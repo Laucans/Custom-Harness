@@ -8,6 +8,7 @@
 //! utilisateurs » est donc tenu par le graphe de crates, à la compilation,
 //! plutôt que par un test qui parcourt des AST.
 
+pub mod adapters;
 pub mod domain;
 pub mod execution;
 pub mod traces;

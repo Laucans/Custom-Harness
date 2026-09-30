@@ -240,17 +240,28 @@ pub struct Stage<S> {
 }
 
 pub enum StageBody<S> {
-    Session { spec: SessionSpec, actions: Vec<Box<dyn SessionAction<S>>> },
-    Local   { actions: Vec<Box<dyn Action<S>>> },
+    Session {
+        spec: SessionSpec,
+        sessions: Rc<dyn SessionFactory>,   // la couture ; voir plus bas
+        actions: Vec<Box<dyn SessionAction<S>>>,
+    },
+    Local { actions: Vec<Box<dyn Action<S>>> },
 }
 ```
 
 - Les gates sont sur `Stage`, pas sur le corps : une gate entoure un
-  exécutable, et l'exécutable est la Stage.
+  exécutable, et l'exécutable est la Stage. **Testé** : un pré-gate qui
+  échoue arrête avant même l'appel à `sessions.open()` — aucune session ne
+  s'ouvre pour une stage sautée.
 - Un ensemble fermé à deux variantes, à dessein : le match est exhaustif, et
   un workflow ne peut pas inventer une troisième façon de faire tourner une
   stage.
 - `pick_task` devient une `StageBody::Local` à une action.
+- **`sessions` vit sur `StageBody::Session`, pas sur `Context`.** Une stage
+  locale n'a donc jamais à porter une fabrique dont elle n'a aucun usage ;
+  le rayon d'action de « qui peut atteindre une session » reste aussi étroit
+  que le veut la règle suivante — même la fabrique reste scopée à la stage
+  qui en a besoin.
 
 **Une session ouverte, plusieurs actions.** C'est la différence de fond avec le
 Python : une stage payante n'est plus un prompt et un résultat, c'est une
@@ -259,18 +270,44 @@ session tenue ouverte contre laquelle plusieurs actions dialoguent.
 ```rust
 // Ce qu'une action de session reçoit. Deref vers Context<S>.
 pub struct Open<'a, S> {
-    ctx: &'a mut Context<S>,
-    session: &'a mut Session,
+    pub ctx: &'a mut Context<S>,
+    pub session: &'a mut dyn Session,
 }
 
+#[async_trait(?Send)]
 pub trait SessionAction<S> {
-    async fn perform(&self, open: &mut Open<S>) -> Outcome<Verdict>;
+    async fn run(&self, open: &mut Open<'_, S>) -> Outcome<Verdict>;
+}
+
+// Le port, dans adapters/agent/ — miroir de AgentRunner (ABC) côté Python :
+// une interface décidée maintenant, un porteur concret décidé plus tard.
+#[async_trait(?Send)]
+pub trait Session {
+    async fn ask(&mut self, prompt: &str) -> Outcome<Reply>;
+}
+
+pub struct Reply {
+    pub text: String,
+    pub stop_line: Option<String>,
+    // Optionnel à dessein : un pane de terminal ne rend pas de compte
+    // d'usage, contrairement à un flux JSON structuré. Le trait ne
+    // présuppose pas la capacité du porteur le plus généreux — sinon
+    // l'interface pencherait déjà pour stream-json avant que le choix soit
+    // fait.
+    pub cost: Option<f64>,
+}
+
+#[async_trait(?Send)]
+pub trait SessionFactory {
+    async fn open(&self, spec: &SessionSpec) -> Outcome<Box<dyn Session>>;
 }
 ```
 
 - **La `Session` ne quitte jamais sa Stage.** Elle n'est pas dans le Context,
-  donc rien en dehors d'une stage ne peut l'atteindre — garanti par les types,
-  pas par une convention.
+  donc rien en dehors d'une stage ne peut l'atteindre — garanti par les
+  types, pas par une convention. **Testé** : deux `SessionAction` dans la
+  même `Stage` partagent un seul appel à `sessions.open()`, donc une seule
+  session pour les deux tours.
 - **Ce que ça supprime** : `StageSpec.lead`. Le champ existait pour cramer
   `/tech-analyst` et `/code` dans un seul prompt « parce que le plan du
   tech-analyst n'est écrit dans aucun fichier — un processus neuf le
@@ -279,6 +316,10 @@ pub trait SessionAction<S> {
 - **Ce que ça préserve** : la session restant au niveau de la stage, la
   comptabilité aussi. `costs.tsv` garde sa ligne par stage, format gelé
   compris ; les tours s'y additionnent.
+- **`Round<S>` générique existe dans `harness-core`** : `Vec<Stage<S>>` +
+  post-gate, pour les workflows sans branchement. La boucle de dev n'en aura
+  pas l'usage — son round bifurque (rollover), et la variante B
+  (`docs/ROUND-DRAFT.md`) lui fait écrire son propre type.
 
 ## Ce que Rust supprime — à ne pas migrer
 
@@ -321,11 +362,14 @@ Trois points à scinder. Le coût de la décision n°1 est borné et connu.
 
 ## Ce qui reste à trancher
 
-### Ce qui porte une `Session` (étape 4)
+### Ce qui porte une `Session` (étape 5)
 
-`Session` est une interface dans `adapters/agent/`. Ce qui la porte est derrière
-la couture, donc ce choix ne perturbe ni le core ni les workflows. Trois
-candidats, et l'arbitrage est entre fidélité du résultat et agnosticisme.
+`Session` est une interface dans `adapters/agent/`, construite à l'étape 4 en
+même temps que `Stage`/`Round` — `Stage` ne tient qu'un `Rc<dyn
+SessionFactory>`, jamais un porteur concret. Ce choix ne perturbe donc ni le
+core ni les workflows : `Stage`/`Round` sont testés (fakes en main), écrits,
+et n'ont plus rien à changer quand ce qui suit se tranche. Trois candidats,
+et l'arbitrage est entre fidélité du résultat et agnosticisme.
 
 | Porteur | Gagne | Coûte |
 | --- | --- | --- |
@@ -373,9 +417,11 @@ C'est le seul arbitrage encore ouvert. Tout le reste est tranché.
 2. ~~La forme du core~~ — faite : les deux traits, les gates autour d'un
    exécutable, la stage et sa session, la hiérarchie stricte.
 3. ~~Le core par l'usage~~ — faite : `docs/ROUND-DRAFT.md`, variante B retenue.
-4. **Le squelette du workspace** : trois crates, `domain/`, `traces/` et les
-   traits d'exécution. `Stage`/`Round` attendent l'étape 5 : ils tiennent une
-   `Session`, dont le porteur n'est pas tranché.
-5. Le port `Session` et son porteur, puis les adaptateurs dont la boucle a
-   besoin.
+4. ~~Le squelette du workspace~~ — faite : trois crates, `domain/`, `traces/`,
+   `execution/` (`Context<S>`, les deux traits, `Gate`, `Stage`, `Round`
+   générique), et le port `adapters::agent::Session`/`SessionFactory`. 23
+   tests. `Stage` ne tient qu'un `Rc<dyn SessionFactory>` — aucun porteur
+   concret n'est câblé.
+5. **Le porteur de `Session`** (tmux ? stream-json ?), et les adaptateurs
+   dont la boucle a besoin (`git`, `gh`, le point de reprise).
 6. La boucle, puis le launcher qui la trigge.
