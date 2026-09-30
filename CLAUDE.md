@@ -6,18 +6,27 @@ as part of the rewrite, not carried over by default.
 
 ## Project Context
 
-- Package: defined in `Cargo.toml`; `edition = "2024"`, pinned `rust-version`
-  (MSRV). Toolchain pinned via `rust-toolchain.toml` (`channel = "stable"`).
-- Layout: `src/lib.rs` defines the public API; `src/main.rs` is a thin entry
-  point that calls into the library. Integration tests live in `tests/` and
-  only see the public API.
+- Cargo workspace, three crates, one direction only:
+  `pipeline-launcher` (bin) → `pipeline-workflows` (lib) → `pipeline-core`
+  (lib). `core` never depends on `workflows` or `launcher` — enforced by
+  Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
+  a warning. See `docs/MIGRATION.md` for why this mirrors the Python
+  original's three packages.
+  `edition = "2024"`, pinned `rust-version` (MSRV) at the workspace level
+  (`[workspace.package]`); each crate's `Cargo.toml` inherits it
+  (`edition.workspace = true`). Toolchain pinned via `rust-toolchain.toml`.
+- Within `pipeline-core`: `src/lib.rs` re-exports `domain/`, `traces/`,
+  `execution/` — no public item lives directly in `lib.rs`. Integration
+  tests for a crate live in that crate's own `tests/` and only see its
+  public API (see `crates/workflows/tests/depends_on_core.rs`).
 - External calls (subprocesses like `git`/`gh`, network, filesystem) are
   isolated behind trait-based adapters — core logic decides, an adapter
   executes. Tests substitute a fake adapter; nothing mocks at the call site.
   Carried over from the Python pipeline on purpose.
-- Async runtime, if/when one is needed: one per process — `tokio`
-  multi-thread for long-running loops, `current_thread` for CLI/tests. Don't
-  add it speculatively.
+- Async: `#[async_trait(?Send)]` on every execution trait, tokio
+  `current_thread`. No `Send` bound to pay for — the pipeline is sequential,
+  and this is a deliberate migration decision (`docs/MIGRATION.md`), not a
+  default.
 
 ## Core Rules
 
@@ -92,9 +101,9 @@ as part of the rewrite, not carried over by default.
 - Hooks live in `.githooks/` (tracked) — `git config core.hooksPath
   .githooks` once per clone to enable them. `pre-commit` runs
   `rustfmt --check` on the staged `.rs` files only.
-- `cargo check --all-targets` before `cargo build` — faster, same type
-  errors. Configure the editor to run it on save.
-- `cargo clippy --all-targets --all-features -- -D warnings` and
+- `cargo check --workspace --all-targets` before `cargo build` — faster,
+  same type errors. Configure the editor to run it on save.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
   `cargo fmt --all` before every commit.
 - `cargo audit` runs in CI (see `.github/workflows/ci.yml`); known
   advisories block the build until patched.
@@ -106,9 +115,9 @@ as part of the rewrite, not carried over by default.
 ## Common Commands
 
 ```
-cargo check --all-targets
-cargo clippy --all-targets --all-features -- -D warnings
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
-cargo test --all-features --workspace
+cargo test --workspace --all-features
 cargo audit
 ```

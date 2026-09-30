@@ -1,11 +1,20 @@
-[package]
-name = "pipeline"
+[workspace]
+resolver = "3"
+# L'ordre est celui des dépendances : core ignore ce qui l'utilise, et Cargo
+# refuse de compiler l'inverse. C'est l'invariant n°1 du projet, tenu par le
+# graphe de crates plutôt que par un test.
+members = ["crates/core", "crates/workflows", "crates/launcher"]
+default-members = ["crates/launcher"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
-description = "The unattended pipeline runner: a sequence of Claude Code sessions (Rust rewrite)."
 license = "MIT"
 
-[dependencies]
-
-[dev-dependencies]
+[workspace.dependencies]
+async-trait = "0.1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
+pipeline-core = { path = "crates/core" }
+pipeline-workflows = { path = "crates/workflows" }

@@ -61,6 +61,10 @@ erreur de compilation.
 | 8 | **La session payante reste une `Stage`**, qui porte un objet `Session` | plusieurs actions interopèrent avec la même session ouverte |
 | 9 | **La `Stage` est le point de variation** : session, ou locale | le Round tient strictement des Stages ; la hiérarchie du diagramme est tenue par les types |
 | 10 | **Premier workflow : la boucle de dev** | elle exerce Round + budget + reprise, donc le plus de core |
+| 11 | **Le round est du code, la séquence est une table** (variante B) | le dépôt a déjà retiré un moteur de graphe parce que la couche déclarative mentait sur l'exécution |
+| 12 | **Le core compose le prompt** depuis une borne `Scoped` sur l'état | « une session ne démarre jamais sans sa portée » devient une garantie de type |
+| 13 | **Le `Workflow` compte les tours**, le `Round` reçoit son numéro | le budget est un `Settings` ; un round n'a pas à savoir qu'il est le 3ᵉ de 5 |
+| 14 | **`Context` porte un port de reprise** ; `ctx.checkpoint()` y délègue | le core n'écrit jamais sur le disque lui-même |
 
 ### Sur l'async
 
@@ -101,13 +105,23 @@ pub type Outcome<T> = Result<T, Halt>;
 ### `Verdict`
 
 ```rust
-pub enum Verdict { Continue, Skip(String) }
+pub enum Verdict {
+    Continue,            // j'ai fait mon travail, enchaîne
+    Skip(String),        // je n'avais rien à faire ici, enchaîne
+    NothingLeft(String), // il n'y a plus rien à faire du tout, arrête proprement
+}
 ```
 
-- `Ok(Continue)` — enchaîner. `Ok(Skip(why))` — déjà fait, passer sans payer.
 - `Err(halt)` — s'arrêter. **`Stop` n'est pas une variante** : c'est `Err`, et
   `?` le propage.
-- Absorbe le `skip` trivalué et les `before`/`after` bivalués du Python.
+- `Continue` et `Skip` absorbent le `skip` trivalué et les `before`/`after`
+  bivalués du Python.
+- **`NothingLeft` est né de la décision n°13.** Demander qui compte les tours a
+  révélé le trou : `Repeat` porte aujourd'hui l'écart entre « budget épuisé » et
+  « plus rien à faire » dans un `Result[bool]`, et ce second cas est un **succès**
+  (code 0), pas un arrêt. Sans cette variante il n'avait nulle part où aller —
+  ni `Continue`, ni `Skip`, ni `Err`. Seul un `Round` l'émet ; la répétition
+  s'arrête dessus, journalise la raison, et rend un succès.
 
 ### `Context<S>`
 
@@ -321,34 +335,41 @@ candidats, et l'arbitrage est entre fidélité du résultat et agnosticisme.
   `adapters/agent/` passe d'« emballer une bibliothèque » à « parler à quelque
   chose ».
 
-### Les autres
+C'est le seul arbitrage encore ouvert. Tout le reste est tranché.
 
-- **Où vont `Workspace`, `repo_root()` et `claim()`.** Proposition :
-  `Workspace` est de l'algèbre de chemins pure et descend dans `domain/` ;
-  `repo_root()` et `claim()` font du vrai I/O et montent dans `adapters/`.
-  Ça coupe l'ex-`filesystem/` selon la ligne de pureté.
-- **`traces/` reste-t-il une feuille ?** `runtime/` n'importe rien aujourd'hui.
-  Si une Gate journalise son verdict, `traces/` doit-il connaître
-  `Verdict`/`Halt`, ou reste-t-il aveugle et c'est l'exécuteur qui formate ?
-- **`design/` survit-il ?** `Blueprint` + `build` existaient pour éviter quatre
-  classes d'emballage recopiées *et* pour garder le chemin rapide. Le chemin
-  rapide n'existe plus, et un `Workflow` devient lui-même un `Executable`.
-- **Le budget et la reprise.** `Repeat` porte aujourd'hui l'écart entre « budget
-  épuisé » et « plus rien à faire » dans un `Result[bool]`. Avec `Round` comme
-  niveau réel, qui compte les tours — le `Workflow`, ou le `Round` lui-même ?
-- **Ce que `Context<S>.results` devient.** Dans une stage, la session porte ce
-  qu'une action a rendu à la suivante : le dict indexé par skill n'a plus
-  d'objet. Entre stages, il en garde peut-être un. À voir quand le raffinage
-  arrivera — la boucle n'en a pas besoin.
+## Ce qui a été tranché en route
+
+- **`Workspace` descend dans `domain/`** — c'est de l'algèbre de chemins pure,
+  qui « déclare et ne monte pas ». **`repo_root()` et `claim()` montent dans
+  `adapters/`** : ils font du vrai I/O. L'ex-`filesystem/` est coupé selon la
+  ligne de pureté, au lieu de rester un fourre-tout.
+- **`traces/` reste une feuille.** Elle ne connaît ni `Verdict` ni `Halt` :
+  l'exécuteur lit `halt.prefix()` et `halt.level()`, et passe une chaîne. C'est
+  déjà ainsi que le Python fonctionne.
+- **`design/` ne survit pas.** `Blueprint` + `build` existaient pour éviter
+  quatre classes d'emballage recopiées *et* pour garder le chemin rapide. Le
+  chemin rapide n'existe plus ; le blanket impl écrit l'emballage une fois ; et
+  en variante B un workflow écrit son propre `Round`. Il ne reste rien à
+  déclarer.
+- **`Context<S>.results` disparaît.** Dans une stage, la session porte ce qu'une
+  action a rendu à la suivante. Ce qui doit survivre à la stage, une action le
+  promeut **explicitement** dans l'état. Plus de dict indexé par nom de skill.
+- **L'idempotence est au core**, via une borne `Resumable` sur l'état
+  (`done()`, `mark()`). Ça supprime le `done=st.stages_done` passé à chaque
+  appel et le cas particulier `mark=False`.
+- **Deux choses sont du framework et ne se déclarent plus** : le filtre
+  `--stages` (`Settings.stages` contre `stage.name`) et la résolution
+  modèle/effort (la table déclare le défaut, `MODEL`/`EFFORT` l'écrasent).
 
 ## Étapes
 
 1. ~~Décisions structurantes~~ — faite.
 2. ~~La forme du core~~ — faite : les deux traits, les gates autour d'un
    exécutable, la stage et sa session, la hiérarchie stricte.
-3. **Le core par l'usage** — écrire le round de la boucle tel qu'on veut le
-   lire, en Rust, sans l'implémenter. C'est ce qui fige les signatures.
-4. Le squelette du workspace : trois crates, `domain/` et `traces/` d'abord.
-5. Les adaptateurs dont la boucle a besoin — dont `Session`, et le choix de ce
-   qui la porte.
+3. ~~Le core par l'usage~~ — faite : `docs/ROUND-DRAFT.md`, variante B retenue.
+4. **Le squelette du workspace** : trois crates, `domain/`, `traces/` et les
+   traits d'exécution. `Stage`/`Round` attendent l'étape 5 : ils tiennent une
+   `Session`, dont le porteur n'est pas tranché.
+5. Le port `Session` et son porteur, puis les adaptateurs dont la boucle a
+   besoin.
 6. La boucle, puis le launcher qui la trigge.
