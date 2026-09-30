@@ -371,15 +371,28 @@ core ni les workflows : `Stage`/`Round` sont testés (fakes en main), écrits,
 et n'ont plus rien à changer quand ce qui suit se tranche. Trois candidats,
 et l'arbitrage est entre fidélité du résultat et agnosticisme.
 
+**Le rapport complet est dans `docs/SESSION-CARRIER.md`** — trois propositions
+chiffrées, à arbitrer. Résumé, et **une correction** :
+
+> Ce document affirmait que sous tmux « le coût et l'usage ne sont pas
+> récupérables ». **C'est faux**, et l'erreur était de supposer que le pane est
+> le seul canal. Le coût en USD exact, les jetons, les ratios de cache **et les
+> quotas** sortent par quatre canaux structurés qui vivent à côté du terminal :
+> `statusLine` (stdin JSON, `cost.total_cost_usd`, `rate_limits`), les métriques
+> OTel (`claude_code.cost.usage`, en USD, exportable en local), le transcript
+> JSONL (usage par message, mais **aucun** champ dollar), et le hook `Stop`
+> (frontière de tour, en événement).
+
 | Porteur | Gagne | Coûte |
 | --- | --- | --- |
-| **tmux** — un pane par session, `send-keys` / `capture-pane` | l'agent devient interchangeable (claude, opencode, …) ; une stage est attachable en cours de run ; aucun protocole à écrire | `capture-pane` rend un terminal : ANSI, spinners, lignes re-rendues. La fin d'un tour est fragile à détecter, et **le coût et l'usage ne sont pas récupérables** |
-| **stream-json** — `claude -p --input-format stream-json` | des tours délimités, le coût et l'usage dans le message `result`, l'acquittement par `--replay-user-messages` | lié à Claude Code ; un protocole à parler, et c'est le plus gros adaptateur de la migration |
-| **un processus par action** — `--session-id` / `--resume` | le plus simple à écrire | paie le démarrage et le rechargement de session par action ; « ouverte » devient une fiction |
+| **A — tmux + instrumentation** | attachable en vol ; coût USD, ratios de cache, **quotas prédictifs** ; conteneur générique | trois surfaces spécifiques à Claude Code à maintenir ; l'entrée reste des frappes dans une TUI |
+| **B — stream-json, processus long** | un seul canal typé, en bande ; la vraie session ouverte ; marche sans TTY | non attachable ; un protocole bidirectionnel à écrire |
+| **C — un processus par action (`--resume`)** | le moins de code ; coût USD et fin de tour gratuits par appel | « ouverte » est une fiction ; rechargement par action ; non attachable |
 
-- Sous tmux, les marqueurs `AGENT_LOOP_OK`/`AGENT_LOOP_STOP` — aujourd'hui un
-  « contrat verbal » avec repli structurel — deviendraient le signal de
-  complétion **primaire**. C'est tenable, mais ça déplace le poids.
+- **tmux n'achète pas l'agnosticisme d'agent**, contrairement à ce qu'on
+  espérait : il achète un conteneur générique **plus** un port
+  d'instrumentation à écrire par agent. `statusLine`, les noms de métriques,
+  les hooks et le schéma du transcript sont tous propres à Claude Code.
 - Sous tmux, `tmux` s'ajoute aux binaires du préflight, comme `claude` l'est.
 - Il n'existe pas de SDK Rust officiel. C'est le vrai coût de quitter Python :
   `adapters/agent/` passe d'« emballer une bibliothèque » à « parler à quelque
