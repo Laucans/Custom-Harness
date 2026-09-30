@@ -89,6 +89,9 @@ as part of the rewrite, not carried over by default.
 
 ## Workflow Rules
 
+- Hooks live in `.githooks/` (tracked) — `git config core.hooksPath
+  .githooks` once per clone to enable them. `pre-commit` runs
+  `rustfmt --check` on the staged `.rs` files only.
 - `cargo check --all-targets` before `cargo build` — faster, same type
   errors. Configure the editor to run it on save.
 - `cargo clippy --all-targets --all-features -- -D warnings` and
