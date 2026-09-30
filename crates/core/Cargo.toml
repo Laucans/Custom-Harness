@@ -1,6 +1,6 @@
 [package]
-name = "pipeline-core"
-description = "Le framework du runner : vocabulaire, traces, exécution. Ignore ses utilisateurs."
+name = "harness-core"
+description = "Le framework du harness : vocabulaire, traces, exécution. Ignore ses utilisateurs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

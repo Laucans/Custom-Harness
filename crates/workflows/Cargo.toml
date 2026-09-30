@@ -1,5 +1,5 @@
 [package]
-name = "pipeline-workflows"
+name = "harness-workflows"
 description = "Les workflows : les instances déclarées contre le framework de core."
 version.workspace = true
 edition.workspace = true
@@ -7,4 +7,4 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-pipeline-core.workspace = true
+harness-core.workspace = true

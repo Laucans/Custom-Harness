@@ -1,7 +1,7 @@
 //! Vocabulaire pur : ni disque, ni subprocess, ni bibliothèque externe.
 //!
 //! Ne nomme aucun workflow, même en commentaire — c'est ce qui permet à
-//! `pipeline-workflows` de dépendre de ce module sans jamais que la
+//! `harness-workflows` de dépendre de ce module sans jamais que la
 //! réciproque devienne pensable.
 
 mod halt;

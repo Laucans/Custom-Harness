@@ -14,13 +14,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pin-project-lite"
-version = "0.2.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "pipeline-core"
+name = "harness-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -29,19 +23,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "pipeline-launcher"
+name = "harness-launcher"
 version = "0.1.0"
 dependencies = [
- "pipeline-core",
- "pipeline-workflows",
+ "harness-core",
+ "harness-workflows",
 ]
 
 [[package]]
-name = "pipeline-workflows"
+name = "harness-workflows"
 version = "0.1.0"
 dependencies = [
- "pipeline-core",
+ "harness-core",
 ]
+
+[[package]]
+name = "pin-project-lite"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "proc-macro2"

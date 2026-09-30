@@ -1,4 +1,4 @@
-# Migration du pipeline vers Rust
+# Migration du pipeline vers un harness Rust
 
 Document de travail, écrit au fur et à mesure. Il porte les décisions prises
 et ce qu'elles impliquent — pas un récit de la migration.
@@ -8,8 +8,12 @@ Sa carte : `pipeline/ARCHITECTURE.md` et `pipeline/src/pipeline/core/ARCHITECTUR
 
 ## Objet
 
-Réécrire le runner en Rust, et profiter du passage pour corriger trois choses
-que le Python a laissées s'installer :
+Réécrire le runner en Rust, sous le nom **harness** — pas « pipeline » : il ne
+fait pas que déplacer de la donnée par étapes, il pilote des sessions d'agent
+au travers de portes de vérification, ce qui est précisément ce que le mot
+désigne dans l'écosystème des agents de code (boucle, observation, actions,
+vérification, persistance d'état). Et profiter du passage pour corriger trois
+choses que le Python a laissées s'installer :
 
 - le vocabulaire d'exécution est implicite — il n'y a pas de type `Round`, ni
   de type `Stage` exécutable ; ce sont des fermetures passées à des `shape`s ;
@@ -23,18 +27,20 @@ L'arborescence est conservée. Elle devient un graphe de crates, dans un
 workspace Cargo :
 
 ```
-pipeline-launcher (bin)  ->  pipeline-workflows (lib)  ->  pipeline-core (lib)
+harness-launcher (bin)  ->  harness-workflows (lib)  ->  harness-core (lib)
      ce qui trigge              la définition des             le framework
                                     workflows
 ```
 
 **Ce que ça remplace** : `tests/test_layering.py` et sa table `ALLOWED`.
 « Le framework ignore ses utilisateurs » cesse d'être un test qui parcourt des
-AST — un `use pipeline_workflows::` dans `pipeline-core` est une dépendance
+AST — un `use harness_workflows::` dans `harness-core` est une dépendance
 cyclique, et Cargo refuse de compiler. L'invariant n°1 du projet devient une
-erreur de compilation.
+erreur de compilation. Vérifié en pratique à l'étape 4 : le nom de crate ne
+résout même pas (`E0432`), avant même qu'une règle de couches ait à
+s'appliquer.
 
-### Dans `pipeline-core`
+### Dans `harness-core`
 
 | Module | Porte | Note |
 | --- | --- | --- |
@@ -53,7 +59,7 @@ erreur de compilation.
 | --- | --- | --- |
 | 1 | **Deux traits** : `Executable` (`&mut Context`), `Verification` (`&Context`) | le borrow checker rend vraie la règle « Action fait, Verification juge » |
 | 2 | **`Context<S>` générique** sur un `State` déclaré par le workflow | aucun downcast ; `core` reste ignorant des workflows, vérifié à la compilation |
-| 3 | **Async, tokio `current_thread`**, `#[async_trait(?Send)]` | l'agent est async ; le pipeline est séquentiel, donc pas de borne `Send` à payer |
+| 3 | **Async, tokio `current_thread`**, `#[async_trait(?Send)]` | l'agent est async ; le harness pilote une session à la fois, donc pas de borne `Send` à payer |
 | 4 | **Trois crates dans un workspace** | la règle de couches devient une erreur de compilation |
 | 5 | **`.execute()` rend du contrôle, pas de la donnée** | découle de « le Context transporte l'état » + « l'exécuteur porte les résultats d'action » |
 | 6 | **`Settings` immuable** | construits une fois, jamais réécrits en place |

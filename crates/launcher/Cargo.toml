@@ -1,5 +1,5 @@
 [package]
-name = "pipeline-launcher"
+name = "harness-launcher"
 description = "Les points d'entrée : CLI et hooks qui trigent un workflow."
 version.workspace = true
 edition.workspace = true
@@ -7,9 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "pipeline"
+name = "harness"
 path = "src/main.rs"
 
 [dependencies]
-pipeline-core.workspace = true
-pipeline-workflows.workspace = true
+harness-core.workspace = true
+harness-workflows.workspace = true

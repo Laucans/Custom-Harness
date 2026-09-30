@@ -1,13 +1,18 @@
-# pipelinev2
+# harness
 
 Rust rewrite of `event_assistant/pipeline` (the unattended agent-loop
-runner). Standalone repo, scaffold stage — architecture is being redecided
-as part of the rewrite, not carried over by default.
+runner) as an agent harness: it drives Claude Code sessions through
+verification gates, rather than just moving data through stages. Standalone
+repo, currently staged inside `event_assistant` under the working directory
+`pipelinev2/` pending its move to its own repository — the directory name is
+provisional, the crates below are the actual project identity. Scaffold
+stage — architecture is being redecided as part of the rewrite, not carried
+over by default.
 
 ## Project Context
 
 - Cargo workspace, three crates, one direction only:
-  `pipeline-launcher` (bin) → `pipeline-workflows` (lib) → `pipeline-core`
+  `harness-launcher` (bin) → `harness-workflows` (lib) → `harness-core`
   (lib). `core` never depends on `workflows` or `launcher` — enforced by
   Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
   a warning. See `docs/MIGRATION.md` for why this mirrors the Python
@@ -15,7 +20,7 @@ as part of the rewrite, not carried over by default.
   `edition = "2024"`, pinned `rust-version` (MSRV) at the workspace level
   (`[workspace.package]`); each crate's `Cargo.toml` inherits it
   (`edition.workspace = true`). Toolchain pinned via `rust-toolchain.toml`.
-- Within `pipeline-core`: `src/lib.rs` re-exports `domain/`, `traces/`,
+- Within `harness-core`: `src/lib.rs` re-exports `domain/`, `traces/`,
   `execution/` — no public item lives directly in `lib.rs`. Integration
   tests for a crate live in that crate's own `tests/` and only see its
   public API (see `crates/workflows/tests/depends_on_core.rs`).
@@ -24,9 +29,9 @@ as part of the rewrite, not carried over by default.
   executes. Tests substitute a fake adapter; nothing mocks at the call site.
   Carried over from the Python pipeline on purpose.
 - Async: `#[async_trait(?Send)]` on every execution trait, tokio
-  `current_thread`. No `Send` bound to pay for — the pipeline is sequential,
-  and this is a deliberate migration decision (`docs/MIGRATION.md`), not a
-  default.
+  `current_thread`. No `Send` bound to pay for — the harness drives one
+  session at a time, and this is a deliberate migration decision
+  (`docs/MIGRATION.md`), not a default.
 
 ## Core Rules
 

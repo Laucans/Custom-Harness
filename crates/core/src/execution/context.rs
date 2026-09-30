@@ -6,7 +6,7 @@ use crate::traces::Logbook;
 /// Ce que l'exécution tient pendant un run, générique sur `S` — l'état
 /// propre au workflow qui l'utilise.
 ///
-/// `pipeline-core` reste ignorant des workflows : il ne nomme jamais un `S`
+/// `harness-core` reste ignorant des workflows : il ne nomme jamais un `S`
 /// concret, seulement le paramètre. C'est ce qui remplace `RoundCtx(Ctx)` et
 /// `RoundState` côté Python, sans downcast — vérifié à la compilation.
 pub struct Context<S> {
