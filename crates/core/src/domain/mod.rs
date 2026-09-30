@@ -4,6 +4,8 @@
 //! `harness-workflows` de dépendre de ce module sans jamais que la
 //! réciproque devienne pensable.
 
+pub mod markers;
+
 mod halt;
 mod resumable;
 mod verdict;

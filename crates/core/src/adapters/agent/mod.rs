@@ -8,6 +8,8 @@
 //! d'implémentation, prise une fois le porteur tranché (`docs/MIGRATION.md`,
 //! « Ce qui reste à trancher »).
 
+pub mod claude_cli;
+
 use async_trait::async_trait;
 
 use crate::domain::Outcome;

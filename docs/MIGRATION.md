@@ -435,6 +435,10 @@ C'est le seul arbitrage encore ouvert. Tout le reste est tranché.
    générique), et le port `adapters::agent::Session`/`SessionFactory`. 23
    tests. `Stage` ne tient qu'un `Rc<dyn SessionFactory>` — aucun porteur
    concret n'est câblé.
-5. **Le porteur de `Session`** (tmux ? stream-json ?), et les adaptateurs
-   dont la boucle a besoin (`git`, `gh`, le point de reprise).
+5. **Le porteur de `Session`** — arbitré et écrit : proposition **C**
+   (`adapters::agent::claude_cli`, un `claude -p --output-format json` par
+   action, recousu par `--resume`), avec **A (tmux) comme destination**. Voir
+   `docs/SESSION-CARRIER.md`, dont le piège de version sur `total_cost_usd`.
+   Restent les adaptateurs dont la boucle a besoin : `git`, `gh`, le point de
+   reprise, et le registre de dépenses.
 6. La boucle, puis le launcher qui la trigge.

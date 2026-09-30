@@ -1,9 +1,44 @@
 # Ce qui porte une `Session` — rapport décisionnel
 
-Étape 5. Trois propositions, à arbitrer. Le port est déjà écrit
+> **Arbitré : C maintenant, A comme destination.** Implémenté dans
+> `adapters::agent::claude_cli`. Le port (`Session` / `SessionFactory`) n'a pas
+> bougé, donc le passage à A ne touchera ni `Stage`/`Round` ni les workflows.
+
+Étape 5. Trois propositions. Le port était déjà écrit
 (`adapters::agent::Session` / `SessionFactory`), donc ce choix ne touche ni
 `Stage`/`Round`, ni les workflows : c'est une décision **réversible**, et ça
 compte dans l'arbitrage.
+
+## Ce que l'implémentation de C a révélé
+
+Un piège de version, trouvé en lisant la doc plutôt qu'en le découvrant dans
+un `costs.tsv` faux :
+
+> **`total_cost_usd` sur un appel `--resume` est cumulatif pour toute la
+> conversation depuis Claude Code v2.1.277.** Avant cette version, chaque
+> appel ne rendait que le sien.
+
+Donc le coût d'une stage est la valeur du **dernier** tour, et sommer les tours
+double-compterait — *ou l'inverse*, selon la version installée. Cette machine
+est en **2.1.257**, du mauvais côté de la bascule : sommer donne le bon chiffre
+aujourd'hui et un chiffre faux après une mise à jour, sans rien qui le signale.
+
+Traitement retenu : l'adaptateur **ne tranche pas**, il rapporte fidèlement ce
+que le tour a dit dans `Reply::cost`. C'est au registre de dépenses — pas
+encore écrit — d'accumuler, et **une porte de préflight sur `claude --version`
+devra le décider**. Une porte coûte un appel local ; un `costs.tsv` faux ne se
+voit pas.
+
+Deux autres points notés au passage :
+
+- `total_cost_usd` est une **estimation côté client**, d'une table de prix
+  embarquée. Bonne pour un budget, jamais pour facturer.
+- `usage` **exclut les subagents** ; `total_cost_usd` et `model_usage` les
+  incluent. Comme le stage `code` en lance, compter les jetons depuis `usage`
+  sous-compterait — c'est `total_cost_usd` qu'il faut lire.
+- **Ne pas utiliser `--bare`** : il saute la découverte des skills et du
+  `CLAUDE.md`, dont le harness dépend entièrement (`/business-analyst`,
+  `/code`).
 
 ## Correction : ce que j'ai écrit à l'étape 4 était faux
 
@@ -173,7 +208,7 @@ processus.
 | **Coûte** | « session ouverte » est une fiction : rechargement du contexte par action (le cache de prompt en amortit le coût, pas la latence). Non attachable. Pas de quotas prédictifs. |
 | **Effort** | le plus faible |
 
-## Recommandation
+## Recommandation — retenue
 
 **C d'abord, A comme destination si l'attachabilité s'avère compter.**
 
