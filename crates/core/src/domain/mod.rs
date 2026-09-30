@@ -7,9 +7,13 @@
 pub mod markers;
 
 mod halt;
+mod issue;
 mod resumable;
+mod spend;
 mod verdict;
 
 pub use halt::{Halt, Severity};
+pub use issue::Issue;
 pub use resumable::Resumable;
+pub use spend::{Spend, Tokens};
 pub use verdict::{Outcome, Verdict};

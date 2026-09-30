@@ -439,6 +439,24 @@ C'est le seul arbitrage encore ouvert. Tout le reste est tranché.
    (`adapters::agent::claude_cli`, un `claude -p --output-format json` par
    action, recousu par `--resume`), avec **A (tmux) comme destination**. Voir
    `docs/SESSION-CARRIER.md`, dont le piège de version sur `total_cost_usd`.
-   Restent les adaptateurs dont la boucle a besoin : `git`, `gh`, le point de
-   reprise, et le registre de dépenses.
+   **Fait aussi** : `domain::Spend`/`Tokens` (ce qu'un tour coûte, tous champs
+   optionnels — `None` se lit « non observé », jamais « zéro »),
+   `domain::Issue`, `adapters::shell::process` (le seul endroit du paquet qui
+   lance un sous-processus ; un code non nul y est une **donnée**, pas une
+   erreur, parce que `git rev-parse --verify` répond comme ça), et
+   `adapters::shell::git` (surface réduite à ce que la boucle et son préflight
+   demandent).
+
+   **Reste à écrire, dans cet ordre :**
+
+   | Quoi | Surface | Invariant à ne pas perdre |
+   | --- | --- | --- |
+   | `adapters::shell::github` | `authenticated`, `repo` (mémoïsé), `labels`, `issue`, `issues_labelled`, `sub_issues`, `blocked_by`, `merged_prs`, `issue_comments` (paginé), et les écritures `add_label`, `remove_label`, `set_body`, `post_issue_comment`, `close_issue` | **une lecture ratée n'est jamais `[]`** : `Halt::Unreadable`, jamais « plus rien à faire » — sinon un jeton expiré fait payer un `/planner`. Les issues passent par `gh api`, pas `gh issue` (les sous-issues et dépendances n'ont pas de flag natif). Filtrer les PR que `/issues` renvoie (clé `pull_request`). Étiquettes acceptées en objets **ou** en chaînes |
+   | `adapters::store::ledger` | `append`, `rows` | en-tête **gelé caractère pour caractère**, colonnes ajoutées **en fin** de ligne, une ligne par stage. `outcome` vide = « non enregistré » |
+   | `adapters::store::checkpoint` | pointeur 2 lignes (`task=`, `flow_id=`) + états | **ne pas porter le sqlite** : son schéma n'existait que par héritage du `@persist` d'un moteur de graphe, qui est mort. Du JSONL suffit et garde « une ligne par étape ». Un magasin illisible est `Unreadable`, jamais « rien n'a tourné » — l'écart vaut une session de `/code` |
+
+   Volontairement hors étape 5 : le montage de workspace (`clone`, `fetch`,
+   `reset --hard`, `clean`, `branches_at_risk`) et les lectures de PR
+   (`pr`, `comment_bodies`, `post_comment`) qui servent la revue, pas la
+   boucle.
 6. La boucle, puis le launcher qui la trigge.

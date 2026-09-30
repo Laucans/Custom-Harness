@@ -108,7 +108,10 @@ mod tests {
             Ok(Reply {
                 text: format!("answered {prompt}"),
                 stop_line: None,
-                cost: Some(0.01),
+                spend: crate::domain::Spend {
+                    cost_usd: Some(0.01),
+                    ..crate::domain::Spend::default()
+                },
             })
         }
     }

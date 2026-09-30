@@ -12,22 +12,27 @@ pub mod claude_cli;
 
 use async_trait::async_trait;
 
-use crate::domain::Outcome;
+use crate::domain::{Outcome, Spend};
 
 /// Ce qu'une session rend après un tour.
 ///
-/// Honnête sur ce qu'un porteur peut réellement observer : `cost` est
-/// optionnel parce qu'un pane de terminal ne rend pas de compte d'usage,
-/// contrairement à un flux JSON structuré. Le trait ne présuppose pas la
-/// capacité du porteur le plus généreux.
+/// Honnête sur ce qu'un porteur peut réellement observer : tout ce que porte
+/// [`Spend`] est optionnel, parce qu'un pane de terminal ne rend pas de compte
+/// d'usage, contrairement à un flux JSON structuré. Le trait ne présuppose pas
+/// la capacité du porteur le plus généreux.
 #[derive(Debug, Clone)]
 pub struct Reply {
     /// Le texte que la session a rendu pour ce tour.
     pub text: String,
     /// Le marqueur `AGENT_LOOP_STOP`, si la session s'est arrêtée d'elle-même.
     pub stop_line: Option<String>,
-    /// Le coût de ce tour, en dollars, quand le porteur peut le rendre.
-    pub cost: Option<f64>,
+    /// Ce que ce tour a coûté et consommé.
+    ///
+    /// Les champs que le registre de dépenses réclame — jetons, tours, durée,
+    /// identifiant de session — vivent ici plutôt qu'en colonnes de `Reply` :
+    /// c'est le registre qui a révélé lesquels, et les grouper garde `Reply`
+    /// lisible quand un porteur n'en remplit aucun.
+    pub spend: Spend,
 }
 
 /// Une session ouverte contre un agent : plusieurs tours, un seul processus.

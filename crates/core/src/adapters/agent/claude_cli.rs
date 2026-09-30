@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::adapters::agent::{Reply, Session, SessionFactory, SessionSpec};
-use crate::domain::{Halt, Outcome, markers};
+use crate::domain::{Halt, Outcome, Spend, Tokens, markers};
 
 /// Le binaire appelé. Nommé ici pour qu'un test puisse le lire.
 const BINARY: &str = "claude";
@@ -67,6 +67,33 @@ struct CliResult {
     session_id: String,
     #[serde(default)]
     total_cost_usd: Option<f64>,
+    #[serde(default)]
+    num_turns: Option<u32>,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    #[serde(default)]
+    usage: CliUsage,
+}
+
+/// Les jetons, tels que le message `result` les rapporte.
+///
+/// **Sous-compte les subagents** : la doc est explicite, `usage` ne couvre que
+/// la boucle principale alors que `total_cost_usd` inclut les subagents. Le
+/// stage `code` en lance, donc ces jetons-là sont un plancher, pas un total.
+/// C'est le coût qu'il faut lire pour un budget, pas les jetons.
+// Les noms sont ceux de l'API, pas les nôtres : les renommer pour faire
+// plaisir à `struct_field_names` ferait mentir le `Deserialize`.
+#[allow(clippy::struct_field_names)]
+#[derive(Debug, Default, Deserialize)]
+struct CliUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
 }
 
 /// Une conversation menée par appels successifs au binaire `claude`.
@@ -161,10 +188,22 @@ fn parse(stdout: &str) -> Outcome<(Reply, String)> {
         )));
     }
 
+    let spend = Spend {
+        cost_usd: parsed.total_cost_usd,
+        turns: parsed.num_turns,
+        duration_ms: parsed.duration_ms,
+        tokens: Tokens {
+            input: parsed.usage.input_tokens,
+            output: parsed.usage.output_tokens,
+            cache_read: parsed.usage.cache_read_input_tokens,
+            cache_write: parsed.usage.cache_creation_input_tokens,
+        },
+        session: (!parsed.session_id.is_empty()).then(|| parsed.session_id.clone()),
+    };
     let reply = Reply {
         stop_line: markers::stop_line(&parsed.result),
         text: parsed.result,
-        cost: parsed.total_cost_usd,
+        spend,
     };
     Ok((reply, parsed.session_id))
 }
@@ -309,7 +348,12 @@ mod tests {
     fn a_successful_turn_yields_its_text_cost_and_session() {
         let (reply, session) = parse(SUCCESS).expect("parse");
         assert_eq!(session, "sess-42");
-        assert!((reply.cost.expect("cost") - 0.1234).abs() < f64::EPSILON);
+        assert!((reply.spend.cost_usd.expect("cost") - 0.1234).abs() < f64::EPSILON);
+        assert_eq!(reply.spend.turns, Some(3));
+        assert_eq!(reply.spend.duration_ms, Some(45000));
+        assert_eq!(reply.spend.tokens.input, Some(100));
+        assert_eq!(reply.spend.tokens.output, Some(20));
+        assert_eq!(reply.spend.session.as_deref(), Some("sess-42"));
         assert!(reply.text.contains("voici ce que j'ai fait"));
         // AGENT_LOOP_OK n'est pas un arrêt.
         assert!(reply.stop_line.is_none());
@@ -332,7 +376,10 @@ mod tests {
         // valide. C'est pour ça que `Reply::cost` est un Option.
         let json = r#"{"is_error":false,"result":"fait","session_id":"s"}"#;
         let (reply, _) = parse(json).expect("parse");
-        assert!(reply.cost.is_none());
+        assert!(reply.spend.cost_usd.is_none());
+        // Rien d'observé, et surtout pas des zéros : un registre doit pouvoir
+        // écrire « non mesuré » plutôt qu'une session gratuite.
+        assert!(reply.spend.is_blind());
     }
 
     #[test]
@@ -416,7 +463,10 @@ mod tests {
             .ask("Réponds exactement: un")
             .await
             .expect("1er tour");
-        assert!(first.cost.is_some(), "le premier tour doit rendre un coût");
+        assert!(
+            first.spend.cost_usd.is_some(),
+            "le premier tour doit rendre un coût"
+        );
 
         // Le second tour doit voir le premier : s'il ne le voit pas, `--resume`
         // n'a pas pris, et toute la proposition C est fausse.

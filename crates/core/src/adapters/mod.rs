@@ -5,3 +5,4 @@
 //! seule. Un sous-module par composant externe, comme côté Python.
 
 pub mod agent;
+pub mod shell;
