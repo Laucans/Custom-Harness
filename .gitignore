@@ -1,0 +1,19 @@
+# build output
+/target
+
+# env — every .env variant, except the committed template
+.env*
+!.env.example
+# .envrc n'est pas un fichier d'env : il est committe, .env* l'avalait.
+!.envrc
+.direnv/
+
+# OS
+.DS_Store
+
+# editor
+.vscode/
+.idea/
+
+# logs
+*.log
