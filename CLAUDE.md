@@ -58,9 +58,17 @@ over by default.
 
 - Lints: crate root sets `#![warn(clippy::pedantic, clippy::nursery,
   missing_docs, rust_2018_idioms)]` (already set). CI runs
-  `cargo clippy --all-targets --all-features -- -D warnings`. No blanket
-  `#[allow]` at the crate root — narrow allows only, with a comment
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`. No
+  blanket `#[allow]` at the crate root — narrow allows only, with a comment
   explaining why.
+  **One exception, already taken**: `clippy::future_not_send` is allowed at
+  the root of `harness-core`. It is not a silenced defect — the lint
+  presupposes `Send` futures, and migration decision #3 chose
+  `#[async_trait(?Send)]` throughout, so every trait method's future is
+  non-`Send` by construction and the lint would fire on nearly every
+  `async fn`. Adding a new root-level allow needs the same kind of
+  justification: the lint must contradict a documented decision globally, not
+  merely be inconvenient locally.
 - Naming: `snake_case` for modules, functions, variables, fields;
   `CamelCase` for types, traits, enum variants; `SCREAMING_SNAKE_CASE` for
   `const`/`static`. No Hungarian notation, no abbreviations beyond

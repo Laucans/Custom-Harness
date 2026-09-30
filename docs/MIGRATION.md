@@ -435,7 +435,7 @@ C'est le seul arbitrage encore ouvert. Tout le reste est tranché.
    générique), et le port `adapters::agent::Session`/`SessionFactory`. 23
    tests. `Stage` ne tient qu'un `Rc<dyn SessionFactory>` — aucun porteur
    concret n'est câblé.
-5. **Le porteur de `Session`** — arbitré et écrit : proposition **C**
+5. ~~Le porteur de `Session` et les adaptateurs~~ — faite. Proposition **C**
    (`adapters::agent::claude_cli`, un `claude -p --output-format json` par
    action, recousu par `--resume`), avec **A (tmux) comme destination**. Voir
    `docs/SESSION-CARRIER.md`, dont le piège de version sur `total_cost_usd`.
@@ -447,7 +447,22 @@ C'est le seul arbitrage encore ouvert. Tout le reste est tranché.
    `adapters::shell::git` (surface réduite à ce que la boucle et son préflight
    demandent).
 
-   **Reste à écrire, dans cet ordre :**
+   **Écrit depuis :** `shell::github` (une lecture ratée rend
+   `Halt::Unreadable`, jamais `[]`), `store::ledger` (en-tête gelé, le vide
+   distinct du zéro), `store::checkpoint` (pointeur deux lignes + JSONL, pas de
+   sqlite). L'étape 5 est finie.
+
+   **Ce que ces trois-là ont appris au passage :**
+
+   - `clippy::future_not_send` (un lint `nursery`) est catégoriquement
+     incompatible avec la décision n°3 : il présuppose des futurs `Send`. Un
+     `allow` à la racine de `harness-core`, justifié sur place, plutôt que
+     parsemé site par site — voir `CLAUDE.md`, qui porte l'exception.
+   - `OnceLock` plutôt que `RefCell` pour mémoïser `owner/name` : même
+     sémantique (écrit une fois), mais `Sync`, et surtout pas d'emprunt à
+     garder ouvert à travers un `await`.
+
+   **L'ancienne liste, pour mémoire :**
 
    | Quoi | Surface | Invariant à ne pas perdre |
    | --- | --- | --- |
@@ -459,4 +474,7 @@ C'est le seul arbitrage encore ouvert. Tout le reste est tranché.
    `reset --hard`, `clean`, `branches_at_risk`) et les lectures de PR
    (`pr`, `comment_bodies`, `post_comment`) qui servent la revue, pas la
    boucle.
-6. La boucle, puis le launcher qui la trigge.
+6. **La boucle, puis le launcher qui la trigge.** Le premier workflow dans
+   `harness-workflows` : `Loop` comme état (avec `Resumable`), le `TaskRound`
+   typé de la variante B, la table des trois stages, et les gates scindées de
+   l'inventaire ci-dessus. Puis le montage de workspace, qui attendait.

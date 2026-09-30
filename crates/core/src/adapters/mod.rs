@@ -6,3 +6,4 @@
 
 pub mod agent;
 pub mod shell;
+pub mod store;

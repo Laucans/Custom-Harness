@@ -4,4 +4,5 @@
 //! système ; les autres traduisent des arguments et lisent des sorties.
 
 pub mod git;
+pub mod github;
 pub mod process;
