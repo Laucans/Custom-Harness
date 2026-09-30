@@ -59,6 +59,36 @@ claude --version   # 2.1.257 au moment où ceci est écrit — en dessous de la 
 claude update
 ```
 
+### Attention : `claude update` peut être masqué par un shim
+
+Sur cette machine, `claude update` a bien installé 2.1.285 dans
+`~/.local/share/claude/versions/2.1.285`, et ce binaire rapporte bien sa
+version. Mais `~/.local/bin/claude` est un shim écrit à la main qui résout
+**le binaire embarqué dans l'extension VS Code** :
+
+```sh
+bin=$(ls -d "$HOME"/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude \
+      | sort -V | tail -1)
+exec "$bin" "$@"
+```
+
+L'extension étant en 2.1.257, `claude --version` rapporte 2.1.257 et la porte
+refusera de tourner — alors que la mise à jour a réussi. Deux sorties, au
+choix :
+
+1. **mettre à jour l'extension VS Code** : le shim la suit déjà, donc rien
+   d'autre à changer. C'est l'intention d'origine du shim ;
+2. **faire pointer le shim sur l'installation native**
+   (`~/.local/share/claude/versions/`, plus récente), ou sur le plus récent
+   des deux.
+
+Vérifier avec le binaire que le `PATH` résout vraiment, pas avec celui qu'on
+croit :
+
+```bash
+command -v claude && claude --version
+```
+
 ## Ce qui reste partagé, et ce qui ne l'est pas
 
 | Chemin | Qui l'écrit après la bascule |
