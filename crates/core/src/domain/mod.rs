@@ -5,6 +5,7 @@
 //! réciproque devienne pensable.
 
 pub mod markers;
+pub mod prompts;
 
 mod halt;
 mod issue;
@@ -14,6 +15,7 @@ mod verdict;
 
 pub use halt::{Halt, Severity};
 pub use issue::Issue;
+pub use prompts::{Named, Scope, Scoped};
 pub use resumable::Resumable;
 pub use spend::{Spend, Tokens};
 pub use verdict::{Outcome, Verdict};
