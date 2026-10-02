@@ -18,9 +18,9 @@ use std::rc::Rc;
 
 use async_trait::async_trait;
 use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::spending::{Entry, Spending};
-use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, markers, prompts};
-use harness_core::execution::{Action, Context, Open, SessionAction};
+use harness_core::adapters::store::spending::Spending;
+use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, prompts};
+use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
 
 use crate::common::labels;
 use crate::dev_loop::state::Loop;
@@ -236,45 +236,16 @@ impl SessionAction<Loop> for Ask {
             self.injector,
         );
         let prompt = prompts::build(&self.lead, &self.branch, &extra, self.injector);
-        let log = open.traces.bind(&self.stage);
-        let dry_run = open.settings.dry_run;
         let task = open.state.task_key.clone();
-
-        let asked = open.session.ask(&prompt).await;
-        // Consignée **avant** de propager quoi que ce soit : un stage mort est
-        // justement celui dont on veut la ligne. Un échec n'a pas de `Spend` —
-        // l'adaptateur l'a traduit en `Halt` — donc la ligne dit « rien
-        // d'observé », ce qui est la vérité, et non une colonne de zéros.
-        if !dry_run {
-            let blind = harness_core::domain::Spend::default();
-            let (spend, outcome) = match &asked {
-                Ok(reply) => (&reply.spend, "ok"),
-                Err(halt) => (&blind, halt.prefix()),
-            };
-            self.spending.record(&Entry {
-                round: self.round,
-                task: &task,
-                stage: &self.stage,
-                spend,
-                outcome,
-            })?;
-        }
-        let reply = asked?;
-
-        if let Some(stop) = markers::stop_line(&reply.text) {
-            // Une session qui répond AGENT_LOOP_STOP s'est arrêtée d'elle-même :
-            // un résultat correct, et la raison est la sienne.
-            return Err(Halt::Halted(format!("{stop} (/{})", self.stage)));
-        }
-        match markers::ok_line(&reply.text) {
-            Some(ok) => log.say(&ok),
-            None if !dry_run => log.say(&format!(
-                "/{} produced no {} marker — relying on the structural checks",
-                self.stage,
-                markers::OK
-            )),
-            None => {}
-        }
+        ask_and_record(
+            open,
+            &prompt,
+            &self.stage,
+            self.round,
+            &task,
+            self.spending.as_ref(),
+        )
+        .await?;
         Ok(Verdict::Continue)
     }
 }
@@ -285,6 +256,7 @@ mod tests {
     use crate::common::fake_github::{FakeGitHub, Wrote};
     use crate::dev_loop::state::Loop;
     use harness_core::adapters::agent::{Reply, Session};
+    use harness_core::adapters::store::spending::Entry;
     use harness_core::domain::{Issue, Spend};
     use harness_core::execution::Settings;
     use harness_core::traces::{Logbook, Sink, Verbosity};

@@ -4,6 +4,7 @@
 pub mod provisioning;
 
 mod action;
+mod ask;
 mod context;
 mod gate;
 mod guards;
@@ -12,6 +13,7 @@ mod stage;
 mod traits;
 
 pub use action::{Action, Open, SessionAction, Unpaid};
+pub use ask::ask_and_record;
 pub use context::{Context, Settings};
 pub use gate::Gate;
 pub use guards::{InThisRun, MarkDone, StageAlreadyDone};

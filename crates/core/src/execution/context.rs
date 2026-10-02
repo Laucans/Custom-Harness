@@ -1,6 +1,9 @@
 //! Ce que l'exécution transporte pendant un run : les réglages, l'état
-//! propre au workflow, le journal.
+//! propre au workflow, le journal, ce que chaque étape payante a répondu.
 
+use std::collections::HashMap;
+
+use crate::adapters::agent::Reply;
 use crate::traces::Logbook;
 
 /// Ce que l'exécution tient pendant un run, générique sur `S` — l'état
@@ -16,15 +19,25 @@ pub struct Context<S> {
     pub state: S,
     /// Le journal de ce run.
     pub traces: Logbook,
+    /// Ce que chaque étape payante a répondu, par son nom.
+    ///
+    /// Ici et pas dans `state` : une réponse alimente l'étape suivante du
+    /// même passage, elle ne se relit pas depuis une reprise — elle se
+    /// repaie. La boucle de dev n'en lit aucune ; la revue de PR y lit la
+    /// passe ligne-à-ligne pour écrire ses notes, le raffinage y lit le
+    /// routeur et les sections pour la passe de cohérence.
+    pub results: HashMap<String, Reply>,
 }
 
 impl<S> Context<S> {
     /// Un contexte neuf, pour cet état et ces réglages.
-    pub const fn new(settings: Settings, state: S, traces: Logbook) -> Self {
+    #[must_use]
+    pub fn new(settings: Settings, state: S, traces: Logbook) -> Self {
         Self {
             settings,
             state,
             traces,
+            results: HashMap::new(),
         }
     }
 }
