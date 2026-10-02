@@ -58,7 +58,7 @@ pub struct Cli {
     pub permission_mode: String,
 
     /// Laisse tourner même si l'arbre de travail est sale.
-    #[arg(long, env = "ALLOW_DIRTY")]
+    #[arg(long, env = "ALLOW_DIRTY", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub allow_dirty: bool,
 
     /// Rejoue un stage que la reprise ferait sauter.
@@ -75,7 +75,7 @@ pub struct Cli {
     /// **Pas le défaut**, et c'est un choix : enchaîner en non surveillé dépense
     /// un run opus et engage le projet sur un item de roadmap que personne n'a
     /// lu.
-    #[arg(long, env = "ROLLOVER")]
+    #[arg(long, env = "ROLLOVER", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub rollover: bool,
 
     /// Tout, y compris ce qu'une session dit en détail.
@@ -108,7 +108,7 @@ pub struct Cli {
     pub workspaces_dir: String,
 
     /// Garde un workspace jetable que le run supprimerait.
-    #[arg(long, env = "KEEP_WORKSPACE")]
+    #[arg(long, env = "KEEP_WORKSPACE", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub keep_workspace: bool,
 
     /// Écrase le travail local d'un workspace réutilisé.
@@ -117,6 +117,35 @@ pub struct Cli {
     /// nommant. C'est un humain qui prend cette sortie.
     #[arg(long)]
     pub force_reset: bool,
+}
+
+/// Un booléen d'environnement, aux orthographes usuelles.
+///
+/// `clap` exige la chaîne littérale `true`/`false` pour tout champ `bool`
+/// combiné à `env` — ni `1`, ni vide, ni `action = SetTrue` n'y changent rien,
+/// vérifié en isolation avant ce correctif. Les trois drapeaux qui s'écrivent
+/// aussi en variable d'environnement (`ALLOW_DIRTY`, `ROLLOVER`,
+/// `KEEP_WORKSPACE`) passent donc par ce parseur plutôt que par le type
+/// `bool` nu de `clap` : `num_args = 0..=1` et `default_missing_value =
+/// "true"` gardent `--rollover` valable seul en ligne de commande, et ce
+/// parseur accepte en plus ce qu'une variable d'environnement écrit en
+/// pratique.
+///
+/// Le vide vaut faux **volontairement** : c'est ce qu'une ligne `ROLLOVER=`
+/// non remplie dans `.env.local` écrit, et c'est le cas le plus courant —
+/// pas une faute de frappe. Une vraie faute (`ROLLOVER=flase`) reste refusée,
+/// pour la même raison que [`strategy`] refuse plutôt que de retomber sur un
+/// défaut : une variable mal orthographiée ne doit pas se lire comme un
+/// silence.
+fn truthy(text: &str) -> Result<bool, String> {
+    match text.trim().to_lowercase().as_str() {
+        "" | "0" | "false" | "no" => Ok(false),
+        "1" | "true" | "yes" => Ok(true),
+        other => Err(format!(
+            "{other:?} n'est pas une valeur booléenne — connues : 1/true/yes, \
+             0/false/no, ou vide"
+        )),
+    }
 }
 
 /// `Strategy::parse`, en refusant plutôt qu'en retombant sur un défaut.
@@ -191,5 +220,91 @@ mod tests {
     #[test]
     fn verbose_and_quiet_cannot_be_asked_for_together() {
         assert!(Cli::try_parse_from(["harness", "--verbose", "--quiet"]).is_err());
+    }
+
+    #[test]
+    fn a_bool_flag_still_takes_no_value_on_the_command_line() {
+        let cli = Cli::try_parse_from(["harness", "--rollover"]).expect("un drapeau nu");
+        assert!(cli.rollover);
+    }
+
+    #[test]
+    fn truthy_accepts_the_usual_spellings() {
+        for yes in ["1", "true", "yes", "TRUE", " yes "] {
+            assert_eq!(truthy(yes), Ok(true), "{yes:?}");
+        }
+        for no in ["0", "false", "no", "FALSE"] {
+            assert_eq!(truthy(no), Ok(false), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn truthy_reads_empty_as_false_because_that_is_what_an_unfilled_env_var_is() {
+        // Ce que `.env.local` écrit pour une variable non remplie : une ligne
+        // `ROLLOVER=` vide. `clap` exige `true`/`false` littéral pour tout
+        // `bool` combiné à `env` — ni `1`, ni vide, ni `action = SetTrue` n'y
+        // changent rien, ce qui faisait échouer `--allow-dirty` seul dès que
+        // `.env.local` existait, même avec les trois variables vides. C'est
+        // ce que `truthy` contourne.
+        assert_eq!(truthy(""), Ok(false));
+    }
+
+    #[test]
+    fn truthy_refuses_a_typo_rather_than_reading_it_as_unset() {
+        // Même logique que `strategy` : une variable mal orthographiée ne
+        // doit pas se lire comme un silence.
+        assert!(truthy("flase").is_err());
+    }
+
+    #[test]
+    fn an_empty_or_truthy_environment_variable_does_not_break_the_flag() {
+        for (value, expect_allow_dirty) in [("", false), ("1", true), ("true", true)] {
+            let cli = Cli::try_parse_from_with_env(["harness"], "ALLOW_DIRTY", value)
+                .expect("ne doit pas échouer");
+            assert_eq!(cli.allow_dirty, expect_allow_dirty, "ALLOW_DIRTY={value:?}");
+        }
+    }
+
+    /// `Cli::try_parse_from`, une seule variable d'environnement posée pour la
+    /// durée de l'appel.
+    ///
+    /// `std::env::set_var` touche un état global du process, partagé entre les
+    /// threads que `cargo test` utilise pour les autres tests de ce fichier —
+    /// la poser et la retirer dans le même appel, plutôt que dans un test qui
+    /// continuerait après, est ce qui empêche une fuite vers un test voisin
+    /// même en cas de panique entre les deux.
+    trait TryParseWithEnv: Sized {
+        fn try_parse_from_with_env<I, T>(
+            args: I,
+            var: &str,
+            value: &str,
+        ) -> Result<Self, clap::Error>
+        where
+            I: IntoIterator<Item = T>,
+            T: Into<std::ffi::OsString> + Clone;
+    }
+
+    impl TryParseWithEnv for Cli {
+        #[allow(unsafe_code)]
+        fn try_parse_from_with_env<I, T>(
+            args: I,
+            var: &str,
+            value: &str,
+        ) -> Result<Self, clap::Error>
+        where
+            I: IntoIterator<Item = T>,
+            T: Into<std::ffi::OsString> + Clone,
+        {
+            // SAFETY: posée puis retirée avant de rendre la main, dans le même
+            // appel — aucun autre test ne peut observer l'état intermédiaire.
+            unsafe {
+                std::env::set_var(var, value);
+            }
+            let parsed = Self::try_parse_from(args);
+            unsafe {
+                std::env::remove_var(var);
+            }
+            parsed
+        }
     }
 }
