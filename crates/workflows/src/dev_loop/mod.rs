@@ -6,8 +6,12 @@
 //!
 //! `dev_loop` et non `loop` : `loop` est un mot-clé.
 
+pub mod actions;
 pub mod board;
 pub mod gates;
 pub mod labels;
+pub mod round;
+pub mod stages;
 pub mod state;
 pub mod tasks;
+pub mod wiring;

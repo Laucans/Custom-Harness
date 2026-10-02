@@ -16,8 +16,23 @@ pub const STOP: &str = "AGENT_LOOP_STOP";
 /// sur cette ligne, et c'est elle qu'un humain lira dans le journal.
 #[must_use]
 pub fn stop_line(text: &str) -> Option<String> {
+    marked(text, STOP)
+}
+
+/// La ligne qui porte [`OK`], si le texte en contient une.
+///
+/// Rendue pour la même raison que [`stop_line`] : c'est le résumé que la
+/// session donne d'elle-même, et c'est cette ligne-là qu'un journal reprend.
+/// Son absence n'est pas un échec — elle fait seulement retomber sur les
+/// vérifications structurelles.
+#[must_use]
+pub fn ok_line(text: &str) -> Option<String> {
+    marked(text, OK)
+}
+
+fn marked(text: &str, marker: &str) -> Option<String> {
     text.lines()
-        .find(|line| line.contains(STOP))
+        .find(|line| line.contains(marker))
         .map(|line| line.trim().to_string())
 }
 
@@ -50,5 +65,15 @@ mod tests {
     #[test]
     fn ok_and_stop_are_distinct_markers() {
         assert!(stop_line("AGENT_LOOP_OK: livré").is_none());
+        assert!(ok_line("AGENT_LOOP_STOP: bloqué").is_none());
+    }
+
+    #[test]
+    fn the_ok_line_comes_back_whole_like_the_stop_line() {
+        let text = "j'ai fait ceci\nAGENT_LOOP_OK: grille livrée\n";
+        assert_eq!(
+            ok_line(text).as_deref(),
+            Some("AGENT_LOOP_OK: grille livrée")
+        );
     }
 }

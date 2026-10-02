@@ -9,6 +9,7 @@
 //! « Ce qui reste à trancher »).
 
 pub mod claude_cli;
+pub mod rehearsal;
 
 use async_trait::async_trait;
 

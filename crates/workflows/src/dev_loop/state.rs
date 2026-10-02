@@ -20,6 +20,12 @@ pub struct Loop {
     pub kind: String,
     /// Vrai quand il n'y a aucune task : le round bifurque vers `/planner`.
     pub rollover: bool,
+    /// Vrai quand le point de reprise a désigné la task, plutôt que le tableau.
+    ///
+    /// Ce que lisent les gardes qui ne valent que sur un round repris : sur un
+    /// round neuf, `/code` n'a jamais tourné, et chercher une PR mergée
+    /// coûterait un appel par round pour une réponse connue d'avance.
+    pub resumed: bool,
     /// Le SPEC est déjà dans le corps de l'issue.
     pub spec_written: bool,
     /// Les stages déjà faites pour cette task, tous runs confondus.

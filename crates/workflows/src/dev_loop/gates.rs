@@ -61,6 +61,52 @@ impl Verification<Loop> for CodeHasASpec {
     }
 }
 
+/// La PR de ce `/code` a-t-elle déjà mergé ? — on ne la repaie pas.
+///
+/// **Seulement sur un round repris.** Sur un round neuf, `/code` n'a jamais
+/// tourné, et la recherche de PR coûterait un appel d'API par round pour une
+/// réponse connue d'avance.
+///
+/// La même preuve qu'exige [`AMergedPrClosesTheTask`], posée *avant* de payer
+/// plutôt qu'après : c'est la seule des gardes qui dise « c'est déjà fait »
+/// plutôt que « ça ne va pas ».
+pub struct CodeAlreadyDelivered {
+    /// De quoi lire l'issue et les PR.
+    pub gh: Rc<dyn GitHub>,
+    /// La branche sur laquelle la preuve est cherchée.
+    pub integration_branch: String,
+    /// `--restart` rejoue le stage même si la preuve est là.
+    pub restart: bool,
+}
+
+#[async_trait(?Send)]
+impl Verification<Loop> for CodeAlreadyDelivered {
+    async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
+        if !ctx.state.resumed || ctx.settings.dry_run || self.restart {
+            return Ok(Verdict::Continue);
+        }
+        let number: u64 = ctx.state.task.number.parse().map_err(|_| {
+            Halt::Failed(format!(
+                "numéro de task illisible : {:?}",
+                ctx.state.task.number
+            ))
+        })?;
+        let here = self.gh.issue(number).await?;
+        let shipped = here.is_closed()
+            || tasks::waiting_merge(&here)
+            || tasks::first_closing(&self.gh.merged_prs(&self.integration_branch).await?, number)
+                .is_some();
+        if !shipped {
+            return Ok(Verdict::Continue);
+        }
+        Ok(Verdict::Skip(format!(
+            "#{number} est déjà livrée sur {} — /code saute plutôt que d'être \
+             repayé (--restart pour le rejouer)",
+            self.integration_branch
+        )))
+    }
+}
+
 /// Le corps de l'issue n'est pas vide — la moitié « juge » de l'ex-
 /// `spec_is_in_the_issue`.
 ///
@@ -263,6 +309,70 @@ mod tests {
         context.settings.dry_run = true;
         assert_eq!(
             CodeHasASpec.verify(&context).await.expect("un verdict"),
+            Verdict::Continue
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_round_never_looks_for_a_merged_pr_of_its_own_code() {
+        // Un appel d'API par round pour une réponse connue d'avance : /code
+        // n'a jamais tourné sur un round neuf.
+        let gh = Rc::new(FakeGitHub {
+            broken: Some(Halt::Unreadable("ne doit pas être appelé".to_string())),
+            ..FakeGitHub::default()
+        });
+        let gate = CodeAlreadyDelivered {
+            gh,
+            integration_branch: "main_agent".to_string(),
+            restart: false,
+        };
+        assert_eq!(
+            gate.verify(&ctx(with_task("34", "le SPEC")))
+                .await
+                .expect("verdict"),
+            Verdict::Continue
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resumed_round_whose_code_already_merged_skips_it() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(34, &[], "")],
+            merged: vec![Issue {
+                number: 99,
+                body: "Closes #34".to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        });
+        let gate = CodeAlreadyDelivered {
+            gh,
+            integration_branch: "main_agent".to_string(),
+            restart: false,
+        };
+        let mut state = with_task("34", "le SPEC");
+        state.resumed = true;
+        let Verdict::Skip(why) = gate.verify(&ctx(state)).await.expect("verdict") else {
+            panic!("un saut");
+        };
+        assert!(why.contains("--restart"), "dire comment le rejouer");
+    }
+
+    #[tokio::test]
+    async fn restart_replays_code_even_when_the_proof_is_there() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(34, &[labels::WAITING_MERGE], "")],
+            ..FakeGitHub::default()
+        });
+        let gate = CodeAlreadyDelivered {
+            gh,
+            integration_branch: "main_agent".to_string(),
+            restart: true,
+        };
+        let mut state = with_task("34", "le SPEC");
+        state.resumed = true;
+        assert_eq!(
+            gate.verify(&ctx(state)).await.expect("verdict"),
             Verdict::Continue
         );
     }

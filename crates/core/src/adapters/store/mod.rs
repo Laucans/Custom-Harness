@@ -6,3 +6,4 @@
 
 pub mod checkpoint;
 pub mod ledger;
+pub mod spending;

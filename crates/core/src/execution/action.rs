@@ -53,3 +53,29 @@ pub trait SessionAction<S> {
     /// Le travail de cette action, contre la session ouverte.
     async fn run(&self, open: &mut Open<'_, S>) -> Outcome<Verdict>;
 }
+
+/// Une action locale, glissée dans la liste d'une stage à session.
+///
+/// Une stage payante a du travail local à faire **après** sa session : relire
+/// ce que la session a écrit, poser une étiquette, se déclarer faite. Ce
+/// travail ne touche pas la session, et l'enrober dit exactement ça — le type
+/// à l'intérieur ne reçoit qu'un `&mut Context`, donc il ne *peut* pas
+/// dépenser.
+///
+/// Nommé pour ce qu'il garantit : ce qui est dedans ne paie rien.
+///
+/// Un `impl` générique de [`SessionAction`] pour tout [`Action`] dirait la
+/// même chose sans l'enrobage, mais la cohérence le refuse — il entrerait en
+/// conflit avec toute impl écrite à la main, le compilateur ne sachant pas
+/// prouver qu'un type n'implémente *pas* `Action`.
+pub struct Unpaid<A>(pub A);
+
+#[async_trait(?Send)]
+impl<S, A> SessionAction<S> for Unpaid<A>
+where
+    A: Action<S>,
+{
+    async fn run(&self, open: &mut Open<'_, S>) -> Outcome<Verdict> {
+        self.0.run(open.ctx).await
+    }
+}
