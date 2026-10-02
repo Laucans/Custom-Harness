@@ -1,203 +1,77 @@
-//! Ce qu'une revue établit avant de payer, et le verrou qu'elle tient.
+//! Assemble an entire review from ports and a config already built.
 //!
-//! **Une revue sautée est un succès**, pas un manquement : une PR en
-//! brouillon ou déjà revue n'a rien à obtenir.
+//! **Not the construction of concrete adapters** — that remains the launcher's
+//! work, the only place with the right to name a `GhCli` or
+//! `ClaudeCliFactory`. This module receives filled [`Ports`] and [`Config`],
+//! and assembles the form that
+//! [`orchestration::workflow`](crate::pr_review::orchestration::workflow)
+//! carries.
 
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::cell::Cell;
 
-use async_trait::async_trait;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::lock::Locks;
-use harness_core::domain::{Halt, Outcome, Verdict};
-use harness_core::execution::{Context, Executable, Gate, OneShot, Stage};
+use harness_core::execution::Gate;
 
-use crate::pr_review::stages::Wiring;
-use crate::pr_review::state::ReviewState;
-use crate::pr_review::{skip_rules, stages};
+use crate::pr_review::config::Config;
+use crate::pr_review::data::state::ReviewState;
+use crate::pr_review::orchestration::round;
+use crate::pr_review::orchestration::workflow::ReviewRun;
+use crate::pr_review::ports::Ports;
 
-/// Une revue entière : précontrôle, verrou, les deux passes, la publication.
-pub struct ReviewRun {
-    /// L'outillage que cette revue exige — rien de plus.
-    pub pre: Gate<ReviewState>,
-    /// Le tableau de PR.
-    pub gh: Rc<dyn GitHub>,
-    /// Ce qui tient les verrous.
-    pub locks: Rc<dyn Locks>,
-    /// Le dossier qui porte les verrous.
-    pub review_dir: PathBuf,
-    /// La PR à revoir, numéro ou URL.
+/// What an invocation requests — distinct from [`Ports`] and [`Config`],
+/// which are infrastructure rather than a request.
+pub struct Request {
+    /// The PR to review, number or URL.
     pub pr_ref: String,
-    /// La branche que la PR doit cibler pour être revue.
+    /// The branch the PR must target to be reviewed.
     pub base: String,
-    /// Revoit même si une règle dirait de sauter.
+    /// Review even if a rule says to skip.
     pub force: bool,
-    /// La table, déjà montée.
-    pub stages: Vec<Stage<ReviewState>>,
 }
 
-#[async_trait(?Send)]
-impl OneShot<ReviewState> for ReviewRun {
-    fn pre(&self) -> Option<&Gate<ReviewState>> {
-        Some(&self.pre)
-    }
-
-    async fn precheck(&self, ctx: &mut Context<ReviewState>) -> Outcome<Option<String>> {
-        let pr = self.gh.pr(&self.pr_ref).await?;
-        let comments = if self.force {
-            String::new()
-        } else {
-            self.gh.pr_comments(&pr.num).await?
-        };
-        if let Some(skip) = skip_rules::skip_reason(self.force, &self.base, &pr, &comments) {
-            return Ok(Some(format!("skip — {skip}")));
-        }
-        ctx.traces.say(&format!(
-            "reviewing #{}  {} -> {}  ({})",
-            pr.num, pr.head, pr.base, pr.title
-        ));
-        ctx.state.pr = Some(pr);
-        Ok(None)
-    }
-
-    fn lock(&self) -> (&std::path::Path, &str) {
-        (&self.review_dir, &self.pr_ref)
-    }
-
-    fn locks(&self) -> &dyn Locks {
-        self.locks.as_ref()
-    }
-
-    fn held(&self, ctx: &Context<ReviewState>) -> String {
-        let num = ctx
-            .state
-            .pr
-            .as_ref()
-            .map_or(self.pr_ref.as_str(), |pr| &pr.num);
-        format!("skip — a review of PR #{num} is already running")
-    }
-
-    fn stages(&self) -> &[Stage<ReviewState>] {
-        &self.stages
-    }
-
-    fn tolerate(&self, stage: &str, failed: &Halt) -> Option<String> {
-        // La passe 1 peut ne rien rendre sans que les notes perdent leur
-        // valeur. Un quota épuisé est l'exception : la passe 2 dépenserait la
-        // même fenêtre et reviendrait pareil.
-        if stage != "inline" || matches!(failed, Halt::Quota(_)) {
-            return None;
-        }
-        Some("inline pass produced no review — continuing without it".to_string())
-    }
-
-    fn summary(&self, ctx: &Context<ReviewState>) -> String {
-        if ctx.settings.dry_run {
-            return "dry run — nothing posted".to_string();
-        }
-        format!("reviewed #{}", ctx.state.pr().num)
-    }
-}
-
-#[async_trait(?Send)]
-impl Executable<ReviewState> for ReviewRun {
-    fn pre(&self) -> Option<&Gate<ReviewState>> {
-        OneShot::pre(self)
-    }
-
-    async fn perform(&self, ctx: &mut Context<ReviewState>) -> Outcome<Verdict> {
-        OneShot::execute(self, ctx).await
-    }
-}
-
-/// Monte une revue entière, à partir de son câblage.
+/// Assemble an entire review from its wiring.
 #[must_use]
 pub fn build(
-    wiring: &Wiring,
-    locks: Rc<dyn Locks>,
-    pr_ref: String,
-    base: String,
-    force: bool,
+    ports: &Ports,
+    config: &Config,
+    request: Request,
     pre: Gate<ReviewState>,
 ) -> ReviewRun {
     ReviewRun {
         pre,
-        gh: Rc::clone(&wiring.gh),
-        locks,
-        review_dir: wiring.review_dir.clone(),
-        pr_ref,
-        base,
-        force,
-        stages: stages::table(wiring),
+        // A review is one round, and only one: there's only one PR to review.
+        remaining: Cell::new(1),
+        gh: std::rc::Rc::clone(&ports.gh),
+        locks: std::rc::Rc::clone(&ports.locks),
+        review_dir: config.review_dir.clone(),
+        pr_ref: request.pr_ref,
+        base: request.base,
+        force: request.force,
+        round: round::build(ports, config),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::fake_github::FakeGitHub;
-    use crate::pr_review::stages::fake;
-    use harness_core::adapters::store::lock::DirLocks;
-    use harness_core::domain::Pr;
-    use harness_core::execution::Settings;
-    use harness_core::traces::Logbook;
+    use crate::pr_review::config::fake as config_fake;
+    use crate::pr_review::ports::fake as ports_fake;
 
-    fn ctx() -> Context<ReviewState> {
-        Context::new(
-            Settings {
-                dry_run: true,
-                stages: String::new(),
+    #[test]
+    fn build_wires_the_request_and_the_table_straight_through() {
+        let built = build(
+            &ports_fake::ports(),
+            &config_fake::config(),
+            Request {
+                pr_ref: "32".to_string(),
+                base: "main_agent".to_string(),
+                force: true,
             },
-            ReviewState::default(),
-            Logbook::null(),
-        )
-    }
-
-    fn pr(num: &str, base: &str, draft: bool) -> Pr {
-        Pr {
-            num: num.to_string(),
-            base: base.to_string(),
-            head: "feat/x".to_string(),
-            title: "un lot".to_string(),
-            url: format!("https://github.com/o/r/pull/{num}"),
-            state: "OPEN".to_string(),
-            draft,
-        }
-    }
-
-    fn run(gh: &Rc<FakeGitHub>, pr_ref: &str) -> ReviewRun {
-        let wiring = fake::with(Rc::clone(gh));
-        build(
-            &wiring,
-            Rc::new(DirLocks),
-            pr_ref.to_string(),
-            "main_agent".to_string(),
-            false,
             Gate::empty("outillage"),
-        )
-    }
-
-    #[tokio::test]
-    async fn a_draft_pr_is_skipped_as_a_success_not_an_error() {
-        let gh = Rc::new(FakeGitHub {
-            prs: vec![("32".to_string(), pr("32", "main_agent", true))],
-            ..FakeGitHub::default()
-        });
-        let built = run(&gh, "32");
-        let mut context = ctx();
-        built
-            .execute(&mut context)
-            .await
-            .expect("succès, pas erreur");
-        assert!(context.state.pr.is_none(), "le précontrôle n'a rien posé");
-    }
-
-    #[tokio::test]
-    async fn an_unreadable_pr_is_a_real_failure() {
-        let gh = Rc::new(FakeGitHub::default());
-        let built = run(&gh, "999");
-        let mut context = ctx();
-        let err = built.execute(&mut context).await.expect_err("doit échouer");
-        assert!(matches!(err, Halt::Failed(_)));
+        );
+        assert_eq!(built.pr_ref, "32");
+        assert_eq!(built.base, "main_agent");
+        assert!(built.force);
+        assert_eq!(built.remaining.get(), 1, "a review is one round");
+        assert_eq!(built.round.stages.len(), 3, "two passes and publishing");
     }
 }

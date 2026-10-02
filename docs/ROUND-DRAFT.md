@@ -1,58 +1,57 @@
-# Le round de la boucle, écrit
+# The dev loop round, written
 
-Étape 3 : le round de la boucle de dev tel qu'on le lirait, en deux variantes.
-Rien n'est implémenté — c'est la déclaration qui est en jeu, parce que c'est
-elle qui fige les signatures du core.
+Step 3: the dev loop round as one would read it, in two variants. Nothing is
+implemented — it's the declaration at stake, because it's what locks in the core
+signatures.
 
 Les types sont ceux de `MIGRATION.md`, et ils compilent : une sonde a validé
 `Open<'a, S>` passé à un `dyn SessionAction`, le `Deref` vers `Context<S>`, le
 blanket impl des gates, et deux actions de session dans une stage.
 `async_trait` n'a demandé aucune borne sur `S`.
 
-## Ce que le round doit faire
+## What the round must do
 
-Repris de `internals/round.py` et `stages/__init__.py`, sans rien perdre :
+Taken from `internals/round.py` and `stages/__init__.py`, nothing lost:
 
-1. **choisir la task** — lire le tableau (ou réutiliser celui que la boucle a
-   lu), poser milestone et task dans l'état, dire au registre sous quelle task
-   facturer. Trois sorties : une task jouable, aucune mais des `pipeline:agent`
-   ouvertes (arrêt, en nommant le geste qui débloque), aucune du tout
-   (rollover) ;
-2. **poser un point de reprise** après le choix ;
-3. **brancher** : rollover → `/planner` ; sinon la séquence des trois stages ;
-4. **la séquence** — `/business-analyst`, puis `/tech-analyst` → `/code`, puis
-   `/create-test`, chacune avec ses gates ;
-5. **constater la livraison** — une PR mergée porte `Closes #N`, sinon arrêt.
+1. **pick the task** — read the board (or reuse what the loop read), place
+   milestone and task in state, tell the ledger what task to charge. Three exits:
+   one playable task, none but open `pipeline:agent`s (stop, naming the unblock
+   gesture), none at all (rollover);
+2. **place a resumption point** after the pick;
+3. **branch**: rollover → `/planner`; else the three-stage sequence;
+4. **the sequence** — `/business-analyst`, then `/tech-analyst` → `/code`, then
+   `/create-test`, each with its gates;
+5. **verify delivery** — a merged PR carries `Closes #N`, else stop.
 
-Les deux gates hybrides sont scindées, comme la décision n°1 l'impose :
+The two hybrid gates are split, as decision #1 demands:
 
-| Aujourd'hui | Verification | Action |
+| Today | Verification | Action |
 | --- | --- | --- |
-| `spec_is_in_the_issue` | le corps de l'issue n'est pas vide | relire le corps dans l'état, poser `pipeline:spec-written` |
-| `task_is_delivered` | une PR mergée porte `Closes #N` | poser `pipeline:waiting-merge` |
+| `spec_is_in_the_issue` | issue body is not empty | re-read body into state, set `pipeline:spec-written` |
+| `task_is_delivered` | merged PR carries `Closes #N` | set `pipeline:waiting-merge` |
 
-## Ce que les deux variantes partagent
+## What both variants share
 
 ```rust
-// L'état du round. C'est le `S` de Context<S>.
+// The round state. This is the `S` of Context<S>.
 pub struct Loop {
     pub milestone: Milestone,
     pub task: Option<Task>,
     pub rollover: bool,
     pub spec_written: bool,
-    pub done: Vec<String>,     // les stages déjà faites, tous runs confondus
+    pub done: Vec<String>,     // stages already done, all runs combined
 }
 
-// Ce que le core exige d'un état pour savoir sauter et marquer.
+// What core demands of state to know skip and mark.
 pub trait Resumable {
     fn done(&self) -> &[String];
     fn mark(&mut self, stage: &str);
 }
 ```
 
-`Resumable` remplace le `done=st.stages_done` passé à chaque appel, et le
-`mark=False` du stage d'archivage. **Le core porte l'idempotence** — « au plus
-une fois par task, tous runs confondus » — dès qu'il sait lire cette liste.
+`Resumable` replaces the `done=st.stages_done` passed per call, and the `mark=False`
+of the archive stage. **Core carries idempotence** — "at most once per task, all
+runs combined" — as soon as it can read this list.
 
 Deux autres choses sont du framework et n'apparaissent dans aucune des deux
 déclarations :
@@ -64,11 +63,10 @@ déclarations :
 
 ---
 
-## Variante A — le round est une table
+## Variant A — the round is a table
 
-Tout est donnée. Une seule sorte d'action de session (`Ask`), qui porte sa
-commande et ses consignes. Le branchement rollover est un pré-gate sur chaque
-stage.
+Everything is data. One kind of session action (`Ask`), carrying its command and
+instructions. The rollover branch is a pre-gate on each stage.
 
 ```rust
 pub fn round() -> Round<Loop> {
@@ -172,10 +170,10 @@ l'Action que la Verification ne peut plus faire.
 
 ---
 
-## Variante B — le round est du code
+## Variant B — the round is code
 
-Le `Round` générique du core sert les cas simples. La boucle écrit le sien :
-un type, et un `perform` qui branche. La table des stages reste une table.
+Core's generic `Round` serves simple cases. The loop writes its own: a type and a
+`perform` that branches. The stage table remains a table.
 
 ```rust
 // Les stages, en table — inchangé dans l'esprit de `stages/__init__.py`.
@@ -268,51 +266,46 @@ boucle — il ne sert que les workflows sans branche.
 
 ---
 
-## Ce que chacune coûte, côté à côté
+## What each costs, side by side
 
 | | A — table | B — code |
 | --- | --- | --- |
-| Le branchement rollover | trois `SkipIfRollover` + un `OnlyIfRollover` | un `if` |
-| Un round en rollover | 5 stages, 3 qui ne font rien | 2 stages |
-| Où lire la séquence | un endroit | un endroit |
-| Où lire ce qui l'entoure | nulle part : c'est la table | `perform` |
-| Le point de reprise | implicite, posé par le core après chaque stage | explicite, `ctx.checkpoint()` |
-| L'action après une post-gate | un champ `then` sur `Round` | une ligne de `perform` |
-| Types nouveaux par workflow | aucun | un (`TaskRound`) |
-| Le `Round` du core | sert la boucle | ne sert que les workflows sans branche |
+| Rollover branch | three `SkipIfRollover` + one `OnlyIfRollover` | one `if` |
+| A rollover round | 5 stages, 3 do nothing | 2 stages |
+| Where to read sequence | one place | one place |
+| Where to read its surround | nowhere: it's the table | `perform` |
+| Resumption point | implicit, placed by core after each stage | explicit, `ctx.checkpoint()` |
+| Action after post-gate | a `then` field on `Round` | one line of `perform` |
+| New types per workflow | none | one (`TaskRound`) |
+| Core's `Round` | serves the loop | only serves branchless workflows |
 
-## Recommandation : B
+## Recommendation: B
 
-Pas par goût du code sur la donnée, mais parce que **le dépôt a déjà tranché
-cette question une fois.** `internals/round.py` porte le compte rendu de
-l'expérience A :
+Not for love of code over data, but because **the repo already decided this once.**
+`internals/round.py` carries the account of experience A:
 
 > Un `if/elif/else`. Le routeur du graphe avait trois sorties dont une muette,
 > parce que c'était la façon la plus courte de dire « ce round ne va nulle
 > part » à un moteur qui, sinon, enchaînait.
 
-Le moteur de graphe a été retiré précisément parce que la couche déclarative
-mentait sur l'exécution : la séquence vivait dans les décorateurs, la table
-n'alimentait qu'un affichage, « et le test qui vérifiait l'ordre d'exécution
-passait quand même ». La variante A réintroduit la même chose en plus petit —
-un round dont le vrai parcours est la résultante de quatre prédicats répartis
-sur cinq lignes, au lieu d'un `if` qu'on lit.
+The graph engine was removed precisely because the declarative layer lied about
+execution: the sequence lived in decorators, the table fed only a display, "and
+the test verifying execution order passed anyway". Variant A reintroduces the same
+thing smaller — a round whose real path is the resultant of four predicates spread
+over five lines, instead of an `if` you read.
 
-Ce que A a de juste, B le garde : la table des stages, où l'ordre des entrées
-est l'ordre d'exécution, et où une gate se lit sur la ligne de ce qu'elle garde.
+What A gets right, B keeps: the stage table, where entry order is execution order,
+and a gate reads on the line of what it guards.
 
-## Ce que les deux laissent ouvert
+## What both leave open
 
-- **La composition du prompt.** `_extra(stage, ctx, st)` monte aujourd'hui
-  préambule + portée (milestone, issue, injecteur) + consignes. Est-ce que le
-  core la compose depuis une borne `Scoped` sur l'état, ou est-ce que chaque
-  `Ask` la monte ? La première garantit qu'aucune session ne part sans portée —
-  ce que le Python appelle une règle et ne peut pas tenir.
-- **Qui compte les tours.** Le budget `max_rounds` et l'écart « budget épuisé »
-  ≠ « plus rien à faire » : dans le `Workflow`, ou dans le `Round` ?
-- **`ctx.checkpoint()`** : le core écrit-il l'état de reprise, ou est-ce un
-  adaptateur que le round appelle ? Il touche le disque, donc il vient de
-  `adapters/store/`.
-- **Ce que rend une action de session.** `Ask` rend `Verdict`, mais la réponse
-  de l'agent va où ? Dans la session (relisible par l'action suivante), dans
-  l'état, ou les deux ?
+- **Prompt composition.** `_extra(stage, ctx, st)` today mounts preamble + scope
+  (milestone, issue, injector) + instructions. Does core compose it from a `Scoped`
+  bound on state, or does each `Ask` mount it? The first guarantees no session
+  starts without scope — what Python calls a rule and can't keep.
+- **Who counts turns.** The `max_rounds` budget and the gap "budget exhausted" ≠
+  "nothing left": in `Workflow`, or in `Round`?
+- **`ctx.checkpoint()`**: does core write resumption state, or is it an adapter the
+  round calls? It touches disk, so it comes from `adapters/store/`.
+- **What a session action returns.** `Ask` returns `Verdict`, but the agent's reply
+  goes where? In the session (re-readable by the next action), in state, or both?

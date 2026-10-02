@@ -1,142 +1,201 @@
-//! Les arguments d'un run, et les variables d'environnement qui les doublent.
+//! The arguments of a run, and the environment variables that back them up.
 //!
-//! **Déclarés ensemble.** Côté Python, `settings.py` lisait `os.environ` dans
-//! des `default_factory`, et un test assérait que « toute variable que le code
-//! lit apparaît dans un épilogue `--help` » — une règle vraie par vigilance.
-//! Ici `#[arg(env = …)]` met les deux au même endroit : l'aide est engendrée
-//! depuis les déclarations, donc elle ne peut plus être incomplète.
+//! **Declared together.** The declarations and environment variables live in
+//! the same place: the help is generated from the declarations, so it can no
+//! longer be incomplete.
 
-use clap::Parser;
+use std::path::PathBuf;
+
+use clap::{Args, Parser, Subcommand};
 use harness_core::domain::workspace::Strategy;
 
-/// Le harness : fait tourner un workflow d'agent sous des portes de
-/// vérification.
+/// The harness: runs an agentic workflow under verification gates, or
+/// initializes a repository for one.
 ///
-/// Quinze booléens, et c'est ce qu'une ligne de commande **est** : un drapeau
-/// présent ou absent. Le conseil du lint — une machine à états, des énumérations
-/// à deux variantes — produirait ici un indirect sans rien rendre plus sûr, et
-/// `clap` engendre l'aide depuis ces champs-là.
-#[allow(clippy::struct_excessive_bools)]
+/// No subcommand: the dev loop, flattened straight into [`RunArgs`] — every
+/// invocation that worked before this split (`harness --rounds 1 --stages
+/// code`) keeps parsing exactly the same way.
 #[derive(Debug, Parser)]
 #[command(
     name = "harness",
     version,
-    about = "Fait tourner la boucle de développement agentique.",
+    about = "Runs the agentic development loop.",
     long_about = None,
 )]
 pub struct Cli {
-    /// N'exécute rien et ne dépense rien : dit ce qui aurait tourné, et écrit
-    /// les prompts qui seraient partis.
+    /// The dev loop's own flags — flattened, so they stay at the top level
+    /// when no subcommand is given.
+    #[command(flatten)]
+    pub run: RunArgs,
+
+    /// What to run instead of the dev loop. Absent: the dev loop.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// A deterministic command, distinct from the dev loop.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Point the harness at a repository: labels, the integration branch, a
+    /// read-only audit, and the link written to `.env.local`.
+    InitRepo(InitRepoArgs),
+}
+
+/// `harness init-repo <url>`'s own arguments.
+#[derive(Debug, Args)]
+pub struct InitRepoArgs {
+    /// The target repository: `https://github.com/o/r[.git]`,
+    /// `git@github.com:o/r.git`, `ssh://…`, or the `o/r` shorthand.
+    pub url: String,
+
+    /// The integration branch to create and to audit. Empty:
+    /// `INTEGRATION_BRANCH`, else `main_agent`.
+    #[arg(long)]
+    pub branch: Option<String>,
+
+    /// Read everything, write nothing — not GitHub, not the env file.
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Les seuls stages à faire tourner, séparés par des espaces. Vide : tous.
+    /// Where the link is written. Empty: `.env.local` at the harness root.
+    #[arg(long)]
+    pub env_file: Option<PathBuf>,
+
+    /// Do every GitHub step, write no env file.
+    #[arg(long)]
+    pub no_env: bool,
+
+    /// Overwrite an existing `TARGET_REPO_URL` that names another repo.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// The dev loop's flags.
+///
+/// Fifteen booleans, and that is what a command line **is**: a flag present
+/// or absent. `clap` generates help from these fields.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Do not execute and do not spend: say what would have run, and write
+    /// the prompts that would have been sent.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// The only stages to run, separated by spaces. Empty: all.
     #[arg(long, env = "STAGES", default_value = "")]
     pub stages: String,
 
-    /// Forçage de modèle pour tout le run. Vide : chaque stage garde le sien.
+    /// Force model for the entire run. Empty: each stage keeps its own.
     #[arg(long, env = "MODEL", default_value = "")]
     pub model: String,
 
-    /// Forçage d'effort pour tout le run.
+    /// Force effort for the entire run.
     #[arg(long, env = "EFFORT", default_value = "")]
     pub effort: String,
 
-    /// Combien de tours au plus.
+    /// Maximum number of rounds.
     #[arg(long, env = "MAX_ROUNDS", default_value_t = 3)]
     pub rounds: u32,
 
-    /// La branche sur laquelle la boucle travaille et merge.
+    /// The branch on which the loop works and merges.
     #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
     pub branch: String,
 
-    /// Le mode de permission passé à `claude`.
+    /// The permission mode passed to `claude`.
     ///
-    /// Les hooks `PreToolUse` du dépôt cible s'appliquent toujours : ce réglage
-    /// ne les contourne pas.
+    /// The `PreToolUse` hooks of the target repository always apply: this
+    /// setting does not bypass them.
     #[arg(long, env = "PERMISSION_MODE", default_value = "bypassPermissions")]
     pub permission_mode: String,
 
-    /// Laisse tourner même si l'arbre de travail est sale.
+    /// Allow run even if the working tree is dirty.
     #[arg(long, env = "ALLOW_DIRTY", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub allow_dirty: bool,
 
-    /// Rejoue un stage que la reprise ferait sauter.
+    /// Replay a stage that resume would skip.
     #[arg(long)]
     pub restart: bool,
 
-    /// Reprend la task que le point de reprise désigne. Par défaut, oui.
+    /// Resume the task that the checkpoint designates. Default: yes.
     #[arg(long)]
     pub no_resume: bool,
 
-    /// Branche le stage de rollover : quand le milestone est fini, `/planner`
-    /// ouvre l'item de roadmap suivant.
+    /// Wire the rollover stage: when the milestone is done, `/planner` opens
+    /// the next roadmap item.
     ///
-    /// **Pas le défaut**, et c'est un choix : enchaîner en non surveillé dépense
-    /// un run opus et engage le projet sur un item de roadmap que personne n'a
-    /// lu.
+    /// **Not the default**, and it is a choice: chaining unattended spends an
+    /// opus run and commits the project to a roadmap item no one has read.
     #[arg(long, env = "ROLLOVER", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub rollover: bool,
 
-    /// Tout, y compris ce qu'une session dit en détail.
+    /// Everything, including what a session says in detail.
     #[arg(long, short, conflicts_with = "quiet")]
     pub verbose: bool,
 
-    /// Seuls les arrêts et les échecs.
+    /// Only stops and failures.
     #[arg(long, short)]
     pub quiet: bool,
 
-    // --- le workspace ------------------------------------------------------
-    /// Travaille dans le dépôt d'où le run est lancé, sans cloner.
+    // --- workspace ---------------------------------------------------------
+    /// Work in the repository from which the run is launched, without cloning.
     #[arg(long)]
     pub no_workspace: bool,
 
-    /// Ce qu'il advient du dossier de travail. Vide : le défaut du domaine
-    /// ([`Strategy::Permanent`]), lu par [`Cli::strategy`].
+    /// What happens to the workspace directory. Empty: the domain default
+    /// ([`Strategy::Permanent`]), read by [`RunArgs::strategy`].
     ///
-    /// En `String`, pas en `Option<Strategy>` avec un `value_parser` qui
-    /// rejette — même défaut que les trois booléens juste au-dessus, et même
-    /// cause : `clap` appelle le parseur dès que la variable existe, même
-    /// vide, et `Strategy::parse("")` refuse à bon droit une orthographe
-    /// inconnue.
+    /// A `String`, not an `Option<Strategy>` with a rejecting `value_parser` —
+    /// `clap` calls the parser as soon as the variable exists, even if empty,
+    /// and `Strategy::parse("")` rightly rejects an unknown spelling.
     #[arg(long, env = "WORKSPACE_STRATEGY", default_value = "")]
     pub workspace_strategy: String,
 
-    /// L'URL à cloner. Vide : l'`origin` du dépôt d'où le run est lancé.
+    /// The URL to clone. Empty: `TARGET_REPO_URL`, else the `origin` of the
+    /// repository from which the run is launched.
     #[arg(long, env = "WORKSPACE_URL", default_value = "")]
     pub workspace_url: String,
 
-    /// Retrouve ce workspace par son nom. Il est alors **jamais supprimé**.
+    /// The repository `init-repo` initialized and the loop mounts.
+    ///
+    /// Precedence: `--workspace-url` (above) wins when given;
+    /// `TARGET_REPO_URL` otherwise; and when both are empty, this checkout's
+    /// own `origin` — today's behavior, and the fallback is what keeps every
+    /// invocation from before this setting existed working unchanged.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
+
+    /// Find this workspace by name. It is then **never deleted**.
     #[arg(long, default_value = "")]
     pub use_workspace: String,
 
-    /// Le dossier qui contient les workspaces.
+    /// The directory that contains workspaces.
     #[arg(long, env = "AGENTIC_WORKSPACES_DIR", default_value = "")]
     pub workspaces_dir: String,
 
-    /// Garde un workspace jetable que le run supprimerait.
+    /// Keep a disposable workspace that the run would delete.
     #[arg(long, env = "KEEP_WORKSPACE", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub keep_workspace: bool,
 
-    /// Écrase le travail local d'un workspace réutilisé.
+    /// Overwrite local work of a reused workspace.
     ///
-    /// Sans ce drapeau, un workspace qui porte quelque chose arrête le run en le
-    /// nommant. C'est un humain qui prend cette sortie.
+    /// Without this flag, a workspace with work stops the run by naming it.
+    /// A human takes this output.
     #[arg(long)]
     pub force_reset: bool,
 }
 
-impl Cli {
-    /// La stratégie de workspace demandée, ou le défaut du domaine si rien
-    /// n'est donné.
+impl RunArgs {
+    /// The workspace strategy requested, or the domain default if nothing is
+    /// given.
     ///
     /// # Errors
     ///
-    /// Une erreur nommant la faute si `workspace_strategy` n'est ni vide ni
-    /// une stratégie connue — refusée plutôt que lue comme le défaut, pour
-    /// la même raison que [`Strategy::parse`] : `WORKSPACE_STRATEGY=permanant`
-    /// qui retomberait sur `tmp` ferait supprimer, une fois et sans rien dire,
-    /// le workspace que l'humain croyait garder.
+    /// An error naming the mistake if `workspace_strategy` is neither empty nor
+    /// a known strategy — refused rather than read as the default, for the same
+    /// reason as [`Strategy::parse`]: `WORKSPACE_STRATEGY=permanant` that fell
+    /// back to `tmp` would delete, once and without saying anything, the
+    /// workspace the human thought they were keeping.
     pub fn strategy(&self) -> Result<Strategy, String> {
         if self.workspace_strategy.is_empty() {
             return Ok(Strategy::Permanent);
@@ -145,47 +204,40 @@ impl Cli {
     }
 }
 
-/// Un booléen d'environnement, aux orthographes usuelles.
+/// An environment boolean, with usual spellings.
 ///
-/// `clap` exige la chaîne littérale `true`/`false` pour tout champ `bool`
-/// combiné à `env` — ni `1`, ni vide, ni `action = SetTrue` n'y changent rien,
-/// vérifié en isolation avant ce correctif. Les trois drapeaux qui s'écrivent
-/// aussi en variable d'environnement (`ALLOW_DIRTY`, `ROLLOVER`,
-/// `KEEP_WORKSPACE`) passent donc par ce parseur plutôt que par le type
-/// `bool` nu de `clap` : `num_args = 0..=1` et `default_missing_value =
-/// "true"` gardent `--rollover` valable seul en ligne de commande, et ce
-/// parseur accepte en plus ce qu'une variable d'environnement écrit en
-/// pratique.
+/// `clap` requires the literal string `true`/`false` for any `bool` field
+/// combined with `env`. The three flags that also write to environment
+/// variables (`ALLOW_DIRTY`, `ROLLOVER`, `KEEP_WORKSPACE`) pass through this
+/// parser rather than `clap`'s bare `bool` type: `num_args = 0..=1` and
+/// `default_missing_value = "true"` keep `--rollover` valid alone on the
+/// command line, and this parser additionally accepts what an environment
+/// variable writes in practice.
 ///
-/// Le vide vaut faux **volontairement** : c'est ce qu'une ligne `ROLLOVER=`
-/// non remplie dans `.env.local` écrit, et c'est le cas le plus courant —
-/// pas une faute de frappe. Une vraie faute (`ROLLOVER=flase`) reste refusée,
-/// pour la même raison que [`strategy`] refuse plutôt que de retomber sur un
-/// défaut : une variable mal orthographiée ne doit pas se lire comme un
-/// silence.
+/// Empty is false **intentionally**: that is what an unfilled `ROLLOVER=` line
+/// in `.env.local` writes, and it is the most common case — not a typo. A real
+/// typo (`ROLLOVER=flase`) stays refused, for the same reason [`strategy`]
+/// refuses rather than falling back to a default: a misspelled variable should
+/// not read as silence.
 fn truthy(text: &str) -> Result<bool, String> {
     match text.trim().to_lowercase().as_str() {
         "" | "0" | "false" | "no" => Ok(false),
         "1" | "true" | "yes" => Ok(true),
         other => Err(format!(
-            "{other:?} n'est pas une valeur booléenne — connues : 1/true/yes, \
-             0/false/no, ou vide"
+            "{other:?} is not a boolean value — known: 1/true/yes, \
+             0/false/no, or empty"
         )),
     }
 }
 
-/// `Strategy::parse`, en refusant plutôt qu'en retombant sur un défaut.
+/// `Strategy::parse`, refusing rather than falling back to a default.
 ///
-/// Un `WORKSPACE_STRATEGY=permanant` qui retomberait sur `tmp` ferait
-/// supprimer, une fois par run et sans rien dire, le workspace que l'humain
-/// croyait garder.
+/// A `WORKSPACE_STRATEGY=permanant` that fell back to `tmp` would delete, once
+/// per run and without saying anything, the workspace the human thought they
+/// were keeping.
 fn strategy(text: &str) -> Result<Strategy, String> {
-    Strategy::parse(text).ok_or_else(|| {
-        format!(
-            "{text:?} n'est pas une stratégie — connues : {}",
-            Strategy::known()
-        )
-    })
+    Strategy::parse(text)
+        .ok_or_else(|| format!("{text:?} is not a strategy — known: {}", Strategy::known()))
 }
 
 #[cfg(test)]
@@ -196,15 +248,14 @@ mod tests {
 
     #[test]
     fn the_declarations_are_coherent() {
-        // `debug_assert` de clap : noms en double, conflits impossibles, valeur
-        // par défaut qui ne passe pas son propre `value_parser`.
+        // clap's `debug_assert`: duplicate names, impossible conflicts, default
+        // value that does not pass its own `value_parser`.
         Cli::command().debug_assert();
     }
 
     #[test]
     fn every_environment_variable_the_run_reads_shows_up_in_the_help() {
-        // Ce que le Python assérait dans un test, et que la déclaration rend
-        // vrai ici : l'aide est engendrée depuis les `env = …`.
+        // The help is generated from the `env = …` declarations.
         let help = Cli::command().render_long_help().to_string();
         for variable in [
             "STAGES",
@@ -217,10 +268,11 @@ mod tests {
             "ROLLOVER",
             "WORKSPACE_STRATEGY",
             "WORKSPACE_URL",
+            "TARGET_REPO_URL",
             "AGENTIC_WORKSPACES_DIR",
             "KEEP_WORKSPACE",
         ] {
-            assert!(help.contains(variable), "{variable} absente de --help");
+            assert!(help.contains(variable), "{variable} missing from --help");
         }
     }
 
@@ -232,38 +284,39 @@ mod tests {
 
     #[test]
     #[serial]
-    fn the_defaults_are_the_ones_the_python_run_with() {
-        let cli = Cli::try_parse_from(["harness"]).expect("les défauts");
-        assert_eq!(cli.rounds, 3);
-        assert_eq!(cli.branch, "main_agent");
-        assert_eq!(cli.permission_mode, "bypassPermissions");
-        assert!(!cli.dry_run);
-        // Le rollover reste à brancher explicitement : il dépense un run opus.
-        assert!(!cli.rollover);
-        // Et aucune stratégie imposée en ligne de commande : c'est
-        // `Cli::strategy` qui retombe sur le défaut du domaine, qui ne
-        // supprime rien.
-        assert_eq!(cli.workspace_strategy, "");
-        assert_eq!(cli.strategy(), Ok(Strategy::Permanent));
+    fn the_defaults_are_what_the_loop_expects() {
+        let cli = Cli::try_parse_from(["harness"]).expect("the defaults");
+        assert_eq!(cli.run.rounds, 3);
+        assert_eq!(cli.run.branch, "main_agent");
+        assert_eq!(cli.run.permission_mode, "bypassPermissions");
+        assert!(!cli.run.dry_run);
+        // Rollover stays to be wired explicitly: it spends an opus run.
+        assert!(!cli.run.rollover);
+        // And no strategy forced on the command line: it is `RunArgs::strategy`
+        // that falls back to the domain default, which does not delete anything.
+        assert_eq!(cli.run.workspace_strategy, "");
+        assert_eq!(cli.run.strategy(), Ok(Strategy::Permanent));
+        assert!(cli.command.is_none());
     }
 
     #[test]
     #[serial]
     fn an_empty_workspace_strategy_defaults_rather_than_erroring() {
-        // Le même défaut que les trois booléens : `clap` appellerait
-        // `Strategy::parse("")` dès que `WORKSPACE_STRATEGY=` existe, même
-        // vide, si le champ restait un `Option<Strategy>` à `value_parser`.
+        // Same issue as the three booleans: `clap` would call
+        // `Strategy::parse("")` as soon as `WORKSPACE_STRATEGY=` exists, even
+        // if empty, if the field stayed as an `Option<Strategy>` with
+        // `value_parser`.
         let cli = Cli::try_parse_from_with_env(["harness"], &[("WORKSPACE_STRATEGY", "")])
-            .expect("ne doit pas échouer à l'analyse des arguments");
-        assert_eq!(cli.strategy(), Ok(Strategy::Permanent));
+            .expect("must not fail argument parsing");
+        assert_eq!(cli.run.strategy(), Ok(Strategy::Permanent));
     }
 
     #[test]
     #[serial]
     fn a_misspelled_workspace_strategy_is_refused_at_use_not_defaulted() {
         let cli = Cli::try_parse_from_with_env(["harness"], &[("WORKSPACE_STRATEGY", "permanant")])
-            .expect("l'analyse des arguments ne rejette plus — Cli::strategy le fait");
-        assert!(cli.strategy().is_err());
+            .expect("argument parsing no longer rejects — RunArgs::strategy does");
+        assert!(cli.run.strategy().is_err());
     }
 
     #[test]
@@ -275,8 +328,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_bool_flag_still_takes_no_value_on_the_command_line() {
-        let cli = Cli::try_parse_from(["harness", "--rollover"]).expect("un drapeau nu");
-        assert!(cli.rollover);
+        let cli = Cli::try_parse_from(["harness", "--rollover"]).expect("a bare flag");
+        assert!(cli.run.rollover);
     }
 
     #[test]
@@ -291,19 +344,19 @@ mod tests {
 
     #[test]
     fn truthy_reads_empty_as_false_because_that_is_what_an_unfilled_env_var_is() {
-        // Ce que `.env.local` écrit pour une variable non remplie : une ligne
-        // `ROLLOVER=` vide. `clap` exige `true`/`false` littéral pour tout
-        // `bool` combiné à `env` — ni `1`, ni vide, ni `action = SetTrue` n'y
-        // changent rien, ce qui faisait échouer `--allow-dirty` seul dès que
-        // `.env.local` existait, même avec les trois variables vides. C'est
-        // ce que `truthy` contourne.
+        // What `.env.local` writes for an unfilled variable: an empty `ROLLOVER=`
+        // line. `clap` requires literal `true`/`false` for any `bool` combined
+        // with `env` — neither `1`, nor empty, nor `action = SetTrue` changes
+        // that, which would fail `--allow-dirty` alone as soon as `.env.local`
+        // existed, even with the three variables empty. That is what `truthy`
+        // works around.
         assert_eq!(truthy(""), Ok(false));
     }
 
     #[test]
     fn truthy_refuses_a_typo_rather_than_reading_it_as_unset() {
-        // Même logique que `strategy` : une variable mal orthographiée ne
-        // doit pas se lire comme un silence.
+        // Same logic as `strategy`: a misspelled variable should not read as
+        // silence.
         assert!(truthy("flase").is_err());
     }
 
@@ -312,19 +365,67 @@ mod tests {
     fn an_empty_or_truthy_environment_variable_does_not_break_the_flag() {
         for (value, expect_allow_dirty) in [("", false), ("1", true), ("true", true)] {
             let cli = Cli::try_parse_from_with_env(["harness"], &[("ALLOW_DIRTY", value)])
-                .expect("ne doit pas échouer");
-            assert_eq!(cli.allow_dirty, expect_allow_dirty, "ALLOW_DIRTY={value:?}");
+                .expect("must not fail");
+            assert_eq!(
+                cli.run.allow_dirty, expect_allow_dirty,
+                "ALLOW_DIRTY={value:?}"
+            );
         }
     }
 
-    /// `Cli::try_parse_from`, des variables d'environnement posées pour la
-    /// durée de l'appel.
+    #[test]
+    #[serial]
+    fn harness_rounds_1_stages_code_still_parses_as_the_dev_loop() {
+        // The regression this guards: the flatten + optional-subcommand split
+        // must not break the invocation every current user already has.
+        let cli = Cli::try_parse_from(["harness", "--rounds", "1", "--stages", "code"])
+            .expect("must still parse");
+        assert!(cli.command.is_none());
+        assert_eq!(cli.run.rounds, 1);
+        assert_eq!(cli.run.stages, "code");
+    }
+
+    #[test]
+    #[serial]
+    fn init_repo_parses_as_a_subcommand() {
+        let cli = Cli::try_parse_from(["harness", "init-repo", "https://github.com/o/r"])
+            .expect("must parse");
+        let Some(Command::InitRepo(args)) = cli.command else {
+            panic!("expected Command::InitRepo");
+        };
+        assert_eq!(args.url, "https://github.com/o/r");
+        assert!(!args.dry_run);
+    }
+
+    #[test]
+    #[serial]
+    fn init_repo_accepts_its_own_flags() {
+        let cli = Cli::try_parse_from([
+            "harness",
+            "init-repo",
+            "o/r",
+            "--branch",
+            "main_agent",
+            "--dry-run",
+            "--force",
+        ])
+        .expect("must parse");
+        let Some(Command::InitRepo(args)) = cli.command else {
+            panic!("expected Command::InitRepo");
+        };
+        assert_eq!(args.branch.as_deref(), Some("main_agent"));
+        assert!(args.dry_run);
+        assert!(args.force);
+    }
+
+    /// `Cli::try_parse_from`, with environment variables set for the duration
+    /// of the call.
     ///
-    /// `std::env::set_var` touche un état global du process, partagé entre les
-    /// threads que `cargo test` utilise pour les autres tests de ce fichier —
-    /// les poser et les retirer dans le même appel, plutôt que dans un test
-    /// qui continuerait après, est ce qui empêche une fuite vers un test
-    /// voisin même en cas de panique entre les deux.
+    /// `std::env::set_var` touches a global process state, shared among the
+    /// threads that `cargo test` uses for the other tests in this file — setting
+    /// and removing them in the same call, rather than in a test that would
+    /// continue after, is what prevents a leak to a neighboring test even in
+    /// case of panic in between.
     trait TryParseWithEnv: Sized {
         fn try_parse_from_with_env<I, T>(
             args: I,
@@ -345,9 +446,8 @@ mod tests {
             I: IntoIterator<Item = T>,
             T: Into<std::ffi::OsString> + Clone,
         {
-            // SAFETY: posées puis retirées avant de rendre la main, dans le
-            // même appel — aucun autre test ne peut observer l'état
-            // intermédiaire.
+            // SAFETY: Set then removed before returning control, in the same
+            // call — no other test can observe the intermediate state.
             unsafe {
                 for (var, value) in vars {
                     std::env::set_var(var, value);
@@ -363,13 +463,12 @@ mod tests {
         }
     }
 
-    /// Chaque variable que `.env.example` déclare, telle qu'elle y est écrite.
+    /// Every variable that `.env.example` declares, as it is written there.
     ///
-    /// Une seule source pour les deux tests qui suivent, pour que le jour où
-    /// une ligne s'ajoute à `.env.example` sans qu'on pense à l'ajouter ici,
-    /// l'écart soit visible — pas pour relire le fichier automatiquement :
-    /// `.env.example` est un gabarit pour un humain, ce tableau est ce que le
-    /// code promet d'accepter.
+    /// A single source for the two tests that follow, so that the day a line is
+    /// added to `.env.example` without being added here, the gap shows — not to
+    /// re-read the file automatically: `.env.example` is a template for a human,
+    /// this array is what the code promises to accept.
     const ENV_EXAMPLE: &[(&str, &str)] = &[
         ("STAGES", ""),
         ("MODEL", ""),
@@ -381,6 +480,7 @@ mod tests {
         ("ROLLOVER", ""),
         ("WORKSPACE_STRATEGY", ""),
         ("WORKSPACE_URL", ""),
+        ("TARGET_REPO_URL", ""),
         ("AGENTIC_WORKSPACES_DIR", ""),
         ("KEEP_WORKSPACE", ""),
     ];
@@ -388,24 +488,24 @@ mod tests {
     #[test]
     #[serial]
     fn a_dot_env_local_freshly_copied_from_the_template_parses_without_error() {
-        // Le scénario qui a cassé deux fois de suite en usage réel avant que ce
-        // test existe : `.env.local` copié tel quel depuis `.env.example`, la
-        // plupart des lignes laissées vides. Les deux bugs — `bool` + `env`, et
-        // `Option<Strategy>` + `env` — se seraient tous les deux montrés ici.
+        // The scenario that broke twice in real use before this test existed:
+        // `.env.local` copied as-is from `.env.example`, most lines left empty.
+        // The two bugs — `bool` + `env`, and `Option<Strategy>` + `env` — would
+        // both have shown up here.
         let cli = Cli::try_parse_from_with_env(["harness"], ENV_EXAMPLE)
-            .expect("un .env.local frais doit toujours parser");
-        assert_eq!(cli.strategy(), Ok(Strategy::Permanent));
+            .expect("a fresh .env.local must always parse");
+        assert_eq!(cli.run.strategy(), Ok(Strategy::Permanent));
     }
 
     #[test]
     fn every_line_of_the_template_is_covered_by_the_regression_test() {
-        // Garde contre l'écart inverse : une ligne ajoutée à `.env.example`
-        // sans être ajoutée à `ENV_EXAMPLE` ci-dessus ne serait plus couverte,
-        // en silence.
+        // Guard against the opposite gap: a line added to `.env.example`
+        // without being added to `ENV_EXAMPLE` above would no longer be covered,
+        // silently.
         let documented = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.env.example"),
         )
-        .expect(".env.example doit se lire");
+        .expect(".env.example must be readable");
         for line in documented.lines() {
             let Some((name, _)) = line.split_once('=') else {
                 continue;
@@ -413,7 +513,7 @@ mod tests {
             if name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
                 assert!(
                     ENV_EXAMPLE.iter().any(|(known, _)| *known == name),
-                    "{name} est dans .env.example mais pas dans ENV_EXAMPLE"
+                    "{name} is in .env.example but not in ENV_EXAMPLE"
                 );
             }
         }

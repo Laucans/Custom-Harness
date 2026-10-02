@@ -1,71 +1,70 @@
-//! Ce qu'est une issue, et rien de ce qu'un workflow en fait.
+//! What an issue is, and nothing of what a workflow makes of it.
 //!
-//! Le suivi du travail vit dans les issues GitHub. Ce module en porte la
-//! **forme** — un numéro, un titre, un état, des étiquettes, un corps, des
-//! bloqueurs — et les seules questions qu'on peut lui poser sans savoir à quoi
-//! elle sert.
+//! Work tracking lives in GitHub issues. This module carries the **form** —
+//! a number, a title, a state, labels, a body, blockers — and the only
+//! questions you can ask it without knowing what it is for.
 //!
-//! **Le vocabulaire, pas la définition.** Ce qui fait d'une issue une « task
-//! prête à tourner » — quelles étiquettes comptent, laquelle choisir ensuite —
-//! est la définition d'un workflow et vit chez lui. C'est cette séparation qui
-//! autorise `adapters::shell::github` à rendre des `Issue` : un adaptateur
-//! désérialise, il ne décide pas de ce qu'une étiquette *signifie*.
+//! **The vocabulary, not the definition.** What makes an issue a "task ready
+//! to run" — which labels matter, which to pick next — is the definition of
+//! a workflow and lives with it. This separation is what allows
+//! `adapters::shell::github` to yield `Issue`s: an adapter deserializes, it
+//! does not decide what a label *means*.
 
-/// Une issue GitHub, vue par le harness.
+/// A GitHub issue, as the harness sees it.
 ///
-/// Le même type sert pour un item de roadmap, un milestone, une task, une
-/// action humaine et une PR : ce qui les distingue est une étiquette, pas une
-/// classe. C'est ce qui permet à `blocked_by` de porter des issues de
-/// n'importe quelle sorte — une dépendance ne demande pas ce qu'elle bloque.
+/// The same type serves for a roadmap item, a milestone, a task, a human
+/// action, and a PR: what distinguishes them is a label, not a class. This is
+/// what allows `blocked_by` to carry issues of any kind — a dependency does
+/// not ask what it blocks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Issue {
-    /// Son numéro.
+    /// Its number.
     pub number: u64,
-    /// Son titre.
+    /// Its title.
     pub title: String,
-    /// `open` ou `closed`, tel que l'API le dit.
+    /// `open` or `closed`, as the API says.
     pub state: String,
-    /// Ses étiquettes, par leur nom.
+    /// Its labels, by name.
     pub labels: Vec<String>,
-    /// Son corps. Pour une task, le corps **est** le SPEC.
+    /// Its body. For a task, the body **is** the SPEC.
     pub body: String,
-    /// Ses bloqueurs, **avec leur état** : savoir qu'une issue est bloquée ne
-    /// suffit pas, il faut savoir si le bloqueur est encore ouvert.
+    /// Its blockers, **with their state**: knowing an issue is blocked is not
+    /// enough, you must know if the blocker is still open.
     pub blocked_by: Vec<Self>,
 }
 
 impl Issue {
-    /// L'identité de l'issue pour l'état de reprise : son numéro.
+    /// The issue's identity for resume state: its number.
     ///
-    /// Un numéro ne change pas quand on réécrit le titre — ce qui n'était pas
-    /// vrai du temps où une task se désignait par `<num>|<titre>`.
+    /// A number does not change when you rewrite the title — which was not
+    /// true when a task was designated by `<num>|<title>`.
     #[must_use]
     pub fn key(&self) -> String {
         self.number.to_string()
     }
 
-    /// `#12` — comme un message la nomme.
+    /// `#12` — as a message names it.
     #[must_use]
     pub fn reference(&self) -> String {
         format!("#{}", self.number)
     }
 
-    /// Vrai tant que GitHub ne l'a pas fermée.
+    /// True as long as GitHub has not closed it.
     ///
-    /// Tout ce qui n'est pas `closed` compte comme ouvert : un état que cette
-    /// version ne connaît pas ne doit pas faire disparaître du travail.
+    /// Anything that is not `closed` counts as open: a state this version does
+    /// not know must not make work disappear.
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.state != "closed"
     }
 
-    /// Vrai si GitHub l'a fermée.
+    /// True if GitHub has closed it.
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.state == "closed"
     }
 
-    /// Vrai si elle porte cette étiquette.
+    /// True if it bears this label.
     #[must_use]
     pub fn has(&self, label: &str) -> bool {
         self.labels.iter().any(|l| l == label)

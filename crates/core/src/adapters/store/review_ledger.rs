@@ -1,10 +1,10 @@
-//! Le registre d'une revue de PR : colonnes distinctes de celui des rounds.
+//! The ledger of a PR review: columns distinct from the rounds ledger.
 //!
-//! **Un registre séparé, à dessein.** Une revue facture par PR et par passe,
-//! jamais par round ni par task — mélanger les deux ferait relire un coût de
-//! revue comme un coût de livraison. Même discipline que [`super::ledger`] :
-//! en-tête gelé, colonnes ajoutées en fin de ligne, `outcome` distingue
-//! l'argent qui a acheté quelque chose de celui qu'une passe coupée a brûlé.
+//! **A separate ledger, by design.** A review charges per PR and per pass,
+//! never by round or task — mixing the two would make a review cost read as
+//! a delivery cost. Same discipline as [`super::ledger`]: frozen header,
+//! columns added at row end, `outcome` distinguishes money that bought
+//! something from what a cut pass burned.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -12,30 +12,30 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::{Halt, Outcome, Spend};
 
-/// L'en-tête, gelé.
+/// The header, frozen.
 pub const HEADER: &str =
     "when\tpr\tpass\tcost_usd\tturns\tduration_ms\tin\tout\tsession\tran_on\toutcome";
 
-/// Les colonnes, dérivées de l'en-tête.
+/// The columns, derived from the header.
 #[must_use]
 pub fn columns() -> Vec<&'static str> {
     HEADER.split('\t').collect()
 }
 
-/// Ce qu'une passe de revue a coûté.
+/// What a review pass cost.
 #[derive(Debug, Clone)]
 pub struct Row {
-    /// L'instant, en ISO-8601 à la seconde.
+    /// The instant, in ISO-8601 to the second.
     pub when: String,
-    /// La PR revue.
+    /// The reviewed PR.
     pub pr: String,
-    /// `inline` ou `brief`.
+    /// `inline` or `brief`.
     pub pass: String,
-    /// Ce que le porteur de session a observé.
+    /// What the session carrier observed.
     pub spend: Spend,
-    /// La machine qui a fait tourner ça.
+    /// The machine that ran it.
     pub ran_on: String,
-    /// `ok`, ou la raison de l'absence de réponse. Vide = non enregistré.
+    /// `ok`, or the reason for missing response. Empty = not recorded.
     pub outcome: String,
 }
 
@@ -48,7 +48,7 @@ fn flat(text: &str) -> String {
 }
 
 impl Row {
-    /// La ligne, telle qu'elle s'écrit.
+    /// The row, as it is written.
     #[must_use]
     pub fn render(&self) -> String {
         let cost = self
@@ -73,13 +73,13 @@ impl Row {
     }
 }
 
-/// Le registre des revues, sur le disque.
+/// The review ledger, on disk.
 pub struct ReviewLedger {
     path: PathBuf,
 }
 
 impl ReviewLedger {
-    /// Le registre à ce chemin. Rien n'est créé avant la première écriture.
+    /// The ledger at this path. Nothing is created before the first write.
     #[must_use]
     pub fn new(path: &Path) -> Self {
         Self {
@@ -87,10 +87,10 @@ impl ReviewLedger {
         }
     }
 
-    /// Ajoute une ligne. Écrit l'en-tête d'abord si le fichier n'existe pas.
+    /// Add a row. Writes the header first if the file does not exist.
     ///
     /// # Errors
-    /// [`Halt::Failed`] si le registre n'a pas pu être écrit.
+    /// [`Halt::Failed`] if the ledger could not be written.
     pub fn append(&self, row: &Row) -> Outcome<()> {
         let fresh = !self.path.exists();
         if let Some(parent) = self.path.parent() {
@@ -110,18 +110,18 @@ impl ReviewLedger {
             .map_err(|e| self.wrote_nothing(&e))
     }
 
-    /// Ce que les deux passes d'une PR ont coûté ensemble, en dollars, formaté
-    /// à quatre décimales — ou vide si rien n'est encore enregistré.
+    /// What both passes of a PR cost together, in dollars, formatted to four
+    /// decimals — or empty if nothing is recorded yet.
     ///
     /// # Errors
-    /// [`Halt::Unreadable`] si le registre existe mais ne se lit pas.
+    /// [`Halt::Unreadable`] if the ledger exists but cannot be read.
     pub fn cost_of(&self, pr: &str) -> Outcome<String> {
         if !self.path.exists() {
             return Ok(String::new());
         }
         let text = std::fs::read_to_string(&self.path).map_err(|e| {
             Halt::Unreadable(format!(
-                "registre de revues illisible en {} ({e})",
+                "review ledger unreadable at {} ({e})",
                 self.path.display()
             ))
         })?;
@@ -143,7 +143,7 @@ impl ReviewLedger {
 
     fn wrote_nothing(&self, err: &std::io::Error) -> Halt {
         Halt::Failed(format!(
-            "impossible d'écrire le registre des revues {} ({err})",
+            "cannot write review ledger {} ({err})",
             self.path.display()
         ))
     }
@@ -198,9 +198,9 @@ mod tests {
         let dir = Dir::new("fresh");
         let path = dir.0.join("costs.tsv");
         let ledger = ReviewLedger::new(&path);
-        ledger.append(&row("32", "inline", 0.5)).expect("écrit");
-        ledger.append(&row("32", "brief", 0.2)).expect("écrit");
-        let text = std::fs::read_to_string(&path).expect("relu");
+        ledger.append(&row("32", "inline", 0.5)).expect("written");
+        ledger.append(&row("32", "brief", 0.2)).expect("written");
+        let text = std::fs::read_to_string(&path).expect("read");
         assert_eq!(text.lines().next(), Some(HEADER));
         assert_eq!(text.lines().count(), 3);
     }
@@ -210,17 +210,17 @@ mod tests {
         let dir = Dir::new("sum");
         let path = dir.0.join("costs.tsv");
         let ledger = ReviewLedger::new(&path);
-        ledger.append(&row("32", "inline", 0.5)).expect("écrit");
-        ledger.append(&row("32", "brief", 0.25)).expect("écrit");
-        ledger.append(&row("99", "inline", 9.0)).expect("écrit");
-        assert_eq!(ledger.cost_of("32").expect("lu"), "0.7500");
+        ledger.append(&row("32", "inline", 0.5)).expect("written");
+        ledger.append(&row("32", "brief", 0.25)).expect("written");
+        ledger.append(&row("99", "inline", 9.0)).expect("written");
+        assert_eq!(ledger.cost_of("32").expect("read"), "0.7500");
     }
 
     #[test]
     fn a_pr_with_no_recorded_cost_is_the_empty_string() {
         let dir = Dir::new("absent");
         let ledger = ReviewLedger::new(&dir.0.join("costs.tsv"));
-        assert_eq!(ledger.cost_of("32").expect("lu"), "");
+        assert_eq!(ledger.cost_of("32").expect("read"), "");
     }
 
     #[test]
@@ -231,9 +231,9 @@ mod tests {
         let mut blind = row("32", "inline", 0.0);
         blind.spend = Spend::default();
         blind.outcome = "quota".to_string();
-        ledger.append(&blind).expect("écrit");
-        let text = std::fs::read_to_string(&path).expect("relu");
-        let data = text.lines().nth(1).expect("une ligne");
+        ledger.append(&blind).expect("written");
+        let text = std::fs::read_to_string(&path).expect("read");
+        let data = text.lines().nth(1).expect("a row");
         assert_eq!(data.split('\t').nth(3), Some(""));
     }
 }

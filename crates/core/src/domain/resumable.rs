@@ -1,19 +1,18 @@
-//! Ce qu'un état de round doit savoir pour qu'une étape ne soit jamais
-//! repayée deux fois.
+//! What round state must know so a stage is never re-billed twice.
 
-/// Porté par l'état d'un workflow : au plus une fois par étape, tous runs confondus.
+/// Carried by workflow state: at most once per stage, across all runs.
 ///
-/// Remplace le `done: list[str]` passé à chaque appel côté Python, et le cas
-/// particulier `mark=False` du stage d'archivage.
+/// Replaces the `done: list[str]` passed to each Python-side call, and the
+/// special `mark=False` case of the archive stage.
 pub trait Resumable {
-    /// Les étapes déjà faites pour la task en cours.
+    /// The stages already done for the current task.
     fn done(&self) -> &[String];
 
-    /// Marque une étape faite. Idempotent : la marquer deux fois ne duplique
-    /// rien dans `done()`.
+    /// Mark a stage done. Idempotent: marking it twice does not duplicate
+    /// anything in `done()`.
     fn mark(&mut self, stage: &str);
 
-    /// Vrai si cette étape a déjà tourné.
+    /// True if this stage has already run.
     fn is_done(&self, stage: &str) -> bool {
         self.done().iter().any(|s| s == stage)
     }

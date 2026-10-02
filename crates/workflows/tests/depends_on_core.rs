@@ -1,7 +1,7 @@
-//! Preuve, pas test unitaire : `harness-workflows` voit bien
-//! `harness-core` — le sens que la table `ALLOWED` de `test_layering.py`
-//! vérifiait côté Python. Ici, un `use` dans l'autre sens ne compilerait
-//! simplement pas ; ce test documente le sens qui, lui, fonctionne.
+//! Proof, not unit test: `harness-workflows` can indeed see
+//! `harness-core` — the direction that the `ALLOWED` table in `test_layering.py`
+//! verified on the Python side. Here, a `use` in the other direction simply
+//! would not compile; this test documents the direction that works.
 
 #[test]
 fn workflows_can_reach_into_core() {

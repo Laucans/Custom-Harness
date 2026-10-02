@@ -1,40 +1,38 @@
-//! Le préambule, le bloc de portée, et comment ils se composent.
+//! The preamble, the scope block, and how they compose.
 //!
-//! Ce que **toute** session reçoit, quel que soit le workflow qui la lance : le
-//! bloc EXECUTION CONTEXT — là où il est dit qu'on ne peut poser aucune
-//! question, comment s'arrêter, et sur quelle branche on travaille — et le bloc
-//! SCOPE, qui porte le milestone et l'issue. Les consignes propres à un stage
-//! s'ajoutent à ça et ne sont pas ici.
+//! What **every** session receives, whatever workflow launches it: the
+//! EXECUTION CONTEXT block — where it is stated that you can ask no questions,
+//! how to stop, and which branch you are working on — and the SCOPE block,
+//! which carries the milestone and the issue. Instructions specific to a stage
+//! are added to that and are not here.
 //!
-//! **Ce module ne connaît aucun workflow.** La prose d'un stage lui est passée
-//! en argument.
+//! **This module knows no workflow.** A stage's prose is passed to it as an
+//! argument.
 //!
-//! Le préambule exige `AGENT_LOOP_OK:` en fin de réponse et
-//! [`crate::domain::markers`] le relit : deux moitiés d'un même contrat, et un
-//! test exige qu'elles nomment la même chaîne.
+//! The preamble requires `AGENT_LOOP_OK:` at the end of the response and
+//! [`crate::domain::markers`] reads it back: two halves of the same contract,
+//! and a test requires them to name the same string.
 //!
-//! # Une seule substitution, en une passe
+//! # A single substitution, one pass
 //!
-//! Le Python avait deux fonctions — `fill`, séquentielle, et `splice`, une
-//! passe — et n'appliquait `splice` qu'au raffinage. Or le bloc SCOPE porte des
-//! corps d'issue et des titres, **qui viennent de GitHub** : un `{body}` écrit
-//! dans un corps de milestone se faisait substituer par la passe suivante.
-//! C'est exactement ce que `splice` existait pour empêcher, appliqué au mauvais
-//! endroit. Les deux sont fusionnées ici en une seule passe : identique quand
-//! les valeurs sont propres, sûre quand elles ne le sont pas.
+//! Python had two functions — `fill`, sequential, and `splice`, one pass — and
+//! applied `splice` only to refinement. But the SCOPE block carries issue bodies
+//! and titles, **which come from GitHub**: a `{body}` written into a milestone
+//! body would be substituted by the next pass. That is exactly what `splice`
+//! existed to prevent, applied to the wrong place. The two are merged here into
+//! a single pass: identical when values are clean, safe when they are not.
 
-/// Le nom cité dans les blocs quand l'appelant n'en donne pas d'autre.
+/// The name cited in blocks when the caller provides none.
 ///
-/// Volontairement générique : nommer ici la CLI d'un workflow précis serait
-/// mettre une instance dans le vocabulaire, ce que cette couche n'a pas le
-/// droit de porter.
+/// Deliberately generic: naming a specific workflow's CLI here would put an
+/// instance into the vocabulary, which this layer has no right to carry.
 pub const INJECTOR: &str = "the harness runner";
 
-/// Ce qu'un corps vide dit, en mots.
+/// What an empty body says, in words.
 ///
-/// Dit plutôt que laissé blanc : un stage qui lit une section blanche ne peut
-/// pas distinguer « rien n'a été écrit » de « l'injection a cassé », et une
-/// seule des deux vaut un arrêt.
+/// Said rather than left blank: a stage reading a blank section cannot
+/// distinguish "nothing was written" from "injection failed", and only one of
+/// the two deserves a stop.
 pub const EMPTY_BODY: &str = "(empty — nothing has been written into this issue yet)";
 
 const PREAMBLE: &str = "
@@ -77,49 +75,47 @@ ISSUE #{num} — {title}
 {body}
 --- END SCOPE ---";
 
-/// Une issue telle qu'une session doit la voir : son numéro, son titre, son
-/// corps.
+/// An issue as a session must see it: its number, its title, its body.
 ///
-/// Sérialisable parce qu'elle entre dans le point de reprise : c'est la portée
-/// qu'un run interrompu doit retrouver pour que la session suivante ne démarre
-/// pas aveugle.
+/// Serializable because it enters the resume point: it is the scope that an
+/// interrupted run must recover so that the following session does not start
+/// blind.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Named {
-    /// Le numéro, en texte — il n'entre que dans de la prose.
+    /// The number, as text — it only enters into prose.
     pub number: String,
-    /// Le titre.
+    /// The title.
     pub title: String,
-    /// Le corps. Pour une task, le corps **est** le SPEC.
+    /// The body. For a task, the body **is** the SPEC.
     pub body: String,
 }
 
-/// Ce sur quoi une session travaille : un milestone, et une task dedans.
+/// What a session works on: a milestone, and a task in it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scope {
-    /// Le milestone.
+    /// The milestone.
     pub milestone: Named,
-    /// La task.
+    /// The task.
     pub task: Named,
 }
 
-/// Porté par l'état d'un workflow dont les sessions travaillent sur une issue.
+/// Carried by the state of a workflow whose sessions work on an issue.
 ///
-/// C'est la borne qui rend vraie, à la compilation, la règle « une session ne
-/// démarre jamais sans sa portée » : une action de session qui compose un
-/// prompt exige `S: Scoped`, donc elle ne peut pas être écrite sans qu'une
-/// portée soit disponible. Côté Python, c'était une règle écrite dans un
-/// commentaire que rien ne tenait.
+/// It is the bound that makes true, at compile time, the rule "a session never
+/// starts without its scope": a session action that composes a prompt requires
+/// `S: Scoped`, so it cannot be written without a scope being available. On the
+/// Python side, it was a rule written in a comment that nothing enforced.
 pub trait Scoped {
-    /// Le milestone et la task de ce round.
+    /// The milestone and task of this round.
     fn scope(&self) -> Scope;
 }
 
-/// Remplace chaque `{nom}` connu, **en une seule passe**.
+/// Replace each known `{name}`, **in a single pass**.
 ///
-/// Une valeur insérée n'est jamais réexaminée : un `{body}` qui arrive *dans*
-/// un corps d'issue reste littéral. Un `{nom}` inconnu reste littéral aussi —
-/// ces gabarits sont de la prose écrite pour un modèle, et elle porte des
-/// accolades qui ne nous appartiennent pas.
+/// An inserted value is never re-examined: a `{body}` that arrives *in* an
+/// issue body remains literal. An unknown `{name}` also remains literal — these
+/// templates are prose written for a model, and they carry braces that do not
+/// belong to us.
 #[must_use]
 pub fn splice(template: &str, values: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(template.len());
@@ -130,8 +126,8 @@ pub fn splice(template: &str, values: &[(&str, &str)]) -> String {
         if let Some(end) = after.find('}') {
             let name = &after[..end];
             if let Some((_, value)) = values.iter().find(|(key, _)| *key == name) {
-                // Poussée dans la sortie, donc hors d'atteinte des
-                // remplacements suivants. C'est tout l'intérêt.
+                // Pushed to output, so out of reach of subsequent replacements.
+                // That is the whole point.
                 out.push_str(value);
             } else {
                 out.push('{');
@@ -148,7 +144,7 @@ pub fn splice(template: &str, values: &[(&str, &str)]) -> String {
     out
 }
 
-/// Le bloc EXECUTION CONTEXT, branche d'intégration substituée.
+/// The EXECUTION CONTEXT block, integration branch substituted.
 #[must_use]
 pub fn preamble(branch: &str, injector: &str) -> String {
     PREAMBLE
@@ -156,7 +152,7 @@ pub fn preamble(branch: &str, injector: &str) -> String {
         .replace("@BRANCH@", branch)
 }
 
-/// Le bloc SCOPE d'un stage : le milestone, puis la task.
+/// The SCOPE block of a stage: the milestone, then the task.
 #[must_use]
 pub fn scope_block(scope: &Scope, injector: &str) -> String {
     let milestone_body = non_empty(&scope.milestone.body);
@@ -184,15 +180,15 @@ fn non_empty(text: &str) -> String {
     }
 }
 
-/// L'`extra` d'un stage : ses consignes, puis la portée où il travaille.
+/// A stage's `extra`: its instructions, then the scope it works on.
 ///
-/// La portée vient en dernier parce que c'est la partie longue — les consignes
-/// restent là où un lecteur, et un modèle, les trouvent : en haut.
+/// The scope comes last because it is the long part — the instructions
+/// stay where a reader, and a model, find them: at the top.
 ///
-/// `scope` est un `Option` pour **un seul** cas, et il a une raison : le stage
-/// de rollover (`/planner`) ne travaille sur aucune task, il en ouvre. Lui
-/// injecter un bloc ISSUE vide lui donnerait une task à chercher. Tous les
-/// autres en reçoivent une, y compris ceux qui n'ont pas de consignes propres.
+/// `scope` is an `Option` for **one** case only, and there is a reason: the
+/// rollover stage (`/planner`) works on no task, it opens one. Giving it
+/// an empty ISSUE block would give it something to hunt for. All others
+/// get one, including those with no instructions of their own.
 #[must_use]
 pub fn extra_for(instructions: &str, scope: Option<&Scope>, injector: &str) -> String {
     let Some(found) = scope else {
@@ -214,7 +210,7 @@ pub fn extra_for(instructions: &str, scope: Option<&Scope>, injector: &str) -> S
     }
 }
 
-/// Le prompt complet d'un stage : la commande, le préambule, puis l'extra.
+/// A stage's complete prompt: the command, the preamble, then the extra.
 #[must_use]
 pub fn build(lead: &str, branch: &str, extra: &str, injector: &str) -> String {
     let mut prompt = format!("{lead}\n{}", preamble(branch, injector));
@@ -234,35 +230,35 @@ mod tests {
         Scope {
             milestone: Named {
                 number: "12".to_string(),
-                title: "Le chat".to_string(),
-                body: "ce que le milestone dit".to_string(),
+                title: "The cat".to_string(),
+                body: "what the milestone says".to_string(),
             },
             task: Named {
                 number: "34".to_string(),
-                title: "La grille".to_string(),
-                body: "le SPEC".to_string(),
+                title: "The grid".to_string(),
+                body: "the SPEC".to_string(),
             },
         }
     }
 
-    // --- les deux moitiés du contrat verbal --------------------------------
+    // --- the two halves of the verbal contract ----------------------------
 
     #[test]
     fn the_preamble_names_the_same_markers_the_domain_reads() {
-        // Deux moitiés d'un même contrat : si l'une change de nom sans
-        // l'autre, une session dirait « fini » dans une langue que le harness
-        // ne lit plus.
+        // Two halves of the same contract: if one changes name without
+        // the other, a session would say "done" in a language the harness
+        // no longer reads.
         let said = preamble("main_agent", INJECTOR);
-        assert!(said.contains(markers::OK), "le préambule doit exiger OK");
-        assert!(said.contains(markers::STOP), "et offrir STOP");
+        assert!(said.contains(markers::OK), "the preamble must require OK");
+        assert!(said.contains(markers::STOP), "and offer STOP");
     }
 
     #[test]
     fn the_integration_branch_replaces_every_occurrence() {
         let said = preamble("main_agent", INJECTOR);
         assert!(!said.contains("@BRANCH@"));
-        // Trois mentions dans la règle 3 : la base de PR, le point de départ,
-        // et la commande. En rater une enverrait une PR sur `main`.
+        // Three mentions in rule 3: the PR base, the starting point,
+        // and the command. Missing one would send a PR to `main`.
         assert_eq!(said.matches("main_agent").count(), 3);
     }
 
@@ -273,47 +269,47 @@ mod tests {
         assert!(!said.contains("@INJECTOR@"));
     }
 
-    // --- la substitution en une passe --------------------------------------
+    // --- single-pass substitution ----------------------------------------
 
     #[test]
     fn an_untrusted_value_carrying_a_placeholder_stays_literal() {
-        // Le mode de panne que ça évite : un corps d'issue qui contient
-        // `{body}` se faisait remplacer par la passe suivante.
+        // The failure mode this prevents: an issue body that contains
+        // `{body}` was being replaced by the next pass.
         let out = splice(
             "A={a} B={b}",
-            &[("a", "ceci contient {b} littéralement"), ("b", "REMPLACÉ")],
+            &[("a", "this contains {b} literally"), ("b", "REPLACED")],
         );
-        assert_eq!(out, "A=ceci contient {b} littéralement B=REMPLACÉ");
+        assert_eq!(out, "A=this contains {b} literally B=REPLACED");
     }
 
     #[test]
     fn an_unknown_placeholder_is_left_alone() {
-        // La prose écrite pour un modèle porte ses propres accolades.
+        // Prose written for a model carries its own braces.
         assert_eq!(
-            splice("garde {ceci} et mets {a}", &[("a", "ça")]),
-            "garde {ceci} et mets ça"
+            splice("keep {this} and set {a}", &[("a", "that")]),
+            "keep {this} and set that"
         );
     }
 
     #[test]
     fn an_unclosed_brace_does_not_swallow_the_rest() {
-        assert_eq!(splice("avant { après", &[("a", "x")]), "avant { après");
+        assert_eq!(splice("before { after", &[("a", "x")]), "before { after");
     }
 
     #[test]
     fn a_template_without_any_brace_comes_back_unchanged() {
-        assert_eq!(splice("rien à faire", &[("a", "x")]), "rien à faire");
+        assert_eq!(splice("nothing to do", &[("a", "x")]), "nothing to do");
     }
 
-    // --- le bloc de portée -------------------------------------------------
+    // --- the scope block ------------------------------------------------
 
     #[test]
     fn the_scope_block_carries_both_issues_verbatim() {
         let said = scope_block(&scope(), INJECTOR);
-        assert!(said.contains("MILESTONE #12 — Le chat"));
-        assert!(said.contains("ce que le milestone dit"));
-        assert!(said.contains("ISSUE #34 — La grille"));
-        assert!(said.contains("le SPEC"));
+        assert!(said.contains("MILESTONE #12 — The cat"));
+        assert!(said.contains("what the milestone says"));
+        assert!(said.contains("ISSUE #34 — The grid"));
+        assert!(said.contains("the SPEC"));
     }
 
     #[test]
@@ -326,27 +322,27 @@ mod tests {
 
     #[test]
     fn a_body_that_mentions_another_field_is_not_substituted() {
-        // Le cas réel : quelqu'un écrit `{body}` dans le corps du milestone.
+        // The real case: someone writes `{body}` in the milestone body.
         let mut tricky = scope();
-        tricky.milestone.body = "voir {body} et {num}".to_string();
+        tricky.milestone.body = "see {body} and {num}".to_string();
         let said = scope_block(&tricky, INJECTOR);
-        assert!(said.contains("voir {body} et {num}"));
+        assert!(said.contains("see {body} and {num}"));
     }
 
-    // --- l'extra -----------------------------------------------------------
+    // --- the extra ---------------------------------------------------------
 
     #[test]
     fn instructions_come_before_the_scope_because_scope_is_the_long_part() {
-        let said = extra_for("fais ceci", Some(&scope()), INJECTOR);
-        let instructions = said.find("fais ceci").expect("les consignes");
-        let block = said.find("--- SCOPE").expect("la portée");
+        let said = extra_for("do this", Some(&scope()), INJECTOR);
+        let instructions = said.find("do this").expect("the instructions");
+        let block = said.find("--- SCOPE").expect("the scope");
         assert!(instructions < block);
     }
 
     #[test]
     fn a_stage_without_instructions_still_gets_its_scope() {
-        // /create-test n'a pas de consignes propres, et serait sinon la seule
-        // session payée du round qui ignore quelle task elle teste.
+        // /create-test has no instructions of its own, and would otherwise be the only
+        // paid session of the round that ignores which task it is testing.
         let said = extra_for("", Some(&scope()), INJECTOR);
         assert!(said.contains("ISSUE #34"));
         assert!(!said.starts_with('\n'));
@@ -354,20 +350,20 @@ mod tests {
 
     #[test]
     fn the_rollover_stage_gets_no_issue_block_to_hunt_for() {
-        // /planner n'a aucune task : lui injecter un bloc ISSUE vide lui
-        // donnerait quelque chose à chercher.
-        let said = extra_for("ouvre le prochain item", None, INJECTOR);
-        assert_eq!(said, "ouvre le prochain item");
+        // /planner has no task: giving it an empty ISSUE block
+        // would give it something to hunt for.
+        let said = extra_for("open the next item", None, INJECTOR);
+        assert_eq!(said, "open the next item");
         assert!(!said.contains("ISSUE #"));
     }
 
     #[test]
     fn instruction_placeholders_are_filled_from_the_task() {
-        let said = extra_for("travaille sur #{num} ({title})", Some(&scope()), INJECTOR);
-        assert!(said.contains("travaille sur #34 (La grille)"));
+        let said = extra_for("work on #{num} ({title})", Some(&scope()), INJECTOR);
+        assert!(said.contains("work on #34 (The grid)"));
     }
 
-    // --- la composition ----------------------------------------------------
+    // --- composition -------------------------------------------------------
 
     #[test]
     fn the_prompt_opens_on_the_command_then_the_preamble() {
@@ -378,9 +374,9 @@ mod tests {
 
     #[test]
     fn the_extra_comes_after_the_preamble() {
-        let built = build("/code", "main_agent", "les consignes", INJECTOR);
-        let context = built.find("END EXECUTION CONTEXT").expect("le préambule");
-        let extra = built.find("les consignes").expect("l'extra");
+        let built = build("/code", "main_agent", "the instructions", INJECTOR);
+        let context = built.find("END EXECUTION CONTEXT").expect("the preamble");
+        let extra = built.find("the instructions").expect("the extra");
         assert!(context < extra);
     }
 }

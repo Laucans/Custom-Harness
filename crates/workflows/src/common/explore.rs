@@ -1,20 +1,20 @@
-//! L'exploration : une lecture gratuite, une session qui condense, une carte.
+//! Exploration: a free read, a session that condenses, a map.
 //!
-//! Ce que ça remplace : plusieurs sessions payées qui relisaient chacune
-//! CLAUDE.md, `docs/ARCHITECTURE.md` et `docs/PROJECT.md` avant d'écrire
-//! trois paragraphes.
+//! What it replaces: several paid sessions that each re-read
+//! CLAUDE.md, `docs/ARCHITECTURE.md`, and `docs/PROJECT.md` before writing
+//! three paragraphs.
 //!
-//! **Deux entrées, dont une seule paie :**
+//! **Two entries, only one of which charges:**
 //!
-//! 1. [`Ground`] colle les trois documents verbatim et la liste des fichiers
-//!    suivis dans l'état. Aucune session, aucun jugement, aucune perte ;
-//! 2. la session d'exploration lit ça, plus le code que le sujet touche, et
-//!    rend une carte compacte — la seule des deux qui paie.
+//! 1. [`Ground`] glues the three documents verbatim and the list of tracked
+//!    files into state. No session, no judgment, no loss.
+//! 2. The exploration session reads that, plus the code the subject touches, and
+//!    produces a compact map — the only one of the two that charges.
 //!
-//! **Dans `common/` parce que rien ici ne nomme un workflow** : un workflow
-//! branche ces deux entrées en implémentant [`Explored`] sur son état. Seul
-//! le raffinage s'en sert aujourd'hui ; ça resterait vrai le jour où un
-//! second voudrait la même carte.
+//! **In `common/` because nothing here names a workflow**: a workflow
+//! wires these two entries by implementing [`Explored`] on its state. Only
+//! refinement uses it today; it would still be true the day a
+//! second one wanted the same map.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -31,33 +31,33 @@ use harness_core::execution::{
 };
 use harness_core::traces::Logbook;
 
-/// Le nom de l'entrée gratuite, dans le journal et sur le registre.
+/// Name of the free entry, in logs and registry.
 pub const GROUND: &str = "ground";
-/// Le nom de l'entrée payante.
+/// Name of the paid entry.
 pub const SKILL: &str = "explore";
 
-/// Les documents collés verbatim dans le prompt de l'explorateur.
+/// Documents pasted verbatim into the explorer's prompt.
 ///
-/// Verbatim et non résumés : ils pèsent une vingtaine de kilo-octets en
-/// tout, et payer un modèle pour les condenser coûterait plus que les
-/// quelques milliers de tokens de contexte que ça économise — en perdant la
-/// formulation exacte des contraintes, qui est justement ce qui compte.
+/// Verbatim, not summarized: they weigh about twenty kilobytes total,
+/// and paying a model to condense them would cost more than the
+/// few thousand context tokens it would save — while losing the
+/// exact wording of constraints, which is what matters.
 pub const GROUNDING: [&str; 3] = ["CLAUDE.md", "docs/ARCHITECTURE.md", "docs/PROJECT.md"];
 
-/// Combien de fichiers suivis sont listés avant qu'on coupe.
+/// How many tracked files are listed before truncation.
 pub const TREE_LINES: usize = 1500;
 
-/// Ce que la carte a le droit de peser, en caractères (~4k tokens).
+/// How much the map is allowed to weigh, in characters (~4k tokens).
 pub const BUDGET: usize = 16_000;
 
 const ABSENT: &str = "(absent from this repository)";
 const CUT: &str = "\n[... truncated: the map ran over its budget ...]";
 
-/// Ce qu'une étape reçoit quand un dry-run n'a fait tourner personne.
+/// What a stage receives when a dry-run ran no one.
 ///
-/// Dit plutôt que laissé vide : les prompts qu'un dry-run écrit sur disque
-/// servent à être relus, et un `{repo_context}` blanc s'y lirait comme une
-/// injection cassée plutôt que comme une session non payée.
+/// Stated rather than left empty: the prompts a dry-run writes to disk
+/// are meant to be re-read, and a blank `{repo_context}` would read as a
+/// broken injection rather than an unpaid session.
 const DRY_RUN: &str = "--- REPO MAP (established once for this run) ---\n\
 (dry run — no exploration session was paid, so there is no map)\n\
 --- END REPO MAP ---";
@@ -146,24 +146,24 @@ The issues of this repository are public and what you write here flows into
 them. Never write the value of a secret, a token, a key, a password, or a URL
 that carries one — name the variable and say where it lives.";
 
-/// Ce qu'un état doit porter pour que ces deux entrées tournent.
+/// What state must carry for these two entries to run.
 ///
-/// `subject` dit ce que ce run travaille — c'est ce qui décide quelles
-/// parties du dépôt comptent. `brief` est où l'étape gratuite dépose sa
-/// lecture, et seul l'explorateur le lit : il ne va jamais aux étapes qui
-/// suivent, qui ne reçoivent que la carte.
+/// `subject` says what this run works on — it decides which
+/// parts of the repo matter. `brief` is where the free stage deposits its
+/// reading, and only the explorer reads it: it never goes to the stages that
+/// follow, which only receive the map.
 pub trait Explored {
-    /// Où l'étape gratuite dépose sa lecture.
+    /// Where the free stage deposits its reading.
     fn brief_mut(&mut self) -> &mut String;
-    /// Ce que ce run travaille.
+    /// What this run works on.
     fn subject(&self) -> String;
-    /// Le round courant — pour la colonne `round` du registre.
+    /// The current round — for the `round` column in the registry.
     fn round_no(&self) -> u32;
-    /// La task facturée — pour la colonne `task` du registre.
+    /// The charged task — for the `task` column in the registry.
     fn task(&self) -> String;
 }
 
-/// Les fichiers suivis, coupés au budget.
+/// Tracked files, cut to budget.
 #[must_use]
 pub fn tree(files: &[String]) -> String {
     if files.len() <= TREE_LINES {
@@ -175,11 +175,11 @@ pub fn tree(files: &[String]) -> String {
     )
 }
 
-/// La carte, ramenée dans son budget. Le dit quand elle déborde.
+/// The map, brought within budget. States when it overflows.
 ///
-/// Coupée plutôt que refusée : une carte trop longue reste une carte, et
-/// faire échouer le run sur une session qui a bien travaillé coûterait plus
-/// que les caractères en trop.
+/// Truncated rather than rejected: an oversized map is still a map, and
+/// failing the run over a session that worked well would cost more
+/// than the excess characters.
 #[must_use]
 pub fn fits(text: &str, log: Option<&Logbook>) -> String {
     let trimmed = text.trim();
@@ -196,13 +196,13 @@ pub fn fits(text: &str, log: Option<&Logbook>) -> String {
     format!("{}{CUT}", &trimmed[..BUDGET])
 }
 
-/// L'entrée gratuite : les documents du dépôt et son arbre, posés dans l'état.
+/// The free entry: the repo's documents and its tree, placed in state.
 pub struct Ground {
-    /// De quoi lister les fichiers suivis.
+    /// For listing tracked files.
     pub repo: Rc<dyn Repo>,
-    /// De quoi lire les documents.
+    /// For reading documents.
     pub disk: Rc<dyn Disk>,
-    /// La racine du code.
+    /// The code root.
     pub root: PathBuf,
 }
 
@@ -237,7 +237,7 @@ impl<S: Explored> Action<S> for Ground {
     }
 }
 
-/// Le `skip` des deux entrées : `--explore` rend le dépôt à chaque étape.
+/// The skip for both entries: `--explore` gives the repo to each stage.
 pub struct TurnedOff {
     /// `--explore`.
     pub explore: bool,
@@ -257,7 +257,7 @@ impl<S> Verification<S> for TurnedOff {
     }
 }
 
-/// L'entrée payante : envoie le brief, garde la carte dans `ctx.results`.
+/// The paid entry: sends the brief, keeps the map in `ctx.results`.
 struct AskExplore {
     spending: Rc<dyn Spending>,
 }
@@ -282,16 +282,21 @@ impl<S: Explored> SessionAction<S> for AskExplore {
     }
 }
 
-/// L'`after` de l'exploration : ce qu'elle doit avoir obtenu, et où il va.
+/// The `after` of exploration: what it must have obtained, and where it goes.
 ///
-/// Écrit un fichier — une mise en cache, pas un état partagé que la suite du
-/// run lit : la carte de ce run-ci vit déjà dans `ctx.results`, et cette
-/// écriture ne sert qu'à une reprise. C'est pourquoi elle reste une
-/// `Verification` plutôt qu'une `Action` scindée à part : rien d'observable
-/// par les étapes suivantes n'en dépend.
+/// Writes a file — a cache, not shared state that the rest of the
+/// run reads: this run's map already lives in `ctx.results`, and this
+/// write only serves a resume. That is why it stays a
+/// `Verification` rather than a separate split `Action`: nothing observable
+/// by later stages depends on it.
+///
+/// `artifacts_dir` not a pre-resolved `map_file`: the table is mounted
+/// **before** `precheck` has counted the round, so before the filename
+/// is known. The round is read from `ctx.state` at verify time,
+/// never fixed at construction.
 pub struct Keep {
-    /// Où la carte de ce round est gardée.
-    pub map_file: PathBuf,
+    /// The artifacts folder for this target (an issue, a round…).
+    pub artifacts_dir: PathBuf,
 }
 
 #[async_trait(?Send)]
@@ -301,10 +306,11 @@ impl<S: Explored> Verification<S> for Keep {
             return Ok(Verdict::Continue);
         }
         let Some(got) = ctx.results.get(SKILL) else {
-            // `--explore` a fait sauter l'étape via sa pre-gate : rien à
-            // garder.
+            // `--explore` skipped the stage via its pre-gate: nothing to
+            // keep.
             return Ok(Verdict::Continue);
         };
+        let map_file = map_file_path(&self.artifacts_dir, &tag_of(ctx.state.round_no()));
         let said = fits(&got.text, Some(&ctx.traces));
         if said.is_empty() {
             return Err(Halt::Failed(
@@ -314,10 +320,10 @@ impl<S: Explored> Verification<S> for Keep {
                     .to_string(),
             ));
         }
-        if let Some(parent) = self.map_file.parent() {
+        if let Some(parent) = map_file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Err(broke) = std::fs::write(&self.map_file, &said) {
+        if let Err(broke) = std::fs::write(&map_file, &said) {
             ctx.traces.warn(&format!(
                 "the repo map could not be kept on disk ({broke}) — this \
                  round is fine, a resumed one would lose it"
@@ -332,20 +338,26 @@ impl<S: Explored> Verification<S> for Keep {
     }
 }
 
-/// Où la carte d'un round est gardée, à côté des autres artefacts.
+/// Where a round's map is kept, alongside other artifacts.
 #[must_use]
 pub fn map_file_path(artifacts_dir: &Path, tag: &str) -> PathBuf {
     artifacts_dir.join(format!("{tag}-{SKILL}.map.md"))
 }
 
-/// Ce qu'une étape reçoit comme bloc `{repo_context}` : la carte, ou son
+/// The artifact tag for a round: `r03` for round 3.
+#[must_use]
+pub fn tag_of(round_no: u32) -> String {
+    format!("r{round_no:02}")
+}
+
+/// What a stage receives as the `{repo_context}` block: the map, or its
 /// absence.
 ///
-/// Une seule porte pour toutes les façons de n'avoir pas de carte —
-/// `--explore`, un dry-run, un workflow qui ne branche pas ces deux entrées.
-/// L'ordre compte : `--explore` passe avant tout le reste, sinon un run lancé
-/// pour rendre le dépôt aux étapes leur servirait la carte qu'un run
-/// précédent a laissée là.
+/// One gate for all ways of having no map —
+/// `--explore`, a dry-run, a workflow that does not wire these two entries.
+/// Order matters: `--explore` takes precedence over everything else, else a run launched
+/// to give the repo to stages would serve them a map from a
+/// previous run left behind.
 #[must_use]
 pub fn repo_context<S>(ctx: &Context<S>, explore: bool, map_file: &Path) -> String {
     if explore {
@@ -357,9 +369,9 @@ pub fn repo_context<S>(ctx: &Context<S>, explore: bool, map_file: &Path) -> Stri
     if let Some(got) = ctx.results.get(SKILL) {
         return block(&fits(&got.text, None));
     }
-    // L'étape a été sautée sans être un dry-run — latent aujourd'hui, parce
-    // que rien ici ne tourne `--stages` ; une reprise le retrouverait sur
-    // disque plutôt que de perdre la carte.
+    // Stage was skipped without being a dry-run — latent today, because
+    // nothing here runs `--stages`; a resume would find it on
+    // disk rather than lose the map.
     match std::fs::read_to_string(map_file) {
         Ok(said) if !said.trim().is_empty() => block(said.trim()),
         _ => UNMAPPED.to_string(),
@@ -370,7 +382,7 @@ fn block(digest: &str) -> String {
     splice(MAPPED, &[("digest", digest)])
 }
 
-/// `16000` → `"16,000"` — Rust n'a pas de groupeur de milliers natif.
+/// `16000` → `"16,000"` — Rust has no native thousands grouper.
 fn grouped(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
@@ -383,69 +395,223 @@ fn grouped(n: usize) -> String {
     out.chars().rev().collect()
 }
 
-/// Ce qu'il faut pour monter les deux entrées.
-pub struct Wiring {
-    /// De quoi lister les fichiers suivis.
+/// The ports of the two entries: read repo, open session, record.
+///
+/// Split from [`Config`] for the same reason as in workflows
+/// (`ARCHITECTURE.md`): here what is injected, there what this run is worth.
+pub struct Ports {
+    /// For listing tracked files.
     pub repo: Rc<dyn Repo>,
-    /// De quoi lire les documents du dépôt.
+    /// For reading the repo's documents.
     pub disk: Rc<dyn Disk>,
-    /// La racine du code.
-    pub root: PathBuf,
-    /// Ce qui ouvre la session d'exploration.
+    /// What opens the exploration session.
     pub sessions: Rc<dyn SessionFactory>,
-    /// Où sa dépense est consignée.
+    /// Where its spending is recorded.
     pub spending: Rc<dyn Spending>,
-    /// `--explore`.
-    pub explore: bool,
-    /// Modèle et effort de la session d'exploration.
-    pub spec: SessionSpec,
-    /// Où la carte de ce round tombe.
-    pub map_file: PathBuf,
 }
 
-/// Les deux entrées, dans l'ordre, prêtes à être mises en tête d'une table.
+/// Settings for the two entries.
+pub struct Config {
+    /// The code root.
+    pub root: PathBuf,
+    /// `--explore`: no map, each stage re-reads the repo.
+    pub explore: bool,
+    /// Model and effort for the exploration session.
+    pub spec: SessionSpec,
+    /// The artifacts folder for this target — each round's map
+    /// falls there under its own name, resolved at verify time.
+    pub artifacts_dir: PathBuf,
+}
+
+/// The two entries, in order, ready to be put at the head of a table.
 #[must_use]
-pub fn entries<S: Explored + 'static>(wiring: &Wiring) -> [Stage<S>; 2] {
+pub fn entries<S: Explored + 'static>(ports: &Ports, config: &Config) -> [Stage<S>; 2] {
     let ground = Stage {
         name: GROUND.to_string(),
         pre: Some(harness_core::execution::Gate {
-            name: "ground requiert",
+            name: "ground requires",
             checks: vec![Box::new(TurnedOff {
-                explore: wiring.explore,
+                explore: config.explore,
             })],
         }),
         post: None,
         body: StageBody::Local {
             actions: vec![Box::new(Ground {
-                repo: Rc::clone(&wiring.repo),
-                disk: Rc::clone(&wiring.disk),
-                root: wiring.root.clone(),
+                repo: Rc::clone(&ports.repo),
+                disk: Rc::clone(&ports.disk),
+                root: config.root.clone(),
             })],
         },
     };
     let explore = Stage {
         name: SKILL.to_string(),
         pre: Some(harness_core::execution::Gate {
-            name: "explore requiert",
+            name: "explore requires",
             checks: vec![Box::new(TurnedOff {
-                explore: wiring.explore,
+                explore: config.explore,
             })],
         }),
         post: Some(harness_core::execution::Gate {
-            name: "explore doit obtenir",
+            name: "explore must obtain",
             checks: vec![Box::new(Keep {
-                map_file: wiring.map_file.clone(),
+                artifacts_dir: config.artifacts_dir.clone(),
             })],
         }),
         body: StageBody::Session {
-            spec: wiring.spec.clone(),
-            sessions: Rc::clone(&wiring.sessions),
+            spec: config.spec.clone(),
+            sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskExplore {
-                spending: Rc::clone(&wiring.spending),
+                spending: Rc::clone(&ports.spending),
             })],
         },
     };
     [ground, explore]
+}
+
+#[cfg(test)]
+pub(crate) mod fake {
+    //! Ports that read a repo from a file, for tests of
+    //! workflows that wire the map.
+    //!
+    //! The two reads **respond** rather than refuse: the free
+    //! entry [`Ground`](super::Ground) runs even in dry-run — reading the
+    //! repo costs nothing, and only a session pays. Everything else in
+    //! `Repo` and `Disk` is unreachable from these two entries, and states so.
+
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+
+    use async_trait::async_trait;
+    use harness_core::adapters::agent::SessionSpec;
+    use harness_core::adapters::agent::rehearsal::Rehearsal;
+    use harness_core::adapters::shell::disk::Disk;
+    use harness_core::adapters::shell::git::Repo;
+    use harness_core::adapters::shell::process::Ran;
+    use harness_core::adapters::store::spending::{Entry, Spending};
+    use harness_core::domain::{Halt, Outcome};
+    use harness_core::traces::Logbook;
+
+    use super::{Config, Ports};
+
+    /// A repo with one tracked file.
+    pub struct OneFileRepo;
+
+    #[async_trait(?Send)]
+    impl Repo for OneFileRepo {
+        async fn tracked_files(&self) -> Outcome<Vec<String>> {
+            Ok(vec!["README.md".to_string()])
+        }
+        async fn current_branch(&self) -> Outcome<String> {
+            unreachable!()
+        }
+        async fn head_sha(&self) -> Outcome<String> {
+            unreachable!()
+        }
+        async fn dirty_files(&self) -> Outcome<Vec<String>> {
+            unreachable!()
+        }
+        async fn has_branch(&self, _name: &str) -> Outcome<bool> {
+            unreachable!()
+        }
+        async fn origin_has_branch(&self, _name: &str) -> Outcome<bool> {
+            unreachable!()
+        }
+        async fn remote_url(&self, _remote: &str) -> Outcome<String> {
+            unreachable!()
+        }
+        async fn default_branch(&self) -> Outcome<String> {
+            unreachable!()
+        }
+        async fn local_branches(&self) -> Outcome<Vec<String>> {
+            unreachable!()
+        }
+        async fn stashes(&self) -> Outcome<Vec<String>> {
+            unreachable!()
+        }
+        async fn unpushed(&self) -> Outcome<Vec<String>> {
+            unreachable!()
+        }
+        async fn branches_at_risk(&self, _upstream: &str) -> Outcome<Vec<String>> {
+            unreachable!()
+        }
+        async fn clone_repo(&self, _url: &str, _name: &str) -> Outcome<Ran> {
+            unreachable!()
+        }
+        async fn fetch(&self) -> Outcome<Ran> {
+            unreachable!()
+        }
+        async fn checkout(&self, _branch: &str, _force: bool) -> Outcome<Ran> {
+            unreachable!()
+        }
+        async fn reset_hard(&self, _reference: &str) -> Outcome<Ran> {
+            unreachable!()
+        }
+        async fn clean(&self) -> Outcome<Ran> {
+            unreachable!()
+        }
+        async fn delete_branch(&self, _name: &str) -> Outcome<Ran> {
+            unreachable!()
+        }
+    }
+
+    /// A disk where none of the three documents exist — a normal response,
+    /// not a failure.
+    pub struct NoDocs;
+
+    impl Disk for NoDocs {
+        fn read_to_string(&self, _path: &Path) -> Option<String> {
+            None
+        }
+        fn exists(&self, _path: &Path) -> bool {
+            unreachable!()
+        }
+        fn create_dir_all(&self, _path: &Path) -> Outcome<()> {
+            unreachable!()
+        }
+        fn remove_dir_all(&self, _path: &Path) -> Outcome<()> {
+            unreachable!()
+        }
+        fn dir_names(&self, _path: &Path) -> Vec<String> {
+            unreachable!()
+        }
+        fn write_to_string(&self, _path: &Path, _content: &str) -> Outcome<()> {
+            unreachable!()
+        }
+    }
+
+    /// A registry that refuses to write.
+    pub struct Nowhere;
+
+    impl Spending for Nowhere {
+        fn record(&self, _entry: &Entry<'_>) -> Outcome<()> {
+            Err(Halt::Failed(
+                "no spending should be recorded in this test".to_string(),
+            ))
+        }
+    }
+
+    /// Test ports for the repo map.
+    pub fn ports() -> Ports {
+        Ports {
+            repo: Rc::new(OneFileRepo),
+            disk: Rc::new(NoDocs),
+            sessions: Rc::new(Rehearsal::new(Logbook::null())),
+            spending: Rc::new(Nowhere),
+        }
+    }
+
+    /// Test config for the repo map, artifacts in this folder.
+    pub fn config(artifacts_dir: PathBuf) -> Config {
+        Config {
+            root: PathBuf::new(),
+            explore: false,
+            spec: SessionSpec {
+                model: "sonnet".to_string(),
+                effort: "high".to_string(),
+            },
+            artifacts_dir,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -491,9 +657,9 @@ mod tests {
             (),
             Logbook::null(),
         );
-        // --explore l'emporte même sur un dry-run.
+        // --explore wins even over a dry-run.
         assert_eq!(
-            repo_context(&ctx, true, Path::new("/tmp/jamais-lu")),
+            repo_context(&ctx, true, Path::new("/tmp/never-read")),
             UNMAPPED
         );
     }
@@ -538,7 +704,7 @@ mod tests {
                 spend: Spend::default(),
             },
         );
-        let said = repo_context(&ctx, false, Path::new("/tmp/jamais-lu"));
+        let said = repo_context(&ctx, false, Path::new("/tmp/never-read"));
         assert!(said.contains("### Constraints"));
         assert!(said.starts_with("--- REPO MAP (established once for this run) ---"));
         assert!(said.contains("--- END REPO MAP ---"));

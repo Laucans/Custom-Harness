@@ -1,20 +1,18 @@
-//! Le binaire `git`, emballé.
+//! The `git` binary, wrapped.
 //!
-//! Chaque appel **nomme le dépôt** (`-C <root>`) plutôt que de dépendre du
-//! répertoire courant : le harness tourne depuis n'importe où, et un `git
-//! status` qui répondrait sur un autre dépôt laisserait passer un arbre sale.
+//! Each call **names the repository** (`-C <root>`) rather than relying on
+//! the current directory: the harness runs from anywhere, and a `git status`
+//! that answers on the wrong repo would miss a dirty tree.
 //!
-//! Rien ici ne décide. Savoir qu'une branche existe est une réponse ; savoir
-//! si c'est la bonne branche est une porte, et les portes vivent chez le
-//! workflow.
+//! Nothing here decides. Knowing that a branch exists is a response; knowing
+//! if it's the right branch is a gate, and gates live in the workflow.
 //!
-//! # Lire et écrire ne rendent pas la même chose
+//! # Reads and writes return different things
 //!
-//! Les lectures rendent une **réponse** déjà interprétée — une branche, des
-//! lignes, un booléen. Les verbes du montage rendent le [`Ran`] brut, parce
-//! qu'un `reset --hard` qui échoue doit pouvoir dire *pourquoi* : la dernière
-//! ligne de son stderr est tout ce qu'un humain aura à lire. Les traduire en
-//! `Outcome<()>` perdrait exactement ça.
+//! Reads return an already-interpreted **response** — a branch, lines, a bool.
+//! Setup verbs return the raw [`Ran`], because a failing `reset --hard` must
+//! be able to say *why*: the last line of its stderr is all a human will read.
+//! Translating them to `Outcome<()>` would lose exactly that.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -24,152 +22,151 @@ use async_trait::async_trait;
 use crate::adapters::shell::process::{self, Ran};
 use crate::domain::Outcome;
 
-/// Le binaire appelé.
+/// The binary to call.
 const BINARY: &str = "git";
 
-/// Ce que le harness demande à git, et rien de plus.
+/// What the harness asks git, and nothing more.
 #[async_trait(?Send)]
 pub trait Repo {
-    /// La branche courante, ou le vide si `HEAD` est détaché.
+    /// The current branch, or empty if `HEAD` is detached.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn current_branch(&self) -> Outcome<String>;
 
-    /// Le sha court de `HEAD`.
+    /// The short sha of `HEAD`.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn head_sha(&self) -> Outcome<String>;
 
-    /// Les fichiers que `status --porcelain` signale, un par ligne.
+    /// Files that `status --porcelain` reports, one per line.
     ///
-    /// Vide veut dire arbre propre.
+    /// Empty means a clean tree.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn dirty_files(&self) -> Outcome<Vec<String>>;
 
-    /// Cette branche existe-t-elle localement ?
+    /// Does this branch exist locally?
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn has_branch(&self, name: &str) -> Outcome<bool>;
 
-    /// `origin` porte-t-il cette branche ?
+    /// Does `origin` have this branch?
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn origin_has_branch(&self, name: &str) -> Outcome<bool>;
 
-    /// L'URL d'un remote, ou le vide s'il n'y en a pas.
+    /// The URL of a remote, or empty if none.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn remote_url(&self, remote: &str) -> Outcome<String>;
 
-    /// Les fichiers que git suit, un par ligne.
+    /// Files that git tracks, one per line.
     ///
-    /// `ls-files` et non un parcours du disque : ce que `.gitignore` écarte
-    /// l'est par construction — dépendances, artefacts de build, journaux —
-    /// et la liste est exactement ce qu'un lecteur du dépôt verrait.
+    /// `ls-files` and not a disk walk: what `.gitignore` excludes is excluded
+    /// by construction — dependencies, build artifacts, logs —
+    /// and the list is exactly what a repository reader would see.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn tracked_files(&self) -> Outcome<Vec<String>>;
 
-    /// La branche que pointe `origin/HEAD`, ou le vide.
+    /// The branch that `origin/HEAD` points to, or empty.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn default_branch(&self) -> Outcome<String>;
 
-    /// Les branches locales, par nom.
+    /// Local branches, by name.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn local_branches(&self) -> Outcome<Vec<String>>;
 
-    /// Les entrées de `stash list`.
+    /// Entries from `stash list`.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn stashes(&self) -> Outcome<Vec<String>>;
 
-    /// Les commits locaux qu'aucun remote ne porte, un par ligne.
+    /// Local commits that no remote has, one per line.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn unpushed(&self) -> Outcome<Vec<String>>;
 
-    /// Les branches locales portant un patch qu'`upstream` n'a pas.
+    /// Local branches carrying a patch that `upstream` doesn't have.
     ///
-    /// **Par patch et non par sha**, et ce n'est pas un détail : le dépôt cible
-    /// fusionne en rebase, donc les commits d'une PR fusionnée n'existent plus
-    /// nulle part sous leur sha d'origine. Les compter comme du travail à
-    /// sauver bloquait un workspace permanent à chaque run.
+    /// **By patch, not by sha**, and that's not a detail: the target repository
+    /// merges with rebase, so commits from a merged PR no longer exist anywhere
+    /// with their original sha. Counting them as work to save was blocking a permanent
+    /// workspace on every run.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn branches_at_risk(&self, upstream: &str) -> Outcome<Vec<String>>;
 
-    // --- les verbes du montage : ils rendent ce que `git` a dit ------------
+    // --- setup verbs: they return what `git` said ---
 
-    /// Clone `url` dans `name`, sous le dépôt que ce client nomme.
+    /// Clone `url` into `name`, under the repository this client names.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn clone_repo(&self, url: &str, name: &str) -> Outcome<Ran>;
 
-    /// `fetch --prune` : ajoute des références distantes, élague les mortes.
+    /// `fetch --prune`: add remote references, prune dead ones.
     ///
-    /// **Ne détruit rien de local**, et c'est ce qui permet de l'appeler avant
-    /// la garde plutôt qu'après.
+    /// **Doesn't destroy anything local**, and that's what lets it be called
+    /// before guard rather than after.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn fetch(&self) -> Outcome<Ran>;
 
-    /// Bascule sur cette branche. `force` écrase les fichiers modifiés.
+    /// Switch to this branch. `force` overwrites modified files.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn checkout(&self, branch: &str, force: bool) -> Outcome<Ran>;
 
     /// `reset --hard <reference>`.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn reset_hard(&self, reference: &str) -> Outcome<Ran>;
 
-    /// `clean -fd` : supprime ce que git ne suit pas, fichiers ignorés exclus.
+    /// `clean -fd`: remove what git doesn't track, ignored files excluded.
     ///
-    /// Les ignorés **restent**, et c'est ce qui laisse un workspace permanent
-    /// garder ses dépendances installées.
+    /// Ignored files **stay**, and that's what lets a permanent workspace
+    /// keep its installed dependencies.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn clean(&self) -> Outcome<Ran>;
 
-    /// Supprime cette branche locale, même non fusionnée.
+    /// Delete this local branch, even if not merged.
     ///
     /// # Errors
-    /// Si `git` n'a pas pu être lancé.
+    /// If `git` couldn't be launched.
     async fn delete_branch(&self, name: &str) -> Outcome<Ran>;
 }
 
-/// Ouvre un [`Repo`] sur un dépôt donné.
+/// Open a [`Repo`] on a given repository.
 ///
-/// Le montage d'un workspace parle à **trois** dépôts : celui d'où le run est
-/// lancé, le dossier parent où le clone tombe, et le clone lui-même. Un
-/// `Repo` est lié à une racine, donc il faut de quoi en ouvrir un ailleurs —
-/// et une seule couture de test pour les trois.
+/// Workspace setup talks to **three** repositories: the one the run launches from,
+/// the parent folder where the clone lands, and the clone itself. A `Repo` is
+/// tied to a root, so we need a way to open one elsewhere — and one test seam for all three.
 pub trait Repos {
-    /// Un `git` sur ce dépôt.
+    /// A `git` on this repository.
     fn at(&self, root: &Path) -> Rc<dyn Repo>;
 }
 
-/// La fabrique qui rend de vrais `git`.
+/// The factory that makes real `git` instances.
 pub struct GitRepos;
 
 impl Repos for GitRepos {
@@ -178,13 +175,13 @@ impl Repos for GitRepos {
     }
 }
 
-/// `git`, appelé sur un dépôt donné.
+/// `git`, called on a given repository.
 pub struct GitCli {
     root: PathBuf,
 }
 
 impl GitCli {
-    /// `git`, sur ce dépôt.
+    /// `git`, on this repository.
     #[must_use]
     pub fn new(root: &Path) -> Self {
         Self {
@@ -192,11 +189,11 @@ impl GitCli {
         }
     }
 
-    /// Les arguments d'un appel, dépôt nommé en tête.
+    /// Arguments for a call, with repository named first.
     ///
-    /// Pur, et c'est là que vit l'invariant : **aucun appel ne part sans
-    /// `-C <root>`**. Un test le vérifie, parce que l'oubli ne se voit pas —
-    /// il répond correctement, sur le mauvais dépôt.
+    /// Pure, and that's where the invariant lives: **every call leaves with `-C <root>`**.
+    /// A test verifies it, because forgetting it isn't visible — it answers correctly
+    /// on the wrong repository.
     fn argv(&self, args: &[&str]) -> Vec<String> {
         let mut out = vec!["-C".to_string(), self.root.display().to_string()];
         out.extend(args.iter().map(ToString::to_string));
@@ -211,8 +208,8 @@ impl GitCli {
 #[async_trait(?Send)]
 impl Repo for GitCli {
     async fn current_branch(&self) -> Outcome<String> {
-        // Le vide est une réponse : un `HEAD` détaché n'a pas de branche, et
-        // `symbolic-ref` sort alors en non nul.
+        // Empty is a response: a detached `HEAD` has no branch,
+        // and `symbolic-ref` exits non-zero in that case.
         Ok(self
             .git(&["symbolic-ref", "--short", "HEAD"])
             .await?
@@ -259,8 +256,8 @@ impl Repo for GitCli {
     }
 
     async fn default_branch(&self) -> Outcome<String> {
-        // `origin/main` -> `main`. Le vide quand `origin/HEAD` n'est pas posé,
-        // ce qui arrive sur un clone partiel : une réponse, pas une panne.
+        // `origin/main` -> `main`. Empty when `origin/HEAD` isn't set,
+        // which happens on a shallow clone: a response, not a failure.
         let found = self
             .git(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
             .await?;
@@ -292,8 +289,8 @@ impl Repo for GitCli {
     async fn branches_at_risk(&self, upstream: &str) -> Outcome<Vec<String>> {
         let mut at_risk = Vec::new();
         for branch in self.local_branches().await? {
-            // `cherry` compare par patch-id : une ligne `+` est un commit
-            // qu'`upstream` n'a pas, même réécrit par un rebase.
+            // `cherry` compares by patch-id: a `+` line is a commit
+            // that `upstream` doesn't have, even if rewritten by a rebase.
             let said = self.git(&["cherry", upstream, &branch]).await?;
             if said.lines().iter().any(|line| line.starts_with('+')) {
                 at_risk.push(branch);
@@ -311,11 +308,10 @@ impl Repo for GitCli {
     }
 
     async fn checkout(&self, branch: &str, force: bool) -> Outcome<Ran> {
-        // `--force` seulement quand on remet à zéro : `git` refuse de basculer
-        // tant que des fichiers modifiés seraient écrasés, donc un
-        // `--force-reset` échouait sur exactement le workspace sale qu'il
-        // existe pour écraser — en se plaignant d'une branche absente, qui
-        // était là.
+        // `--force` only when resetting: `git` refuses to switch
+        // if modified files would be overwritten, so a `--force-reset` would fail
+        // on exactly the dirty workspace it exists to obliterate — complaining
+        // about a missing branch that was there.
         if force {
             self.git(&["checkout", "--force", branch]).await
         } else {
@@ -346,8 +342,8 @@ mod tests {
 
     #[test]
     fn every_call_names_the_repository_first() {
-        // L'oubli qu'on rend impossible : `git status` répondrait
-        // correctement, sur le dépôt du répertoire courant.
+        // The mistake we make impossible: `git status` would answer correctly
+        // on the current directory's repository.
         let args = git().argv(&["status", "--porcelain"]);
         assert_eq!(args[0], "-C");
         assert_eq!(args[1], "/tmp/le-clone");
@@ -377,24 +373,24 @@ mod tests {
 
     #[test]
     fn tracked_files_uses_ls_files_not_a_disk_walk() {
-        // `.gitignore` écarte les dépendances et les artefacts de build par
-        // construction ; un parcours du disque les rendrait, `ls-files` non.
+        // `.gitignore` excludes dependencies and build artifacts by construction;
+        // a disk walk would include them, `ls-files` doesn't.
         assert_eq!(git().argv(&["ls-files"])[2], "ls-files");
     }
 
     #[test]
     fn clean_leaves_ignored_files_alone() {
-        // Sans ça, un workspace permanent perdrait `node_modules` à chaque run
-        // et chaque commande de vérification d'un stage échouerait. `-x`
-        // supprimerait les ignorés ; il ne doit jamais apparaître ici.
+        // Without this, a permanent workspace would lose `node_modules` on every run
+        // and every stage verification command would fail. `-x` would delete ignored files;
+        // it must never appear here.
         let args = git().argv(&["clean", "-fd"]);
         assert!(!args.iter().any(|a| a.contains('x')));
     }
 
     #[test]
     fn a_reset_checkout_forces_and_a_plain_one_does_not() {
-        // Deux formes d'argv, et le test les fige : `--force` sur un checkout
-        // qui ne remet pas à zéro écraserait un workspace qu'on voulait garder.
+        // Two forms of argv, and the test locks them in: `--force` on a checkout
+        // that isn't resetting would overwrite a workspace we wanted to keep.
         assert!(
             !git()
                 .argv(&["checkout", "main_agent"])

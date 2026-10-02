@@ -1,45 +1,45 @@
-//! Les arrêts, comme valeurs : `Halt` remplace l'exception.
+//! Stops, as values: `Halt` replaces the exception.
 
 use thiserror::Error;
 
-/// Le niveau auquel un arrêt mérite d'être journalisé.
+/// The level at which a stop deserves to be logged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
-    /// Un résultat correct, pas un problème.
+    /// A correct result, not a problem.
     Info,
-    /// La fenêtre d'abonnement est épuisée — ni réparé ni abandonné.
+    /// The subscription window is exhausted — neither repaired nor abandoned.
     Warn,
-    /// Un stage n'a rien rendu d'utilisable.
+    /// A stage rendered nothing usable.
     Error,
 }
 
-/// Les quatre façons dont un run s'arrête sans lever.
+/// The four ways a run stops without raising.
 ///
-/// Codes de sortie, préfixes et niveaux sont ceux que lisait déjà
-/// l'ordonnanceur externe du pipeline Python — inchangés par la migration :
-/// un ordonnanceur extérieur les lit, et les déplacer serait un changement
-/// de contrat déguisé en refactoring.
+/// Exit codes, prefixes and levels are those already read by the Python
+/// pipeline's external scheduler — unchanged by the migration: an external
+/// scheduler reads them, and moving them would be a hidden contract change
+/// disguised as refactoring.
 #[derive(Debug, Clone, Error)]
 pub enum Halt {
-    /// L'arrêt volontaire : la boucle refuse de deviner.
+    /// Voluntary stop: the loop refuses to guess.
     #[error("{0}")]
     Halted(String),
-    /// Un magasin (GitHub, le point de reprise) n'a pas répondu.
+    /// A store (GitHub, the resume point) didn't answer.
     ///
-    /// Séparé de [`Halt::Halted`] : lire "illisible" comme "rien à faire"
-    /// ferait payer un `/planner` pour un jeton expiré.
+    /// Separate from [`Halt::Halted`]: reading "unreadable" as "nothing to do"
+    /// would charge a `/planner` for an expired token.
     #[error("{0}")]
     Unreadable(String),
-    /// Un stage n'a rien rendu d'utilisable. Pas un résultat correct.
+    /// A stage rendered nothing usable. Not a correct result.
     #[error("{0}")]
     Failed(String),
-    /// La fenêtre d'abonnement est épuisée — revenir plus tard, inchangé.
+    /// The subscription window is exhausted — come back later, unchanged.
     #[error("{0}")]
     Quota(String),
 }
 
 impl Halt {
-    /// Le code que lit un ordonnanceur extérieur.
+    /// The code that an external scheduler reads.
     #[must_use]
     pub const fn exit_code(&self) -> i32 {
         match self {
@@ -49,7 +49,7 @@ impl Halt {
         }
     }
 
-    /// Comment la ligne s'annonce dans le journal (`STOP`, `FAILED`, `QUOTA`).
+    /// How the line announces itself in the log (`STOP`, `FAILED`, `QUOTA`).
     #[must_use]
     pub const fn prefix(&self) -> &'static str {
         match self {
@@ -59,7 +59,7 @@ impl Halt {
         }
     }
 
-    /// Le niveau auquel journaliser cet arrêt.
+    /// The level at which to log this stop.
     #[must_use]
     pub const fn severity(&self) -> Severity {
         match self {
@@ -69,7 +69,7 @@ impl Halt {
         }
     }
 
-    /// La raison portée, quelle que soit la variante.
+    /// The reason carried, whatever the variant.
     #[must_use]
     pub fn reason(&self) -> &str {
         match self {
@@ -77,11 +77,11 @@ impl Halt {
         }
     }
 
-    /// Le même arrêt, avec la raison englobante ajoutée devant.
+    /// The same stop, with the encompassing reason added in front.
     ///
-    /// La raison d'origine est gardée derrière : ce qui a cassé en bas et ce
-    /// que ça empêchait en haut sont deux moitiés de la même phrase, et une
-    /// autopsie a besoin des deux.
+    /// The original reason is kept behind: what broke below and what that
+    /// prevented above are two halves of the same sentence, and an autopsy
+    /// needs both.
     #[must_use]
     pub fn but(self, context: &str) -> Self {
         let said = format!("{context} ({})", self.reason());

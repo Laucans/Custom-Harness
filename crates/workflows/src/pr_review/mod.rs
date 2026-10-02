@@ -1,17 +1,23 @@
-//! La revue consultative d'une PR : second avis en contexte neuf, puis des
-//! notes pour l'humain qui doit décider s'il fait confiance au lot.
+//! The advisory review of a PR: a second opinion in fresh context, then
+//! notes for the human who must decide if they trust the batch.
 //!
-//! Déclenchée par un hook sur `gh pr create`, pas par un round de la boucle —
-//! voir `docs/CUTOVER.md` pour ce qui reste humain dans ce déclenchement.
+//! Triggered by a hook on `gh pr create`, not by a loop round — see
+//! `docs/CUTOVER.md` for what remains human in this trigger.
 //!
-//! **La surface de design, et la seule** : `stages::table`. Le reste porte ce
-//! qui l'entoure — le précontrôle dans `run`, les quatre règles de saut dans
-//! `skip_rules`, le texte publié dans `notes`.
+//! Same skeleton as other workflows (`ARCHITECTURE.md`):
+//!
+//! - [`data`] — what the review reads, pure business logic;
+//! - [`action`] — what it writes;
+//! - [`checks`] — what judges without ever writing;
+//! - [`orchestration`] — what sequences: table, round, and entire review.
+//!
+//! [`ports`], [`config`] and [`run`] stay at the root: none of the three is
+//! a step. **The design surface, and the only one**: `orchestration::stages::table`.
 
-pub mod gates;
-pub mod notes;
-pub mod publish;
+pub mod action;
+pub mod checks;
+pub mod config;
+pub mod data;
+pub mod orchestration;
+pub mod ports;
 pub mod run;
-pub mod skip_rules;
-pub mod stages;
-pub mod state;

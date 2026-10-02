@@ -1,24 +1,23 @@
-//! Les portes qu'aucun workflow ne possède : les outils, et la branche.
+//! The gates that no workflow has: the tools and the branch.
 //!
-//! Elles sont ici et non chez un workflow parce qu'aucune n'est propre à l'un
-//! d'eux : `claude` sur le `PATH` et à la bonne version, `gh` authentifié, une
-//! branche d'intégration qui existe et qui déclenche la CI, un arbre propre. Un
-//! workflow composera la liste qui le concerne ; ce qui lui est propre reste
-//! chez lui.
+//! They are here and not with a workflow because none is specific to one: `claude`
+//! on the `PATH` and at the right version, `gh` authenticated, an integration branch
+//! that exists and triggers CI, a clean tree. A workflow will compose the list that
+//! concerns it; what is specific to it stays with it.
 //!
-//! Génériques sur l'état du workflow (`S`) : aucune ne le lit.
+//! Generic over the workflow state (`S`): none reads it.
 //!
-//! # La porte de version, et pourquoi elle est dure
+//! # The version gate, and why it is strict
 //!
-//! `claude --version` doit rendre **au moins [`MINIMUM`]**. La raison est dans
-//! `docs/SESSION-CARRIER.md` : depuis la v2.1.277, `total_cost_usd` sur un
-//! appel `--resume` est cumulatif pour toute la conversation, et ne couvrait que
-//! l'appel avant. Le registre lit le dernier tour d'une stage ; sous une version
-//! plus ancienne cette valeur serait le coût du dernier tour seul, et le
-//! registre sous-compterait sans que rien ne le montre.
+//! `claude --version` must return **at least [`MINIMUM`]**. The reason is in
+//! `docs/SESSION-CARRIER.md`: since v2.1.277, `total_cost_usd` on a `--resume`
+//! call is cumulative for the entire conversation, and only covered the call
+//! before. The ledger reads the last turn of a stage; under an older version
+//! this value would be the cost of the last turn alone, and the ledger would
+//! undercount without showing it.
 //!
-//! Une porte coûte un appel local. Un `costs.tsv` faux ne se voit pas — c'est
-//! tout l'arbitrage, et c'est pourquoi elle refuse plutôt que d'avertir.
+//! A gate costs a local call. A false `costs.tsv` is not visible — that is
+//! the entire trade-off, and that is why it refuses rather than warns.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -31,10 +30,10 @@ use harness_core::adapters::shell::process;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 
-/// La version de `claude` en dessous de laquelle le registre mentirait.
+/// The version of `claude` below which the ledger would lie.
 pub const MINIMUM: Version = Version(2, 1, 277);
 
-/// Une version, en trois nombres.
+/// A version, in three numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version(pub u32, pub u32, pub u32);
 
@@ -44,29 +43,29 @@ impl std::fmt::Display for Version {
     }
 }
 
-/// La version que ce texte annonce, ou `None`.
+/// The version that this text announces, or `None`.
 ///
-/// `claude --version` rend `2.1.285 (Claude Code)` : on lit le premier mot, et
-/// on ignore le reste — ce qui suit a déjà changé de forme une fois.
+/// `claude --version` returns `2.1.285 (Claude Code)`: we read the first word
+/// and ignore the rest — what follows has already changed form once.
 ///
-/// `None` plutôt qu'un zéro optimiste : une version qu'on ne sait pas lire n'est
-/// pas une version ancienne, et les deux ne méritent pas le même message.
+/// `None` rather than an optimistic zero: a version we cannot read is not an
+/// old version, and the two do not merit the same message.
 #[must_use]
 pub fn parse_version(text: &str) -> Option<Version> {
     let first = text.split_whitespace().next()?;
     let mut parts = first.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
-    // Un suffixe de pré-publication (`277-beta.1`) ne doit pas rendre la
-    // version illisible : on lit les chiffres de tête.
+    // A prerelease suffix (`277-beta.1`) must not make the version unreadable:
+    // we read the leading digits.
     let patch = parts.next().unwrap_or("0");
     let digits: String = patch.chars().take_while(char::is_ascii_digit).collect();
     Some(Version(major, minor, digits.parse().ok()?))
 }
 
-/// `claude` est sur le `PATH`, et assez récent pour que le registre soit juste.
+/// `claude` is on the `PATH` and recent enough that the ledger is correct.
 pub struct ClaudeIsRecentEnough {
-    /// La version au moins exigée.
+    /// The minimum version required.
     pub minimum: Version,
 }
 
@@ -116,9 +115,9 @@ impl<S> Verification<S> for ClaudeIsRecentEnough {
     }
 }
 
-/// `gh` répond, et il est authentifié.
+/// `gh` responds and is authenticated.
 pub struct GhIsAuthenticated {
-    /// Le port GitHub.
+    /// The GitHub port.
     pub gh: Rc<dyn GitHub>,
 }
 
@@ -134,19 +133,19 @@ impl<S> Verification<S> for GhIsAuthenticated {
     }
 }
 
-/// La branche d'intégration existe, est celle du checkout, et est sur
+/// The integration branch exists, is the one in the checkout, and is on
 /// `origin`.
 ///
-/// Les trois en une porte parce qu'elles se supposent : demander si `origin` la
-/// porte n'a pas de sens tant qu'elle n'existe pas localement, et chaque échec
-/// nomme sa propre commande.
+/// All three in one gate because they depend on each other: asking if `origin`
+/// has it does not make sense until it exists locally, and each failure names
+/// its own command.
 pub struct TheIntegrationBranch {
-    /// Le dépôt où la question se pose.
+    /// The repository where the question is asked.
     pub git: Rc<dyn Repo>,
-    /// La branche attendue.
+    /// The expected branch.
     pub branch: String,
-    /// Faux quand le run travaille dans un clone : la branche courante y est
-    /// posée par le montage, pas par un humain.
+    /// False when the run works in a clone: the current branch is there set by
+    /// the mount, not by a human.
     pub check_current: bool,
 }
 
@@ -177,17 +176,17 @@ impl<S> Verification<S> for TheIntegrationBranch {
     }
 }
 
-/// La CI se déclenche sur la branche d'intégration.
+/// CI triggers on the integration branch.
 ///
-/// Sans ça les PR que les stages ouvrent ne portent aucun check `ci`, et le
-/// `gh pr checks` que les skills attendent ne se résout jamais — la stage
-/// tourne jusqu'au bout de son budget et meurt sans rien livrer.
+/// Without this, the PRs that stages open carry no `ci` check, and the `gh pr
+/// checks` that skills wait for never resolves — the stage runs through its
+/// budget and dies without delivering anything.
 pub struct CiTriggersOnTheBranch {
-    /// De quoi lire le fichier.
+    /// How to read the file.
     pub disk: Rc<dyn Disk>,
-    /// Le workflow de CI du dépôt cible.
+    /// The CI workflow of the target repository.
     pub path: PathBuf,
-    /// La branche attendue.
+    /// The expected branch.
     pub branch: String,
 }
 
@@ -212,9 +211,9 @@ impl<S> Verification<S> for CiTriggersOnTheBranch {
     }
 }
 
-/// L'arbre de travail est propre, sauf si le run a demandé le contraire.
+/// The working tree is clean, unless the run asked otherwise.
 pub struct WorkingTreeIsClean {
-    /// Le dépôt où la question se pose.
+    /// The repository where the question is asked.
     pub git: Rc<dyn Repo>,
     /// `--allow-dirty`.
     pub allowed: bool,
@@ -247,7 +246,7 @@ mod tests {
 
     #[test]
     fn the_version_is_read_off_the_first_word_and_the_rest_is_ignored() {
-        // Ce qui suit le numéro a déjà changé de forme une fois.
+        // What follows the number has already changed form once.
         assert_eq!(
             parse_version("2.1.285 (Claude Code)"),
             Some(Version(2, 1, 285))
@@ -262,17 +261,17 @@ mod tests {
 
     #[test]
     fn a_version_that_cannot_be_read_is_none_not_an_optimistic_zero() {
-        // Une version illisible et une version ancienne ne méritent pas le
-        // même message.
+        // An unreadable version and an old version do not merit the same
+        // message.
         assert_eq!(parse_version(""), None);
-        assert_eq!(parse_version("inconnue"), None);
+        assert_eq!(parse_version("unknown"), None);
         assert_eq!(parse_version("2"), None);
     }
 
     #[test]
     fn the_ordering_is_by_number_not_by_text() {
-        // `"2.1.9" > "2.1.277"` en comparaison de chaînes, et c'est exactement
-        // l'erreur que trois `u32` rendent impossible.
+        // `"2.1.9" > "2.1.277"` in string comparison, and that is exactly the
+        // error three `u32`s make impossible.
         assert!(Version(2, 1, 9) < Version(2, 1, 277));
         assert!(Version(2, 2, 0) > MINIMUM);
         assert!(Version(2, 1, 257) < MINIMUM);

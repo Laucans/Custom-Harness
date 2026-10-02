@@ -1,57 +1,55 @@
-//! Ce qu'un tour a coûté. Donnée pure : personne ici ne sait l'écrire.
+//! What a turn cost. Pure data: no one here knows how to write it.
 //!
-//! Chaque champ est un `Option`, et pour la même raison que
-//! `adapters::agent::Reply::cost` : un porteur de session ne rend pas
-//! forcément tout. Un pane de terminal ne rend ni jetons ni coût ; un flux
-//! JSON rend les deux. `None` se lit « non observé », jamais « zéro » — la
-//! différence est ce qui empêche un registre de compter une session gratuite
-//! là où il n'a rien su mesurer.
+//! Every field is an `Option`, and for the same reason as
+//! `adapters::agent::Reply::cost`: a session bearer doesn't necessarily
+//! return everything. A terminal pane returns neither tokens nor cost; a JSON
+//! stream returns both. `None` reads as « not observed », never « zero » — the
+//! difference is what prevents a register from counting a free session where
+//! it measured nothing.
 
-/// Les jetons d'un tour, par nature.
+/// The tokens of a turn, by nature.
 ///
-/// Séparés du coût : le coût est une estimation dérivée d'une table de prix,
-/// les jetons sont ce que l'API a réellement rapporté.
+/// Separate from cost: cost is an estimate derived from a price table, tokens
+/// are what the API actually reported.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tokens {
-    /// Jetons d'entrée, cache exclu.
+    /// Input tokens, cache excluded.
     pub input: Option<u64>,
-    /// Jetons de sortie.
+    /// Output tokens.
     pub output: Option<u64>,
-    /// Jetons lus dans le cache, facturés à taux réduit.
+    /// Tokens read from cache, billed at reduced rate.
     pub cache_read: Option<u64>,
-    /// Jetons écrits dans le cache, facturés à taux majoré.
+    /// Tokens written to cache, billed at increased rate.
     pub cache_write: Option<u64>,
 }
 
-/// Ce qu'un tour a coûté, et ce qu'il a consommé.
+/// What a turn cost, and what it consumed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Spend {
-    /// Coût en dollars.
+    /// Cost in dollars.
     ///
-    /// **Estimation côté client**, calculée d'une table de prix embarquée dans
-    /// Claude Code — pas une donnée de facturation. Bonne pour un budget,
-    /// jamais pour facturer.
+    /// **Client-side estimate**, calculated from a price table embedded in
+    /// Claude Code — not billing data. Good for a budget, never for billing.
     ///
-    /// Attention à la sémantique du cumul : sur une session reprise, Claude
-    /// Code rend le total de **toute** la conversation depuis la v2.1.277, et
-    /// seulement celui de l'appel avant. Voir
-    /// `adapters::agent::claude_cli`.
+    /// Beware the cumulation semantics: on a resumed session, Claude Code
+    /// returns the total of **the entire** conversation since v2.1.277, and
+    /// only that of the previous call. See `adapters::agent::claude_cli`.
     pub cost_usd: Option<f64>,
-    /// Combien d'aller-retours avec le modèle ce tour a demandés.
+    /// How many round-trips with the model this turn requested.
     pub turns: Option<u32>,
-    /// Durée du tour, bout en bout.
+    /// Duration of the turn, end to end.
     pub duration_ms: Option<u64>,
-    /// Les jetons consommés.
+    /// The tokens consumed.
     pub tokens: Tokens,
-    /// L'identifiant de session que le porteur a rapporté.
+    /// The session identifier that the bearer reported.
     pub session: Option<String>,
 }
 
 impl Spend {
-    /// Vrai si rien n'a été observé — aucun champ rempli.
+    /// True if nothing was observed — no field filled.
     ///
-    /// Ce qu'un registre lit pour écrire « non mesuré » plutôt qu'une colonne
-    /// de zéros, qui se relirait comme une session gratuite.
+    /// What a register reads to write « not measured » rather than a column of
+    /// zeros, which would read back as a free session.
     #[must_use]
     pub const fn is_blind(&self) -> bool {
         self.cost_usd.is_none()
@@ -77,8 +75,8 @@ mod tests {
             cost_usd: Some(0.0),
             ..Spend::default()
         };
-        // Un coût de zéro **observé** n'est pas la même chose que rien
-        // d'observé : le premier est une mesure, le second une ignorance.
+        // A cost of zero **observed** is not the same as nothing observed: the
+        // first is a measurement, the second is ignorance.
         assert!(!spend.is_blind());
     }
 

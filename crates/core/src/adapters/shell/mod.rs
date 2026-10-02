@@ -1,7 +1,7 @@
-//! Les binaires, emballés : `git`, `gh`, et le lanceur qu'ils partagent.
+//! The binaries, wrapped: `git`, `gh`, and the launcher they share.
 //!
-//! Un sous-module par composant externe. `process` est le seul à parler au
-//! système ; les autres traduisent des arguments et lisent des sorties.
+//! One submodule per external component. `process` is the only one that talks
+//! to the system; the others translate arguments and read outputs.
 
 pub mod disk;
 pub mod git;

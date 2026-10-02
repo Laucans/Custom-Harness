@@ -1,18 +1,17 @@
-//! Le registre de coûts : une ligne par stage, ce que le run a vraiment coûté.
+//! The cost ledger: one row per stage, what the run actually cost.
 //!
-//! **L'en-tête est gelé.** Mêmes colonnes, même ordre que le registre Python,
-//! et toute colonne nouvelle s'ajoute **en fin** de ligne : les anciennes
-//! lignes en ont moins et restent lisibles telles quelles. C'est la seule
-//! raison pour laquelle `when` est en UTC ici alors que le Python écrivait
-//! l'heure locale — le format ne change pas, seule la valeur, et un dépôt neuf
-//! n'a pas d'historique à contredire.
+//! **The header is frozen.** Same columns, same order as the Python ledger,
+//! and any new column is added **at the end** of the row: older rows have
+//! fewer columns and remain readable as-is. This is the only reason `when` is
+//! UTC here whereas Python wrote local time — the format does not change, only
+//! the value, and a fresh repo has no history to contradict.
 //!
-//! Ce module **écrit et relit** le registre ; il ne le met pas en forme. Les
-//! tables qu'un rapport affiche sont un autre métier.
+//! This module **writes and re-reads** the ledger; it does not format it. The
+//! tables a report displays are a different concern.
 //!
-//! Le registre ne lit pas l'horloge : `when` arrive dans la ligne. Un registre
-//! qui lirait l'heure lui-même ne serait pas testable, et c'est l'appelant qui
-//! sait de quel instant il parle.
+//! The ledger does not read the clock: `when` arrives in the row. A ledger
+//! that read the clock itself would not be testable, and it is the caller who
+//! knows what instant it is talking about.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -20,63 +19,63 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::{Halt, Outcome, Spend};
 
-/// L'en-tête, gelé caractère pour caractère.
+/// The header, frozen character for character.
 pub const HEADER: &str = "when\trun\tround\ttask\tstage\tcost_usd\tturns\t\
                           duration_ms\tin\tout\tsession\tran_on\tcache_read\t\
                           cache_write\toutcome";
 
-/// Les colonnes, dérivées de l'en-tête.
+/// The columns, derived from the header.
 ///
-/// Une seule source de vérité pour l'ordre : étendre `HEADER` déplace les
-/// colonnes avec lui, au lieu de laisser un compte tenu à la main dériver.
+/// Single source of truth for the order: extending `HEADER` moves the
+/// columns with it, rather than leaving a manually-maintained count drift.
 #[must_use]
 pub fn columns() -> Vec<&'static str> {
     HEADER.split('\t').collect()
 }
 
-/// Ce qu'une stage a coûté, prêt à être écrit.
+/// What a stage cost, ready to be written.
 #[derive(Debug, Clone)]
 pub struct Row {
-    /// L'instant, en ISO-8601 à la seconde. Fourni, jamais lu d'une horloge.
+    /// The instant, in ISO-8601 to the second. Provided, never read from a clock.
     pub when: String,
-    /// L'identifiant du run.
+    /// The run identifier.
     pub run: String,
-    /// Le numéro de round.
+    /// The round number.
     pub round: u32,
-    /// La task facturée.
+    /// The billed task.
     pub task: String,
-    /// La stage.
+    /// The stage.
     pub stage: String,
-    /// Ce que le porteur de session a observé.
+    /// What the session carrier observed.
     pub spend: Spend,
-    /// La machine qui a fait tourner ça.
+    /// The machine that ran it.
     pub ran_on: String,
-    /// `ok`, ou la raison de l'absence de réponse. Vide = non enregistré.
+    /// `ok`, or the reason for missing response. Empty = not recorded.
     pub outcome: String,
 }
 
-/// Un nombre observé, ou le vide.
+/// An observed number, or empty.
 ///
-/// Le vide et le zéro ne disent pas la même chose : `None` veut dire « non
-/// observé », et l'écrire `0` ferait lire une session gratuite là où on n'a
-/// rien su mesurer.
+/// Empty and zero do not mean the same thing: `None` means "not observed",
+/// and writing it as `0` would read as a free session where nothing was
+/// measured.
 fn seen<T: ToString>(value: Option<T>) -> String {
     value.map(|v| v.to_string()).unwrap_or_default()
 }
 
-/// Un texte libre, sans rien qui puisse casser une colonne.
+/// Free text, with nothing that could break a column.
 ///
-/// Les tabulations et les retours à la ligne sont ce qui décale une ligne
-/// entière d'une colonne — un titre de task en contient tôt ou tard.
+/// Tabs and newlines are what shift an entire row by one column — a task
+/// title contains them sooner or later.
 fn flat(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 impl Row {
-    /// La ligne, telle qu'elle s'écrit.
+    /// The row, as it is written.
     ///
-    /// Assemblée dans l'ordre de [`columns`] : la ligne et l'en-tête ne peuvent
-    /// pas dériver l'un de l'autre.
+    /// Assembled in the order of [`columns`]: the row and header cannot drift
+    /// from each other.
     #[must_use]
     pub fn render(&self) -> String {
         let cost = self
@@ -103,19 +102,19 @@ impl Row {
         debug_assert_eq!(
             values.len(),
             columns().len(),
-            "une ligne doit avoir exactement les colonnes de l'en-tête"
+            "a row must have exactly the header columns"
         );
         values.join("\t")
     }
 }
 
-/// Le registre, sur le disque.
+/// The ledger, on disk.
 pub struct Ledger {
     path: PathBuf,
 }
 
 impl Ledger {
-    /// Le registre à ce chemin. Rien n'est créé avant la première écriture.
+    /// The ledger at this path. Nothing is created before the first write.
     #[must_use]
     pub fn new(path: &Path) -> Self {
         Self {
@@ -123,13 +122,13 @@ impl Ledger {
         }
     }
 
-    /// Ajoute une ligne. Écrit l'en-tête d'abord si le fichier n'existe pas.
+    /// Add a row. Writes the header first if the file does not exist.
     ///
     /// # Errors
     ///
-    /// [`Halt::Failed`] si le registre n'a pas pu être écrit. Une dépense qu'on
-    /// n'arrive pas à enregistrer est un échec : le budget d'un run se lit
-    /// ici, et une ligne perdue le fait mentir.
+    /// [`Halt::Failed`] if the ledger could not be written. Spending that
+    /// cannot be recorded is a failure: a run's budget is read from here,
+    /// and a lost row makes it lie.
     pub fn append(&self, row: &Row) -> Outcome<()> {
         let fresh = !self.path.exists();
         if let Some(parent) = self.path.parent() {
@@ -149,20 +148,20 @@ impl Ledger {
             .map_err(|e| self.wrote_nothing(&e))
     }
 
-    /// Chaque ligne de données, découpée, en-tête écarté.
+    /// Each data row, split, header excluded.
     ///
     /// # Errors
     ///
-    /// [`Halt::Unreadable`] si le fichier existe mais ne se lit pas : un
-    /// registre illisible n'est pas un registre vide.
+    /// [`Halt::Unreadable`] if the file exists but cannot be read: an
+    /// unreadable ledger is not an empty ledger.
     pub fn rows(&self) -> Outcome<Vec<Vec<String>>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
         let text = std::fs::read_to_string(&self.path).map_err(|e| {
             Halt::Unreadable(format!(
-                "registre illisible en {} ({e}) — ce que le harness a dépensé \
-                 est inconnu",
+                "ledger unreadable at {} ({e}) — what the harness spent is \
+                 unknown",
                 self.path.display()
             ))
         })?;
@@ -176,8 +175,8 @@ impl Ledger {
 
     fn wrote_nothing(&self, err: &std::io::Error) -> Halt {
         Halt::Failed(format!(
-            "impossible d'écrire le registre {} ({err}) — la dépense de cette \
-             stage n'est enregistrée nulle part",
+            "cannot write ledger {} ({err}) — this stage's spending is not \
+             recorded anywhere",
             self.path.display()
         ))
     }
@@ -219,7 +218,7 @@ mod tests {
 
     #[test]
     fn the_header_is_the_frozen_one() {
-        // Gelé : les colonnes et leur ordre sont un format sur disque.
+        // Frozen: columns and their order are a disk format.
         assert_eq!(
             HEADER,
             "when\trun\tround\ttask\tstage\tcost_usd\tturns\tduration_ms\tin\t\
@@ -236,7 +235,7 @@ mod tests {
             cells[columns()
                 .iter()
                 .position(|c| *c == name)
-                .expect("colonne connue")]
+                .expect("known column")]
         };
         assert_eq!(at("when"), "2026-09-30T12:00:00Z");
         assert_eq!(at("round"), "03");
@@ -262,10 +261,10 @@ mod tests {
             cells[columns()
                 .iter()
                 .position(|c| *c == name)
-                .expect("colonne connue")]
+                .expect("known column")]
         };
-        // Un zéro se relirait comme une session gratuite ; le vide dit
-        // « non mesuré », ce qui est le cas sous un porteur aveugle.
+        // A zero would read back as a free session; empty means
+        // "not measured", which is the case under a blind carrier.
         assert_eq!(at("cost_usd"), "");
         assert_eq!(at("in"), "");
         assert_eq!(at("turns"), "");
@@ -274,7 +273,7 @@ mod tests {
     #[test]
     fn a_tab_in_free_text_cannot_shift_the_whole_line() {
         let messy = Row {
-            task: "42\tavec\tdes\ttabulations".to_string(),
+            task: "42\twith\ttabs".to_string(),
             ..row()
         };
         assert_eq!(messy.render().split('\t').count(), columns().len());
@@ -283,7 +282,7 @@ mod tests {
     #[test]
     fn a_newline_in_free_text_cannot_split_the_row_in_two() {
         let messy = Row {
-            task: "42\nsur deux lignes".to_string(),
+            task: "42\non two lines".to_string(),
             ..row()
         };
         let rendered = messy.render();
@@ -298,15 +297,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let ledger = Ledger::new(&path);
 
-        ledger.append(&row()).expect("1re ligne");
-        ledger.append(&row()).expect("2e ligne");
+        ledger.append(&row()).expect("first row");
+        ledger.append(&row()).expect("second row");
 
-        let back = ledger.rows().expect("relecture");
-        assert_eq!(back.len(), 2, "l'en-tête ne compte pas comme une ligne");
+        let back = ledger.rows().expect("re-read");
+        assert_eq!(back.len(), 2, "header does not count as a row");
         assert_eq!(back[0].len(), columns().len());
 
-        // L'en-tête n'est écrit qu'une fois.
-        let raw = std::fs::read_to_string(&path).expect("lecture");
+        // Header is written only once.
+        let raw = std::fs::read_to_string(&path).expect("read");
         assert_eq!(raw.matches(HEADER).count(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);

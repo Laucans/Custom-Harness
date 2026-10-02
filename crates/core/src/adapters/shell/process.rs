@@ -1,39 +1,38 @@
-//! Le seul endroit du paquet qui lance un sous-processus.
+//! The only place in the crate that spawns a subprocess.
 //!
-//! Un seul, pour que « une porte décide, elle n'appelle jamais `git`/`gh`
-//! elle-même » ait un endroit où être vrai. `git.rs` et `github.rs` sont des
-//! traducteurs au-dessus de ce module : ils construisent des arguments et
-//! lisent des sorties, ils ne parlent pas au système.
+//! Only one, so that "a port decides, it never calls `git`/`gh` itself"
+//! has a place to be true. `git.rs` and `github.rs` are translators
+//! above this module: they build arguments and read output, they don't talk to the system.
 
 use std::path::Path;
 
 use crate::domain::{Halt, Outcome};
 
-/// Ce qu'un processus a laissé derrière lui.
+/// What a process left behind.
 #[derive(Debug, Clone)]
 pub struct Ran {
-    /// Le code de sortie. `None` quand un signal a tué le processus.
+    /// The exit code. `None` when a signal killed the process.
     pub code: Option<i32>,
-    /// La sortie standard, telle quelle.
+    /// Standard output, as-is.
     pub stdout: String,
-    /// La sortie d'erreur, telle quelle.
+    /// Standard error, as-is.
     pub stderr: String,
 }
 
 impl Ran {
-    /// Vrai si le processus a rendu zéro.
+    /// True if the process returned zero.
     #[must_use]
     pub fn ok(&self) -> bool {
         self.code == Some(0)
     }
 
-    /// La sortie standard, sans les blancs de bord.
+    /// Standard output, trimmed.
     #[must_use]
     pub fn out(&self) -> &str {
         self.stdout.trim()
     }
 
-    /// Les lignes non vides de la sortie standard.
+    /// Non-empty lines from standard output.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         self.stdout
@@ -44,39 +43,38 @@ impl Ran {
             .collect()
     }
 
-    /// La dernière ligne utile de stderr — le bout qui diagnostique.
+    /// The last useful line from stderr — the diagnostic part.
     ///
-    /// C'est la seule ligne qu'un humain doit lire quand deux passes payées
-    /// ont échoué à poster, donc elle ne doit jamais être vide ni ressembler
-    /// à une liste Python.
+    /// It's the only line a human should read when two paid passes failed to post,
+    /// so it must never be empty or blank.
     #[must_use]
     pub fn why(&self) -> String {
         last_line(&self.stderr)
     }
 }
 
-/// La dernière ligne non vide d'un texte, ou une phrase qui le dit.
+/// The last non-empty line of text, or a message saying there is none.
 #[must_use]
 pub fn last_line(text: &str) -> String {
     text.lines()
         .rfind(|line| !line.trim().is_empty())
         .map_or_else(
-            || "(rien sur stderr)".to_string(),
+            || "(nothing on stderr)".to_string(),
             |line| line.trim().to_string(),
         )
 }
 
-/// Lance `binary` avec ces arguments, depuis `cwd`.
+/// Run `binary` with these arguments, from `cwd`.
 ///
-/// **Un code de sortie non nul n'est pas une erreur ici.** `git rev-parse
-/// --verify` répond « cette branche n'existe pas » par un code non nul, et
-/// c'est une réponse, pas une panne. Seul un binaire qu'on n'a pas pu lancer
-/// rend `Err` — l'appelant décide de ce que le code veut dire.
+/// **A non-zero exit code is not an error here.** `git rev-parse
+/// --verify` answers "this branch doesn't exist" with a non-zero code,
+/// and that's a response, not a failure. Only a binary that couldn't be run
+/// returns `Err` — the caller decides what the code means.
 ///
 /// # Errors
 ///
-/// [`Halt::Failed`] si le processus n'a pas pu être lancé du tout : binaire
-/// absent du `PATH`, ou répertoire de travail inexistant.
+/// [`Halt::Failed`] if the process couldn't be launched at all: binary
+/// not in `PATH`, or working directory doesn't exist.
 pub async fn run(binary: &str, args: &[String], cwd: &Path) -> Outcome<Ran> {
     let out = tokio::process::Command::new(binary)
         .args(args)
@@ -85,7 +83,7 @@ pub async fn run(binary: &str, args: &[String], cwd: &Path) -> Outcome<Ran> {
         .await
         .map_err(|e| {
             Halt::Failed(format!(
-                "{binary} n'a pas pu être lancé depuis {} : {e}",
+                "couldn't launch {binary} from {}: {e}",
                 cwd.display()
             ))
         })?;
@@ -128,10 +126,10 @@ mod tests {
 
     #[test]
     fn an_empty_stderr_says_so_instead_of_being_blank() {
-        // Le mode de panne que ça évite : une ligne de diagnostic vide, seule
-        // chose qu'un humain avait à lire après deux passes payées.
-        assert_eq!(ran("", "", 1).why(), "(rien sur stderr)");
-        assert_eq!(ran("", "   \n\n", 1).why(), "(rien sur stderr)");
+        // Prevents the failure mode: an empty diagnostic line, the only
+        // thing a human had to read after two paid passes.
+        assert_eq!(ran("", "", 1).why(), "(nothing on stderr)");
+        assert_eq!(ran("", "   \n\n", 1).why(), "(nothing on stderr)");
     }
 
     #[test]
@@ -148,16 +146,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_binary_is_a_failure_not_a_non_zero_code() {
-        let err = run("un-binaire-qui-nexiste-pas-ici", &[], Path::new("."))
+        let err = run("nonexistent-binary", &[], Path::new("."))
             .await
-            .expect_err("doit échouer");
+            .expect_err("must fail");
         assert!(matches!(err, Halt::Failed(_)));
     }
 
     #[tokio::test]
     async fn a_non_zero_exit_comes_back_as_data() {
-        // `false` sort avec 1 : c'est une réponse, pas une panne.
-        let out = run("false", &[], Path::new(".")).await.expect("lancé");
+        // `false` exits with 1: it's a response, not a failure.
+        let out = run("false", &[], Path::new(".")).await.expect("launched");
         assert!(!out.ok());
         assert_eq!(out.code, Some(1));
     }

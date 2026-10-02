@@ -1,0 +1,208 @@
+//! Refinement: the sequence, and what we know of each stage.
+//!
+//! **The only design surface of the workflow.** The order of entries
+//! *is* the execution order: the router, the five sections in canonical
+//! body order, then coherence, then publishing — a table stage but not
+//! a session.
+//!
+//! **Stage names are written here, nowhere else.** Gates and actions receive
+//! them as fields: two literals in two layers would silently desynchronize —
+//! a gate looking for a stage's reply under a name nobody wrote thinks it
+//! skipped.
+//!
+//! The repo map (`ground` + `explore`) is **not** wired here: it comes from
+//! [`crate::common::explore::entries`], which [`crate::refinement::run::build`]
+//! puts at the head of the sequence — this table itself has no way to read
+//! the repo, and doesn't need to.
+
+use std::rc::Rc;
+
+use harness_core::adapters::agent::SessionSpec;
+use harness_core::execution::{Gate, Stage, StageBody, Unpaid};
+
+use crate::refinement::action::actions::{AskRefine, RecordWantedSections};
+use crate::refinement::action::publish::Write;
+use crate::refinement::checks::gates::{
+    NothingIsWritten, RouterIsOff, RouterNamedSections, SectionIsWanted,
+};
+use crate::refinement::config::Config;
+use crate::refinement::data::sections;
+use crate::refinement::data::state::RefinementState;
+use crate::refinement::orchestration::prompts as text;
+use crate::refinement::ports::Ports;
+
+/// The router stage name.
+pub const ROUTER: &str = "router";
+/// The coherence stage name.
+pub const COHERENCE: &str = "coherence";
+/// The publish local stage name.
+pub const PUBLISH: &str = "publish";
+
+/// The template for each stage, by stage key.
+fn template_of(key: &str) -> &'static str {
+    match key {
+        ROUTER => text::ROUTER_PROMPT,
+        "business-goal" => text::BUSINESS_GOAL_PROMPT,
+        "technical" => text::TECHNICAL_PROMPT,
+        "acceptance-criteria" => text::ACCEPTANCE_CRITERIA_PROMPT,
+        "business-rules" => text::BUSINESS_RULES_PROMPT,
+        "technical-plan" => text::TECHNICAL_PLAN_PROMPT,
+        COHERENCE => text::COHERENCE_PROMPT,
+        other => unreachable!("unknown stage: {other}"),
+    }
+}
+
+fn spec_of(config: &Config, key: &str) -> SessionSpec {
+    match key {
+        "business-goal" => config.goal.clone(),
+        "technical" => config.technical.clone(),
+        "acceptance-criteria" => config.criteria.clone(),
+        "business-rules" => config.rules.clone(),
+        "technical-plan" => config.plan.clone(),
+        other => unreachable!("unknown section key: {other}"),
+    }
+}
+
+fn paid(ports: &Ports, config: &Config, stage: &str, spec: SessionSpec) -> Stage<RefinementState> {
+    Stage {
+        name: stage.to_string(),
+        pre: None,
+        post: None,
+        body: StageBody::Session {
+            spec,
+            sessions: Rc::clone(&ports.sessions),
+            actions: vec![Box::new(AskRefine {
+                stage: stage.to_string(),
+                template: template_of(stage),
+                merged_body: stage == COHERENCE,
+                context: config.context.clone(),
+                artifacts_dir: config.artifacts_dir.clone(),
+                explore: config.explore,
+                spending: Rc::clone(&ports.spending),
+            })],
+        },
+    }
+}
+
+/// The router, skipped before round 3 or without `--context`.
+#[must_use]
+pub fn router(ports: &Ports, config: &Config) -> Stage<RefinementState> {
+    let mut stage = paid(ports, config, ROUTER, config.router.clone());
+    stage.pre = Some(Gate {
+        name: "router requires",
+        checks: vec![Box::new(RouterIsOff {
+            router: ROUTER.to_string(),
+            has_context: !config.context.is_empty(),
+        })],
+    });
+    stage.post = Some(Gate {
+        name: "router must achieve",
+        checks: vec![Box::new(RouterNamedSections {
+            router: ROUTER.to_string(),
+        })],
+    });
+    if let StageBody::Session { actions, .. } = &mut stage.body {
+        actions.push(Box::new(Unpaid(RecordWantedSections {
+            router: ROUTER.to_string(),
+        })));
+    }
+    stage
+}
+
+/// A section, skipped when this round doesn't write it.
+#[must_use]
+pub fn section(ports: &Ports, config: &Config, key: &'static str) -> Stage<RefinementState> {
+    let mut stage = paid(ports, config, key, spec_of(config, key));
+    stage.pre = Some(Gate {
+        name: "section requires",
+        checks: vec![Box::new(SectionIsWanted {
+            key: key.to_string(),
+        })],
+    });
+    stage
+}
+
+/// Coherence: reads this round's sections together, refines them.
+#[must_use]
+pub fn coherence(ports: &Ports, config: &Config) -> Stage<RefinementState> {
+    paid(ports, config, COHERENCE, config.coherence.clone())
+}
+
+/// Publishing: a local stage, which costs nothing.
+#[must_use]
+pub fn publish(ports: &Ports, config: &Config) -> Stage<RefinementState> {
+    Stage {
+        name: PUBLISH.to_string(),
+        pre: Some(Gate {
+            name: "publish requires",
+            checks: vec![Box::new(NothingIsWritten)],
+        }),
+        post: None,
+        body: StageBody::Local {
+            actions: vec![Box::new(Write {
+                gh: Rc::clone(&ports.gh),
+                coherence: COHERENCE.to_string(),
+                refinement_dir: config.refinement_dir.clone(),
+            })],
+        },
+    }
+}
+
+/// The router, five sections, coherence, publishing — in order. The map
+/// (`ground`/`explore`) is not here: see the module.
+///
+/// Coherence has no `skip`: by the time the sequence reaches it,
+/// `state.wanted` is never empty (rounds 1 and 2 set it, and a routed round
+/// that named nothing would already fail in `RouterNamedSections`) — nothing
+/// is ever skipped.
+#[must_use]
+pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<RefinementState>> {
+    let mut built = Vec::with_capacity(8);
+    built.push(router(ports, config));
+    for key in sections::KEYS {
+        built.push(section(ports, config, key));
+    }
+    built.push(coherence(ports, config));
+    built.push(publish(ports, config));
+    built
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::refinement::config::fake as config_fake;
+    use crate::refinement::ports::fake as ports_fake;
+
+    #[test]
+    fn the_order_of_the_table_is_the_order_of_the_body() {
+        let names: Vec<String> = table(&ports_fake::ports(), &config_fake::config())
+            .iter()
+            .map(|stage| stage.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ROUTER,
+                "business-goal",
+                "technical",
+                "acceptance-criteria",
+                "business-rules",
+                "technical-plan",
+                COHERENCE,
+                PUBLISH,
+            ]
+        );
+    }
+
+    #[test]
+    fn every_section_key_has_a_template_and_a_spec() {
+        // `template_of` and `spec_of` are two hand-written exhaustive matches:
+        // a key added to `sections::KEYS` without text or model would panic
+        // during table assembly, not a test.
+        let config = config_fake::config();
+        for key in sections::KEYS {
+            assert!(!template_of(key).is_empty());
+            assert!(!spec_of(&config, key).model.is_empty());
+        }
+    }
+}

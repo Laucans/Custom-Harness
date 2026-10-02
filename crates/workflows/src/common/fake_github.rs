@@ -1,56 +1,71 @@
-//! Un `GitHub` en mémoire, partagé par les workflows qui en ont besoin pour
-//! leurs tests.
+//! An in-memory `GitHub`, shared by workflows that need it for their tests.
 //!
-//! Un faux adaptateur, pas un mock : il répond depuis des `Issue`/`Pr` qu'on
-//! lui a données, et les écritures se relisent. C'est ce que `CLAUDE.md`
-//! demande — « inject a fake adapter; nothing mocks at the call site » — et
-//! c'est ce qui permet d'exercer les règles sans réseau.
+//! A fake adapter, not a mock: it responds from `Issue`/`Pr` given to it,
+//! and writes re-read. This is what `CLAUDE.md` asks for — "inject a fake
+//! adapter; nothing mocks at the call site" — and what makes it possible to
+//! exercise rules without network.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 
 use async_trait::async_trait;
 use harness_core::adapters::shell::github::GitHub;
 use harness_core::domain::{Halt, Issue, Outcome, Pr};
 
-/// Ce que le faux a enregistré comme écriture.
+/// What the fake recorded as a write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wrote {
-    /// Une étiquette posée.
+    /// A label placed.
     Label(u64, String),
-    /// Une étiquette retirée.
+    /// A label removed.
     Unlabelled(u64, String),
-    /// Un corps réécrit.
+    /// A body rewritten.
     Body(u64, String),
-    /// Un commentaire posté sur une issue.
+    /// A comment posted on an issue.
     Comment(u64, String),
-    /// Une issue fermée.
+    /// An issue closed.
     Closed(u64),
-    /// Un commentaire posté sur une PR, et le fichier dont il vient.
+    /// A comment posted on a PR, and the file it comes from.
     PrComment(String, String),
+    /// A label created: name, color, description.
+    CreatedLabel(String, String, String),
+    /// A branch created: name, sha.
+    CreatedBranch(String, String),
 }
 
-/// Un GitHub en mémoire.
+/// An in-memory GitHub.
 #[derive(Default)]
 pub struct FakeGitHub {
-    /// Les issues qu'il connaît, milestones compris.
+    /// The issues it knows, including milestones.
     pub issues: Vec<Issue>,
-    /// Les sous-issues, par numéro de parent.
+    /// Sub-issues, by parent number.
     pub subs: Vec<(u64, Vec<Issue>)>,
-    /// Les PR mergées qu'il rendra pour `merged_prs`.
+    /// Merged PRs it will return for `merged_prs`.
     pub merged: Vec<Issue>,
-    /// Les étiquettes que le dépôt porte.
+    /// The labels the repository carries.
     pub labels: Vec<String>,
-    /// Les commentaires d'issue qu'il rendra pour `issue_comments`.
+    /// Issue comments it will return for `issue_comments`.
     pub issue_comments: Vec<String>,
-    /// Les PR que `pr()` sait lire, par numéro ou URL demandé.
+    /// PRs that `pr()` can read, by number or URL requested.
     pub prs: Vec<(String, Pr)>,
-    /// Ce que `pr_comments` rend, par numéro de PR.
+    /// What `pr_comments` returns, by PR number.
     pub pr_comment_bodies: Vec<(String, String)>,
-    /// Ce qu'il a écrit.
+    /// What it wrote.
     pub wrote: RefCell<Vec<Wrote>>,
-    /// Quand c'est rempli, **toute** lecture échoue avec cet arrêt.
+    /// When filled, **every** read fails with this halt.
     pub broken: Option<Halt>,
+    /// `branch_sha` answers, by branch name. An absent key refuses — the
+    /// test must set up exactly what it reads.
+    pub branch_shas: HashMap<String, Option<String>>,
+    /// `file_text` answers, by `(path, git_ref)`. An absent key is `None` —
+    /// a 404, not a refusal, since "the file is absent" is itself a valid
+    /// test scenario.
+    pub files: HashMap<(String, String), String>,
+    /// `default_branch`'s answer. `None` refuses — the test must set it up.
+    pub default_branch_name: Option<String>,
+    /// `can_push`'s answer. `None` refuses — the test must set it up.
+    pub can_push_answer: Option<bool>,
 }
 
 impl FakeGitHub {
@@ -60,7 +75,7 @@ impl FakeGitHub {
             .map_or(Ok(()), |halt| Err(halt.clone()))
     }
 
-    /// Les écritures, dans l'ordre.
+    /// The writes, in order.
     pub fn writes(&self) -> Vec<Wrote> {
         self.wrote.borrow().clone()
     }
@@ -89,7 +104,7 @@ impl GitHub for FakeGitHub {
             .iter()
             .find(|issue| issue.number == number)
             .cloned()
-            .ok_or_else(|| Halt::Unreadable(format!("pas d'issue #{number}")))
+            .ok_or_else(|| Halt::Unreadable(format!("no issue #{number}")))
     }
 
     async fn issues_labelled(&self, label: &str, _state: &str) -> Outcome<Vec<Issue>> {
@@ -114,8 +129,8 @@ impl GitHub for FakeGitHub {
 
     async fn blocked_by(&self, number: u64) -> Outcome<Vec<Issue>> {
         self.ok()?;
-        // Les bloqueurs sont déjà portés par l'issue dans le faux : ce
-        // qu'on veut exercer est la règle, pas la forme de l'API.
+        // Blockers are already carried by the issue in the fake: what we want
+        // to exercise is the rule, not the API shape.
         Ok(self
             .subs
             .iter()
@@ -179,7 +194,7 @@ impl GitHub for FakeGitHub {
             .iter()
             .find(|(asked, _)| asked == pr_ref)
             .map(|(_, pr)| pr.clone())
-            .ok_or_else(|| Halt::Failed(format!("pas de PR {pr_ref}")))
+            .ok_or_else(|| Halt::Failed(format!("no PR {pr_ref}")))
     }
 
     async fn pr_comments(&self, num: &str) -> Outcome<String> {
@@ -199,5 +214,50 @@ impl GitHub for FakeGitHub {
             body_file.display().to_string(),
         ));
         Ok(())
+    }
+
+    async fn create_label(&self, name: &str, color: &str, description: &str) -> Outcome<()> {
+        self.wrote.borrow_mut().push(Wrote::CreatedLabel(
+            name.to_string(),
+            color.to_string(),
+            description.to_string(),
+        ));
+        Ok(())
+    }
+
+    async fn branch_sha(&self, branch: &str) -> Outcome<Option<String>> {
+        self.ok()?;
+        self.branch_shas
+            .get(branch)
+            .cloned()
+            .ok_or_else(|| Halt::Failed(format!("branch_sha({branch}) not set up in this test")))
+    }
+
+    async fn create_branch(&self, branch: &str, sha: &str) -> Outcome<()> {
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::CreatedBranch(branch.to_string(), sha.to_string()));
+        Ok(())
+    }
+
+    async fn default_branch(&self) -> Outcome<String> {
+        self.ok()?;
+        self.default_branch_name
+            .clone()
+            .ok_or_else(|| Halt::Failed("default_branch not set up in this test".to_string()))
+    }
+
+    async fn can_push(&self) -> Outcome<bool> {
+        self.ok()?;
+        self.can_push_answer
+            .ok_or_else(|| Halt::Failed("can_push not set up in this test".to_string()))
+    }
+
+    async fn file_text(&self, path: &str, git_ref: &str) -> Outcome<Option<String>> {
+        self.ok()?;
+        Ok(self
+            .files
+            .get(&(path.to_string(), git_ref.to_string()))
+            .cloned())
     }
 }

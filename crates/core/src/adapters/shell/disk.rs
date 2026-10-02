@@ -1,52 +1,57 @@
-//! Le disque, emballé — pour que ce qui supprime soit testable.
+//! The disk, wrapped — so that deletion is testable.
 //!
-//! Un port pour cinq opérations de système de fichiers peut sembler de trop :
-//! `std::fs` est déjà une bibliothèque. La raison est ailleurs. Le seul module
-//! qui s'en sert est [`crate::execution::provisioning`], c'est-à-dire le seul
-//! du paquet qui **supprime des centaines de mégaoctets**, et ses trois règles
-//! — rien n'est écrasé sans le dire, rien n'est supprimé sans le dire, un
-//! dry-run ne clone pas — sont précisément celles qu'il faut pouvoir exercer
-//! sans mettre un vrai dossier en jeu.
+//! A port for five filesystem operations might seem like too much:
+//! `std::fs` is already a library. The reason is elsewhere. The only module
+//! that uses it is [`crate::execution::provisioning`], i.e. the only one
+//! in the crate that **deletes hundreds of megabytes**, and its three rules
+//! — nothing is overwritten silently, nothing is deleted silently, a
+//! dry-run doesn't clone — are precisely those that must be testable
+//! without putting a real folder at risk.
 //!
-//! Un faux disque rend « ce test prouve qu'on ne supprime pas » vérifiable.
-//! Sans lui, le prouver demanderait de créer un clone et d'espérer.
+//! A fake disk makes "this test proves we don't delete" verifiable.
+//! Without it, proving it would require creating a clone and hoping.
 
 use std::path::Path;
 
 use crate::domain::{Halt, Outcome};
 
-/// Ce que le montage d'un workspace demande au disque.
+/// What workspace setup asks from the disk.
 pub trait Disk {
-    /// Ce chemin existe-t-il ?
+    /// Does this path exist?
     fn exists(&self, path: &Path) -> bool;
 
-    /// Crée ce dossier et ses parents. Déjà là n'est pas une erreur.
+    /// Create this folder and its parents. Already existing is not an error.
     ///
     /// # Errors
-    /// Si le dossier n'a pas pu être créé.
+    /// If the folder couldn't be created.
     fn create_dir_all(&self, path: &Path) -> Outcome<()>;
 
-    /// Supprime ce dossier et tout ce qu'il contient.
+    /// Remove this folder and everything in it.
     ///
     /// # Errors
-    /// Si la suppression a échoué. L'absence du dossier n'en est pas une : la
-    /// fin voulue est atteinte.
+    /// If removal failed. The folder being absent is not an error: the desired
+    /// end state is reached.
     fn remove_dir_all(&self, path: &Path) -> Outcome<()>;
 
-    /// Les noms des sous-dossiers, triés. Vide si le chemin n'est pas un
-    /// dossier — ce qui sert à lister les workspaces gardés dans un message.
+    /// Names of subdirectories, sorted. Empty if the path isn't a directory —
+    /// this is used to list workspaces kept in a message.
     fn dir_names(&self, path: &Path) -> Vec<String>;
 
-    /// Le contenu d'un fichier texte, ou `None` à la moindre raison.
+    /// The content of a text file, or `None` for any reason.
     ///
-    /// `None` et jamais un échec : c'est le raffinage qui lit `CLAUDE.md` et
-    /// les docs du dépôt pour établir sa carte, et un fichier absent ou
-    /// illisible y est une donnée — « rien à lire là » — jamais une panne qui
-    /// arrêterait le round.
+    /// `None`, never an error: refinement reads `CLAUDE.md` and repository
+    /// docs to build its map, and a missing or unreadable file is data —
+    /// "nothing to read there" — never a failure that stops the round.
     fn read_to_string(&self, path: &Path) -> Option<String>;
+
+    /// Write this text to a file, replacing its content wholesale.
+    ///
+    /// # Errors
+    /// If the write failed.
+    fn write_to_string(&self, path: &Path, content: &str) -> Outcome<()>;
 }
 
-/** Le vrai disque. */
+/** The real disk. */
 pub struct RealDisk;
 
 impl Disk for RealDisk {
@@ -56,7 +61,7 @@ impl Disk for RealDisk {
 
     fn create_dir_all(&self, path: &Path) -> Outcome<()> {
         std::fs::create_dir_all(path)
-            .map_err(|e| Halt::Failed(format!("impossible de créer {} : {e}", path.display())))
+            .map_err(|e| Halt::Failed(format!("couldn't create {}: {e}", path.display())))
     }
 
     fn remove_dir_all(&self, path: &Path) -> Outcome<()> {
@@ -64,7 +69,7 @@ impl Disk for RealDisk {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Halt::Failed(format!(
-                "impossible de supprimer {} : {e}",
+                "couldn't delete {}: {e}",
                 path.display()
             ))),
         }
@@ -86,6 +91,11 @@ impl Disk for RealDisk {
     fn read_to_string(&self, path: &Path) -> Option<String> {
         std::fs::read_to_string(path).ok()
     }
+
+    fn write_to_string(&self, path: &Path, content: &str) -> Outcome<()> {
+        std::fs::write(path, content)
+            .map_err(|e| Halt::Failed(format!("couldn't write {}: {e}", path.display())))
+    }
 }
 
 #[cfg(test)]
@@ -94,22 +104,22 @@ mod tests {
 
     #[test]
     fn removing_something_that_is_already_gone_is_not_a_failure() {
-        // La fin voulue est atteinte, et le démontage ne doit pas requalifier
-        // un run réussi en panne pour ça.
+        // The desired end state is reached, and teardown must not requalify
+        // a successful run as a failure for this.
         assert!(
             RealDisk
-                .remove_dir_all(Path::new("/tmp/un-dossier-qui-nexiste-pas-ici"))
+                .remove_dir_all(Path::new("/tmp/nonexistent-directory"))
                 .is_ok()
         );
     }
 
     #[test]
     fn a_missing_file_reads_as_none_not_as_a_failure() {
-        // Le raffinage lit CLAUDE.md et les docs pour sa carte : un fichier
-        // absent y est une donnée — « rien à lire là » — jamais une panne.
+        // Refinement reads CLAUDE.md and docs for its map: a missing file
+        // is data — "nothing to read there" — never a failure.
         assert!(
             RealDisk
-                .read_to_string(Path::new("/tmp/un-fichier-qui-nexiste-pas-ici.md"))
+                .read_to_string(Path::new("/tmp/nonexistent-file.md"))
                 .is_none()
         );
     }

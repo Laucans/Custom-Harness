@@ -1,11 +1,11 @@
-//! Le registre, câblé : l'horloge, l'identifiant du run, la machine.
+//! The ledger, wired: the clock, the run ID, the machine.
 //!
-//! L'implémentation du port [`Spending`] vit ici et non dans `harness-core`,
-//! et c'est délibéré. `Ledger` sait écrire une ligne mais pas quelle heure il
-//! est ; une ligne de registre reçoit son instant plutôt que de le lire, ce qui
-//! la rend testable. Les trois faits qui manquent — l'instant, le nom du run,
-//! le nom de la machine — sont des faits du **lanceur**, et les mettre ici est
-//! ce qui laisse `harness-core` sans aucune dépendance au temps.
+//! The [`Spending`] port implementation lives here, not in `harness-core`,
+//! and that is deliberate. `Ledger` knows how to write a line but not what
+//! time it is; a ledger line receives its timestamp rather than reading it,
+//! which makes it testable. The three facts that are missing — the timestamp,
+//! the run name, the machine name — are facts of the **launcher**, and putting
+//! them here is what leaves `harness-core` with no dependency on time.
 
 use std::path::Path;
 
@@ -14,7 +14,7 @@ use harness_core::adapters::store::ledger::{Ledger, Row};
 use harness_core::adapters::store::spending::{Entry, Spending};
 use harness_core::domain::Outcome;
 
-/// Le registre de ce run.
+/// The ledger for this run.
 pub struct LedgerSpending {
     ledger: Ledger,
     run: String,
@@ -22,7 +22,7 @@ pub struct LedgerSpending {
 }
 
 impl LedgerSpending {
-    /// Le registre à ce chemin, pour ce run, sur cette machine.
+    /// The ledger at this path, for this run, on this machine.
     #[must_use]
     pub fn new(path: &Path, run: &str, host: &str) -> Self {
         Self {
@@ -48,11 +48,11 @@ impl Spending for LedgerSpending {
     }
 }
 
-/// L'instant, en ISO-8601 UTC à la seconde.
+/// The timestamp, in ISO-8601 UTC to the second.
 ///
-/// En UTC là où le Python écrivait l'heure locale. Le **format** ne change pas,
-/// donc l'en-tête gelé tient et les anciennes lignes restent lisibles ; seule la
-/// valeur change, et un dépôt neuf n'a pas d'historique à contredire.
+/// The **format** does not change, so the frozen header holds and old lines
+/// remain readable; only the value changes, and a new repository has no
+/// history to contradict.
 #[must_use]
 pub fn now() -> String {
     jiff::Timestamp::now()
@@ -60,22 +60,21 @@ pub fn now() -> String {
         .to_string()
 }
 
-/// Un identifiant de run : l'instant, compacté.
+/// A run ID: the timestamp, compacted.
 ///
-/// Il nomme le dossier de journal, la colonne `run` du registre et un workspace
-/// jetable. Lisible à dessein — c'est ce qu'un humain tape pour retrouver les
-/// traces d'un run.
+/// It names the log directory, the `run` column of the ledger, and a
+/// disposable workspace. Readable by design — it's what a human types to find
+/// the traces of a run.
 #[must_use]
 pub fn run_id() -> String {
     jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string()
 }
 
-/// Le nom de la machine, ou `?`.
+/// The machine name, or `?`.
 ///
-/// Par le binaire `hostname` et l'adaptateur de processus : c'est un appel
-/// externe, et les appels externes passent par `adapters`. Son absence n'arrête
-/// rien — c'est une colonne de confort, pas une donnée dont dépend une
-/// décision.
+/// Via the `hostname` binary and the process adapter: it's an external call,
+/// and external calls go through `adapters`. Its absence does not stop anything
+/// — it's a comfort column, not data that a decision depends on.
 pub async fn hostname() -> String {
     let said = process::run("hostname", &[], Path::new(".")).await;
     match said {
@@ -96,7 +95,7 @@ mod tests {
         fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!("harness-spending-{tag}"));
             let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).expect("un dossier de test");
+            std::fs::create_dir_all(&path).expect("a test directory");
             Self(path)
         }
     }
@@ -145,34 +144,30 @@ mod tests {
                 spend: &spend,
                 outcome: "ok",
             })
-            .expect("écrit");
-        let text = std::fs::read_to_string(&path).expect("relu");
+            .expect("written");
+        let text = std::fs::read_to_string(&path).expect("re-read");
         let mut lines = text.lines();
         assert_eq!(lines.next(), Some(HEADER));
-        let row: Vec<&str> = lines.next().expect("une ligne").split('\t').collect();
+        let row: Vec<&str> = lines.next().expect("a line").split('\t').collect();
         let columns = ledger::columns();
         assert_eq!(row.len(), columns.len());
         let at = |name: &str| row[columns.iter().position(|c| *c == name).expect(name)];
         assert_eq!(at("run"), "20261002-120000");
-        assert_eq!(
-            at("round"),
-            "02",
-            "zéro-paddé, comme l'étiquette du journal"
-        );
+        assert_eq!(at("round"), "02", "zero-padded, like the log tag");
         assert_eq!(at("task"), "11");
         assert_eq!(at("stage"), "code");
         assert_eq!(at("cost_usd"), "1.500000");
         assert_eq!(at("ran_on"), "le-mac");
         assert_eq!(at("outcome"), "ok");
-        // Non observé reste vide : une colonne de zéros se relirait comme une
-        // session gratuite.
+        // Unobserved remains empty: a column of zeros would read as a free
+        // session.
         assert_eq!(at("out"), "");
         assert_eq!(at("session"), "");
     }
 
     #[tokio::test]
     async fn a_hostname_that_cannot_be_read_does_not_stop_a_run() {
-        // Une colonne de confort, pas une donnée dont dépend une décision.
+        // A comfort column, not data that a decision depends on.
         assert!(!hostname().await.is_empty());
     }
 }

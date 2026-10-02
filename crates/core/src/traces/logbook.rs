@@ -1,39 +1,39 @@
-//! Le journal d'un run : niveaux, et l'étiquette qui rend un journal
-//! entrelacé attribuable.
+//! The journal of a run: verbosity levels and the tag that makes a journal
+//! interlaced and attributable.
 
 use std::rc::Rc;
 
-/// Ce que l'utilisateur voit sur la sortie standard. Le fichier, lui, garde
-/// toujours tout — cette distinction n'existe que pour la console.
+/// What the user sees on standard output. The file keeps everything — this
+/// distinction exists only for the console.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verbosity {
-    /// Tout, y compris ce qu'une session dit en détail.
+    /// Everything, including what a session says in detail.
     Verbose,
-    /// Une ligne par étape.
+    /// One line per stage.
     Normal,
-    /// Seuls les arrêts et les échecs.
+    /// Only stops and failures.
     Quiet,
 }
 
-/// Où une ligne de journal part. Le seul point que `traces/` ne décide pas
-/// lui-même : écrire sur la console, dans un fichier, ou nulle part.
+/// Where a journal line goes. The only thing `traces/` does not decide itself:
+/// write to console, to a file, or nowhere.
 pub trait Sink {
-    /// Écrit une ligne déjà formatée.
+    /// Write an already-formatted line.
     fn emit(&self, line: &str);
 }
 
-/// Un puits qui n'écrit nulle part — pour les tests et le chemin rapide.
+/// A sink that writes nowhere — for tests and the fast path.
 struct Null;
 
 impl Sink for Null {
     fn emit(&self, _line: &str) {}
 }
 
-/// Le journal d'un run : un puits, une étiquette optionnelle, un niveau.
+/// The journal of a run: a sink, an optional tag, a verbosity level.
 ///
-/// Feuille : ne connaît ni `Halt` ni `Verdict`. L'exécuteur qui journalise un
-/// arrêt lui passe une chaîne déjà formatée — `traces/` n'a pas à savoir ce
-/// qu'un arrêt est pour rester une feuille du paquet.
+/// Leaf: knows neither `Halt` nor `Verdict`. The executor that logs a halt
+/// passes it an already-formatted string — `traces/` need not know what a halt
+/// is to remain a leaf of the package.
 #[derive(Clone)]
 pub struct Logbook {
     sink: Rc<dyn Sink>,
@@ -42,7 +42,7 @@ pub struct Logbook {
 }
 
 impl Logbook {
-    /// Un journal qui écrit vers `sink`, au niveau `verbosity`.
+    /// A logbook that writes to `sink`, at `verbosity` level.
     #[must_use]
     pub fn new(sink: Rc<dyn Sink>, verbosity: Verbosity) -> Self {
         Self {
@@ -52,17 +52,16 @@ impl Logbook {
         }
     }
 
-    /// Un journal qui n'écrit nulle part.
+    /// A logbook that writes nowhere.
     #[must_use]
     pub fn null() -> Self {
         Self::new(Rc::new(Null), Verbosity::Quiet)
     }
 
-    /// Le même journal, dont chaque ligne porte désormais cette étiquette.
+    /// The same logbook, where each line now bears this tag.
     ///
-    /// `log.bind("r3").bind("code")` estampille les lignes `[r3:code]` — ce
-    /// qui rend un journal entrelacé (plusieurs stages, un seul fichier)
-    /// attribuable.
+    /// `log.bind("r3").bind("code")` timestamps lines `[r3:code]` — which makes
+    /// an interlaced journal (several stages, one file) attributable.
     #[must_use]
     pub fn bind(&self, tag: &str) -> Self {
         let tag = self
@@ -76,7 +75,7 @@ impl Logbook {
         }
     }
 
-    /// Écrit une ligne, étiquette en tête si `bind` en a posé une.
+    /// Write a line, with tag at the head if `bind` set one.
     pub fn say(&self, line: &str) {
         match &self.tag {
             Some(tag) => self.sink.emit(&format!("[{tag}] {line}")),
@@ -84,23 +83,23 @@ impl Logbook {
         }
     }
 
-    /// Une ligne qu'un humain doit voir même en `Quiet`.
+    /// A line that a human must see even in `Quiet`.
     ///
-    /// Pas une panne — un `Halt` voyage comme valeur. Ce qui passe ici est ce
-    /// qui *n'arrête pas* le run et serait pourtant une mauvaise surprise plus
-    /// tard : un workspace gardé, du travail local absent du clone.
+    /// Not a failure — a `Halt` travels as a value. What passes here is what
+    /// *does not stop* the run and yet would be a bad surprise later: a kept
+    /// workspace, local work missing from the clone.
     pub fn warn(&self, line: &str) {
-        self.say(&format!("attention : {line}"));
+        self.say(&format!("warning: {line}"));
     }
 
-    /// Une ligne qui n'intéresse qu'une autopsie — tue sauf en `Verbose`.
+    /// A line of interest only to autopsy — silent unless `Verbose`.
     pub fn debug(&self, line: &str) {
         if self.verbosity == Verbosity::Verbose {
             self.say(line);
         }
     }
 
-    /// Le niveau de ce journal.
+    /// The verbosity level of this logbook.
     #[must_use]
     pub const fn verbosity(&self) -> Verbosity {
         self.verbosity
@@ -154,22 +153,22 @@ mod tests {
 
     #[test]
     fn a_warning_is_written_even_at_the_quietest_level() {
-        // Un workspace gardé n'arrête pas le run : si `--quiet` l'avalait,
-        // personne n'apprendrait jamais qu'il reste du travail sur le disque.
+        // A kept workspace does not stop the run: if `--quiet` swallowed it,
+        // nobody would ever learn that work stays on disk.
         let capture = Rc::new(Capture::default());
         let log = Logbook::new(Rc::clone(&capture) as Rc<dyn Sink>, Verbosity::Quiet);
-        log.warn("workspace gardé");
-        assert_eq!(capture.0.borrow()[0], "attention : workspace gardé");
+        log.warn("workspace kept");
+        assert_eq!(capture.0.borrow()[0], "warning: workspace kept");
     }
 
     #[test]
     fn a_debug_line_only_shows_up_when_asked_for() {
         let quiet = Rc::new(Capture::default());
-        Logbook::new(Rc::clone(&quiet) as Rc<dyn Sink>, Verbosity::Normal).debug("détail");
+        Logbook::new(Rc::clone(&quiet) as Rc<dyn Sink>, Verbosity::Normal).debug("detail");
         assert!(quiet.0.borrow().is_empty());
 
         let loud = Rc::new(Capture::default());
-        Logbook::new(Rc::clone(&loud) as Rc<dyn Sink>, Verbosity::Verbose).debug("détail");
-        assert_eq!(loud.0.borrow()[0], "détail");
+        Logbook::new(Rc::clone(&loud) as Rc<dyn Sink>, Verbosity::Verbose).debug("detail");
+        assert_eq!(loud.0.borrow()[0], "detail");
     }
 }

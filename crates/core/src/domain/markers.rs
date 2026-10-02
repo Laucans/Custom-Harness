@@ -1,30 +1,29 @@
-//! Le contrat verbal : ce qu'une session dit pour qu'on sache où elle en est.
+//! The verbal contract: what a session says so we know where it stands.
 //!
-//! Une session sans `AGENT_LOOP_OK` retombe sur les vérifications
-//! structurelles — les gates. Le marqueur n'est pas la preuve qu'un travail
-//! est fait, c'est la version courte ; c'est une PR mergée qui prouve.
+//! A session without `AGENT_LOOP_OK` falls back to structural checks — the
+//! gates. The marker is not proof that work is done, it is the short version;
+//! a merged PR is proof.
 
-/// La session dit ce qu'elle a fait.
+/// The session states what it did.
 pub const OK: &str = "AGENT_LOOP_OK";
 
-/// La session s'arrête d'elle-même. Un résultat correct, pas une panne.
+/// The session stops itself. A correct result, not a failure.
 pub const STOP: &str = "AGENT_LOOP_STOP";
 
-/// La ligne qui porte [`STOP`], si le texte en contient une.
+/// The line bearing [`STOP`], if the text contains one.
 ///
-/// Rendue entière plutôt qu'en booléen : la raison que la session donne est
-/// sur cette ligne, et c'est elle qu'un humain lira dans le journal.
+/// Returned whole rather than as a boolean: the reason the session gives is
+/// on this line, and it is what a human will read in the journal.
 #[must_use]
 pub fn stop_line(text: &str) -> Option<String> {
     marked(text, STOP)
 }
 
-/// La ligne qui porte [`OK`], si le texte en contient une.
+/// The line bearing [`OK`], if the text contains one.
 ///
-/// Rendue pour la même raison que [`stop_line`] : c'est le résumé que la
-/// session donne d'elle-même, et c'est cette ligne-là qu'un journal reprend.
-/// Son absence n'est pas un échec — elle fait seulement retomber sur les
-/// vérifications structurelles.
+/// Returned for the same reason as [`stop_line`]: it is the summary the
+/// session gives of itself, and it is this line that a journal picks up. Its
+/// absence is not a failure — it only falls back to structural checks.
 #[must_use]
 pub fn ok_line(text: &str) -> Option<String> {
     marked(text, OK)
@@ -42,38 +41,38 @@ mod tests {
 
     #[test]
     fn a_text_without_the_marker_has_no_stop_line() {
-        assert!(stop_line("j'ai fini, tout va bien").is_none());
+        assert!(stop_line("I'm done, everything is fine").is_none());
     }
 
     #[test]
     fn the_whole_line_comes_back_not_just_the_marker() {
-        let text = "voici ce que j'ai fait\nAGENT_LOOP_STOP: le SPEC est vide\nfin";
+        let text = "here is what I did\nAGENT_LOOP_STOP: the SPEC is empty\nend";
         assert_eq!(
             stop_line(text).as_deref(),
-            Some("AGENT_LOOP_STOP: le SPEC est vide")
+            Some("AGENT_LOOP_STOP: the SPEC is empty")
         );
     }
 
     #[test]
     fn the_line_is_trimmed_so_indentation_does_not_leak_into_the_journal() {
         assert_eq!(
-            stop_line("   AGENT_LOOP_STOP: rien à faire   ").as_deref(),
-            Some("AGENT_LOOP_STOP: rien à faire")
+            stop_line("   AGENT_LOOP_STOP: nothing to do   ").as_deref(),
+            Some("AGENT_LOOP_STOP: nothing to do")
         );
     }
 
     #[test]
     fn ok_and_stop_are_distinct_markers() {
-        assert!(stop_line("AGENT_LOOP_OK: livré").is_none());
-        assert!(ok_line("AGENT_LOOP_STOP: bloqué").is_none());
+        assert!(stop_line("AGENT_LOOP_OK: delivered").is_none());
+        assert!(ok_line("AGENT_LOOP_STOP: blocked").is_none());
     }
 
     #[test]
     fn the_ok_line_comes_back_whole_like_the_stop_line() {
-        let text = "j'ai fait ceci\nAGENT_LOOP_OK: grille livrée\n";
+        let text = "I did this\nAGENT_LOOP_OK: grid delivered\n";
         assert_eq!(
             ok_line(text).as_deref(),
-            Some("AGENT_LOOP_OK: grille livrée")
+            Some("AGENT_LOOP_OK: grid delivered")
         );
     }
 }

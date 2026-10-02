@@ -1,59 +1,54 @@
-# Ce qui porte une `Session` — rapport décisionnel
+# What carries a `Session` — decision report
 
-> **Arbitré : C maintenant, A comme destination.** Implémenté dans
-> `adapters::agent::claude_cli`. Le port (`Session` / `SessionFactory`) n'a pas
-> bougé, donc le passage à A ne touchera ni `Stage`/`Round` ni les workflows.
+> **Decided: C now, A as destination.** Implemented in `adapters::agent::claude_cli`.
+> The port (`Session` / `SessionFactory`) didn't move, so moving to A won't touch
+> `Stage`/`Round` or workflows.
 
-Étape 5. Trois propositions. Le port était déjà écrit
-(`adapters::agent::Session` / `SessionFactory`), donc ce choix ne touche ni
-`Stage`/`Round`, ni les workflows : c'est une décision **réversible**, et ça
-compte dans l'arbitrage.
+Step 5. Three proposals. The port was already written (`adapters::agent::Session` /
+`SessionFactory`), so this choice doesn't touch `Stage`/`Round` or workflows: it's
+a **reversible** decision, and that counts in the decision.
 
-## Ce que l'implémentation de C a révélé
+## What implementing C revealed
 
-Un piège de version, trouvé en lisant la doc plutôt qu'en le découvrant dans
-un `costs.tsv` faux :
+A version trap, found by reading docs rather than discovering it in a wrong `costs.tsv`:
 
-> **`total_cost_usd` sur un appel `--resume` est cumulatif pour toute la
-> conversation depuis Claude Code v2.1.277.** Avant cette version, chaque
-> appel ne rendait que le sien.
+> **`total_cost_usd` on a `--resume` call is cumulative for the entire conversation
+> since Claude Code v2.1.277.** Before that version, each call returned only its own.
 
-Donc le coût d'une stage est la valeur du **dernier** tour, et sommer les tours
-double-compterait — *ou l'inverse*, selon la version installée. Cette machine
-est en **2.1.257**, du mauvais côté de la bascule : sommer donne le bon chiffre
-aujourd'hui et un chiffre faux après une mise à jour, sans rien qui le signale.
+So a stage's cost is the value of the **last** turn, and summing turns would double-count
+— *or the reverse*, depending on the installed version. This machine is on **2.1.257**,
+the wrong side of the flip: summing gives the right number today and a wrong number
+after an update, with nothing to signal it.
 
-Traitement retenu : l'adaptateur **ne tranche pas**, il rapporte fidèlement ce
-que le tour a dit dans `Reply::cost`. C'est au registre de dépenses — pas
-encore écrit — d'accumuler, et **une porte de préflight sur `claude --version`
-devra le décider**. Une porte coûte un appel local ; un `costs.tsv` faux ne se
-voit pas.
+Approach chosen: the adapter **doesn't decide**, it faithfully reports what the turn
+said in `Reply::cost`. It's up to the spending ledger — not yet written — to accumulate,
+and **a preflight gate on `claude --version` will have to decide it**. A gate costs a
+local call; a wrong `costs.tsv` doesn't show.
 
-Deux autres points notés au passage :
+Two other points noted along the way:
 
-- `total_cost_usd` est une **estimation côté client**, d'une table de prix
-  embarquée. Bonne pour un budget, jamais pour facturer.
-- `usage` **exclut les subagents** ; `total_cost_usd` et `model_usage` les
-  incluent. Comme le stage `code` en lance, compter les jetons depuis `usage`
-  sous-compterait — c'est `total_cost_usd` qu'il faut lire.
-- **Ne pas utiliser `--bare`** : il saute la découverte des skills et du
-  `CLAUDE.md`, dont le harness dépend entièrement (`/business-analyst`,
-  `/code`).
+- `total_cost_usd` is a **client-side estimate** from an embedded price table. Good
+  for budgeting, never for billing.
+- `usage` **excludes subagents**; `total_cost_usd` and `model_usage` include them.
+  Since the `code` stage launches them, counting tokens from `usage` would undercount
+  — it's `total_cost_usd` to read.
+- **Don't use `--bare`**: it skips skill discovery and `CLAUDE.md`, which the harness
+  depends entirely on (`/business-analyst`, `/code`).
 
-## Correction : ce que j'ai écrit à l'étape 4 était faux
+## Correction: what I wrote at step 4 was wrong
 
-`MIGRATION.md` disait, sous tmux : « **le coût et l'usage ne sont pas
-récupérables** ». C'est faux. L'erreur était de supposer que le pane est le
-seul canal. Il ne l'est pas — et la question « peut-on demander le prix à la
-session ? » a une meilleure réponse : **on ne le demande pas au pane du tout.**
+`MIGRATION.md` said, under tmux: "**cost and usage are not retrievable**". Wrong.
+The error was assuming the pane is the only channel. It's not — and the question
+"can we ask the session for the price?" has a better answer: **we don't ask the pane
+at all.**
 
-Quatre canaux structurés existent *à côté* du terminal, tous compatibles avec
-une session interactive hébergée dans tmux.
+Four structured channels exist *alongside* the terminal, all compatible with an
+interactive session hosted in tmux.
 
-### 1. `statusLine` — le plus riche
+### 1. `statusLine` — the richest
 
-Claude Code invoque un script de status line en lui passant du JSON sur stdin.
-Le schéma porte, entre autres :
+Claude Code invokes a status line script by passing JSON on stdin. The schema
+carries, among others:
 
 ```json
 {
@@ -77,158 +72,149 @@ Le schéma porte, entre autres :
 }
 ```
 
-- **Le coût en USD exact**, pas des jetons à convertir.
-- **Les ratios de cache**, que `runtime/monitoring/metrics.py` calcule
-  aujourd'hui à la main.
-- **Les quotas, structurés et *prédictifs*.** Aujourd'hui `Halt::Quota` est
-  détecté **après coup**, en cherchant une phrase dans un run déjà échoué.
-  Ici le harness peut savoir *avant* d'ouvrir une stage que la fenêtre de 5 h
-  est à 95 % — et s'arrêter proprement au lieu de brûler un stage. C'est un
-  gain que ni stream-json ni le transcript n'offrent.
-- Mises à jour événementielles, débouncées à 300 ms, plus un
-  `refreshInterval` optionnel (minimum 1 s).
-- **Piège** : un script en vol est **annulé** si une nouvelle mise à jour
-  arrive. Donc écriture atomique (fichier temporaire + `rename`), sinon
-  enregistrement déchiré.
-- C'est un élément de TUI : disponible précisément dans le cas interactif
-  (donc tmux), pas en mode `-p`.
+- **Exact USD cost**, not tokens to convert.
+- **Cache ratios**, which `runtime/monitoring/metrics.py` calculates by hand today.
+- **Quotas, structured and *predictive*.** Today `Halt::Quota` is detected
+  **after the fact**, searching for a phrase in an already-failed run. Here the
+  harness can know *before* opening a stage that the 5h window is at 95% — and
+  stop cleanly instead of burning a stage. A win stream-json and the transcript
+  don't offer.
+- Event-driven updates, debounced at 300 ms, plus an optional `refreshInterval`
+  (minimum 1 s).
+- **Trap**: a script in flight is **cancelled** if a new update arrives. So atomic
+  write (temp file + `rename`), else torn record.
+- It's a TUI element: available precisely in the interactive case (so tmux), not
+  in `-p` mode.
 
-### 2. OpenTelemetry — le plus propre à agréger
+### 2. OpenTelemetry — cleanest to aggregate
 
-| Métrique | Unité | Quand |
+| Metric | Unit | When |
 | --- | --- | --- |
-| `claude_code.cost.usage` | **USD** | après chaque requête API |
-| `claude_code.token.usage` | tokens | après chaque requête API |
+| `claude_code.cost.usage` | **USD** | after each API request |
+| `claude_code.token.usage` | tokens | after each API request |
 
-Attributs : `session.id`, `model`, `effort`, `query_source`
-(`main` / `subagent` / `auxiliary`), `speed`. Donc attribuable par session, et
-distinguant un subagent du thread principal.
+Attributes: `session.id`, `model`, `effort`, `query_source` (`main` / `subagent` /
+`auxiliary`), `speed`. So attributable per session, distinguishing a subagent from
+the main thread.
 
-- Exportable **localement, sans réseau** : `OTEL_METRICS_EXPORTER=prometheus`
-  expose `http://localhost:9464/metrics`, que le harness scrape.
-- **À ne pas utiliser** : `OTEL_METRICS_EXPORTER=console` — ça écrit sur
-  stdout, donc dans le pane, par-dessus la TUI.
-- Compteur cumulatif : le coût d'un tour est un delta entre deux scrapes. Si
-  une session = une stage, une seule lecture à la fin suffit.
-- Un port par processus : sans objet ici, le harness est séquentiel
-  (décision n°3).
+- Exportable **locally, no network**: `OTEL_METRICS_EXPORTER=prometheus` exposes
+  `http://localhost:9464/metrics`, which the harness scrapes.
+- **Don't use**: `OTEL_METRICS_EXPORTER=console` — writes to stdout, so in the pane,
+  over the TUI.
+- Cumulative counter: a turn's cost is a delta between two scrapes. If one session
+  = one stage, a single read at the end suffices.
+- One port per process: no object here, the harness is sequential (decision #3).
 
-### 3. Le transcript JSONL — vérifié sur votre machine
+### 3. The JSONL transcript — verified on your machine
 
-`~/.claude/projects/<cwd-slug>/<session-id>.jsonl`, et `--session-id <uuid>`
-permet au harness de **choisir** l'uuid, donc de connaître le chemin d'avance.
+`~/.claude/projects/<cwd-slug>/<session-id>.jsonl`, and `--session-id <uuid>`
+lets the harness **choose** the uuid, so it knows the path ahead.
 
-Mesuré sur le transcript de la session en cours (332 messages `assistant`) :
+Measured on the current session transcript (332 `assistant` messages):
 
-- `message.usage` présent sur **100 %** d'entre eux : `input_tokens`,
-  `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
-  `service_tier`, `speed`, `iterations`.
-- `stopReason` au niveau racine — une frontière de tour exploitable.
-- **Aucun champ coût** : `grep` sur tout nom contenant `cost`/`usd` → rien.
-  Les jetons oui, les dollars non. Il faudrait une table de prix à tenir à
-  jour, ce qui est exactement le genre de duplication qui dérive en silence.
+- `message.usage` present on **100%** of them: `input_tokens`, `output_tokens`,
+  `cache_creation_input_tokens`, `cache_read_input_tokens`, `service_tier`,
+  `speed`, `iterations`.
+- `stopReason` at root level — an exploitable turn boundary.
+- **No cost field**: `grep` every name containing `cost`/`usd` → nothing. Tokens
+  yes, dollars no. Would need a price table to maintain, exactly the kind of
+  drift-prone duplication.
 
-### 4. Le hook `Stop` — la frontière de tour
+### 4. The `Stop` hook — turn boundary
 
-Payload : `session_id`, `transcript_path`, `cwd`, `permission_mode`,
-`hook_event_name`. Déclenché quand l'agent principal a fini de répondre —
-donc **la fin d'un tour, en événement**, sans lire un seul octet de terminal.
+Payload: `session_id`, `transcript_path`, `cwd`, `permission_mode`,
+`hook_event_name`. Fired when the main agent finishes answering — so **end of a
+turn, as an event**, without reading a single byte of terminal.
 
-- Le projet sait déjà faire : `event_assistant` fait déjà tourner un
-  `PostToolUse` sur `gh pr create` et un `PreToolUse` de garde de branche.
-- **Réserves connues** : des bugs rapportés de `transcript_path` /
-  `session_id` **périmés** après `/exit` et `--continue`
+- The project can already do it: `event_assistant` already runs a `PostToolUse`
+  on `gh pr create` and a `PreToolUse` branch guard.
+- **Known caveats**: reported bugs with `transcript_path` / `session_id`
+  **stale** after `/exit` and `--continue`
   ([#8564](https://github.com/anthropics/claude-code/issues/8564),
-  [#9188](https://github.com/anthropics/claude-code/issues/9188)). À tester
-  avant d'en dépendre.
-- Le payload ne porte pas l'usage ; c'est une demande ouverte
-  ([#91767](https://github.com/anthropics/claude-code/issues/91767)).
+  [#9188](https://github.com/anthropics/claude-code/issues/9188)). Test before
+  relying.
+- Payload doesn't carry usage; open request ([#91767](https://github.com/anthropics/claude-code/issues/91767)).
 
-## Le vrai coût de tmux, qui n'est pas celui que je croyais
+## The real cost of tmux, not what I thought
 
-Le coût n'est pas « pas de données de coût ». C'est celui-ci :
+The cost isn't "no cost data". It's this:
 
-> **tmux n'achète pas l'agnosticisme d'agent. Il achète un conteneur
-> générique plus un port d'instrumentation à écrire par agent.**
+> **tmux doesn't buy agent agnosticism. It buys a generic container plus an
+> instrumentation port to write per agent.**
 
-`statusLine`, les noms de métriques OTel, les hooks, le schéma du transcript :
-**tout est spécifique à Claude Code.** Un pane tmux qui héberge `opencode`
-n'aura aucun de ces quatre canaux — il en aura d'autres, ou aucun. Donc la
-motivation d'origine (« un Tmux portera un claude ou un opencode ») tient pour
-le *conteneur*, pas pour l'instrumentation. C'est défendable — c'est même la
-bonne architecture — mais c'est deux ports, pas un.
+`statusLine`, OTel metric names, hooks, transcript schema: **all Claude Code
+specific.** A tmux pane hosting `opencode` will have none of these four channels
+— it will have others, or none. So the original motivation ("one tmux will carry
+a claude or an opencode") holds for the *container*, not the instrumentation.
+Defensible — even the right architecture — but it's two ports, not one.
 
-Ce qui reste difficile sous tmux, et qui ne se résout par aucun canal
-out-of-band :
+What remains hard under tmux, unsolvable by any out-of-band channel:
 
-- **Piloter l'entrée reste des frappes clavier.** `send-keys` dans une TUI est
-  plus fragile qu'écrire une ligne JSON : bracketed paste, prompts multilignes,
-  un `/` en tête interprété, un pane dans un état modal. `send-keys -l` et
-  `load-buffer` + `paste-buffer` atténuent, mais on simule un humain.
-- **Les demandes de permission bloquent.** En non surveillé, un dialogue de
-  permission est un blocage indéfini. `--permission-mode bypassPermissions`
-  règle la question — et le projet l'a déjà choisi (`PERMISSION_MODE`).
+- **Driving input remains keyboard typing.** `send-keys` in a TUI is more fragile
+  than writing a JSON line: bracketed paste, multi-line prompts, a leading `/`
+  interpreted, a pane in a modal state. `send-keys -l` and `load-buffer` +
+  `paste-buffer` help, but you're simulating a human.
+- **Permission requests block.** Unattended, a permission dialog is indefinite
+  blocking. `--permission-mode bypassPermissions` settles it — and the project
+  already chose it (`PERMISSION_MODE`).
 
-## Les trois propositions
+## The three proposals
 
-### A — tmux + instrumentation Claude Code
+### A — tmux + Claude Code instrumentation
 
-Un pane par stage, `claude` interactif, `--session-id <uuid>` imposé par le
-harness, `--permission-mode bypassPermissions`. Entrée par `send-keys`. Fin de
-tour par le hook `Stop`. Coût et quotas par `statusLine`, écrit atomiquement
-dans un fichier par session.
+One pane per stage, interactive `claude`, `--session-id <uuid>` imposed by harness,
+`--permission-mode bypassPermissions`. Input via `send-keys`. Turn end via `Stop`
+hook. Cost and quotas from `statusLine`, atomically written to a file per session.
 
 | | |
 | --- | --- |
-| **Gagne** | attachable en vol (`tmux attach`) : un humain reprend une stage coincée à 3 h du matin. Coût USD exact, ratios de cache, **quotas prédictifs**. Conteneur générique pour un futur agent. |
-| **Coûte** | trois surfaces spécifiques à Claude Code à écrire et à maintenir (statusline, hook, frappes). Fragilité TUI en entrée. Réserves de péremption sur le hook. |
-| **Effort** | le plus élevé |
+| **Gains** | attachable in flight (`tmux attach`): a human resumes a stuck stage at 3 AM. Exact USD cost, cache ratios, **predictive quotas**. Generic container for a future agent. |
+| **Costs** | three Claude Code-specific surfaces to write and maintain (statusline, hook, keystrokes). TUI input fragility. Hook staleness caveats. |
+| **Effort** | highest |
 
-### B — stream-json, processus long
+### B — stream-json, long-running process
 
 `claude -p --input-format stream-json --output-format stream-json
---replay-user-messages`. Un seul processus enfant, JSON par lignes dans les
-deux sens. Fin de tour et `total_cost_usd` dans le message `result`.
+--replay-user-messages`. One child process, JSON line-by-line both ways. Turn end
+and `total_cost_usd` in the `result` message.
 
 | | |
 | --- | --- |
-| **Gagne** | un seul canal, typé, en bande. Aucune instrumentation annexe. Acquittement natif (`--replay-user-messages`). La vraie « session ouverte ». Marche en CI, sans TTY. |
-| **Coûte** | non attachable : personne ne peut regarder ni reprendre. Un protocole bidirectionnel à écrire — le plus gros adaptateur de la migration. Pas de quotas prédictifs. |
-| **Effort** | élevé, concentré en un endroit |
+| **Gains** | one channel, typed, in-band. No side instrumentation. Native acknowledgement (`--replay-user-messages`). Real "session open". Works in CI, no TTY. |
+| **Costs** | not attachable: no one can watch or resume. Bidirectional protocol to write — biggest adapter of the migration. No predictive quotas. |
+| **Effort** | high, concentrated in one place |
 
-### C — un processus par action, recousu par `--resume`
+### C — one process per action, stitched by `--resume`
 
-Chaque `SessionAction` = un `claude -p --resume <uuid> --output-format json`.
-Un objet JSON à parser, `total_cost_usd` dedans, frontière de tour = sortie du
-processus.
+Each `SessionAction` = a `claude -p --resume <uuid> --output-format json`. One
+JSON object to parse, `total_cost_usd` inside, turn boundary = process exit.
 
 | | |
 | --- | --- |
-| **Gagne** | de loin le moins de code : ni protocole, ni hook, ni statusline, ni frappes. Coût USD et fin de tour **gratuits** à chaque appel. La continuité de conversation — ce pour quoi `lead` existait — est bien préservée par `--resume`. |
-| **Coûte** | « session ouverte » est une fiction : rechargement du contexte par action (le cache de prompt en amortit le coût, pas la latence). Non attachable. Pas de quotas prédictifs. |
-| **Effort** | le plus faible |
+| **Gains** | by far the least code: no protocol, hook, statusline, or keystrokes. USD cost and turn end **free** per call. Conversation continuity — what `lead` existed for — well preserved by `--resume`. |
+| **Costs** | "session open" is fiction: context reload per action (prompt cache amortizes cost, not latency). Not attachable. No predictive quotas. |
+| **Effort** | lowest |
 
-## Recommandation — retenue
+## Recommendation — chosen
 
-**C d'abord, A comme destination si l'attachabilité s'avère compter.**
+**C first, A as destination if attachability proves to matter.**
 
-Trois raisons :
+Three reasons:
 
-1. **Le projet optimise pour la simplicité et l'itération rapide**, pas pour
-   l'exhaustivité (`CLAUDE.md` du dépôt parent, en toutes lettres). C est
-   petit, et il donne *déjà* coût exact et frontières de tour.
-2. **La décision est réversible par construction.** Le trait `Session` existe,
-   `Stage`/`Round` sont testés contre des fakes. Passer de C à A ne touche
-   aucun workflow. Prendre le chemin cher d'abord, c'est payer une option dont
-   on ne sait pas encore si on a besoin.
-3. **B est le mauvais achat.** Il coûte le plus (un protocole bidirectionnel)
-   pour un bénéfice — un processus réellement vivant — que C approxime à une
-   fraction de l'effort, et sans rien gagner sur l'observabilité.
+1. **The project optimizes for simplicity and fast iteration**, not completeness
+   (parent repo's `CLAUDE.md`, in so many words). C is small, and it *already*
+   gives exact cost and turn boundaries.
+2. **The decision is reversible by construction.** The `Session` trait exists,
+   `Stage`/`Round` are tested against fakes. Moving from C to A touches no
+   workflow. Taking the expensive path first is paying for an option we don't yet
+   know we need.
+3. **B is the wrong buy.** It costs the most (a bidirectional protocol) for a
+   benefit — a truly live process — that C approximates at a fraction of the effort,
+   gaining nothing on observability.
 
-Ce qui ferait basculer vers **A** : si en usage réel les stages se coincent et
-qu'on veut pouvoir reprendre la main sans tuer le run, ou si les quotas
-prédictifs deviennent nécessaires pour ne pas gâcher des rounds. Les deux sont
-plausibles — d'où « destination », pas « jamais ».
+What would flip to **A**: if in real use stages get stuck and we want to resume
+without killing the run, or if predictive quotas become necessary to avoid wasting
+rounds. Both plausible — hence "destination", not "never".
 
 ## Sources
 

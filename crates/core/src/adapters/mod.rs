@@ -1,8 +1,7 @@
-//! L'extérieur, emballé.
+//! External dependencies, wrapped.
 //!
-//! Une porte décide, elle n'appelle jamais un sous-processus ou une
-//! bibliothèque externe elle-même — c'est cette couche qui le fait, et elle
-//! seule. Un sous-module par composant externe, comme côté Python.
+//! A port decides, it never calls a subprocess or external library itself —
+//! this layer does it, and only this layer. One submodule per external component.
 
 pub mod agent;
 pub mod shell;

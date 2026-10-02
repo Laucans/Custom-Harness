@@ -1,19 +1,19 @@
 #![warn(clippy::pedantic, clippy::nursery, missing_docs, rust_2018_idioms)]
 #![deny(unsafe_code)]
-// Même raison qu'à la racine de `harness-core` : la décision n°3 choisit
-// `?Send` partout, et `clippy::future_not_send` présuppose le contraire.
+// Same reason as at the root of `harness-core`: decision #3 chooses `?Send`
+// everywhere, and `clippy::future_not_send` presupposes the opposite.
 #![allow(clippy::future_not_send)]
 
-//! Le point d'entrée : lire les arguments, trouver le dépôt, faire tourner.
+//! The entry point: read the arguments, find the repository, run.
 //!
-//! Le code de sortie **est un contrat**. Un ordonnanceur extérieur le lit, et
-//! les quatre valeurs sont celles du pipeline Python, inchangées par la
-//! migration : `0` tout va bien, `1` un arrêt volontaire ou un magasin
-//! illisible, `2` un échec, `3` un quota épuisé. Les déplacer serait un
-//! changement de contrat déguisé en refactoring.
+//! The exit code **is a contract**. An external scheduler reads it, and the
+//! four values are: `0` everything is fine, `1` a voluntary halt or an
+//! unreadable store, `2` a failure, `3` a quota exhausted. Moving them would
+//! be a hidden contract change dressed up as refactoring.
 
 mod cli;
 mod dev_loop;
+mod init_repo;
 mod sink;
 mod spending;
 mod tooling;
@@ -24,11 +24,11 @@ use std::process::ExitCode;
 use clap::Parser;
 use harness_core::domain::{Severity, Verdict};
 
-/// Fait tourner la boucle, et rend le code que l'ordonnanceur lit.
+/// Runs the loop and returns the code that the scheduler reads.
 ///
-/// `current_thread` : le harness pilote une session à la fois, et la décision
-/// n°3 choisit `?Send` partout — un ordonnanceur multi-thread n'aurait rien à
-/// ordonnancer.
+/// `current_thread`: the harness drives one session at a time, and decision
+/// #3 chooses `?Send` everywhere — a multi-thread scheduler would have
+/// nothing to schedule.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let args = cli::Cli::parse();
@@ -39,45 +39,44 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match dev_loop::run(&args, &here).await {
-        Ok(ran) => {
-            if let Verdict::NothingLeft(why) = &ran.verdict {
-                println!("{why}");
+    match &args.command {
+        Some(cli::Command::InitRepo(sub)) => init_repo::run(sub, &here).await,
+        None => match dev_loop::run(&args.run, &here).await {
+            Ok(ran) => {
+                if let Verdict::NothingLeft(why) = &ran.verdict {
+                    println!("{why}");
+                }
+                println!("journal : {}", ran.log.display());
+                ExitCode::SUCCESS
             }
-            println!("journal : {}", ran.log.display());
-            ExitCode::SUCCESS
-        }
-        Err(halt) => {
-            // Le préfixe et le niveau sont ceux que l'ordonnanceur lisait déjà.
-            let line = format!("{}: {}", halt.prefix(), halt.reason());
-            match halt.severity() {
-                Severity::Info => println!("{line}"),
-                Severity::Warn | Severity::Error => eprintln!("{line}"),
+            Err(halt) => {
+                // The prefix and level are those that the scheduler already read.
+                let line = format!("{}: {}", halt.prefix(), halt.reason());
+                match halt.severity() {
+                    Severity::Info => println!("{line}"),
+                    Severity::Warn | Severity::Error => eprintln!("{line}"),
+                }
+                ExitCode::from(u8::try_from(halt.exit_code()).unwrap_or(2))
             }
-            ExitCode::from(u8::try_from(halt.exit_code()).unwrap_or(2))
-        }
+        },
     }
 }
 
-/// Le dépôt d'où le run est lancé.
+/// The repository from which the run is launched.
 ///
-/// En remontant depuis le répertoire courant, **sans sous-processus** : le
-/// Python lançait un `git rev-parse` à l'import, donc charger n'importe quel
-/// module — un hook, un `--help`, une collecte de tests — en lançait un, et
-/// levait une exception nue en dehors d'un checkout.
+/// By walking up from the current directory, **without a subprocess**.
 fn repo_root() -> Result<PathBuf, String> {
-    let here = std::env::current_dir()
-        .map_err(|e| format!("le répertoire courant ne se lit pas : {e}"))?;
+    let here =
+        std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?;
     walk_up(&here).ok_or_else(|| {
         format!(
-            "aucun dépôt git au-dessus de {} — lancez le harness depuis un \
-             checkout",
+            "no git repository above {} — run the harness from a checkout",
             here.display()
         )
     })
 }
 
-/// Le premier ancêtre qui porte un `.git`, celui-ci compris.
+/// The first ancestor that carries a `.git`, including this one.
 fn walk_up(from: &Path) -> Option<PathBuf> {
     from.ancestors()
         .find(|parent| parent.join(".git").exists())
@@ -91,13 +90,13 @@ mod tests {
 
     #[test]
     fn the_exit_codes_are_the_frozen_contract() {
-        // Un ordonnanceur extérieur les lit : les déplacer serait un changement
-        // de contrat déguisé en refactoring.
+        // An external scheduler reads them: moving them would be a hidden
+        // contract change dressed up as refactoring.
         assert_eq!(Halt::Halted(String::new()).exit_code(), 1);
         assert_eq!(Halt::Unreadable(String::new()).exit_code(), 1);
         assert_eq!(Halt::Failed(String::new()).exit_code(), 2);
         assert_eq!(Halt::Quota(String::new()).exit_code(), 3);
-        // Et chacun tient dans le `u8` que rend un processus.
+        // And each fits in the `u8` that a process returns.
         for halt in [
             Halt::Halted(String::new()),
             Halt::Unreadable(String::new()),
@@ -110,8 +109,8 @@ mod tests {
 
     #[test]
     fn the_repository_is_found_by_walking_up_without_a_subprocess() {
-        // Ce dépôt-ci : le test tourne dedans, donc la réponse est connue.
-        let found = walk_up(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("un dépôt");
+        // This repository: the test runs inside it, so the answer is known.
+        let found = walk_up(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("a repository");
         assert!(found.join(".git").exists());
     }
 

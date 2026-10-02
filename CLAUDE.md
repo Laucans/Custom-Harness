@@ -1,23 +1,33 @@
 # harness
 
-Rust rewrite of `event_assistant/pipeline` (the unattended agent-loop
-runner) as an agent harness: it drives Claude Code sessions through
+Rust agent harness: it drives Claude Code sessions through
 verification gates, rather than just moving data through stages. Standalone
-repo, currently staged inside `event_assistant` under the working directory
-`pipelinev2/` pending its move to its own repository — the directory name is
-provisional, the crates below are the actual project identity. Scaffold
+The crates below are the actual project identity. Scaffold
 stage — architecture is being redecided as part of the rewrite, not carried
 over by default.
 
+## Role
+You are one of the many sessions used to build the harness
+
+## Interaction context
+If the user speak in french, translate in english before to think, then before to answer translate to french.
+Use less word as possible, speak with light sentence, straight to the point and avoid large answers, use dotlist with few words instead, if user want more details onto a point he will ask.
+
+## Objective
+The objective is to build a re-usable harness, first workflow will focus onto development, but another user can use harness-core to build another agent workflow, for example to build report to answer a question as a strategy consultant can do.
+
 ## Project Context
 
+- **Architecture: `ARCHITECTURE_OVERVIEW.md`** — the split, each crate's role,
+  and how the dependencies form. Current detail per crate in
+  `crates/<crate>/ARCHITECTURE.md`; read the one for the crate you are touching
+  before moving a file or adding a module.
 - Cargo workspace, three crates, one direction only:
   `harness-launcher` (bin) → `harness-workflows` (lib) → `harness-core`
   (lib). `core` never depends on `workflows` or `launcher` — enforced by
   Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
-  a warning. See `docs/MIGRATION.md` for why this mirrors the Python
-  original's three packages.
-  `edition = "2024"`, pinned `rust-version` (MSRV) at the workspace level
+  a warning. 
+- `edition = "2024"`, pinned `rust-version` (MSRV) at the workspace level
   (`[workspace.package]`); each crate's `Cargo.toml` inherits it
   (`edition.workspace = true`). Toolchain pinned via `rust-toolchain.toml`.
 - Within `harness-core`: `src/lib.rs` re-exports `domain/`, `traces/`,
@@ -55,7 +65,7 @@ over by default.
   loops honor cancellation via `tokio::select!` against a shutdown signal.
 
 ## Style Rules
-
+- Comments have to be in english, if you are editing something where comments are french. Remove them and add an understandable comment in english (prefer few explicit words)
 - Lints: crate root sets `#![warn(clippy::pedantic, clippy::nursery,
   missing_docs, rust_2018_idioms)]` (already set). CI runs
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`. No

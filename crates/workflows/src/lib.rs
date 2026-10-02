@@ -1,15 +1,23 @@
 #![warn(clippy::pedantic, clippy::nursery, missing_docs, rust_2018_idioms)]
 #![deny(unsafe_code)]
-// Même raison qu'à la racine de `harness-core` : la décision n°3 choisit
-// `?Send` partout, et `clippy::future_not_send` présuppose le contraire.
+// Same reason as at the root of `harness-core`: decision #3 chooses `?Send`
+// everywhere, and `clippy::future_not_send` presupposes the opposite.
 #![allow(clippy::future_not_send)]
 
-//! Les instances : ce que `harness-core` ne peut pas nommer.
+//! The instances: what `harness-core` cannot name.
 //!
-//! Un sous-module par workflow, plus `common` pour ce qu'au moins deux d'entre
-//! eux lisent réellement — les étiquettes, un faux GitHub pour leurs tests.
+//! One submodule per workflow, plus `common` for what at least two of them
+//! actually read — labels, the repo map, a fake GitHub for their tests.
+//!
+//! **The three workflows have the same skeleton** — `ports` / `config` / `run`
+//! at the root, then `data` / `action` / `checks` / `orchestration`. What each
+//! carries, the sense of dependencies between them, and the reason for each
+//! rule: `ARCHITECTURE.md`, to be read before adding a workflow or moving a file
+//! in an existing one. `init_repo` is the one departure from that skeleton —
+//! see its own `mod.rs`.
 
 pub mod common;
 pub mod dev_loop;
+pub mod init_repo;
 pub mod pr_review;
 pub mod refinement;

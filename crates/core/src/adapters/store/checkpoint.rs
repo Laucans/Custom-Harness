@@ -1,31 +1,28 @@
-//! Où en est le harness, et comment il reprend.
+//! Where the harness is, and how it resumes.
 //!
-//! Deux magasins, et c'est délibéré :
+//! Two stores, and it's deliberate:
 //!
-//! - un **pointeur** de deux lignes (`task=`, `flow_id=`), qui reste lisible au
-//!   `cat` et effaçable à la main. Il existe parce qu'un état que personne ne
-//!   peut lire est un état que personne ne débogue ;
-//! - les **états**, un fichier JSONL par flow, une ligne par étape.
+//! - a **pointer** of two lines (`task=`, `flow_id=`), readable with `cat` and
+//!   editable by hand. It exists because an unreadable state is an undebuggable state;
+//! - the **states**, one JSONL file per flow, one line per step.
 //!
-//! **Ce qui n'est pas porté : sqlite.** Le schéma du Python
-//! (`flow_states(flow_uuid, method_name, timestamp, state_json)`) n'existait
-//! que par héritage du `@persist` d'un moteur de graphe, et ce moteur est mort
-//! avant la migration. Du JSONL garde la propriété qui comptait — une ligne par
-//! étape, donc une reprise ratée reste lisible après coup — sans traîner une
-//! dépendance C pour un fichier qu'on ouvre deux fois par round.
+//! **What is not ported: sqlite.** The Python schema
+//! (`flow_states(flow_uuid, method_name, timestamp, state_json)`) existed only
+//! by inheritance from a `@persist` graph engine, and that engine died before
+//! the migration. JSONL keeps the property that mattered — one line per step,
+//! so a failed resume stays readable afterwards — without dragging a C dependency
+//! for a file opened twice per round.
 //!
-//! Synchrone, à la différence de `Session` et `Repo` : ceux-là lancent des
-//! processus, ce qui est lent et n'existe qu'en async chez tokio. Écrire deux
-//! kilo-octets sur un disque local n'a rien à gagner d'un `await`, et le
-//! prétendre asynchrone donnerait une fausse idée de ce que ça coûte.
+//! Synchronous, unlike `Session` and `Repo`: those spawn processes, which is slow
+//! and async-only in tokio. Writing two kilobytes to local disk gains nothing from
+//! `await`, and claiming it's async would give a false idea of cost.
 //!
-//! # L'invariant qui coûte de l'argent
+//! # The invariant that costs money
 //!
-//! **Un magasin illisible n'est jamais « rien n'a tourné ».** Les deux réponses
-//! valent une session de `/code` d'écart : la seconde fait repayer une stage
-//! qui a peut-être déjà mergé. Un magasin absent, un flow inconnu et un
-//! identifiant vide veulent dire la même chose, inoffensive, et rendent `None` ;
-//! tout le reste rend [`Halt::Unreadable`].
+//! **An unreadable store is never "nothing ran yet".** The two answers are worth
+//! a `/code` session apart: the latter makes us repay a stage that may have already
+//! merged. A missing store, an unknown flow, and an empty ID all mean the same
+//! harmless thing and return `None`; everything else returns [`Halt::Unreadable`].
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -34,25 +31,25 @@ use serde_json::Value;
 
 use crate::domain::{Halt, Outcome};
 
-/// Le point de reprise, tel que le pointeur le dit.
+/// The resume point, as the pointer describes it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pointer {
-    /// La task en cours, si le harness en avait une.
+    /// The current task, if the harness had one.
     pub task: Option<String>,
-    /// Le flow dont les états portent le détail.
+    /// The flow whose states carry the details.
     pub flow_id: Option<String>,
 }
 
-/// Le pointeur, tel qu'il s'écrit : deux lignes, lisibles au `cat`.
+/// The pointer, as it's written: two lines, readable with `cat`.
 #[must_use]
 fn render_pointer(task: &str, flow_id: &str) -> String {
     format!("task={task}\nflow_id={flow_id}\n")
 }
 
-/// Le pointeur, tel qu'il se relit.
+/// The pointer, as it's re-read.
 ///
-/// Une ligne qu'on ne comprend pas est ignorée : le fichier est fait pour être
-/// édité à la main, et une faute de frappe ne doit pas arrêter un run.
+/// A line we don't understand is ignored: the file is meant to be hand-edited,
+/// and a typo must not stop a run.
 #[must_use]
 fn parse_pointer(text: &str) -> Pointer {
     let mut found = Pointer::default();
@@ -66,14 +63,13 @@ fn parse_pointer(text: &str) -> Pointer {
     found
 }
 
-/// Le magasin de reprise, dans un répertoire.
+/// The resume store, in a directory.
 pub struct Checkpoint {
     dir: PathBuf,
 }
 
 impl Checkpoint {
-    /// Le magasin dans ce répertoire. Rien n'est créé avant la première
-    /// écriture.
+    /// The store in this directory. Nothing is created until the first write.
     #[must_use]
     pub fn new(dir: &Path) -> Self {
         Self {
@@ -85,8 +81,8 @@ impl Checkpoint {
         self.dir.join("state")
     }
 
-    /// Un fichier par flow. L'identifiant est assaini : il vient d'un
-    /// workflow, et un `../` dedans écrirait ailleurs que dans le magasin.
+    /// One file per flow. The ID is sanitized: it comes from a workflow,
+    /// and a `../` in it would write outside the store.
     fn flow_path(&self, flow_id: &str) -> PathBuf {
         let safe: String = flow_id
             .chars()
@@ -101,11 +97,11 @@ impl Checkpoint {
         self.dir.join(format!("flow-{safe}.jsonl"))
     }
 
-    /// Le point de reprise, ou un pointeur vide s'il n'y en a pas.
+    /// The resume point, or an empty pointer if there is none.
     ///
     /// # Errors
     ///
-    /// [`Halt::Unreadable`] si le fichier existe mais ne se lit pas.
+    /// [`Halt::Unreadable`] if the file exists but can't be read.
     pub fn pointer(&self) -> Outcome<Pointer> {
         let path = self.pointer_path();
         if !path.exists() {
@@ -115,11 +111,11 @@ impl Checkpoint {
         Ok(parse_pointer(&text))
     }
 
-    /// Écrit le point de reprise.
+    /// Write the resume point.
     ///
     /// # Errors
     ///
-    /// [`Halt::Failed`] si le pointeur n'a pas pu être écrit.
+    /// [`Halt::Failed`] if the pointer couldn't be written.
     pub fn set_pointer(&self, task: &str, flow_id: &str) -> Outcome<()> {
         std::fs::create_dir_all(&self.dir).map_err(|e| wrote_nothing(&self.dir, &e.to_string()))?;
         let path = self.pointer_path();
@@ -127,12 +123,12 @@ impl Checkpoint {
             .map_err(|e| wrote_nothing(&path, &e.to_string()))
     }
 
-    /// La task est livrée : le point de reprise n'a plus rien à décrire.
+    /// The task is done: the resume point has nothing left to describe.
     ///
     /// # Errors
     ///
-    /// [`Halt::Failed`] si le pointeur existe et n'a pas pu être supprimé — le
-    /// laisser en place ferait reprendre une task déjà finie.
+    /// [`Halt::Failed`] if the pointer exists and couldn't be deleted — leaving it
+    /// in place would resume a task that's already done.
     pub fn clear(&self) -> Outcome<()> {
         let path = self.pointer_path();
         match std::fs::remove_file(&path) {
@@ -142,15 +138,14 @@ impl Checkpoint {
         }
     }
 
-    /// Ajoute l'état du round après une étape.
+    /// Add the round state after a step.
     ///
-    /// Une ligne par étape plutôt qu'une mise à jour : [`Checkpoint::load`] lit
-    /// la dernière, et garder les précédentes rend une reprise ratée lisible
-    /// après coup.
+    /// One line per step rather than an update: [`Checkpoint::load`] reads the last,
+    /// and keeping the previous ones makes a failed resume readable afterwards.
     ///
     /// # Errors
     ///
-    /// [`Halt::Failed`] si l'état n'a pas pu être écrit.
+    /// [`Halt::Failed`] if the state couldn't be written.
     pub fn save(&self, flow_id: &str, step: &str, state: &Value) -> Outcome<()> {
         std::fs::create_dir_all(&self.dir).map_err(|e| wrote_nothing(&self.dir, &e.to_string()))?;
         let path = self.flow_path(flow_id);
@@ -163,16 +158,16 @@ impl Checkpoint {
         writeln!(file, "{line}").map_err(|e| wrote_nothing(&path, &e.to_string()))
     }
 
-    /// L'état le plus récent de ce flow, ou `None`.
+    /// The most recent state of this flow, or `None`.
     ///
-    /// `None` veut dire « rien n'a encore tourné » — magasin absent, flow
-    /// inconnu, identifiant vide. Toutes ces réponses sont inoffensives.
+    /// `None` means "nothing has run yet" — missing store, unknown flow, empty ID.
+    /// All these answers are harmless.
     ///
     /// # Errors
     ///
-    /// [`Halt::Unreadable`] si le magasin existe mais ne se décode pas. **Ce
-    /// n'est pas la même chose que `None`** : l'écart vaut une session de
-    /// `/code`, et le confondre ferait repayer une stage déjà mergée.
+    /// [`Halt::Unreadable`] if the store exists but can't be decoded. **This
+    /// is not the same as `None`**: the gap is worth a `/code` session, and confusing
+    /// them would make us repay a stage that's already merged.
     pub fn load(&self, flow_id: &str) -> Outcome<Option<Value>> {
         if flow_id.is_empty() {
             return Ok(None);
@@ -183,7 +178,7 @@ impl Checkpoint {
         }
         let text = std::fs::read_to_string(&path).map_err(|e| unreadable(&path, &e.to_string()))?;
         let Some(last) = text.lines().rfind(|line| !line.trim().is_empty()) else {
-            // Un fichier vide : personne n'a encore écrit d'étape.
+            // Empty file: no one has written a step yet.
             return Ok(None);
         };
         let record: Value =
@@ -192,25 +187,23 @@ impl Checkpoint {
             .get("state")
             .cloned()
             .map(Some)
-            .ok_or_else(|| unreadable(&path, "la dernière ligne n'a pas de champ `state`"))
+            .ok_or_else(|| unreadable(&path, "last line has no `state` field"))
     }
 }
 
-/// Ce qu'on dit quand on ne sait pas où en est le harness.
+/// What we say when we don't know where the harness is.
 fn unreadable(path: &Path, detail: &str) -> Halt {
     Halt::Unreadable(format!(
-        "état de reprise illisible en {} ({detail}) — quelles stages ont déjà \
-         tourné est inconnu, et lire ça comme « aucune » ferait repayer une \
-         stage qui a peut-être déjà mergé. Inspecter ou supprimer le fichier, \
-         ou relancer en forçant la reprise de cette task depuis le début.",
+        "resume state unreadable at {} ({detail}) — which stages have already run is unknown, \
+         and reading it as « none » would make us repay a stage that may have already merged. \
+         Inspect or delete the file, or relaunch forcing this task's resume from the start.",
         path.display()
     ))
 }
 
 fn wrote_nothing(path: &Path, detail: &str) -> Halt {
     Halt::Failed(format!(
-        "impossible d'écrire {} ({detail}) — le harness ne pourrait pas \
-         reprendre là où il s'arrête",
+        "couldn't write {} ({detail}) — the harness couldn't resume where it stopped",
         path.display()
     ))
 }
@@ -220,8 +213,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Un répertoire à nous, effacé à la fin. Le vrai disque, pas un double :
-    /// ce module *est* le système de fichiers, et un faux ne prouverait rien.
+    /// A directory of our own, cleaned up at the end. The real disk, not a fake:
+    /// this module *is* the filesystem, and a fake wouldn't prove anything.
     struct Dir(PathBuf);
 
     impl Dir {
@@ -243,7 +236,7 @@ mod tests {
         }
     }
 
-    // --- le pointeur -------------------------------------------------------
+    // --- pointer ---
 
     #[test]
     fn the_pointer_stays_two_readable_lines() {
@@ -254,9 +247,9 @@ mod tests {
     fn a_pointer_round_trips() {
         let dir = Dir::new("pointer");
         let store = dir.store();
-        store.set_pointer("42", "flow-9").expect("écriture");
+        store.set_pointer("42", "flow-9").expect("write");
         assert_eq!(
-            store.pointer().expect("relecture"),
+            store.pointer().expect("read back"),
             Pointer {
                 task: Some("42".to_string()),
                 flow_id: Some("flow-9".to_string()),
@@ -272,9 +265,8 @@ mod tests {
 
     #[test]
     fn a_hand_edited_pointer_survives_a_stray_line() {
-        // Le fichier est fait pour être édité à la main : une faute de frappe
-        // ne doit pas arrêter un run.
-        let found = parse_pointer("task=42\nune ligne que personne n'attend\nflow_id=f1\n");
+        // The file is meant to be hand-edited: a typo must not stop a run.
+        let found = parse_pointer("task=42\nan unexpected line\nflow_id=f1\n");
         assert_eq!(found.task.as_deref(), Some("42"));
         assert_eq!(found.flow_id.as_deref(), Some("f1"));
     }
@@ -288,13 +280,13 @@ mod tests {
     fn clearing_a_pointer_that_is_already_gone_is_not_an_error() {
         let dir = Dir::new("clear");
         let store = dir.store();
-        store.clear().expect("déjà absent");
-        store.set_pointer("1", "f").expect("écriture");
-        store.clear().expect("suppression");
-        assert_eq!(store.pointer().expect("relecture"), Pointer::default());
+        store.clear().expect("already absent");
+        store.set_pointer("1", "f").expect("write");
+        store.clear().expect("delete");
+        assert_eq!(store.pointer().expect("read back"), Pointer::default());
     }
 
-    // --- les états ---------------------------------------------------------
+    // --- states ---
 
     #[test]
     fn the_last_step_written_is_the_one_that_comes_back() {
@@ -302,16 +294,16 @@ mod tests {
         let store = dir.store();
         store
             .save("f1", "pick-task", &json!({ "stages_done": [] }))
-            .expect("1re étape");
+            .expect("first step");
         store
             .save(
                 "f1",
                 "business-analyst",
                 &json!({ "stages_done": ["business-analyst"] }),
             )
-            .expect("2e étape");
+            .expect("second step");
 
-        let state = store.load("f1").expect("relecture").expect("un état");
+        let state = store.load("f1").expect("read back").expect("a state");
         assert_eq!(state, json!({ "stages_done": ["business-analyst"] }));
     }
 
@@ -321,7 +313,7 @@ mod tests {
         let store = dir.store();
         store.save("f1", "a", &json!({ "n": 1 })).expect("a");
         store.save("f1", "b", &json!({ "n": 2 })).expect("b");
-        let raw = std::fs::read_to_string(dir.0.join("flow-f1.jsonl")).expect("lecture");
+        let raw = std::fs::read_to_string(dir.0.join("flow-f1.jsonl")).expect("read");
         assert_eq!(raw.lines().count(), 2);
     }
 
@@ -329,22 +321,21 @@ mod tests {
     fn nothing_has_run_yet_reads_as_none_in_all_its_harmless_forms() {
         let dir = Dir::new("nothing");
         let store = dir.store();
-        // Magasin absent, flow inconnu, identifiant vide : trois façons de
-        // dire la même chose inoffensive.
+        // Missing store, unknown flow, empty ID: three ways to say the same harmless thing.
         assert!(store.load("f1").expect("absent").is_none());
-        assert!(store.load("").expect("vide").is_none());
+        assert!(store.load("").expect("empty").is_none());
         store.save("f1", "a", &json!({})).expect("a");
-        assert!(store.load("inconnu").expect("autre flow").is_none());
+        assert!(store.load("unknown").expect("other flow").is_none());
     }
 
     #[test]
     fn a_store_that_does_not_decode_is_unreadable_never_nothing_ran() {
-        // Le mode de panne que ça évite : repayer un /code qui a déjà mergé.
+        // Prevents the failure mode: repaying a /code that's already merged.
         let dir = Dir::new("corrupt");
         let store = dir.store();
         std::fs::create_dir_all(&dir.0).expect("mkdir");
-        std::fs::write(dir.0.join("flow-f1.jsonl"), "ceci n'est pas du json\n").expect("écriture");
-        let err = store.load("f1").expect_err("doit échouer");
+        std::fs::write(dir.0.join("flow-f1.jsonl"), "this is not json\n").expect("write");
+        let err = store.load("f1").expect_err("must fail");
         assert!(matches!(err, Halt::Unreadable(_)));
     }
 
@@ -353,9 +344,9 @@ mod tests {
         let dir = Dir::new("nostate");
         let store = dir.store();
         std::fs::create_dir_all(&dir.0).expect("mkdir");
-        std::fs::write(dir.0.join("flow-f1.jsonl"), "{\"step\":\"a\"}\n").expect("écriture");
+        std::fs::write(dir.0.join("flow-f1.jsonl"), "{\"step\":\"a\"}\n").expect("write");
         assert!(matches!(
-            store.load("f1").expect_err("doit échouer"),
+            store.load("f1").expect_err("must fail"),
             Halt::Unreadable(_)
         ));
     }
@@ -365,16 +356,16 @@ mod tests {
         let dir = Dir::new("emptyfile");
         let store = dir.store();
         std::fs::create_dir_all(&dir.0).expect("mkdir");
-        std::fs::write(dir.0.join("flow-f1.jsonl"), "").expect("écriture");
-        assert!(store.load("f1").expect("vide").is_none());
+        std::fs::write(dir.0.join("flow-f1.jsonl"), "").expect("write");
+        assert!(store.load("f1").expect("empty").is_none());
     }
 
     #[test]
     fn a_flow_id_cannot_escape_the_store_directory() {
-        // L'identifiant vient d'un workflow : un `../` dedans écrirait ailleurs.
+        // The ID comes from a workflow: a `../` in it would write elsewhere.
         let dir = Dir::new("escape");
         let store = dir.store();
-        let path = store.flow_path("../../ailleurs");
+        let path = store.flow_path("../../elsewhere");
         assert_eq!(path.parent(), Some(dir.0.as_path()));
         assert!(!path.display().to_string().contains(".."));
     }

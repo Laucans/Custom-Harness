@@ -1,27 +1,27 @@
-//! Ce qu'un exécutable rend : pas sa donnée, le contrôle de ce qui suit.
+//! What an executable returns: not its data, the control of what follows.
 
 use crate::domain::halt::Halt;
 
-/// Le résultat d'un `execute()` qui n'a pas arrêté la séquence.
+/// The result of an `execute()` that didn't stop the sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// Le travail a été fait, ou la séquence peut enchaîner.
+    /// The work was done, or the sequence can proceed.
     Continue,
-    /// Rien à faire ici ; la raison est journalisée par l'appelant.
+    /// Nothing to do here; the reason is logged by the caller.
     Skip(String),
-    /// Il n'y a plus rien à faire **du tout** — un succès, pas un arrêt.
+    /// There's nothing left to do **at all** — a success, not a stop.
     ///
-    /// Distinct de [`Halt`] : "plus de tour à jouer" et "quelque chose a
-    /// cassé" ne doivent jamais partager un code de sortie. Seul un `Round`
-    /// l'émet ; la répétition s'arrête dessus et rend un succès.
+    /// Distinct from [`Halt`]: "nothing left to play" and "something broke"
+    /// must never share an exit code. Only a `Round` emits it; the repetition
+    /// stops on it and returns success.
     NothingLeft(String),
 }
 
-/// Ce que rend tout exécutable : le contrôle, jamais la charge utile.
+/// What every executable returns: the control, never the payload.
 ///
-/// La donnée produite va dans le `Context` ; `Outcome` ne porte que de quoi
-/// décider si la séquence continue, saute, s'arrête proprement (`NothingLeft`
-/// via `Verdict`), ou a échoué (`Err`).
+/// The data produced goes in the `Context`; `Outcome` carries only what's
+/// needed to decide if the sequence continues, skips, stops cleanly
+/// (`NothingLeft` via `Verdict`), or failed (`Err`).
 pub type Outcome<T> = Result<T, Halt>;
 
 #[cfg(test)]

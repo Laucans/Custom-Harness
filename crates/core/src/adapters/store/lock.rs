@@ -1,31 +1,30 @@
-//! Un verrou de fichiers : au plus un porteur d'un nom à la fois.
+//! A file lock: at most one carrier of a given name at a time.
 //!
-//! Garde `pr_review` et `refinement` d'une double exécution — deux hooks
-//! partis sur la même PR, ou deux rounds de raffinage sur la même issue,
-//! posteraient chacun en double. Un `mkdir` et non un fichier témoin : la
-//! création d'un répertoire est atomique sur tout système de fichiers qui
-//! nous concerne, donc deux processus partis en même temps ne peuvent pas
-//! l'obtenir tous les deux.
+//! Prevents `pr_review` and `refinement` from double-running — two hooks on
+//! the same PR, or two refinement rounds on the same issue, would each post
+//! twice. A `mkdir`, not a witness file: directory creation is atomic on
+//! every filesystem we care about, so two processes starting at once cannot
+//! both get it.
 
 use std::path::Path;
 
 use crate::domain::{Halt, Outcome};
 
-/// Ce qu'un verrou demande au disque.
+/// What a lock demands from the disk.
 pub trait Locks {
-    /// Tente d'acquérir le verrou `name` sous `dir`. Vrai si c'est cet appel
-    /// qui l'a obtenu, faux si quelqu'un d'autre le tient déjà.
+    /// Attempt to acquire the lock `name` under `dir`. True if this call
+    /// acquired it, false if someone else already holds it.
     ///
     /// # Errors
-    /// Si `dir` n'a pas pu être créé.
+    /// If `dir` could not be created.
     fn acquire(&self, dir: &Path, name: &str) -> Outcome<bool>;
 
-    /// Relâche le verrou. Silencieux s'il n'existe déjà plus — le relâcher
-    /// deux fois ne doit pas être une erreur.
+    /// Release the lock. Silent if it no longer exists — releasing it twice
+    /// must not be an error.
     fn release(&self, dir: &Path, name: &str);
 }
 
-/// Un verrou qui est réellement un dossier sur le disque.
+/// A lock that is actually a directory on disk.
 pub struct DirLocks;
 
 impl DirLocks {
@@ -38,7 +37,7 @@ impl Locks for DirLocks {
     fn acquire(&self, dir: &Path, name: &str) -> Outcome<bool> {
         std::fs::create_dir_all(dir).map_err(|e| {
             Halt::Failed(format!(
-                "impossible de créer {} pour y poser un verrou : {e}",
+                "cannot create {} to place a lock: {e}",
                 dir.display()
             ))
         })?;
@@ -46,7 +45,7 @@ impl Locks for DirLocks {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
             Err(e) => Err(Halt::Failed(format!(
-                "impossible de poser le verrou {name} dans {} : {e}",
+                "cannot place lock {name} in {}: {e}",
                 dir.display()
             ))),
         }
@@ -82,38 +81,33 @@ mod tests {
     #[test]
     fn a_fresh_name_is_acquired() {
         let dir = Dir::new("fresh");
-        assert!(DirLocks.acquire(&dir.0, "32").expect("acquis"));
+        assert!(DirLocks.acquire(&dir.0, "32").expect("acquired"));
     }
 
     #[test]
     fn a_name_already_held_is_refused_to_a_second_claimant() {
-        // Deux hooks partis sur la même PR : le second ne doit pas aussi
-        // obtenir le verrou.
+        // Two hooks on the same PR: the second must not also get the lock.
         let dir = Dir::new("held");
-        assert!(
-            DirLocks
-                .acquire(&dir.0, "32")
-                .expect("le premier l'obtient")
-        );
+        assert!(DirLocks.acquire(&dir.0, "32").expect("first gets it"));
         assert!(
             !DirLocks
                 .acquire(&dir.0, "32")
-                .expect("le second ne l'obtient pas")
+                .expect("second does not get it")
         );
     }
 
     #[test]
     fn releasing_frees_the_name_for_the_next_claimant() {
         let dir = Dir::new("released");
-        assert!(DirLocks.acquire(&dir.0, "32").expect("acquis"));
+        assert!(DirLocks.acquire(&dir.0, "32").expect("acquired"));
         DirLocks.release(&dir.0, "32");
-        assert!(DirLocks.acquire(&dir.0, "32").expect("réacquis"));
+        assert!(DirLocks.acquire(&dir.0, "32").expect("re-acquired"));
     }
 
     #[test]
     fn releasing_twice_is_not_an_error() {
         let dir = Dir::new("double-release");
-        assert!(DirLocks.acquire(&dir.0, "32").expect("acquis"));
+        assert!(DirLocks.acquire(&dir.0, "32").expect("acquired"));
         DirLocks.release(&dir.0, "32");
         DirLocks.release(&dir.0, "32");
     }
@@ -121,11 +115,7 @@ mod tests {
     #[test]
     fn two_different_names_do_not_contend() {
         let dir = Dir::new("two-names");
-        assert!(DirLocks.acquire(&dir.0, "32").expect("le premier"));
-        assert!(
-            DirLocks
-                .acquire(&dir.0, "99")
-                .expect("le second, sans rapport")
-        );
+        assert!(DirLocks.acquire(&dir.0, "32").expect("first"));
+        assert!(DirLocks.acquire(&dir.0, "99").expect("second, unrelated"));
     }
 }

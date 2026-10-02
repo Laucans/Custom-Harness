@@ -1,42 +1,40 @@
-//! Où une dépense est consignée — le port, pas le fichier.
+//! Where spending is recorded — the port, not the file.
 //!
-//! [`Ledger`](super::ledger::Ledger) sait écrire une ligne, mais pas quelle
-//! heure il est, ni comment s'appelle ce run, ni sur quelle machine il tourne.
-//! Ces trois-là sont des faits du lanceur, pas de l'exécution : une action qui
-//! vient de payer une session sait ce qu'elle a dépensé et pour quelle task,
-//! et rien de plus.
+//! [`Ledger`](super::ledger::Ledger) knows how to write a row, but not what
+//! time it is, what this run is called, or what machine it runs on. Those
+//! three are facts of the launcher, not the execution: an action that just
+//! paid a session knows what it spent and for which task, and nothing more.
 //!
-//! D'où ce port. L'implémentation vit dans `harness-launcher`, qui est le seul
-//! à tenir une horloge et un nom de machine — et c'est aussi ce qui garde
-//! `harness-core` sans dépendance au temps.
+//! Hence this port. The implementation lives in `harness-launcher`, which
+//! alone holds a clock and machine name — and this is also what keeps
+//! `harness-core` free of time dependency.
 
 use crate::domain::{Outcome, Spend};
 
-/// Ce qu'une stage finie a coûté, tel que l'exécution le sait.
+/// What a finished stage cost, as execution knows it.
 ///
-/// Emprunté plutôt que possédé : la ligne est écrite dans l'appel, rien n'est
-/// gardé après.
+/// Borrowed rather than owned: the row is written in the call, nothing is
+/// kept after.
 pub struct Entry<'a> {
-    /// Le numéro de round.
+    /// The round number.
     pub round: u32,
-    /// La task facturée. Vide sur un round de rollover, qui n'en a pas.
+    /// The billed task. Empty on a rollover round, which has none.
     pub task: &'a str,
-    /// La stage.
+    /// The stage.
     pub stage: &'a str,
-    /// Ce que le porteur de session a observé — champs non observés compris.
+    /// What the session carrier observed — including unobserved fields.
     pub spend: &'a Spend,
-    /// `ok`, ou la raison de l'absence de réponse.
+    /// `ok`, or the reason for missing response.
     pub outcome: &'a str,
 }
 
-/// Où une dépense est consignée.
+/// Where spending is recorded.
 pub trait Spending {
-    /// Consigne ce qu'une stage a coûté.
+    /// Record what a stage cost.
     ///
     /// # Errors
     ///
-    /// L'échec de l'écriture, et il **arrête le round** : le budget d'un run
-    /// se lit dans le registre, et une ligne perdue le fait mentir sur une
-    /// dépense déjà engagée.
+    /// Write failure, and it **stops the round**: a run's budget is read from
+    /// the ledger, and a lost row makes it lie about already-incurred spending.
     fn record(&self, entry: &Entry<'_>) -> Outcome<()>;
 }

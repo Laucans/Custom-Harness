@@ -1,10 +1,9 @@
-//! Ce que plusieurs workflows lisent, écrit une fois.
+//! What multiple workflows read, written once.
 //!
-//! N'y vont que des choses dont **au moins deux** workflows ont réellement
-//! besoin, aujourd'hui — pas ce qui pourrait un jour servir à un troisième.
-//! `labels` sert la boucle et le raffinage ; `explore` sert le raffinage, et
-//! sa place ici tient pour le jour où un troisième workflow veut la même
-//! carte du dépôt, pas parce qu'il existe déjà.
+//! Only things **at least two** workflows actually need today go here — not
+//! what might someday serve a third. `labels` serves the loop and refinement;
+//! `explore` serves refinement, and its place here holds for the day a third
+//! workflow wants the same repository map, not because it exists yet.
 
 pub mod explore;
 pub mod labels;

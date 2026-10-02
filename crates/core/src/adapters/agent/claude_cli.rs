@@ -1,34 +1,34 @@
-//! Proposition C : un processus par action, recousu par `--resume`.
+//! Approach C: one process per action, stitched together via `--resume`.
 //!
-//! Chaque tour est un `claude -p --output-format json`. Le premier appel crée
-//! la conversation ; les suivants la reprennent par `--resume <session_id>`,
-//! l'identifiant étant appris de la réponse du premier plutôt qu'imposé —
-//! c'est le geste que la doc `headless` décrit, et ça évite de se demander ce
-//! qu'un `--session-id` déjà pris ferait.
+//! Each turn is `claude -p --output-format json`. The first call creates the
+//! conversation; subsequent calls resume it via `--resume <session_id>`, with
+//! the identifier learned from the first response rather than imposed — this is
+//! the pattern the `headless` docs describe, and avoids wondering what would
+//! happen with a `--session-id` already in use.
 //!
-//! « Session ouverte » est donc une fiction assumée : la continuité vit sur le
-//! disque, dans le transcript, pas dans un processus vivant. C'est ce que
-//! `docs/SESSION-CARRIER.md` a arbitré — le moins de code pour du coût exact
-//! et des frontières de tour gratuites, avec la proposition A (tmux) comme
-//! destination si l'attachabilité devient nécessaire.
+//! "Open session" is thus an assumed fiction: continuity lives on disk, in the
+//! transcript, not in a live process. This is what `docs/SESSION-CARRIER.md`
+//! chose — minimal code for exact cost and free turn boundaries, with
+//! approach A (tmux) as a target if attachability becomes necessary.
 //!
-//! # Coût : lire `total_cost_usd` sans le sommer à l'aveugle
+//! # Cost: read `total_cost_usd` without summing blindly
 //!
-//! **Depuis Claude Code v2.1.277**, un appel qui reprend une session rend le
-//! total de **toute la conversation**, dépenses des appels précédents
-//! comprises. Le coût d'une stage est donc la valeur du **dernier** tour, et
-//! sommer les tours double-compterait. Avant cette version, chaque appel ne
-//! rendait que le sien, et il fallait sommer.
+//! **Since Claude Code v2.1.277**, a call that resumes a session returns the
+//! total of **the entire conversation**, including costs from prior calls. The
+//! cost of a stage is therefore the value of the **last** turn, and summing
+//! turns would double-count. Before that version, each call returned only its
+//! own, and you had to sum.
 //!
-//! Cet adaptateur ne tranche pas : il rapporte fidèlement ce que le tour a
-//! dit, dans [`Reply::cost`]. C'est au registre de dépenses — qui n'existe
-//! pas encore — d'accumuler, et **il devra vérifier la version** plutôt que
-//! de supposer. Une porte de préflight sur `claude --version` coûte un appel
-//! local ; un `costs.tsv` faux ne se voit pas.
+//! This adapter does not decide: it reports faithfully what the turn said, in
+//! [`Spend::cost_usd`](crate::domain::Spend). It is up to the spending ledger
+//! — which does not yet exist —
+//! to accumulate, and **it must verify the version** rather than assume. A
+//! preflight gate on `claude --version` costs one local call; false cost data
+//! is invisible.
 //!
-//! `total_cost_usd` est par ailleurs une **estimation côté client**, calculée
-//! d'une table de prix embarquée, pas une donnée de facturation. Bon pour un
-//! budget, jamais pour facturer qui que ce soit.
+//! `total_cost_usd` is moreover a **client-side estimate**, calculated from an
+//! embedded price table, not billing data. Good for budgeting, never for
+//! billing anyone.
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -39,22 +39,21 @@ use serde::Deserialize;
 use crate::adapters::agent::{Reply, Session, SessionFactory, SessionSpec};
 use crate::domain::{Halt, Outcome, Spend, Tokens, markers};
 
-/// Le binaire appelé. Nommé ici pour qu'un test puisse le lire.
+/// The called binary. Named here so a test can read it.
 const BINARY: &str = "claude";
 
-/// Les bouts de phrase qui font lire un échec comme un quota épuisé.
+/// Phrases that mark a failure as an exhausted quota.
 ///
-/// En un seul endroit : c'est une heuristique sur du texte d'erreur, donc
-/// elle dérivera, et le jour où elle dérive on veut un seul endroit à
-/// corriger. Cherchée uniquement dans un tour **déjà en échec** — une session
-/// qui réussit en parlant de « rate limit » n'est pas un quota épuisé.
+/// In one place: this is a heuristic on error text, so it will drift, and
+/// when it drifts we want one place to fix. Searched only in a turn
+/// **already failing** — a session that succeeds while mentioning "rate limit"
+/// is not a quota.
 const QUOTA_PHRASES: [&str; 4] = ["usage limit", "rate limit", "quota", "too many requests"];
 
-/// Ce qu'on lit du JSON de `--output-format json`.
+/// What we read from the JSON of `--output-format json`.
 ///
-/// Tous les champs sont optionnels à dessein : Claude Code en ajoute au fil
-/// des versions, et un champ inconnu ne doit pas faire échouer un tour qui
-/// s'est bien passé.
+/// All fields are intentionally optional: Claude Code adds them over versions,
+/// and an unknown field must not fail a turn that went well.
 #[derive(Debug, Deserialize)]
 struct CliResult {
     #[serde(default)]
@@ -75,14 +74,14 @@ struct CliResult {
     usage: CliUsage,
 }
 
-/// Les jetons, tels que le message `result` les rapporte.
+/// Tokens as reported by the `result` message.
 ///
-/// **Sous-compte les subagents** : la doc est explicite, `usage` ne couvre que
-/// la boucle principale alors que `total_cost_usd` inclut les subagents. Le
-/// stage `code` en lance, donc ces jetons-là sont un plancher, pas un total.
-/// C'est le coût qu'il faut lire pour un budget, pas les jetons.
-// Les noms sont ceux de l'API, pas les nôtres : les renommer pour faire
-// plaisir à `struct_field_names` ferait mentir le `Deserialize`.
+/// **Undercounts subagents**: the docs are explicit, `usage` covers only the
+/// main loop while `total_cost_usd` includes subagents. The `code` stage
+/// launches them, so those tokens are a floor, not a total. This is the cost
+/// to read for budgeting, not the tokens.
+// Field names are from the API, not ours: renaming to please
+// `struct_field_names` would lie to `Deserialize`.
 #[allow(clippy::struct_field_names)]
 #[derive(Debug, Default, Deserialize)]
 struct CliUsage {
@@ -96,19 +95,19 @@ struct CliUsage {
     cache_creation_input_tokens: Option<u64>,
 }
 
-/// Une conversation menée par appels successifs au binaire `claude`.
+/// A conversation conducted via successive calls to the `claude` binary.
 pub struct ClaudeCli {
     cwd: PathBuf,
     model: String,
     effort: String,
     permission_mode: String,
-    /// Appris de la réponse du premier tour. `None` = la conversation n'existe
-    /// pas encore, donc pas de `--resume` à passer.
+    /// Learned from the first turn's response. `None` = conversation does not
+    /// yet exist, so no `--resume` to pass.
     session_id: Option<String>,
 }
 
 impl ClaudeCli {
-    /// Une conversation qui n'a pas encore eu lieu.
+    /// A conversation that has not yet taken place.
     #[must_use]
     pub fn new(cwd: PathBuf, spec: &SessionSpec, permission_mode: &str) -> Self {
         Self {
@@ -120,15 +119,15 @@ impl ClaudeCli {
         }
     }
 
-    /// Les arguments de ce tour.
+    /// The arguments for this turn.
     ///
-    /// Pur, et séparé de l'appel : c'est la partie qui se teste sans dépenser
-    /// un centime, et c'est là que vit la seule vraie logique — passer
-    /// `--resume` ou non.
+    /// Pure, and separated from the call: this is the part that tests without
+    /// spending a cent, and where the only real logic lives — whether to pass
+    /// `--resume` or not.
     ///
-    /// Le prompt voyage en argument plutôt que sur stdin. Quelques kilo-octets
-    /// tiennent largement sous `ARG_MAX` ; si un préambule devenait énorme, ça
-    /// serait le moment de le passer par stdin.
+    /// The prompt travels as an argument rather than stdin. A few kilobytes
+    /// stay well under `ARG_MAX`; if a preamble became huge, that would be
+    /// the time to pass it via stdin.
     fn argv(&self, prompt: &str) -> Vec<String> {
         let mut args = vec![
             "-p".to_string(),
@@ -150,11 +149,11 @@ impl ClaudeCli {
     }
 }
 
-/// Comment classer un tour qui a échoué.
+/// How to classify a failed turn.
 ///
-/// Un quota n'est ni « réparé » ni « abandonné » : c'est le même travail à
-/// relancer plus tard, inchangé. Le distinguer d'un échec est ce qui évite de
-/// rejouer une session qui n'avait rien de cassé.
+/// A quota is neither "repaired" nor "abandoned": it is the same work to
+/// restart later, unchanged. Distinguishing it from a failure prevents
+/// replaying a session that had nothing broken.
 fn halt_for(subtype: &str, text: &str) -> Halt {
     let haystack = format!("{subtype} {text}").to_lowercase();
     if QUOTA_PHRASES.iter().any(|phrase| haystack.contains(phrase)) {
@@ -163,27 +162,27 @@ fn halt_for(subtype: &str, text: &str) -> Halt {
     Halt::Failed(text.to_string())
 }
 
-/// Ce qu'un tour a rendu, plus l'identifiant de la conversation.
+/// What a turn returned, plus the conversation identifier.
 ///
-/// Pur : tout ce qui suit l'appel au binaire se teste en lui passant une
-/// chaîne.
+/// Pure: everything after the binary call tests by passing it a string.
 ///
 /// # Errors
 ///
-/// - [`Halt::Failed`] si le JSON est illisible, ou si le tour a abouti sans
-///   rien rendre — un tour vide n'est pas utilisable par l'action suivante ;
-/// - [`Halt::Quota`] ou [`Halt::Failed`] selon ce que l'échec dit, voir
-///   [`halt_for`].
+/// - [`Halt::Failed`] if the JSON is unreadable, or if the turn succeeded
+///   without returning anything — an empty turn is not usable by the next
+///   action;
+/// - [`Halt::Quota`] or [`Halt::Failed`] depending on what the failure says,
+///   see [`halt_for`].
 fn parse(stdout: &str) -> Outcome<(Reply, String)> {
     let parsed: CliResult = serde_json::from_str(stdout.trim())
-        .map_err(|e| Halt::Failed(format!("réponse illisible de {BINARY} : {e}")))?;
+        .map_err(|e| Halt::Failed(format!("unreadable response from {BINARY} : {e}")))?;
 
     if parsed.is_error {
         return Err(halt_for(&parsed.subtype, &parsed.result));
     }
     if parsed.result.trim().is_empty() {
         return Err(Halt::Failed(format!(
-            "{BINARY} a abouti sans rien rendre (subtype {:?})",
+            "{BINARY} succeeded without returning anything (subtype {:?})",
             parsed.subtype
         )));
     }
@@ -208,10 +207,10 @@ fn parse(stdout: &str) -> Outcome<(Reply, String)> {
     Ok((reply, parsed.session_id))
 }
 
-/// Ce qu'un processus qui n'a pas abouti laisse lire.
+/// What a failed process leaves to read.
 ///
-/// `stderr` d'abord : quand `claude` refuse un drapeau, c'est là que la raison
-/// est, et le JSON de stdout est alors absent.
+/// `stderr` first: when `claude` rejects a flag, the reason is there, and the
+/// JSON on stdout is absent.
 fn failed_process(out: &Output) -> Halt {
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -219,8 +218,8 @@ fn failed_process(out: &Output) -> Halt {
     let code = out
         .status
         .code()
-        .map_or_else(|| "tué par un signal".to_string(), |c| format!("code {c}"));
-    halt_for("", &format!("{BINARY} s'est arrêté ({code}) : {said}"))
+        .map_or_else(|| "killed by signal".to_string(), |c| format!("code {c}"));
+    halt_for("", &format!("{BINARY} stopped ({code}): {said}"))
 }
 
 #[async_trait(?Send)]
@@ -231,15 +230,15 @@ impl Session for ClaudeCli {
             .current_dir(&self.cwd)
             .output()
             .await
-            .map_err(|e| Halt::Failed(format!("{BINARY} n'a pas pu être lancé : {e}")))?;
+            .map_err(|e| Halt::Failed(format!("{BINARY} could not be launched: {e}")))?;
 
         if !out.status.success() {
             return Err(failed_process(&out));
         }
 
         let (reply, session_id) = parse(&String::from_utf8_lossy(&out.stdout))?;
-        // Le premier tour apprend l'identifiant ; les suivants le rendent tel
-        // quel, et le réécrire ne coûte rien.
+        // The first turn learns the identifier; later turns return it as-is,
+        // and rewriting it costs nothing.
         if !session_id.is_empty() {
             self.session_id = Some(session_id);
         }
@@ -247,17 +246,17 @@ impl Session for ClaudeCli {
     }
 }
 
-/// Ouvre des conversations `claude` dans un répertoire donné.
+/// Opens `claude` conversations in a given directory.
 pub struct ClaudeCliFactory {
     cwd: PathBuf,
     permission_mode: String,
 }
 
 impl ClaudeCliFactory {
-    /// Une fabrique qui fait travailler chaque session dans `cwd`.
+    /// A factory that runs each session in `cwd`.
     ///
-    /// `cwd` est la racine du checkout du run — le clone, pas le dépôt d'où le
-    /// run est lancé.
+    /// `cwd` is the root of the run's checkout — the clone, not the repo
+    /// from which the run is launched.
     #[must_use]
     pub fn new(cwd: &Path, permission_mode: &str) -> Self {
         Self {
@@ -269,10 +268,11 @@ impl ClaudeCliFactory {
 
 #[async_trait(?Send)]
 impl SessionFactory for ClaudeCliFactory {
-    /// Sous la proposition C, ouvrir ne lance rien.
+    /// Under approach C, opening launches nothing.
     ///
-    /// La conversation naît au premier `ask`. C'est la contrepartie assumée du
-    /// choix : rien à démonter, rien qui fuie si une stage meurt en chemin.
+    /// The conversation is born at the first `ask`. This is the assumed trade-off
+    /// of the choice: nothing to tear down, nothing that leaks if a stage dies
+    /// along the way.
     async fn open(&self, spec: &SessionSpec) -> Outcome<Box<dyn Session>> {
         Ok(Box::new(ClaudeCli::new(
             self.cwd.clone(),
@@ -327,8 +327,8 @@ mod tests {
 
     // --- parse --------------------------------------------------------------
 
-    /// La forme documentée du JSON de `--output-format json`, champs inconnus
-    /// compris : le parseur doit les ignorer, pas s'en étouffer.
+    /// The documented form of the JSON from `--output-format json`, including
+    /// unknown fields: the parser must ignore them, not choke on them.
     const SUCCESS: &str = r#"{
         "type": "result",
         "subtype": "success",
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(reply.spend.tokens.output, Some(20));
         assert_eq!(reply.spend.session.as_deref(), Some("sess-42"));
         assert!(reply.text.contains("voici ce que j'ai fait"));
-        // AGENT_LOOP_OK n'est pas un arrêt.
+        // AGENT_LOOP_OK is not a stop marker.
         assert!(reply.stop_line.is_none());
     }
 
@@ -372,13 +372,13 @@ mod tests {
 
     #[test]
     fn a_turn_with_no_cost_field_parses_and_reports_none() {
-        // Un porteur, ou une version, qui ne rend pas le coût : le tour reste
-        // valide. C'est pour ça que `Reply::cost` est un Option.
+        // A carrier or version that does not return cost: the turn stays valid.
+        // That is why `Reply::cost` is an Option.
         let json = r#"{"is_error":false,"result":"fait","session_id":"s"}"#;
         let (reply, _) = parse(json).expect("parse");
         assert!(reply.spend.cost_usd.is_none());
-        // Rien d'observé, et surtout pas des zéros : un registre doit pouvoir
-        // écrire « non mesuré » plutôt qu'une session gratuite.
+        // Nothing observed, especially not zeros: a ledger must be able to
+        // write "not measured" rather than a free session.
         assert!(reply.spend.is_blind());
     }
 
@@ -401,10 +401,10 @@ mod tests {
     fn an_exhausted_window_is_a_quota_not_a_failure() {
         let json = r#"{"is_error":true,"subtype":"error_during_execution",
                        "result":"Claude usage limit reached","session_id":"s"}"#;
-        let err = parse(json).expect_err("doit échouer");
+        let err = parse(json).expect_err("must fail");
         assert!(
             matches!(err, Halt::Quota(_)),
-            "un quota relance le même travail plus tard ; un échec le rejoue"
+            "a quota restarts the same work later; a failure replays it"
         );
     }
 
@@ -413,7 +413,7 @@ mod tests {
         let json = r#"{"is_error":true,"subtype":"error_during_execution",
                        "result":"the tool crashed","session_id":"s"}"#;
         assert!(matches!(
-            parse(json).expect_err("doit échouer"),
+            parse(json).expect_err("must fail"),
             Halt::Failed(_)
         ));
     }
@@ -430,8 +430,8 @@ mod tests {
 
     #[tokio::test]
     async fn opening_a_session_spawns_nothing() {
-        // Sous C, `open` est gratuit : la conversation naît au premier `ask`.
-        // Ce test passe donc sans qu'aucun binaire `claude` existe.
+        // Under C, `open` is free: the conversation is born at the first `ask`.
+        // This test passes without any `claude` binary existing.
         let factory = ClaudeCliFactory::new(Path::new("/tmp/workspace"), "bypassPermissions");
         let spec = SessionSpec {
             model: "sonnet".to_string(),
@@ -440,17 +440,16 @@ mod tests {
         assert!(factory.open(&spec).await.is_ok());
     }
 
-    /// Le seul test qui dépense vraiment de l'argent, et qui touche le vrai
-    /// binaire. Ignoré par défaut — les tests hermétiques ci-dessus tournent
-    /// contre une réponse figée, et une réponse figée peut mentir le jour où
-    /// Claude Code renomme un champ. Celui-ci est là pour fermer cet écart,
-    /// à la demande :
+    /// The only test that actually spends money and touches the real binary.
+    /// Ignored by default — the hermetic tests above run against a frozen
+    /// response, and a frozen response can lie when Claude Code renames a field.
+    /// This one is here to close that gap, on demand:
     ///
     /// ```text
     /// cargo test -p harness-core -- --ignored live_
     /// ```
     #[tokio::test]
-    #[ignore = "appelle le vrai binaire claude et dépense du quota"]
+    #[ignore = "calls the real claude binary and spends quota"]
     async fn live_two_turns_share_one_session() {
         let factory = ClaudeCliFactory::new(Path::new("."), "bypassPermissions");
         let spec = SessionSpec {
@@ -462,21 +461,21 @@ mod tests {
         let first = session
             .ask("Réponds exactement: un")
             .await
-            .expect("1er tour");
+            .expect("1st turn");
         assert!(
             first.spend.cost_usd.is_some(),
-            "le premier tour doit rendre un coût"
+            "the first turn must return a cost"
         );
 
-        // Le second tour doit voir le premier : s'il ne le voit pas, `--resume`
-        // n'a pas pris, et toute la proposition C est fausse.
+        // The second turn must see the first: if it does not, `--resume` did not
+        // work, and the entire approach C is wrong.
         let second = session
             .ask("Quel mot venais-tu de répondre ?")
             .await
-            .expect("2e tour");
+            .expect("2nd turn");
         assert!(
             second.text.to_lowercase().contains("un"),
-            "le 2e tour n'a pas vu le 1er — --resume n'a pas fonctionné : {}",
+            "2nd turn did not see the 1st — --resume did not work: {}",
             second.text
         );
     }

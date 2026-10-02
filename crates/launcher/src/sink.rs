@@ -1,9 +1,10 @@
-//! Où les lignes de journal tombent : la console, et le fichier du run.
+//! Where log lines are written: the console and the run log file.
 //!
-//! Les deux, toujours. **Le fichier garde tout** quel que soit le niveau
-//! demandé — c'est lui qu'on relit après coup, et un `--quiet` qui aurait
-//! tronqué la seule trace d'un run de nuit serait une fausse économie. Le
-//! niveau ne concerne que la console, et [`Logbook`] le tient déjà.
+//! Both, always. **The file keeps everything** regardless of the level
+//! requested — it's what we re-read after the fact, and a `--quiet` that had
+//! truncated the only trace of a night run would be a false economy. The
+//! level only concerns the console, and `harness_core::traces::Logbook`
+//! already handles it.
 
 use std::cell::RefCell;
 use std::io::Write as _;
@@ -11,22 +12,22 @@ use std::path::{Path, PathBuf};
 
 use harness_core::traces::Sink;
 
-/// La console, et le fichier du run.
+/// The console and the run log file.
 pub struct Both {
     path: PathBuf,
     file: RefCell<Option<std::fs::File>>,
 }
 
 impl Both {
-    /// Le journal de ce run, écrit ici en plus de la console.
+    /// The log for this run, written here in addition to the console.
     ///
-    /// Le fichier est ouvert maintenant plutôt qu'à la première ligne : un
-    /// dossier de journal qu'on ne peut pas créer vaut d'être su avant qu'une
-    /// session soit payée, pas après.
+    /// The file is opened now rather than at the first line: a log directory
+    /// that cannot be created is worth knowing before a session is charged, not
+    /// after.
     ///
     /// # Errors
     ///
-    /// Si le dossier ou le fichier n'ont pas pu être créés.
+    /// If the directory or file could not be created.
     pub fn new(path: &Path) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -41,7 +42,7 @@ impl Both {
         })
     }
 
-    /// Où ce journal est écrit.
+    /// Where this log is written.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -51,18 +52,15 @@ impl Both {
 impl Sink for Both {
     fn emit(&self, line: &str) {
         println!("{line}");
-        // Un fichier qui ne s'écrit plus ne doit pas tuer un run en vol, et ne
-        // doit pas non plus se plaindre à chaque ligne : on le lâche une fois,
-        // en le disant une fois.
+        // A file that no longer writes should not kill a run in flight, and
+        // should not complain on each line either: we release it once,
+        // saying so once.
         let mut held = self.file.borrow_mut();
         if let Some(file) = held.as_mut()
             && writeln!(file, "{line}").is_err()
         {
             *held = None;
-            eprintln!(
-                "attention : le journal {} ne s'écrit plus",
-                self.path.display()
-            );
+            eprintln!("warning: log file {} no longer writes", self.path.display());
         }
     }
 }
@@ -91,18 +89,18 @@ mod tests {
     fn the_log_directory_is_created_rather_than_demanded() {
         let dir = Dir::new("creates");
         let path = dir.0.join("20261002/run.log");
-        let sink = Both::new(&path).expect("un journal");
-        sink.emit("une ligne");
-        assert_eq!(std::fs::read_to_string(&path).expect("relu"), "une ligne\n");
+        let sink = Both::new(&path).expect("a log");
+        sink.emit("a line");
+        assert_eq!(std::fs::read_to_string(&path).expect("re-read"), "a line\n");
     }
 
     #[test]
     fn a_second_run_appends_rather_than_truncating() {
         let dir = Dir::new("appends");
         let path = dir.0.join("run.log");
-        Both::new(&path).expect("un journal").emit("premier");
-        Both::new(&path).expect("un journal").emit("second");
-        let text = std::fs::read_to_string(&path).expect("relu");
-        assert_eq!(text, "premier\nsecond\n");
+        Both::new(&path).expect("a log").emit("first");
+        Both::new(&path).expect("a log").emit("second");
+        let text = std::fs::read_to_string(&path).expect("re-read");
+        assert_eq!(text, "first\nsecond\n");
     }
 }

@@ -1,26 +1,26 @@
-//! Ce qu'on lit d'une PR. Métier pur : ni I/O, ni sous-processus.
+//! What you read from a PR. Pure domain: no I/O, no subprocesses.
 
-/// Une PR, telle qu'une revue la lit.
+/// A PR, as a review reads it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pr {
-    /// Son numéro, en texte — il n'entre que dans de la prose et des chemins.
+    /// Its number, as text — it only appears in prose and paths.
     pub num: String,
-    /// La branche visée.
+    /// The targeted branch.
     pub base: String,
-    /// La branche qui porte le changement.
+    /// The branch that carries the change.
     pub head: String,
-    /// Son titre.
+    /// Its title.
     pub title: String,
-    /// Son URL.
+    /// Its URL.
     pub url: String,
-    /// `OPEN`, `CLOSED`, `MERGED` — tel que l'API le rend, non interprété.
+    /// `OPEN`, `CLOSED`, `MERGED` — as the API renders it, uninterpreted.
     pub state: String,
-    /// Un brouillon n'a rien à faire relire.
+    /// A draft has nothing to be reviewed.
     pub draft: bool,
 }
 
 impl Pr {
-    /// `#12` — comme un message le nomme.
+    /// `#12` — as a message names it.
     #[must_use]
     pub fn reference(&self) -> String {
         format!("#{}", self.num)

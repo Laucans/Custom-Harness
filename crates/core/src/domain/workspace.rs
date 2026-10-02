@@ -1,58 +1,56 @@
-//! Le checkout contre lequel un run travaille, et où sa comptabilité tombe.
+//! The checkout a run works against, and where its accounting lands.
 //!
-//! **Deux racines et non une**, depuis qu'un run peut travailler ailleurs que
-//! dans le dépôt d'où il est lancé : `root` porte **le code** — ce que les
-//! sessions éditent, ce que `git` et `gh` voient — et `state_root` porte **la
-//! comptabilité** : journaux, registre des coûts, point de reprise. Les deux
-//! coïncident tant que personne ne demande de workspace.
+//! **Two roots, not one**, since a run can work elsewhere than in the repo
+//! from which it is launched: `root` carries **the code** — what sessions
+//! edit, what `git` and `gh` see — and `state_root` carries **the accounting**:
+//! logs, cost register, resume point. The two coincide as long as nobody asks
+//! for a workspace.
 //!
-//! L'écart entre les deux est ce qui rend un workspace jetable : le dossier de
-//! code disparaît à la fin du run, et le registre des coûts répond toujours.
+//! The gap between the two is what makes a workspace disposable: the code
+//! folder disappears at the end of the run, and the cost register still answers.
 //!
-//! **Rien ici ne monte quoi que ce soit : ce module décrit.** Le clone, la
-//! remise à zéro et la suppression vivent dans
-//! [`crate::execution::provisioning`], parce qu'ils appellent `git`.
+//! **Nothing here mounts anything: this module describes.** Cloning, resetting,
+//! and deletion live in [`crate::execution::provisioning`], because they call
+//! `git`.
 
 use std::path::{Path, PathBuf};
 
-/// Où tombent les workspaces quand personne n'en décide autrement.
+/// Where workspaces land when no one decides otherwise.
 ///
-/// Sous `.llocal/`, donc gitignoré : un clone du dépôt *dans* le dépôt ne doit
-/// pas se voir dans `git status`, sans quoi la porte « arbre propre »
-/// refuserait tout run dès le second.
+/// Under `.llocal/`, so gitignored: a clone of the repo *within* the repo must
+/// not show up in `git status`, or else the "clean tree" gate would refuse
+/// every run from the second one on.
 ///
-/// Le nom n'a **pas** été renommé avec le reste (`pipeline:*` → `harness:*`) :
-/// un workspace permanent pèse quelques centaines de mégaoctets, et le
-/// renommer en orphelinerait un qui est déjà sur le disque.
+/// The name was **not** renamed with the rest (`pipeline:*` → `harness:*`): a
+/// permanent workspace weighs hundreds of megabytes, and renaming it would
+/// orphan one already on disk.
 pub const DEFAULT_BASE: &str = ".llocal/agentic_workspaces";
 
-/// Combien de temps le workspace d'un run survit au run.
+/// How long a run's workspace survives the run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Strategy {
-    /// Un workspace par dépôt cible, réutilisé d'un run à l'autre et jamais
-    /// supprimé. Remis à l'état d'`origin` avant chaque run, donc il ne dérive
-    /// pas.
+    /// One workspace per target repo, reused run to run and never deleted.
+    /// Reset to `origin` before each run, so it does not drift.
     ///
-    /// **Le défaut, et c'est une contrainte, pas une préférence.** Un clone ne
-    /// porte que ce que git suit : ni les dépendances npm, ni un venv, qui sont
-    /// gitignorés. Sous [`Strategy::Tmp`] le workspace est supprimé à chaque
-    /// fin de run, donc il n'existe aucun moment où les installer — et chaque
-    /// commande de vérification d'un stage échouerait sur un dépôt sans
-    /// dépendances. Un workspace permanent les garde : `reset --hard` et
-    /// `clean -fd` remettent le code à l'état d'`origin` sans toucher aux
-    /// fichiers ignorés.
+    /// **The default, and it is a constraint, not a preference.** A clone carries
+    /// only what git tracks: neither npm dependencies nor a venv, which are
+    /// gitignored. Under [`Strategy::Tmp`] the workspace is deleted at every run
+    /// end, so there is no moment to install them — and every stage check command
+    /// would fail on a repo without dependencies. A permanent workspace keeps
+    /// them: `reset --hard` and `clean -fd` return the code to `origin` without
+    /// touching ignored files.
     #[default]
     Permanent,
-    /// Clone jetable, supprimé à la fin du run.
+    /// Disposable clone, deleted at the end of the run.
     Tmp,
 }
 
 impl Strategy {
-    /// La stratégie de ce texte, ou `None` — **jamais un défaut silencieux**.
+    /// The strategy of this text, or `None` — **never a silent default**.
     ///
-    /// Un `WORKSPACE_STRATEGY=permanant` qui retomberait sur `Tmp` ferait
-    /// supprimer, une fois par run et sans rien dire, le workspace que l'humain
-    /// croyait garder.
+    /// A `WORKSPACE_STRATEGY=permanant` that fell back to `Tmp` would delete,
+    /// once per run and without saying anything, the workspace the human thought
+    /// they were keeping.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         match text.trim().to_lowercase().as_str() {
@@ -62,7 +60,7 @@ impl Strategy {
         }
     }
 
-    /// Comment la stratégie s'écrit — dans une variable, dans un journal.
+    /// How the strategy is written — in a variable, in a journal.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -71,38 +69,38 @@ impl Strategy {
         }
     }
 
-    /// Les valeurs acceptées, pour un message d'erreur qui aide.
+    /// The accepted values, for an error message that helps.
     #[must_use]
     pub const fn known() -> &'static str {
         "permanent|tmp"
     }
 }
 
-/// Le workspace qu'un workflow demande. Une **déclaration**, pas un montage.
+/// The workspace a workflow asks for. A **declaration**, not a mount.
 #[derive(Debug, Clone, Default)]
 pub struct Wanted {
-    /// Ce qu'il advient du dossier.
+    /// What becomes of the folder.
     pub strategy: Strategy,
-    /// L'URL à cloner. Vide : l'`origin` du dépôt d'où le run est lancé.
+    /// The URL to clone. Empty: `origin` of the repo from which the run is launched.
     pub url: String,
-    /// Le nom du dossier.
+    /// The folder name.
     ///
-    /// Vide, il est dérivé du dépôt en `Permanent` (un workspace par cible,
-    /// sans que personne ait à le nommer) et engendré en `Tmp`. Rempli, c'est
-    /// le `--use-workspace` d'un humain : le workspace est alors **retrouvé**,
-    /// jamais recréé, et jamais supprimé — nommer un workspace pour y
-    /// travailler est une façon de dire qu'on ne veut pas le perdre.
+    /// Empty, it is derived from the repo in `Permanent` (one workspace per
+    /// target, without anyone having to name it) and generated in `Tmp`. Filled,
+    /// it is a human's `--use-workspace`: the workspace is then **found**, never
+    /// recreated, and never deleted — naming a workspace to work in is a way of
+    /// saying you do not want to lose it.
     pub id: String,
-    /// Le dossier qui contient les workspaces. Vide : [`DEFAULT_BASE`].
+    /// The folder containing workspaces. Empty: [`DEFAULT_BASE`].
     pub base: String,
-    /// `--keep-workspace` : garder un `Tmp` engendré que le run supprimerait.
+    /// `--keep-workspace`: keep a `Tmp` generated that the run would delete.
     pub keep: bool,
-    /// `--force-reset` : écraser le travail local d'un workspace réutilisé, au
-    /// lieu de s'arrêter en le nommant.
+    /// `--force-reset`: overwrite local work of a reused workspace, instead of
+    /// stopping and naming it.
     pub force_reset: bool,
 }
 
-/// Le checkout d'un run, et où sa comptabilité tombe.
+/// A run's checkout, and where its accounting lands.
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
@@ -110,8 +108,7 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Les deux racines au même endroit — ce qu'un run sans workspace veut
-    /// dire.
+    /// Both roots at the same place — what a run without a workspace means.
     #[must_use]
     pub fn new(root: &Path) -> Self {
         Self {
@@ -120,10 +117,10 @@ impl Workspace {
         }
     }
 
-    /// Le même workspace, le code pris ailleurs.
+    /// The same workspace, code taken elsewhere.
     ///
-    /// La comptabilité reste où elle était, et c'est tout l'intérêt : c'est ce
-    /// qui rend un dossier de code jetable.
+    /// The accounting stays where it was, and that is the whole point: that is what
+    /// makes a code folder disposable.
     #[must_use]
     pub fn at(&self, root: &Path) -> Self {
         Self {
@@ -132,75 +129,75 @@ impl Workspace {
         }
     }
 
-    /// Le code : ce que les sessions éditent, ce que `git` et `gh` voient.
+    /// The code: what sessions edit, what `git` and `gh` see.
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// La comptabilité : journaux, registre, point de reprise.
+    /// The accounting: logs, ledger, resume point.
     #[must_use]
     pub fn state_root(&self) -> &Path {
         &self.state_root
     }
 
-    /// Le dossier de la boucle, sous la racine de comptabilité.
+    /// The loop folder, under the accounting root.
     #[must_use]
     pub fn loop_dir(&self) -> PathBuf {
         self.state_root.join(".llocal/agent-loop")
     }
 
-    /// Le pointeur de reprise, deux lignes.
+    /// The resume pointer, two lines.
     #[must_use]
     pub fn pointer(&self) -> PathBuf {
         self.loop_dir().join("state")
     }
 
-    /// Le registre des coûts, dont l'en-tête est gelé.
+    /// The cost ledger, whose header is frozen.
     #[must_use]
     pub fn ledger(&self) -> PathBuf {
         self.loop_dir().join("costs.tsv")
     }
 
-    /// Le dossier d'une revue : ses verrous, son journal, ses artefacts.
+    /// A review's folder: its locks, logs, artifacts.
     ///
-    /// Un seul dossier pour toutes les revues — leurs artefacts sont
-    /// préfixés par le numéro de la PR, pas par un identifiant de run.
+    /// One folder for all reviews — their artifacts are
+    /// prefixed by PR number, not by a run id.
     #[must_use]
     pub fn review_dir(&self) -> PathBuf {
         self.state_root.join(".llocal/pr-review")
     }
 
-    /// Le registre des revues — colonnes distinctes de celui des rounds.
+    /// The review ledger — columns distinct from the rounds one.
     #[must_use]
     pub fn review_ledger(&self) -> PathBuf {
         self.review_dir().join("costs.tsv")
     }
 
-    /// Le dossier du raffinage : ses verrous, ses artefacts, un sous-dossier
-    /// par issue.
+    /// Refinement's folder: its locks, artifacts, one subfolder
+    /// per issue.
     #[must_use]
     pub fn refinement_dir(&self) -> PathBuf {
         self.state_root.join(".llocal/refinement")
     }
 
-    /// Le registre du raffinage — mêmes colonnes que celui des rounds.
+    /// The refinement ledger — same columns as the rounds one.
     #[must_use]
     pub fn refinement_ledger(&self) -> PathBuf {
         self.refinement_dir().join("costs.tsv")
     }
 
-    /// Où tombent les workspaces que ce dépôt monte.
+    /// Where workspaces this repo mounts land.
     #[must_use]
     pub fn workspaces(&self) -> PathBuf {
         self.state_root.join(DEFAULT_BASE)
     }
 
-    /// Ce chemin, relatif à l'une des deux racines quand c'est possible.
+    /// This path, relative to one of the two roots when possible.
     ///
-    /// **Le code d'abord, la comptabilité ensuite**, et l'ordre compte : le
-    /// workspace vit *sous* la racine de comptabilité quand personne n'a dit le
-    /// contraire. La comptabilité d'abord rendait donc tout chemin de code
+    /// **Code first, accounting last**, and order matters: the
+    /// workspace lives *under* the accounting root when no one has said otherwise. Accounting
+    /// first would have made every code path
     /// précédé de `.llocal/agentic_workspaces/<nom>/`, et la racine du code
     /// n'était jamais atteinte.
     #[must_use]

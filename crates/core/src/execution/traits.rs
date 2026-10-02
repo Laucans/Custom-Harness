@@ -1,57 +1,82 @@
-//! Les deux traits que tout niveau d'exécution partage.
+//! The two traits every execution level shares.
 
 use async_trait::async_trait;
 
 use crate::domain::{Outcome, Verdict};
-use crate::execution::context::Context;
-use crate::execution::gate::Gate;
+use crate::execution::checks::gate::Gate;
+use crate::execution::data::context::Context;
 
-/// Une vérification : elle **juge**, elle n'écrit jamais dans le `Context`.
+/// A check: it **judges**, it never writes into the `Context`.
 ///
-/// Le `&Context` (immuable), plutôt qu'un unique trait pour tout, est ce qui
-/// rend la règle « Verification juge, Action fait » vraie à la compilation
-/// au lieu d'être une convention — le borrow checker refuse qu'une
-/// `Verification` mute l'état.
+/// The `&Context` (immutable), rather than a single trait for everything, is
+/// what makes the rule "a Verification judges, an Action does" true at compile
+/// time instead of being a convention — the borrow checker refuses to let a
+/// `Verification` mutate the state.
 #[async_trait(?Send)]
 pub trait Verification<S> {
-    /// Rend `Continue` si tout tient, `Skip` pour sauter sans payer, ou un
-    /// `Halt` pour arrêter la séquence.
+    /// Returns `Continue` if everything holds, `Skip` to skip without paying,
+    /// or a `Halt` to stop the sequence.
     async fn verify(&self, ctx: &Context<S>) -> Outcome<Verdict>;
 }
 
-/// Le travail propre à un niveau — Workflow, Round, Stage ou Action.
+/// The work proper to one level — Workflow, Round, Stage or Action.
 ///
-/// Distinct de [`Guarded::execute`] : `perform` est ce qu'un niveau écrit,
-/// `execute` est la séquence pré-gate → perform → post-gate que personne ne
-/// réécrit.
+/// Distinct from [`Guarded::execute`]: `perform` is what a level writes,
+/// `execute` is the pre-gate → perform → post-gate sequence that nobody
+/// rewrites.
 #[async_trait(?Send)]
 pub trait Executable<S> {
-    /// Ce qui doit tenir avant de payer. `None` : rien à vérifier.
+    /// What must hold before paying. `None`: nothing to check.
     fn pre(&self) -> Option<&Gate<S>> {
         None
     }
 
-    /// Ce qui doit avoir été obtenu après. `None` : rien à vérifier.
+    /// What must have been obtained afterwards. `None`: nothing to check.
     fn post(&self) -> Option<&Gate<S>> {
         None
     }
 
-    /// Le travail propre à ce niveau, entre les deux gardes.
+    /// The work proper to this level, between the two guards.
     async fn perform(&self, ctx: &mut Context<S>) -> Outcome<Verdict>;
 }
 
-/// La séquence commune à tout exécutable : pré-gate, `perform`, post-gate.
+/// A borrowed executable is one too.
 ///
-/// Un *blanket impl* plutôt qu'une méthode par défaut sur `Executable` : ça
-/// rend la séquence non contournable. Une impl de `Guarded` écrite à la main
-/// pour un type qui implémente déjà `Executable` entrerait en conflit avec
-/// celle-ci — il n'y a qu'un seul chemin pour exécuter quoi que ce soit, et
-/// c'est celui-là. C'est ce que `contract/workflow.py` décrivait comme
-/// « quinze lignes, jamais réécrites », tenu ici par le compilateur.
+/// What this exists for: a workflow that builds its round once and hands it
+/// out every turn returns `Box::new(&self.round)`, while one that builds a
+/// fresh round per turn boxes the owned value. Both satisfy
+/// [`Workflow::round`](crate::execution::Workflow::round) without the core
+/// having to choose between owning and borrowing for them.
+#[async_trait(?Send)]
+impl<S, T> Executable<S> for &T
+where
+    T: Executable<S> + ?Sized,
+{
+    fn pre(&self) -> Option<&Gate<S>> {
+        (**self).pre()
+    }
+
+    fn post(&self) -> Option<&Gate<S>> {
+        (**self).post()
+    }
+
+    async fn perform(&self, ctx: &mut Context<S>) -> Outcome<Verdict> {
+        (**self).perform(ctx).await
+    }
+}
+
+/// The sequence common to every executable: pre-gate, `perform`, post-gate.
+///
+/// A *blanket impl* rather than a default method on `Executable`: that makes
+/// the sequence impossible to bypass. A hand-written `Guarded` impl for a type
+/// that already implements `Executable` would conflict with this one — there
+/// is exactly one path to execute anything, and this is it. It's what
+/// `contract/workflow.py` described as "fifteen lines, never rewritten", held
+/// here by the compiler.
 #[async_trait(?Send)]
 pub trait Guarded<S> {
-    /// Pré-gate → `perform` → post-gate. Ce que le séquenceur appelle, et la
-    /// seule chose qu'il appelle.
+    /// Pre-gate → `perform` → post-gate. What the sequencer calls, and the
+    /// only thing it calls.
     async fn execute(&self, ctx: &mut Context<S>) -> Outcome<Verdict>;
 }
 
@@ -78,7 +103,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::context::Settings;
+    use crate::execution::data::context::Settings;
     use crate::traces::Logbook;
 
     struct AlwaysSkips;
@@ -127,8 +152,8 @@ mod tests {
         };
         let mut context = ctx();
         let verdict = stage.execute(&mut context).await.unwrap();
-        // Continue, pas Skip : le parent enchaîne, seule la ligne journalisée
-        // dit qu'on a sauté perform.
+        // Continue, not Skip: the parent carries on, only the logged line says
+        // that perform was skipped.
         assert_eq!(verdict, Verdict::Continue);
     }
 
@@ -137,5 +162,24 @@ mod tests {
         let stage = Counts { pre: None };
         let mut context = ctx();
         stage.execute(&mut context).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_borrowed_executable_keeps_its_gates() {
+        // What this guards: a workflow handing out `&self.round` every turn
+        // must not lose that round's post-gate on the way.
+        let stage = Counts {
+            pre: Some(Gate {
+                name: "test",
+                checks: vec![Box::new(AlwaysSkips)],
+            }),
+        };
+        let borrowed = &stage;
+        let mut context = ctx();
+        assert!(borrowed.pre().is_some());
+        assert_eq!(
+            borrowed.execute(&mut context).await.unwrap(),
+            Verdict::Continue
+        );
     }
 }
