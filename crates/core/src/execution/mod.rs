@@ -1,6 +1,8 @@
 //! Faire tourner : le contexte, les deux traits, la porte, la stage, le
 //! round.
 
+pub mod provisioning;
+
 mod action;
 mod context;
 mod gate;

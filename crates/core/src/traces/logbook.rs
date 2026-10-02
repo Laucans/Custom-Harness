@@ -84,6 +84,22 @@ impl Logbook {
         }
     }
 
+    /// Une ligne qu'un humain doit voir même en `Quiet`.
+    ///
+    /// Pas une panne — un `Halt` voyage comme valeur. Ce qui passe ici est ce
+    /// qui *n'arrête pas* le run et serait pourtant une mauvaise surprise plus
+    /// tard : un workspace gardé, du travail local absent du clone.
+    pub fn warn(&self, line: &str) {
+        self.say(&format!("attention : {line}"));
+    }
+
+    /// Une ligne qui n'intéresse qu'une autopsie — tue sauf en `Verbose`.
+    pub fn debug(&self, line: &str) {
+        if self.verbosity == Verbosity::Verbose {
+            self.say(line);
+        }
+    }
+
     /// Le niveau de ce journal.
     #[must_use]
     pub const fn verbosity(&self) -> Verbosity {
@@ -134,5 +150,26 @@ mod tests {
     #[test]
     fn null_never_panics_and_records_nothing() {
         Logbook::null().say("nowhere");
+    }
+
+    #[test]
+    fn a_warning_is_written_even_at_the_quietest_level() {
+        // Un workspace gardé n'arrête pas le run : si `--quiet` l'avalait,
+        // personne n'apprendrait jamais qu'il reste du travail sur le disque.
+        let capture = Rc::new(Capture::default());
+        let log = Logbook::new(Rc::clone(&capture) as Rc<dyn Sink>, Verbosity::Quiet);
+        log.warn("workspace gardé");
+        assert_eq!(capture.0.borrow()[0], "attention : workspace gardé");
+    }
+
+    #[test]
+    fn a_debug_line_only_shows_up_when_asked_for() {
+        let quiet = Rc::new(Capture::default());
+        Logbook::new(Rc::clone(&quiet) as Rc<dyn Sink>, Verbosity::Normal).debug("détail");
+        assert!(quiet.0.borrow().is_empty());
+
+        let loud = Rc::new(Capture::default());
+        Logbook::new(Rc::clone(&loud) as Rc<dyn Sink>, Verbosity::Verbose).debug("détail");
+        assert_eq!(loud.0.borrow()[0], "détail");
     }
 }

@@ -6,6 +6,7 @@
 
 pub mod markers;
 pub mod prompts;
+pub mod workspace;
 
 mod halt;
 mod issue;
