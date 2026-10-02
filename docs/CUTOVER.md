@@ -1,5 +1,10 @@
 # La reprise en main — ce qu'un humain doit faire, et quand
 
+> **Où en est le harness.** Il tourne. `harness --dry-run --no-workspace` passe
+> la porte de version, interroge `gh`, vérifie la branche et la CI, puis
+> **s'arrête sur les étiquettes** — parce que les sept `harness:*` n'existent
+> pas encore. Les deux gestes ci-dessous sont tout ce qui manque.
+
 Le harness Rust prend la main sur le suivi plutôt que de cohabiter : les
 étiquettes passent de `pipeline:*` à `harness:*`, et l'état reprend
 `.llocal/agent-loop/`. **Rien ici n'est fait automatiquement**, et c'est
@@ -89,6 +94,23 @@ croit :
 command -v claude && claude --version
 ```
 
+**La porte le dit elle-même**, et c'est voulu : son message nomme la commande
+*et* le piège du shim, parce que « `claude update` a marché mais la porte
+refuse toujours » est précisément la situation où il faut le lire.
+
+```
+STOP: claude 2.1.257 is older than 2.1.277 — … Run: claude update (and check
+that `command -v claude` resolves to what you just updated)
+```
+
+En attendant, un run se vérifie en mettant l'installation native en tête du
+`PATH` pour cette commande-là seulement :
+
+```bash
+d=$(mktemp -d) && ln -s "$HOME/.local/share/claude/versions/2.1.285" "$d/claude"
+PATH="$d:$PATH" harness --dry-run --no-workspace
+```
+
 ## Ce qui reste partagé, et ce qui ne l'est pas
 
 | Chemin | Qui l'écrit après la bascule |
@@ -99,3 +121,34 @@ command -v claude && claude --version
 
 Le sqlite n'est pas supprimé par la bascule : il reste lisible au `sqlite3` si
 une autopsie en a besoin un jour.
+
+## Le premier vrai run, quand les deux gestes sont faits
+
+Dans cet ordre, et chacun répond à une question que le suivant suppose.
+
+```bash
+# 1. Qu'est-ce qu'il choisirait ? Ne dépense rien, n'ouvre aucune session.
+harness --dry-run --no-workspace --allow-dirty
+
+# 2. Un seul tour, dans un clone, un seul stage : la plus petite dépense
+#    réelle qui prouve que la chaîne entière tient.
+harness --rounds 1 --stages business-analyst
+
+# 3. Un round entier.
+harness --rounds 1
+```
+
+Deux choses à savoir avant le premier run qui monte un workspace :
+
+- **le clone n'a ni `node_modules` ni venv** — rien de ce que git ne suit pas.
+  Une porte de préflight le dit et refuse de tourner, plutôt que de brûler un
+  `/code` dont chaque commande de vérification répond `command not found`. Il
+  faut les installer **dans le workspace**, une fois ; `PERMANENT` les garde
+  ensuite d'un run à l'autre ;
+- **ce qui n'est pas poussé n'existe pas pour le run.** Le montage clone
+  `origin`. Un avertissement le dit si le checkout porte des commits non
+  poussés ou un arbre sale, mais c'est un avertissement : il ne refuse pas.
+
+`--rollover` n'est **pas** le défaut : un milestone fini arrête la boucle au
+lieu de payer un `/planner` qui engage le projet sur un item de roadmap que
+personne n'a lu. Le brancher est une décision, pas un réglage.

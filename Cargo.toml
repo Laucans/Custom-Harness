@@ -13,7 +13,15 @@ rust-version = "1.98"
 license = "MIT"
 
 [workspace.dependencies]
+anyhow = "1"
 async-trait = "0.1"
+# Les arguments *et* leurs variables d'environnement, déclarés ensemble : la
+# règle « toute variable que le code lit apparaît dans `--help` » devient vraie
+# par construction, là où le Python l'assérait dans un test.
+clap = { version = "4", features = ["derive", "env"] }
+# Une horloge, et elle ne vit que dans le lanceur : `harness-core` n'a aucune
+# dépendance au temps, parce que la ligne de registre reçoit son instant.
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 thiserror = "2"
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = "1"

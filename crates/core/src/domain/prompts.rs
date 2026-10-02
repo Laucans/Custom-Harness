@@ -79,7 +79,11 @@ ISSUE #{num} — {title}
 
 /// Une issue telle qu'une session doit la voir : son numéro, son titre, son
 /// corps.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Sérialisable parce qu'elle entre dans le point de reprise : c'est la portée
+/// qu'un run interrompu doit retrouver pour que la session suivante ne démarre
+/// pas aveugle.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Named {
     /// Le numéro, en texte — il n'entre que dans de la prose.
     pub number: String,

@@ -474,7 +474,72 @@ C'est le seul arbitrage encore ouvert. Tout le reste est tranché.
    `reset --hard`, `clean`, `branches_at_risk`) et les lectures de PR
    (`pr`, `comment_bodies`, `post_comment`) qui servent la revue, pas la
    boucle.
-6. **La boucle, puis le launcher qui la trigge.** Le premier workflow dans
-   `harness-workflows` : `Loop` comme état (avec `Resumable`), le `TaskRound`
-   typé de la variante B, la table des trois stages, et les gates scindées de
-   l'inventaire ci-dessus. Puis le montage de workspace, qui attendait.
+6. ~~La boucle, puis le launcher qui la trigge~~ — **faite**. Le premier
+   workflow dans `harness-workflows` : `Loop` comme état (`Resumable` +
+   `Scoped`), les quatre règles de choix de task, le `Board` comme donnée pure,
+   le `TaskRound` typé de la variante B, la table des trois stages, et les
+   gates scindées de l'inventaire ci-dessus. Puis le montage de workspace et le
+   lanceur. **270 tests.**
+
+   **Ce que l'étape a ajouté au core, et pourquoi :**
+
+   | Quoi | Pourquoi là et pas ailleurs |
+   | --- | --- |
+   | `execution::guards` — `InThisRun`, `StageAlreadyDone`, `MarkDone` | les trois règles que **tout** stage subit, quel que soit le workflow. Côté Python c'étaient trois branches dans le corps de `StageRunner.run`, donc impossibles à retirer d'un stage, à tester seules, ou à lire dans la table. Les deux premières **jugent**, la troisième **fait** : la décision n°1 appliquée à une mécanique qui mélangeait les trois |
+   | `execution::Unpaid<A>` | une action locale glissée dans une stage payante. Ce qui est dedans ne reçoit pas la session, donc **ne peut pas** dépenser. Un `impl` générique dirait la même chose sans l'enrobage, mais la cohérence le refuse — le compilateur ne sait pas prouver qu'un type n'implémente *pas* `Action` |
+   | `adapters::store::spending` — le port, pas le fichier | `Ledger` sait écrire une ligne mais pas quelle heure il est. L'horloge, le nom du run et celui de la machine sont des faits du **lanceur**, et les y mettre garde `harness-core` **sans aucune dépendance au temps** |
+   | `adapters::agent::rehearsal` | un dry-run devient un **choix de câblage**, pas une branche du framework. Côté Python chaque fonction qui exécutait portait son `if cfg.dry_run`, donc le chemin à blanc était un second parcours du code — celui qu'aucun test d'intégration ne couvre |
+   | `adapters::shell::disk` | un port pour cinq opérations de fichiers, et sa seule raison est de rendre **testable le module qui supprime**. Un faux disque rend « ce test prouve qu'on ne supprime pas » vérifiable au lieu d'espérable |
+   | `shell::git::Repos` | le montage parle à trois dépôts — la source, le dossier parent, le clone. Une seule couture de test les couvre |
+   | `Logbook::warn`/`debug` | un workspace gardé n'arrête pas le run, et un `--quiet` qui l'avalerait laisserait du travail sur le disque sans que personne l'apprenne |
+
+   **Ce que le portage a corrigé en passant :**
+
+   - les consignes des stages **nommaient les étiquettes en dur** dans la prose
+     du prompt (`pipeline:human`, `pipeline:waiting-merge`, …), à côté des
+     constantes que le code lisait. Le renommage en `harness:*` aurait laissé
+     les prompts réclamer des étiquettes mortes, et une session aurait obéi en
+     en créant de nouvelles. Elles sont **épissées depuis `labels`** au montage
+     de la table ; un futur renommage ne peut plus désynchroniser les deux ;
+   - la garde « ce dossier est-il un workspace ? » passe désormais **avant**
+     `--force-reset` : côté Python elle était derrière, c'est-à-dire absente du
+     seul chemin destructeur ;
+   - `Settings` étant immuable (décision n°6), le montage **rend** un `Mount`
+     au lieu de réécrire `cfg.workspace` en place. Le hack que le Python
+     assumait n'a plus d'objet ;
+   - `clap` avec `env = …` met un argument et sa variable d'environnement au
+     même endroit : « toute variable que le code lit apparaît dans `--help` »
+     devient vrai **par construction**, là où le Python l'assérait dans un test.
+
+   **Deux dépendances, et elles ne vivent que dans le lanceur** : `clap` pour
+   ce qui précède, et `jiff` pour l'horloge — `harness-core` reste sans
+   dépendance au temps parce qu'une ligne de registre **reçoit** son instant.
+
+   **Pas de forme `Repeat` dans le core.** Le Python avait
+   `core/execution/shapes/repeat.py`, une couche déclarative pour quinze lignes
+   de `for`. Le compte de tours vit dans `dev_loop::workflow::DevLoop`, qui
+   l'écrit. Le jour où un second workflow veut la même forme, elle se
+   factorisera — avec deux exemples sous les yeux plutôt qu'un.
+
+   **Vérifié en vrai** (`--dry-run --no-workspace --allow-dirty` depuis
+   `event_assistant`, avec `claude` 2.1.285 sur le `PATH`) : la porte de
+   version passe, `gh` répond, les portes de branche et de CI passent, la porte
+   « arbre propre » arrête sur l'arbre réellement sale, et la porte des
+   étiquettes arrête en nommant les sept `gh label create`. Le run s'arrête
+   donc exactement là où `docs/CUTOVER.md` dit qu'un humain doit agir.
+
+## Ce qui reste, après l'étape 6
+
+Rien de la boucle. Ce qui n'est pas porté est ce qui ne la servait pas :
+
+- les deux autres workflows (la revue de PR, le raffinage d'une issue) et les
+  hooks qui les déclenchent ;
+- les lectures de PR de l'adaptateur GitHub (`pr`, `comment_bodies`,
+  `post_comment`), qui servent la revue ;
+- `--status` et `--costs`, les deux sous-commandes de lecture ;
+- le battement (`heartbeat`) et les traces de progression d'une session. Sous
+  la proposition C, un `claude -p` ne rend rien avant d'avoir fini : il n'y a
+  pas de flux à battre. C'est le prix de C, et la proposition A (tmux) est ce
+  qui le rend ;
+- `PIPELINE_HOME`, que le Python posait pour que le hook de revue lancé depuis
+  le clone retrouve le paquet. Pas de hook en Rust, donc pas encore d'objet.

@@ -8,7 +8,11 @@
 use harness_core::domain::{Named, Resumable, Scope, Scoped};
 
 /// Ce que le round sait, et qui n'appartient qu'à lui.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Sérialisable parce que c'est **lui** qu'un run reprend : le pointeur de deux
+/// lignes dit quelle task, cet état dit où elle en était.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Loop {
     /// Le milestone en cours.
     pub milestone: Named,
@@ -58,6 +62,22 @@ impl Loop {
     #[must_use]
     pub const fn has_task(&self) -> bool {
         !self.task_key.is_empty()
+    }
+
+    /// L'état d'un tour suivant : la task oubliée, le milestone gardé.
+    ///
+    /// `stages_done` part avec la task, et c'est l'invariant : cette liste est
+    /// « ce qui a déjà tourné **pour cette task** ». La garder d'un tour à
+    /// l'autre ferait sauter les trois stages de la task suivante.
+    ///
+    /// Le milestone reste parce qu'il sera relu de toute façon ; le garder
+    /// laisse seulement un journal lisible entre deux tours.
+    #[must_use]
+    pub fn turned(&self) -> Self {
+        Self {
+            milestone: self.milestone.clone(),
+            ..Self::default()
+        }
     }
 }
 

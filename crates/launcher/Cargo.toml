@@ -11,5 +11,10 @@ name = "harness"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
 harness-core.workspace = true
 harness-workflows.workspace = true
+jiff.workspace = true
+tokio.workspace = true
