@@ -92,9 +92,10 @@ impl TaskRound {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dev_loop::board::fake::{FakeGitHub, Wrote};
+    use crate::common::fake_github::{FakeGitHub, Wrote};
+    use crate::common::labels;
     use crate::dev_loop::wiring::fake;
-    use crate::dev_loop::{gates, labels, stages};
+    use crate::dev_loop::{gates, stages};
     use harness_core::domain::{Halt, Issue, Resumable};
     use harness_core::execution::Settings;
     use harness_core::traces::Logbook;

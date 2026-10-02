@@ -30,7 +30,7 @@
 
 use harness_core::domain::Issue;
 
-use crate::dev_loop::labels;
+use crate::common::labels;
 
 /// Vrai si l'issue est une task que l'agent peut faire tourner.
 #[must_use]

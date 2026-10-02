@@ -86,7 +86,7 @@ pub(crate) mod fake {
     use harness_core::domain::{Halt, Outcome};
 
     use super::Wiring;
-    use crate::dev_loop::board::fake::FakeGitHub;
+    use crate::common::fake_github::FakeGitHub;
 
     /// Une fabrique qui refuse d'ouvrir.
     pub struct NoSessions;

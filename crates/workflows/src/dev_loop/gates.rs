@@ -22,8 +22,9 @@ use harness_core::adapters::shell::github::GitHub;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 
+use crate::common::labels;
 use crate::dev_loop::state::Loop;
-use crate::dev_loop::{board, labels, tasks};
+use crate::dev_loop::{board, tasks};
 
 /// L'étiquette dit que le SPEC est déjà écrit : on reprend après, on ne repaie
 /// pas une seconde rédaction par-dessus la première.
@@ -233,7 +234,7 @@ impl Verification<Loop> for PlannerOpenedATask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dev_loop::board::fake::FakeGitHub;
+    use crate::common::fake_github::FakeGitHub;
     use harness_core::domain::{Issue, Named};
     use harness_core::execution::Settings;
     use harness_core::traces::Logbook;

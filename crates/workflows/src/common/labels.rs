@@ -1,13 +1,15 @@
-//! Les étiquettes `harness:*`, qui portent tout le modèle de suivi.
+//! Les étiquettes `harness:*`, partagées par les workflows qui les lisent.
 //!
-//! Elles sont **créées à la main sur le dépôt**, et le préflight vérifie
-//! qu'elles existent avant de payer quoi que ce soit : une étiquette mal
-//! orthographiée rend le tableau vide, et un tableau vide se lit « plus rien à
-//! faire ».
+//! Elles sont **créées à la main sur le dépôt**, et le préflight de chaque
+//! workflow vérifie que les siennes existent avant de payer quoi que ce soit :
+//! une étiquette mal orthographiée rend le tableau vide, et un tableau vide se
+//! lit « plus rien à faire ».
 //!
 //! Renommées depuis `pipeline:*` — la migration prend la main sur le suivi
 //! plutôt que de cohabiter. Le renommage côté GitHub est un geste humain : il
-//! arrête le pipeline Python à la seconde où il est fait.
+//! arrête le pipeline Python à la seconde où il est fait. `REFINEMENT` est
+//! renommée dès l'écriture, comme les sept autres — ce qui reste humain est le
+//! `gh label edit` lui-même, documenté dans `docs/CUTOVER.md`.
 
 /// Un item de roadmap : ce dont `/planner` tire un milestone.
 pub const ROADMAP: &str = "harness:roadmap";
@@ -34,9 +36,15 @@ pub const SPEC_WRITTEN: &str = "harness:spec-written";
 /// « l'agent a fini » de « c'est dans `main` ».
 pub const WAITING_MERGE: &str = "harness:waiting-merge";
 
+/// Un round de raffinage reste à faire sur cette issue.
+///
+/// Posée par un humain (ou le planner) pour demander un round ; le raffinage
+/// la retire lui-même une fois le round écrit.
+pub const REFINEMENT: &str = "harness:refinement";
+
 /// Les sept que la boucle exige.
 ///
-/// `harness:refinement` n'en fait pas partie : la boucle ne la lit pas, et son
+/// `REFINEMENT` n'en fait pas partie : la boucle ne la lit pas, et son
 /// préflight refuserait de tourner sans elle.
 pub const LOOP: [&str; 7] = [
     ROADMAP,
@@ -71,13 +79,23 @@ mod tests {
 
     #[test]
     fn they_all_share_the_namespace_and_none_is_a_prefix_of_another() {
-        for label in LOOP {
+        let all = [
+            ROADMAP,
+            MILESTONE,
+            AGENT,
+            HUMAN,
+            READY,
+            SPEC_WRITTEN,
+            WAITING_MERGE,
+            REFINEMENT,
+        ];
+        for label in all {
             assert!(label.starts_with("harness:"), "{label} hors du namespace");
         }
         // Une étiquette préfixe d'une autre rendrait un `has()` ambigu si
         // quelqu'un passait un jour à une comparaison par préfixe.
-        for a in LOOP {
-            let prefixes = LOOP.iter().filter(|b| b.starts_with(a)).count();
+        for a in all {
+            let prefixes = all.iter().filter(|b| b.starts_with(a)).count();
             assert_eq!(prefixes, 1, "{a} est le préfixe d'une autre étiquette");
         }
     }

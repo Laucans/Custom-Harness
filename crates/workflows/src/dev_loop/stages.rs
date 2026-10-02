@@ -48,10 +48,11 @@ use harness_core::execution::{
     Verification,
 };
 
+use crate::common::labels;
 use crate::dev_loop::actions::{Ask, RecordSpecWritten};
+use crate::dev_loop::gates;
 use crate::dev_loop::state::Loop;
 use crate::dev_loop::wiring::Wiring;
-use crate::dev_loop::{gates, labels};
 
 const BUSINESS_ANALYST: &str =
     "Take issue #{num} (\"{title}\") — its body is below, under SCOPE. The

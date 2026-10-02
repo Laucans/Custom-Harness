@@ -451,6 +451,15 @@ mod tests {
         async fn close_issue(&self, _number: u64) -> Outcome<()> {
             Err(refused())
         }
+        async fn pr(&self, _pr_ref: &str) -> Outcome<harness_core::domain::Pr> {
+            Err(refused())
+        }
+        async fn pr_comments(&self, _num: &str) -> Outcome<String> {
+            Err(refused())
+        }
+        async fn post_pr_comment(&self, _num: &str, _body_file: &std::path::Path) -> Outcome<()> {
+            Err(refused())
+        }
     }
 
     struct NoSessions;

@@ -30,7 +30,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::adapters::shell::process;
-use crate::domain::{Halt, Issue, Outcome};
+use crate::domain::{Halt, Issue, Outcome, Pr};
 
 /// Le binaire appelé.
 const BINARY: &str = "gh";
@@ -108,6 +108,35 @@ fn text_at(payload: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+/// Les métadonnées qu'une règle de saut de la revue demande, en un appel.
+const PR_FIELDS: &str = "number,baseRefName,headRefName,title,url,state,isDraft";
+
+/// Une PR de l'API, dans la forme que le domaine sait lire.
+fn pr_from(payload: &Value) -> Pr {
+    Pr {
+        num: payload
+            .get("number")
+            .and_then(Value::as_u64)
+            .map_or_else(String::new, |n| n.to_string()),
+        base: text_at(payload, "baseRefName"),
+        head: text_at(payload, "headRefName"),
+        title: text_at(payload, "title"),
+        url: text_at(payload, "url"),
+        state: {
+            let state = text_at(payload, "state");
+            if state.is_empty() {
+                "OPEN".to_string()
+            } else {
+                state
+            }
+        },
+        draft: payload
+            .get("isDraft")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
 }
 
 /// Les issues d'une réponse de liste, **PR exclues**.
@@ -247,6 +276,41 @@ pub trait GitHub {
     /// # Errors
     /// [`Halt::Halted`] si GitHub refuse.
     async fn close_issue(&self, number: u64) -> Outcome<()>;
+
+    // --- ce que la revue de PR demande, et elle seule ----------------------
+    //
+    // Par `gh pr view`/`gh pr comment`, pas par `gh api` : une revue n'a pas
+    // besoin des sous-issues ni des dépendances, et ces deux sous-commandes
+    // rendent déjà la forme qu'il faut. Leurs échecs sont [`Halt::Failed`], pas
+    // [`Halt::Unreadable`] : il n'y a ici aucune liste vide qui pourrait se
+    // relire comme « plus rien à faire » — une PR qu'on ne peut pas lire est
+    // un échec ordinaire, pas une ambiguïté.
+
+    /// Les métadonnées d'une PR, par son numéro ou son URL.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`] si `gh` ne peut pas la lire.
+    async fn pr(&self, pr_ref: &str) -> Outcome<Pr>;
+
+    /// Le corps de tous les commentaires d'une PR, **concaténés tels quels**.
+    ///
+    /// Une chaîne et non une liste, à dessein : la seule chose qui en est
+    /// faite est une recherche de sous-chaîne (le marqueur d'une revue déjà
+    /// postée), et c'est exactement ce que rend `gh pr view --json comments -q
+    /// .comments[].body`.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`] si `gh` ne peut pas les lire.
+    async fn pr_comments(&self, num: &str) -> Outcome<String>;
+
+    /// Poste un commentaire sur une PR, depuis un fichier.
+    ///
+    /// Un fichier et non une chaîne : le texte est déjà gardé sur disque avant
+    /// cet appel, pour qu'il survive à un `gh` qui échoue.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`] si GitHub refuse.
+    async fn post_pr_comment(&self, num: &str, body_file: &Path) -> Outcome<()>;
 }
 
 /// `gh`, appelé depuis un dépôt donné.
@@ -537,6 +601,68 @@ impl GitHub for GhCli {
         )
         .await
     }
+
+    async fn pr(&self, pr_ref: &str) -> Outcome<Pr> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "view".to_string(),
+                pr_ref.to_string(),
+                "--json".to_string(),
+                PR_FIELDS.to_string(),
+            ])
+            .await?;
+        if !ran.ok() {
+            return Err(Halt::Failed(format!(
+                "cannot read PR {pr_ref} — {}",
+                ran.why()
+            )));
+        }
+        serde_json::from_str::<Value>(ran.out())
+            .map_err(|e| Halt::Failed(format!("cannot read PR {pr_ref} — {e}")))
+            .map(|value| pr_from(&value))
+    }
+
+    async fn pr_comments(&self, num: &str) -> Outcome<String> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "view".to_string(),
+                num.to_string(),
+                "--json".to_string(),
+                "comments".to_string(),
+                "-q".to_string(),
+                ".comments[].body".to_string(),
+            ])
+            .await?;
+        if !ran.ok() {
+            return Err(Halt::Failed(format!(
+                "cannot tell whether PR #{num} was already reviewed — {}",
+                ran.why()
+            )));
+        }
+        Ok(ran.stdout)
+    }
+
+    async fn post_pr_comment(&self, num: &str, body_file: &Path) -> Outcome<()> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "comment".to_string(),
+                num.to_string(),
+                "--body-file".to_string(),
+                body_file.display().to_string(),
+            ])
+            .await?;
+        if ran.ok() {
+            return Ok(());
+        }
+        Err(Halt::Failed(format!(
+            "exit {}: {}",
+            ran.code.unwrap_or(-1),
+            ran.why()
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -634,6 +760,30 @@ mod tests {
         let merged = merged_from(&payload, "les PR").expect("parse");
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].number, 1);
+    }
+
+    #[test]
+    fn a_pr_is_read_from_its_own_fields_not_the_issue_shape() {
+        let payload = json!({
+            "number": 32,
+            "baseRefName": "main_agent",
+            "headRefName": "feat/cities",
+            "title": "feat(db): table cities",
+            "url": "https://github.com/o/r/pull/32",
+            "state": "MERGED",
+            "isDraft": false
+        });
+        let pr = pr_from(&payload);
+        assert_eq!(pr.num, "32");
+        assert_eq!(pr.base, "main_agent");
+        assert_eq!(pr.state, "MERGED");
+        assert!(!pr.draft);
+    }
+
+    #[test]
+    fn a_missing_state_on_a_pr_defaults_to_open() {
+        let pr = pr_from(&json!({ "number": 1 }));
+        assert_eq!(pr.state, "OPEN");
     }
 
     #[test]

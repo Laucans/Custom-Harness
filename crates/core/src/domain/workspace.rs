@@ -162,6 +162,34 @@ impl Workspace {
         self.loop_dir().join("costs.tsv")
     }
 
+    /// Le dossier d'une revue : ses verrous, son journal, ses artefacts.
+    ///
+    /// Un seul dossier pour toutes les revues — leurs artefacts sont
+    /// préfixés par le numéro de la PR, pas par un identifiant de run.
+    #[must_use]
+    pub fn review_dir(&self) -> PathBuf {
+        self.state_root.join(".llocal/pr-review")
+    }
+
+    /// Le registre des revues — colonnes distinctes de celui des rounds.
+    #[must_use]
+    pub fn review_ledger(&self) -> PathBuf {
+        self.review_dir().join("costs.tsv")
+    }
+
+    /// Le dossier du raffinage : ses verrous, ses artefacts, un sous-dossier
+    /// par issue.
+    #[must_use]
+    pub fn refinement_dir(&self) -> PathBuf {
+        self.state_root.join(".llocal/refinement")
+    }
+
+    /// Le registre du raffinage — mêmes colonnes que celui des rounds.
+    #[must_use]
+    pub fn refinement_ledger(&self) -> PathBuf {
+        self.refinement_dir().join("costs.tsv")
+    }
+
     /// Où tombent les workspaces que ce dépôt monte.
     #[must_use]
     pub fn workspaces(&self) -> PathBuf {
@@ -233,6 +261,24 @@ mod tests {
         assert_eq!(
             moved.rel(Path::new("/depot/.llocal/w/clone/src/main.rs")),
             "src/main.rs"
+        );
+    }
+
+    #[test]
+    fn review_and_refinement_live_under_their_own_llocal_dirs() {
+        let here = Workspace::new(Path::new("/depot"));
+        assert_eq!(here.review_dir(), Path::new("/depot/.llocal/pr-review"));
+        assert_eq!(
+            here.review_ledger(),
+            Path::new("/depot/.llocal/pr-review/costs.tsv")
+        );
+        assert_eq!(
+            here.refinement_dir(),
+            Path::new("/depot/.llocal/refinement")
+        );
+        assert_eq!(
+            here.refinement_ledger(),
+            Path::new("/depot/.llocal/refinement/costs.tsv")
         );
     }
 

@@ -10,6 +10,7 @@ pub mod workspace;
 
 mod halt;
 mod issue;
+mod pulls;
 mod resumable;
 mod spend;
 mod verdict;
@@ -17,6 +18,7 @@ mod verdict;
 pub use halt::{Halt, Severity};
 pub use issue::Issue;
 pub use prompts::{Named, Scope, Scoped};
+pub use pulls::Pr;
 pub use resumable::Resumable;
 pub use spend::{Spend, Tokens};
 pub use verdict::{Outcome, Verdict};

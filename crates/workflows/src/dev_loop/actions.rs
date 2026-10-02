@@ -22,8 +22,9 @@ use harness_core::adapters::store::spending::{Entry, Spending};
 use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, markers, prompts};
 use harness_core::execution::{Action, Context, Open, SessionAction};
 
+use crate::common::labels;
 use crate::dev_loop::state::Loop;
-use crate::dev_loop::{board, labels, tasks};
+use crate::dev_loop::{board, tasks};
 
 /// Le numéro de la task en cours, ou l'échec de le lire.
 fn number_of(ctx: &Context<Loop>) -> Outcome<u64> {
@@ -281,7 +282,7 @@ impl SessionAction<Loop> for Ask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dev_loop::board::fake::{FakeGitHub, Wrote};
+    use crate::common::fake_github::{FakeGitHub, Wrote};
     use crate::dev_loop::state::Loop;
     use harness_core::adapters::agent::{Reply, Session};
     use harness_core::domain::{Issue, Spend};

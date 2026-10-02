@@ -6,7 +6,10 @@
 
 //! Les instances : ce que `harness-core` ne peut pas nommer.
 //!
-//! Un sous-module par workflow. Le premier, et le seul pour l'instant, est la
-//! boucle de développement.
+//! Un sous-module par workflow, plus `common` pour ce qu'au moins deux d'entre
+//! eux lisent réellement — les étiquettes, un faux GitHub pour leurs tests.
 
+pub mod common;
 pub mod dev_loop;
+pub mod pr_review;
+pub mod refinement;

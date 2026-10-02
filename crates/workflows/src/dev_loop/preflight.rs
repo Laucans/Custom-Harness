@@ -19,8 +19,9 @@ use harness_core::adapters::shell::github::GitHub;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 
+use crate::common::labels;
+use crate::dev_loop::board;
 use crate::dev_loop::state::Loop;
-use crate::dev_loop::{board, labels};
 
 /// Les sept étiquettes dans lesquelles tout le modèle est exprimé.
 ///
@@ -164,7 +165,7 @@ impl Verification<Loop> for DependenciesAreInstalled {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dev_loop::board::fake::FakeGitHub;
+    use crate::common::fake_github::FakeGitHub;
     use harness_core::domain::Issue;
     use harness_core::execution::Settings;
     use harness_core::traces::Logbook;

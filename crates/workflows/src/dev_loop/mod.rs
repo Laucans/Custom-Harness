@@ -9,7 +9,6 @@
 pub mod actions;
 pub mod board;
 pub mod gates;
-pub mod labels;
 pub mod preflight;
 pub mod round;
 pub mod stages;
