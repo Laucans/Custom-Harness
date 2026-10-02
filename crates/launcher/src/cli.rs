@@ -91,9 +91,16 @@ pub struct Cli {
     #[arg(long)]
     pub no_workspace: bool,
 
-    /// Ce qu'il advient du dossier de travail.
-    #[arg(long, env = "WORKSPACE_STRATEGY", value_parser = strategy)]
-    pub workspace_strategy: Option<Strategy>,
+    /// Ce qu'il advient du dossier de travail. Vide : le défaut du domaine
+    /// ([`Strategy::Permanent`]), lu par [`Cli::strategy`].
+    ///
+    /// En `String`, pas en `Option<Strategy>` avec un `value_parser` qui
+    /// rejette — même défaut que les trois booléens juste au-dessus, et même
+    /// cause : `clap` appelle le parseur dès que la variable existe, même
+    /// vide, et `Strategy::parse("")` refuse à bon droit une orthographe
+    /// inconnue.
+    #[arg(long, env = "WORKSPACE_STRATEGY", default_value = "")]
+    pub workspace_strategy: String,
 
     /// L'URL à cloner. Vide : l'`origin` du dépôt d'où le run est lancé.
     #[arg(long, env = "WORKSPACE_URL", default_value = "")]
@@ -117,6 +124,25 @@ pub struct Cli {
     /// nommant. C'est un humain qui prend cette sortie.
     #[arg(long)]
     pub force_reset: bool,
+}
+
+impl Cli {
+    /// La stratégie de workspace demandée, ou le défaut du domaine si rien
+    /// n'est donné.
+    ///
+    /// # Errors
+    ///
+    /// Une erreur nommant la faute si `workspace_strategy` n'est ni vide ni
+    /// une stratégie connue — refusée plutôt que lue comme le défaut, pour
+    /// la même raison que [`Strategy::parse`] : `WORKSPACE_STRATEGY=permanant`
+    /// qui retomberait sur `tmp` ferait supprimer, une fois et sans rien dire,
+    /// le workspace que l'humain croyait garder.
+    pub fn strategy(&self) -> Result<Strategy, String> {
+        if self.workspace_strategy.is_empty() {
+            return Ok(Strategy::Permanent);
+        }
+        strategy(&self.workspace_strategy)
+    }
 }
 
 /// Un booléen d'environnement, aux orthographes usuelles.
@@ -166,6 +192,7 @@ fn strategy(text: &str) -> Result<Strategy, String> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use serial_test::serial;
 
     #[test]
     fn the_declarations_are_coherent() {
@@ -204,6 +231,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn the_defaults_are_the_ones_the_python_run_with() {
         let cli = Cli::try_parse_from(["harness"]).expect("les défauts");
         assert_eq!(cli.rounds, 3);
@@ -212,17 +240,40 @@ mod tests {
         assert!(!cli.dry_run);
         // Le rollover reste à brancher explicitement : il dépense un run opus.
         assert!(!cli.rollover);
-        // Et aucune stratégie imposée : le défaut vient du domaine, qui ne
+        // Et aucune stratégie imposée en ligne de commande : c'est
+        // `Cli::strategy` qui retombe sur le défaut du domaine, qui ne
         // supprime rien.
-        assert_eq!(cli.workspace_strategy, None);
+        assert_eq!(cli.workspace_strategy, "");
+        assert_eq!(cli.strategy(), Ok(Strategy::Permanent));
     }
 
     #[test]
+    #[serial]
+    fn an_empty_workspace_strategy_defaults_rather_than_erroring() {
+        // Le même défaut que les trois booléens : `clap` appellerait
+        // `Strategy::parse("")` dès que `WORKSPACE_STRATEGY=` existe, même
+        // vide, si le champ restait un `Option<Strategy>` à `value_parser`.
+        let cli = Cli::try_parse_from_with_env(["harness"], &[("WORKSPACE_STRATEGY", "")])
+            .expect("ne doit pas échouer à l'analyse des arguments");
+        assert_eq!(cli.strategy(), Ok(Strategy::Permanent));
+    }
+
+    #[test]
+    #[serial]
+    fn a_misspelled_workspace_strategy_is_refused_at_use_not_defaulted() {
+        let cli = Cli::try_parse_from_with_env(["harness"], &[("WORKSPACE_STRATEGY", "permanant")])
+            .expect("l'analyse des arguments ne rejette plus — Cli::strategy le fait");
+        assert!(cli.strategy().is_err());
+    }
+
+    #[test]
+    #[serial]
     fn verbose_and_quiet_cannot_be_asked_for_together() {
         assert!(Cli::try_parse_from(["harness", "--verbose", "--quiet"]).is_err());
     }
 
     #[test]
+    #[serial]
     fn a_bool_flag_still_takes_no_value_on_the_command_line() {
         let cli = Cli::try_parse_from(["harness", "--rollover"]).expect("un drapeau nu");
         assert!(cli.rollover);
@@ -257,27 +308,27 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn an_empty_or_truthy_environment_variable_does_not_break_the_flag() {
         for (value, expect_allow_dirty) in [("", false), ("1", true), ("true", true)] {
-            let cli = Cli::try_parse_from_with_env(["harness"], "ALLOW_DIRTY", value)
+            let cli = Cli::try_parse_from_with_env(["harness"], &[("ALLOW_DIRTY", value)])
                 .expect("ne doit pas échouer");
             assert_eq!(cli.allow_dirty, expect_allow_dirty, "ALLOW_DIRTY={value:?}");
         }
     }
 
-    /// `Cli::try_parse_from`, une seule variable d'environnement posée pour la
+    /// `Cli::try_parse_from`, des variables d'environnement posées pour la
     /// durée de l'appel.
     ///
     /// `std::env::set_var` touche un état global du process, partagé entre les
     /// threads que `cargo test` utilise pour les autres tests de ce fichier —
-    /// la poser et la retirer dans le même appel, plutôt que dans un test qui
-    /// continuerait après, est ce qui empêche une fuite vers un test voisin
-    /// même en cas de panique entre les deux.
+    /// les poser et les retirer dans le même appel, plutôt que dans un test
+    /// qui continuerait après, est ce qui empêche une fuite vers un test
+    /// voisin même en cas de panique entre les deux.
     trait TryParseWithEnv: Sized {
         fn try_parse_from_with_env<I, T>(
             args: I,
-            var: &str,
-            value: &str,
+            vars: &[(&str, &str)],
         ) -> Result<Self, clap::Error>
         where
             I: IntoIterator<Item = T>,
@@ -288,23 +339,83 @@ mod tests {
         #[allow(unsafe_code)]
         fn try_parse_from_with_env<I, T>(
             args: I,
-            var: &str,
-            value: &str,
+            vars: &[(&str, &str)],
         ) -> Result<Self, clap::Error>
         where
             I: IntoIterator<Item = T>,
             T: Into<std::ffi::OsString> + Clone,
         {
-            // SAFETY: posée puis retirée avant de rendre la main, dans le même
-            // appel — aucun autre test ne peut observer l'état intermédiaire.
+            // SAFETY: posées puis retirées avant de rendre la main, dans le
+            // même appel — aucun autre test ne peut observer l'état
+            // intermédiaire.
             unsafe {
-                std::env::set_var(var, value);
+                for (var, value) in vars {
+                    std::env::set_var(var, value);
+                }
             }
             let parsed = Self::try_parse_from(args);
             unsafe {
-                std::env::remove_var(var);
+                for (var, _) in vars {
+                    std::env::remove_var(var);
+                }
             }
             parsed
+        }
+    }
+
+    /// Chaque variable que `.env.example` déclare, telle qu'elle y est écrite.
+    ///
+    /// Une seule source pour les deux tests qui suivent, pour que le jour où
+    /// une ligne s'ajoute à `.env.example` sans qu'on pense à l'ajouter ici,
+    /// l'écart soit visible — pas pour relire le fichier automatiquement :
+    /// `.env.example` est un gabarit pour un humain, ce tableau est ce que le
+    /// code promet d'accepter.
+    const ENV_EXAMPLE: &[(&str, &str)] = &[
+        ("STAGES", ""),
+        ("MODEL", ""),
+        ("EFFORT", ""),
+        ("MAX_ROUNDS", "3"),
+        ("INTEGRATION_BRANCH", "main_agent"),
+        ("PERMISSION_MODE", "bypassPermissions"),
+        ("ALLOW_DIRTY", ""),
+        ("ROLLOVER", ""),
+        ("WORKSPACE_STRATEGY", ""),
+        ("WORKSPACE_URL", ""),
+        ("AGENTIC_WORKSPACES_DIR", ""),
+        ("KEEP_WORKSPACE", ""),
+    ];
+
+    #[test]
+    #[serial]
+    fn a_dot_env_local_freshly_copied_from_the_template_parses_without_error() {
+        // Le scénario qui a cassé deux fois de suite en usage réel avant que ce
+        // test existe : `.env.local` copié tel quel depuis `.env.example`, la
+        // plupart des lignes laissées vides. Les deux bugs — `bool` + `env`, et
+        // `Option<Strategy>` + `env` — se seraient tous les deux montrés ici.
+        let cli = Cli::try_parse_from_with_env(["harness"], ENV_EXAMPLE)
+            .expect("un .env.local frais doit toujours parser");
+        assert_eq!(cli.strategy(), Ok(Strategy::Permanent));
+    }
+
+    #[test]
+    fn every_line_of_the_template_is_covered_by_the_regression_test() {
+        // Garde contre l'écart inverse : une ligne ajoutée à `.env.example`
+        // sans être ajoutée à `ENV_EXAMPLE` ci-dessus ne serait plus couverte,
+        // en silence.
+        let documented = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.env.example"),
+        )
+        .expect(".env.example doit se lire");
+        for line in documented.lines() {
+            let Some((name, _)) = line.split_once('=') else {
+                continue;
+            };
+            if name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                assert!(
+                    ENV_EXAMPLE.iter().any(|(known, _)| *known == name),
+                    "{name} est dans .env.example mais pas dans ENV_EXAMPLE"
+                );
+            }
         }
     }
 }

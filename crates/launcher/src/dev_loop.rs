@@ -23,7 +23,7 @@ use harness_core::adapters::shell::github::{GhCli, GitHub};
 use harness_core::adapters::store::checkpoint::Checkpoint;
 use harness_core::adapters::store::spending::Spending;
 use harness_core::domain::Verdict;
-use harness_core::domain::workspace::{Strategy, Wanted, Workspace};
+use harness_core::domain::workspace::{Wanted, Workspace};
 use harness_core::execution::provisioning::{Mount, Provisioner, Run};
 use harness_core::execution::{Context, Gate, Guarded, Settings, Verification};
 use harness_core::traces::{Logbook, Sink, Verbosity};
@@ -170,7 +170,7 @@ async fn mount(
         return Ok(Mount::in_place(source.clone()));
     }
     let wanted = Wanted {
-        strategy: cli.workspace_strategy.unwrap_or(Strategy::Permanent),
+        strategy: cli.strategy().map_err(harness_core::domain::Halt::Halted)?,
         url: cli.workspace_url.clone(),
         id: cli.use_workspace.clone(),
         base: cli.workspaces_dir.clone(),
@@ -400,6 +400,7 @@ mod tests {
     use harness_core::adapters::agent::{Session, SessionSpec};
     use harness_core::adapters::store::spending::Entry;
     use harness_core::domain::{Halt, Issue, Outcome};
+    use serial_test::serial;
 
     struct NoGitHub;
 
@@ -502,6 +503,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn the_resume_key_is_only_given_to_the_first_turn() {
         // La redonner ferait rejouer la même task à chaque tour du budget.
         let built = rounds(&cli(&[]), &wiring(), Some("11".to_string()));
@@ -510,12 +512,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn each_turn_gets_its_own_number_for_the_ledger_and_the_journal() {
         let built = rounds(&cli(&[]), &wiring(), None);
         assert_eq!(built(3).turn, 3);
     }
 
     #[test]
+    #[serial]
     fn the_rollover_stage_is_only_wired_when_asked_for() {
         let off = rounds(&cli(&[]), &wiring(), None);
         assert!(off(1).rollover.is_none(), "un run opus n'est pas un défaut");
@@ -524,6 +528,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn the_table_stays_whole_and_the_filter_lives_in_the_gates() {
         // `--stages` ne retire pas d'entrée : il fait sauter un stage *en le
         // disant*. Retirer l'entrée rendrait le journal illisible — un pipeline
@@ -542,6 +547,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn a_dry_run_asks_for_no_installed_dependencies() {
         // Rien n'est exécuté, donc aucune commande de vérification ne tournera,
         // donc exiger `node_modules` refuserait un dry-run parfaitement utile.
@@ -551,6 +557,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn the_console_level_follows_the_flags_and_the_file_keeps_everything() {
         assert_eq!(verbosity(&cli(&[])), Verbosity::Normal);
         assert_eq!(verbosity(&cli(&["--verbose"])), Verbosity::Verbose);
@@ -558,6 +565,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn a_clone_does_not_demand_a_clean_tree_in_the_humans_checkout() {
         // Le run ne touche pas à son arbre : l'exiger propre l'obligerait à
         // committer pour un run qui travaille ailleurs.

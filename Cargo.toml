@@ -22,6 +22,10 @@ clap = { version = "4", features = ["derive", "env"] }
 # Une horloge, et elle ne vit que dans le lanceur : `harness-core` n'a aucune
 # dépendance au temps, parce que la ligne de registre reçoit son instant.
 jiff = { version = "0.2", default-features = false, features = ["std"] }
+# Dev uniquement : des tests mutent `std::env` pour exercer `clap(env = …)`,
+# et `cargo test` partage cet état entre threads. Sans lui, ces tests lisent
+# parfois l'environnement qu'un autre thread vient de poser.
+serial_test = "3"
 thiserror = "2"
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = "1"
