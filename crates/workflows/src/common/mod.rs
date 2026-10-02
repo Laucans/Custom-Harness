@@ -6,6 +6,7 @@
 //! sa place ici tient pour le jour où un troisième workflow veut la même
 //! carte du dépôt, pas parce qu'il existe déjà.
 
+pub mod explore;
 pub mod labels;
 
 #[cfg(test)]
