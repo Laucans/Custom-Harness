@@ -193,6 +193,7 @@ impl GitHub for FakeGitHub {
     }
 
     async fn post_pr_comment(&self, num: &str, body_file: &Path) -> Outcome<()> {
+        self.ok()?;
         self.wrote.borrow_mut().push(Wrote::PrComment(
             num.to_string(),
             body_file.display().to_string(),
