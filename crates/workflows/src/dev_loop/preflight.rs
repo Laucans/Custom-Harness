@@ -208,6 +208,10 @@ mod tests {
         fn dir_names(&self, _path: &Path) -> Vec<String> {
             Vec::new()
         }
+
+        fn read_to_string(&self, _path: &Path) -> Option<String> {
+            None
+        }
     }
 
     #[tokio::test]

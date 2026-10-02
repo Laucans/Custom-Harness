@@ -690,6 +690,10 @@ mod tests {
             Ok(self.remote.clone())
         }
 
+        async fn tracked_files(&self) -> Outcome<Vec<String>> {
+            Ok(Vec::new())
+        }
+
         async fn default_branch(&self) -> Outcome<String> {
             Ok(self.default_branch.clone())
         }
@@ -781,6 +785,10 @@ mod tests {
 
         fn dir_names(&self, _path: &Path) -> Vec<String> {
             self.names.clone()
+        }
+
+        fn read_to_string(&self, _path: &Path) -> Option<String> {
+            None
         }
     }
 

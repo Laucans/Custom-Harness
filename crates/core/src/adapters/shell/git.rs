@@ -68,6 +68,16 @@ pub trait Repo {
     /// Si `git` n'a pas pu être lancé.
     async fn remote_url(&self, remote: &str) -> Outcome<String>;
 
+    /// Les fichiers que git suit, un par ligne.
+    ///
+    /// `ls-files` et non un parcours du disque : ce que `.gitignore` écarte
+    /// l'est par construction — dépendances, artefacts de build, journaux —
+    /// et la liste est exactement ce qu'un lecteur du dépôt verrait.
+    ///
+    /// # Errors
+    /// Si `git` n'a pas pu être lancé.
+    async fn tracked_files(&self) -> Outcome<Vec<String>>;
+
     /// La branche que pointe `origin/HEAD`, ou le vide.
     ///
     /// # Errors
@@ -244,6 +254,10 @@ impl Repo for GitCli {
             .to_string())
     }
 
+    async fn tracked_files(&self) -> Outcome<Vec<String>> {
+        Ok(self.git(&["ls-files"]).await?.lines())
+    }
+
     async fn default_branch(&self) -> Outcome<String> {
         // `origin/main` -> `main`. Le vide quand `origin/HEAD` n'est pas posé,
         // ce qui arrive sur un clone partiel : une réponse, pas une panne.
@@ -359,6 +373,13 @@ mod tests {
     #[test]
     fn a_call_with_no_arguments_still_names_the_repository() {
         assert_eq!(git().argv(&[]).len(), 2);
+    }
+
+    #[test]
+    fn tracked_files_uses_ls_files_not_a_disk_walk() {
+        // `.gitignore` écarte les dépendances et les artefacts de build par
+        // construction ; un parcours du disque les rendrait, `ls-files` non.
+        assert_eq!(git().argv(&["ls-files"])[2], "ls-files");
     }
 
     #[test]

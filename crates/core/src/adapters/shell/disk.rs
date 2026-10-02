@@ -36,6 +36,14 @@ pub trait Disk {
     /// Les noms des sous-dossiers, triés. Vide si le chemin n'est pas un
     /// dossier — ce qui sert à lister les workspaces gardés dans un message.
     fn dir_names(&self, path: &Path) -> Vec<String>;
+
+    /// Le contenu d'un fichier texte, ou `None` à la moindre raison.
+    ///
+    /// `None` et jamais un échec : c'est le raffinage qui lit `CLAUDE.md` et
+    /// les docs du dépôt pour établir sa carte, et un fichier absent ou
+    /// illisible y est une donnée — « rien à lire là » — jamais une panne qui
+    /// arrêterait le round.
+    fn read_to_string(&self, path: &Path) -> Option<String>;
 }
 
 /** Le vrai disque. */
@@ -74,6 +82,10 @@ impl Disk for RealDisk {
         names.sort();
         names
     }
+
+    fn read_to_string(&self, path: &Path) -> Option<String> {
+        std::fs::read_to_string(path).ok()
+    }
 }
 
 #[cfg(test)]
@@ -88,6 +100,17 @@ mod tests {
             RealDisk
                 .remove_dir_all(Path::new("/tmp/un-dossier-qui-nexiste-pas-ici"))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_missing_file_reads_as_none_not_as_a_failure() {
+        // Le raffinage lit CLAUDE.md et les docs pour sa carte : un fichier
+        // absent y est une donnée — « rien à lire là » — jamais une panne.
+        assert!(
+            RealDisk
+                .read_to_string(Path::new("/tmp/un-fichier-qui-nexiste-pas-ici.md"))
+                .is_none()
         );
     }
 
