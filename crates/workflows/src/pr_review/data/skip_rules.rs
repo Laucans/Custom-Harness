@@ -57,6 +57,7 @@ mod tests {
             url: String::new(),
             state: "OPEN".to_string(),
             draft: false,
+            labels: Vec::new(),
         }
     }
 

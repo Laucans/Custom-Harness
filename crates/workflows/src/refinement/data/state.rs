@@ -5,18 +5,24 @@ use std::collections::HashMap;
 use harness_core::domain::{Issue, prompts};
 
 use crate::common::explore::Explored;
+use crate::refinement::data::phase::Phase;
 
 /// The state of a refinement round.
 #[derive(Debug, Clone, Default)]
 pub struct RefinementState {
     /// The refined issue, set by precheck.
     pub issue: Option<Issue>,
+    /// Which half of the refinement this run does.
+    pub phase: Phase,
     /// The current round, counted from the comments.
     pub round_no: u32,
     /// The sections already in the body, by key — re-read at `precheck`.
     pub found: HashMap<String, String>,
     /// The keys this round writes.
     pub wanted: Vec<String>,
+    /// The roadmap, milestone and sibling tasks around the issue, rendered.
+    /// Empty when the issue is in no open milestone.
+    pub hierarchy: String,
     /// What the free stage read from the repo. Only the explorer reads it.
     pub brief: String,
 }

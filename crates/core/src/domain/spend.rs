@@ -1,7 +1,7 @@
 //! What a turn cost. Pure data: no one here knows how to write it.
 //!
 //! Every field is an `Option`, and for the same reason as
-//! `adapters::agent::Reply::cost`: a session bearer doesn't necessarily
+//! `ports::agent::Reply::cost`: a session bearer doesn't necessarily
 //! return everything. A terminal pane returns neither tokens nor cost; a JSON
 //! stream returns both. `None` reads as « not observed », never « zero » — the
 //! difference is what prevents a register from counting a free session where
@@ -43,6 +43,16 @@ pub struct Spend {
     pub tokens: Tokens,
     /// The session identifier that the bearer reported.
     pub session: Option<String>,
+    /// What the carrier observed of its rate-limit windows on this turn.
+    ///
+    /// **On the contract and not inside one adapter**, so swapping the carrier
+    /// swaps only the *translation*. A carrier that reports no window leaves this
+    /// `None` and the preflight that reads it starts anyway — but the field is
+    /// here, in the type every carrier fills, rather than a file one adapter
+    /// happened to write. The earlier shape had `claude_cli` call `std::fs::write`
+    /// directly: a second client would have silently provided nothing, and the
+    /// gate would have become dead code with no compile error to say so.
+    pub quota: Option<crate::domain::quota::Reading>,
 }
 
 impl Spend {

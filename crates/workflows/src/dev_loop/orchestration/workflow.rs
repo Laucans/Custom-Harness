@@ -30,9 +30,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::store::checkpoint::Checkpoint;
 use harness_core::domain::{Halt, Outcome, Resumable, Verdict};
 use harness_core::execution::{Context, Executable, Gate, Workflow};
+use harness_core::ports::store::checkpoint::Checkpoints;
 
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::orchestration::round::TaskRound;
@@ -48,7 +48,7 @@ pub struct DevLoop {
     /// the journal's tag.
     pub rounds: Box<dyn Fn(u32) -> TaskRound>,
     /// Where the resume point is written, when there is one.
-    pub store: Option<Rc<Checkpoint>>,
+    pub store: Option<Rc<dyn Checkpoints>>,
     /// The flow's identifier, which names the state file.
     pub flow_id: String,
 }
@@ -134,8 +134,8 @@ mod tests {
         }
     }
 
-    /// A board whose every agent task is closed: every round therefore veers
-    /// to rollover, and none of them pays.
+    /// A board whose every agent task is closed: every round therefore finds
+    /// nothing to pick, and none of them pays.
     fn finished_milestone() -> Rc<FakeGitHub> {
         let mut done = issue(11, &[labels::AGENT]);
         done.state = "closed".to_string();
@@ -162,7 +162,6 @@ mod tests {
                         resuming: None,
                     },
                     stages: stages::table(&ports, &config, turn),
-                    rollover: None,
                     delivered: MarkWaitingMerge {
                         gh,
                         integration_branch: config.integration_branch.clone(),
@@ -187,10 +186,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nothing_left_stops_the_loop_instead_of_replaying_the_rollover() {
-        // Without this, a finished milestone with no rollover wired would run
-        // all three rounds of the budget to learn three times over that there
-        // is nothing there.
+    async fn nothing_left_stops_the_loop_instead_of_replaying_the_same_round() {
+        // Without this, a finished milestone would run all three rounds of
+        // the budget to learn three times over that there is nothing there.
         let capture = Rc::new(Capture::default());
         let log = Logbook::new(Rc::clone(&capture) as Rc<dyn Sink>, Verbosity::Normal);
         let mut context = ctx(log);

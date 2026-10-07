@@ -1,5 +1,5 @@
 //! The text of each refinement stage: the router, the five sections,
-//! coherence.
+//! coherence, and the advice on the technical refinement.
 
 /// The router prompt: which sections this round reopens.
 pub const ROUTER_PROMPT: &str =
@@ -9,8 +9,8 @@ issue body get rewritten this round, and you decide nothing else — each
 section you name costs a paid session, and each one you leave out stays
 exactly as it is.
 
-These are the only section keys that exist, in the order they appear in the
-body:
+These are the only section keys this round can rewrite, in the order they
+appear in the body:
 {keys}
 
 Here is the body as it stands right now:
@@ -21,11 +21,13 @@ Here is the body as it stands right now:
 {additional_context}
 
 Name the sections the request above actually asks to rework, plus the ones
-that cannot stay consistent once those change — a changed Business Goal
-usually drags the Acceptance Criteria with it, a changed Technical section
-usually drags the Technical Implementation Plan. Name nothing else: a section
-nobody asked about is better left alone. If the request is broad enough to
-touch everything, naming all five is a correct answer.
+that cannot stay consistent once those change — {drags}. Name nothing else: a
+section nobody asked about is better left alone. If the request is broad enough
+to touch everything, naming every key is a correct answer.
+
+The keys above are the only ones this round can touch. The body holds other
+sections, written by the other half of the refinement or by the loop; naming
+one of those changes nothing and wastes the round.
 
 Answer with the section keys alone, one per line, spelled exactly as listed
 above. No numbering, no bullets, no headings, no explanation, no empty answer
@@ -95,9 +97,11 @@ Here is the body of the issue as it stands right now:
 {body}
 </issue-body>
 
-On round 1 that body is the raw request, as a human dropped it there: it is
-your source material to translate, not text to preserve. From round 2 on a
-Technical section is probably already in it — rework it, keeping what still
+The business sections (Business Goal, Acceptance Criteria, Business Rules) are
+already in the body: they are the contract this design must satisfy, and you
+do not rewrite them. Read the code the repository map points at — this is the
+half of the refinement that needs it. From round 2 on a Technical section is
+probably already in it — rework it, keeping what still
 holds and fixing what does not, rather than rewriting from scratch.
 
 {additional_context}
@@ -141,8 +145,10 @@ On round 1 that body is the raw request, as a human dropped it there: it is
 your source material to translate, not text to preserve. From round 2 on an
 Acceptance Criteria section is probably already in it — rework it, keeping
 what still holds and fixing what does not, rather than rewriting from
-scratch. Keep it consistent with the Business Goal and Technical sections
-above it: a criterion nothing in this issue asks for does not belong here.
+scratch. Keep it consistent with the Business Goal above it, and with any
+Technical section already in the body: a criterion nothing in this issue asks
+for does not belong here. This round has no access to the code — state
+behaviour a person can observe, not how it is built.
 
 {additional_context}
 
@@ -183,9 +189,9 @@ Here is the body of the issue as it stands right now:
 {body}
 </issue-body>
 
-Round 1 has already written the Business Goal, the Technical section and the
-Acceptance Criteria above: read them, and stay consistent with them. From
-round 2 on a Business Rules section may already be in the body — rework it,
+The Business Goal and the Acceptance Criteria were written just before this
+section: read them, and stay consistent with them. From round 2 on a
+Business Rules section may already be in the body — rework it,
 keeping what still holds and fixing what does not, rather than rewriting from
 scratch.
 
@@ -227,9 +233,9 @@ Here is the body of the issue as it stands right now:
 {body}
 </issue-body>
 
-Round 1 has already written the Business Goal, the Technical section and the
-Acceptance Criteria above: the plan implements those, and every acceptance
-criterion should be reachable through one of your steps. From round 2 on a
+The business sections and the Technical section are already in the body: the
+plan implements them, and every acceptance criterion should be reachable
+through one of your steps. From round 2 on a
 Technical Implementation Plan may already be in the body — rework it, keeping
 what still holds and fixing what does not, rather than rewriting from
 scratch.
@@ -286,6 +292,54 @@ preamble, no closing remark, no code fence around the whole answer.
 
 Change no file, post no comment, touch no issue and no label. The workflow
 writes what you output back into the body of #{num} itself.
+
+The issues of this repository are public. Never write the value of a secret,
+a token, a key, a password, or a URL that carries one — name the variable and
+say where it lives.";
+
+/// The advice prompt: should a human take part in the technical refinement?
+pub const ADVICE_PROMPT: &str =
+    "You have just seen the business half of the refinement of GitHub issue
+#{num} (\"{title}\") in this repository. The technical half comes next: it
+writes the Technical section and the Technical Implementation Plan, reading the
+code. It can run two ways — unattended, as a stage of the development loop, or
+asked for on the issue itself (label `harness:tech-refinement`), where a human
+can read it and answer before anything is built.
+
+Here is the body as it stands after this round:
+<issue-body>
+{body}
+</issue-body>
+
+Score how much this issue needs the technical half run **on the issue, under a
+human's eyes**, before anything is built. The owner reads your score to decide
+where to spend their attention across a whole board, so a 5 must mean something
+a 3 does not:
+
+5 — a wrong call here is expensive or irreversible: a paid service, a
+    credential, a schema or public contract later tasks are built on.
+4 — two real designs lead to different product behaviour, or a business rule
+    looks impossible or expensive against the code as it is.
+3 — one decision is open and the body does not settle it, but any of the
+    plausible answers can be changed later at a normal cost.
+2 — the approach follows from the code, with a detail or two left to judgement.
+1 — mechanical: the repository already shows how, and any engineer reading it
+    would make the same calls.
+
+Answer in this exact shape, and nothing else:
+Line 1: `technical-refinement: N/5`, N being that score.
+Line 2: `human-in-the-loop: yes` or `human-in-the-loop: no` — yes from 4 up,
+and whenever a question below has no answer anywhere in the body. The two lines
+must agree.
+Then two to five short bullets: the reasons, and — for `yes` — the precise
+questions the human has to answer.
+
+Score the issue in front of you, not the average issue: if nothing here is
+genuinely open, 1 is the useful answer and inflating it costs the owner a
+reading for nothing.
+
+Change no file, post no comment, touch no issue and no label. The workflow
+posts your answer as a comment on #{num} itself.
 
 The issues of this repository are public. Never write the value of a secret,
 a token, a key, a password, or a URL that carries one — name the variable and

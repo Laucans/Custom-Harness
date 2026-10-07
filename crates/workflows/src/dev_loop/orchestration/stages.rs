@@ -26,8 +26,8 @@
 //!
 //! # Models
 //!
-//! Distributed by where a wrong answer costs twice. `/business-analyst` writes
-//! the SPEC — the issue body — that all following stages read; `code` plans
+//! Distributed by where a wrong answer costs twice. The technical refinement writes
+//! the technical half of the SPEC — the issue body — that all following stages read; `code` plans
 //! then writes the change itself: an error comes back as rework. `/create-test`
 //! writes hermetic Vitest against an already-existing spec, which is not a
 //! reasoning problem. Tune to the cost registry, not intuition.
@@ -44,27 +44,53 @@ use harness_core::execution::{
 };
 
 use crate::common::labels;
-use crate::dev_loop::action::actions::{Ask, RecordSpecWritten};
+use crate::dev_loop::action::actions::{Ask, RecordTechWritten};
 use crate::dev_loop::checks::gates;
 use crate::dev_loop::config::Config;
-use crate::dev_loop::data::grounding;
+use crate::dev_loop::data::brief::Cut;
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::ports::Ports;
 
-const BUSINESS_ANALYST: &str =
-    "Take issue #{num} (\"{title}\") — its body is below, under SCOPE. The
-interview in step 3 of the skill cannot happen — no human is reachable.
-Answer each question you would have asked from docs/PROJECT.md,
-docs/ARCHITECTURE.md and the repo itself, and record every answer you had
-to assume under an `## Assumptions (autonomous run)` heading. Write the SPEC
-into the body of issue #{num} itself — that body is what the /code stage
-reads, and nothing else is. Anything a human must do first becomes its own
-`{human}` issue, a sub-issue of milestone #{milestone}, declared as a
-dependency of #{num}: the loop will not pick #{num} up again until it is
-closed. If an assumption would make the task useless or harmful when wrong —
-a paid service, a schema decision the later tasks depend on, a credential
-only the human holds — that is ambiguity, not a default: AGENT_LOOP_STOP
-instead of guessing.";
+/// What `technical-refinement` leaves out: the three sections it writes.
+///
+/// 26 167 characters of #65's body, re-read on every turn of the stage whose
+/// whole output they are. A previous run's draft also invites the session to
+/// edit what is there rather than write the section the gate asks for.
+const REFINEMENT_WRITES: &[&str] = &["Technical", "Technical Implementation Plan", "Assumptions"];
+
+/// What `code` leaves out: the business goal.
+///
+/// 1 557 characters, and the only section `code` cannot act on — it executes a
+/// plan that was derived from it, by the stage above. The acceptance criteria
+/// and the business rules stay: those it verifies against, bullet by bullet.
+///
+/// The smallest of the three cuts, and the most arguable: the goal is also the
+/// cheapest insurance against a session drifting out of scope. One line to
+/// restore if a run ever reads as though it lost the point.
+const CODE_SKIPS: &[&str] = &["Business Goal"];
+
+/// What `/create-test` leaves out: everything but the spec it asserts against.
+///
+/// It writes hermetic tests from the acceptance criteria, the business rules and
+/// the plan's verification bullets. The technical design, the goal and another
+/// session's assumptions are not things a test asserts — and neither is the
+/// hierarchy, which is why this is the one stage on
+/// [`Cut::TaskOnly`](crate::dev_loop::data::brief::Cut::TaskOnly).
+const TEST_SKIPS: &[&str] = &["Business Goal", "Technical", "Assumptions"];
+
+const TECHNICAL_REFINEMENT: &str =
+    "Take issue #{num} (\"{title}\") — its body is below, under SCOPE, and already
+carries its business sections. Read the real code, then write the two missing
+sections, `## Technical` and `## Technical Implementation Plan`, into the body
+of issue #{num} itself — that body is what the /code stage reads, and nothing
+else is. Keep every other section verbatim. No human is reachable: record
+every answer you had to assume under an `## Assumptions (autonomous run)`
+heading. Anything a human must do first becomes its own `{human}` issue, a
+sub-issue of milestone #{milestone}, declared as a dependency of #{num}. If an
+assumption would make the task useless or harmful when wrong — a paid service,
+a schema decision the later tasks depend on, a credential only the human
+holds — that is ambiguity, not a default: AGENT_LOOP_STOP instead of
+guessing.";
 
 const CODE: &str = "The task is issue #{num} (\"{title}\"); its body, below under SCOPE, is the
 SPEC. Plan it as /tech-analyst: the pre-flight gate, the ordered checklist
@@ -82,19 +108,6 @@ not close the issue yourself.
 findings instead of re-deriving them. Nothing outside this session can read
 your plan, so a gate finding or a risk you do not act on now is lost — put it
 in your reply.";
-
-const PLANNER: &str = "Every `{agent}` issue of milestone #{milestone} is closed. Take the
-open `{roadmap}` issue with the lowest number — do not ask which one.
-Open one `{milestone_label}` issue for it, as a sub-issue of that roadmap
-issue, and one `{agent}` sub-issue per task slice, each blocked_by the
-one before it. Then close milestone #{milestone}, and close the roadmap issue
-it hangs off if that item is now fully delivered: the loop works on the
-LOWEST-numbered open milestone, so leaving the finished one open makes every
-later round roll over again instead of picking up what you just planned. Do
-not add `{ready}` to anything: the human opens the tap. Step 3 of the
-skill applies in full: verify the ground truth in the repo, and if a
-dependency the item builds on is not actually there, AGENT_LOOP_STOP with
-what is missing rather than planning on top of it.";
 
 /// Instructions for a stage, with labels spliced from [`labels`].
 ///
@@ -137,7 +150,7 @@ struct Paid<'a> {
     model: &'a str,
     lead: &'a str,
     instructions: &'a str,
-    scoped: bool,
+    cut: Cut,
     then: Vec<Box<dyn SessionAction<Loop>>>,
 }
 
@@ -147,9 +160,11 @@ impl Paid<'_> {
             stage: self.stage.to_string(),
             lead: self.lead.to_string(),
             instructions: with_labels(self.instructions),
-            scoped: self.scoped,
+            cut: self.cut,
             round: turn,
             branch: config.integration_branch.clone(),
+            stack: config.stack.clone(),
+            signatures: Rc::clone(&config.signatures),
             injector: config.injector(),
             spending: Rc::clone(&ports.spending),
         })];
@@ -165,32 +180,36 @@ impl Paid<'_> {
     }
 }
 
-/// `/business-analyst`: writes the SPEC into the issue body.
+/// `technical-refinement`: writes the technical sections into the issue body.
+///
+/// Only runs when the technical refinement was not done on the issue
+/// (`harness:tech-written`); the business half must already exist.
 #[must_use]
-pub fn business_analyst(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
+pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
     let body = Paid {
-        stage: "business-analyst",
+        stage: "technical-refinement",
         model: "opus",
-        lead: "/business-analyst",
-        instructions: BUSINESS_ANALYST,
-        scoped: true,
-        // Recording the reviewed SPEC is local work, and it goes *in* the
-        // stage — not in a gate, which would have no right to write.
-        then: vec![Box::new(Unpaid(RecordSpecWritten {
+        lead: "/tech-analyst",
+        instructions: TECHNICAL_REFINEMENT,
+        cut: Cut::Situated(REFINEMENT_WRITES),
+        // Recording is local work, and it goes *in* the stage — not in a
+        // gate, which would have no right to write.
+        then: vec![Box::new(Unpaid(RecordTechWritten {
             gh: Rc::clone(&ports.gh),
         }))],
     }
     .body(ports, config, turn);
-    let mut pre = always("business-analyst");
-    pre.push(Box::new(gates::SpecAlreadyWritten));
+    let mut pre = always("technical-refinement");
+    pre.push(Box::new(gates::TechAlreadyWritten));
+    pre.push(Box::new(gates::TaskHasABusinessSpec));
     Stage {
-        name: "business-analyst".to_string(),
+        name: "technical-refinement".to_string(),
         pre: Some(Gate {
-            name: "business-analyst requires",
+            name: "technical-refinement requires",
             checks: pre,
         }),
         post: Some(Gate {
-            name: "business-analyst must achieve",
+            name: "technical-refinement must achieve",
             checks: vec![Box::new(gates::IssueBodyIsNotEmpty {
                 gh: Rc::clone(&ports.gh),
             })],
@@ -225,10 +244,15 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
         post: None,
         body: Paid {
             stage: "code",
-            model: "opus",
+            // Sonnet, not opus: the tasks reaching this stage are sliced by
+            // `split` and specified by the refinement, so `code` executes a
+            // decided plan rather than making the decision. Measured on
+            // milestone 15, `code` was 62% of the spend while the stages that
+            // actually decide — `plan`, `slice` — were cents.
+            model: "sonnet",
             lead: "/tech-analyst",
             instructions: CODE,
-            scoped: true,
+            cut: Cut::Situated(CODE_SKIPS),
             then: Vec::new(),
         }
         .body(ports, config, turn),
@@ -254,66 +278,10 @@ pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             model: "sonnet",
             lead: "/create-test",
             instructions: "",
-            scoped: true,
+            cut: Cut::TaskOnly(TEST_SKIPS),
             then: Vec::new(),
         }
         .body(ports, config, turn),
-    }
-}
-
-/// `/planner`: opens the next roadmap item when the milestone is done.
-///
-/// **Not in [`table`]**, by design: rollover is a branch, not another stage —
-/// it runs when there are **no** tasks, so when the sequence has nothing to do.
-/// The launcher decides whether to wire it; chaining unsupervised spends an opus
-/// run and commits the project to a roadmap item nobody read.
-#[must_use]
-pub fn planner(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
-    let business = ports
-        .disk
-        .read_to_string(&config.grill_dir.join("business-digest.md"));
-    let technical = ports
-        .disk
-        .read_to_string(&config.grill_dir.join("technical-digest.md"));
-    let instructions = planner_instructions(business.as_deref(), technical.as_deref());
-    Stage {
-        name: "planner".to_string(),
-        pre: Some(Gate {
-            name: "planner requires",
-            checks: always("planner"),
-        }),
-        post: Some(Gate {
-            name: "planner must achieve",
-            checks: vec![Box::new(gates::PlannerOpenedATask {
-                gh: Rc::clone(&ports.gh),
-            })],
-        }),
-        body: Paid {
-            stage: "planner",
-            model: "opus",
-            lead: "/planner",
-            instructions: &instructions,
-            // The only stage in this case: it works on no task, it opens one.
-            scoped: false,
-            then: Vec::new(),
-        }
-        .body(ports, config, turn),
-    }
-}
-
-/// `PLANNER`, with the two grill digests appended when either exists.
-///
-/// Pulled out of [`planner`] so the splice itself is testable without
-/// building a whole `Stage` and reaching into a type-erased `SessionAction`.
-fn planner_instructions(business: Option<&str>, technical: Option<&str>) -> String {
-    let gathered = grounding::combine(business, technical);
-    if gathered.is_empty() {
-        PLANNER.to_string()
-    } else {
-        format!(
-            "{PLANNER}\n\nGathered ahead of time, before any human was \
-             reachable — verify ground truth in the repo where it disagrees:\n\n{gathered}"
-        )
     }
 }
 
@@ -321,13 +289,13 @@ fn planner_instructions(business: Option<&str>, technical: Option<&str>) -> Stri
 #[must_use]
 pub fn table(ports: &Ports, config: &Config, turn: u32) -> Vec<Stage<Loop>> {
     vec![
-        business_analyst(ports, config, turn),
+        technical_refinement(ports, config, turn),
         code(ports, config, turn),
         create_test(ports, config, turn),
     ]
 }
 
-/// `business-analyst(opus/high) -> code(opus/high) -> …`
+/// `technical-refinement(opus/high) -> code(opus/high) -> …`
 ///
 /// Derived from **built** stages, not a second list: the announced line and
 /// what runs cannot diverge, and `MODEL`/`EFFORT` forcing shows up here
@@ -376,14 +344,14 @@ mod tests {
             .iter()
             .map(|stage| stage.name.clone())
             .collect();
-        assert_eq!(names, ["business-analyst", "code", "create-test"]);
+        assert_eq!(names, ["technical-refinement", "code", "create-test"]);
     }
 
     #[test]
     fn no_instruction_text_names_a_label_the_code_does_not_use() {
         // Failure mode avoided: the prompt asks for `pipeline:human`, the label
         // no longer exists, and the session creates a new one.
-        for text in [BUSINESS_ANALYST, CODE, PLANNER] {
+        for text in [TECHNICAL_REFINEMENT, CODE] {
             let said = with_labels(text);
             assert!(
                 !said.contains("pipeline:"),
@@ -397,36 +365,36 @@ mod tests {
     }
 
     #[test]
-    fn every_label_the_prose_mentions_is_one_of_the_seven() {
+    fn every_label_dev_loops_own_prose_mentions_appears_as_written() {
         let said = format!(
-            "{} {} {}",
-            with_labels(BUSINESS_ANALYST),
-            with_labels(CODE),
-            with_labels(PLANNER)
+            "{} {}",
+            with_labels(TECHNICAL_REFINEMENT),
+            with_labels(CODE)
         );
-        for label in labels::LOOP {
-            // `spec-written` is not mentioned: the harness sets it, not the
-            // session. The others must appear as-is.
-            if label == labels::SPEC_WRITTEN {
-                continue;
-            }
+        // Only the labels dev_loop's own two prompts talk about: opening a
+        // human blocker, and the merge-wait state. `ROADMAP`/`MILESTONE`/
+        // `READY`/`AGENT` are the planner/split workflows' concern now, not
+        // something a technical-refinement or `/code` session needs explained
+        // to it. `SPEC_WRITTEN` is set by the harness, never mentioned to the
+        // session either.
+        for label in [labels::HUMAN, labels::WAITING_MERGE] {
             assert!(said.contains(label), "{label} missing from prose");
         }
     }
 
     #[test]
     fn the_task_placeholders_survive_the_label_pass_for_the_scope_to_fill() {
-        let said = with_labels(BUSINESS_ANALYST);
+        let said = with_labels(TECHNICAL_REFINEMENT);
         assert!(said.contains("#{num}"), "the number remains to fill");
         assert!(said.contains("{title}"));
         assert!(said.contains("milestone #{milestone}"));
     }
 
     #[test]
-    fn business_analyst_records_the_spec_before_declaring_itself_done() {
+    fn technical_refinement_records_the_sections_before_declaring_itself_done() {
         // Order matters: declaring done before recording would leave a written
         // but unrecorded SPEC, so it would be rewritten on the next run.
-        let stage = business_analyst(&ports_fake::ports(), &config_fake::config(), 1);
+        let stage = technical_refinement(&ports_fake::ports(), &config_fake::config(), 1);
         let StageBody::Session { actions, .. } = &stage.body else {
             panic!("a paid stage");
         };
@@ -434,80 +402,50 @@ mod tests {
     }
 
     #[test]
-    fn the_planner_is_not_in_the_sequence_because_rollover_is_a_branch() {
-        assert!(
-            !table(&ports_fake::ports(), &config_fake::config(), 1)
-                .iter()
-                .any(|stage| stage.name == "planner")
-        );
-    }
-
-    #[test]
-    fn with_neither_digest_the_planner_keeps_its_own_instructions_verbatim() {
-        assert_eq!(planner_instructions(None, None), PLANNER);
-    }
-
-    #[test]
-    fn a_digest_is_appended_after_the_planners_own_instructions() {
-        let said = planner_instructions(Some("ship fast"), None);
-        assert!(said.starts_with(PLANNER), "the original text leads");
-        assert!(said.contains("Business constraints:\nship fast"));
-    }
-
-    #[test]
-    fn the_planner_stage_reads_both_digests_through_the_disk_port() {
-        use std::path::{Path, PathBuf};
-
-        use harness_core::adapters::shell::disk::Disk;
-        use harness_core::domain::Outcome;
-
-        /// A disk answering only the two digest paths this test sets up —
-        /// anything else panics, so a wrong path is caught immediately rather
-        /// than silently reading as "no digest".
-        struct OnlyDigests {
-            dir: PathBuf,
-        }
-        impl Disk for OnlyDigests {
-            fn read_to_string(&self, path: &Path) -> Option<String> {
-                if path == self.dir.join("business-digest.md") {
-                    Some("ship fast".to_string())
-                } else if path == self.dir.join("technical-digest.md") {
-                    None
-                } else {
-                    panic!("unexpected read: {}", path.display());
-                }
-            }
-            fn exists(&self, _path: &Path) -> bool {
-                unreachable!()
-            }
-            fn create_dir_all(&self, _path: &Path) -> Outcome<()> {
-                unreachable!()
-            }
-            fn remove_dir_all(&self, _path: &Path) -> Outcome<()> {
-                unreachable!()
-            }
-            fn dir_names(&self, _path: &Path) -> Vec<String> {
-                unreachable!()
-            }
-            fn write_to_string(&self, _path: &Path, _content: &str) -> Outcome<()> {
-                unreachable!()
+    fn no_stage_drops_a_section_that_is_not_part_of_an_issue_body() {
+        // The failure mode: a drop-list naming `Technical Design`, nothing
+        // matching it, and a stage still paying for the section on every turn
+        // with nothing to show that the filter did nothing.
+        //
+        // `Assumptions` is the one entry no canonical table carries: a session
+        // writes it, under the heading `TECHNICAL_REFINEMENT` asks for.
+        for list in [REFINEMENT_WRITES, CODE_SKIPS, TEST_SKIPS] {
+            for heading in list {
+                let known = crate::common::sections::SECTIONS
+                    .iter()
+                    .any(|s| s.heading == *heading);
+                assert!(
+                    known || TECHNICAL_REFINEMENT.contains(heading),
+                    "no issue body ever carries `## {heading}`"
+                );
             }
         }
+    }
 
-        let dir = PathBuf::from("/repo/.llocal/grill/o/r");
-        let mut ports = ports_fake::ports();
-        ports.disk = Rc::new(OnlyDigests { dir: dir.clone() });
-        let mut config = config_fake::config();
-        config.grill_dir = dir;
+    #[test]
+    fn the_refinement_does_not_receive_the_sections_its_own_prose_asks_it_to_write() {
+        // Two halves of one decision: the prompt names the sections to write,
+        // the cut names the sections left out. A section asked for but injected
+        // invites the session to edit a previous run's draft instead.
+        for heading in ["Technical", "Technical Implementation Plan", "Assumptions"] {
+            assert!(
+                TECHNICAL_REFINEMENT.contains(heading),
+                "the prose must ask for `{heading}`"
+            );
+            assert!(
+                REFINEMENT_WRITES.contains(&heading),
+                "and the cut must leave it out"
+            );
+        }
+    }
 
-        let stage = planner(&ports, &config, 1);
-        let StageBody::Session { actions, .. } = &stage.body else {
-            panic!("a paid stage");
-        };
-        // `Ask` is type-erased here — what's checkable from outside is that
-        // building the stage didn't panic on an unexpected path, i.e. it read
-        // exactly the two digest paths this test wired up.
-        assert_eq!(actions.len(), 2, "Ask, mark — planner has no `then`");
+    #[test]
+    fn create_test_keeps_the_plan_it_asserts_against() {
+        // `Technical` and `Technical Implementation Plan` are two sections, and
+        // `/create-test` needs exactly one of them. A prefix-matching drop-list
+        // would take both — see `sections::without`.
+        assert!(TEST_SKIPS.contains(&"Technical"));
+        assert!(!TEST_SKIPS.contains(&"Technical Implementation Plan"));
     }
 
     #[test]
@@ -518,26 +456,34 @@ mod tests {
         );
         assert_eq!(
             said,
-            "business-analyst(opus/high) -> code(opus/high) -> create-test(sonnet/high)"
+            "technical-refinement(opus/high) -> code(sonnet/high) -> \
+             create-test(sonnet/high)"
         );
     }
 
     #[test]
     fn a_forced_model_shows_up_in_the_summary_without_being_reapplied() {
         let mut config = config_fake::config();
-        config.model = "sonnet".to_string();
+        config.model = "haiku".to_string();
         let said = summary(&table(&ports_fake::ports(), &config, 1), &settings(""));
         assert!(!said.contains("opus"), "forcing applies to the entire run");
+        assert!(
+            !said.contains("sonnet"),
+            "including each stage's own default"
+        );
     }
 
     #[test]
     fn what_stages_leaves_out_is_named_rather_than_silently_dropped() {
         let built = table(&ports_fake::ports(), &config_fake::config(), 1);
         let cfg = settings("code");
-        assert_eq!(summary(&built, &cfg), "code(opus/high)");
+        assert_eq!(summary(&built, &cfg), "code(sonnet/high)");
         assert_eq!(
             filtered_out(&built, &cfg),
-            ["business-analyst".to_string(), "create-test".to_string()]
+            [
+                "technical-refinement".to_string(),
+                "create-test".to_string()
+            ]
         );
     }
 }

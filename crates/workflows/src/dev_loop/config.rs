@@ -26,10 +26,17 @@ pub struct Config {
     pub effort: String,
     /// Replay a stage that resumption would skip.
     pub restart: bool,
-    /// Where the planner reads `business-digest.md`/`technical-digest.md`
-    /// from, if either exists: `<state_root>/.llocal/grill/<owner>/<name>`.
-    /// Never read by any other stage.
-    pub grill_dir: std::path::PathBuf,
+    /// The repository's own build and test configuration, verbatim — see
+    /// [`crate::dev_loop::data::stack`]. Empty when the stack was not
+    /// recognised, and then no block is injected.
+    ///
+    /// Read once at assembly, like everything else here: it is a property of
+    /// the checkout, identical for every stage and every turn of the run.
+    pub stack: String,
+    /// The public shape of every indexed file — see
+    /// [`crate::dev_loop::data::signatures`]. Built once per run; which files a
+    /// prompt carries is decided per task.
+    pub signatures: std::rc::Rc<crate::dev_loop::data::signatures::Index>,
 }
 
 impl Config {
@@ -40,8 +47,8 @@ impl Config {
     /// rebuilt an entire `StageSpec`, and a field added to the table was lost
     /// as soon as a run provided `--model`.
     #[must_use]
-    pub fn spec(&self, model: &str, effort: &str) -> harness_core::adapters::agent::SessionSpec {
-        harness_core::adapters::agent::SessionSpec {
+    pub fn spec(&self, model: &str, effort: &str) -> harness_core::ports::agent::SessionSpec {
+        harness_core::ports::agent::SessionSpec {
             model: pick(&self.model, model),
             effort: pick(&self.effort, effort),
         }
@@ -75,9 +82,8 @@ pub(crate) mod fake {
             model: String::new(),
             effort: String::new(),
             restart: false,
-            // Never read: tests use `ports::fake::NoGrounding`, which answers
-            // every path with `None`.
-            grill_dir: std::path::PathBuf::from("/unused"),
+            stack: String::new(),
+            signatures: std::rc::Rc::default(),
         }
     }
 }

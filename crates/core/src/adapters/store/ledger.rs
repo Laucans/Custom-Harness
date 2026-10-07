@@ -17,12 +17,16 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{Halt, Outcome, Spend};
+use crate::domain::{Halt, Outcome, Spend, breaker};
 
 /// The header, frozen character for character.
+///
+/// `fingerprint` is the one column added since: it sits **last**, so every
+/// row written before it existed is still read correctly — it simply has one
+/// cell fewer, which reads as "no fingerprint known" rather than as a match.
 pub const HEADER: &str = "when\trun\tround\ttask\tstage\tcost_usd\tturns\t\
                           duration_ms\tin\tout\tsession\tran_on\tcache_read\t\
-                          cache_write\toutcome";
+                          cache_write\toutcome\tfingerprint";
 
 /// The columns, derived from the header.
 ///
@@ -52,6 +56,9 @@ pub struct Row {
     pub ran_on: String,
     /// `ok`, or the reason for missing response. Empty = not recorded.
     pub outcome: String,
+    /// The fingerprint of the prompt this stage sent, so a later run can
+    /// recognise the identical session.
+    pub fingerprint: String,
 }
 
 /// An observed number, or empty.
@@ -98,6 +105,7 @@ impl Row {
             seen(self.spend.tokens.cache_read),
             seen(self.spend.tokens.cache_write),
             flat(&self.outcome),
+            flat(&self.fingerprint),
         ];
         debug_assert_eq!(
             values.len(),
@@ -173,6 +181,41 @@ impl Ledger {
             .collect())
     }
 
+    /// How many times this exact session already ended in error.
+    ///
+    /// The identity is the three cells `task`, `stage` and `fingerprint`;
+    /// the rule applied to the outcomes found is
+    /// [`breaker::trailing_failures`].
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Unreadable`] if the ledger exists and cannot be read — the
+    /// caller is about to pay, and an unreadable history is not an empty one.
+    pub fn failures(&self, task: &str, stage: &str, fingerprint: &str) -> Outcome<u32> {
+        let columns = columns();
+        let at = |name: &str| columns.iter().position(|column| *column == name);
+        let (Some(task_at), Some(stage_at), Some(outcome_at), Some(fingerprint_at)) =
+            (at("task"), at("stage"), at("outcome"), at("fingerprint"))
+        else {
+            return Ok(0);
+        };
+        let outcomes: Vec<String> = self
+            .rows()?
+            .into_iter()
+            .filter(|row| {
+                // `.get`, not indexing: a row written before `fingerprint`
+                // existed is shorter, and must read as no match rather than
+                // panic.
+                let cell = |at: usize| row.get(at).map_or("", String::as_str);
+                cell(task_at) == task
+                    && cell(stage_at) == stage
+                    && cell(fingerprint_at) == fingerprint
+            })
+            .map(|row| row.get(outcome_at).cloned().unwrap_or_default())
+            .collect();
+        Ok(breaker::trailing_failures(&outcomes))
+    }
+
     fn wrote_nothing(&self, err: &std::io::Error) -> Halt {
         Halt::Failed(format!(
             "cannot write ledger {} ({err}) — this stage's spending is not \
@@ -205,9 +248,13 @@ mod tests {
                     cache_write: Some(6),
                 },
                 session: Some("sess-42".to_string()),
+                // The ledger has no column for it: a reading is state the next
+                // run reads, not a row in a history.
+                quota: None,
             },
             ran_on: "macbook".to_string(),
             outcome: "ok".to_string(),
+            fingerprint: "0123456789abcdef".to_string(),
         }
     }
 
@@ -217,14 +264,15 @@ mod tests {
     }
 
     #[test]
-    fn the_header_is_the_frozen_one() {
-        // Frozen: columns and their order are a disk format.
-        assert_eq!(
-            HEADER,
+    fn the_header_is_the_frozen_one_and_grew_only_at_the_end() {
+        // Frozen: columns and their order are a disk format. A new column is
+        // appended, never inserted, so old rows stay readable as-is.
+        assert!(HEADER.starts_with(
             "when\trun\tround\ttask\tstage\tcost_usd\tturns\tduration_ms\tin\t\
              out\tsession\tran_on\tcache_read\tcache_write\toutcome"
-        );
-        assert_eq!(columns().len(), 15);
+        ));
+        assert_eq!(columns().last(), Some(&"fingerprint"));
+        assert_eq!(columns().len(), 16);
     }
 
     #[test]
@@ -309,6 +357,103 @@ mod tests {
         assert_eq!(raw.matches(HEADER).count(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct Dir(std::path::PathBuf);
+
+    impl Dir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("harness-breaker-{tag}"));
+            let _ = std::fs::remove_dir_all(&path);
+            Self(path)
+        }
+
+        fn ledger(&self) -> Ledger {
+            Ledger::new(&self.0.join("costs.tsv"))
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn attempt(outcome: &str, fingerprint: &str) -> Row {
+        Row {
+            outcome: outcome.to_string(),
+            fingerprint: fingerprint.to_string(),
+            ..row()
+        }
+    }
+
+    #[test]
+    fn identical_failures_are_counted_for_the_session_that_made_them() {
+        let dir = Dir::new("counted");
+        let ledger = dir.ledger();
+        for _ in 0..3 {
+            ledger
+                .append(&attempt("STOP", "deadbeefdeadbeef"))
+                .expect("a row");
+        }
+        assert_eq!(
+            ledger
+                .failures("42", "code", "deadbeefdeadbeef")
+                .expect("read"),
+            3
+        );
+    }
+
+    #[test]
+    fn a_different_prompt_stage_or_task_is_a_different_session() {
+        let dir = Dir::new("identity");
+        let ledger = dir.ledger();
+        for _ in 0..3 {
+            ledger
+                .append(&attempt("STOP", "deadbeefdeadbeef"))
+                .expect("a row");
+        }
+        // The gesture that resolves the ambiguity rewrites the issue, so the
+        // prompt — and the fingerprint — are no longer the ones that failed.
+        assert_eq!(
+            ledger
+                .failures("42", "code", "0000000000000000")
+                .expect("read"),
+            0
+        );
+        assert_eq!(
+            ledger
+                .failures("42", "create-test", "deadbeefdeadbeef")
+                .expect("read"),
+            0
+        );
+        assert_eq!(
+            ledger
+                .failures("43", "code", "deadbeefdeadbeef")
+                .expect("read"),
+            0
+        );
+    }
+
+    #[test]
+    fn a_row_written_before_the_column_existed_matches_no_session() {
+        let dir = Dir::new("legacy");
+        let path = dir.0.join("costs.tsv");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        // 15 cells: exactly what the previous header wrote.
+        let old = format!(
+            "{HEADER}\n2026-09-30T12:00:00Z\trun-1\t03\t42\tcode\t\t\t\t\t\t\tmac\t\t\tSTOP\n"
+        );
+        std::fs::write(&path, old).expect("a ledger");
+        let ledger = Ledger::new(&path);
+        assert_eq!(ledger.rows().expect("re-read").len(), 1);
+        assert_eq!(
+            ledger
+                .failures("42", "code", "deadbeefdeadbeef")
+                .expect("read"),
+            0,
+            "an empty cell must never read as a match"
+        );
     }
 
     #[test]

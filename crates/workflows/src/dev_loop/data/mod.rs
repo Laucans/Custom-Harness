@@ -1,10 +1,13 @@
-//! Ce que la boucle lit : le tableau, l'état d'un round, et ce qu'une task
-//! veut dire pour elle.
+//! What the loop reads: the board, a round's state, the repository's own
+//! configuration, and what a task means to it.
 //!
-//! Métier pur ou lecture seule — rien ici n'appelle `gh` ni n'écrit nulle
-//! part. Ce qui écrit vit dans `action`, ce qui juge dans `checks`.
+//! Pure business logic or read-only — nothing here calls `gh` or writes
+//! anywhere. What writes lives in `action`, what judges in `checks`.
 
 pub mod board;
-pub mod grounding;
+pub mod brief;
+pub mod dependencies;
+pub mod signatures;
+pub mod stack;
 pub mod state;
 pub mod tasks;

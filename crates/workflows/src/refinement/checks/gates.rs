@@ -30,7 +30,7 @@ impl Verification<RefinementState> for SectionIsWanted {
     }
 }
 
-/// The router only runs from round 3 on, and with a `--context`.
+/// The router only runs from round 2 on, and with a `--context`.
 pub struct RouterIsOff {
     /// The name of the router stage, to name it when skipping.
     pub router: String,
@@ -153,9 +153,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_router_is_off_before_round_three() {
+    async fn the_router_is_off_on_the_first_round() {
         let mut context = ctx(false);
-        context.state.round_no = 2;
+        context.state.round_no = 1;
         assert!(matches!(
             router_gate(true).verify(&context).await.expect("verdict"),
             Verdict::Skip(_)
@@ -163,9 +163,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_router_runs_from_round_three_with_context() {
+    async fn the_router_runs_from_round_two_with_context() {
         let mut context = ctx(false);
-        context.state.round_no = 3;
+        context.state.round_no = 2;
         assert_eq!(
             router_gate(true).verify(&context).await.expect("verdict"),
             Verdict::Continue
@@ -174,8 +174,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_router_that_named_nothing_stops_the_round() {
-        use harness_core::adapters::agent::Reply;
         use harness_core::domain::Spend;
+        use harness_core::ports::agent::Reply;
         let mut context = ctx(false);
         context.results.insert(
             ROUTER.to_string(),

@@ -1,4 +1,4 @@
-//! The refinement's round: the repo map, then the eight steps of the table.
+//! The refinement's round: the repo map, then the steps of the table.
 //!
 //! A single round — [`RefinementRun`](crate::refinement::orchestration::workflow::RefinementRun)
 //! carries `remaining = 1`, one round per run — so the generic [`Round`] of
@@ -12,6 +12,7 @@ use harness_core::execution::{Round, Stage};
 
 use crate::common::explore;
 use crate::refinement::config::Config;
+use crate::refinement::data::phase::Phase;
 use crate::refinement::data::state::RefinementState;
 use crate::refinement::orchestration::stages;
 use crate::refinement::ports::Ports;
@@ -24,10 +25,11 @@ pub fn build(
     config: &Config,
     explore_ports: &explore::Ports,
     explore_config: &explore::Config,
+    phase: Phase,
 ) -> Round<RefinementState> {
     let mut sequence: Vec<Stage<RefinementState>> =
         explore::entries::<RefinementState>(explore_ports, explore_config).into();
-    sequence.extend(stages::table(ports, config));
+    sequence.extend(stages::table(ports, config, phase));
     Round::plain(sequence)
 }
 
@@ -47,10 +49,11 @@ mod tests {
             &config,
             &explore::fake::ports(),
             &explore::fake::config(config.artifacts_dir.clone()),
+            Phase::Business,
         );
         let names: Vec<&str> = round.stages.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(&names[..2], [explore::GROUND, explore::SKILL]);
-        assert_eq!(names.len(), 10, "the two entries, then the eight steps");
+        assert_eq!(names.len(), 9, "the two entries, then the seven steps");
         assert!(round.tolerance.is_none(), "refinement tolerates nothing");
     }
 }

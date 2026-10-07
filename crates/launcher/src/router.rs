@@ -1,0 +1,447 @@
+//! `harness watch`: polls on an interval, decides what to run next
+//! (`common::routing`), dispatches, and loops.
+//!
+//! The only place that builds the `GitHub` adapter used purely for the
+//! routing decision — a lightweight read, no checkout mounted for it.
+//! Dispatching to a workflow is each workflow's own launcher module's job
+//! (`dev_loop.rs`, `planner.rs`, `split.rs`, `refinement.rs`,
+//! `pr_review.rs`, `pr_fix.rs`) — each mounts what it needs itself, and only
+//! when actually dispatched to. A tick that routes to [`Route::Nothing`]
+//! therefore never touches disk.
+//!
+//! The PR-facing reads cost one extra API call per labelled candidate (the
+//! failing checks, or the comments) and stop at the first match. That is
+//! deliberately paid here rather than inside the workflows: a PR that would
+//! skip must not cost a mounted checkout every thirty seconds.
+//!
+//! **A failed routing read stops the loop** — a persistent problem (bad
+//! credentials, an unreadable repo) should not retry silently forever.
+//! **A failed dispatch does not** — one workflow's own failure (a quota
+//! exhausted, a session hiccup) is that workflow's business, logged here,
+//! and likely to succeed on a later tick.
+
+use std::path::Path;
+use std::rc::Rc;
+use std::time::Duration;
+
+use clap::Parser as _;
+use harness_core::adapters::shell::github::GhCli;
+use harness_core::domain::doctor::Repair;
+use harness_core::domain::workspace::Workspace;
+use harness_core::domain::{Halt, Outcome, Pr, Slug, Verdict};
+use harness_core::ports::shell::github::GitHub;
+use harness_core::traces::{Logbook, Sink, Verbosity};
+use harness_workflows::common::routing::{self, Route, Snapshot};
+use harness_workflows::common::{branching, labels};
+use harness_workflows::dev_loop::data::board;
+use harness_workflows::milestone_merge::data::audit;
+use harness_workflows::pr_review::data::skip_rules;
+use harness_workflows::refinement::data::phase::Phase;
+
+use crate::adapters::sink::Both;
+use crate::adapters::spending;
+use crate::cli::WatchArgs;
+
+/// Runs the watch loop: one tick now, then every `--interval` seconds,
+/// forever — or exactly once under `--once`.
+///
+/// # Errors
+///
+/// Only under `--once`, where a single pass's outcome is what the caller
+/// asked for. A watch that keeps polling **swallows a failed tick**: it is
+/// recorded in the error ledger and the next tick is taken. A dispatch
+/// failure was already swallowed — see the module doc.
+pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
+    let journal = Workspace::new(here).loop_dir().join("watch.log");
+    let sink = Rc::new(Both::new(&journal).map_err(|e| {
+        Halt::Failed(format!(
+            "the watch journal {} cannot be opened: {e}",
+            journal.display()
+        ))
+    })?);
+    // Appended across restarts on purpose: the question this answers — what
+    // has the loop been doing — does not stop at a restart.
+    let log = Logbook::new(Rc::clone(&sink) as Rc<dyn Sink>, Verbosity::Normal);
+    log.say(&format!(
+        "watch: every {}s on {} — journal {}",
+        args.interval,
+        if args.target_repo_url.is_empty() {
+            "this checkout's own origin".to_string()
+        } else {
+            args.target_repo_url.clone()
+        },
+        Workspace::new(here).rel(&journal)
+    ));
+    loop {
+        let went = tick(args, here, &log).await;
+        if args.once {
+            // One pass was asked for, and its exit code is the answer.
+            return went;
+        }
+        if let Err(halt) = went {
+            // A read that failed is **not** the end of the loop. A single
+            // `connection reset by peer` on one GitHub call used to kill an
+            // unattended watch outright, and the milestone it was about to
+            // merge waited for a human to notice.
+            log.warn(&format!("watch: tick -> {}", halt.reason()));
+            crate::dispatch::doctor::record(here, &spending::run_id(), "watch", &halt);
+        }
+        tokio::time::sleep(Duration::from_secs(args.interval)).await;
+    }
+}
+
+/// One pass: read the snapshot, decide, dispatch.
+async fn tick(args: &WatchArgs, here: &Path, log: &Logbook) -> Outcome<()> {
+    let gh = resolve_gh(args, here)?;
+    let found = snapshot(gh.as_ref()).await?;
+    // What the decision was made from, for a tick whose choice later looks
+    // wrong: the counts are the whole input to `routing::decide`.
+    log.debug(&format!(
+        "saw: {} roadmap, {} milestone(s), {} refining, {} tech-refining, \
+         pr_fix={:?}, pr_review={:?}, ready_to_merge={:?}, dev_loop={:?}",
+        found.roadmap.len(),
+        found.milestones.len(),
+        found.refining.len(),
+        found.tech_refining.len(),
+        found.pr_to_fix.as_ref().map(|pr| pr.num.clone()),
+        found.pr_to_review.as_ref().map(|pr| pr.num.clone()),
+        found.ready_to_merge,
+        found.dev_loop_milestone,
+    ));
+    let route = routing::decide(&found);
+    dispatch(args, here, gh.as_ref(), route, log).await;
+    Ok(())
+}
+
+/// The `GitHub` used for the routing decision alone — no checkout: a named
+/// target resolves through `gh api` by slug; an unnamed one falls back to
+/// this launch directory's own `origin`, like `dev_loop`'s `--no-workspace`.
+fn resolve_gh(args: &WatchArgs, here: &Path) -> Outcome<Rc<dyn GitHub>> {
+    if args.target_repo_url.is_empty() {
+        return Ok(Rc::new(GhCli::new(here)));
+    }
+    let slug = Slug::parse(&args.target_repo_url).ok_or_else(|| {
+        Halt::Failed(format!(
+            "{:?} is not a usable repository URL",
+            args.target_repo_url
+        ))
+    })?;
+    Ok(Rc::new(GhCli::for_slug(&slug)))
+}
+
+/// Reads everything [`routing::decide`] needs.
+async fn snapshot(gh: &dyn GitHub) -> Outcome<Snapshot> {
+    let roadmap = gh.issues_labelled(labels::ROADMAP, "open").await?;
+    let lowest_roadmap_has_milestone = match roadmap
+        .iter()
+        .filter(|issue| issue.is_open())
+        .min_by_key(|issue| issue.number)
+    {
+        Some(lowest) => !gh.sub_issues(lowest.number).await?.is_empty(),
+        None => false,
+    };
+    let milestones = gh.issues_labelled(labels::MILESTONE, "open").await?;
+    let pr_to_fix = lowest_red_pr(gh).await?;
+    let pr_to_review = lowest_pr_worth_reviewing(gh).await?;
+    let ready_to_merge = lowest_ready_to_merge(gh, &milestones).await?;
+    let refining = gh.issues_labelled(labels::REFINEMENT, "open").await?;
+    let tech_refining = gh.issues_labelled(labels::TECH_REFINEMENT, "open").await?;
+    // Tolerant on purpose: "no open milestone at all" is this probe's most
+    // common answer, not a failure — `dev_loop::run` itself is where that
+    // distinction matters and is already made.
+    let dev_loop_milestone = board::read(gh)
+        .await
+        .ok()
+        .filter(|b| b.next().is_some())
+        .map(|b| b.milestone.number);
+    Ok(Snapshot {
+        roadmap,
+        lowest_roadmap_has_milestone,
+        milestones,
+        pr_to_fix,
+        pr_to_review,
+        ready_to_merge,
+        refining,
+        tech_refining,
+        dev_loop_milestone,
+    })
+}
+
+/// The lowest-numbered open PR that carries `harness:pr-fix` **and** has a
+/// check that concluded in failure — one CI read per candidate, in number
+/// order, stopping at the first match.
+///
+/// The pairing is the point: the label alone would send a paid session at a
+/// PR that is merely still building.
+async fn lowest_red_pr(gh: &dyn GitHub) -> Outcome<Option<Pr>> {
+    for candidate in by_number(gh.open_prs_labelled(labels::PR_FIX).await?) {
+        if !gh.pr_failing_checks(&candidate.num).await?.is_empty() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+/// The lowest-numbered open PR that carries `harness:to-review` and that the
+/// review itself would not skip — one comments read per candidate, in number
+/// order, stopping at the first match.
+///
+/// The decision reuses `pr_review`'s own rules rather than restating them:
+/// policy in two places is policy that drifts. Applying them here is only
+/// an optimization — a PR that would skip (a draft, a test PR, one already
+/// carrying a review) must not cost a mounted checkout on every poll, and
+/// its label can be left in place harmlessly because of this filter.
+async fn lowest_pr_worth_reviewing(gh: &dyn GitHub) -> Outcome<Option<Pr>> {
+    for candidate in by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?) {
+        let comments = gh.pr_comments(&candidate.num).await?;
+        // `candidate.base` as the expected base: the label is the
+        // authorization, and a task PR legitimately targets its milestone's
+        // branch. What stays live are the other three rules.
+        if skip_rules::skip_reason(false, &candidate.base, &candidate, &comments).is_none() {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+/// PRs in number order, the ones whose number is unreadable last — a PR ref
+/// that is not a number cannot be ordered, and dropping it silently would
+/// hide it instead.
+fn by_number(mut prs: Vec<Pr>) -> Vec<Pr> {
+    prs.sort_by_key(|pr| pr.num.parse::<u64>().unwrap_or(u64::MAX));
+    prs
+}
+
+/// The lowest-numbered open milestone, not yet `harness:waiting-merge`,
+/// whose own tasks are all closed — one extra read per candidate, in
+/// number order, stopping at the first match.
+async fn lowest_ready_to_merge(
+    gh: &dyn harness_core::ports::shell::github::GitHub,
+    milestones: &[harness_core::domain::Issue],
+) -> Outcome<Option<u64>> {
+    let mut candidates: Vec<&harness_core::domain::Issue> = milestones
+        .iter()
+        .filter(|issue| issue.is_open() && !issue.has(labels::WAITING_MERGE))
+        .collect();
+    candidates.sort_by_key(|issue| issue.number);
+    for candidate in candidates {
+        let tasks = gh.sub_issues(candidate.number).await?;
+        if audit::all_tasks_delivered(&tasks) {
+            return Ok(Some(candidate.number));
+        }
+    }
+    Ok(None)
+}
+
+/// Runs whichever workflow the route names. Reports, never propagates: see
+/// the module doc on why a dispatch failure does not stop the loop.
+async fn dispatch(args: &WatchArgs, here: &Path, gh: &dyn GitHub, route: Route, log: &Logbook) {
+    // The route with its parameters, before anything runs: it is the one line
+    // that says what this tick decided and on what.
+    log.say(&format!("tick: {route:?}"));
+    let failed = dispatched(args, here, gh, route, log).await;
+    // Recorded before anything is repaired: the record is what the repair
+    // reads, and what says — next tick — that it has already been treated.
+    if let Some((workflow, halt)) = failed {
+        crate::dispatch::doctor::record(here, &spending::run_id(), workflow, &halt);
+        if args.no_doctor {
+            return;
+        }
+        match crate::dispatch::doctor::treat(here, args.dry_run, log).await {
+            Ok(Repair::Nothing) => {}
+            Ok(done) => log.say(&format!("watch: doctor -> {}", done.outcome())),
+            Err(broke) => log.warn(&format!("watch: doctor -> {}", broke.reason())),
+        }
+    }
+}
+
+/// Runs the route, and says which workflow failed, if one did.
+async fn dispatched(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    route: Route,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    match route {
+        Route::Nothing => None,
+        Route::DevLoop { milestone } => run_dev_loop(here, gh, milestone, args.force_reset, log)
+            .await
+            .map(|halt| ("dev_loop", halt)),
+        Route::Planner { roadmap } => report_failure(
+            "planner",
+            crate::dispatch::planner::run(
+                roadmap,
+                here,
+                &args.target_repo_url,
+                &args.branch,
+                &args.permission_mode,
+                args.dry_run,
+            )
+            .await,
+            log,
+        ),
+        Route::Split { milestone } => report_failure(
+            "split",
+            crate::dispatch::split::run(
+                milestone,
+                here,
+                &args.target_repo_url,
+                &args.branch,
+                &args.permission_mode,
+                args.dry_run,
+            )
+            .await,
+            log,
+        ),
+        Route::PrFix { pr } => report_failure(
+            "pr_fix",
+            crate::dispatch::pr_fix::run(
+                &pr,
+                here,
+                &args.target_repo_url,
+                &args.permission_mode,
+                args.dry_run,
+            )
+            .await,
+            log,
+        ),
+        Route::PrReview { pr, base } => report_failure(
+            "pr_review",
+            crate::dispatch::pr_review::run(
+                &pr,
+                &base,
+                here,
+                &args.target_repo_url,
+                &args.branch,
+                &args.permission_mode,
+                args.dry_run,
+            )
+            .await,
+            log,
+        ),
+        Route::MergeMilestone { milestone } => {
+            run_milestone_merge(args, here, milestone, log).await
+        }
+        Route::Refinement { issue } => report_failure(
+            "refinement",
+            crate::dispatch::refinement::run(
+                Phase::Business,
+                issue,
+                here,
+                &args.target_repo_url,
+                &args.branch,
+                &args.permission_mode,
+                args.dry_run,
+            )
+            .await,
+            log,
+        ),
+        Route::TechRefinement { issue } => report_failure(
+            "tech_refinement",
+            crate::dispatch::refinement::run(
+                Phase::Technical,
+                issue,
+                here,
+                &args.target_repo_url,
+                &args.branch,
+                &args.permission_mode,
+                args.dry_run,
+            )
+            .await,
+            log,
+        ),
+    }
+}
+
+/// Merges one milestone, and says so. Its own function only because the
+/// dispatch table is long enough already.
+async fn run_milestone_merge(
+    args: &WatchArgs,
+    here: &Path,
+    milestone: u64,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    match crate::dispatch::milestone_merge::run(
+        milestone,
+        here,
+        &args.target_repo_url,
+        &args.branch,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            log.say(&format!("watch: milestone_merge -> {outcome:?}"));
+            None
+        }
+        Err(halt) => {
+            log.warn(&format!("watch: milestone_merge -> {}", halt.reason()));
+            Some(("milestone_merge", halt))
+        }
+    }
+}
+
+/// Runs the dev loop pointed at this milestone's own branch, derived from
+/// its number and title (`common::branching`) — never the fixed
+/// `--branch`/`INTEGRATION_BRANCH` a direct `harness` invocation would use.
+async fn run_dev_loop(
+    here: &Path,
+    gh: &dyn GitHub,
+    milestone: u64,
+    force_reset: bool,
+    log: &Logbook,
+) -> Option<Halt> {
+    let title = match gh.issue(milestone).await {
+        Ok(issue) => issue.title,
+        Err(halt) => {
+            log.warn(&format!(
+                "watch: dev_loop -> cannot read milestone #{milestone}: {}",
+                halt.reason()
+            ));
+            return Some(halt);
+        }
+    };
+    let branch = branching::milestone_branch(milestone, &title);
+    let mut cli = match crate::cli::Cli::try_parse_from(["harness"]) {
+        Ok(cli) => cli,
+        Err(e) => {
+            log.warn(&format!(
+                "watch: cannot build default dev_loop arguments: {e}"
+            ));
+            return None;
+        }
+    };
+    cli.run.branch = branch;
+    cli.run.force_reset = force_reset;
+    match crate::dispatch::dev_loop::run(&cli.run, here).await {
+        Ok(ran) => {
+            log.say(&format!("watch: dev_loop -> {:?}", ran.verdict));
+            None
+        }
+        Err(halt) => {
+            log.warn(&format!("watch: dev_loop -> {}", halt.reason()));
+            Some(halt)
+        }
+    }
+}
+
+/// Says what the workflow did, and hands back the `Halt` when it failed.
+///
+/// The return is what lets one place — [`dispatch`] — record every failure,
+/// rather than each arm remembering to.
+fn report_failure(
+    name: &'static str,
+    result: Outcome<Verdict>,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    match result {
+        Ok(verdict) => {
+            log.say(&format!("watch: {name} -> {verdict:?}"));
+            None
+        }
+        Err(halt) => {
+            log.warn(&format!("watch: {name} -> {}", halt.reason()));
+            Some((name, halt))
+        }
+    }
+}

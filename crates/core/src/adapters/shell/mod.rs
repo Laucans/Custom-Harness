@@ -1,7 +1,8 @@
-//! The binaries, wrapped: `git`, `gh`, and the launcher they share.
+//! The binaries, wrapped: `git`, `gh`, the disk, and the launcher they share.
 //!
-//! One submodule per external component. `process` is the only one that talks
-//! to the system; the others translate arguments and read outputs.
+//! The implementations behind [`ports::shell`](crate::ports::shell).
+//! `process` is the only one that talks to the system; the others translate
+//! arguments and read outputs.
 
 pub mod disk;
 pub mod git;

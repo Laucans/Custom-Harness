@@ -18,29 +18,54 @@
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::github::GitHub;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
+use harness_core::ports::shell::github::GitHub;
 
 use crate::common::labels;
 use crate::dev_loop::data::state::Loop;
-use crate::dev_loop::data::{board, tasks};
+use crate::dev_loop::data::tasks;
 
-/// The label says the SPEC is already written: we resume after, we don't
+/// The label says the technical sections are already written — by a
+/// technical refinement or by a previous run: we resume after, we don't
 /// re-charge a second write on top of the first.
-pub struct SpecAlreadyWritten;
+pub struct TechAlreadyWritten;
 
 #[async_trait(?Send)]
-impl Verification<Loop> for SpecAlreadyWritten {
+impl Verification<Loop> for TechAlreadyWritten {
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
-        if !ctx.state.spec_written {
+        if !ctx.state.tech_written {
             return Ok(Verdict::Continue);
         }
         Ok(Verdict::Skip(format!(
-            "issue #{} already carries {} — skipping /business-analyst \
-             (resuming a previous run)",
+            "issue #{} already carries {} — skipping the technical \
+             refinement",
             ctx.state.task.number,
-            labels::SPEC_WRITTEN
+            labels::TECH_WRITTEN
+        )))
+    }
+}
+
+/// The technical stage builds on the business sections: without them it
+/// would plan a guess.
+///
+/// Refuses rather than writing the business half itself: that half is the
+/// human's to ask for (`harness:refinement`), and the loop never invents it.
+pub struct TaskHasABusinessSpec;
+
+#[async_trait(?Send)]
+impl Verification<Loop> for TaskHasABusinessSpec {
+    async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
+        if ctx.settings.dry_run || ctx.state.spec_written {
+            return Ok(Verdict::Continue);
+        }
+        Err(Halt::Halted(format!(
+            "issue #{} does not carry {} — its business sections are not \
+             written. Ask for them with `gh issue edit {} --add-label {}`",
+            ctx.state.task.number,
+            labels::SPEC_WRITTEN,
+            ctx.state.task.number,
+            labels::REFINEMENT
         )))
     }
 }
@@ -56,8 +81,9 @@ impl Verification<Loop> for CodeHasASpec {
         }
         Err(Halt::Halted(format!(
             "issue #{} has an empty body — there is no SPEC to build from. Run \
-             /business-analyst on it first (--stages business-analyst).",
-            ctx.state.task.number
+             business refinement on it first (label {}).",
+            ctx.state.task.number,
+            labels::REFINEMENT
         )))
     }
 }
@@ -132,8 +158,8 @@ impl Verification<Loop> for IssueBodyIsNotEmpty {
         let issue = self.gh.issue(number).await?;
         if issue.body.trim().is_empty() {
             return Err(Halt::Halted(format!(
-                "/business-analyst left issue #{number} with an empty body — \
-                 the SPEC goes there, and /code reads nothing else"
+                "the technical refinement left issue #{number} with an empty \
+                 body — the SPEC goes there, and /code reads nothing else"
             )));
         }
         Ok(Verdict::Continue)
@@ -143,7 +169,7 @@ impl Verification<Loop> for IssueBodyIsNotEmpty {
 /// Does a merged PR carry `Closes #N` — the "judge" half of the old `task_is_delivered`.
 ///
 /// What we require is not a stage's assertion, but a **merged** PR declaring it.
-/// Without this check, `--stages business-analyst` would infinitely re-charge the
+/// Without this check, `--stages technical-refinement` would infinitely re-charge the
 /// same SPEC write.
 pub struct AMergedPrClosesTheTask {
     /// What reads the issue and PRs.
@@ -195,39 +221,6 @@ impl Verification<Loop> for AMergedPrClosesTheTask {
     }
 }
 
-/// Rollover opened something to work on, in the next milestone.
-///
-/// Re-read from scratch: the current milestone may not be the same anymore.
-/// It will be only if `/planner` closed the one it just finished — the loop
-/// works on the lowest-numbered open milestone, so an old one left open would
-/// roll all following rounds empty.
-pub struct PlannerOpenedATask {
-    /// What re-reads the board.
-    pub gh: Rc<dyn GitHub>,
-}
-
-#[async_trait(?Send)]
-impl Verification<Loop> for PlannerOpenedATask {
-    async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
-        if ctx.settings.dry_run {
-            return Ok(Verdict::Continue);
-        }
-        let after = board::read(self.gh.as_ref()).await?;
-        if after.open_agents().is_empty() {
-            return Err(Halt::Halted(format!(
-                "/planner left nothing to pick up: milestone {} still has no \
-                 open {} issue. Either it opened none, or it did not close \
-                 milestone #{} — the harness reads the lowest-numbered open \
-                 milestone, and that one is still it.",
-                after.milestone.reference(),
-                labels::AGENT,
-                ctx.state.milestone.number
-            )));
-        }
-        Ok(Verdict::Continue)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,10 +263,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_spec_already_written_skips_rather_than_paying_twice() {
+    async fn technical_sections_already_written_skip_rather_than_paying_twice() {
         let mut state = with_task("34", "the SPEC");
-        state.spec_written = true;
-        let verdict = SpecAlreadyWritten
+        state.tech_written = true;
+        let verdict = TechAlreadyWritten
             .verify(&ctx(state))
             .await
             .expect("a verdict");
@@ -281,12 +274,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_the_label_business_analyst_runs() {
-        let verdict = SpecAlreadyWritten
+    async fn without_the_label_the_technical_refinement_runs() {
+        let verdict = TechAlreadyWritten
             .verify(&ctx(with_task("34", "")))
             .await
             .expect("a verdict");
         assert_eq!(verdict, Verdict::Continue);
+    }
+
+    #[tokio::test]
+    async fn the_technical_stage_refuses_a_task_without_a_business_spec() {
+        let err = TaskHasABusinessSpec
+            .verify(&ctx(with_task("34", "raw request")))
+            .await
+            .expect_err("must stop");
+        assert!(err.reason().contains(labels::REFINEMENT));
+        let mut state = with_task("34", "raw request");
+        state.spec_written = true;
+        assert_eq!(
+            TaskHasABusinessSpec
+                .verify(&ctx(state))
+                .await
+                .expect("a verdict"),
+            Verdict::Continue
+        );
     }
 
     #[tokio::test]
@@ -469,7 +480,7 @@ mod tests {
             gh,
             integration_branch: "main_agent".to_string(),
             code_runs: false,
-            stages: "business-analyst".to_string(),
+            stages: "technical-refinement".to_string(),
         };
         let err = gate
             .verify(&ctx(with_task("34", "")))
@@ -496,21 +507,5 @@ mod tests {
                 .expect("verdict"),
             Verdict::Continue
         );
-    }
-
-    #[tokio::test]
-    async fn a_planner_that_opened_nothing_stops_and_says_which_of_two_causes() {
-        let gh = Rc::new(FakeGitHub {
-            issues: vec![issue(4, &[labels::MILESTONE], "")],
-            subs: vec![(4, vec![])],
-            ..FakeGitHub::default()
-        });
-        let gate = PlannerOpenedATask { gh };
-        let mut state = Loop::default();
-        state.milestone.number = "4".to_string();
-        let err = gate.verify(&ctx(state)).await.expect_err("must stop");
-        let said = format!("{err}");
-        assert!(said.contains("opened none"));
-        assert!(said.contains("did not close milestone"));
     }
 }

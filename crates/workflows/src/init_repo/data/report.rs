@@ -29,6 +29,9 @@ pub struct Report {
     pub labels_kept: usize,
     /// What the integration branch line says.
     pub branch_line: BranchReportLine,
+    /// What was done about the default branch and the release branch's
+    /// protection, one line each.
+    pub guard_lines: Vec<String>,
     /// The link line, already rendered — it depends on `--no-env`/`--force`
     /// in ways only [`crate::init_repo::action::apply`] knows.
     pub env_line: String,
@@ -91,6 +94,9 @@ impl Report {
             }
         };
         let _ = writeln!(out, "{:<12}{branch_value}", "branch");
+        for line in &self.guard_lines {
+            let _ = writeln!(out, "{:<12}{line}", "guard");
+        }
         let _ = writeln!(out, "{:<12}{}", "link", self.env_line);
 
         if !self.blocking.is_empty() {
@@ -128,6 +134,7 @@ mod tests {
                 sha: "9f21ac3".to_string(),
                 default: "main".to_string(),
             },
+            guard_lines: Vec::new(),
             env_line: ".env.local — TARGET_REPO_URL set, INTEGRATION_BRANCH set".to_string(),
             blocking: vec![
                 (
@@ -140,9 +147,7 @@ mod tests {
                     "copy the skill into the target repo".to_string(),
                 ),
             ],
-            advisory: vec![
-                ".claude/settings.json declares no pr-review hook on `gh pr create`".to_string(),
-            ],
+            advisory: vec!["no CLAUDE.md — the repository map reads it first".to_string()],
             dry_run: false,
         };
 
@@ -161,7 +166,7 @@ mod tests {
             "    → copy the skill into the target repo\n",
             "\n",
             "advisory:\n",
-            "  .claude/settings.json declares no pr-review hook on `gh pr create`\n",
+            "  no CLAUDE.md — the repository map reads it first\n",
         );
 
         assert_eq!(report.render(), expected);
@@ -175,6 +180,7 @@ mod tests {
             labels_created: vec![],
             labels_kept: 8,
             branch_line: BranchReportLine::AlreadyExists,
+            guard_lines: Vec::new(),
             env_line: ".env.local — TARGET_REPO_URL set, INTEGRATION_BRANCH set".to_string(),
             blocking: vec![],
             advisory: vec![],

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::adapters::agent::Reply;
+use crate::ports::agent::Reply;
 use crate::traces::Logbook;
 
 /// What execution holds during a run, generic over `S` — the workflow-specific

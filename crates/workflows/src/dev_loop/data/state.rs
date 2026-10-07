@@ -5,7 +5,7 @@
 //! core requires of it: [`Resumable`] for idempotence, [`Scoped`] so no
 //! session starts without knowing what it's working on.
 
-use harness_core::domain::{Named, Resumable, Scope, Scoped};
+use harness_core::domain::{Named, Resumable, Scope, Scoped, Sibling};
 
 /// What the round knows, and what belongs only to it.
 ///
@@ -14,24 +14,28 @@ use harness_core::domain::{Named, Resumable, Scope, Scoped};
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Loop {
+    /// The roadmap item the milestone came from, when it could be found.
+    pub roadmap: Option<Named>,
     /// The current milestone.
     pub milestone: Named,
+    /// The milestone's tasks, titles and status only.
+    pub siblings: Vec<Sibling>,
     /// The chosen task. Empty until `pick-task` runs.
     pub task: Named,
     /// The task resume key — its number.
     pub task_key: String,
     /// `auto` ou `human`, pour le journal.
     pub kind: String,
-    /// True when there is no task: the round branches to `/planner`.
-    pub rollover: bool,
     /// True when the resume point designated the task, rather than the board.
     ///
     /// What guards read that only apply on a resumed round: on a fresh
     /// round, `/code` never ran, and looking for a merged PR would cost one
     /// call per round for a known answer.
     pub resumed: bool,
-    /// The SPEC is already in the issue body.
+    /// The business SPEC is already in the issue body.
     pub spec_written: bool,
+    /// The technical sections are already in the issue body.
+    pub tech_written: bool,
     /// The stages already done for this task, across all runs.
     pub stages_done: Vec<String>,
 }
@@ -51,6 +55,8 @@ impl Resumable for Loop {
 impl Scoped for Loop {
     fn scope(&self) -> Scope {
         Scope {
+            roadmap: self.roadmap.clone(),
+            siblings: self.siblings.clone(),
             milestone: self.milestone.clone(),
             task: self.task.clone(),
         }
@@ -104,10 +110,9 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_state_has_no_task_and_is_not_a_rollover() {
+    fn a_fresh_state_has_no_task() {
         let fresh = Loop::default();
         assert!(!fresh.has_task());
-        assert!(!fresh.rollover);
         assert!(fresh.done().is_empty());
     }
 

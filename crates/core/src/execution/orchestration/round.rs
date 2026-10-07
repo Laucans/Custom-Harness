@@ -1,11 +1,12 @@
 //! A generic round: a list of stages, in order, until the first one that
 //! fails without being tolerated.
 //!
-//! Serves the workflows that don't branch. A round that has to choose between
-//! several paths — like the dev loop's rollover, which veers to `/planner`
-//! when there is no task — writes its own type and implements `Executable`
-//! directly rather than using this one; see `docs/ROUND-DRAFT.md`, variant B,
-//! and the reason for that choice.
+//! Serves the workflows whose round is nothing but that `Vec`. A round with
+//! steps outside the stage table — the dev loop's `pick` before it and
+//! `delivered` after, both `Action`s that must run unconditionally, outside
+//! any `--stages`/resume guard a `Stage` would carry — writes its own type
+//! and implements `Executable` directly rather than using this one; see
+//! `docs/ROUND-DRAFT.md`, variant B, and the reason for that choice.
 //!
 //! # Why tolerance lives here
 //!

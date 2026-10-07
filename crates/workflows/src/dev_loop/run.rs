@@ -13,17 +13,18 @@
 //! gates, command-line parsing, log writing.
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use harness_core::adapters::shell::disk::Disk;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::checkpoint::Checkpoint;
 use harness_core::execution::Gate;
+use harness_core::ports::shell::disk::Disk;
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::checkpoint::Checkpoints;
 
 use crate::dev_loop::action::actions::{MarkWaitingMerge, PickTask};
 use crate::dev_loop::checks::{gates, preflight};
 use crate::dev_loop::config::Config;
+use crate::dev_loop::data::dependencies;
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::orchestration::round::TaskRound;
 use crate::dev_loop::orchestration::{stages, workflow::DevLoop};
@@ -36,8 +37,6 @@ pub struct Request {
     pub rounds_budget: u32,
     /// What `--stages` was worth for this run. Empty: all.
     pub stages_filter: String,
-    /// Branch the rollover stage.
-    pub rollover: bool,
     /// The task the resume point designates, if there is one. Only applies to
     /// the first turn — see the `rounds` factory below.
     pub resuming: Option<String>,
@@ -51,22 +50,30 @@ pub fn build(
     config: &Config,
     request: Request,
     pre: Gate<Loop>,
-    store: Option<Rc<Checkpoint>>,
+    store: Option<Rc<dyn Checkpoints>>,
     flow_id: String,
 ) -> DevLoop {
     DevLoop {
         pre,
         remaining: Cell::new(request.rounds_budget),
-        rounds: rounds(
-            ports,
-            config,
-            request.rollover,
-            request.stages_filter,
-            request.resuming,
-        ),
+        rounds: rounds(ports, config, request.stages_filter, request.resuming),
         store,
         flow_id,
     }
+}
+
+/// What [`workspace_gates`] needs to judge the rate-limit window.
+///
+/// Grouped rather than three more parameters: they travel together, and `now` is
+/// passed in rather than read here so the decision stays testable against a
+/// clock the caller owns.
+pub struct QuotaRoom {
+    /// Where the last reading was recorded.
+    pub at: PathBuf,
+    /// `--ignore-quota`.
+    pub ignored: bool,
+    /// Now, in seconds since the epoch.
+    pub now: u64,
 }
 
 /// The gates that speak to the workspace mounted and what's in it.
@@ -81,11 +88,21 @@ pub fn workspace_gates(
     dry_run: bool,
     disk: Rc<dyn Disk>,
     gh: Rc<dyn GitHub>,
+    quota: QuotaRoom,
 ) -> Gate<Loop> {
     let skills = root.join(".claude/skills");
     Gate {
         name: "dev_loop preflight",
         checks: vec![
+            // First: it costs one file read, and it is the only gate whose
+            // refusal is about *when* rather than about what is wrong. Finding
+            // out after three network calls would waste them.
+            Box::new(preflight::QuotaHasRoom {
+                disk: Rc::clone(&disk),
+                at: quota.at,
+                ignored: quota.ignored || dry_run,
+                now: quota.now,
+            }),
             Box::new(preflight::LabelsExist { gh: Rc::clone(&gh) }),
             Box::new(preflight::MilestoneIsReachable { gh }),
             Box::new(preflight::SkillsExist {
@@ -96,20 +113,36 @@ pub fn workspace_gates(
             // Last: the only one that speaks to what's *in* the workspace
             // rather than what it is.
             Box::new(preflight::DependenciesAreInstalled {
+                needed: if dry_run {
+                    Vec::new()
+                } else {
+                    installed(&root, disk.as_ref())
+                },
                 disk,
                 root,
-                needed: if dry_run { Vec::new() } else { installed() },
             }),
         ],
     }
 }
 
-/// What this repository must have installed for a stage to verify.
+/// What this checkout must have installed for a stage to verify, derived
+/// from the manifests it actually carries.
 ///
-/// None of this is tracked by git — that's precisely why a fresh clone doesn't
-/// have it, and why the gate exists.
-fn installed() -> Vec<(String, String)> {
-    vec![("node_modules".to_string(), "npm install".to_string())]
+/// None of it is tracked by git — that's precisely why a fresh clone doesn't
+/// have it, and why the gate exists. Which ecosystem it is, though, is the
+/// clone's business and not the harness's: see
+/// [`data::dependencies`](crate::dev_loop::data::dependencies).
+///
+/// Public because the repair reads it too: the doctor runs these very commands
+/// when a tick stopped for lack of them, and deriving the list twice is how the
+/// gate and the repair come to disagree.
+#[must_use]
+pub fn installed(root: &Path, disk: &dyn Disk) -> Vec<(String, String)> {
+    let present: Vec<String> = dependencies::manifests()
+        .into_iter()
+        .filter(|name| disk.exists(&root.join(name)))
+        .collect();
+    dependencies::needed(&present)
 }
 
 /// The skills this run names: the stages, and the commands that open them.
@@ -120,6 +153,8 @@ fn named_skills(ports: &Ports, config: &Config) -> Vec<String> {
     let mut named: Vec<String> = stages::table(ports, config, 1)
         .iter()
         .map(|stage| stage.name.clone())
+        // Runs `/tech-analyst`: it is not a skill of its own.
+        .filter(|name| name != "technical-refinement")
         .collect();
     named.push("tech-analyst".to_string());
     named
@@ -132,7 +167,6 @@ fn named_skills(ports: &Ports, config: &Config) -> Vec<String> {
 fn rounds(
     ports: &Ports,
     config: &Config,
-    rollover: bool,
     stages_filter: String,
     resuming: Option<String>,
 ) -> Box<dyn Fn(u32) -> TaskRound> {
@@ -144,7 +178,8 @@ fn rounds(
     let model = config.model.clone();
     let effort = config.effort.clone();
     let restart = config.restart;
-    let grill_dir = config.grill_dir.clone();
+    let stack = config.stack.clone();
+    let signatures = Rc::clone(&config.signatures);
     Box::new(move |turn| {
         let ports = Ports {
             gh: Rc::clone(&gh),
@@ -157,7 +192,8 @@ fn rounds(
             model: model.clone(),
             effort: effort.clone(),
             restart,
-            grill_dir: grill_dir.clone(),
+            stack: stack.clone(),
+            signatures: Rc::clone(&signatures),
         };
         TaskRound {
             turn,
@@ -166,7 +202,6 @@ fn rounds(
                 resuming: if turn == 1 { resuming.clone() } else { None },
             },
             stages: stages::table(&ports, &config, turn),
-            rollover: rollover.then(|| stages::planner(&ports, &config, turn)),
             delivered: MarkWaitingMerge {
                 gh: Rc::clone(&gh),
                 integration_branch: branch.clone(),
@@ -199,6 +234,7 @@ mod tests {
     //! themselves are tested where they live, against fakes from their crate.
 
     use super::*;
+
     use crate::dev_loop::config::fake as config_fake;
     use crate::dev_loop::ports::fake as ports_fake;
 
@@ -206,7 +242,6 @@ mod tests {
         Request {
             rounds_budget: 3,
             stages_filter: String::new(),
-            rollover: false,
             resuming,
         }
     }
@@ -227,7 +262,6 @@ mod tests {
         let built = rounds(
             &ports_fake::ports(),
             &config_fake::config(),
-            false,
             String::new(),
             Some("11".to_string()),
         );
@@ -240,31 +274,10 @@ mod tests {
         let built = rounds(
             &ports_fake::ports(),
             &config_fake::config(),
-            false,
             String::new(),
             None,
         );
         assert_eq!(built(3).turn, 3);
-    }
-
-    #[test]
-    fn the_rollover_stage_is_only_wired_when_asked_for() {
-        let off = rounds(
-            &ports_fake::ports(),
-            &config_fake::config(),
-            false,
-            String::new(),
-            None,
-        );
-        assert!(off(1).rollover.is_none(), "an opus run is not the default");
-        let on = rounds(
-            &ports_fake::ports(),
-            &config_fake::config(),
-            true,
-            String::new(),
-            None,
-        );
-        assert!(on(1).rollover.is_some());
     }
 
     #[test]
@@ -275,7 +288,6 @@ mod tests {
         let built = rounds(
             &ports_fake::ports(),
             &config_fake::config(),
-            false,
             "code".to_string(),
             None,
         );
@@ -287,15 +299,47 @@ mod tests {
         // Without this, "nothing marks delivery" reads as a bug when in fact
         // it's `--stages` that removed the only stage that delivers.
         assert!(code_runs(""), "empty means all");
-        assert!(code_runs("business-analyst code"));
-        assert!(!code_runs("business-analyst"));
+        assert!(code_runs("technical-refinement code"));
+        assert!(!code_runs("technical-refinement"));
     }
 
     #[test]
-    fn a_dry_run_asks_for_no_installed_dependencies() {
-        // `workspace_gates` only asks for `installed()` if the run is not dry
-        // — what this constant holds must at least exist.
-        assert!(!installed().is_empty());
+    fn what_must_be_installed_follows_the_checkout_not_the_harness() {
+        // The regression this guards: `installed()` was a constant naming
+        // `node_modules`, so a Rust target was told to run `npm install` and
+        // a fresh repo was refused for lacking a directory it never had.
+        use harness_core::ports::shell::disk::Disk as _;
+        struct Only(&'static str);
+        impl harness_core::ports::shell::disk::Disk for Only {
+            fn exists(&self, path: &Path) -> bool {
+                path.ends_with(self.0)
+            }
+            fn create_dir_all(&self, _p: &Path) -> harness_core::domain::Outcome<()> {
+                Ok(())
+            }
+            fn remove_dir_all(&self, _p: &Path) -> harness_core::domain::Outcome<()> {
+                Ok(())
+            }
+            fn dir_names(&self, _p: &Path) -> Vec<String> {
+                Vec::new()
+            }
+            fn read_to_string(&self, _p: &Path) -> Option<String> {
+                None
+            }
+            fn write_to_string(&self, _p: &Path, _c: &str) -> harness_core::domain::Outcome<()> {
+                Ok(())
+            }
+        }
+        let root = PathBuf::from("/w");
+        let node = Only("package.json");
+        assert_eq!(installed(&root, &node).len(), 1);
+        assert!(node.exists(&root.join("package.json")), "the fake answers");
+
+        let rust = Only("Cargo.toml");
+        assert!(
+            installed(&root, &rust).is_empty(),
+            "cargo fetches on build; nothing to install up front"
+        );
     }
 
     #[test]

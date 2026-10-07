@@ -12,8 +12,8 @@
 //! to avoid reopening one. In Rust the client is passed, and a board without
 //! client is tested by building it by hand.
 
-use harness_core::adapters::shell::github::GitHub;
 use harness_core::domain::{Halt, Issue, Outcome};
+use harness_core::ports::shell::github::GitHub;
 
 use crate::common::labels;
 use crate::dev_loop::data::tasks;
@@ -34,7 +34,7 @@ pub struct Board {
 }
 
 impl Board {
-    /// Open agent tasks — what decides rollover.
+    /// Open agent tasks — empty means the milestone has nothing left to run.
     #[must_use]
     pub fn open_agents(&self) -> Vec<&Issue> {
         tasks::open_agent_tasks(&self.tasks)
@@ -58,10 +58,11 @@ impl Board {
 
     /// The stop message when tasks remain but none can run.
     ///
-    /// This case is **not** rollover, and confusing them costs an opus run:
-    /// the milestone is not done, it awaits a human. It remains to say **which**
-    /// gesture it awaits, because they're not the same — delivering everything
-    /// and awaiting a merge is not the same answer as an unchecked `harness:ready` box.
+    /// This case is **not** "nothing left", and confusing them stops the loop
+    /// when it should instead keep waiting: the milestone is not done, it
+    /// awaits a human. It remains to say **which** gesture it awaits, because
+    /// they're not the same — delivering everything and awaiting a merge is
+    /// not the same answer as an unchecked `harness:ready` box.
     #[must_use]
     pub fn stuck(&self) -> String {
         let open = self.open_agents();
@@ -97,8 +98,8 @@ pub async fn read(gh: &dyn GitHub) -> Outcome<Board> {
     let found = gh.issues_labelled(labels::MILESTONE, "open").await?;
     let Some(milestone) = tasks::current_milestone(&found) else {
         return Err(Halt::Halted(format!(
-            "no open {} issue — there is nothing to work from. Open one (or let \
-             /planner open one from a {} issue) before running the harness.",
+            "no open {} issue — there is nothing to work from. /planner opens \
+             one from a {} issue, triggered on its own rather than from here.",
             labels::MILESTONE,
             labels::ROADMAP
         )));

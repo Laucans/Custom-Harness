@@ -11,10 +11,12 @@
 
 use std::rc::Rc;
 
-use harness_core::adapters::agent::SessionFactory;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::lock::Locks;
-use harness_core::adapters::store::spending::Spending;
+use harness_core::ports::agent::SessionFactory;
+use harness_core::ports::shell::disk::Disk;
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::lock::Locks;
+use harness_core::ports::store::review::ReviewCosts;
+use harness_core::ports::store::spending::Spending;
 
 /// The ports of a review.
 pub struct Ports {
@@ -24,6 +26,10 @@ pub struct Ports {
     pub sessions: Rc<dyn SessionFactory>,
     /// Where a pass's spending is recorded.
     pub spending: Rc<dyn Spending>,
+    /// What the review's passes already cost, for the posted footer.
+    pub costs: Rc<dyn ReviewCosts>,
+    /// Where the comment is written before it is posted.
+    pub disk: Rc<dyn Disk>,
     /// What holds the lock for a review — one per PR at a time.
     pub locks: Rc<dyn Locks>,
     /// The instant to display in the header of the posted comment.
@@ -40,13 +46,15 @@ pub(crate) mod fake {
     use std::rc::Rc;
 
     use async_trait::async_trait;
-    use harness_core::adapters::agent::{Session, SessionFactory, SessionSpec};
-    use harness_core::adapters::store::lock::DirLocks;
-    use harness_core::adapters::store::spending::{Entry, Spending};
     use harness_core::domain::{Halt, Outcome};
+    use harness_core::ports::agent::{Session, SessionFactory, SessionSpec};
+    use harness_core::ports::store::review::ReviewCosts;
+    use harness_core::ports::store::spending::{Entry, Spending};
 
     use super::Ports;
+    use crate::common::fake_disk::FakeDisk;
     use crate::common::fake_github::FakeGitHub;
+    use crate::common::fake_locks::Grants;
 
     /// A factory that refuses to open.
     pub struct NoSessions;
@@ -71,6 +79,15 @@ pub(crate) mod fake {
         }
     }
 
+    /// A ledger with nothing in it: no pass has been billed.
+    pub struct Free;
+
+    impl ReviewCosts for Free {
+        fn cost_of(&self, _pr: &str) -> Outcome<String> {
+            Ok(String::new())
+        }
+    }
+
     /// Test ports, empty GitHub.
     pub fn ports() -> Ports {
         with(Rc::new(FakeGitHub::default()))
@@ -82,7 +99,9 @@ pub(crate) mod fake {
             gh,
             sessions: Rc::new(NoSessions),
             spending: Rc::new(Nowhere),
-            locks: Rc::new(DirLocks),
+            costs: Rc::new(Free),
+            disk: Rc::new(FakeDisk::default()),
+            locks: Rc::new(Grants),
             now: || "2026-10-02 16:00".to_string(),
         }
     }

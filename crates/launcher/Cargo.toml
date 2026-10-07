@@ -20,4 +20,5 @@ clap.workspace = true
 harness-core.workspace = true
 harness-workflows.workspace = true
 jiff.workspace = true
+serde_json.workspace = true
 tokio.workspace = true

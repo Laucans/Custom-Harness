@@ -11,12 +11,13 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::store::spending::Spending;
 use harness_core::domain::prompts::splice;
 use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
+use harness_core::ports::store::spending::Spending;
 
 use crate::common::explore;
+use crate::refinement::data::phase::Phase;
 use crate::refinement::data::state::RefinementState;
 use crate::refinement::data::{rounds, sections};
 
@@ -33,7 +34,7 @@ fn additional_context_block(text: &str) -> String {
 
 /// Sends the prompt for a paid refinement step.
 ///
-/// One type for all seven — router, five sections, coherence — because they
+/// One type for every paid step — router, sections, coherence, advice — because they
 /// compose their prompt the same way: the same template, the same scope,
 /// prefixed by the repository map.
 pub struct AskRefine {
@@ -44,9 +45,12 @@ pub struct AskRefine {
     /// Does this step read the body this round is about to publish, rather
     /// than the one before this round?
     ///
-    /// True for coherence and it alone: it's the only way for it to read
-    /// together sections that no one else, in this round, has read together.
+    /// True for coherence and the advice: they read together sections that
+    /// no one else, in this round, has read together.
     pub merged_body: bool,
+    /// Which half of the refinement this step belongs to — the keys it
+    /// names to the model are this phase's.
+    pub phase: Phase,
     /// What a human asked for this round, verbatim.
     pub context: String,
     /// This issue's artifacts folder.
@@ -81,7 +85,8 @@ impl SessionAction<RefinementState> for AskRefine {
                 ("num", &issue.number.to_string()),
                 ("title", &issue.title),
                 ("round", &open.state.round_no.to_string()),
-                ("keys", &sections::KEYS.join("\n")),
+                ("keys", &self.phase.keys().join("\n")),
+                ("drags", self.phase.drags()),
                 (
                     "additional_context",
                     &additional_context_block(&self.context),
@@ -89,10 +94,14 @@ impl SessionAction<RefinementState> for AskRefine {
                 ("body", &body),
             ],
         );
-        let map_file =
-            explore::map_file_path(&self.artifacts_dir, &explore::tag_of(open.state.round_no));
+        let map_file = explore::map_file_path(&self.artifacts_dir);
         let prefix = explore::repo_context(open.ctx, self.explore, &map_file);
-        let prompt = format!("{prefix}\n\n{filled}");
+        let hierarchy = &open.state.hierarchy;
+        let prompt = if hierarchy.is_empty() {
+            format!("{prefix}\n\n{filled}")
+        } else {
+            format!("{prefix}\n\n{hierarchy}\n\n{filled}")
+        };
         let round = open.state.round_no;
         let task = format!("#{}", issue.number);
         ask_and_record(
@@ -123,7 +132,7 @@ pub struct RecordWantedSections {
 impl Action<RefinementState> for RecordWantedSections {
     async fn run(&self, ctx: &mut Context<RefinementState>) -> Outcome<Verdict> {
         if let Some(reply) = ctx.results.get(&self.router) {
-            ctx.state.wanted = rounds::wanted_from(&reply.text);
+            ctx.state.wanted = rounds::wanted_from(&reply.text, ctx.state.phase);
         }
         Ok(Verdict::Continue)
     }

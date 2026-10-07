@@ -20,6 +20,16 @@ pub enum Verbosity {
 pub trait Sink {
     /// Write an already-formatted line.
     fn emit(&self, line: &str);
+
+    /// Keep a line without showing it.
+    ///
+    /// What [`Logbook::debug`] writes when the console is not `Verbose`: a
+    /// sink that has somewhere durable to write keeps it there, a sink that is
+    /// only a console drops it. Defaults to [`Sink::emit`] — a sink that makes
+    /// no such distinction loses nothing by showing it.
+    fn keep(&self, line: &str) {
+        self.emit(line);
+    }
 }
 
 /// A sink that writes nowhere — for tests and the fast path.
@@ -77,10 +87,14 @@ impl Logbook {
 
     /// Write a line, with tag at the head if `bind` set one.
     pub fn say(&self, line: &str) {
-        match &self.tag {
-            Some(tag) => self.sink.emit(&format!("[{tag}] {line}")),
-            None => self.sink.emit(line),
-        }
+        self.sink.emit(&self.tagged(line));
+    }
+
+    /// The line as it is written: tagged if `bind` set a tag.
+    fn tagged(&self, line: &str) -> String {
+        self.tag
+            .as_ref()
+            .map_or_else(|| line.to_string(), |tag| format!("[{tag}] {line}"))
     }
 
     /// A line that a human must see even in `Quiet`.
@@ -92,10 +106,18 @@ impl Logbook {
         self.say(&format!("warning: {line}"));
     }
 
-    /// A line of interest only to autopsy — silent unless `Verbose`.
+    /// A line of interest only to autopsy — shown only in `Verbose`, **kept
+    /// either way**.
+    ///
+    /// The autopsy is exactly what these lines are for: dropping them from the
+    /// file unless someone thought to ask for `--verbose` in advance means the
+    /// one run worth explaining is the one that explains nothing. The console
+    /// stays quiet; see [`Sink::keep`].
     pub fn debug(&self, line: &str) {
         if self.verbosity == Verbosity::Verbose {
             self.say(line);
+        } else {
+            self.sink.keep(&self.tagged(line));
         }
     }
 
@@ -111,6 +133,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    /// A console: it shows, it keeps nothing.
     #[derive(Default)]
     struct Capture(RefCell<Vec<String>>);
 
@@ -118,6 +141,8 @@ mod tests {
         fn emit(&self, line: &str) {
             self.0.borrow_mut().push(line.to_string());
         }
+
+        fn keep(&self, _line: &str) {}
     }
 
     #[test]
@@ -170,5 +195,43 @@ mod tests {
         let loud = Rc::new(Capture::default());
         Logbook::new(Rc::clone(&loud) as Rc<dyn Sink>, Verbosity::Verbose).debug("detail");
         assert_eq!(loud.0.borrow()[0], "detail");
+    }
+
+    /// A sink that keeps and shows in two places, as a log file beside a
+    /// console does.
+    #[derive(Default)]
+    struct Shelf {
+        shown: RefCell<Vec<String>>,
+        kept: RefCell<Vec<String>>,
+    }
+
+    impl Sink for Shelf {
+        fn emit(&self, line: &str) {
+            self.shown.borrow_mut().push(line.to_string());
+            self.kept.borrow_mut().push(line.to_string());
+        }
+
+        fn keep(&self, line: &str) {
+            self.kept.borrow_mut().push(line.to_string());
+        }
+    }
+
+    #[test]
+    fn a_debug_line_the_console_hides_is_still_kept() {
+        // The failure this answers: the one run worth explaining is the one
+        // nobody thought to launch with `--verbose`.
+        let shelf = Rc::new(Shelf::default());
+        Logbook::new(Rc::clone(&shelf) as Rc<dyn Sink>, Verbosity::Normal).debug("saw: 3 tasks");
+        assert!(shelf.shown.borrow().is_empty());
+        assert_eq!(shelf.kept.borrow()[0], "saw: 3 tasks");
+    }
+
+    #[test]
+    fn a_kept_line_carries_the_tag_the_shown_one_would_have() {
+        let shelf = Rc::new(Shelf::default());
+        Logbook::new(Rc::clone(&shelf) as Rc<dyn Sink>, Verbosity::Normal)
+            .bind("r3")
+            .debug("saw: 3 tasks");
+        assert_eq!(shelf.kept.borrow()[0], "[r3] saw: 3 tasks");
     }
 }

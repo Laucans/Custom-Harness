@@ -4,12 +4,8 @@
 //! already commented, plus one. No state file, no label — the counter lives
 //! where the human can see and correct it.
 
-use std::collections::HashMap;
-
+use crate::refinement::data::phase::Phase;
 use crate::refinement::data::sections;
-
-/// The round-end comment marker, case-insensitive.
-pub const MARKER: &str = "refinement round:";
 
 /// What a model can write to name a section: its key, or its title — plus
 /// two short forms that, without them, would reopen the wrong section
@@ -20,62 +16,46 @@ const ALIASES: [(&str, &str); 2] = [
     ("implementation plan", "technical-plan"),
 ];
 
-/// The highest round already commented, `0` if none.
+/// The highest round of this phase already commented, `0` if none.
 #[must_use]
-pub fn counter(comments: &[String]) -> u32 {
+pub fn counter(comments: &[String], phase: Phase) -> u32 {
     comments
         .iter()
         .flat_map(|body| body.lines())
-        .filter_map(round_in_line)
+        .filter_map(|line| round_in_line(line, phase))
         .max()
         .unwrap_or(0)
 }
 
-fn round_in_line(line: &str) -> Option<u32> {
+fn round_in_line(line: &str, phase: Phase) -> Option<u32> {
     let trimmed = line.trim();
     let lower = trimmed.to_lowercase();
-    let rest = lower.strip_prefix(MARKER)?;
+    let rest = lower.strip_prefix(phase.marker())?;
     rest.trim().parse().ok()
 }
 
-/// The round-end comment: `refinement round: 3`.
+/// The round-end comment: `refinement round: 3`, or its technical form.
 #[must_use]
-pub fn comment(round_no: u32) -> String {
-    format!("{MARKER} {round_no}")
+pub fn comment(round_no: u32, phase: Phase) -> String {
+    format!("{} {round_no}", phase.marker())
 }
 
 /// Does this round go through the router?
 #[must_use]
 pub const fn routed(round_no: u32, has_context: bool) -> bool {
-    round_no >= 3 && has_context
+    round_no >= 2 && has_context
 }
 
 /// The sections this round writes, outside router decisions.
 ///
-/// Round 1: the three of round 1. Round 2: the missing from round 1, then
-/// round 2's two. Round >= 3: all five, or nothing when the router decides.
-// Never called with a hasher other than the default throughout the crate:
-// generalizing over `BuildHasher` would add only a type parameter nobody
-// fills.
-#[allow(clippy::implicit_hasher)]
+/// All of the phase's sections, so one request is enough to get a complete
+/// half; nothing when the router decides.
 #[must_use]
-pub fn planned(
-    round_no: u32,
-    found: &HashMap<String, String>,
-    has_context: bool,
-) -> Vec<&'static str> {
-    if round_no <= 1 {
-        return sections::keys_of_round(1);
-    }
-    if round_no == 2 {
-        let mut said = sections::missing(found);
-        said.extend(sections::keys_of_round(2));
-        return said;
-    }
+pub fn planned(phase: Phase, round_no: u32, has_context: bool) -> Vec<&'static str> {
     if routed(round_no, has_context) {
         return Vec::new();
     }
-    sections::KEYS.to_vec()
+    phase.keys().to_vec()
 }
 
 /// A token, longest first: "technical plan" must be tried before "technical",
@@ -125,12 +105,13 @@ fn names(haystack: &str, token: &str) -> bool {
     false
 }
 
-/// The section keys the router named, in canonical order.
+/// The section keys of this phase the router named, in canonical order.
 ///
 /// Empty when nothing is recognized: the router's exit gate makes it a
-/// failure rather than a silent round.
+/// failure rather than a silent round. A key of the other phase is ignored —
+/// this round does not write it.
 #[must_use]
-pub fn wanted_from(answer: &str) -> Vec<String> {
+pub fn wanted_from(answer: &str, phase: Phase) -> Vec<String> {
     let mut said = answer.to_lowercase();
     let mut named: Vec<&'static str> = Vec::new();
     for (token, key) in tokens() {
@@ -145,7 +126,7 @@ pub fn wanted_from(answer: &str) -> Vec<String> {
     }
     sections::KEYS
         .iter()
-        .filter(|key| named.contains(key))
+        .filter(|key| named.contains(key) && phase.keys().contains(key))
         .map(ToString::to_string)
         .collect()
 }
@@ -153,7 +134,6 @@ pub fn wanted_from(answer: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn the_counter_is_the_highest_round_commented_so_far() {
@@ -162,58 +142,64 @@ mod tests {
             "refinement round: 2".to_string(),
             "refinement round: 1".to_string(),
         ];
-        assert_eq!(counter(&comments), 2);
+        assert_eq!(counter(&comments, Phase::Business), 2);
     }
 
     #[test]
     fn no_comment_at_all_counts_as_round_zero() {
-        assert_eq!(counter(&[]), 0);
+        assert_eq!(counter(&[], Phase::Business), 0);
     }
 
     #[test]
     fn the_marker_is_matched_case_insensitively() {
-        assert_eq!(counter(&["REFINEMENT ROUND: 4".to_string()]), 4);
-    }
-
-    #[test]
-    fn round_one_writes_exactly_the_three_round_one_sections() {
         assert_eq!(
-            planned(1, &HashMap::new(), false),
-            vec!["business-goal", "technical", "acceptance-criteria"]
+            counter(&["REFINEMENT ROUND: 4".to_string()], Phase::Business),
+            4
         );
     }
 
     #[test]
-    fn round_two_writes_whats_missing_from_round_one_then_round_twos_own() {
-        let mut found = HashMap::new();
-        found.insert("business-goal".to_string(), "already there".to_string());
+    fn each_phase_counts_its_own_rounds_only() {
+        let comments = vec![
+            "refinement round: 1".to_string(),
+            "technical refinement round: 3".to_string(),
+        ];
+        assert_eq!(counter(&comments, Phase::Business), 1);
+        assert_eq!(counter(&comments, Phase::Technical), 3);
+    }
+
+    #[test]
+    fn a_round_writes_all_the_sections_of_its_phase_and_only_those() {
         assert_eq!(
-            planned(2, &found, false),
-            vec![
-                "technical",
-                "acceptance-criteria",
-                "business-rules",
-                "technical-plan"
-            ]
+            planned(Phase::Business, 1, false),
+            vec!["business-goal", "acceptance-criteria", "business-rules"]
+        );
+        assert_eq!(
+            planned(Phase::Technical, 1, false),
+            vec!["technical", "technical-plan"]
         );
     }
 
     #[test]
-    fn round_three_without_context_rewrites_all_five() {
-        assert_eq!(planned(3, &HashMap::new(), false), sections::KEYS.to_vec());
+    fn a_second_round_without_context_rewrites_the_whole_phase() {
+        assert_eq!(planned(Phase::Technical, 2, false), Phase::Technical.keys());
     }
 
     #[test]
-    fn round_three_with_context_defers_entirely_to_the_router() {
-        assert!(planned(3, &HashMap::new(), true).is_empty());
-        assert!(routed(3, true));
+    fn a_later_round_with_context_defers_entirely_to_the_router() {
+        assert!(planned(Phase::Business, 2, true).is_empty());
+        assert!(routed(2, true));
+        assert!(!routed(1, true));
     }
 
     #[test]
     fn the_router_names_sections_by_key_or_by_heading() {
         assert_eq!(
-            wanted_from("please rework technical and acceptance-criteria"),
-            vec!["technical", "acceptance-criteria"]
+            wanted_from(
+                "please rework business rules and acceptance-criteria",
+                Phase::Business
+            ),
+            vec!["acceptance-criteria", "business-rules"]
         );
     }
 
@@ -222,18 +208,26 @@ mod tests {
         // Without the alias, "technical plan" would match twice: once for
         // "technical", once for the long token.
         assert_eq!(
-            wanted_from("rework the technical plan"),
+            wanted_from("rework the technical plan", Phase::Technical),
             vec!["technical-plan"]
         );
     }
 
     #[test]
+    fn a_section_of_the_other_phase_is_ignored() {
+        assert!(wanted_from("technical", Phase::Business).is_empty());
+    }
+
+    #[test]
     fn naming_nothing_recognisable_wants_nothing() {
-        assert!(wanted_from("do something, anything").is_empty());
+        assert!(wanted_from("do something, anything", Phase::Business).is_empty());
     }
 
     #[test]
     fn the_answer_is_read_case_insensitively() {
-        assert_eq!(wanted_from("BUSINESS GOAL"), vec!["business-goal"]);
+        assert_eq!(
+            wanted_from("BUSINESS GOAL", Phase::Business),
+            vec!["business-goal"]
+        );
     }
 }

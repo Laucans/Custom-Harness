@@ -1,4 +1,6 @@
-//! The ledger of a PR review: columns distinct from the rounds ledger.
+//! The ledger of a PR review — the implementation of [`ReviewCosts`].
+//!
+//! Columns distinct from the rounds ledger.
 //!
 //! **A separate ledger, by design.** A review charges per PR and per pass,
 //! never by round or task — mixing the two would make a review cost read as
@@ -11,6 +13,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::domain::{Halt, Outcome, Spend};
+use crate::ports::store::review::ReviewCosts;
 
 /// The header, frozen.
 pub const HEADER: &str =
@@ -110,12 +113,17 @@ impl ReviewLedger {
             .map_err(|e| self.wrote_nothing(&e))
     }
 
-    /// What both passes of a PR cost together, in dollars, formatted to four
-    /// decimals — or empty if nothing is recorded yet.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the ledger exists but cannot be read.
-    pub fn cost_of(&self, pr: &str) -> Outcome<String> {
+    fn wrote_nothing(&self, err: &std::io::Error) -> Halt {
+        Halt::Failed(format!(
+            "cannot write review ledger {} ({err})",
+            self.path.display()
+        ))
+    }
+}
+
+impl ReviewCosts for ReviewLedger {
+    /// Both passes of a PR, summed, in dollars formatted to four decimals.
+    fn cost_of(&self, pr: &str) -> Outcome<String> {
         if !self.path.exists() {
             return Ok(String::new());
         }
@@ -139,13 +147,6 @@ impl ReviewLedger {
             return Ok(String::new());
         }
         Ok(format!("{total:.4}"))
-    }
-
-    fn wrote_nothing(&self, err: &std::io::Error) -> Halt {
-        Halt::Failed(format!(
-            "cannot write review ledger {} ({err})",
-            self.path.display()
-        ))
     }
 }
 

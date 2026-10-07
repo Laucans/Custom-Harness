@@ -28,10 +28,10 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::adapters::shell::disk::Disk;
-use crate::adapters::shell::git::{Repo, Repos};
 use crate::domain::workspace::{Strategy, Wanted, Workspace};
 use crate::domain::{Halt, Outcome, same_repo};
+use crate::ports::shell::disk::Disk;
+use crate::ports::shell::git::{Repo, Repos};
 use crate::traces::Logbook;
 
 /// What a mount gave, and what unmount must do with it.
@@ -138,9 +138,34 @@ impl Provisioner {
         let dest = base.join(&name);
 
         if run.dry_run {
+            // In place, but **in the workspace a real run would use** when that
+            // one is already on disk. Nothing is cloned, checked out, reset or
+            // deleted — `path` stays `None`, so unmount does nothing, and the
+            // "a dry-run doesn't clone" rule stands untouched.
+            //
+            // What changes is *which repository* everything downstream then
+            // speaks about: the branch and CI gates, the installed-dependency
+            // gate, the configuration digest, the signature index, and the
+            // prompts the dry run writes out. Against the harness's own
+            // checkout all six described the wrong repository, which made
+            // `--dry-run` useless for the one thing it is for — reading the
+            // prompt a real run would send.
+            if self.disk.exists(&dest) {
+                log.say(&format!(
+                    "workspace: would use {} ({}, from {url}) — dry run reads it \
+                     in place, mounting nothing",
+                    source.rel(&dest),
+                    wanted.strategy.as_str()
+                ));
+                return Ok(Mount::in_place(source.at(&dest)));
+            }
+            // Said rather than passed over: the gates and the prompt below are
+            // then about the harness itself, and a reader who is not told will
+            // take them for the target's.
             log.say(&format!(
-                "workspace: would use {} ({}, from {url}) — dry run works in \
-                 place",
+                "workspace: would clone {} ({}, from {url}) — it is not on disk \
+                 yet, so this dry run reads THIS checkout instead: the gates and \
+                 prompts below describe the harness, not the target",
                 source.rel(&dest),
                 wanted.strategy.as_str()
             ));
@@ -149,12 +174,14 @@ impl Provisioner {
 
         let branch = if self.disk.exists(&dest) {
             self.reuse(&dest, run, &url, &name, log).await?
-        } else if named {
+        } else if named && !wanted.create_if_missing {
             // `--use-workspace` finds, it does not create: a typo would
             // otherwise make a fresh clone under a similar name, and the
             // workspace the human targeted would stay intact and unused. Under
             // `Permanent`, the extra clone would not even be deleted at the end,
-            // so the typo would stay on disk.
+            // so the typo would stay on disk. `create_if_missing` lifts this
+            // for a name the harness chose itself, which no human could have
+            // cloned beforehand.
             let kept = self.disk.dir_names(&base).join(" ");
             return Err(Halt::Halted(format!(
                 "no workspace named {name:?} under {} — kept workspaces: {}",
@@ -587,7 +614,7 @@ fn is_a_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::shell::process::Ran;
+    use crate::ports::shell::process::Ran;
     use async_trait::async_trait;
     use std::cell::RefCell;
     use std::collections::HashSet;
@@ -712,6 +739,22 @@ mod tests {
 
         async fn delete_branch(&self, name: &str) -> Outcome<Ran> {
             Ok(self.note(&format!("delete_branch {name}")))
+        }
+
+        async fn create_local_branch(&self, name: &str, from: &str) -> Outcome<Ran> {
+            Ok(self.note(&format!("create_local_branch {name} {from}")))
+        }
+
+        async fn stage_all(&self) -> Outcome<Ran> {
+            Ok(self.note("stage_all"))
+        }
+
+        async fn commit(&self, message: &str) -> Outcome<Ran> {
+            Ok(self.note(&format!("commit {message}")))
+        }
+
+        async fn push(&self, branch: &str) -> Outcome<Ran> {
+            Ok(self.note(&format!("push {branch}")))
         }
     }
 
@@ -852,6 +895,32 @@ mod tests {
         assert!(disk.created.borrow().is_empty());
     }
 
+    #[tokio::test]
+    async fn a_dry_run_reads_the_workspace_a_real_run_would_use_when_it_is_there() {
+        // The defect this fixes: a dry run read the *harness's own* checkout, so
+        // the branch and CI gates, the installed-dependency gate, the
+        // configuration digest, the signature index and the prompts it writes
+        // all described the wrong repository — which is the one thing
+        // `--dry-run` exists to let you read.
+        let git = repo(clean_repo());
+        let disk = Rc::new(disk_with_workspace());
+        let mount = mount_with(&git, &disk, &wanted(), true)
+            .await
+            .expect("mounted");
+        assert_eq!(mount.workspace.root(), Path::new(DEST));
+        // Still mounts nothing: `path` is None, so unmount cannot reset or
+        // delete a workspace a dry run only read.
+        assert!(!mount.mounted());
+        assert!(mount.branch.is_empty());
+        assert!(!mount.disposable);
+        assert!(git.calls().is_empty(), "no git verbs: nothing checked out");
+        assert!(disk.created.borrow().is_empty());
+        assert!(disk.removed().is_empty());
+        // And the accounting stays home: a dry run must not write a ledger into
+        // the target's checkout.
+        assert_eq!(mount.workspace.state_root(), Path::new("/depot"));
+    }
+
     // --- the name ----------------------------------------------------------
 
     #[tokio::test]
@@ -892,6 +961,29 @@ mod tests {
             "list what is there"
         );
         assert!(git.calls().is_empty(), "no clone");
+    }
+
+    #[tokio::test]
+    async fn a_name_the_harness_chose_itself_is_cloned_when_it_is_missing() {
+        // The other side of the same rule: a fixed id a workflow reserves for
+        // its own checkout cannot pre-exist on a fresh machine, so refusing
+        // would make it unreachable forever rather than catch a typo.
+        let git = repo(clean_repo());
+        let disk = Rc::new(FakeDisk::default());
+        let asked = Wanted {
+            id: "router-readonly".to_string(),
+            create_if_missing: true,
+            ..wanted()
+        };
+        let mount = mount_with(&git, &disk, &asked, false)
+            .await
+            .expect("mounted");
+        assert!(mount.workspace.root().ends_with("router-readonly"));
+        assert!(
+            git.calls().iter().any(|call| call.starts_with("clone")),
+            "it clones instead of refusing: {:?}",
+            git.calls()
+        );
     }
 
     // --- rule 1: nothing is overwritten without saying so ----------------

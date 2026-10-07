@@ -12,6 +12,20 @@ output as one of its own inputs — business decisions come first, because an
 architecture grilled before its objectives are settled is architecture for
 objectives nobody confirmed.
 
+## Anchor: which project
+
+**This is never about the harness checkout you're running in.** Before
+round one, read `TARGET_REPO_URL` from `.env.local` at the harness root
+(fall back to the `TARGET_REPO_URL` environment variable). If neither is
+set, say so and ask the user for the repository before proceeding — do not
+default to grilling about the harness tool itself just because that's the
+current directory; it is the instrument, never the subject.
+
+State the resolved `owner/name` back to the user in your very first message
+("Grilling the business objectives of `<owner>/<name>` — stop me now if
+that's wrong"), so a wrong resolution is caught before a whole session of
+questions about the wrong project.
+
 ## The subject
 
 Seed the design tree with these branches — not a fixed checklist, a starting
@@ -51,6 +65,7 @@ round at a time, wait for answers, done when the frontier is empty, and —
 Say so plainly, summarize the shared understanding in a few bullets, and stop.
 This skill produces understanding, nothing else — no file, no issue. If the
 user wants that understanding turned into `harness:roadmap` issues on the
-repository named by `TARGET_REPO_URL`, point them at
-`business-grill-with-issues`, which expects exactly this session's outcome as
-its starting point.
+repository named by `TARGET_REPO_URL`, point them at `grill-to-roadmap`,
+which expects exactly this session's outcome as its starting point — and
+takes a `technical-grill-me` session as an optional second input, so running
+the architecture grilling before it sharpens the item's constraints.

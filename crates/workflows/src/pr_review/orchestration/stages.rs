@@ -146,6 +146,8 @@ pub fn publish(ports: &Ports, config: &Config) -> Stage<ReviewState> {
         body: StageBody::Local {
             actions: vec![Box::new(Publish {
                 gh: Rc::clone(&ports.gh),
+                costs: Rc::clone(&ports.costs),
+                disk: Rc::clone(&ports.disk),
                 brief: BRIEF.to_string(),
                 review_dir: config.review_dir.clone(),
                 no_inline: config.no_inline,

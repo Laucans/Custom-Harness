@@ -15,7 +15,7 @@ output is local to this harness checkout, for two different readers: a human
 
 ## Where everything goes
 
-Resolve `TARGET_REPO_URL` the same way `business-grill-with-issues` does
+Resolve `TARGET_REPO_URL` the same way `grill-to-roadmap` does
 (`.env.local`, falling back to the environment variable; stop and point at
 `harness init-repo <url>` if neither is set) to get `owner/name`. Everything
 below lives under `.llocal/grill/<owner>/<name>/` **at the harness root** —
@@ -42,8 +42,10 @@ decisions contradict — a silently stale glossary is worse than a short one.
 ## Write the technical digest
 
 `.llocal/grill/<owner>/<name>/technical-digest.md` — short on purpose (a
-paid `/planner` run reads it before every milestone it opens; it is a
-digest, not the ADRs). A few bullets: the invariants a task must not break,
+paid `/planner` run reads it before every milestone it opens, and
+`grill-to-roadmap` reads it to state a roadmap item's constraints; it is a
+digest, not the ADRs). Both of those only ever read it — this skill is the
+only writer. A few bullets: the invariants a task must not break,
 the module boundaries that constrain how work can be sliced, and open
 technical risks `/planner` should turn into their own blocking task rather
 than silently assume away. If it already exists, show the user the diff and

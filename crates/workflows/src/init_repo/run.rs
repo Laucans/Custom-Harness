@@ -13,9 +13,9 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use harness_core::adapters::shell::disk::Disk;
-use harness_core::adapters::shell::github::GitHub;
 use harness_core::domain::{Outcome, Slug};
+use harness_core::ports::shell::disk::Disk;
+use harness_core::ports::shell::github::GitHub;
 
 use crate::init_repo::action::apply;
 use crate::init_repo::config::Config;

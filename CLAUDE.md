@@ -31,17 +31,52 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   (`[workspace.package]`); each crate's `Cargo.toml` inherits it
   (`edition.workspace = true`). Toolchain pinned via `rust-toolchain.toml`.
 - Within `harness-core`: `src/lib.rs` re-exports `domain/`, `traces/`,
-  `execution/` — no public item lives directly in `lib.rs`. Integration
-  tests for a crate live in that crate's own `tests/` and only see its
-  public API (see `crates/workflows/tests/depends_on_core.rs`).
+  `ports/`, `execution/` — no public item lives directly in `lib.rs`.
+  Integration tests for a crate live in that crate's own `tests/` and only
+  see its public API (see `crates/workflows/tests/depends_on_core.rs`).
 - External calls (subprocesses like `git`/`gh`, network, filesystem) are
-  isolated behind trait-based adapters — core logic decides, an adapter
+  isolated behind trait-based ports — core logic decides, an adapter
   executes. Tests substitute a fake adapter; nothing mocks at the call site.
   Carried over from the Python pipeline on purpose.
 - Async: `#[async_trait(?Send)]` on every execution trait, tokio
   `current_thread`. No `Send` bound to pay for — the harness drives one
   session at a time, and this is a deliberate migration decision
   (`docs/MIGRATION.md`), not a default.
+
+## Hexagonal Architecture — non-negotiable
+
+The harness is a ports-and-adapters design and every change keeps it one.
+`ARCHITECTURE_OVERVIEW.md` carries the diagram and the reasoning; these are
+the rules a diff is checked against:
+
+- **A port is a trait in `harness-core/src/ports/`**, one module per external
+  component, traits and the values they exchange only. Never declare a port in
+  the same module as an implementation of it: the dependency runs
+  `adapters -> ports`, and a trait sitting in `adapters/` makes the next
+  workflow family inherit `gh` along with the seam.
+- **An adapter is an implementation in `harness-core/src/adapters/`**, and it
+  is the only layer allowed to spawn a process, touch the disk, or call a
+  library. `shell/process.rs` is the only place that spawns.
+- **The inside never names a type from `adapters`.** `domain/`, `execution/`,
+  `ports/` and every workflow take `Rc<dyn Trait>`; only `harness-launcher`
+  builds `GhCli`, `GitCli`, `ClaudeCliFactory`, `Checkpoint`, `ReviewLedger`,
+  `DirLocks`. Two exceptions, both test-only: a fixture may wire `Rehearsal`
+  as its session factory (core's own stand-in carrier, the one `--dry-run`
+  wires), and a test may name a concrete adapter when that adapter's real
+  behaviour is what is under test — `DirLocks` in core's workflow test, which
+  proves the lock is really released. Everywhere else, inject a fake from
+  `workflows/src/common/fake_*.rs`.
+- **No `std::fs`, no `Command`, no clock in a workflow, an action or a gate** —
+  not even three lines of it. If a store the inside reads has no port yet,
+  declare one (`Checkpoints`, `ReviewCosts` exist for exactly that reason)
+  rather than reaching for the concrete type.
+- **Where `core` needs a fact of the process** — the time, a run id, a machine
+  name, a console — it declares a port and the launcher implements it
+  (`Spending`, `Sink`). Never the reverse.
+- Reviewable in one command:
+  `grep -rn 'adapters::' crates/core/src/domain crates/core/src/execution crates/core/src/ports crates/workflows/src`
+  Its only legitimate hits are doc links and the two test exceptions above —
+  anything in shipped code is the review finding, not a detail.
 
 ## Core Rules
 

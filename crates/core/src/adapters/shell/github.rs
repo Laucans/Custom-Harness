@@ -1,4 +1,4 @@
-//! The `gh` binary, wrapped.
+//! The `gh` binary, wrapped — the implementation of the [`GitHub`] port.
 //!
 //! Each call **names the repo** by its working directory, for the same reason
 //! as `git.rs`: `gh` resolves a PR from its `cwd`, so a call launched from
@@ -10,17 +10,9 @@
 //! half the model must pass through the raw API anyway, all of it does, rather
 //! than leaving a reader guess which half does what.
 //!
-//! Nothing here decides. Reading an issue, its comments, its blockers, adding
-//! a label: what a label **means** is the definition of a workflow and lives
-//! with it.
-//!
-//! # The invariant that costs money
-//!
-//! **A read that does not succeed never returns an empty list.** `[]` reads as
-//! "this milestone has no open tasks left", which is exactly the input that
-//! triggers a `/planner`: an expired token would cost an opus run. Every failed
-//! read thus returns [`Halt::Unreadable`], which says what we do not know and
-//! names the gesture that unblocks.
+//! Nothing here decides, and no read that fails answers `[]` — what the port
+//! promises, and what that invariant costs when broken, is documented with it
+//! in [`ports::shell::github`](crate::ports::shell::github).
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -30,6 +22,8 @@ use serde_json::Value;
 
 use crate::adapters::shell::process;
 use crate::domain::{Halt, Issue, Outcome, Pr};
+use crate::ports::shell::github::GitHub;
+use crate::ports::shell::process::Ran;
 
 /// The called binary.
 const BINARY: &str = "gh";
@@ -67,21 +61,7 @@ fn issue_from(payload: &Value) -> Outcome<Issue> {
         .get("number")
         .and_then(Value::as_u64)
         .ok_or_else(|| unreadable("an issue", "no usable `number` field"))?;
-    let labels = payload
-        .get("labels")
-        .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|label| match label {
-                    Value::String(name) => Some(name.clone()),
-                    other => other
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let labels = label_names(payload);
     Ok(Issue {
         number,
         title: text_at(payload, "title"),
@@ -109,7 +89,27 @@ fn text_at(payload: &Value, key: &str) -> String {
 }
 
 /// The metadata a review skip rule demands, in one call.
-const PR_FIELDS: &str = "number,baseRefName,headRefName,title,url,state,isDraft";
+const PR_FIELDS: &str = "number,baseRefName,headRefName,title,url,state,isDraft,labels";
+
+/// The label names of a payload, whether they arrive as objects or as
+/// strings — `gh issue` and `gh pr` do not agree on which.
+fn label_names(payload: &Value) -> Vec<String> {
+    payload
+        .get("labels")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|label| match label {
+                    Value::String(name) => Some(name.clone()),
+                    other => other
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// A PR from the API, in the form the domain knows how to read.
 fn pr_from(payload: &Value) -> Pr {
@@ -134,6 +134,7 @@ fn pr_from(payload: &Value) -> Pr {
             .get("isDraft")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        labels: label_names(payload),
     }
 }
 
@@ -164,6 +165,55 @@ fn merged_from(payload: &Value, what: &str) -> Outcome<Vec<Issue>> {
         .collect()
 }
 
+/// The check states that mean "this one has broken", as `gh pr checks`
+/// reports them.
+///
+/// Deliberately **not** "everything that is not `SUCCESS`": `PENDING`,
+/// `QUEUED` and `IN_PROGRESS` are a run still happening, and `SKIPPED` or
+/// `NEUTRAL` are a run that decided it had nothing to say. Treating either
+/// as a failure would send a repair at a PR with nothing wrong with it yet.
+const FAILED_STATES: [&str; 6] = [
+    "FAILURE",
+    "ERROR",
+    "CANCELLED",
+    "TIMED_OUT",
+    "STARTUP_FAILURE",
+    "ACTION_REQUIRED",
+];
+
+/// The rows of a `gh pr checks --json name,state,link` response that have
+/// concluded in failure, one readable line each.
+fn failing_checks(rows: &[Value]) -> Vec<String> {
+    rows.iter()
+        .filter(|row| {
+            row.get("state")
+                .and_then(Value::as_str)
+                .is_some_and(|state| FAILED_STATES.contains(&state))
+        })
+        .map(|row| {
+            let name = text_at(row, "name");
+            let state = text_at(row, "state");
+            let link = text_at(row, "link");
+            let named = if name.is_empty() { "a check" } else { &name };
+            if link.is_empty() {
+                format!("{named} — {state}")
+            } else {
+                format!("{named} — {state} — {link}")
+            }
+        })
+        .collect()
+}
+
+/// Whether every row of a `gh pr checks --json state` response says
+/// `SUCCESS`. An empty list is **not** green — proof that CI ran is the
+/// point, not the absence of a reason to refuse.
+fn checks_are_green(rows: &[Value]) -> bool {
+    !rows.is_empty()
+        && rows
+            .iter()
+            .all(|row| row.get("state").and_then(Value::as_str) == Some("SUCCESS"))
+}
+
 /// The array from a response. `null` counts as empty, anything else is unreadable.
 fn rows_of<'a>(payload: &'a Value, what: &str) -> Outcome<&'a [Value]> {
     match payload {
@@ -171,185 +221,6 @@ fn rows_of<'a>(payload: &'a Value, what: &str) -> Outcome<&'a [Value]> {
         Value::Null => Ok(&[]),
         other => Err(unreadable(what, &format!("expected an array, got {other}"))),
     }
-}
-
-/// What the harness asks `gh` for, and nothing more.
-#[async_trait(?Send)]
-pub trait GitHub {
-    /// Is `gh` authenticated?
-    ///
-    /// # Errors
-    /// If `gh` could not be launched.
-    async fn authenticated(&self) -> Outcome<bool>;
-
-    /// `owner/name`, requested once then cached.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if `gh` cannot tell which repo this is.
-    async fn repo(&self) -> Outcome<String>;
-
-    /// The labels the repo bears, by name.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed.
-    async fn labels(&self) -> Outcome<Vec<String>>;
-
-    /// This issue.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed.
-    async fn issue(&self, number: u64) -> Outcome<Issue>;
-
-    /// Issues bearing this label, PRs excluded.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed.
-    async fn issues_labelled(&self, label: &str, state: &str) -> Outcome<Vec<Issue>>;
-
-    /// The sub-issues of this one.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed.
-    async fn sub_issues(&self, number: u64) -> Outcome<Vec<Issue>>;
-
-    /// What blocks this issue, with the state of each blocker.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed.
-    async fn blocked_by(&self, number: u64) -> Outcome<Vec<Issue>>;
-
-    /// The same tasks, each bearing its blockers.
-    ///
-    /// One request per task: the entry point that lists sub-issues says nothing
-    /// of dependencies, and deciding without them would read as "nothing
-    /// blocks".
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if a read does not succeed.
-    async fn with_blockers(&self, tasks: Vec<Issue>) -> Outcome<Vec<Issue>>;
-
-    /// Merged PRs on `base`, most recently touched first.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed — "API is down" and
-    /// "nothing was delivered" lead to opposite decisions.
-    async fn merged_prs(&self, base: &str) -> Outcome<Vec<Issue>>;
-
-    /// The body of each comment, oldest to newest.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed, or if there are more
-    /// comments than pagination covers.
-    async fn issue_comments(&self, number: u64) -> Outcome<Vec<String>>;
-
-    /// Add a label.
-    ///
-    /// # Errors
-    /// [`Halt::Halted`] if GitHub refuses.
-    async fn add_label(&self, number: u64, label: &str) -> Outcome<()>;
-
-    /// Remove a label.
-    ///
-    /// # Errors
-    /// [`Halt::Halted`] if GitHub refuses.
-    async fn remove_label(&self, number: u64, label: &str) -> Outcome<()>;
-
-    /// Rewrite the body of an issue — for a task, its SPEC.
-    ///
-    /// # Errors
-    /// [`Halt::Halted`] if GitHub refuses.
-    async fn set_body(&self, number: u64, body: &str) -> Outcome<()>;
-
-    /// Post a comment on an issue.
-    ///
-    /// # Errors
-    /// [`Halt::Halted`] if GitHub refuses.
-    async fn post_issue_comment(&self, number: u64, body: &str) -> Outcome<()>;
-
-    /// Close an issue.
-    ///
-    /// # Errors
-    /// [`Halt::Halted`] if GitHub refuses.
-    async fn close_issue(&self, number: u64) -> Outcome<()>;
-
-    // --- what the PR review demands, and nothing else ----------------------
-    //
-    // Via `gh pr view`/`gh pr comment`, not via `gh api`: a review does not need
-    // sub-issues or dependencies, and these two subcommands already return the
-    // right form. Their failures are [`Halt::Failed`], not [`Halt::Unreadable`]:
-    // there is no empty list here that could read as "nothing left to do" — a
-    // PR we cannot read is an ordinary failure, not an ambiguity.
-
-    /// A PR's metadata, by its number or URL.
-    ///
-    /// # Errors
-    /// [`Halt::Failed`] if `gh` cannot read it.
-    async fn pr(&self, pr_ref: &str) -> Outcome<Pr>;
-
-    /// The body of all comments on a PR, **concatenated as-is**.
-    ///
-    /// A string, not a list, by design: the only thing done with it is a
-    /// substring search (the marker of a review already posted), and that is
-    /// exactly what `gh pr view --json comments -q .comments[].body`
-    /// returns.
-    ///
-    /// # Errors
-    /// [`Halt::Failed`] if `gh` cannot read them.
-    async fn pr_comments(&self, num: &str) -> Outcome<String>;
-
-    /// Post a comment on a PR, from a file.
-    ///
-    /// A file, not a string: the text is already kept on disk before this call,
-    /// so it survives if `gh` fails.
-    ///
-    /// # Errors
-    /// [`Halt::Failed`] if GitHub refuses.
-    async fn post_pr_comment(&self, num: &str, body_file: &Path) -> Outcome<()>;
-
-    // --- what `init-repo` needs, and nothing else ---------------------------
-    //
-    // Two of these (`branch_sha`, `file_text`) answer `None` on a 404, and only
-    // on a 404: a 404 and a failed call must not collapse into the same value,
-    // or an expired token would report "ci.yml is missing" and send a human
-    // editing a file that is already correct.
-
-    /// Create a label.
-    ///
-    /// # Errors
-    /// [`Halt::Halted`] if GitHub refuses.
-    async fn create_label(&self, name: &str, color: &str, description: &str) -> Outcome<()>;
-
-    /// The sha a branch points at, or `None` **only** on a 404.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read fails for any reason other than
-    /// "absent".
-    async fn branch_sha(&self, branch: &str) -> Outcome<Option<String>>;
-
-    /// Create `refs/heads/{branch}` at this sha.
-    ///
-    /// # Errors
-    /// [`Halt::Halted`] if GitHub refuses.
-    async fn create_branch(&self, branch: &str, sha: &str) -> Outcome<()>;
-
-    /// The repo's default branch.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed.
-    async fn default_branch(&self) -> Outcome<String>;
-
-    /// Whether the authenticated token can push to this repo.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read does not succeed.
-    async fn can_push(&self) -> Outcome<bool>;
-
-    /// The raw text of a file at `git_ref`, or `None` **only** on a 404.
-    ///
-    /// # Errors
-    /// [`Halt::Unreadable`] if the read fails for any reason other than
-    /// "absent".
-    async fn file_text(&self, path: &str, git_ref: &str) -> Outcome<Option<String>>;
 }
 
 /// `gh`, called from a given repo.
@@ -390,7 +261,18 @@ impl GhCli {
         }
     }
 
-    async fn gh(&self, args: &[String]) -> Outcome<process::Ran> {
+    async fn gh(&self, args: &[String]) -> Outcome<Ran> {
+        // `gh pr …` infers the repo from the cwd, and a slug-only adapter has
+        // none that means anything (it would hit the harness's own repo), so
+        // name the target explicitly. `api` calls already carry the slug.
+        if args.first().is_some_and(|a| a == "pr")
+            && let Some(name) = self.name.get()
+        {
+            let mut named = args.to_vec();
+            named.push("-R".to_string());
+            named.push(name.clone());
+            return process::run(BINARY, &named, &self.root).await;
+        }
         process::run(BINARY, args, &self.root).await
     }
 
@@ -433,7 +315,11 @@ impl GhCli {
         fields: &[(&str, String)],
     ) -> Outcome<()> {
         let repo = self.repo().await?;
-        let url = format!("repos/{repo}/{path}");
+        let url = if path.is_empty() {
+            format!("repos/{repo}")
+        } else {
+            format!("repos/{repo}/{path}")
+        };
         let mut args = vec![
             "api".to_string(),
             "-X".to_string(),
@@ -482,12 +368,79 @@ impl GhCli {
         serde_json::from_str(ran.out()).map_err(|e| unreadable(what, &e.to_string()))
     }
 
+    /// An issue's internal node id — what the sub-issues/dependencies API
+    /// actually wants, distinct from the number everything else here uses.
+    async fn node_id(&self, number: u64) -> Outcome<u64> {
+        let what = format!("internal id of #{number}");
+        let payload = self.read(&what, &format!("issues/{number}"), &[]).await?;
+        payload
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| unreadable(&what, "no usable `id` field"))
+    }
+
+    /// An API write whose response body is the point — unlike [`Self::write`],
+    /// which discards it. `-f`: every field here is a plain string.
+    async fn create(&self, what: &str, path: &str, fields: &[(&str, String)]) -> Outcome<Value> {
+        let repo = self.repo().await?;
+        let url = format!("repos/{repo}/{path}");
+        let mut args = vec![
+            "api".to_string(),
+            "-X".to_string(),
+            "POST".to_string(),
+            url.clone(),
+        ];
+        for (key, value) in fields {
+            args.push("-f".to_string());
+            args.push(format!("{key}={value}"));
+        }
+        let ran = self.gh(&args).await?;
+        if !ran.ok() {
+            return Err(Halt::Halted(format!(
+                "GitHub refused to {what} (POST {url}): {}. Nothing is retried \
+                 and nothing is undone here — a partially applied change is \
+                 easier to finish by hand than to guess.",
+                ran.why()
+            )));
+        }
+        serde_json::from_str(ran.out())
+            .map_err(|e| Halt::Halted(format!("{what}: unreadable response: {e}")))
+    }
+
+    /// Like [`Self::create`], but with `-F` fields: GitHub's sub-issues and
+    /// dependencies endpoints want a typed integer (`sub_issue_id`,
+    /// `issue_id`), and `-f` would send it as a JSON string instead.
+    async fn link(&self, what: &str, path: &str, fields: &[(&str, String)]) -> Outcome<()> {
+        let repo = self.repo().await?;
+        let url = format!("repos/{repo}/{path}");
+        let mut args = vec![
+            "api".to_string(),
+            "-X".to_string(),
+            "POST".to_string(),
+            url.clone(),
+        ];
+        for (key, value) in fields {
+            args.push("-F".to_string());
+            args.push(format!("{key}={value}"));
+        }
+        let ran = self.gh(&args).await?;
+        if ran.ok() {
+            return Ok(());
+        }
+        Err(Halt::Halted(format!(
+            "GitHub refused to {what} (POST {url}): {}. Nothing is retried \
+             and nothing is undone here — a partially applied change is \
+             easier to finish by hand than to guess.",
+            ran.why()
+        )))
+    }
+
     /// Runs a fully-built `gh api` call where absence is a valid answer.
     ///
     /// The delicate part: a 404 and a failed call must not collapse into the
     /// same `None`. Non-zero exits either way, so the split comes from
     /// reading `gh`'s own diagnostic, not its exit code.
-    async fn read_optional(&self, what: &str, args: &[String]) -> Outcome<Option<process::Ran>> {
+    async fn read_optional(&self, what: &str, args: &[String]) -> Outcome<Option<Ran>> {
         let ran = self.gh(args).await?;
         if ran.ok() {
             return Ok(Some(ran));
@@ -505,7 +458,7 @@ impl GhCli {
 /// `Accept` header.
 ///
 /// Pure, so the 404/failure split is unit-testable without a subprocess.
-fn is_404(ran: &process::Ran) -> bool {
+fn is_404(ran: &Ran) -> bool {
     ran.why().contains("HTTP 404")
 }
 
@@ -820,6 +773,46 @@ impl GitHub for GhCli {
             .ok_or_else(|| unreadable(what, "no usable default_branch field"))
     }
 
+    async fn set_default_branch(&self, branch: &str) -> Outcome<()> {
+        self.write(
+            &format!("make {branch} the default branch"),
+            "PATCH",
+            "",
+            &[("default_branch", branch.to_string())],
+        )
+        .await
+    }
+
+    async fn protect_branch(&self, branch: &str) -> Outcome<()> {
+        // `-F` types its value (`null`, numbers) and understands the bracket
+        // form for nested objects, which the string-only `write` cannot send.
+        let repo = self.repo().await?;
+        let url = format!("repos/{repo}/branches/{branch}/protection");
+        let mut args = vec![
+            "api".to_string(),
+            "-X".to_string(),
+            "PUT".to_string(),
+            url.clone(),
+        ];
+        for field in [
+            "required_status_checks=null",
+            "enforce_admins=false",
+            "restrictions=null",
+            "required_pull_request_reviews[required_approving_review_count]=0",
+        ] {
+            args.push("-F".to_string());
+            args.push(field.to_string());
+        }
+        let ran = self.gh(&args).await?;
+        if ran.ok() {
+            return Ok(());
+        }
+        Err(Halt::Halted(format!(
+            "GitHub refused to protect {branch} (PUT {url}): {}",
+            ran.why()
+        )))
+    }
+
     async fn can_push(&self) -> Outcome<bool> {
         let what = "push permission";
         let value = self.repo_json(what).await?;
@@ -847,6 +840,169 @@ impl GitHub for GhCli {
             return Ok(None);
         };
         Ok(Some(ran.stdout))
+    }
+
+    async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<u64> {
+        let mut fields = vec![("title", title.to_string()), ("body", body.to_string())];
+        for label in labels {
+            fields.push(("labels[]", (*label).to_string()));
+        }
+        let payload = self.create("create an issue", "issues", &fields).await?;
+        payload
+            .get("number")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                Halt::Halted("created an issue but the response named no number".to_string())
+            })
+    }
+
+    async fn create_sub_issue_link(&self, parent: u64, child: u64) -> Outcome<()> {
+        let child_id = self.node_id(child).await?;
+        self.link(
+            &format!("link #{child} as a sub-issue of #{parent}"),
+            &format!("issues/{parent}/sub_issues"),
+            &[("sub_issue_id", child_id.to_string())],
+        )
+        .await
+    }
+
+    async fn add_blocked_by(&self, number: u64, blocker: u64) -> Outcome<()> {
+        let blocker_id = self.node_id(blocker).await?;
+        self.link(
+            &format!("mark #{number} as blocked by #{blocker}"),
+            &format!("issues/{number}/dependencies/blocked_by"),
+            &[("issue_id", blocker_id.to_string())],
+        )
+        .await
+    }
+
+    async fn create_pr(&self, head: &str, base: &str, title: &str, body: &str) -> Outcome<String> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "create".to_string(),
+                "--head".to_string(),
+                head.to_string(),
+                "--base".to_string(),
+                base.to_string(),
+                "--title".to_string(),
+                title.to_string(),
+                "--body".to_string(),
+                body.to_string(),
+            ])
+            .await?;
+        if !ran.ok() {
+            return Err(Halt::Halted(format!(
+                "GitHub refused to open a PR from {head} into {base}: {}. Nothing \
+                 is retried and nothing is undone here — a partially applied \
+                 change is easier to finish by hand than to guess.",
+                ran.why()
+            )));
+        }
+        let url = ran.out().to_string();
+        if url.is_empty() {
+            return Err(Halt::Halted(format!(
+                "opened a PR from {head} into {base} but gh printed nothing to \
+                 read its URL back"
+            )));
+        }
+        Ok(url)
+    }
+
+    async fn merge_pr(&self, pr_ref: &str) -> Outcome<()> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "merge".to_string(),
+                pr_ref.to_string(),
+                "--rebase".to_string(),
+            ])
+            .await?;
+        if ran.ok() {
+            return Ok(());
+        }
+        Err(Halt::Halted(format!(
+            "GitHub refused to merge {pr_ref}: {}. Nothing is retried and \
+             nothing is undone here — a partially applied change is easier to \
+             finish by hand than to guess.",
+            ran.why()
+        )))
+    }
+
+    async fn pr_checks_green(&self, pr_ref: &str) -> Outcome<bool> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "checks".to_string(),
+                pr_ref.to_string(),
+                "--json".to_string(),
+                "state".to_string(),
+            ])
+            .await?;
+        // `gh pr checks` exits non-zero whenever a check is pending or
+        // failing — a normal answer, not a failed read. Success is read from
+        // the JSON body, which is printed either way.
+        if ran.out().is_empty() {
+            return Err(Halt::Halted(format!(
+                "could not read CI status for {pr_ref} — {}",
+                ran.why()
+            )));
+        }
+        let rows: Vec<Value> = serde_json::from_str(ran.out())
+            .map_err(|e| Halt::Halted(format!("unreadable CI status for {pr_ref}: {e}")))?;
+        Ok(checks_are_green(&rows))
+    }
+
+    async fn open_prs_labelled(&self, label: &str) -> Outcome<Vec<Pr>> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "list".to_string(),
+                "--label".to_string(),
+                label.to_string(),
+                "--state".to_string(),
+                "open".to_string(),
+                "--json".to_string(),
+                PR_FIELDS.to_string(),
+            ])
+            .await?;
+        if !ran.ok() {
+            return Err(Halt::Failed(format!(
+                "cannot list the open PRs carrying {label} — {}",
+                ran.why()
+            )));
+        }
+        let payload: Value = serde_json::from_str(ran.out()).map_err(|e| {
+            Halt::Failed(format!("cannot list the open PRs carrying {label} — {e}"))
+        })?;
+        Ok(rows_of(&payload, &format!("open PRs carrying {label}"))?
+            .iter()
+            .map(pr_from)
+            .collect())
+    }
+
+    async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "checks".to_string(),
+                pr_ref.to_string(),
+                "--json".to_string(),
+                "name,state,link".to_string(),
+            ])
+            .await?;
+        // Same contract as `pr_checks_green`: a non-zero exit is how `gh`
+        // reports "something is pending or failing", which is precisely the
+        // answer being asked for. Only an empty body is unreadable.
+        if ran.out().is_empty() {
+            return Err(Halt::Halted(format!(
+                "could not read CI status for {pr_ref} — {}",
+                ran.why()
+            )));
+        }
+        let rows: Vec<Value> = serde_json::from_str(ran.out())
+            .map_err(|e| Halt::Halted(format!("unreadable CI status for {pr_ref}: {e}")))?;
+        Ok(failing_checks(&rows))
     }
 }
 
@@ -981,8 +1137,8 @@ mod tests {
 
     // --- init-repo: a 404 must never collapse into an ordinary failure ------
 
-    fn ran(code: i32, stderr: &str) -> process::Ran {
-        process::Ran {
+    fn ran(code: i32, stderr: &str) -> Ran {
+        Ran {
             code: Some(code),
             stdout: String::new(),
             stderr: stderr.to_string(),
@@ -1001,5 +1157,79 @@ mod tests {
         // already correct.
         assert!(!is_404(&ran(1, "gh: Bad credentials (HTTP 401)")));
         assert!(!is_404(&ran(1, "(nothing on stderr)")));
+    }
+
+    // --- checks_are_green ----------------------------------------------------
+
+    #[test]
+    fn every_check_succeeding_is_green() {
+        let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "SUCCESS"})];
+        assert!(checks_are_green(&rows));
+    }
+
+    #[test]
+    fn one_failing_check_is_not_green() {
+        let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "FAILURE"})];
+        assert!(!checks_are_green(&rows));
+    }
+
+    #[test]
+    fn one_pending_check_is_not_green() {
+        let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "PENDING"})];
+        assert!(!checks_are_green(&rows));
+    }
+
+    #[test]
+    fn no_checks_at_all_is_not_green() {
+        // Proof CI ran is the point, not the absence of a reason to refuse.
+        assert!(!checks_are_green(&[]));
+    }
+
+    // --- failing_checks ------------------------------------------------------
+
+    #[test]
+    fn only_the_concluded_failures_are_listed_with_their_link() {
+        let rows = vec![
+            json!({"name": "ci", "state": "FAILURE", "link": "https://x/1"}),
+            json!({"name": "fmt", "state": "SUCCESS", "link": "https://x/2"}),
+        ];
+        assert_eq!(
+            failing_checks(&rows),
+            ["ci — FAILURE — https://x/1".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_pending_check_is_not_a_failure_to_repair() {
+        // The distinction this function exists for: paying a repair session
+        // while CI is still running fixes nothing and costs the same.
+        for state in ["PENDING", "QUEUED", "IN_PROGRESS", "SKIPPED", "NEUTRAL"] {
+            let rows = vec![json!({"name": "ci", "state": state})];
+            assert!(
+                failing_checks(&rows).is_empty(),
+                "{state} must not read as a failure"
+            );
+        }
+    }
+
+    #[test]
+    fn every_way_a_run_can_break_is_a_failure() {
+        for state in FAILED_STATES {
+            let rows = vec![json!({"name": "ci", "state": state})];
+            assert_eq!(failing_checks(&rows).len(), 1, "{state} must read as one");
+        }
+    }
+
+    #[test]
+    fn a_failure_without_a_link_or_a_name_still_says_something() {
+        let rows = vec![json!({"state": "FAILURE"})];
+        assert_eq!(failing_checks(&rows), ["a check — FAILURE".to_string()]);
+    }
+
+    #[test]
+    fn no_checks_at_all_means_nothing_to_repair() {
+        // Unlike `checks_are_green`, where an empty list refuses: there is
+        // no broken run to send a session at.
+        assert!(failing_checks(&[]).is_empty());
     }
 }

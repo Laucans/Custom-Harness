@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::domain::breaker;
+
 /// The level at which a stop deserves to be logged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -50,12 +52,16 @@ impl Halt {
     }
 
     /// How the line announces itself in the log (`STOP`, `FAILED`, `QUOTA`).
+    ///
+    /// The same word lands in the ledger's `outcome` column, which
+    /// [`breaker`](crate::domain::breaker) reads back to count identical
+    /// failures — hence the shared constants rather than literals here.
     #[must_use]
     pub const fn prefix(&self) -> &'static str {
         match self {
-            Self::Halted(_) | Self::Unreadable(_) => "STOP",
-            Self::Failed(_) => "FAILED",
-            Self::Quota(_) => "QUOTA",
+            Self::Halted(_) | Self::Unreadable(_) => breaker::STOP,
+            Self::Failed(_) => breaker::FAILED,
+            Self::Quota(_) => breaker::QUOTA,
         }
     }
 

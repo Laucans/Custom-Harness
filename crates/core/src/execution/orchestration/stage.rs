@@ -8,12 +8,12 @@ use std::rc::Rc;
 
 use async_trait::async_trait;
 
-use crate::adapters::agent::{SessionFactory, SessionSpec};
 use crate::domain::{Outcome, Verdict};
 use crate::execution::action::kinds::{Action, Open, SessionAction};
 use crate::execution::checks::gate::Gate;
 use crate::execution::data::context::Context;
 use crate::execution::traits::Executable;
+use crate::ports::agent::{SessionFactory, SessionSpec};
 
 /// The two forms a Stage can take.
 ///
@@ -91,17 +91,17 @@ impl<S> Executable<S> for Stage<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::agent::Reply;
     use crate::domain::Halt;
     use crate::execution::checks::gate::Gate;
     use crate::execution::data::context::Settings;
     use crate::execution::traits::{Guarded, Verification};
+    use crate::ports::agent::Reply;
     use crate::traces::Logbook;
 
     struct FakeSession;
 
     #[async_trait(?Send)]
-    impl crate::adapters::agent::Session for FakeSession {
+    impl crate::ports::agent::Session for FakeSession {
         async fn ask(&mut self, prompt: &str) -> Outcome<Reply> {
             Ok(Reply {
                 text: format!("answered {prompt}"),
@@ -121,7 +121,7 @@ mod tests {
         async fn open(
             &self,
             _spec: &SessionSpec,
-        ) -> Outcome<Box<dyn crate::adapters::agent::Session>> {
+        ) -> Outcome<Box<dyn crate::ports::agent::Session>> {
             Ok(Box::new(FakeSession))
         }
     }

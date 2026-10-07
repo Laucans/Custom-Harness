@@ -1,4 +1,4 @@
-//! The summary comment: assembled, saved to disk, then posted.
+//! The summary comment: assembled, saved through the disk port, then posted.
 //!
 //! Written before posting: if `gh` fails, the text still exists and the error
 //! message can say where — two paid passes don't vanish because a network call failed.
@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::review_ledger::ReviewLedger;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Action, Context};
+use harness_core::ports::shell::disk::Disk;
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::review::ReviewCosts;
 
 use crate::pr_review::data::notes;
 use crate::pr_review::data::state::ReviewState;
@@ -22,11 +23,15 @@ use crate::pr_review::data::state::ReviewState;
 pub struct Publish {
     /// What posts the comment.
     pub gh: Rc<dyn GitHub>,
+    /// What the review already cost, for the footer.
+    pub costs: Rc<dyn ReviewCosts>,
+    /// Where the comment is written before being posted.
+    pub disk: Rc<dyn Disk>,
     /// The summary stage name, where its text is stored in `ctx.results`.
     /// Received from the table rather than hardcoded here: two literals would
     /// desynchronize by posting an empty comment.
     pub brief: String,
-    /// Where the comment is saved and the ledger lives.
+    /// The folder the comment file is written into.
     pub review_dir: PathBuf,
     /// `--no-inline`, for the footer.
     pub no_inline: bool,
@@ -40,7 +45,7 @@ pub struct Publish {
     ///
     /// A function pointer, not a direct clock call: neither `harness-core`
     /// nor the workflows carry a time dependency, as
-    /// `adapters::store::spending` already documents — it's the launcher
+    /// `ports::store::spending` already documents — it's the launcher
     /// that knows the time and supplies it here.
     pub now: fn() -> String,
 }
@@ -68,8 +73,7 @@ impl Action<ReviewState> for Publish {
             .map(|reply| reply.text.clone())
             .unwrap_or_default();
 
-        let ledger = ReviewLedger::new(&self.review_dir.join("costs.tsv"));
-        let cost = ledger.cost_of(&pr.num)?;
+        let cost = self.costs.cost_of(&pr.num)?;
         let path = self.review_dir.join(format!("{}-comment.md", pr.num));
         let stamp = (self.now)();
         let footer = notes::footer(
@@ -83,14 +87,8 @@ impl Action<ReviewState> for Publish {
         let full = notes::comment(&stamp, &body, &footer);
         // Written before posting: if `gh` fails, the text still exists and the
         // error message can say where.
-        std::fs::create_dir_all(&self.review_dir).map_err(|e| {
-            Halt::Failed(format!(
-                "failed to create {}: {e}",
-                self.review_dir.display()
-            ))
-        })?;
-        std::fs::write(&path, &full)
-            .map_err(|e| Halt::Failed(format!("failed to write {}: {e}", path.display())))?;
+        self.disk.create_dir_all(&self.review_dir)?;
+        self.disk.write_to_string(&path, &full)?;
 
         if let Err(why) = self.gh.post_pr_comment(&pr.num, &path).await {
             return Err(Halt::Failed(format!(
@@ -115,17 +113,17 @@ impl Action<ReviewState> for Publish {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::fake_disk::FakeDisk;
     use crate::common::fake_github::{FakeGitHub, Wrote};
-    use harness_core::adapters::agent::Reply;
+    use crate::pr_review::ports::fake::Free;
     use harness_core::domain::{Pr, Spend};
     use harness_core::execution::Settings;
+    use harness_core::ports::agent::Reply;
     use harness_core::traces::Logbook;
 
+    /// A folder that is never created: the disk is a fake, and a path is data.
     fn dir(name: &str) -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("harness-pr-publish-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        path
+        PathBuf::from("/reviews").join(name)
     }
 
     fn ctx_with_brief(text: &str) -> Context<ReviewState> {
@@ -158,8 +156,11 @@ mod tests {
     async fn the_comment_is_written_to_disk_then_posted() {
         let review_dir = dir("writes-then-posts");
         let gh = Rc::new(FakeGitHub::default());
+        let disk = Rc::new(FakeDisk::default());
         let publish = Publish {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            costs: Rc::new(Free),
+            disk: Rc::clone(&disk) as Rc<dyn Disk>,
             brief: "brief".to_string(),
             review_dir: review_dir.clone(),
             no_inline: false,
@@ -172,7 +173,9 @@ mod tests {
         publish.run(&mut context).await.expect("posted");
 
         let path = review_dir.join("32-comment.md");
-        let text = std::fs::read_to_string(&path).expect("written to disk");
+        let text = disk
+            .written_to(&path)
+            .expect("written through the disk port");
         assert!(text.contains("pass 2 notes"));
         assert!(text.starts_with(notes::MARKER));
 
@@ -183,7 +186,6 @@ mod tests {
                 path.display().to_string()
             )]
         );
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 
     #[tokio::test]
@@ -193,8 +195,11 @@ mod tests {
             broken: Some(Halt::Failed("network down".to_string())),
             ..FakeGitHub::default()
         });
+        let disk = Rc::new(FakeDisk::default());
         let publish = Publish {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            costs: Rc::new(Free),
+            disk: Rc::clone(&disk) as Rc<dyn Disk>,
             brief: "brief".to_string(),
             review_dir: review_dir.clone(),
             no_inline: false,
@@ -207,16 +212,18 @@ mod tests {
         let err = publish.run(&mut context).await.expect_err("must fail");
         assert!(err.reason().contains("gh pr comment 32 --body-file"));
         // Text remains despite posting failure.
-        assert!(review_dir.join("32-comment.md").exists());
-        let _ = std::fs::remove_dir_all(&review_dir);
+        assert!(disk.written_to(&review_dir.join("32-comment.md")).is_some());
     }
 
     #[tokio::test]
     async fn the_footer_names_no_inline_when_the_pass_was_disabled() {
         let review_dir = dir("no-inline-footer");
         let gh = Rc::new(FakeGitHub::default());
+        let disk = Rc::new(FakeDisk::default());
         let publish = Publish {
             gh,
+            costs: Rc::new(Free),
+            disk: Rc::clone(&disk) as Rc<dyn Disk>,
             brief: "brief".to_string(),
             review_dir: review_dir.clone(),
             no_inline: true,
@@ -227,8 +234,9 @@ mod tests {
         };
         let mut context = ctx_with_brief("notes");
         publish.run(&mut context).await.expect("posted");
-        let text = std::fs::read_to_string(review_dir.join("32-comment.md")).expect("written");
+        let text = disk
+            .written_to(&review_dir.join("32-comment.md"))
+            .expect("written");
         assert!(text.contains("line-by-line pass disabled"));
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 }

@@ -18,10 +18,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::lock::Locks;
 use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Context, Executable, Gate, Lock, Round, Workflow};
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::lock::Locks;
 
 use crate::pr_review::data::skip_rules;
 use crate::pr_review::data::state::ReviewState;
@@ -149,6 +149,7 @@ mod tests {
             url: format!("https://github.com/o/r/pull/{num}"),
             state: "OPEN".to_string(),
             draft,
+            labels: Vec::new(),
         }
     }
 

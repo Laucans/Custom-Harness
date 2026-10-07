@@ -11,12 +11,10 @@
 //! unreadable store, `2` a failure, `3` a quota exhausted. Moving them would
 //! be a hidden contract change dressed up as refactoring.
 
+mod adapters;
 mod cli;
-mod dev_loop;
-mod init_repo;
-mod sink;
-mod spending;
-mod tooling;
+mod dispatch;
+mod router;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -40,8 +38,26 @@ async fn main() -> ExitCode {
         }
     };
     match &args.command {
-        Some(cli::Command::InitRepo(sub)) => init_repo::run(sub, &here).await,
-        None => match dev_loop::run(&args.run, &here).await {
+        Some(cli::Command::InitRepo(sub)) => dispatch::init_repo::run(sub, &here).await,
+        Some(cli::Command::Watch(sub)) => match router::run(sub, &here).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(halt) => halt_to_code(&halt),
+        },
+        Some(cli::Command::Doctor(sub)) => {
+            let log = harness_core::traces::Logbook::new(
+                std::rc::Rc::new(adapters::sink::Console)
+                    as std::rc::Rc<dyn harness_core::traces::Sink>,
+                harness_core::traces::Verbosity::Normal,
+            );
+            match dispatch::doctor::treat_by_hand(&here, sub.dry_run, &log).await {
+                Ok(repair) => {
+                    println!("doctor: {}", repair.outcome());
+                    ExitCode::SUCCESS
+                }
+                Err(halt) => halt_to_code(&halt),
+            }
+        }
+        None => match dispatch::dev_loop::run(&args.run, &here).await {
             Ok(ran) => {
                 if let Verdict::NothingLeft(why) = &ran.verdict {
                     println!("{why}");
@@ -49,17 +65,19 @@ async fn main() -> ExitCode {
                 println!("journal : {}", ran.log.display());
                 ExitCode::SUCCESS
             }
-            Err(halt) => {
-                // The prefix and level are those that the scheduler already read.
-                let line = format!("{}: {}", halt.prefix(), halt.reason());
-                match halt.severity() {
-                    Severity::Info => println!("{line}"),
-                    Severity::Warn | Severity::Error => eprintln!("{line}"),
-                }
-                ExitCode::from(u8::try_from(halt.exit_code()).unwrap_or(2))
-            }
+            Err(halt) => halt_to_code(&halt),
         },
     }
+}
+
+/// The prefix and level are those that the scheduler already reads.
+fn halt_to_code(halt: &harness_core::domain::Halt) -> ExitCode {
+    let line = format!("{}: {}", halt.prefix(), halt.reason());
+    match halt.severity() {
+        Severity::Info => println!("{line}"),
+        Severity::Warn | Severity::Error => eprintln!("{line}"),
+    }
+    ExitCode::from(u8::try_from(halt.exit_code()).unwrap_or(2))
 }
 
 /// The repository from which the run is launched.

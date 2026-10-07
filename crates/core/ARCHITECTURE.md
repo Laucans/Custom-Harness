@@ -1,24 +1,34 @@
 # `harness-core` — architecture
 
-The framework: vocabulary, traces, execution shapes, adapters. It names no
-workflow, and Cargo refuses the reverse dependency — see
+The framework: vocabulary, traces, execution shapes, ports, adapters. It names
+no workflow, and Cargo refuses the reverse dependency — see
 [ARCHITECTURE_OVERVIEW.md](../../ARCHITECTURE_OVERVIEW.md) for the crate graph.
+
+The shape is **hexagonal**: `domain` + `execution` + `ports` are the inside,
+`adapters` is the only outside. A port is declared in `ports/` and implemented
+in `adapters/` — never the other way round, and never in the same module.
 
 This file describes the **current** state. Rust rules (lints, errors, `?Send`,
 docs on every `pub`) live in `../../CLAUDE.md`.
 
-## The four top-level modules
+## The five top-level modules
 
 ```
 src/lib.rs            re-exports only — no public item lives here
   domain/             pure vocabulary: no disk, no subprocess, no library
   traces/             the run journal (leaf: imports nothing else from core)
-  adapters/           external dependencies, wrapped
+  ports/              what the inside needs from the outside, as traits
+  adapters/           one implementation per port — the only outside
   execution/          what runs: data, action, checks, orchestration
 ```
 
 `domain` names no workflow even in comments; that is what makes the reverse
 dependency inconceivable rather than merely forbidden.
+
+`domain`, `execution` and `ports` never name a type from `adapters` — a
+dependency that way round is the hexagon leaking, and it is reviewable with
+`grep -rn 'crate::adapters' src/domain src/execution src/ports`, which must
+answer nothing outside a `#[cfg(test)]` block.
 
 ## `domain/` — the vocabulary
 
@@ -28,6 +38,7 @@ dependency inconceivable rather than merely forbidden.
 | `Verdict`, `Outcome<T>` | what an executable returns — `Continue`, `Skip(why)`, `NothingLeft(why)`; `Outcome<T> = Result<T, Halt>`. |
 | `Issue`, `Pr` | the **form** of a tracked item. What a label *means* is a workflow's definition, never here. |
 | `Spend`, `Tokens` | what a turn cost. Every field is `Option`: `None` reads as "not observed", never "zero". |
+| `breaker` | the circuit breaker: `fingerprint` (FNV-1a of a prompt), `trailing_failures`, `tripped`, `LIMIT` = 3, and the `outcome` words `STOP`/`FAILED`/`QUOTA` that `Halt::prefix` returns. Identity is task + stage + **prompt**, which is what lets a reworded issue clear the count with no gesture on the ledger. `QUOTA` is transparent: nothing ran, nothing was billed. |
 | `markers` | the verbal contract — `AGENT_LOOP_OK`, `AGENT_LOOP_STOP`. |
 | `prompts` | the preamble, the `Scope` block, and `splice` — one substitution pass, so values coming back from GitHub can't be re-substituted. `Named`, `Scope`, `Scoped`. |
 | `workspace` | `Strategy`, `Wanted`, `Workspace`. **Two roots**: `root` is the code, `state_root` is the accounting — which is what makes a workspace disposable. Describes only; mounting lives in `execution::provisioning`. |
@@ -40,24 +51,53 @@ dependency inconceivable rather than merely forbidden.
 as it knows nothing of workflows. The sink is injected (the launcher writes to
 console *and* file).
 
+## `ports/` — what the inside needs from the outside
+
+One module per external component, traits only (plus the few values those
+traits exchange). **A port decides, an adapter calls.**
+
+```
+agent         Session, SessionFactory, SessionSpec, Reply
+shell/git     Repo, Repos — reads answer, setup verbs return `Ran`
+shell/github  GitHub — a failed read is never an empty list
+shell/disk    Disk — exists so deletion is testable
+shell/process Ran, last_line — what a shell port hands back
+store/spending    Spending, Entry — implemented in the launcher, not here
+store/lock        Locks — one bearer per name
+store/checkpoint  Checkpoints, Pointer — where a run says what it was doing
+store/review      ReviewCosts — the one *read* of a review's spending
+```
+
+`Sink` ([`traces/`](#traces--the-journal)) is a port too, and stays with
+`Logbook`: it is the journal's own collaborator, not an external component the
+execution layer reaches for.
+
+Two of these are declared here and **not** implemented here: `Spending`, which
+needs a clock, a run id and a machine name — all facts of the launcher — and
+`Sink`. That inversion is what leaves `harness-core` with no dependency on
+time.
+
 ## `adapters/` — the outside, wrapped
 
-One submodule per external component. **A port decides, an adapter calls.**
+One implementation per port, one submodule per external component. Nothing
+outside the launcher names a type from this module.
 
 ```
 agent/    claude_cli   one process per turn, stitched with `--resume`
           rehearsal    the `--dry-run` carrier: returns the prompt, opens nothing
-          (traits)     Session, SessionFactory, SessionSpec, Reply
+          stream_log   the JSON stream, read into `Reply`
 shell/    process      the only place in the crate that spawns a subprocess
-          git          Repo, Repos — every call names the repo with `-C <root>`
-          github       GitHub — issues go through `gh api`, not `gh issue`
-          disk         Disk — exists so deletion is testable
-store/    checkpoint   the resume point: a two-line pointer + one JSONL per flow
+          git          GitCli, GitRepos — every call names the repo with `-C <root>`
+          github       GhCli — issues go through `gh api`, not `gh issue`
+          disk         RealDisk
+store/    checkpoint   Checkpoint: a two-line pointer + one JSONL per flow
           ledger       the cost ledger, frozen header, new columns appended
-          review_ledger  a separate ledger: a review charges per PR, not per round
-          lock         Locks — an atomic `mkdir`, one bearer per name
-          spending     the Spending **port**; its impl lives in the launcher
+          review_ledger  ReviewLedger: a review charges per PR, not per round
+          lock         DirLocks — an atomic `mkdir`
 ```
+
+`ledger` and `error_ledger` carry no port: the launcher writes them and the
+hexagon never reads them, so a trait would be a seam with one side.
 
 Three invariants here are the expensive ones:
 
@@ -149,8 +189,8 @@ exit), nothing is deleted silently, and **a dry-run doesn't clone**.
 ## Where to add what
 
 - a new word with no I/O → `domain/`
-- a new external binary, file or API → `adapters/<family>/`, and only
-  `shell/process.rs` spawns
+- a new external binary, file or API → a trait in `ports/<family>/`, its
+  implementation in `adapters/<family>/`, and only `shell/process.rs` spawns
 - a new shape shared by more than one workflow → `execution/`, in the category
   that answers *does it carry, write, judge, or sequence?*
 - anything that needs a clock, a run id, or a machine name → declare a port

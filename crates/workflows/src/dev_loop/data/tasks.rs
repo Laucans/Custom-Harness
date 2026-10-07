@@ -22,8 +22,8 @@
 //!    because it's in `blocked_by`, like any other dependency — the round's
 //!    human gate disappeared in this rule;
 //! 4. **`harness:ready` commands everything.** An open but not-ready task
-//!    stops the run; it especially does not flip to rollover, which spends an
-//!    opus run opening a roadmap item nobody asked for.
+//!    stops the run; it especially does not read as "nothing left", which
+//!    would wrongly say the milestone is finished.
 //!
 //! Pure business logic: no I/O, no subprocess.
 
@@ -53,6 +53,12 @@ pub fn is_ready(issue: &Issue) -> bool {
 #[must_use]
 pub fn spec_written(issue: &Issue) -> bool {
     issue.has(labels::SPEC_WRITTEN)
+}
+
+/// True if the technical sections are already written in the body.
+#[must_use]
+pub fn tech_written(issue: &Issue) -> bool {
+    issue.has(labels::TECH_WRITTEN)
 }
 
 /// True if the task is delivered and waiting for a merge.
@@ -158,7 +164,7 @@ pub fn agent_tasks(issues: &[Issue]) -> Vec<&Issue> {
     found
 }
 
-/// Open agent tasks — what decides rollover.
+/// Open agent tasks — empty means the milestone has nothing left to run.
 #[must_use]
 pub fn open_agent_tasks(issues: &[Issue]) -> Vec<&Issue> {
     agent_tasks(issues)
@@ -178,9 +184,8 @@ pub fn next_task(issues: &[Issue]) -> Option<&Issue> {
 
 /// Why no task can run, task by task.
 ///
-/// The case this text exists for, not to confuse with rollover: tasks remain
-/// open, so the milestone is not done, so calling `/planner` would pay an opus
-/// run to open another milestone.
+/// The case this text exists for, not to confuse with "nothing left": tasks
+/// remain open, so the milestone is not done — it is only blocked.
 #[must_use]
 pub fn stuck_report(issues: &[Issue]) -> String {
     open_agent_tasks(issues)
@@ -190,53 +195,10 @@ pub fn stuck_report(issues: &[Issue]) -> String {
         .join("\n")
 }
 
-/// Does the PR body declare closing `#number`?
-///
-/// **Requires the entire line**, whereas GitHub accepts the keyword anywhere
-/// in the body. Deliberately stricter, and rightly so: `/code`'s instructions
-/// say to put it on its own line, and reading wider would close an issue on
-/// a sentence mentioning it. Missing a close GitHub would make is fine — the
-/// issue is already closed, and we never reach here.
-///
-/// Hand-written rather than regex: three keywords and a number don't warrant
-/// a dependency, and line-by-line reading says exactly the rule.
-#[must_use]
-pub fn closes(body: &str, number: u64) -> bool {
-    body.lines()
-        .any(|line| closes_on_its_own_line(line, number))
-}
-
-fn closes_on_its_own_line(line: &str, number: u64) -> bool {
-    let trimmed = line.trim_matches(|c| c == ' ' || c == '\t');
-    let lowered = trimmed.to_lowercase();
-    for keyword in ["closes", "fixes", "resolves"] {
-        let Some(rest) = lowered.strip_prefix(keyword) else {
-            continue;
-        };
-        // At least one space or tab between the keyword and the `#`.
-        let rest = rest.trim_start_matches([' ', '\t']);
-        if rest.len() == lowered.len() - keyword.len() {
-            continue;
-        }
-        let Some(digits) = rest.strip_prefix('#') else {
-            continue;
-        };
-        if digits.parse::<u64>() == Ok(number) {
-            return true;
-        }
-    }
-    false
-}
-
-/// The first PR in the list that declares closing `#number`.
-///
-/// Here, not in the adapter: `closes` is the convention given to `/code`,
-/// not a GitHub API property. The adapter returns merged PRs, this module
-/// decides which is proof of delivery.
-#[must_use]
-pub fn first_closing(prs: &[Issue], number: u64) -> Option<&Issue> {
-    prs.iter().find(|pr| closes(&pr.body, number))
-}
+/// What counts as proof a task shipped — moved to
+/// [`crate::common::delivery`] once the milestone merge needed the same
+/// reading, re-exported here so the loop keeps naming it where it reads it.
+pub use crate::common::delivery::{closes, first_closing};
 
 #[cfg(test)]
 mod tests {

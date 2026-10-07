@@ -21,4 +21,5 @@
 pub mod adapters;
 pub mod domain;
 pub mod execution;
+pub mod ports;
 pub mod traces;

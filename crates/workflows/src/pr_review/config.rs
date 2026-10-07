@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use harness_core::adapters::agent::SessionSpec;
+use harness_core::ports::agent::SessionSpec;
 
 /// The settings for a review.
 pub struct Config {
@@ -31,7 +31,7 @@ pub(crate) mod fake {
 
     use std::path::PathBuf;
 
-    use harness_core::adapters::agent::SessionSpec;
+    use harness_core::ports::agent::SessionSpec;
 
     use super::Config;
 

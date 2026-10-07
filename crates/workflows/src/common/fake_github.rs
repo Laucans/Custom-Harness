@@ -5,13 +5,13 @@
 //! adapter; nothing mocks at the call site" — and what makes it possible to
 //! exercise rules without network.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::github::GitHub;
 use harness_core::domain::{Halt, Issue, Outcome, Pr};
+use harness_core::ports::shell::github::GitHub;
 
 /// What the fake recorded as a write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +32,20 @@ pub enum Wrote {
     CreatedLabel(String, String, String),
     /// A branch created: name, sha.
     CreatedBranch(String, String),
+    /// A branch made the default.
+    DefaultBranch(String),
+    /// A branch protected.
+    ProtectedBranch(String),
+    /// An issue created: title, body, labels.
+    CreatedIssue(String, String, Vec<String>),
+    /// A sub-issue link: parent, child.
+    SubIssueLink(u64, u64),
+    /// A `blocked_by` link: the blocked issue, its blocker.
+    BlockedByLink(u64, u64),
+    /// A pull request created: head, base, title.
+    CreatedPr(String, String, String),
+    /// A pull request merged, by ref.
+    MergedPr(String),
 }
 
 /// An in-memory GitHub.
@@ -62,10 +76,32 @@ pub struct FakeGitHub {
     /// a 404, not a refusal, since "the file is absent" is itself a valid
     /// test scenario.
     pub files: HashMap<(String, String), String>,
+    /// Makes `protect_branch` refuse, as a free private repo does.
+    pub protection_refused: bool,
     /// `default_branch`'s answer. `None` refuses — the test must set it up.
     pub default_branch_name: Option<String>,
     /// `can_push`'s answer. `None` refuses — the test must set it up.
     pub can_push_answer: Option<bool>,
+    /// The number `create_issue` assigns next. Sequential from 1, like
+    /// GitHub's own issue numbering.
+    pub next_issue_number: Cell<u64>,
+    /// The number `create_pr` assigns next, folded into the URL it returns.
+    pub next_pr_number: Cell<u64>,
+    /// `pr_checks_green` answers, by PR ref. An absent key refuses — the
+    /// test must set up exactly what it reads.
+    pub pr_checks: HashMap<String, bool>,
+    /// What `open_prs_labelled` returns, by label. An absent key is an empty
+    /// list: "no PR carries this label" is itself a scenario worth writing.
+    pub prs_labelled: HashMap<String, Vec<Pr>>,
+    /// What `pr_failing_checks` returns, by PR ref. An absent key refuses —
+    /// the distinction between "nothing failed" and "this test forgot to say"
+    /// is exactly what a repair decision turns on.
+    pub failing_checks: HashMap<String, Vec<String>>,
+    /// Labels whose add and remove refuse, as `gh` does for a label the
+    /// repository never created. Narrower than [`Self::broken`] on purpose: a
+    /// caller that must survive one label failing still needs every other
+    /// write to work.
+    pub refused_labels: RefCell<Vec<String>>,
 }
 
 impl FakeGitHub {
@@ -73,6 +109,22 @@ impl FakeGitHub {
         self.broken
             .as_ref()
             .map_or(Ok(()), |halt| Err(halt.clone()))
+    }
+
+    /// Makes this label's add and remove refuse, as a label absent from the
+    /// repository does.
+    pub fn refuse_label(&self, label: &str) {
+        self.refused_labels.borrow_mut().push(label.to_string());
+    }
+
+    /// Whether this label was set to refuse.
+    fn refuses(&self, label: &str) -> Outcome<()> {
+        if self.refused_labels.borrow().iter().any(|l| l == label) {
+            return Err(Halt::Failed(format!(
+                "'{label}' not found in the repository's labels"
+            )));
+        }
+        Ok(())
     }
 
     /// The writes, in order.
@@ -156,6 +208,7 @@ impl GitHub for FakeGitHub {
     }
 
     async fn add_label(&self, number: u64, label: &str) -> Outcome<()> {
+        self.refuses(label)?;
         self.wrote
             .borrow_mut()
             .push(Wrote::Label(number, label.to_string()));
@@ -163,6 +216,7 @@ impl GitHub for FakeGitHub {
     }
 
     async fn remove_label(&self, number: u64, label: &str) -> Outcome<()> {
+        self.refuses(label)?;
         self.wrote
             .borrow_mut()
             .push(Wrote::Unlabelled(number, label.to_string()));
@@ -247,6 +301,23 @@ impl GitHub for FakeGitHub {
             .ok_or_else(|| Halt::Failed("default_branch not set up in this test".to_string()))
     }
 
+    async fn set_default_branch(&self, branch: &str) -> Outcome<()> {
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::DefaultBranch(branch.to_string()));
+        Ok(())
+    }
+
+    async fn protect_branch(&self, branch: &str) -> Outcome<()> {
+        if self.protection_refused {
+            return Err(Halt::Halted("protection is not offered".to_string()));
+        }
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::ProtectedBranch(branch.to_string()));
+        Ok(())
+    }
+
     async fn can_push(&self) -> Outcome<bool> {
         self.ok()?;
         self.can_push_answer
@@ -259,5 +330,74 @@ impl GitHub for FakeGitHub {
             .files
             .get(&(path.to_string(), git_ref.to_string()))
             .cloned())
+    }
+
+    async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<u64> {
+        self.ok()?;
+        self.wrote.borrow_mut().push(Wrote::CreatedIssue(
+            title.to_string(),
+            body.to_string(),
+            labels.iter().map(|l| (*l).to_string()).collect(),
+        ));
+        let number = self.next_issue_number.get() + 1;
+        self.next_issue_number.set(number);
+        Ok(number)
+    }
+
+    async fn create_sub_issue_link(&self, parent: u64, child: u64) -> Outcome<()> {
+        self.ok()?;
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::SubIssueLink(parent, child));
+        Ok(())
+    }
+
+    async fn add_blocked_by(&self, number: u64, blocker: u64) -> Outcome<()> {
+        self.ok()?;
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::BlockedByLink(number, blocker));
+        Ok(())
+    }
+
+    async fn create_pr(&self, head: &str, base: &str, title: &str, _body: &str) -> Outcome<String> {
+        self.ok()?;
+        self.wrote.borrow_mut().push(Wrote::CreatedPr(
+            head.to_string(),
+            base.to_string(),
+            title.to_string(),
+        ));
+        let number = self.next_pr_number.get() + 1;
+        self.next_pr_number.set(number);
+        Ok(format!("https://github.com/owner/repo/pull/{number}"))
+    }
+
+    async fn merge_pr(&self, pr_ref: &str) -> Outcome<()> {
+        self.ok()?;
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::MergedPr(pr_ref.to_string()));
+        Ok(())
+    }
+
+    async fn pr_checks_green(&self, pr_ref: &str) -> Outcome<bool> {
+        self.ok()?;
+        self.pr_checks.get(pr_ref).copied().ok_or_else(|| {
+            Halt::Failed(format!("pr_checks_green({pr_ref}) not set up in this test"))
+        })
+    }
+
+    async fn open_prs_labelled(&self, label: &str) -> Outcome<Vec<Pr>> {
+        self.ok()?;
+        Ok(self.prs_labelled.get(label).cloned().unwrap_or_default())
+    }
+
+    async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
+        self.ok()?;
+        self.failing_checks.get(pr_ref).cloned().ok_or_else(|| {
+            Halt::Failed(format!(
+                "pr_failing_checks({pr_ref}) not set up in this test"
+            ))
+        })
     }
 }

@@ -11,8 +11,8 @@
 
 use async_trait::async_trait;
 
-use crate::adapters::agent::{Reply, Session, SessionFactory, SessionSpec};
 use crate::domain::{Outcome, Spend};
+use crate::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
 use crate::traces::Logbook;
 
 /// Opens sessions that are not really sessions.

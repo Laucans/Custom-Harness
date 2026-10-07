@@ -20,6 +20,7 @@ use harness_core::execution::Gate;
 
 use crate::common::explore;
 use crate::refinement::config::Config;
+use crate::refinement::data::phase::Phase;
 use crate::refinement::data::state::RefinementState;
 use crate::refinement::orchestration::round;
 use crate::refinement::orchestration::workflow::RefinementRun;
@@ -28,6 +29,8 @@ use crate::refinement::ports::Ports;
 /// What an invocation requests — distinct from [`Ports`] and [`Config`],
 /// which are infrastructure rather than a request.
 pub struct Request {
+    /// Which half of the refinement to run.
+    pub phase: Phase,
     /// The issue to refine.
     pub issue: u64,
     /// What a human asked for this round, verbatim.
@@ -58,7 +61,8 @@ pub fn build(
         issue: request.issue,
         context: request.context,
         force: request.force,
-        round: round::build(ports, config, explore_ports, explore_config),
+        phase: request.phase,
+        round: round::build(ports, config, explore_ports, explore_config, request.phase),
     }
 }
 
@@ -77,6 +81,7 @@ mod tests {
             &explore::fake::ports(),
             &explore::fake::config(config.artifacts_dir.clone()),
             Request {
+                phase: Phase::Business,
                 issue: 25,
                 context: String::new(),
                 force: false,
@@ -85,6 +90,6 @@ mod tests {
         );
         assert_eq!(built.issue_key, "25");
         assert_eq!(built.remaining.get(), 1, "a run is one round");
-        assert_eq!(built.round.stages.len(), 10, "the map, then the table");
+        assert_eq!(built.round.stages.len(), 9, "the map, then the table");
     }
 }

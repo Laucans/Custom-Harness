@@ -28,6 +28,13 @@ pub const READY: &str = "harness:ready";
 /// The SPEC has been written into the issue body.
 pub const SPEC_WRITTEN: &str = "harness:spec-written";
 
+/// The technical sections have been written into the issue body.
+///
+/// Set by the technical refinement (or, when nobody asked for one, by the
+/// dev loop's own technical stage) — the loop skips that stage once it is
+/// there.
+pub const TECH_WRITTEN: &str = "harness:tech-written";
+
 /// Delivered on the integration branch, not yet merged into `main`.
 ///
 /// The issue stays **open**: closing it would say the work is integrated,
@@ -41,17 +48,69 @@ pub const WAITING_MERGE: &str = "harness:waiting-merge";
 /// once the round is written.
 pub const REFINEMENT: &str = "harness:refinement";
 
-/// The seven the loop requires.
+/// A technical refinement round remains to be done on this issue.
+///
+/// Same gesture as [`REFINEMENT`], for the sections that need the code:
+/// `Technical` and `Technical Implementation Plan`. Without it, the dev loop
+/// writes them itself in a stage of its own.
+pub const TECH_REFINEMENT: &str = "harness:tech-refinement";
+
+/// The refinement's advice says a human has a decision to make on this issue.
+///
+/// Posed — or removed — by the **business** refinement, from the same reading
+/// of the advice that writes the comment: see
+/// [`advice::Read::wants_a_human`](crate::refinement::data::advice::Read::wants_a_human).
+/// Derived state, re-decided on every round, so a later round that concludes
+/// `no` clears it rather than leaving the board claiming a blocker that is gone.
+///
+/// **What it is for**: `gh issue list --label harness:needs-decision` answers
+/// "what is waiting on me" in one call. The advice already said so in a comment,
+/// but a comment is only found by opening the issue — on a board of twenty
+/// tasks, that is twenty issues to open.
+///
+/// **It is not read by any workflow**, hence not in [`LOOP`]: nothing is gated
+/// on it, and a task carrying it still runs the moment [`READY`] is set. The
+/// human removes it by hand when they have answered — the same gesture as
+/// adding [`READY`], which is how they say they decided.
+pub const NEEDS_DECISION: &str = "harness:needs-decision";
+
+/// This milestone has already been split into tasks.
+///
+/// Posed by the split workflow once it has opened a milestone's tasks, in
+/// the same breath as removing `READY` — a re-poll must not re-split a
+/// milestone it already saw. Removing `TRIGGERED` by hand is the resplit
+/// gesture. Not read by `dev_loop`, hence not in `LOOP`.
+pub const TRIGGERED: &str = "harness:triggered";
+
+/// This PR is waiting for an agent review.
+///
+/// Posed on a **pull request**, by a human or by whatever opened it. It is a
+/// request, not state the harness clears: a PR that already carries a
+/// review stops being offered on its own, because the review's own skip
+/// rules say so. Not read by `dev_loop`, hence not in `LOOP`.
+pub const TO_REVIEW: &str = "harness:to-review";
+
+/// This PR's red CI is worth one repair attempt.
+///
+/// Posed on a **pull request**. It authorizes exactly one attempt: the
+/// repair consumes it before paying for anything, so a PR that cannot be
+/// fixed does not burn one session per poll. Re-posing it by hand is the
+/// gesture that asks for another attempt. Not read by `dev_loop`, hence not
+/// in `LOOP`.
+pub const PR_FIX: &str = "harness:pr-fix";
+
+/// The eight the loop requires.
 ///
 /// `REFINEMENT` is not among them: the loop does not read it, and its
 /// preflight would refuse to run without it.
-pub const LOOP: [&str; 7] = [
+pub const LOOP: [&str; 8] = [
     ROADMAP,
     MILESTONE,
     AGENT,
     HUMAN,
     READY,
     SPEC_WRITTEN,
+    TECH_WRITTEN,
     WAITING_MERGE,
 ];
 
@@ -65,12 +124,12 @@ pub struct Label {
     pub description: &'static str,
 }
 
-/// The eight labels `init-repo` creates when they are missing.
+/// The fourteen labels `init-repo` creates when they are missing.
 ///
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 8] = [
+pub const ALL: [Label; 14] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -102,6 +161,11 @@ pub const ALL: [Label; 8] = [
         description: "The SPEC has been written into the issue body",
     },
     Label {
+        name: TECH_WRITTEN,
+        color: "c2e0c6",
+        description: "The technical sections have been written into the issue body",
+    },
+    Label {
         name: WAITING_MERGE,
         color: "bfd4f2",
         description: "Delivered on the integration branch, not yet merged",
@@ -110,6 +174,31 @@ pub const ALL: [Label; 8] = [
         name: REFINEMENT,
         color: "d4c5f9",
         description: "A refinement round remains to be done",
+    },
+    Label {
+        name: TECH_REFINEMENT,
+        color: "d4c5f9",
+        description: "A technical refinement round remains to be done",
+    },
+    Label {
+        name: NEEDS_DECISION,
+        color: "ee0701",
+        description: "The refinement's advice says a human has a decision to make",
+    },
+    Label {
+        name: TRIGGERED,
+        color: "e99695",
+        description: "This milestone has already been split into tasks",
+    },
+    Label {
+        name: TO_REVIEW,
+        color: "006b75",
+        description: "This PR is waiting for an agent review",
+    },
+    Label {
+        name: PR_FIX,
+        color: "b60205",
+        description: "This PR's red CI is worth one repair attempt",
     },
 ];
 
@@ -128,6 +217,7 @@ mod tests {
             HUMAN,
             READY,
             SPEC_WRITTEN,
+            TECH_WRITTEN,
             WAITING_MERGE,
         ] {
             assert!(LOOP.contains(&label), "{label} missing from LOOP");
@@ -143,8 +233,14 @@ mod tests {
             HUMAN,
             READY,
             SPEC_WRITTEN,
+            TECH_WRITTEN,
             WAITING_MERGE,
             REFINEMENT,
+            TECH_REFINEMENT,
+            NEEDS_DECISION,
+            TRIGGERED,
+            TO_REVIEW,
+            PR_FIX,
         ];
         for label in all {
             assert!(label.starts_with("harness:"), "{label} outside namespace");
@@ -158,12 +254,35 @@ mod tests {
     }
 
     #[test]
-    fn every_const_the_loop_or_refinement_names_is_in_all() {
+    fn every_const_the_loop_or_another_workflow_names_is_in_all() {
         let names: Vec<&str> = ALL.iter().map(|l| l.name).collect();
         for label in LOOP {
             assert!(names.contains(&label), "{label} missing from ALL");
         }
-        assert!(names.contains(&REFINEMENT), "{REFINEMENT} missing from ALL");
+        // The six outside `LOOP`: `init-repo` still has to create them, or
+        // the workflow that writes one would fail on a label GitHub does not
+        // know — and for the ones a workflow reads, an empty list reads as
+        // "nothing to do".
+        for label in [
+            REFINEMENT,
+            TECH_REFINEMENT,
+            NEEDS_DECISION,
+            TRIGGERED,
+            TO_REVIEW,
+            PR_FIX,
+        ] {
+            assert!(names.contains(&label), "{label} missing from ALL");
+        }
+    }
+
+    #[test]
+    fn the_two_pull_request_labels_stay_out_of_the_loops_requirements() {
+        // `dev_loop`'s preflight demands every label of `LOOP` exist before
+        // it spends anything. A PR label it never reads has no business
+        // blocking a run.
+        for label in [TO_REVIEW, PR_FIX] {
+            assert!(!LOOP.contains(&label), "{label} must not be in LOOP");
+        }
     }
 
     #[test]

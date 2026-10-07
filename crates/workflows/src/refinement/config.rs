@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use harness_core::adapters::agent::SessionSpec;
+use harness_core::ports::agent::SessionSpec;
 
 /// The settings for a refinement round.
 ///
@@ -37,6 +37,8 @@ pub struct Config {
     pub router: SessionSpec,
     /// Model and effort for the coherence pass.
     pub coherence: SessionSpec,
+    /// Model and effort for the advice on the technical refinement.
+    pub advice: SessionSpec,
     /// This issue's artifacts folder — same files the repository map drops
     /// there, resolved to the current round's name.
     pub artifacts_dir: PathBuf,
@@ -48,7 +50,7 @@ pub(crate) mod fake {
 
     use std::path::PathBuf;
 
-    use harness_core::adapters::agent::SessionSpec;
+    use harness_core::ports::agent::SessionSpec;
 
     use super::Config;
 
@@ -73,6 +75,7 @@ pub(crate) mod fake {
             plan: spec(),
             router: spec(),
             coherence: spec(),
+            advice: spec(),
         }
     }
 

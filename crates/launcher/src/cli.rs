@@ -39,6 +39,75 @@ pub enum Command {
     /// Point the harness at a repository: labels, the integration branch, a
     /// read-only audit, and the link written to `.env.local`.
     InitRepo(InitRepoArgs),
+    /// Poll on an interval, decide which workflow is ready to run next, and
+    /// dispatch to it.
+    Watch(WatchArgs),
+    /// Read why the harness last stopped and repair what can be repaired.
+    ///
+    /// The same code `watch` runs on its next tick after a failure. By hand,
+    /// it answers "why is the loop not moving" and unblocks it.
+    Doctor(DoctorArgs),
+}
+
+/// `harness doctor`'s own arguments.
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Say what would be repaired, change nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// `harness watch`'s own arguments.
+///
+/// Booleans, for the same reason as [`RunArgs`]: a flag is present or absent,
+/// and that is what a command line is.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    /// Seconds between two polls.
+    #[arg(long, default_value_t = 30)]
+    pub interval: u64,
+
+    /// One pass, then exit — for a manual check or a test.
+    #[arg(long)]
+    pub once: bool,
+
+    /// Read everything, write nothing — propagated to whichever workflow a
+    /// tick dispatches to.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// The target repository. Empty: this checkout's own `origin`.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
+
+    /// The branch `dev_loop` works on, and the one `planner`/`split`/
+    /// `refinement` mount their shared read-only checkout at.
+    #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
+    pub branch: String,
+
+    /// Passed to `claude -p`.
+    #[arg(long, env = "PERMISSION_MODE", default_value = "bypassPermissions")]
+    pub permission_mode: String,
+
+    /// Do not repair after a failed tick.
+    ///
+    /// The repair is on by default: the failure it treats — a quota that ran
+    /// out mid-session — is ordinary, and left alone it deadlocks every later
+    /// tick. This flag is for watching that deadlock happen on purpose.
+    #[arg(long)]
+    pub no_doctor: bool,
+
+    /// Let a dispatched `dev_loop` overwrite local work left in the workspace.
+    ///
+    /// Without it, a session cut mid-work — a quota that runs out is the
+    /// ordinary case — leaves uncommitted files behind, and **every later
+    /// tick refuses on them**: the gate names `--force-reset` as the gesture,
+    /// and an unattended watch has no way to make it. The work discarded is
+    /// the harness's own unfinished attempt, in a clone it owns, and the next
+    /// session redoes it from the issue.
+    #[arg(long)]
+    pub force_reset: bool,
 }
 
 /// `harness init-repo <url>`'s own arguments.
@@ -117,17 +186,30 @@ pub struct RunArgs {
     #[arg(long)]
     pub restart: bool,
 
+    /// Build no signature index, so prompts carry no `PUBLIC SIGNATURES` block.
+    ///
+    /// The control arm of the experiment the index has not yet passed: run the
+    /// same task twice, once with and once without, and compare how the session
+    /// reads the files its plan names. Everything else — the configuration
+    /// digest, the scope, the model — stays identical.
+    ///
+    /// Also the escape hatch if `tsc` ever misbehaves on a checkout: the index is
+    /// an optimisation, and a run must never depend on one.
+    #[arg(long, env = "NO_SIGNATURES", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub no_signatures: bool,
+
+    /// Start a dev phase even when the rate-limit window is nearly spent.
+    ///
+    /// The reserve exists because an interrupted stage is expensive: on #64 a
+    /// window that ran out 60 turns into `code` cost 4,32 $ that delivered
+    /// nothing. Refused sessions themselves are free. Set this when you would
+    /// rather risk the interruption than wait.
+    #[arg(long, env = "IGNORE_QUOTA", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub ignore_quota: bool,
+
     /// Resume the task that the checkpoint designates. Default: yes.
     #[arg(long)]
     pub no_resume: bool,
-
-    /// Wire the rollover stage: when the milestone is done, `/planner` opens
-    /// the next roadmap item.
-    ///
-    /// **Not the default**, and it is a choice: chaining unattended spends an
-    /// opus run and commits the project to a roadmap item no one has read.
-    #[arg(long, env = "ROLLOVER", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
-    pub rollover: bool,
 
     /// Everything, including what a session says in detail.
     #[arg(long, short, conflicts_with = "quiet")]
@@ -207,16 +289,16 @@ impl RunArgs {
 /// An environment boolean, with usual spellings.
 ///
 /// `clap` requires the literal string `true`/`false` for any `bool` field
-/// combined with `env`. The three flags that also write to environment
-/// variables (`ALLOW_DIRTY`, `ROLLOVER`, `KEEP_WORKSPACE`) pass through this
-/// parser rather than `clap`'s bare `bool` type: `num_args = 0..=1` and
-/// `default_missing_value = "true"` keep `--rollover` valid alone on the
-/// command line, and this parser additionally accepts what an environment
-/// variable writes in practice.
+/// combined with `env`. The flags that also write to environment variables
+/// (`ALLOW_DIRTY`, `KEEP_WORKSPACE`) pass through this parser rather than
+/// `clap`'s bare `bool` type: `num_args = 0..=1` and `default_missing_value =
+/// "true"` keep the bare flag valid alone on the command line, and this
+/// parser additionally accepts what an environment variable writes in
+/// practice.
 ///
-/// Empty is false **intentionally**: that is what an unfilled `ROLLOVER=` line
-/// in `.env.local` writes, and it is the most common case — not a typo. A real
-/// typo (`ROLLOVER=flase`) stays refused, for the same reason [`strategy`]
+/// Empty is false **intentionally**: that is what an unfilled line in
+/// `.env.local` writes, and it is the most common case — not a typo. A real
+/// typo (`ALLOW_DIRTY=flase`) stays refused, for the same reason [`strategy`]
 /// refuses rather than falling back to a default: a misspelled variable should
 /// not read as silence.
 fn truthy(text: &str) -> Result<bool, String> {
@@ -265,7 +347,6 @@ mod tests {
             "INTEGRATION_BRANCH",
             "PERMISSION_MODE",
             "ALLOW_DIRTY",
-            "ROLLOVER",
             "WORKSPACE_STRATEGY",
             "WORKSPACE_URL",
             "TARGET_REPO_URL",
@@ -290,8 +371,6 @@ mod tests {
         assert_eq!(cli.run.branch, "main_agent");
         assert_eq!(cli.run.permission_mode, "bypassPermissions");
         assert!(!cli.run.dry_run);
-        // Rollover stays to be wired explicitly: it spends an opus run.
-        assert!(!cli.run.rollover);
         // And no strategy forced on the command line: it is `RunArgs::strategy`
         // that falls back to the domain default, which does not delete anything.
         assert_eq!(cli.run.workspace_strategy, "");
@@ -328,8 +407,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_bool_flag_still_takes_no_value_on_the_command_line() {
-        let cli = Cli::try_parse_from(["harness", "--rollover"]).expect("a bare flag");
-        assert!(cli.run.rollover);
+        let cli = Cli::try_parse_from(["harness", "--allow-dirty"]).expect("a bare flag");
+        assert!(cli.run.allow_dirty);
     }
 
     #[test]
@@ -344,12 +423,12 @@ mod tests {
 
     #[test]
     fn truthy_reads_empty_as_false_because_that_is_what_an_unfilled_env_var_is() {
-        // What `.env.local` writes for an unfilled variable: an empty `ROLLOVER=`
-        // line. `clap` requires literal `true`/`false` for any `bool` combined
-        // with `env` — neither `1`, nor empty, nor `action = SetTrue` changes
-        // that, which would fail `--allow-dirty` alone as soon as `.env.local`
-        // existed, even with the three variables empty. That is what `truthy`
-        // works around.
+        // What `.env.local` writes for an unfilled variable: an empty
+        // `ALLOW_DIRTY=` line. `clap` requires literal `true`/`false` for any
+        // `bool` combined with `env` — neither `1`, nor empty, nor
+        // `action = SetTrue` changes that, which would fail `--allow-dirty`
+        // alone as soon as `.env.local` existed, even with the variable
+        // empty. That is what `truthy` works around.
         assert_eq!(truthy(""), Ok(false));
     }
 
@@ -477,7 +556,6 @@ mod tests {
         ("INTEGRATION_BRANCH", "main_agent"),
         ("PERMISSION_MODE", "bypassPermissions"),
         ("ALLOW_DIRTY", ""),
-        ("ROLLOVER", ""),
         ("WORKSPACE_STRATEGY", ""),
         ("WORKSPACE_URL", ""),
         ("TARGET_REPO_URL", ""),

@@ -45,14 +45,17 @@ three is a step**: the first two are the contract the launcher fulfills, the
 third is the entry point that, with that contract filled, assembles the whole
 workflow.
 
-**`init_repo` is the one departure**: no `orchestration/`, no `checks/`. It is
-a deterministic command (D1 of `docs/to_build.md`), not a workflow — no
-`Context`, no stage table, no session, no cost — so a stage table would name
-one entry for a sequence that does not exist, and a `Verification` would
-judge against a `Context<S>` nobody carries. What `checks/` would hold (its
-read-only audit's criteria) lives in `init_repo::data::audit` as pure
-functions over text already read. See `init_repo/mod.rs` for the same
-reasoning in place.
+**A deterministic command departs from this skeleton**: no `orchestration/`,
+no `checks/`. `init_repo` and `milestone_merge` are both this, not a
+workflow — no `Context`, no stage table, no session, no cost — so a stage
+table would name one entry for a sequence that does not exist, and a
+`Verification` would judge against a `Context<S>` nobody carries. What
+`checks/` would hold (a read-only audit's criteria, a merge's readiness
+predicate) lives in that module's own `data::audit` as pure functions over
+values already read. See `init_repo/mod.rs` and `milestone_merge/mod.rs`
+for the same reasoning in place — the router (`common::routing` +
+`harness watch`) is this too, though its own "audit" is a pure decision
+function rather than a module of its own.
 
 ## 2. Ports ≠ Config
 
@@ -144,9 +147,14 @@ receives what) without executing anything. The two files change for different
 reasons — one when the workflow's semantics change, the other when the wiring
 does.
 
-**`run.rs` builds no concrete adapter.** Naming a `GhCli`, a `GitCli` or a
-`ClaudeCliFactory` is the launcher's job, and its alone: that is what leaves
-each port a single test seam.
+**`run.rs` builds no concrete adapter — and neither does an action or a gate.**
+Naming a `GhCli`, a `GitCli`, a `ClaudeCliFactory`, a `Checkpoint` or a
+`ReviewLedger` is the launcher's job, and its alone: that is what leaves each
+port a single test seam. A workflow imports from `harness_core::ports`, never
+from `harness_core::adapters`, and it carries no `std::fs` call and no clock of
+its own — if what it needs has no port yet, the port is what gets added
+(`Checkpoints` and `ReviewCosts` were added exactly that way). The rule and its
+two test-only exceptions are in `../../CLAUDE.md`.
 
 ## 8. One design surface, and only one
 
@@ -207,6 +215,8 @@ Current contents:
 | `labels` | the `harness:*` labels. Created by hand on the repo; each preflight checks they exist, because a misspelled label makes a list empty and an empty list reads as "nothing left to do". |
 | `explore` | the repo map: `Ground` (free — glues `CLAUDE.md`, `docs/ARCHITECTURE.md`, `docs/PROJECT.md` and the tracked-file list verbatim) then one paid session that condenses it. A workflow wires both by implementing `Explored` on its state. |
 | `fake_github` | `#[cfg(test)]` — an in-memory `GitHub` shared by the workflows' tests. A fake adapter, not a mock. |
+| `fake_disk` | `#[cfg(test)]` — an in-memory `Disk`: what it holds reads back, what was written to it can be re-read. |
+| `fake_locks` | `#[cfg(test)]` — `Grants`, a lock nobody else holds. It exists so mounting a table creates no `.lock-*` directory anywhere. |
 
 ## 12. A workflow is N rounds
 
@@ -227,49 +237,76 @@ is the same five concerns written twice, and core's `Round<S>` served nobody
 because a stage's tolerance lived at workflow level. It now lives on the round,
 that is, on whatever iterates the stages.
 
-## 13. The three workflows today
+## 13. The workflows today
 
 The skeleton is the same; what differs is justified by the nature of the
-workflow, not by its history:
+workflow, not by its history. Two tables, grouped by what a run's **subject**
+is — an issue, or a pull request — because that is what decides the shape of
+its precheck, its lock and its trigger.
 
-| | `dev_loop` | `pr_review` | `refinement` |
-| --- | --- | --- | --- |
-| what it does | picks a task, runs it through its stages, observes delivery | advisory second opinion on a PR, in fresh context | rewrites an issue body into five canonical sections |
-| trigger | the `harness` binary | a hook on `gh pr create` | the `harness:refinement` label |
-| state | `Loop` (`Resumable` + `Scoped`) | `ReviewState` | `RefinementState` (`Explored`) |
-| `remaining` | the `--rounds` budget | 1 | 1 |
-| the round | `TaskRound`, hand-written | core's `Round<S>` | core's `Round<S>` |
-| stages | `business_analyst`, `code`, `create_test` (+ `planner` on rollover) | `inline`, `brief`, `publish` | `router`, the five sections, `coherence`, `publish` |
-| `orchestration/` | + `round.rs` | + `round.rs` | + `round.rs`, `prompts.rs` |
-| `checks/` | + `preflight.rs` | — | — |
-| lock | — | per PR | per issue |
-| resume | `Checkpoint` | — | the counter in the issue comments |
-| tolerance | — | `InlineMayFail` | — |
+**The four that work an issue:**
 
-- `dev_loop` writes its round by hand because it **branches**: no runnable task
-  rolls over to `/planner`. The other two have nothing to route, so their
-  `round.rs` mounts core's `Round<S>` and stops there.
+| | `dev_loop` | `refinement` | `planner` | `split` |
+| --- | --- | --- | --- | --- |
+| what it does | picks a task, runs it through its stages, observes delivery | rewrites an issue body into five canonical sections | opens the milestones of a roadmap item | opens the tasks of a milestone |
+| trigger | the `harness` binary, or the router | the `harness:refinement` label | `harness:ready` on a roadmap item with no milestone yet | `harness:ready` on a milestone |
+| state | `Loop` (`Resumable` + `Scoped`) | `RefinementState` (`Explored`) | `PlannerState` (`Explored`) | `SplitState` |
+| `remaining` | the `--rounds` budget | 1 | 1 | 1 |
+| the round | `TaskRound`, hand-written | core's `Round<S>` | core's `Round<S>` | core's `Round<S>` |
+| stages | `technical_refinement`, `code`, `create_test` | `router`, the phase sections (business: 3, technical: 2), `coherence`, `human-advice` (business), `publish` | the map, `context`, `plan`, `publish` | `context`, `slice`, `publish` |
+| `orchestration/` | + `round.rs` | + `round.rs`, `prompts.rs` | + `round.rs` | + `round.rs` |
+| `checks/` | + `preflight.rs` | — | + `gates.rs` | + `gates.rs` |
+| lock | — | per issue | per roadmap item | per milestone |
+| resume | `Checkpoint` | the counter in the issue comments | — | — |
+| tolerance | — | — | one retry inside the `plan` action | one retry inside the `slice` action |
+
+**The two that work a pull request:**
+
+| | `pr_review` | `pr_fix` |
+| --- | --- | --- |
+| what it does | advisory second opinion on a PR, in fresh context | one repair attempt on a PR whose CI went red |
+| trigger | the `harness:to-review` label | the `harness:pr-fix` label **and** a check concluded in failure |
+| state | `ReviewState` | `FixState` |
+| `remaining` | 1 | 1 |
+| the round | core's `Round<S>` | core's `Round<S>` |
+| stages | `inline`, `brief`, `publish` | `context`, `fix` |
+| `orchestration/` | + `round.rs` | + `round.rs` |
+| `checks/` | + `gates.rs` | + `gates.rs` |
+| lock | per PR | per PR |
+| resume | — | — |
+| tolerance | `InlineMayFail` | — |
+
+- `dev_loop` writes its round by hand because `pick` (choosing the task) and
+  `delivered` (marking it) are **`Action`s, not `Stage`s**: forcing them into
+  core's `Round<S>` table would subject them to the `--stages` and resume
+  guards, which have no meaning for either. The others have nothing outside
+  their table, so their `round.rs` mounts core's `Round<S>` and stops there.
 - `dev_loop` has **preflight** gates (labels, milestone, skills, installed
   dependencies) because several opus sessions follow, and a `stat` costs less
   than a `/code`.
 - `refinement` moves its seven templates into `prompts.rs`: same rule 5, just
   too much text to sit with the table.
-- `refinement`'s round prepends the two shared `explore` entries to the
+- `refinement` and `planner` prepend the two shared `explore` entries to their
   sequence; `pr_review` tolerates a failed `inline` pass because the summary can
   still say something useful.
 - `pr_review::data::notes` stays **in French**: it is published on a GitHub PR
   for a French-speaking human.
-- Only `dev_loop` is wired into the binary today — `pr_review::run::build` and
-  `refinement::run::build` exist and are tested, but nothing in
-  `harness-launcher` calls them yet.
+- `pr_fix` is the only workflow whose **first** stage writes: it removes its own
+  trigger label before paying for anything, so a PR nobody can repair does not
+  buy one session per poll. Its own `mod.rs` carries the reasoning.
+- All six are wired into the binary — `dev_loop` directly (`harness`) and every
+  one of them through the router's dispatch (`harness watch`). `pr_review` was
+  the last to get a launcher entry point: its documented trigger used to be a
+  hook on `gh pr create`, which needs a public URL this harness does not have.
 
-A fourth directory, `init_repo`, sits beside these three but is not in the
-table above: it is the one exception described in §1 — a deterministic
-command (`harness init-repo`), not a workflow. It has no `trigger` beyond the
-subcommand itself, no `state`, no `remaining`, no round, no lock, no resume,
-no tolerance — every column above would read "n/a". What it does: creates the
+Two more directories sit beside these, not in the table above: `init_repo`
+and `milestone_merge`, both the deterministic-command departure described
+in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
+router route, no `state`, no `remaining`, no round, no lock, no resume, no
+tolerance — every column above would read "n/a". `init_repo` creates the
 `harness:*` labels and the integration branch, runs a read-only audit, and
-writes the link into `.env.local`.
+writes the link into `.env.local`. `milestone_merge` opens or merges a
+milestone's PR once its tasks are closed and its CI is green.
 
 ## 14. Adding a workflow
 

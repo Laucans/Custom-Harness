@@ -4,8 +4,11 @@
 //! `harness-workflows` to depend on this module without the reciprocal ever
 //! becoming conceivable.
 
+pub mod breaker;
+pub mod doctor;
 pub mod markers;
 pub mod prompts;
+pub mod quota;
 pub mod workspace;
 
 mod halt;
@@ -18,7 +21,7 @@ mod verdict;
 
 pub use halt::{Halt, Severity};
 pub use issue::Issue;
-pub use prompts::{Named, Scope, Scoped};
+pub use prompts::{Named, Scope, Scoped, Sibling};
 pub use pulls::Pr;
 pub use remote::{Slug, same_repo};
 pub use resumable::Resumable;

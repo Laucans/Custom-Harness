@@ -26,6 +26,17 @@ use std::path::{Path, PathBuf};
 /// orphan one already on disk.
 pub const DEFAULT_BASE: &str = ".llocal/agentic_workspaces";
 
+/// Where everything a run writes about itself lands: one folder per workflow,
+/// one folder per run inside it, plus that workflow's ledgers.
+///
+/// **One folder, so that deleting is safe.** These used to sit directly under
+/// `.llocal/`, as siblings of the clone — `.llocal/agent-loop`,
+/// `.llocal/refinement`, `.llocal/split`… — and tidying up by hand there meant
+/// choosing, among eight similar-looking folders, the ones that are traces and
+/// the one that is a checkout the loop needs. Someone deleted across the two and
+/// the loop stopped. Now `.llocal/` holds the clones and `logs/`.
+pub const LOGS: &str = ".llocal/logs";
+
 /// How long a run's workspace survives the run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Strategy {
@@ -98,6 +109,14 @@ pub struct Wanted {
     /// `--force-reset`: overwrite local work of a reused workspace, instead of
     /// stopping and naming it.
     pub force_reset: bool,
+    /// Clone a named workspace that does not exist yet, instead of refusing.
+    ///
+    /// **False for a human's `--use-workspace`**, and that is the whole point
+    /// of the default: a typo must not silently clone beside the workspace
+    /// the human meant. True only where the *harness itself* picks the name
+    /// — a fixed id a workflow reserves for its own checkout, which nobody
+    /// could have created by hand beforehand.
+    pub create_if_missing: bool,
 }
 
 /// A run's checkout, and where its accounting lands.
@@ -141,10 +160,25 @@ impl Workspace {
         &self.state_root
     }
 
+    /// Where every workflow's traces live, under the accounting root.
+    #[must_use]
+    pub fn logs(&self) -> PathBuf {
+        self.state_root.join(LOGS)
+    }
+
+    /// One workflow's folder of traces: its run folders, its ledgers.
+    ///
+    /// The single place a workflow name becomes a path, so a new workflow needs
+    /// no new method here and cannot land outside [`LOGS`].
+    #[must_use]
+    pub fn log_dir(&self, workflow: &str) -> PathBuf {
+        self.logs().join(workflow)
+    }
+
     /// The loop folder, under the accounting root.
     #[must_use]
     pub fn loop_dir(&self) -> PathBuf {
-        self.state_root.join(".llocal/agent-loop")
+        self.log_dir("agent-loop")
     }
 
     /// The resume pointer, two lines.
@@ -159,13 +193,33 @@ impl Workspace {
         self.loop_dir().join("costs.tsv")
     }
 
+    /// The last thing a session's stream said about the rate-limit window.
+    ///
+    /// One file, overwritten, not a ledger: only the latest reading means
+    /// anything — see [`quota`](crate::domain::quota). Beside the ledgers because
+    /// it is the same kind of thing, something a *later* process reads back about
+    /// an earlier one.
+    #[must_use]
+    pub fn quota(&self) -> PathBuf {
+        self.loop_dir().join("quota.json")
+    }
+
+    /// The error ledger: why runs stopped, and what repairs were tried.
+    ///
+    /// Beside the cost ledger, in the loop's own folder: it is the harness's
+    /// health, not a workflow's accounting.
+    #[must_use]
+    pub fn error_ledger(&self) -> PathBuf {
+        self.loop_dir().join("errors.tsv")
+    }
+
     /// A review's folder: its locks, logs, artifacts.
     ///
     /// One folder for all reviews — their artifacts are
     /// prefixed by PR number, not by a run id.
     #[must_use]
     pub fn review_dir(&self) -> PathBuf {
-        self.state_root.join(".llocal/pr-review")
+        self.log_dir("pr-review")
     }
 
     /// The review ledger — columns distinct from the rounds one.
@@ -178,7 +232,7 @@ impl Workspace {
     /// per issue.
     #[must_use]
     pub fn refinement_dir(&self) -> PathBuf {
-        self.state_root.join(".llocal/refinement")
+        self.log_dir("refinement")
     }
 
     /// The refinement ledger — same columns as the rounds one.
@@ -246,7 +300,7 @@ mod tests {
         assert_eq!(moved.root(), Path::new("/depot/.llocal/w/clone"));
         assert_eq!(
             moved.ledger(),
-            Path::new("/depot/.llocal/agent-loop/costs.tsv")
+            Path::new("/depot/.llocal/logs/agent-loop/costs.tsv")
         );
     }
 
@@ -262,27 +316,54 @@ mod tests {
     }
 
     #[test]
-    fn review_and_refinement_live_under_their_own_llocal_dirs() {
+    fn every_workflow_keeps_its_traces_in_its_own_folder_under_logs() {
         let here = Workspace::new(Path::new("/depot"));
-        assert_eq!(here.review_dir(), Path::new("/depot/.llocal/pr-review"));
+        assert_eq!(
+            here.review_dir(),
+            Path::new("/depot/.llocal/logs/pr-review")
+        );
         assert_eq!(
             here.review_ledger(),
-            Path::new("/depot/.llocal/pr-review/costs.tsv")
+            Path::new("/depot/.llocal/logs/pr-review/costs.tsv")
         );
         assert_eq!(
             here.refinement_dir(),
-            Path::new("/depot/.llocal/refinement")
+            Path::new("/depot/.llocal/logs/refinement")
         );
         assert_eq!(
             here.refinement_ledger(),
-            Path::new("/depot/.llocal/refinement/costs.tsv")
+            Path::new("/depot/.llocal/logs/refinement/costs.tsv")
         );
+        assert_eq!(here.loop_dir(), Path::new("/depot/.llocal/logs/agent-loop"));
+    }
+
+    #[test]
+    fn no_trace_folder_sits_beside_the_clone_anymore() {
+        // What the layout is for: `.llocal/` holds the clones and `logs/`, so
+        // deleting traces by hand cannot take a checkout with it.
+        let here = Workspace::new(Path::new("/depot"));
+        for folder in [
+            here.loop_dir(),
+            here.review_dir(),
+            here.refinement_dir(),
+            here.log_dir("split"),
+        ] {
+            assert!(
+                folder.starts_with(here.logs()),
+                "{} is not under logs/",
+                folder.display()
+            );
+        }
+        assert!(!here.workspaces().starts_with(here.logs()));
     }
 
     #[test]
     fn a_bookkeeping_path_is_still_relative_to_the_state_root() {
         let moved = Workspace::new(Path::new("/depot")).at(Path::new("/clone"));
-        assert_eq!(moved.rel(&moved.ledger()), ".llocal/agent-loop/costs.tsv");
+        assert_eq!(
+            moved.rel(&moved.ledger()),
+            ".llocal/logs/agent-loop/costs.tsv"
+        );
     }
 
     #[test]

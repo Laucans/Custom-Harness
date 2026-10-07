@@ -12,10 +12,10 @@
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::store::spending::Spending;
 use harness_core::domain::prompts::splice;
 use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Open, SessionAction, ask_and_record};
+use harness_core::ports::store::spending::Spending;
 
 use crate::pr_review::data::findings;
 use crate::pr_review::data::state::ReviewState;

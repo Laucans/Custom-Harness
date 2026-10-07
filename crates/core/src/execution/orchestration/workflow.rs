@@ -37,10 +37,10 @@ use std::path::Path;
 
 use async_trait::async_trait;
 
-use crate::adapters::store::lock::Locks;
 use crate::domain::{Outcome, Verdict};
 use crate::execution::data::context::Context;
 use crate::execution::traits::{Executable, Guarded};
+use crate::ports::store::lock::Locks;
 
 /// Where a workflow's lock lives, and what holds it.
 ///
@@ -270,8 +270,8 @@ mod tests {
         }
     }
 
-    /// A round that says there is nothing left, like the dev loop's rollover
-    /// with no `/planner` wired.
+    /// A round that says there is nothing left, like the dev loop's when a
+    /// milestone has no runnable task.
     struct Exhausted;
 
     #[async_trait(?Send)]

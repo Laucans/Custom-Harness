@@ -4,9 +4,9 @@ use std::ops::{Deref, DerefMut};
 
 use async_trait::async_trait;
 
-use crate::adapters::agent::Session;
 use crate::domain::{Outcome, Verdict};
 use crate::execution::data::context::Context;
+use crate::ports::agent::Session;
 
 /// An action that costs nothing: a local call (choose a task, observe state,
 /// apply a label).

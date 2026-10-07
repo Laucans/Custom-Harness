@@ -7,7 +7,7 @@
 //!
 //! | Python | its judging half | its acting half |
 //! | --- | --- | --- |
-//! | `spec_is_in_the_issue` | `gates::IssueBodyIsNotEmpty` | [`RecordSpecWritten`] |
+//! | `spec_is_in_the_issue` | `gates::IssueBodyIsNotEmpty` | [`RecordTechWritten`] |
 //! | `task_is_delivered` | `gates::AMergedPrClosesTheTask` | [`MarkWaitingMerge`] |
 //!
 //! The split costs one issue re-read per pair: the action re-reads to write,
@@ -17,14 +17,15 @@
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::spending::Spending;
 use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, prompts};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::spending::Spending;
 
-use crate::common::labels;
+use crate::common::{delivery, hierarchy, labels, sections};
+use crate::dev_loop::data::brief::Cut;
 use crate::dev_loop::data::state::Loop;
-use crate::dev_loop::data::{board, tasks};
+use crate::dev_loop::data::{board, signatures, tasks};
 
 /// The number of the current task, or failure to read it.
 fn number_of(ctx: &Context<Loop>) -> Outcome<u64> {
@@ -36,17 +37,19 @@ fn number_of(ctx: &Context<Loop>) -> Outcome<u64> {
     })
 }
 
-/// Picks the round's task, or switches to rollover.
+/// Picks the round's task, or finds none.
 ///
 /// The first action of every round, and the only one with the right to find
-/// nothing. Its three outputs are the `if/elif/else` that replaced a three-branch
-/// router in a graph engine:
+/// nothing. Its two outputs are what replaced a three-branch router in a
+/// graph engine — the third branch, rollover to `/planner`, is gone: that is
+/// now a separate workflow, triggered on its own:
 ///
 /// - a task (the resumed one, else the one from the table) → round continues;
-/// - no playable task **but open tasks** → stop, naming the unblocking gesture.
-///   Definitely not a rollover: confusing the two charges a `/planner` for a
-///   `harness:ready` box no one checked;
-/// - no open tasks at all → rollover.
+/// - no playable task **but open tasks** → stop, naming the unblocking
+///   gesture — a `harness:ready` box no one checked, never a reason to stop
+///   issuing milestones;
+/// - no open tasks at all → leaves `ctx.state.task` empty. The round reads
+///   that via `has_task()` and ends with `Verdict::NothingLeft`.
 pub struct PickTask {
     /// What reads the board.
     pub gh: Rc<dyn GitHub>,
@@ -69,6 +72,8 @@ impl Action<Loop> for PickTask {
             title: here.milestone.title.clone(),
             body: here.milestone.body.clone(),
         };
+        ctx.state.siblings = here.tasks.iter().map(hierarchy::sibling).collect();
+        ctx.state.roadmap = hierarchy::roadmap_of(self.gh.as_ref(), here.milestone.number).await?;
         ctx.traces.say(&format!(
             "milestone {}: {}",
             here.milestone.reference(),
@@ -79,10 +84,8 @@ impl Action<Loop> for PickTask {
             if !here.open_agents().is_empty() {
                 return Err(Halt::Halted(here.stuck()));
             }
-            ctx.state.rollover = true;
             ctx.traces.say(&format!(
-                "milestone {} has no open {} sub-issue — opening the next \
-                 roadmap item",
+                "milestone {} has no open {} sub-issue left",
                 here.milestone.reference(),
                 labels::AGENT
             ));
@@ -96,6 +99,7 @@ impl Action<Loop> for PickTask {
         ctx.state.task_key = task.key();
         ctx.state.kind = tasks::kind(task).to_string();
         ctx.state.spec_written = tasks::spec_written(task);
+        ctx.state.tech_written = tasks::tech_written(task);
         ctx.state.resumed = resumed.is_some();
         ctx.traces.say(&format!(
             "task {}: {} [{}]",
@@ -107,7 +111,7 @@ impl Action<Loop> for PickTask {
     }
 }
 
-/// Records that the SPEC is in the issue's body.
+/// Records that the technical sections are in the issue's body.
 ///
 /// The "write" half of the old `spec_is_in_the_issue`: it re-reads the body —
 /// which **is** the SPEC, and that the next stage will receive in its scope —,
@@ -118,13 +122,13 @@ impl Action<Loop> for PickTask {
 /// following gate — `gates::IssueBodyIsNotEmpty` — that stops the round by
 /// saying so. Placing the label first would skip the write on the next run when
 /// nothing was written.
-pub struct RecordSpecWritten {
+pub struct RecordTechWritten {
     /// What re-reads the issue and labels it.
     pub gh: Rc<dyn GitHub>,
 }
 
 #[async_trait(?Send)]
-impl Action<Loop> for RecordSpecWritten {
+impl Action<Loop> for RecordTechWritten {
     async fn run(&self, ctx: &mut Context<Loop>) -> Outcome<Verdict> {
         if ctx.settings.dry_run {
             return Ok(Verdict::Continue);
@@ -135,8 +139,8 @@ impl Action<Loop> for RecordSpecWritten {
             return Ok(Verdict::Continue);
         }
         ctx.state.task.body = issue.body;
-        self.gh.add_label(number, labels::SPEC_WRITTEN).await?;
-        ctx.state.spec_written = true;
+        self.gh.add_label(number, labels::TECH_WRITTEN).await?;
+        ctx.state.tech_written = true;
         Ok(Verdict::Continue)
     }
 }
@@ -156,6 +160,14 @@ impl Action<Loop> for RecordSpecWritten {
 ///
 /// Without proof, it marks nothing and stays silent: it's the gate that says
 /// why the round stops.
+///
+/// It also comments the landing on the issue — see
+/// [`delivery::merged_note`](crate::common::delivery::merged_note). The comment
+/// goes **before** the label, and the label is what makes this run once: if the
+/// comment fails the round halts having written nothing and the next run
+/// retries both; if the label fails after the comment landed, the next run
+/// posts a second comment — visible noise against no state damage, which is
+/// the right way round.
 pub struct MarkWaitingMerge {
     /// What reads the issue and PRs, and places the label.
     pub gh: Rc<dyn GitHub>,
@@ -187,6 +199,12 @@ impl Action<Loop> for MarkWaitingMerge {
             self.integration_branch,
             labels::WAITING_MERGE
         ));
+        self.gh
+            .post_issue_comment(
+                number,
+                &delivery::merged_note(&self.integration_branch, &shipped.reference()),
+            )
+            .await?;
         self.gh.add_label(number, labels::WAITING_MERGE).await?;
         Ok(Verdict::Continue)
     }
@@ -209,15 +227,28 @@ pub struct Ask {
     /// Instructions specific to this stage. Empty: preamble and scope are
     /// enough, as for `/create-test`.
     pub instructions: String,
-    /// Inject the SCOPE block.
-    ///
-    /// False for `/planner` and it alone: it doesn't work on any task, it
-    /// opens one. Injecting an empty ISSUE block would give it a task to find.
-    pub scoped: bool,
+    /// How much of the brief this stage's prompt carries — see
+    /// [`Cut`](crate::dev_loop::data::brief::Cut).
+    pub cut: Cut,
     /// The round number, for the `round` column of the registry.
     pub round: u32,
     /// The integration branch cited in the preamble.
     pub branch: String,
+    /// The repository's own configuration, verbatim — see
+    /// [`crate::dev_loop::data::stack`]. Empty when the stack was not
+    /// recognised, and then no block is injected.
+    ///
+    /// Carried here, not in [`Loop`]: the state is serialized into the resume
+    /// point, and a digest of config files has no business growing that file.
+    /// It is read once per run and never changes within it.
+    pub stack: String,
+    /// The public shape of every indexed file in the checkout — see
+    /// [`crate::dev_loop::data::signatures`].
+    ///
+    /// The whole index, not this task's slice: which files matter depends on the
+    /// task, and the task is picked inside the round. Built once per run because
+    /// its TypeScript half costs a `tsc` subprocess; the selection below is pure.
+    pub signatures: Rc<signatures::Index>,
     /// The name cited as the injector.
     pub injector: &'static str,
     /// Where spending is recorded.
@@ -227,10 +258,23 @@ pub struct Ask {
 #[async_trait(?Send)]
 impl SessionAction<Loop> for Ask {
     async fn run(&self, open: &mut Open<'_, Loop>) -> Outcome<Verdict> {
-        let scope = open.state.scope();
+        // The **whole** body decides the index slice, before the cut: a file
+        // named only in a section this stage does not receive is still a file
+        // the stage will touch, and its signature costs less than opening it.
+        let carried =
+            signatures::carried(&self.signatures, &open.state.task.body, signatures::BUDGET);
+        let mut scope = open.state.scope();
+        scope.task.body = sections::without(&scope.task.body, self.cut.without());
+        let brief = match self.cut {
+            Cut::Unscoped => prompts::Brief::Unscoped,
+            Cut::Situated(_) => prompts::Brief::Situated(&scope),
+            Cut::TaskOnly(_) => prompts::Brief::TaskOnly(&scope),
+        };
         let extra = prompts::extra_for(
             &self.instructions,
-            if self.scoped { Some(&scope) } else { None },
+            brief,
+            &self.stack,
+            &carried,
             self.injector,
         );
         let prompt = prompts::build(&self.lead, &self.branch, &extra, self.injector);
@@ -253,10 +297,10 @@ mod tests {
     use super::*;
     use crate::common::fake_github::{FakeGitHub, Wrote};
     use crate::dev_loop::data::state::Loop;
-    use harness_core::adapters::agent::{Reply, Session};
-    use harness_core::adapters::store::spending::Entry;
     use harness_core::domain::{Issue, Spend};
     use harness_core::execution::Settings;
+    use harness_core::ports::agent::{Reply, Session};
+    use harness_core::ports::store::spending::Entry;
     use harness_core::traces::{Logbook, Sink, Verbosity};
     use std::cell::RefCell;
 
@@ -307,7 +351,37 @@ mod tests {
         assert_eq!(context.state.task.number, "11");
         assert_eq!(context.state.task_key, "11");
         assert_eq!(context.state.kind, "auto");
-        assert!(!context.state.rollover);
+        assert!(context.state.has_task());
+    }
+
+    #[tokio::test]
+    async fn picking_also_loads_the_roadmap_and_the_sibling_titles() {
+        let mut roadmap = issue(2, &[labels::ROADMAP]);
+        roadmap.body = "the plan".to_string();
+        let mut shipped = task(10);
+        shipped.state = "closed".to_string();
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![roadmap, milestone(4)],
+            subs: vec![(2, vec![milestone(4)]), (4, vec![shipped, task(11)])],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(Loop::default());
+        PickTask { gh, resuming: None }
+            .run(&mut context)
+            .await
+            .expect("a task");
+        let found = context.state.roadmap.expect("the roadmap");
+        assert_eq!(
+            (found.number.as_str(), found.body.as_str()),
+            ("2", "the plan")
+        );
+        let seen: Vec<_> = context
+            .state
+            .siblings
+            .iter()
+            .map(|s| (s.number.as_str(), s.status.as_str()))
+            .collect();
+        assert_eq!(seen, [("10", "done"), ("11", "open")]);
     }
 
     #[tokio::test]
@@ -334,7 +408,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_open_task_at_all_is_a_rollover() {
+    async fn no_open_task_at_all_leaves_the_task_empty() {
         let mut done = task(11);
         done.state = "closed".to_string();
         let gh = Rc::new(FakeGitHub {
@@ -346,15 +420,14 @@ mod tests {
         PickTask { gh, resuming: None }
             .run(&mut context)
             .await
-            .expect("un rollover");
-        assert!(context.state.rollover);
+            .expect("nothing to pick, not a failure");
         assert!(!context.state.has_task());
     }
 
     #[tokio::test]
-    async fn open_but_unplayable_tasks_halt_rather_than_roll_over() {
-        // Mixing the two charges an opus /planner for a `harness:ready`
-        // box no one checked.
+    async fn open_but_unplayable_tasks_halt_rather_than_say_nothing_is_left() {
+        // Mistaking the two would leave a `harness:ready` box no one
+        // checked read as "the milestone is finished".
         let gh = Rc::new(FakeGitHub {
             issues: vec![milestone(4)],
             subs: vec![(4, vec![issue(11, &[labels::AGENT])])],
@@ -366,12 +439,12 @@ mod tests {
             .await
             .expect_err("must stop");
         assert!(matches!(err, Halt::Halted(_)));
-        assert!(!context.state.rollover, "especially not a rollover");
+        assert!(!context.state.has_task(), "especially not picked");
         assert!(err.reason().contains(labels::READY));
     }
 
     #[tokio::test]
-    async fn an_unreadable_board_never_becomes_a_rollover() {
+    async fn an_unreadable_board_is_a_failure_not_an_empty_milestone() {
         let gh = Rc::new(FakeGitHub {
             broken: Some(Halt::Unreadable("expired token".to_string())),
             ..FakeGitHub::default()
@@ -382,10 +455,10 @@ mod tests {
             .await
             .expect_err("must fail");
         assert!(matches!(err, Halt::Unreadable(_)));
-        assert!(!context.state.rollover);
+        assert!(!context.state.has_task());
     }
 
-    // --- RecordSpecWritten -------------------------------------------------
+    // --- RecordTechWritten -------------------------------------------------
 
     fn with_task(number: &str) -> Loop {
         Loop {
@@ -400,23 +473,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recording_the_spec_copies_the_reread_body_into_the_scope() {
+    async fn recording_the_technical_sections_copies_the_reread_body_into_the_scope() {
         let mut written = issue(11, &[labels::AGENT]);
-        written.body = "the SPEC, written by /business-analyst".to_string();
+        written.body = "the SPEC, with its technical sections".to_string();
         let gh = Rc::new(FakeGitHub {
             issues: vec![written],
             ..FakeGitHub::default()
         });
         let mut context = ctx(with_task("11"));
-        RecordSpecWritten { gh: gh.clone() }
+        RecordTechWritten { gh: gh.clone() }
             .run(&mut context)
             .await
             .expect("recorded");
         assert!(context.state.task.body.contains("the SPEC"));
-        assert!(context.state.spec_written);
+        assert!(context.state.tech_written);
         assert_eq!(
             gh.writes(),
-            vec![Wrote::Label(11, labels::SPEC_WRITTEN.to_string())]
+            vec![Wrote::Label(11, labels::TECH_WRITTEN.to_string())]
         );
     }
 
@@ -429,11 +502,11 @@ mod tests {
             ..FakeGitHub::default()
         });
         let mut context = ctx(with_task("11"));
-        RecordSpecWritten { gh: gh.clone() }
+        RecordTechWritten { gh: gh.clone() }
             .run(&mut context)
             .await
             .expect("nothing to record");
-        assert!(!context.state.spec_written);
+        assert!(!context.state.tech_written);
         assert!(gh.writes().is_empty());
     }
 
@@ -445,7 +518,7 @@ mod tests {
         });
         let mut context = ctx(with_task("11"));
         context.settings.dry_run = true;
-        RecordSpecWritten { gh: gh.clone() }
+        RecordTechWritten { gh: gh.clone() }
             .run(&mut context)
             .await
             .expect("nothing");
@@ -477,10 +550,15 @@ mod tests {
         .run(&mut context)
         .await
         .expect("marked");
-        // Labeled, never closed: closing would say "integrated in main".
+        // Labeled and commented, never closed: closing would say "integrated
+        // in main". The comment comes first — the label is the mark that
+        // keeps the pair from running twice.
         assert_eq!(
             gh.writes(),
-            vec![Wrote::Label(11, labels::WAITING_MERGE.to_string())]
+            vec![
+                Wrote::Comment(11, delivery::merged_note("main_agent", "#99")),
+                Wrote::Label(11, labels::WAITING_MERGE.to_string()),
+            ]
         );
     }
 
@@ -520,12 +598,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rollover_round_has_no_task_to_mark() {
+    async fn a_round_with_no_task_picked_has_nothing_to_mark() {
         let gh = Rc::new(FakeGitHub::default());
-        let mut context = ctx(Loop {
-            rollover: true,
-            ..Loop::default()
-        });
+        let mut context = ctx(Loop::default());
         MarkWaitingMerge {
             gh: gh.clone(),
             integration_branch: "main_agent".to_string(),
@@ -586,16 +661,26 @@ mod tests {
     }
 
     fn scoped_state() -> Loop {
+        with_body("the SPEC")
+    }
+
+    fn with_body(body: &str) -> Loop {
         Loop {
             milestone: Named {
                 number: "4".to_string(),
                 title: "The chat".to_string(),
                 body: "what the milestone says".to_string(),
             },
+            siblings: vec![harness_core::domain::Sibling {
+                number: "12".to_string(),
+                title: "The fence".to_string(),
+                status: "open".to_string(),
+                gist: "covers the fence".to_string(),
+            }],
             task: Named {
                 number: "11".to_string(),
                 title: "The grid".to_string(),
-                body: "the SPEC".to_string(),
+                body: body.to_string(),
             },
             task_key: "11".to_string(),
             ..Loop::default()
@@ -609,7 +694,28 @@ mod tests {
         said: String,
     }
 
-    async fn ask_with(ask_scoped: bool, reply: Result<Reply, Halt>, dry_run: bool) -> Asked {
+    const NOTHING: &[&str] = &[];
+
+    async fn ask_with(cut: Cut, reply: Result<Reply, Halt>, dry_run: bool) -> Asked {
+        ask_carrying(cut, reply, dry_run, String::new()).await
+    }
+
+    async fn ask_carrying(
+        cut: Cut,
+        reply: Result<Reply, Halt>,
+        dry_run: bool,
+        stack: String,
+    ) -> Asked {
+        ask_about(scoped_state(), cut, reply, dry_run, stack).await
+    }
+
+    async fn ask_about(
+        state: Loop,
+        cut: Cut,
+        reply: Result<Reply, Halt>,
+        dry_run: bool,
+        stack: String,
+    ) -> Asked {
         let spending = Rc::new(Recorded::default());
         let capture = Rc::new(Capture::default());
         let mut context = Context::new(
@@ -617,7 +723,7 @@ mod tests {
                 dry_run,
                 stages: String::new(),
             },
-            scoped_state(),
+            state,
             Logbook::new(Rc::clone(&capture) as Rc<dyn Sink>, Verbosity::Normal),
         );
         let mut session = Scripted {
@@ -628,9 +734,11 @@ mod tests {
             stage: "code".to_string(),
             lead: "/tech-analyst".to_string(),
             instructions: "the task is #{num} (\"{title}\")".to_string(),
-            scoped: ask_scoped,
+            cut,
             round: 3,
             branch: "main_agent".to_string(),
+            stack,
+            signatures: Rc::new(signatures::Index::default()),
             injector: "test",
             spending: Rc::clone(&spending) as Rc<dyn Spending>,
         };
@@ -651,7 +759,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_prompt_carries_the_command_the_preamble_and_the_scope() {
-        let run = ask_with(true, Ok(answered("AGENT_LOOP_OK: delivered")), false).await;
+        let run = ask_with(
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: delivered")),
+            false,
+        )
+        .await;
         let prompt = &run.prompts[0];
         assert!(prompt.starts_with("/tech-analyst\n"));
         assert!(prompt.contains("main_agent"), "the integration branch");
@@ -660,21 +773,160 @@ mod tests {
         assert!(prompt.contains("MILESTONE #4"));
     }
 
+    // --- what each stage's prompt leaves out -------------------------------
+
+    const REFINED: &str = "## Business Goal\n\nthe why\n\n\
+                           ## Acceptance Criteria\n\n- it works\n\n\
+                           ## Technical\n\nthe design\n\n\
+                           ## Technical Implementation Plan\n\n1. do it\n\n\
+                           ## Assumptions (autonomous run)\n\nguessed\n";
+
+    #[tokio::test]
+    async fn a_stage_does_not_receive_the_sections_it_is_about_to_write() {
+        // `technical-refinement`'s own cut: 26 167 characters of #65's body were
+        // the two sections and the assumptions the stage exists to produce.
+        let run = ask_about(
+            with_body(REFINED),
+            Cut::Situated(&["Technical", "Technical Implementation Plan", "Assumptions"]),
+            Ok(answered("AGENT_LOOP_OK: written")),
+            false,
+            String::new(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(prompt.contains("the why"), "{prompt}");
+        assert!(prompt.contains("- it works"));
+        assert!(!prompt.contains("the design"), "{prompt}");
+        assert!(!prompt.contains("1. do it"), "{prompt}");
+        assert!(!prompt.contains("guessed"), "{prompt}");
+        // Still situated: where the task sits is half of what it decides.
+        assert!(prompt.contains("MILESTONE #4"));
+    }
+
+    #[tokio::test]
+    async fn a_stage_working_against_a_written_spec_gets_the_task_alone() {
+        // `/create-test`: the hierarchy was 19 397 of #65's 60 363 SCOPE
+        // characters, re-read on every turn to say what the plan had settled.
+        let run = ask_about(
+            with_body(REFINED),
+            Cut::TaskOnly(&["Business Goal", "Technical", "Assumptions"]),
+            Ok(answered("AGENT_LOOP_OK: tested")),
+            false,
+            String::new(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(prompt.contains("- it works"), "the criteria it asserts");
+        assert!(prompt.contains("1. do it"), "and the plan's bullets");
+        assert!(!prompt.contains("the design"), "{prompt}");
+        assert!(!prompt.contains("the why"), "{prompt}");
+        assert!(!prompt.contains("MILESTONE #4 —"), "{prompt}");
+        assert!(!prompt.contains("covers the fence"), "{prompt}");
+        // The way back, so the cut is a default rather than a removal.
+        assert!(prompt.contains("gh issue view"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn the_index_slice_is_chosen_from_the_whole_body_not_the_cut_one() {
+        // A file named only in a section this stage does not receive is still a
+        // file the stage will touch, and a signature costs less than opening it.
+        let mut index = signatures::Index {
+            ecosystem: signatures::Ecosystem::TypeScript,
+            ..signatures::Index::default()
+        };
+        index.tracked.push("src/core/place.ts".to_string());
+        index.by_path.insert(
+            "src/core/place.ts".to_string(),
+            "export declare function place(): void;".to_string(),
+        );
+        let state =
+            with_body("## Business Goal\n\nthe why\n\n## Technical\n\nextend src/core/place.ts\n");
+        let spending = Rc::new(Recorded::default());
+        let mut context = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            state,
+            Logbook::null(),
+        );
+        let mut session = Scripted {
+            reply: Ok(answered("AGENT_LOOP_OK: ok")),
+            seen: RefCell::new(Vec::new()),
+        };
+        let ask = Ask {
+            stage: "create-test".to_string(),
+            lead: "/create-test".to_string(),
+            instructions: String::new(),
+            cut: Cut::TaskOnly(&["Technical"]),
+            round: 1,
+            branch: "main_agent".to_string(),
+            stack: String::new(),
+            signatures: Rc::new(index),
+            injector: "test",
+            spending: Rc::clone(&spending) as Rc<dyn Spending>,
+        };
+        {
+            let mut open = Open {
+                ctx: &mut context,
+                session: &mut session,
+            };
+            ask.run(&mut open).await.expect("asked");
+        }
+        let prompt = &session.seen.borrow()[0];
+        assert!(
+            !prompt.contains("extend src/core/place.ts"),
+            "cut: {prompt}"
+        );
+        assert!(prompt.contains("export declare function place"), "{prompt}");
+    }
+
     #[tokio::test]
     async fn an_unscoped_ask_gets_no_issue_block_to_hunt_for() {
-        let run = ask_with(false, Ok(answered("AGENT_LOOP_OK: planned")), false).await;
+        let run = ask_with(Cut::Unscoped, Ok(answered("AGENT_LOOP_OK: planned")), false).await;
         assert!(!run.prompts[0].contains("ISSUE #"));
     }
 
     #[tokio::test]
+    async fn the_repository_configuration_reaches_the_prompt_verbatim() {
+        let run = ask_carrying(
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: delivered")),
+            false,
+            "<file path=\"package.json\">{ \"test\": \"vitest run\" }</file>".to_string(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(prompt.contains("--- REPOSITORY CONFIGURATION"), "{prompt}");
+        // Byte for byte: the exact command is the whole point of carrying it.
+        assert!(prompt.contains("{ \"test\": \"vitest run\" }"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn an_unrecognised_stack_adds_nothing_to_the_prompt() {
+        let run = ask_with(
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: delivered")),
+            false,
+        )
+        .await;
+        assert!(!run.prompts[0].contains("REPOSITORY CONFIGURATION"));
+    }
+
+    #[tokio::test]
     async fn the_ok_line_is_echoed_into_the_journal_under_the_stage_tag() {
-        let run = ask_with(true, Ok(answered("AGENT_LOOP_OK: delivered")), false).await;
+        let run = ask_with(
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: delivered")),
+            false,
+        )
+        .await;
         assert!(run.said.contains("[code] AGENT_LOOP_OK: delivered"));
     }
 
     #[tokio::test]
     async fn a_missing_ok_marker_is_said_rather_than_treated_as_a_failure() {
-        let run = ask_with(true, Ok(answered("I'm done")), false).await;
+        let run = ask_with(Cut::Situated(NOTHING), Ok(answered("I'm done")), false).await;
         assert!(run.verdict.is_ok());
         assert!(run.said.contains("no AGENT_LOOP_OK marker"));
     }
@@ -682,7 +934,7 @@ mod tests {
     #[tokio::test]
     async fn a_stop_marker_halts_and_keeps_the_sessions_own_reason() {
         let run = ask_with(
-            true,
+            Cut::Situated(NOTHING),
             Ok(answered(
                 "AGENT_LOOP_STOP: the SPEC requires a paid service",
             )),
@@ -697,7 +949,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_successful_ask_records_what_it_cost() {
-        let run = ask_with(true, Ok(answered("AGENT_LOOP_OK: delivered")), false).await;
+        let run = ask_with(
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: delivered")),
+            false,
+        )
+        .await;
         assert_eq!(run.rows, vec![("code".to_string(), "ok".to_string(), 0.42)]);
     }
 
@@ -705,7 +962,12 @@ mod tests {
     async fn a_dead_stage_still_gets_its_line_and_it_says_nothing_was_observed() {
         // It's the dead stage whose traces we want. And a zero line would
         // be read as a free session: -1.0 is the witness of `None`.
-        let run = ask_with(true, Err(Halt::Quota("window exhausted".into())), false).await;
+        let run = ask_with(
+            Cut::Situated(NOTHING),
+            Err(Halt::Quota("window exhausted".into())),
+            false,
+        )
+        .await;
         assert!(matches!(run.verdict, Err(Halt::Quota(_))));
         assert_eq!(
             run.rows,
@@ -715,7 +977,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_dry_run_records_no_spend_because_none_was_made() {
-        let run = ask_with(true, Ok(answered("")), true).await;
+        let run = ask_with(Cut::Situated(NOTHING), Ok(answered("")), true).await;
         assert!(run.rows.is_empty());
         // And it doesn't ask for a marker from a session nobody opened.
         assert!(!run.said.contains("no AGENT_LOOP_OK marker"));

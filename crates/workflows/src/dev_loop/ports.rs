@@ -11,10 +11,10 @@
 
 use std::rc::Rc;
 
-use harness_core::adapters::agent::SessionFactory;
-use harness_core::adapters::shell::disk::Disk;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::spending::Spending;
+use harness_core::ports::agent::SessionFactory;
+use harness_core::ports::shell::disk::Disk;
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::spending::Spending;
 
 /// The ports that a loop round needs.
 pub struct Ports {
@@ -24,10 +24,8 @@ pub struct Ports {
     pub sessions: Rc<dyn SessionFactory>,
     /// Where a stage's spending is recorded.
     pub spending: Rc<dyn Spending>,
-    /// Where the planner reads its grounding digests from
-    /// (`Config::grill_dir`) — same precedent as `refinement`'s `explore`,
-    /// which also reads repository docs through a port rather than a path
-    /// alone.
+    /// What the preflight gates check for — skill files, installed
+    /// dependencies — through a port rather than a path alone.
     pub disk: Rc<dyn Disk>,
 }
 
@@ -43,10 +41,10 @@ pub(crate) mod fake {
     use std::rc::Rc;
 
     use async_trait::async_trait;
-    use harness_core::adapters::agent::{Session, SessionFactory, SessionSpec};
-    use harness_core::adapters::shell::disk::Disk;
-    use harness_core::adapters::store::spending::{Entry, Spending};
     use harness_core::domain::{Halt, Outcome};
+    use harness_core::ports::agent::{Session, SessionFactory, SessionSpec};
+    use harness_core::ports::shell::disk::Disk;
+    use harness_core::ports::store::spending::{Entry, Spending};
 
     use super::Ports;
     use crate::common::fake_github::FakeGitHub;
@@ -74,11 +72,11 @@ pub(crate) mod fake {
         }
     }
 
-    /// A disk with no grounding digests — the normal case: most tests don't
-    /// exercise the planner's grounding read at all.
-    pub struct NoGrounding;
+    /// A disk that answers every read with absence — the normal case: most
+    /// tests don't exercise a preflight disk read at all.
+    pub struct NoDiskReads;
 
-    impl Disk for NoGrounding {
+    impl Disk for NoDiskReads {
         fn read_to_string(&self, _path: &Path) -> Option<String> {
             None
         }
@@ -110,7 +108,7 @@ pub(crate) mod fake {
             gh,
             sessions: Rc::new(NoSessions),
             spending: Rc::new(Nowhere),
-            disk: Rc::new(NoGrounding),
+            disk: Rc::new(NoDiskReads),
         }
     }
 }

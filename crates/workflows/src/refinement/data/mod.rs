@@ -1,9 +1,13 @@
-//! Ce que le raffinage lit et décide : son état, le compteur de rounds, les
-//! cinq sections du corps.
+//! What the refinement reads and decides: its state, the round counter, the
+//! five sections of the body, and the advice it leaves on the issue.
 //!
-//! Métier pur — rien ici n'appelle `gh` ni n'écrit nulle part. Ce qui écrit
-//! vit dans `action`, ce qui juge dans `checks`.
+//! Pure business logic — nothing here calls `gh` or writes anywhere. What
+//! writes lives in `action`, what judges in `checks`.
 
+pub mod advice;
+pub mod phase;
 pub mod rounds;
-pub mod sections;
+/// The sections of an issue body, now shared: `common::hierarchy` reads a
+/// sibling's body with the same model that writes it here.
+pub use crate::common::sections;
 pub mod state;

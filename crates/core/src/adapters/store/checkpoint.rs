@@ -1,28 +1,22 @@
-//! Where the harness is, and how it resumes.
+//! Where the harness is, on disk — the implementation of [`Checkpoints`].
 //!
-//! Two stores, and it's deliberate:
+//! Two files, and it is deliberate:
 //!
 //! - a **pointer** of two lines (`task=`, `flow_id=`), readable with `cat` and
-//!   editable by hand. It exists because an unreadable state is an undebuggable state;
+//!   editable by hand. It exists because an unreadable state is an
+//!   undebuggable state;
 //! - the **states**, one JSONL file per flow, one line per step.
 //!
 //! **What is not ported: sqlite.** The Python schema
 //! (`flow_states(flow_uuid, method_name, timestamp, state_json)`) existed only
 //! by inheritance from a `@persist` graph engine, and that engine died before
 //! the migration. JSONL keeps the property that mattered — one line per step,
-//! so a failed resume stays readable afterwards — without dragging a C dependency
-//! for a file opened twice per round.
+//! so a failed resume stays readable afterwards — without dragging a C
+//! dependency for a file opened twice per round.
 //!
-//! Synchronous, unlike `Session` and `Repo`: those spawn processes, which is slow
-//! and async-only in tokio. Writing two kilobytes to local disk gains nothing from
-//! `await`, and claiming it's async would give a false idea of cost.
-//!
-//! # The invariant that costs money
-//!
-//! **An unreadable store is never "nothing ran yet".** The two answers are worth
-//! a `/code` session apart: the latter makes us repay a stage that may have already
-//! merged. A missing store, an unknown flow, and an empty ID all mean the same
-//! harmless thing and return `None`; everything else returns [`Halt::Unreadable`].
+//! What the port promises, and why an unreadable store is never "nothing ran
+//! yet", is documented with it in
+//! [`ports::store::checkpoint`](crate::ports::store::checkpoint).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -30,15 +24,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::domain::{Halt, Outcome};
-
-/// The resume point, as the pointer describes it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Pointer {
-    /// The current task, if the harness had one.
-    pub task: Option<String>,
-    /// The flow whose states carry the details.
-    pub flow_id: Option<String>,
-}
+use crate::ports::store::checkpoint::{Checkpoints, Pointer};
 
 /// The pointer, as it's written: two lines, readable with `cat`.
 #[must_use]
@@ -96,13 +82,10 @@ impl Checkpoint {
             .collect();
         self.dir.join(format!("flow-{safe}.jsonl"))
     }
+}
 
-    /// The resume point, or an empty pointer if there is none.
-    ///
-    /// # Errors
-    ///
-    /// [`Halt::Unreadable`] if the file exists but can't be read.
-    pub fn pointer(&self) -> Outcome<Pointer> {
+impl Checkpoints for Checkpoint {
+    fn pointer(&self) -> Outcome<Pointer> {
         let path = self.pointer_path();
         if !path.exists() {
             return Ok(Pointer::default());
@@ -111,25 +94,17 @@ impl Checkpoint {
         Ok(parse_pointer(&text))
     }
 
-    /// Write the resume point.
-    ///
-    /// # Errors
-    ///
-    /// [`Halt::Failed`] if the pointer couldn't be written.
-    pub fn set_pointer(&self, task: &str, flow_id: &str) -> Outcome<()> {
+    /// Overwritten, never appended: a resume point is a state, not a history.
+    fn set_pointer(&self, task: &str, flow_id: &str) -> Outcome<()> {
         std::fs::create_dir_all(&self.dir).map_err(|e| wrote_nothing(&self.dir, &e.to_string()))?;
         let path = self.pointer_path();
         std::fs::write(&path, render_pointer(task, flow_id))
             .map_err(|e| wrote_nothing(&path, &e.to_string()))
     }
 
-    /// The task is done: the resume point has nothing left to describe.
-    ///
-    /// # Errors
-    ///
-    /// [`Halt::Failed`] if the pointer exists and couldn't be deleted — leaving it
-    /// in place would resume a task that's already done.
-    pub fn clear(&self) -> Outcome<()> {
+    /// An already-absent pointer is not a failure: the desired end state is
+    /// reached.
+    fn clear(&self) -> Outcome<()> {
         let path = self.pointer_path();
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -138,15 +113,10 @@ impl Checkpoint {
         }
     }
 
-    /// Add the round state after a step.
-    ///
-    /// One line per step rather than an update: [`Checkpoint::load`] reads the last,
-    /// and keeping the previous ones makes a failed resume readable afterwards.
-    ///
-    /// # Errors
-    ///
-    /// [`Halt::Failed`] if the state couldn't be written.
-    pub fn save(&self, flow_id: &str, step: &str, state: &Value) -> Outcome<()> {
+    /// One line per step rather than an update: [`Checkpoints::load`] reads the
+    /// last, and keeping the previous ones makes a failed resume readable
+    /// afterwards.
+    fn save(&self, flow_id: &str, step: &str, state: &Value) -> Outcome<()> {
         std::fs::create_dir_all(&self.dir).map_err(|e| wrote_nothing(&self.dir, &e.to_string()))?;
         let path = self.flow_path(flow_id);
         let line = serde_json::json!({ "step": step, "state": state });
@@ -158,17 +128,9 @@ impl Checkpoint {
         writeln!(file, "{line}").map_err(|e| wrote_nothing(&path, &e.to_string()))
     }
 
-    /// The most recent state of this flow, or `None`.
-    ///
-    /// `None` means "nothing has run yet" — missing store, unknown flow, empty ID.
-    /// All these answers are harmless.
-    ///
-    /// # Errors
-    ///
-    /// [`Halt::Unreadable`] if the store exists but can't be decoded. **This
-    /// is not the same as `None`**: the gap is worth a `/code` session, and confusing
-    /// them would make us repay a stage that's already merged.
-    pub fn load(&self, flow_id: &str) -> Outcome<Option<Value>> {
+    /// The last non-empty line wins; an empty file is "nothing ran yet", a line
+    /// that will not decode is [`Halt::Unreadable`].
+    fn load(&self, flow_id: &str) -> Outcome<Option<Value>> {
         if flow_id.is_empty() {
             return Ok(None);
         }

@@ -1,8 +1,16 @@
 //! The advisory review of a PR: a second opinion in fresh context, then
 //! notes for the human who must decide if they trust the batch.
 //!
-//! Triggered by a hook on `gh pr create`, not by a loop round — see
-//! `docs/CUTOVER.md` for what remains human in this trigger.
+//! Triggered by `harness:to-review` on a pull request, not by a loop round.
+//! The original design said "a hook on `gh pr create`"; that needs a public
+//! URL permanently reachable, which this harness does not have, so the
+//! trigger is a label like every other stage of the flow — posed by a human
+//! or by whatever opened the PR, and read by the router.
+//!
+//! **The label is a request, not state this workflow clears.** It is left in
+//! place: a PR that already carries a review stops being offered because the
+//! review's own rules say so (`data::skip_rules`), which the router applies
+//! before mounting anything. Nothing has to remember to clean up.
 //!
 //! Same skeleton as other workflows (`ARCHITECTURE.md`):
 //!

@@ -8,10 +8,10 @@
 
 use std::rc::Rc;
 
-use harness_core::adapters::agent::SessionFactory;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::lock::Locks;
-use harness_core::adapters::store::spending::Spending;
+use harness_core::ports::agent::SessionFactory;
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::lock::Locks;
+use harness_core::ports::store::spending::Spending;
 
 /// The ports of a refinement round.
 pub struct Ports {
@@ -37,13 +37,13 @@ pub(crate) mod fake {
     use std::rc::Rc;
 
     use harness_core::adapters::agent::rehearsal::Rehearsal;
-    use harness_core::adapters::store::lock::DirLocks;
-    use harness_core::adapters::store::spending::{Entry, Spending};
     use harness_core::domain::{Halt, Outcome};
+    use harness_core::ports::store::spending::{Entry, Spending};
     use harness_core::traces::Logbook;
 
     use super::Ports;
     use crate::common::fake_github::FakeGitHub;
+    use crate::common::fake_locks::Grants;
 
     /// A registry that refuses to write.
     pub struct Nowhere;
@@ -67,7 +67,7 @@ pub(crate) mod fake {
             gh,
             sessions: Rc::new(Rehearsal::new(Logbook::null())),
             spending: Rc::new(Nowhere),
-            locks: Rc::new(DirLocks),
+            locks: Rc::new(Grants),
         }
     }
 }

@@ -19,12 +19,13 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::adapters::store::lock::Locks;
-use harness_core::domain::{Halt, Outcome, Verdict};
+use harness_core::domain::{Halt, Outcome, Verdict, prompts};
 use harness_core::execution::{Context, Executable, Gate, Lock, Round, Workflow};
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::lock::Locks;
 
-use crate::common::labels;
+use crate::common::{hierarchy, labels};
+use crate::refinement::data::phase::Phase;
 use crate::refinement::data::state::RefinementState;
 use crate::refinement::data::{rounds, sections};
 
@@ -46,8 +47,10 @@ pub struct RefinementRun {
     pub issue_key: String,
     /// What a human asked for this round, verbatim.
     pub context: String,
-    /// Refine even if the issue does not carry `harness:refinement`.
+    /// Refine even if the issue does not carry the phase's label.
     pub force: bool,
+    /// Which half of the refinement this run does.
+    pub phase: Phase,
     /// The round, already mounted: the map, then the table's steps.
     pub round: Round<RefinementState>,
 }
@@ -76,13 +79,22 @@ impl Workflow<RefinementState> for RefinementRun {
                 labels::HUMAN
             )));
         }
-        if !issue.has(labels::REFINEMENT) && !self.force {
+        let asked = self.phase.requested_by();
+        if !issue.has(asked) && !self.force {
             return Err(Halt::Halted(format!(
-                "#{} does not carry {} — add it with `gh issue edit {} \
-                 --add-label {}`, or re-run with --force",
+                "#{} does not carry {asked} — add it with `gh issue edit {} \
+                 --add-label {asked}`, or re-run with --force",
+                self.issue, self.issue,
+            )));
+        }
+        // The technical half builds on the business one: refining the code
+        // side of a body nobody has specified writes a plan for a guess.
+        if self.phase == Phase::Technical && !issue.has(labels::SPEC_WRITTEN) && !self.force {
+            return Err(Halt::Halted(format!(
+                "#{} does not carry {} — run the business refinement ({}) \
+                 first, or re-run with --force",
                 self.issue,
-                labels::REFINEMENT,
-                self.issue,
+                labels::SPEC_WRITTEN,
                 labels::REFINEMENT
             )));
         }
@@ -91,9 +103,9 @@ impl Workflow<RefinementState> for RefinementRun {
         // restart at 1 and rewrite the body over two rounds.
         let comments = self.gh.issue_comments(self.issue).await?;
 
-        let round_no = rounds::counter(&comments) + 1;
+        let round_no = rounds::counter(&comments, self.phase) + 1;
         let found = sections::parse(&issue.body);
-        let wanted = rounds::planned(round_no, &found, !self.context.is_empty());
+        let wanted = rounds::planned(self.phase, round_no, !self.context.is_empty());
 
         let said = if wanted.is_empty() {
             "router decides".to_string()
@@ -105,7 +117,12 @@ impl Workflow<RefinementState> for RefinementRun {
             self.issue
         ));
 
+        ctx.state.hierarchy = hierarchy::around(self.gh.as_ref(), &issue)
+            .await?
+            .map(|scope| prompts::hierarchy_block(&scope, prompts::INJECTOR))
+            .unwrap_or_default();
         ctx.state.issue = Some(issue);
+        ctx.state.phase = self.phase;
         ctx.state.round_no = round_no;
         ctx.state.found = found;
         ctx.state.wanted = wanted.into_iter().map(str::to_string).collect();
@@ -185,6 +202,16 @@ mod tests {
         context: &str,
         refinement_dir: PathBuf,
     ) -> RefinementRun {
+        built_for(Phase::Business, gh, force, context, refinement_dir)
+    }
+
+    fn built_for(
+        phase: Phase,
+        gh: &Rc<FakeGitHub>,
+        force: bool,
+        context: &str,
+        refinement_dir: PathBuf,
+    ) -> RefinementRun {
         let config = config_fake::in_dir(refinement_dir, context);
         let explore_config = explore::fake::config(config.artifacts_dir.clone());
         run::build(
@@ -193,6 +220,7 @@ mod tests {
             &explore::fake::ports(),
             &explore_config,
             run::Request {
+                phase,
                 issue: 25,
                 context: context.to_string(),
                 force,
@@ -293,7 +321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn round_one_wants_exactly_the_three_round_one_sections() {
+    async fn the_business_round_one_wants_the_three_business_sections() {
         let gh = Rc::new(FakeGitHub {
             issues: vec![issue(25, "open", &[labels::AGENT, labels::REFINEMENT], "")],
             ..FakeGitHub::default()
@@ -301,9 +329,58 @@ mod tests {
         let round = built(&gh, false, "", dir("round-one-wants"));
         let mut context = ctx(true);
         round.execute(&mut context).await.expect("a success");
-        assert_eq!(
-            context.state.wanted,
-            vec!["business-goal", "technical", "acceptance-criteria"]
-        );
+        assert_eq!(context.state.wanted, Phase::Business.keys().to_vec());
+    }
+
+    #[tokio::test]
+    async fn the_technical_round_wants_the_two_technical_sections() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(
+                25,
+                "open",
+                &[labels::AGENT, labels::TECH_REFINEMENT, labels::SPEC_WRITTEN],
+                "",
+            )],
+            ..FakeGitHub::default()
+        });
+        let round = built_for(Phase::Technical, &gh, false, "", dir("tech-wants"));
+        let mut context = ctx(true);
+        round.execute(&mut context).await.expect("a success");
+        assert_eq!(context.state.wanted, Phase::Technical.keys().to_vec());
+        assert_eq!(context.state.phase, Phase::Technical);
+    }
+
+    #[tokio::test]
+    async fn the_technical_round_refuses_a_body_nobody_has_specified() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(
+                25,
+                "open",
+                &[labels::AGENT, labels::TECH_REFINEMENT],
+                "",
+            )],
+            ..FakeGitHub::default()
+        });
+        let round = built_for(Phase::Technical, &gh, false, "", dir("tech-no-spec"));
+        let mut context = ctx(true);
+        let err = round.execute(&mut context).await.expect_err("must stop");
+        assert!(err.reason().contains(labels::SPEC_WRITTEN));
+    }
+
+    #[tokio::test]
+    async fn the_technical_round_needs_its_own_label() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(
+                25,
+                "open",
+                &[labels::AGENT, labels::REFINEMENT, labels::SPEC_WRITTEN],
+                "",
+            )],
+            ..FakeGitHub::default()
+        });
+        let round = built_for(Phase::Technical, &gh, false, "", dir("tech-no-label"));
+        let mut context = ctx(true);
+        let err = round.execute(&mut context).await.expect_err("must stop");
+        assert!(err.reason().contains(labels::TECH_REFINEMENT));
     }
 }

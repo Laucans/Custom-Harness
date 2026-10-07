@@ -34,9 +34,9 @@ pub fn findings(ctx: &Context<ReviewState>, inline_stage: &str, no_inline: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::adapters::agent::Reply;
     use harness_core::domain::Spend;
     use harness_core::execution::Settings;
+    use harness_core::ports::agent::Reply;
     use harness_core::traces::Logbook;
 
     /// The name the table gives to the line-by-line pass.

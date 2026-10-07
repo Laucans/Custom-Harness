@@ -6,7 +6,7 @@
 > are all that's missing.
 
 The Rust harness takes over tracking rather than cohabiting: labels move from
-`pipeline:*` to `harness:*`, and state moves to `.llocal/agent-loop/`. **Nothing
+`pipeline:*` to `harness:*`, and state moves to `.llocal/logs/agent-loop/`. **Nothing
 here is automatic**, deliberate: each of these moves stops the Python pipeline.
 
 ## Before switching
@@ -117,9 +117,13 @@ PATH="$d:$PATH" harness --dry-run --no-workspace
 
 | Path | Who writes it after cutover |
 | --- | --- |
-| `.llocal/agent-loop/costs.tsv` | Rust, appending to history — header frozen, old lines remain readable |
-| `.llocal/agent-loop/state` | Rust, same two-line format (`task=`, `flow_id=`) |
-| `.llocal/agent-loop/flow_states.db` | nobody. Rust writes `flow-<id>.jsonl` alongside |
+| `.llocal/logs/agent-loop/costs.tsv` | Rust, appending to history — header frozen, old lines remain readable |
+| `.llocal/logs/agent-loop/state` | Rust, same two-line format (`task=`, `flow_id=`) |
+| `.llocal/agent-loop/flow_states.db` | nobody. Python's own sqlite, left where it is |
+
+Rust keeps every workflow's traces under `.llocal/logs/<workflow>/`; Python wrote
+them directly under `.llocal/`. Moving a pre-cutover folder is a `mv`, and the
+ledgers' headers are frozen either way, so history keeps reading.
 
 Sqlite isn't deleted by cutover: remains readable via `sqlite3` if an autopsy needs it.
 

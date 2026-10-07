@@ -7,13 +7,13 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::github::GitHub;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Action, Context};
+use harness_core::ports::shell::github::GitHub;
 
 use crate::common::labels;
 use crate::refinement::data::state::RefinementState;
-use crate::refinement::data::{rounds, sections};
+use crate::refinement::data::{advice, rounds, sections};
 
 /// The publishing step: body, comment, labels.
 pub struct Write {
@@ -22,8 +22,60 @@ pub struct Write {
     /// The coherence stage name, where its output is stored in
     /// `ctx.results`. Received from the table, like every stage name.
     pub coherence: String,
+    /// The advice stage name, when this phase has one (business only): its
+    /// reply is posted as a comment before the round counter.
+    pub advice: Option<String>,
     /// The artifacts folder for this issue.
     pub refinement_dir: PathBuf,
+}
+
+impl Write {
+    /// Poses or clears `harness:needs-decision`, to match what the advice said.
+    ///
+    /// **Never fails the round.** By the time this runs, every session is paid
+    /// for, the body is posted and the advice comment carries the same answer in
+    /// words. A label is how the board is read at a glance, not where the
+    /// information lives — so a `gh` refusal is said in the journal and the round
+    /// still completes. The one setup it cannot survive is the label not existing
+    /// on the repository, which is why it is in
+    /// [`labels::ALL`](crate::common::labels::ALL) for `init-repo` to create.
+    ///
+    /// Both directions, because the flag is derived from the latest round: a
+    /// re-run that now concludes `no` has to take it off, or the board keeps
+    /// claiming a blocker that has been answered.
+    async fn flag_decision(
+        &self,
+        num: u64,
+        issue: &harness_core::domain::Issue,
+        found: &advice::Read,
+        ctx: &Context<RefinementState>,
+    ) {
+        let carried = issue.has(labels::NEEDS_DECISION);
+        let wanted = found.wants_a_human();
+        let done = if wanted && !carried {
+            self.gh.add_label(num, labels::NEEDS_DECISION).await
+        } else if !wanted && carried {
+            self.gh.remove_label(num, labels::NEEDS_DECISION).await
+        } else {
+            return;
+        };
+        match done {
+            Ok(()) if wanted => ctx.traces.say(&format!(
+                "#{num} — {} posed: a human has a decision to make",
+                labels::NEEDS_DECISION
+            )),
+            Ok(()) => ctx.traces.say(&format!(
+                "#{num} — {} removed: this round needs no decision",
+                labels::NEEDS_DECISION
+            )),
+            Err(why) => ctx.traces.warn(&format!(
+                "#{num} — could not {} {}: {why}. The advice comment says it \
+                 anyway; the round is published",
+                if wanted { "pose" } else { "remove" },
+                labels::NEEDS_DECISION
+            )),
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -86,23 +138,40 @@ impl Action<RefinementState> for Write {
 
         self.gh.set_body(num, &body).await?;
 
+        let phase = ctx.state.phase;
+
         // Only if it was there: `gh` returns 404 removing a missing label,
         // which is true for every run with `--force`.
-        if issue.has(labels::REFINEMENT) {
-            self.gh.remove_label(num, labels::REFINEMENT).await?;
+        if issue.has(phase.requested_by()) {
+            self.gh.remove_label(num, phase.requested_by()).await?;
         }
 
-        // Three sections are enough for a human to act: their task is
-        // specified by round 1.
-        let due = if issue.has(labels::HUMAN) { 1 } else { 2 };
-        if ctx.state.round_no >= due {
-            self.gh.add_label(num, labels::SPEC_WRITTEN).await?;
+        // One request writes the whole phase: the label it leaves says so.
+        self.gh.add_label(num, phase.leaves()).await?;
+
+        if let Some(reply) = self
+            .advice
+            .as_ref()
+            .and_then(|stage| ctx.results.get(stage))
+        {
+            let text = reply.text.trim();
+            if !text.is_empty() {
+                let found = advice::read(text);
+                // The headline goes in the journal too: the whole point of the
+                // score is to be read without opening the issue.
+                ctx.traces
+                    .say(&format!("#{num} — {}", advice::headline(&found)));
+                self.gh
+                    .post_issue_comment(num, &advice::comment(num, text))
+                    .await?;
+                self.flag_decision(num, &issue, &found, ctx).await;
+            }
         }
 
         // Counter last: it's what says this round happened. Posted before a
         // failing label, it would restart resumption at the next round.
         self.gh
-            .post_issue_comment(num, &rounds::comment(ctx.state.round_no))
+            .post_issue_comment(num, &rounds::comment(ctx.state.round_no, phase))
             .await?;
 
         ctx.traces.say(&format!(
@@ -118,13 +187,15 @@ impl Action<RefinementState> for Write {
 mod tests {
     use super::*;
     use crate::common::fake_github::{FakeGitHub, Wrote};
-    use harness_core::adapters::agent::Reply;
+    use crate::refinement::data::phase::Phase;
     use harness_core::domain::{Issue, Spend};
     use harness_core::execution::Settings;
+    use harness_core::ports::agent::Reply;
     use harness_core::traces::Logbook;
 
     /// The name the table gives to the coherence stage.
     const COHERENCE: &str = "coherence";
+    const ADVICE: &str = "human-advice";
 
     fn dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -144,6 +215,7 @@ mod tests {
             }),
             round_no,
             wanted: vec!["business-goal".to_string()],
+            phase: Phase::Business,
             ..RefinementState::default()
         }
     }
@@ -169,12 +241,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn round_one_writes_the_body_but_not_spec_written_yet() {
+    async fn round_one_writes_the_body_and_marks_spec_written() {
         let review_dir = dir("round-one");
         let gh = Rc::new(FakeGitHub::default());
         let write = Write {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
+            advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
         };
         let mut context = ctx(1, &[labels::REFINEMENT]);
@@ -186,7 +259,7 @@ mod tests {
                 .any(|w| matches!(w, Wrote::Body(25, b) if b.contains("the lot goal")))
         );
         assert!(writes.contains(&Wrote::Unlabelled(25, labels::REFINEMENT.to_string())));
-        assert!(!writes.contains(&Wrote::Label(25, labels::SPEC_WRITTEN.to_string())));
+        assert!(writes.contains(&Wrote::Label(25, labels::SPEC_WRITTEN.to_string())));
         let _ = std::fs::remove_dir_all(&review_dir);
     }
 
@@ -197,6 +270,7 @@ mod tests {
         let write = Write {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
+            advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
         };
         let mut context = ctx(2, &[]);
@@ -215,6 +289,7 @@ mod tests {
         let write = Write {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
+            advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
         };
         let mut context = ctx(1, &[labels::HUMAN]);
@@ -227,12 +302,197 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_advice_is_posted_as_a_comment_before_the_counter() {
+        let review_dir = dir("advice");
+        let gh = Rc::new(FakeGitHub::default());
+        let write = Write {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            coherence: COHERENCE.to_string(),
+            advice: Some(ADVICE.to_string()),
+            refinement_dir: review_dir.clone(),
+        };
+        let mut context = ctx(1, &[]);
+        context.results.insert(
+            ADVICE.to_string(),
+            Reply {
+                text: "technical-refinement: 5/5\nhuman-in-the-loop: yes\n- a paid service"
+                    .to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        write.run(&mut context).await.expect("written");
+        let writes = gh.writes();
+        let advice = writes
+            .iter()
+            .position(|w| matches!(w, Wrote::Comment(25, b) if b.contains("necessity 5/5")))
+            .expect("advice posted");
+        // The relation, not a position: the decision label now lands between
+        // the two, and an index would break on every write added here while
+        // saying nothing about the invariant, which is the order.
+        let counter = writes
+            .iter()
+            .position(|w| matches!(w, Wrote::Comment(25, b) if b == "refinement round: 1"))
+            .expect("the counter");
+        assert!(advice < counter, "the advice comes before the counter");
+        // The score is the headline, the advice is kept whole under it, and the
+        // gesture a `yes` implies is spelled out.
+        let Some(Wrote::Comment(_, body)) = writes.get(advice) else {
+            panic!("a comment");
+        };
+        assert!(
+            body.starts_with("Technical refinement — necessity 5/5"),
+            "{body}"
+        );
+        assert!(body.contains("a paid service"));
+        assert!(body.contains(labels::TECH_REFINEMENT));
+        let _ = std::fs::remove_dir_all(&review_dir);
+    }
+
+    /// A business round whose advice says `text`, on an issue carrying `labels`.
+    async fn advised(name: &str, text: &str, issue_labels: &[&str]) -> Vec<Wrote> {
+        let review_dir = dir(name);
+        let gh = Rc::new(FakeGitHub::default());
+        let write = Write {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            coherence: COHERENCE.to_string(),
+            advice: Some(ADVICE.to_string()),
+            refinement_dir: review_dir.clone(),
+        };
+        let mut context = ctx(1, issue_labels);
+        context.results.insert(
+            ADVICE.to_string(),
+            Reply {
+                text: text.to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        write.run(&mut context).await.expect("written");
+        let _ = std::fs::remove_dir_all(&review_dir);
+        gh.writes()
+    }
+
+    #[tokio::test]
+    async fn an_advice_that_wants_a_human_poses_the_decision_label() {
+        let writes = advised(
+            "needs-decision",
+            "technical-refinement: 4/5\nhuman-in-the-loop: yes\n\n- Q1: which port?",
+            &[],
+        )
+        .await;
+        assert!(writes.contains(&Wrote::Label(25, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn an_advice_that_wants_no_human_poses_nothing() {
+        let writes = advised(
+            "no-decision",
+            "technical-refinement: 2/5\nhuman-in-the-loop: no\n\n- mechanical",
+            &[],
+        )
+        .await;
+        assert!(!writes.contains(&Wrote::Label(25, labels::NEEDS_DECISION.to_string())));
+        // And nothing is removed either: it was not there to begin with, and
+        // `gh` answers 404 on a label an issue does not carry.
+        assert!(!writes.contains(&Wrote::Unlabelled(25, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_later_round_that_needs_no_decision_clears_the_label() {
+        // Derived state: leaving it would keep the board claiming a blocker
+        // that this round just concluded is gone.
+        let writes = advised(
+            "decision-cleared",
+            "technical-refinement: 1/5\nhuman-in-the-loop: no",
+            &[labels::NEEDS_DECISION],
+        )
+        .await;
+        assert!(writes.contains(&Wrote::Unlabelled(25, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_label_already_there_is_not_posed_twice() {
+        let writes = advised(
+            "decision-kept",
+            "technical-refinement: 5/5\nhuman-in-the-loop: yes",
+            &[labels::NEEDS_DECISION],
+        )
+        .await;
+        assert!(!writes.contains(&Wrote::Label(25, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_advice_still_asks_for_a_human() {
+        // Nothing was understood, so nobody can say this is safe unattended —
+        // and the one who reads an unreadable answer has to be a human.
+        let writes = advised("decision-unstated", "a paragraph with no shape", &[]).await;
+        assert!(writes.contains(&Wrote::Label(25, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn the_round_survives_a_decision_label_gh_refuses() {
+        // Every session is paid by now and the advice comment carries the same
+        // answer in words. A board flag is not worth losing the round over.
+        let review_dir = dir("decision-refused");
+        let gh = Rc::new(FakeGitHub::default());
+        gh.refuse_label(labels::NEEDS_DECISION);
+        let write = Write {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            coherence: COHERENCE.to_string(),
+            advice: Some(ADVICE.to_string()),
+            refinement_dir: review_dir.clone(),
+        };
+        let mut context = ctx(1, &[]);
+        context.results.insert(
+            ADVICE.to_string(),
+            Reply {
+                text: "technical-refinement: 4/5\nhuman-in-the-loop: yes".to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        write.run(&mut context).await.expect("published anyway");
+        // And the counter still landed: the round really did complete.
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Comment(25, "refinement round: 1".to_string()))
+        );
+        let _ = std::fs::remove_dir_all(&review_dir);
+    }
+
+    #[tokio::test]
+    async fn a_technical_round_leaves_tech_written_and_its_own_counter() {
+        let review_dir = dir("technical");
+        let gh = Rc::new(FakeGitHub::default());
+        let write = Write {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            coherence: COHERENCE.to_string(),
+            advice: None,
+            refinement_dir: review_dir.clone(),
+        };
+        let mut context = ctx(1, &[labels::TECH_REFINEMENT]);
+        context.state.phase = Phase::Technical;
+        write.run(&mut context).await.expect("written");
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Unlabelled(25, labels::TECH_REFINEMENT.to_string())));
+        assert!(writes.contains(&Wrote::Label(25, labels::TECH_WRITTEN.to_string())));
+        assert!(!writes.contains(&Wrote::Label(25, labels::SPEC_WRITTEN.to_string())));
+        assert!(writes.contains(&Wrote::Comment(
+            25,
+            "technical refinement round: 1".to_string()
+        )));
+        let _ = std::fs::remove_dir_all(&review_dir);
+    }
+
+    #[tokio::test]
     async fn the_round_counter_comment_is_posted_last() {
         let review_dir = dir("counter-last");
         let gh = Rc::new(FakeGitHub::default());
         let write = Write {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
+            advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
         };
         let mut context = ctx(1, &[]);
@@ -253,6 +513,7 @@ mod tests {
         let write = Write {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
+            advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
         };
         let mut context = ctx(1, &[]);

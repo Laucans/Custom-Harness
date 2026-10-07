@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::disk::Disk;
-use harness_core::adapters::shell::github::GitHub;
-use harness_core::domain::{Halt, Outcome, Verdict};
+use harness_core::domain::{Halt, Outcome, Verdict, doctor, quota};
 use harness_core::execution::{Context, Verification};
+use harness_core::ports::shell::disk::Disk;
+use harness_core::ports::shell::github::GitHub;
 
 use crate::common::labels;
 use crate::dev_loop::data::board;
@@ -99,7 +99,10 @@ impl Verification<Loop> for SkillsExist {
             if !self.disk.exists(&path) {
                 return Err(Halt::Halted(format!(
                     "this run names /{skill} but .claude/skills/{skill}/SKILL.md \
-                     does not exist"
+                     is not in the checkout. The harness lends its own skills \
+                     into the clone at mount time, so this means the harness \
+                     itself has no {skill}/SKILL.md — not that the target repo \
+                     should carry one"
                 )));
             }
         }
@@ -140,14 +143,17 @@ impl Verification<Loop> for DependenciesAreInstalled {
         if missing.is_empty() {
             return Ok(Verdict::Continue);
         }
+        // The marker comes from `domain::doctor`, which matches on it to run
+        // the install itself: the gate is right to refuse, and the repair is to
+        // carry out the very command named here.
         Err(Halt::Halted(format!(
-            "the workspace has no {} — nothing a clone carries. Install them in \
-             {}: {}",
+            "the workspace has no {} — {}. Install them in {}: {}",
             missing
                 .iter()
                 .map(|(path, _)| path.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
+            doctor::MISSING_DEPENDENCIES,
             self.root.display(),
             missing
                 .iter()
@@ -304,7 +310,9 @@ mod tests {
         let err = gate.verify(&ctx()).await.expect_err("must stop");
         assert!(err.reason().contains("node_modules"));
         assert!(err.reason().contains("npm install"));
-        assert!(err.reason().contains("nothing a clone carries"));
+        // The marker, by its const: the repair matches on it, so the two
+        // must not drift apart.
+        assert!(err.reason().contains(doctor::MISSING_DEPENDENCIES));
     }
 
     #[tokio::test]
@@ -318,5 +326,268 @@ mod tests {
             gate.verify(&ctx()).await.expect("a verdict"),
             Verdict::Continue
         );
+    }
+}
+
+/// Refuses a dev phase when the rate-limit window has too little left.
+///
+/// **What it prevents is not a refused session — those are free.** On #64, 125
+/// refusals cost 0,0000 $. What cost was the *interruption*: the window ran out
+/// 60 turns into `code`, the session was cut mid-reasoning, and the run that
+/// resumed it spent 5,25 $ working out what the first one had left behind. The
+/// first 4,32 $ delivered nothing.
+///
+/// So the gate is about **starting**, not about spending. It costs a file read.
+///
+/// **It fails open on everything but a clear refusal**, and the reasoning is
+/// [`quota::decide`]'s: no reading, an unreadable one, a stale one all start. A
+/// gate that blocked on absence would deadlock the loop, since the only thing
+/// that can produce a reading is a run.
+///
+/// Disabled by `--ignore-quota`, in which case it is skipped out loud: a gate
+/// that silently stopped applying would be worse than no gate.
+pub struct QuotaHasRoom {
+    /// What reads the recorded reading.
+    pub disk: Rc<dyn Disk>,
+    /// Where it was recorded — [`Workspace::quota`](harness_core::domain::workspace::Workspace::quota).
+    pub at: PathBuf,
+    /// `--ignore-quota`: the human has decided the reserve does not apply.
+    pub ignored: bool,
+    /// Now, in seconds since the epoch, so staleness is judged against a clock
+    /// the caller owns rather than one this gate reaches for.
+    pub now: u64,
+}
+
+#[async_trait(?Send)]
+impl Verification<Loop> for QuotaHasRoom {
+    async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
+        if self.ignored {
+            // `Continue`, **not** `Verdict::Skip`. `Skip` means "skip what this
+            // gate guards", and `Gate` returns the first verdict that is not
+            // `Continue` — so a `Skip` here skipped the four preflight checks
+            // after it and then the whole run, which ended at exit 0 having done
+            // nothing. `--ignore-quota` says this one check does not apply; it
+            // has no business speaking for the rest.
+            ctx.traces
+                .say("--ignore-quota — starting whatever the rate-limit window has left");
+            return Ok(Verdict::Continue);
+        }
+        // A file that is absent, or holds something this cannot read, is no
+        // reading at all: `decide` starts on `None`.
+        let reading: Option<quota::Reading> = self
+            .disk
+            .read_to_string(&self.at)
+            .and_then(|text| serde_json::from_str(&text).ok());
+        match quota::decide(reading.as_ref(), self.now) {
+            quota::Verdict::Start(why) => {
+                ctx.traces.debug(&format!("quota: {why}"));
+                Ok(Verdict::Continue)
+            }
+            quota::Verdict::Wait(why) => Err(Halt::Quota(why)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod quota_gate {
+    //! The gate that refuses a dev phase on a nearly spent window.
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+
+    use harness_core::domain::{Halt, Outcome, Verdict, quota};
+    use harness_core::execution::{Context, Settings, Verification};
+    use harness_core::ports::shell::disk::Disk;
+    use harness_core::traces::Logbook;
+
+    use super::QuotaHasRoom;
+    use crate::dev_loop::data::state::Loop;
+
+    const NOW: u64 = 1_000_000;
+    const AT: &str = "/state/quota.json";
+
+    /// A disk holding one file's text, or nothing.
+    struct Holds(Option<String>);
+
+    impl Disk for Holds {
+        fn read_to_string(&self, path: &Path) -> Option<String> {
+            (path == Path::new(AT)).then(|| self.0.clone()).flatten()
+        }
+        fn exists(&self, _path: &Path) -> bool {
+            unreachable!()
+        }
+        fn create_dir_all(&self, _path: &Path) -> Outcome<()> {
+            unreachable!()
+        }
+        fn remove_dir_all(&self, _path: &Path) -> Outcome<()> {
+            unreachable!()
+        }
+        fn dir_names(&self, _path: &Path) -> Vec<String> {
+            unreachable!()
+        }
+        fn write_to_string(&self, _path: &Path, _content: &str) -> Outcome<()> {
+            unreachable!()
+        }
+    }
+
+    fn gate(held: Option<&str>, ignored: bool) -> QuotaHasRoom {
+        QuotaHasRoom {
+            disk: Rc::new(Holds(held.map(ToString::to_string))),
+            at: PathBuf::from(AT),
+            ignored,
+            now: NOW,
+        }
+    }
+
+    fn ctx() -> Context<Loop> {
+        Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            Loop::default(),
+            Logbook::null(),
+        )
+    }
+
+    fn written(utilization: f64, resets_at: u64) -> String {
+        serde_json::to_string(&quota::Reading {
+            windows: vec![quota::Window {
+                name: "five_hour".to_string(),
+                utilization,
+                resets_at,
+            }],
+            at: NOW,
+        })
+        .expect("serialisable")
+    }
+
+    #[tokio::test]
+    async fn a_nearly_spent_window_refuses_as_a_quota_not_a_failure() {
+        // `resets_at` in the future: the window is still live.
+        // `Halt::Quota` and not `Halt::Failed`: the breaker treats quota as
+        // transparent, so this refusal must not count towards tripping it — the
+        // window will reset and the same run will then be right to proceed.
+        let said = gate(Some(&written(0.96, NOW + 3600)), false)
+            .verify(&ctx())
+            .await;
+        let Err(Halt::Quota(why)) = said else {
+            panic!("a quota halt, got {said:?}")
+        };
+        assert!(why.contains("4%"), "{why}");
+        assert!(why.contains("--ignore-quota"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_window_with_room_lets_the_run_through() {
+        let said = gate(Some(&written(0.40, NOW + 3600)), false)
+            .verify(&ctx())
+            .await;
+        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
+    }
+
+    #[tokio::test]
+    async fn no_recorded_reading_lets_the_run_through() {
+        // The deadlock this avoids: only a run can write a reading.
+        let said = gate(None, false).verify(&ctx()).await;
+        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_file_is_no_reading_rather_than_a_refusal() {
+        let said = gate(Some("{ this is not a reading }"), false)
+            .verify(&ctx())
+            .await;
+        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
+    }
+
+    #[tokio::test]
+    async fn a_window_that_has_since_reset_lets_the_run_through() {
+        // Its reset time is behind us, so what it measured is gone.
+        let reset = written(1.0, NOW - 1);
+        let said = gate(Some(&reset), false).verify(&ctx()).await;
+        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
+    }
+
+    #[tokio::test]
+    async fn ignore_quota_lets_the_run_through_rather_than_skipping_it() {
+        // The defect this locks out, and my previous test locked *in*: this
+        // returned `Verdict::Skip`, `Gate` stops on the first verdict that is not
+        // `Continue`, and so `--ignore-quota` skipped the four checks after it
+        // and then the entire run — exit 0, nothing done, nothing said. The old
+        // test asserted `Skip` because that was what the code did; it should have
+        // asserted what the flag means.
+        let said = gate(Some(&written(0.99, NOW + 3600)), true)
+            .verify(&ctx())
+            .await;
+        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
+    }
+
+    #[tokio::test]
+    async fn ignore_quota_says_so_rather_than_applying_silently() {
+        // A gate that stopped applying without saying so would be worse than no
+        // gate: nobody would know which of the two runs they were looking at.
+        let heard = Rc::new(Heard::default());
+        let context = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            Loop::default(),
+            Logbook::new(
+                Rc::clone(&heard) as Rc<dyn harness_core::traces::Sink>,
+                harness_core::traces::Verbosity::Normal,
+            ),
+        );
+        gate(Some(&written(0.99, NOW + 3600)), true)
+            .verify(&context)
+            .await
+            .expect("through");
+        assert!(
+            heard
+                .0
+                .borrow()
+                .iter()
+                .any(|l| l.contains("--ignore-quota")),
+            "{:?}",
+            heard.0.borrow()
+        );
+    }
+
+    /// A console that keeps what it was told.
+    #[derive(Default)]
+    struct Heard(std::cell::RefCell<Vec<String>>);
+
+    impl harness_core::traces::Sink for Heard {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_gate_this_check_opens_is_not_short_circuited_by_it() {
+        // The defect was only visible one level up: the check looked right on
+        // its own. What broke was the *gate* — so the gate is what this asserts.
+        let whole: harness_core::execution::Gate<Loop> = harness_core::execution::Gate {
+            name: "preflight",
+            checks: vec![
+                Box::new(gate(Some(&written(0.99, NOW + 3600)), true)),
+                Box::new(MustBeReached),
+            ],
+        };
+        let said = whole.verify(&ctx()).await;
+        assert!(
+            matches!(said, Err(Halt::Halted(ref why)) if why == "reached"),
+            "the check after --ignore-quota must still run, got {said:?}"
+        );
+    }
+
+    /// Proof that the checks after the quota gate are still reached.
+    struct MustBeReached;
+
+    #[async_trait::async_trait(?Send)]
+    impl Verification<Loop> for MustBeReached {
+        async fn verify(&self, _ctx: &Context<Loop>) -> Outcome<Verdict> {
+            Err(Halt::Halted("reached".to_string()))
+        }
     }
 }
