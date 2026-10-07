@@ -173,9 +173,9 @@ pub fn parse(body: &str) -> HashMap<String, String> {
 /// is to remove what a stage does not act on, not to reformat what it does —
 /// and the body is a GitHub issue a human reads too.
 ///
-/// A heading is named in [`comparable`] form, and compared **exactly**, not by
-/// prefix: dropping `Technical` must not take `Technical Implementation Plan`
-/// with it. `/create-test` is the stage that needs precisely that distinction —
+/// A heading is named in lowercase, up to any parenthetical, and compared
+/// **exactly**, not by prefix: dropping `Technical` must not take
+/// `Technical Implementation Plan` with it. `/create-test` is the stage that needs precisely that distinction —
 /// it tests against the plan and has no use for the design.
 #[must_use]
 pub fn without(body: &str, headings: &[&str]) -> String {

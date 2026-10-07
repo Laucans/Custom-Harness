@@ -1,19 +1,53 @@
 //! The shape of the code a task builds on: public signatures, without bodies.
 //!
-//! What it replaces: the session reading whole source files to learn the API it
-//! must call. Measured on issue #62, after the configuration digest had already
-//! removed the config re-reads, file reads were still 32% of everything coming
-//! back from a tool — 12k tokens of neighbouring source, opened to find out what
-//! a function takes.
+//! What it is **for**: sparing the session the need to open a whole source file
+//! just to learn the API it must call.
+//!
+//! # What it actually did, measured
+//!
+//! One A/B pair on the `code` stage of issue #65 — same task, same model, the
+//! index on in one arm and `--no-signatures` in the other. **It does not reduce
+//! file reading. It changes which files get opened whole.**
+//!
+//! | characters read from files | with | without | |
+//! | --- | --- | --- | --- |
+//! | pre-existing code — what this targets | 173 253 | 189 854 | **−8.7%** |
+//! | the session's own freshly written code | 85 119 | 65 088 | +31% |
+//! | total | 269 920 | 264 127 | **+2.2%** |
+//!
+//! So the mechanism works on the material it aims at, and the total goes the
+//! other way because the session spends more of its budget re-reading code **it
+//! has just written** — which an index of git-tracked files can never carry. The
+//! sharpest single case: `pack-runner.ts`, in the carried block, was never opened
+//! whole with the index (7 targeted reads) and opened whole three times without
+//! it.
+//!
+//! Three limits on that reading, and they matter more than the numbers:
+//!
+//! 1. **n = 1 against n = 1.** Two sessions, not a distribution. The same task
+//!    measured twice has varied by ×2.4 before (`observations.md`).
+//! 2. **The arms are not symmetric.** The control ran `--stages code` only, so
+//!    there is no `technical-refinement` or `create-test` to compare — and
+//!    `technical-refinement` is the stage where this index is structurally blind
+//!    anyway, since the plan that names the files is what that stage writes.
+//! 3. **Whole-file counts flip with the definition.** Neither arm used `cat`
+//!    much; both paged files through `awk '{print NR": "$0}'` and `sed 's/^/|/'`.
+//!    Counting only `cat`/`Read`: 11 with, 17 without. Counting those pagers too:
+//!    29 with, 25 without. The character figures above are the honest summary
+//!    because they do not depend on that call.
+//!
+//! The stage was also 45 turns and $1.34 cheaper with the index — a gap far
+//! larger than a 2% difference in characters read, and therefore **not**
+//! something these two runs let anyone attribute to file reading.
 //!
 //! # Why each language gets a different mechanism
 //!
 //! Measured, not assumed, and the answer is syntactic:
 //!
-//! - **Rust**: extracting text works, and works well — `domain/doctor.rs` goes
-//!   from 7 382 characters to 277, variants included. A `pub struct` or
-//!   `pub enum` block holds only fields and variants; the methods live in a
-//!   separate `impl`. So keeping a block keeps the shape and drops the bodies.
+//! - **Rust**: extracting text works — `domain/doctor.rs` goes from 7 382
+//!   characters to 232, variants included. A `pub struct` or `pub enum` block
+//!   holds only fields and variants; the methods live in a separate `impl`. So
+//!   keeping a block keeps the shape and drops the bodies.
 //! - **TypeScript**: the same approach fails. A `class` body holds its method
 //!   **bodies** inline, so keeping the block keeps the implementation —
 //!   `obsidian-double.ts` only went from 9 235 characters to 7 064, 23%, which
@@ -28,9 +62,30 @@
 //! # What it is not
 //!
 //! Not a code graph, and not a map of the repository. It answers "what can I
-//! call, and with what arguments", for files the task already names. "Who calls
-//! this" and "where does this live" are different questions, and the session's
-//! own `grep` answers them for the price of one turn.
+//! call", for files the task already names. "Who calls this" and "where does
+//! this live" are different questions, and the session's own `grep` answers
+//! them.
+//!
+//! # Two known gaps in the Rust path
+//!
+//! Both **latent**: the only target measured so far is TypeScript, which goes
+//! through `tsc` and has neither problem. Named here rather than left to be
+//! rediscovered, because the prompt template promises a session more than this
+//! half delivers.
+//!
+//! - **A signature spanning several lines keeps only its first line.**
+//!   `signature_of` cuts at `" {"` on one line, so
+//!   `pub fn extra_for(\n  a: &str,\n) -> String` is carried as `pub fn
+//!   extra_for(` — the arguments, which are the point, are gone. 22 of this
+//!   workspace's 311 public functions (7%) are written that way. The emitted
+//!   fragment is at least visibly broken, so a session re-opens the file; the
+//!   cost is a wasted slice of the budget, not a wrong call.
+//! - **`pub const NAME: T = …;` is dropped entirely.** In `opens`,
+//!   `trim_start_matches("const ")` runs *before* the loop that tests for
+//!   `"const"`, so the word compared is the identifier. The strip is there to
+//!   let `pub const fn` through, which it does; a bare `pub const` falls to
+//!   `None`. `doctor::MISSING_DEPENDENCIES` is a real example — a marker other
+//!   modules match on, absent from its own file's shape.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -53,13 +108,16 @@ pub enum Ecosystem {
 
 /// Which ecosystem these tracked files describe.
 ///
-/// Pure: it reads a list of names. Rust is tested before TypeScript because a
-/// Rust repository may carry a `package.json` for tooling while a TypeScript one
+/// Pure: it compares a list of paths against known manifest names. By suffix,
+/// not by file name — so a root `vendor-package.json` would decide, which no
+/// checkout has yet had. Rust is tested before TypeScript because a Rust
+/// repository may carry a `package.json` for tooling while a TypeScript one
 /// never carries a `Cargo.toml` — so the rarer, more decisive marker wins.
 ///
-/// Only the root and one level down, like
-/// [`stack::MAX_DEPTH`](super::stack::MAX_DEPTH): a `Cargo.toml` six folders
-/// deep is a vendored dependency, not what this checkout is.
+/// Shallow only, at [`stack::MAX_DEPTH`](super::stack::MAX_DEPTH) separators —
+/// today 2, so the root and **two** levels down, which is what
+/// `crates/core/Cargo.toml` needs. A `Cargo.toml` six folders deep is a vendored
+/// dependency, not what this checkout is.
 #[must_use]
 pub fn detect(tracked: &[String]) -> Ecosystem {
     let shallow = |name: &str| {
@@ -221,20 +279,28 @@ pub fn rust_shape(source: &str) -> String {
     out.join("\n")
 }
 
-/// How much the carried signatures may weigh, in characters (~3k tokens).
+/// How much the carried signatures may weigh, in characters (~3k tokens at the
+/// conventional four characters per token — not a tokenizer's answer).
 ///
 /// Not the whole index: that measured 60 000 characters of `.d.ts` on the target
-/// checkout, and a block that size, re-read on every turn, was calculated to be a
-/// wash against the file reads it saves. What pays is the handful a task names.
+/// checkout, and a block that size is re-read on every turn. What pays is the
+/// handful a task names.
 ///
 /// **Raised from 6 000 after measuring it starve.** On #63 the budget cut in:
 /// `place-scenes.ts` came to 3 157 characters and `src/core/index.ts` to 3 194,
 /// so the two together did not fit and the prompt carried one of them. The issue
 /// body had named `src/core/index.ts` three times, in full, and the session read
 /// it anyway. A budget that drops what the task explicitly asked for is not a
-/// budget, it is a bug — the figure now matches what a real task needs, four to
-/// six files of up to ~3 200 characters. The extra 6 000 characters cost about
-/// 1 500 cached tokens a turn, four cents across a 42-turn stage.
+/// budget, it is a bug.
+///
+/// **It is still not enough, and that is measured too.** Each entry costs
+/// `35 + path + shape` characters plus a separator, so 12 000 holds **three**
+/// files of ~3 200 — a fourth needs about 13 100. On #65's `code` stage the
+/// carried block ran to 11 347 characters over 12 small files and still ended on
+/// `the index hit its budget`, with two files the task named left out. Whether
+/// raising it again pays is open: the same measurement found the index does not
+/// reduce total file reading (see the module doc), so a bigger block is a bigger
+/// certain cost against an uncertain saving.
 pub const BUDGET: usize = 12_000;
 
 /// One file's index, as the prompt carries it.
@@ -322,18 +388,22 @@ pub fn carried(index: &Index, body: &str, budget: usize) -> String {
 ///
 /// # Three forms, because a plan does not write full paths
 ///
-/// Measured on #63, which named every file the session then read — in four
-/// different spellings, only one of which an exact match catches:
-/// `src/core/index.ts`, `core/testing/vault-store-contract.ts` (the `src/` left
-/// off), `pnj-actor.ts` and `vault-store.ts` (bare), `../vault-store` (as the
-/// import reads). Requiring the full path found two files out of eight and the
-/// session opened the rest itself.
+/// Measured on #63, which named every file the session then read, in three
+/// spellings an exact match does not all catch: `src/core/index.ts` (the tracked
+/// path), `core/testing/vault-store-contract.ts` (the `src/` left off), and
+/// `pnj-actor.ts` / `vault-store.ts` (bare names). Requiring the full path
+/// resolved only the first kind, and the session opened the rest itself.
 ///
 /// So a token resolves if it is the tracked path, a tail of it on a segment
-/// boundary, or a **unique** file name. Unique is what keeps this honest: half a
-/// dozen directories hold an `index.ts`, and guessing which one a plan meant
-/// would carry the wrong file's signatures — worse than carrying none, because
-/// the session would trust it.
+/// boundary, or a **unique** file name. Unique is what keeps this honest: when
+/// more than one directory holds an `index.ts`, guessing which one a plan meant
+/// would carry the wrong file's signatures — worse than carrying none, if the
+/// session trusts it.
+///
+/// **A fourth form it does not handle**: a bare import specifier such as
+/// `../vault-store`, which carries no suffix and so matches no tracked path.
+/// Left unhandled on purpose — resolving module specifiers means resolving
+/// `tsconfig` path aliases, and a plan that names a file usually names it.
 #[must_use]
 pub fn paths_named_in(body: &str, tracked: &[String], suffix: &str) -> Vec<String> {
     if suffix.is_empty() {
@@ -553,8 +623,12 @@ mod tests {
 
     #[test]
     fn the_shape_is_a_fraction_of_the_source() {
-        // The measured ratio this module is built on: `domain/doctor.rs` went
-        // from 7 382 characters to 277.
+        // A synthetic input, and the assertion says so: a >10x ratio on doc
+        // lines plus one function. It does **not** measure `domain/doctor.rs` —
+        // the comment here used to claim it did, and quoted a figure (277) that
+        // the code has never produced for that file. The real pair is in the
+        // module doc, and `real_checkouts` below is where this file touches the
+        // actual repository.
         let source = "/// Doc line that costs tokens and says nothing callable.\n".repeat(40)
             + "pub fn kept() -> u8 {\n    let mut total = 0;\n    total += 1;\n    total\n}\n";
         let shape = rust_shape(&source);

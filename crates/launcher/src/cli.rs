@@ -188,10 +188,16 @@ pub struct RunArgs {
 
     /// Build no signature index, so prompts carry no `PUBLIC SIGNATURES` block.
     ///
-    /// The control arm of the experiment the index has not yet passed: run the
-    /// same task twice, once with and once without, and compare how the session
-    /// reads the files its plan names. Everything else — the configuration
-    /// digest, the scope, the model — stays identical.
+    /// The control arm of the experiment: run the same task twice, once with and
+    /// once without, and compare how the session reads the files its plan names.
+    /// Everything else — the configuration digest, the scope, the model — stays
+    /// identical.
+    ///
+    /// It has been run once, on #65's `code` stage, and the index did **not**
+    /// reduce total file reading — see
+    /// [`signatures`](harness_workflows::dev_loop::data::signatures) for the
+    /// numbers and for the three reasons one pair of runs settles little. Worth
+    /// running again on the next task large enough to matter.
     ///
     /// Also the escape hatch if `tsc` ever misbehaves on a checkout: the index is
     /// an optimisation, and a run must never depend on one.
