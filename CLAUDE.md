@@ -22,11 +22,18 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   and how the dependencies form. Current detail per crate in
   `crates/<crate>/ARCHITECTURE.md`; read the one for the crate you are touching
   before moving a file or adding a module.
-- Cargo workspace, three crates, one direction only:
+- Cargo workspace, five crates, one direction only:
   `harness-launcher` (bin) → `harness-workflows` (lib) → `harness-core`
-  (lib). `core` never depends on `workflows` or `launcher` — enforced by
+  (lib), and `harness-view` (bin) beside the launcher on the same arrow.
+  `core` never depends on `workflows`, `launcher` or `view` — enforced by
   Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
-  a warning. 
+  a warning. `view` is read-only: it shows the traces the harness leaves in
+  `.llocal/logs` and the GitHub board, and never writes anything a run reads.
+  Its one hand on the plant is the steward — an interactive Claude Code in a
+  pseudo-terminal the human drives from the page (`crates/view/ARCHITECTURE.md`).
+  The drawing is `harness-view-render`, a Bevy scene compiled to WebAssembly
+  by `scripts/build-render.sh`; it depends on none of the other crates
+  (`crates/view-render/ARCHITECTURE.md`).
 - `edition = "2024"`, pinned `rust-version` (MSRV) at the workspace level
   (`[workspace.package]`); each crate's `Cargo.toml` inherits it
   (`edition.workspace = true`). Toolchain pinned via `rust-toolchain.toml`.
@@ -58,9 +65,11 @@ the rules a diff is checked against:
   is the only layer allowed to spawn a process, touch the disk, or call a
   library. `shell/process.rs` is the only place that spawns.
 - **The inside never names a type from `adapters`.** `domain/`, `execution/`,
-  `ports/` and every workflow take `Rc<dyn Trait>`; only `harness-launcher`
-  builds `GhCli`, `GitCli`, `ClaudeCliFactory`, `Checkpoint`, `ReviewLedger`,
-  `DirLocks`. Two exceptions, both test-only: a fixture may wire `Rehearsal`
+  `ports/` and every workflow take `Rc<dyn Trait>`; only the two outer rings
+  build a concrete adapter — `harness-launcher` builds `GhCli`, `GitCli`,
+  `ClaudeCliFactory`, `Checkpoint`, `ReviewLedger`, `DirLocks`; `harness-view`
+  builds `GhCli` and its own read-only `FsTraces`, in its `main.rs` and
+  nowhere else. Two exceptions, both test-only: a fixture may wire `Rehearsal`
   as its session factory (core's own stand-in carrier, the one `--dry-run`
   wires), and a test may name a concrete adapter when that adapter's real
   behaviour is what is under test — `DirLocks` in core's workflow test, which

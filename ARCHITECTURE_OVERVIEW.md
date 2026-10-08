@@ -1,11 +1,13 @@
 # Architecture overview
 
-Three crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
+Five crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
 detail; this file is only the split and why the dependencies form the way they
 do.
 
 ```
 harness-launcher (bin)  →  harness-workflows (lib)  →  harness-core (lib)
+harness-view     (bin)  →  harness-workflows (lib)  →  harness-core (lib)
+harness-view-render (cdylib → wasm)   depends on none of them: it draws what harness-view serves
 ```
 
 ## The role of each crate
@@ -13,8 +15,10 @@ harness-launcher (bin)  →  harness-workflows (lib)  →  harness-core (lib)
 | crate | role | detail |
 | --- | --- | --- |
 | `harness-core` | **the framework**: vocabulary, traces, execution shapes, ports, adapters. Names no workflow. | [crates/core/ARCHITECTURE.md](crates/core/ARCHITECTURE.md) |
-| `harness-workflows` | **the instances**: three workflows declared against that framework — `dev_loop`, `pr_review`, `refinement`. | [crates/workflows/ARCHITECTURE.md](crates/workflows/ARCHITECTURE.md) |
-| `harness-launcher` | **the entry points**: the `harness` binary, the CLI, and the only place that builds a concrete adapter. | [crates/launcher/ARCHITECTURE.md](crates/launcher/ARCHITECTURE.md) |
+| `harness-workflows` | **the instances**: the workflows declared against that framework — `dev_loop`, `refinement`, `planner`, `split`, `pr_review`, `pr_fix`, plus two deterministic commands. | [crates/workflows/ARCHITECTURE.md](crates/workflows/ARCHITECTURE.md) |
+| `harness-launcher` | **the entry points**: the `harness` binary, the CLI, the router, and the place that builds the adapters a run needs. | [crates/launcher/ARCHITECTURE.md](crates/launcher/ARCHITECTURE.md) |
+| `harness-view` | **the plant**: a local web page that shows the harness as an isometric factory, read from the traces a run leaves behind. A second outer ring; it writes nothing the harness reads. | [crates/view/ARCHITECTURE.md](crates/view/ARCHITECTURE.md) |
+| `harness-view-render` | **the drawing**: a Bevy scene compiled to WebAssembly, bound to the view's canvas. Shares no type with the rest; mirrors the picture it draws. | [crates/view-render/ARCHITECTURE.md](crates/view-render/ARCHITECTURE.md) |
 
 ## The shape: hexagonal, and it is a rule
 
@@ -36,8 +40,13 @@ expected to keep it that way:
    adapters/ (git, gh, claude, the disk, the ledgers)
                       ▲
                       │  builds one concrete adapter per port
-                 launcher
+            launcher · view
 ```
+
+Two outer rings, not one: `launcher` drives sessions and writes the traces,
+`view` reads them back and draws. Neither names the other, and `view`
+builds only the two adapters it reads through (`GhCli`, and its own
+`FsTraces` over `.llocal/logs`).
 
 Four rules, in the order they are most often broken:
 
