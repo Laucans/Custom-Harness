@@ -140,29 +140,20 @@
     for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
     return FACES[h % FACES.length];
   }
-  // The issue an agent works, from its name (`#64 · Dev loop`), or null.
-  const issueOf = (e) => { const m = /^#(\d+)\b/.exec(e.name || ''); return m ? Number(m[1]) : null; };
-  // An issue's title, from the board the snapshot carries, or ''.
-  function issueTitle(n) {
-    const b = S.snap.board || {};
-    const all = [...(b.roadmap || []), ...(b.needs_human || []), ...(b.milestones || []).flatMap((m) => [m.issue, ...(m.tasks || [])])];
-    const hit = all.find((i) => i && i.number === n);
-    return hit ? hit.title : '';
-  }
   function crewBar() {
     const bar = $('crew-bar');
     if (!bar) return;
     const at = S.snap.employees.filter((e) => e.active);
     bar.hidden = !at.length;
-    // Several agents on one issue are one bubble, `#N - <title>`: a click
-    // lists them first, then opens the one picked.
+    // Several agents at one station are one bubble: a click lists them
+    // first, then opens the one picked — the same pane as the scene's.
     const groups = [];
     for (const e of at) {
-      const n = issueOf(e);
-      const g = n != null && groups.find((x) => x.n === n);
-      if (g) g.agents.push(e); else groups.push({ n, agents: [e] });
+      const station = e.station || null;
+      const g = groups.find((x) => x.line === e.workflow && x.station === station);
+      if (g) g.agents.push(e); else groups.push({ line: e.workflow, station, agents: [e] });
     }
-    const html = groups.map(({ n, agents }) => {
+    const html = groups.map(({ line, station, agents }) => {
       const e = agents[0];
       const ring = e.model ? ` ${esc(e.model)}` : '';
       if (agents.length === 1) {
@@ -170,10 +161,10 @@
         const tip = esc(`${e.name}${e.stage ? ' — ' + e.stage : ''}`);
         return `<div class="crew-item"><button class="crew-bubble" data-crew='${open}' title="${tip}"><span class="face${ring}">${faceOf(e.id)}</span><span class="who"><b>${esc(e.name)}</b><small>${esc(e.stage || 'starting')}</small></span></button>${worksOn(e, 'crew-link')}</div>`;
       }
-      const title = `#${n} - ${issueTitle(n) || agents.map((a) => a.name.replace(/^#\d+ · /, '')).join(', ')}`;
-      const open = esc(JSON.stringify({ kind: 'agents', number: n }));
-      return `<button class="crew-bubble" data-crew='${open}' title="${esc(title)}"><span class="face${ring}">${faceOf(e.id)}<span class="count">${agents.length}</span></span><span class="who"><b>${esc(title)}</b><small>${agents.length} agents · ${esc(agents.map((a) => a.stage || 'starting').join(', '))}</small></span></button>`
-        + (S.snap.project.url ? `<a class="crew-link" href="${esc(S.snap.project.url)}/issues/${n}" target="_blank" rel="noopener" title="open #${n} on GitHub">#${n} ↗</a>` : '');
+      const lineTitle = (S.snap.lines.find((l) => l.id === line) || {}).title || line;
+      const title = `${lineTitle} · ${e.stage || 'starting'}`;
+      const open = esc(JSON.stringify({ kind: 'crew', line, station }));
+      return `<div class="crew-item"><button class="crew-bubble" data-crew='${open}' title="${esc(title)}"><span class="face${ring}">${faceOf(e.id)}<span class="count">${agents.length}</span></span><span class="who"><b>${esc(title)}</b><small>${esc(agents.map((a) => a.name.replace(/ · .*$/, '')).join(', '))}</small></span></button></div>`;
     }).join('');
     if (html !== S.crewHtml) { bar.innerHTML = html; S.crewHtml = html; }
   }
@@ -1153,15 +1144,6 @@
         S.logTimer = setInterval(pull, 2000);
       };
       return [e.name, html, after];
-    },
-
-    // The agents at work on one issue: pick one, then its usual pane.
-    agents(p) {
-      const here = S.snap.employees.filter((e) => e.active && issueOf(e) === p.number);
-      const title = `#${p.number} - ${issueTitle(p.number) || 'issue'}`;
-      if (!here.length) return [title, '<div class="callout">Nobody is at work on this issue any more.</div>'];
-      const items = here.map((e) => `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: e.id }))}'>${esc(e.name)}</button></span><span class="muted">${esc(e.stage || 'starting')} ${e.model ? tag(e.model, e.model) : ''} · ${fmtAge(e.age_secs)} ago</span></li>`).join('');
-      return [title, `<p class="muted">${here.length} agents work this issue. Pick the one to follow:</p><ul class="issues">${items}</ul>`];
     },
 
     crew(p) {
