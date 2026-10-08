@@ -133,6 +133,7 @@ mod tests {
                 stages: String::new(),
             },
             ReviewState {
+                data_layer: false,
                 pr: Some(Pr {
                     num: "32".to_string(),
                     url: "https://github.com/o/r/pull/32".to_string(),

@@ -7,6 +7,9 @@ use harness_core::domain::Pr;
 pub struct ReviewState {
     /// The PR under review. `None` until `precheck` has read it.
     pub pr: Option<Pr>,
+    /// The PR delivers a milestone's data layer (`harness:data-layer` on
+    /// the task it closes): the review holds it to the write side's bar.
+    pub data_layer: bool,
 }
 
 impl ReviewState {

@@ -88,6 +88,7 @@ process. If the change is small and clean, say so briefly rather than
 inflating it. Do not edit any file and do not post anything yourself; the
 script posts what you output.
 
+{strictness}
 End the comment with ONE last line, alone, that the loop reads to decide
 what happens next:
   VERDICT: blocking — <the defect, in a few words>

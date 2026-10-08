@@ -40,6 +40,26 @@ impl SessionAction<ReviewState> for AskInline {
     }
 }
 
+/// What the data layer is held to, on top of the common bar — or nothing.
+const fn data_layer_bar(data_layer: bool) -> &'static str {
+    if data_layer {
+        "This pull request delivers a milestone's **data layer** (`harness:data-layer`):
+its aggregates, invariants, migrations and DataCapabilities, which every
+reader of the milestone will build on. Hold it to the write side's bar —
+these are blocking too:
+  - an invariant with no test that fails when it is violated;
+  - a migration that does not replay on a fresh schema, or that drops or
+    rewrites existing data without an expand/contract step;
+  - a DataCapability whose declared `effect` and `touches` do not match what
+    its code writes;
+  - a privilege that lets the read-only role write, or the application role
+    bypass the DataGuard.
+"
+    } else {
+        ""
+    }
+}
+
 /// Composes and sends the "brief" pass prompt.
 pub struct AskBrief {
     /// The stage name, for the journal and the `stage` column of the registry.
@@ -68,6 +88,7 @@ impl SessionAction<ReviewState> for AskBrief {
                 ("head", &pr.head),
                 ("base", &pr.base),
                 ("findings", &found),
+                ("strictness", data_layer_bar(open.state.data_layer)),
             ],
         );
         ask_and_record(
@@ -80,5 +101,16 @@ impl SessionAction<ReviewState> for AskBrief {
         )
         .await?;
         Ok(Verdict::Continue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_data_layer_is_held_to_a_higher_bar_and_the_rest_to_the_common_one() {
+        assert!(data_layer_bar(true).contains("invariant with no test"));
+        assert!(data_layer_bar(false).is_empty());
     }
 }

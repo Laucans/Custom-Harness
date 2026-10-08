@@ -23,6 +23,8 @@ use harness_core::execution::{Context, Executable, Gate, Lock, Round, Workflow};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
 
+use crate::common::labels;
+use crate::dev_loop::data::tasks;
 use crate::pr_review::data::skip_rules;
 use crate::pr_review::data::state::ReviewState;
 
@@ -64,11 +66,24 @@ impl Workflow<ReviewState> for ReviewRun {
         if let Some(skip) = skip_rules::skip_reason(self.force, &self.base, &pr, &comments) {
             return Ok(Some(format!("skip — {skip}")));
         }
+        // The task this PR delivers is found by its declared branch — a PR
+        // carries no body here, and the data layer is a label on the task.
+        let data_layer = self
+            .gh
+            .issues_labelled(labels::DATA_LAYER, "open")
+            .await?
+            .iter()
+            .any(|task| tasks::declared_branch(&task.body).as_deref() == Some(pr.head.as_str()));
         ctx.traces.say(&format!(
-            "reviewing #{}  {} -> {}  ({})",
-            pr.num, pr.head, pr.base, pr.title
+            "reviewing #{}  {} -> {}  ({}){}",
+            pr.num,
+            pr.head,
+            pr.base,
+            pr.title,
+            if data_layer { " — a data layer" } else { "" }
         ));
         ctx.state.pr = Some(pr);
+        ctx.state.data_layer = data_layer;
         Ok(None)
     }
 
