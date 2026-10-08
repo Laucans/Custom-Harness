@@ -243,7 +243,14 @@
     const tab = e.target.closest('[data-file]');
     if (tab && S.pane && S.pane.kind === 'employee') { S.pane.file = tab.dataset.file; renderPane(S.pane, false); return undefined; }
     const machine = e.target.closest('[data-stage-idx]');
-    if (machine && S.pane && S.pane.kind === 'employee') { S.pane.file = null; S.pane.stageIdx = Number(machine.dataset.stageIdx); renderPane(S.pane, false); return undefined; }
+    if (machine && S.pane && S.pane.kind === 'employee') {
+      // An older machine is pinned; the one the agent is at goes back to
+      // following it live.
+      const idx = Number(machine.dataset.stageIdx);
+      const count = machine.parentElement ? machine.parentElement.querySelectorAll('[data-stage-idx]').length : 0;
+      S.pane.file = null; S.pane.stageIdx = idx; S.pane.pinned = idx !== count - 1; S.pane.jump = true;
+      renderPane(S.pane, false); return undefined;
+    }
     const liveRun = e.target.closest('[data-live-run]');
     if (liveRun && S.pane) { S.pane.liveRun = liveRun.dataset.liveRun; S.pane.jump = true; renderPane(S.pane, false); return undefined; }
     const help = e.target.closest('[data-help]');
@@ -424,14 +431,24 @@
             // A run that stopped at its gates opened no session: its run.log
             // is all there is.
             if (!stages.length && !p.file) p.file = 'run.log';
-            if (!p.file && (p.stageIdx == null || p.stageIdx >= stages.length)) {
-              const wanted = p.stage ? stages.map((x) => x.stage).lastIndexOf(p.stage) : -1;
-              p.stageIdx = wanted >= 0 ? wanted : stages.length - 1;
+            // Follow the machine the agent is at — the last session — unless
+            // a machine was picked: by a click, or by the Recent work entry
+            // this pane was opened from.
+            const last = stages.length - 1;
+            if (p.stage && !p.pinned) {
+              const wanted = stages.map((x) => x.stage).lastIndexOf(p.stage);
+              if (wanted >= 0 && wanted !== last) { p.stageIdx = wanted; p.pinned = true; }
+              p.stage = null;
+            }
+            if (!p.file && !(p.pinned && p.stageIdx != null && p.stageIdx <= last)) {
+              if (p.stageIdx !== last) p.jump = true;
+              p.stageIdx = last;
+              p.pinned = false;
             }
             const seen = {};
             const labels = stages.map((x) => { seen[x.stage] = (seen[x.stage] || 0) + 1; return seen[x.stage] > 1 ? `${x.stage} (${seen[x.stage]})` : x.stage; });
             bar.innerHTML = (stages.length ? '' : '<span class="muted">no machine reached — this run stopped before it opened a session; its run.log says why</span> ')
-              + labels.map((label, i) => `<button data-stage-idx="${i}" class="${!p.file && i === p.stageIdx ? 'on' : ''}">${esc(label)}</button>`).join('')
+              + labels.map((label, i) => `<button data-stage-idx="${i}" class="${!p.file && i === p.stageIdx ? 'on' : ''}" title="${e.active && i === stages.length - 1 ? 'where the agent is now — followed live' : 'a machine it went through'}">${e.active && i === stages.length - 1 ? '● ' : ''}${esc(label)}</button>`).join('')
               + ['run.log', 'prompts.md'].map((f) => `<button data-file="${f}" class="muted ${f === p.file ? 'on' : ''}">${f}</button>`).join('');
             let text;
             if (p.file) {
