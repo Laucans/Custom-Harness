@@ -204,7 +204,7 @@ impl Provisioner {
             wanted.strategy.as_str(),
             if disposable { "disposable" } else { "kept" }
         ));
-        self.say_what_stays_behind(source, log).await;
+        self.say_what_stays_behind(source, &url, log).await;
         Ok(Mount {
             workspace: source.at(&dest),
             name,
@@ -535,8 +535,32 @@ impl Provisioner {
     /// would ask a question here whose answer depends on how fresh
     /// `origin/…` is — and we are not going to `fetch` in the human's
     /// repo just to write a warning.
-    async fn say_what_stays_behind(&self, source: &Workspace, log: &Logbook) {
+    ///
+    /// Only when the workspace clones **this checkout's own repository**: a
+    /// harness driving another repository clones that one, and the
+    /// checkout's local work was never meant to be in it.
+    async fn say_what_stays_behind(&self, source: &Workspace, url: &str, log: &Logbook) {
+        let held = self.left_behind(source, url).await;
+        if !held.is_empty() {
+            log.warn(&format!(
+                "your checkout holds {} — the workspace is cloned from origin, \
+                 so none of it is in this run",
+                held.join(", ")
+            ));
+        }
+    }
+}
+
+impl Provisioner {
+    /// What the checkout holds that a clone of `url` will not: its
+    /// uncommitted changes and its unpushed commits — nothing when `url` is
+    /// another repository than the checkout's `origin`.
+    async fn left_behind(&self, source: &Workspace, url: &str) -> Vec<String> {
         let git = self.repos.at(source.root());
+        let origin = git.remote_url("origin").await.unwrap_or_default();
+        if !same_repo(&origin, url) {
+            return Vec::new();
+        }
         let mut held = Vec::new();
         if let Ok(dirty) = git.dirty_files().await
             && !dirty.is_empty()
@@ -550,13 +574,7 @@ impl Provisioner {
             let where_ = if branch.is_empty() { "HEAD" } else { &branch };
             held.push(format!("{} commit(s) not pushed on {where_}", ahead.len()));
         }
-        if !held.is_empty() {
-            log.warn(&format!(
-                "your checkout holds {} — the workspace is cloned from origin, \
-                 so none of it is in this run",
-                held.join(", ")
-            ));
-        }
+        held
     }
 }
 
@@ -1263,6 +1281,25 @@ mod tests {
         let disk = Rc::new(FakeDisk::default()); // no `.git`
         unmount_with(&git, &disk, &disposable("main_agent")).await;
         assert!(disk.removed().is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_work_is_only_reported_when_the_clone_is_of_this_repository() {
+        let git = Rc::new(FakeRepo {
+            remote: "https://github.com/Laucans/Custom-Harness".to_string(),
+            unpushed: vec!["abc1234 not on origin".to_string()],
+            ..FakeRepo::default()
+        });
+        let disk = Rc::new(FakeDisk::default());
+        let prov = provisioner(&git, disk);
+        let source = Workspace::new(Path::new("/src"));
+        let other = prov.left_behind(&source, "Laucans/dnd_helper").await;
+        assert!(other.is_empty(), "{other:?}");
+        let own = prov
+            .left_behind(&source, "git@github.com:Laucans/Custom-Harness.git")
+            .await;
+        assert_eq!(own.len(), 1, "{own:?}");
+        assert!(own[0].contains("not pushed"));
     }
 
     #[tokio::test]
