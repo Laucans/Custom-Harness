@@ -343,7 +343,12 @@
     $('pane-title').textContent = title;
     // A pane with a live log keeps its body on a refresh: its `after` updates
     // the parts that changed, and the log keeps its scroll.
-    if (!(refresh && (p.kind === 'employee' || keep))) $('pane-body').innerHTML = html;
+    // An unchanged body is not rewritten either: a refresh that replaces the
+    // buttons under the pointer swallows the click being made on them.
+    if (!(refresh && (p.kind === 'employee' || keep)) && !(refresh && html === S.paneHtml)) {
+      $('pane-body').innerHTML = html;
+    }
+    S.paneHtml = html;
     if (after) after(refresh);
   }
 
@@ -447,9 +452,12 @@
             }
             const seen = {};
             const labels = stages.map((x) => { seen[x.stage] = (seen[x.stage] || 0) + 1; return seen[x.stage] > 1 ? `${x.stage} (${seen[x.stage]})` : x.stage; });
-            bar.innerHTML = (stages.length ? '' : '<span class="muted">no machine reached — this run stopped before it opened a session; its run.log says why</span> ')
+            const barHtml = (stages.length ? '' : '<span class="muted">no machine reached — this run stopped before it opened a session; its run.log says why</span> ')
               + labels.map((label, i) => `<button data-stage-idx="${i}" class="${!p.file && i === p.stageIdx ? 'on' : ''}" title="${e.active && i === stages.length - 1 ? 'where the agent is now — followed live' : 'a machine it went through'}">${e.active && i === stages.length - 1 ? '● ' : ''}${esc(label)}</button>`).join('')
               + ['run.log', 'prompts.md'].map((f) => `<button data-file="${f}" class="muted ${f === p.file ? 'on' : ''}">${f}</button>`).join('');
+            // Rewritten only when it changed: a button replaced between the
+            // press and the release of a click swallows that click.
+            if (barHtml !== p.barHtml) { bar.innerHTML = barHtml; p.barHtml = barHtml; }
             let text;
             if (p.file) {
               const f = await fetch(`/api/runs/${e.workflow}/${e.run_id}/${p.file}?bytes=14000`);
@@ -466,6 +474,7 @@
           } catch (err) { /* the next pull will say */ }
         };
         p.jump = true;
+        p.barHtml = null;
         pull();
         clearInterval(S.logTimer);
         S.logTimer = setInterval(pull, 2000);
@@ -534,10 +543,11 @@
       p.liveCount = live.length;
       const after = (isRefresh) => {
         if (isRefresh && keep) {
-          const main = $('line-main'); if (main) main.innerHTML = h;
-          const bar = $('line-live-bar'); if (bar) bar.innerHTML = liveBar;
+          const main = $('line-main'); if (main && p.mainHtml !== h) { main.innerHTML = h; p.mainHtml = h; }
+          const bar = $('line-live-bar'); if (bar && p.liveBarHtml !== liveBar) { bar.innerHTML = liveBar; p.liveBarHtml = liveBar; }
           return;
         }
+        p.mainHtml = h; p.liveBarHtml = liveBar;
         const pull = async () => {
           const e = S.snap.employees.find((x) => x.id === p.liveRun);
           const pre = $('line-live-log');
