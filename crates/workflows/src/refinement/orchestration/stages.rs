@@ -90,6 +90,7 @@ fn paid(
                 context: config.context.clone(),
                 artifacts_dir: config.artifacts_dir.clone(),
                 explore: config.explore,
+                disk: Rc::clone(&ports.disk),
                 spending: Rc::clone(&ports.spending),
             })],
         },
@@ -180,6 +181,7 @@ pub fn publish(ports: &Ports, config: &Config, phase: Phase) -> Stage<Refinement
                 coherence: COHERENCE.to_string(),
                 advice: (phase == Phase::Business).then(|| ADVICE.to_string()),
                 refinement_dir: config.refinement_dir.clone(),
+                disk: Rc::clone(&ports.disk),
             })],
         },
     }

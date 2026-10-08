@@ -102,6 +102,8 @@ pub struct AskForPlan {
     pub artifacts_dir: PathBuf,
     /// `--explore`.
     pub explore: bool,
+    /// What reads a kept map back.
+    pub disk: Rc<dyn Disk>,
     /// Where spending is recorded.
     pub spending: Rc<dyn Spending>,
 }
@@ -131,7 +133,7 @@ impl SessionAction<PlannerState> for AskForPlan {
             ],
         );
         let map_file = explore::map_file_path(&self.artifacts_dir);
-        let prefix = explore::repo_context(open.ctx, self.explore, &map_file);
+        let prefix = explore::repo_context(open.ctx, self.explore, &map_file, self.disk.as_ref());
         let prompt = format!("{prefix}\n\n{filled}");
         let task = format!("#{}", roadmap.number);
 

@@ -9,6 +9,7 @@
 use std::rc::Rc;
 
 use harness_core::ports::agent::SessionFactory;
+use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
 use harness_core::ports::store::spending::Spending;
@@ -23,6 +24,8 @@ pub struct Ports {
     pub spending: Rc<dyn Spending>,
     /// What holds the lock — one refinement per issue at a time.
     pub locks: Rc<dyn Locks>,
+    /// What keeps a round's body and reads the repo map back.
+    pub disk: Rc<dyn Disk>,
 }
 
 #[cfg(test)]
@@ -42,6 +45,7 @@ pub(crate) mod fake {
     use harness_core::traces::Logbook;
 
     use super::Ports;
+    use crate::common::fake_disk::FakeDisk;
     use crate::common::fake_github::FakeGitHub;
     use crate::common::fake_locks::Grants;
 
@@ -68,6 +72,7 @@ pub(crate) mod fake {
             sessions: Rc::new(Rehearsal::new(Logbook::null())),
             spending: Rc::new(Nowhere),
             locks: Rc::new(Grants),
+            disk: Rc::new(FakeDisk::default()),
         }
     }
 }
