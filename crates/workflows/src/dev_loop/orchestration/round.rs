@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_task_a_merged_pr_closes_is_marked_waiting_merge_not_closed() {
+    async fn a_task_a_merged_pr_closes_is_closed() {
         let gh = Rc::new(FakeGitHub {
             issues: vec![
                 issue(4, &[labels::MILESTONE]),
@@ -238,7 +238,7 @@ mod tests {
                     11,
                     crate::common::delivery::merged_note("main_agent", "#99")
                 ),
-                Wrote::Label(11, labels::WAITING_MERGE.to_string()),
+                Wrote::Closed(11),
             ]
         );
     }

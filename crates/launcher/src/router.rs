@@ -35,6 +35,7 @@ use harness_workflows::common::routing::{self, Route, Snapshot};
 use harness_workflows::common::{branching, labels, review};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
+use harness_workflows::main_agent_merge::data::report::Outcome as MergeReport;
 use harness_workflows::pr_review::data::skip_rules;
 use harness_workflows::refinement::data::phase::Phase;
 
@@ -379,7 +380,7 @@ async fn dispatched(
             log,
         ),
         Route::MergeIntoMilestone { task, pr, base } => {
-            run_milestone_merge(gh, task, pr, base, log).await
+            run_milestone_merge(gh, here, task, pr, base, log).await
         }
         Route::MergeMainAgent { milestone } => {
             run_main_agent_merge(args, here, milestone, log).await
@@ -591,9 +592,24 @@ fn router_lane_command(
     Some(command)
 }
 
+/// Leaves a run of `line` in the traces — the folder the view reads a line's
+/// work from — for a command that works without a session of its own and
+/// would otherwise show as never having run.
+fn record_run(here: &Path, line: &str, issue: u64, said: &str, log: &Logbook) {
+    let path = Workspace::new(here)
+        .log_dir(line)
+        .join(spending::run_id_for(issue))
+        .join("run.log");
+    match Both::new(&path) {
+        Ok(sink) => Logbook::new(Rc::new(sink) as Rc<dyn Sink>, Verbosity::Quiet).say(said),
+        Err(e) => log.warn(&format!("watch: cannot record the {line} run: {e}")),
+    }
+}
+
 /// Merges one task's PR into its milestone, and says so.
 async fn run_milestone_merge(
     gh: &dyn GitHub,
+    here: &Path,
     task: u64,
     pr: String,
     base: String,
@@ -613,6 +629,13 @@ async fn run_milestone_merge(
             log.say(&format!(
                 "watch: milestone_merge -> #{task} merged into its milestone"
             ));
+            record_run(
+                here,
+                "milestone-merge",
+                task,
+                &format!("task #{task}: reviewed and green — merged into its milestone, closed"),
+                log,
+            );
             None
         }
         Err(halt) => {
@@ -640,6 +663,20 @@ async fn run_main_agent_merge(
     {
         Ok(outcome) => {
             log.say(&format!("watch: main_agent_merge -> {outcome:?}"));
+            // Only what changed something gets a run of its own: a milestone
+            // not ready yet, or waiting on its checks, is every tick's answer.
+            let said = match &outcome {
+                MergeReport::OpenedPr(url) => Some(format!(
+                    "milestone #{milestone}: every task merged — opened {url} to the integration branch"
+                )),
+                MergeReport::Merged => Some(format!(
+                    "milestone #{milestone}: CI green — merged into the integration branch, its tasks closed"
+                )),
+                MergeReport::NotReady | MergeReport::WaitingOnChecks => None,
+            };
+            if let Some(line) = said {
+                record_run(here, "main-agent-merge", milestone, &line, log);
+            }
             None
         }
         Err(halt) => {

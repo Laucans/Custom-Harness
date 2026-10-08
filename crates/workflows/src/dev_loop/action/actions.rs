@@ -231,12 +231,13 @@ impl Action<Loop> for MarkWaitingMerge {
                 self.gh.remove_label(number, labels::NEEDS_DECISION).await?;
             }
         }
+        // Merged into its milestone is done: the task closes, and closing it
+        // is what unblocks the tasks that wait on it. GitHub would not do it
+        // — its closing keywords fire only on the default branch.
         ctx.traces.say(&format!(
-            "#{number} delivered by PR {}, merged on {} — marked {}, now you \
-             close it by merging to the default branch",
+            "#{number} delivered by PR {}, merged on {} — closed",
             shipped.reference(),
             self.integration_branch,
-            labels::WAITING_MERGE
         ));
         self.gh
             .post_issue_comment(
@@ -244,7 +245,7 @@ impl Action<Loop> for MarkWaitingMerge {
                 &delivery::merged_note(&self.integration_branch, &shipped.reference()),
             )
             .await?;
-        self.gh.add_label(number, labels::WAITING_MERGE).await?;
+        self.gh.close_issue(number).await?;
         Ok(Verdict::Continue)
     }
 }
@@ -664,14 +665,13 @@ mod tests {
         .run(&mut context)
         .await
         .expect("marked");
-        // Labeled and commented, never closed: closing would say "integrated
-        // in main". The comment comes first — the label is the mark that
-        // keeps the pair from running twice.
+        // Commented, then closed: merged into its milestone is done, and the
+        // close is what unblocks the tasks waiting on it.
         assert_eq!(
             gh.writes(),
             vec![
                 Wrote::Comment(11, delivery::merged_note("main_agent", "#99")),
-                Wrote::Label(11, labels::WAITING_MERGE.to_string()),
+                Wrote::Closed(11),
             ]
         );
     }
@@ -759,7 +759,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_human_s_merge_of_a_write_side_pr_trades_review_pending_for_waiting_merge() {
+    async fn the_merge_of_a_write_side_pr_drops_review_pending_and_closes_the_task() {
         let gh = Rc::new(FakeGitHub {
             issues: vec![issue(
                 11,
@@ -786,7 +786,7 @@ mod tests {
         let writes = gh.writes();
         assert!(writes.contains(&Wrote::Unlabelled(11, labels::REVIEW_PENDING.to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(11, labels::NEEDS_DECISION.to_string())));
-        assert!(writes.contains(&Wrote::Label(11, labels::WAITING_MERGE.to_string())));
+        assert!(writes.contains(&Wrote::Closed(11)));
     }
 
     #[tokio::test]

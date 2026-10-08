@@ -3,8 +3,8 @@
 //! A **deterministic command, not a workflow** — like `main_agent_merge`, one
 //! level down: no session, no cost. A task on the write side leaves its pull
 //! request open on the milestone branch (`review-pending`); once the agent
-//! review has run and every check is green, this merges it and marks the task
-//! delivered, exactly as a human merge would have left it. The CI and the
+//! review has run and every check is green, this merges it and closes the
+//! task — which is what unblocks the tasks that wait on it. The CI and the
 //! review are what stand for the human review here.
 //!
 //! The choice of *which* PR is pure ([`candidate`]); the router reads the
@@ -34,9 +34,9 @@ pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &
     })
 }
 
-/// Merges `pr` into its milestone branch and marks `task` delivered:
-/// `review-pending` and `needs-decision` off, `waiting-merge` on, and a
-/// comment naming the PR.
+/// Merges `pr` into its milestone branch and closes `task`:
+/// `review-pending` and `needs-decision` off, a comment naming the PR, then
+/// the close — what unblocks the tasks waiting on it.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from the merge or any label write —
@@ -55,7 +55,7 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
         ),
     )
     .await?;
-    gh.add_label(task.number, labels::WAITING_MERGE).await
+    gh.close_issue(task.number).await
 }
 
 /// Hands `task` to a human: its PR's review stayed blocking after every
@@ -156,6 +156,6 @@ mod tests {
         assert!(writes.contains(&Wrote::MergedPr("68".to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::REVIEW_PENDING.to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::NEEDS_DECISION.to_string())));
-        assert!(writes.contains(&Wrote::Label(64, labels::WAITING_MERGE.to_string())));
+        assert!(writes.contains(&Wrote::Closed(64)));
     }
 }
