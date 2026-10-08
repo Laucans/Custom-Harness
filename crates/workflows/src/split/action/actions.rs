@@ -27,8 +27,7 @@ pub struct ReadExistingTasks {
 impl Action<SplitState> for ReadExistingTasks {
     async fn run(&self, ctx: &mut Context<SplitState>) -> Outcome<Verdict> {
         let number = ctx.state.milestone().number;
-        let mut existing = self.gh.sub_issues(number).await?;
-        existing.sort_by_key(|issue| issue.number);
+        let existing = still_open(self.gh.sub_issues(number).await?);
         if !existing.is_empty() {
             ctx.traces.say(&format!(
                 "{} task(s) already open under #{number} — the slice must \
@@ -39,6 +38,14 @@ impl Action<SplitState> for ReadExistingTasks {
         ctx.state.existing = existing;
         Ok(Verdict::Continue)
     }
+}
+
+/// The open ones, by number: a task closed as superseded or done is not a
+/// slice the plan must avoid — GitHub's sub-issue list carries both.
+fn still_open(mut issues: Vec<Issue>) -> Vec<Issue> {
+    issues.retain(Issue::is_open);
+    issues.sort_by_key(|issue| issue.number);
+    issues
 }
 
 /// What's already open under the milestone, rendered for the prompt.
@@ -119,5 +126,33 @@ impl SessionAction<SplitState> for AskForSlice {
         )
         .await?;
         Ok(Verdict::Continue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn issue(number: u64, state: &str) -> Issue {
+        Issue {
+            number,
+            state: state.to_string(),
+            ..Issue::default()
+        }
+    }
+
+    #[test]
+    fn closed_sub_issues_are_not_tasks_already_open() {
+        let kept = still_open(vec![issue(9, "open"), issue(8, "closed"), issue(7, "open")]);
+        let numbers: Vec<u64> = kept.iter().map(|issue| issue.number).collect();
+        assert_eq!(numbers, [7, 9]);
+    }
+
+    #[test]
+    fn a_milestone_whose_tasks_were_all_closed_is_sliced_from_scratch() {
+        assert_eq!(
+            existing_block(&still_open(vec![issue(1, "closed")])),
+            "No task exists yet under this milestone."
+        );
     }
 }
