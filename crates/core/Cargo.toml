@@ -1,6 +1,6 @@
 [package]
 name = "harness-core"
-description = "Le framework du harness : vocabulaire, traces, exécution. Ignore ses utilisateurs."
+description = "The harness framework: vocabulary, traces, execution. Ignores its users."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

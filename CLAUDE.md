@@ -46,8 +46,9 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   executes. Tests substitute a fake adapter; nothing mocks at the call site.
   Carried over from the Python pipeline on purpose.
 - Async: `#[async_trait(?Send)]` on every execution trait, tokio
-  `current_thread`. No `Send` bound to pay for — the harness drives one
-  session at a time, and this is a deliberate migration decision
+  `current_thread`. No `Send` bound to pay for — one process drives one
+  session at a time (a parallel `watch` is several processes, one per lane,
+  never threads), and this is a deliberate migration decision
   (`docs/MIGRATION.md`), not a default.
 
 ## Hexagonal Architecture — non-negotiable
@@ -82,10 +83,14 @@ the rules a diff is checked against:
 - **Where `core` needs a fact of the process** — the time, a run id, a machine
   name, a console — it declares a port and the launcher implements it
   (`Spending`, `Sink`). Never the reverse.
-- Reviewable in one command:
+- Reviewable in two commands:
   `grep -rn 'adapters::' crates/core/src/domain crates/core/src/execution crates/core/src/ports crates/workflows/src`
   Its only legitimate hits are doc links and the two test exceptions above —
-  anything in shipped code is the review finding, not a detail.
+  anything in shipped code is the review finding, not a detail. And for the
+  I/O that reaches the disk without naming an adapter:
+  `grep -rn 'std::fs\|std::process\|std::env\|tokio::fs\|tokio::process' crates/core/src/domain crates/core/src/execution crates/core/src/ports crates/workflows/src`
+  whose only legitimate hits sit inside a `#[cfg(test)]` block. The port for
+  a file a workflow keeps is `Disk`; the port for a process is `Process`.
 
 ## Core Rules
 
@@ -132,8 +137,11 @@ the rules a diff is checked against:
 - Docs: every `pub` item carries `///` doc comments with a one-sentence
   summary on the first line. `pub fn` returning `Result` documents
   `# Errors`; functions that can panic document `# Panics`.
-- Logging: use `tracing`, not `println!`/`eprintln!`, in library code.
-  `println!` is fine in `main.rs` for actual CLI output.
+- Logging: library code writes through the journal port (`Logbook` over a
+  `Sink`, in `harness-core::traces`) — never `println!`/`eprintln!`, and not
+  `tracing` either: the journal is a port so a test reads it back and a run
+  keeps it in `.llocal/logs`. `println!` is fine in `main.rs` for actual CLI
+  output; `tracing` is only wired in `harness-view`.
 
 ## Testing Rules
 
@@ -165,6 +173,10 @@ the rules a diff is checked against:
 
 ## Workflow Rules
 
+- Several Claude sessions build this repository at the same time. A session
+  that edits code works in its own `git worktree` on its own branch, never in
+  the shared checkout: a `cargo test` run in a tree another session is
+  mid-edit on proves nothing, and has already produced phantom failures.
 - Hooks live in `.githooks/` (tracked) — `git config core.hooksPath
   .githooks` once per clone to enable them. `pre-commit` runs
   `rustfmt --check` on the staged `.rs` files only.

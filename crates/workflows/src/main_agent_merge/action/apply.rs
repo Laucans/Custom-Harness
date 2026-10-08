@@ -135,7 +135,7 @@ mod tests {
             .await
             .expect("a verdict");
         assert_eq!(outcome, MergeOutcome::NotReady);
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]
@@ -222,7 +222,7 @@ mod tests {
             .await
             .expect("a verdict");
         assert_eq!(outcome, MergeOutcome::WaitingOnChecks);
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]

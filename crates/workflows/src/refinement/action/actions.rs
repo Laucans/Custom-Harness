@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use harness_core::domain::prompts::splice;
 use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
+use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::store::spending::Spending;
 
 use crate::common::explore;
@@ -57,6 +58,8 @@ pub struct AskRefine {
     pub artifacts_dir: PathBuf,
     /// `--explore`.
     pub explore: bool,
+    /// What reads a kept map back.
+    pub disk: Rc<dyn Disk>,
     /// Where spending is recorded.
     pub spending: Rc<dyn Spending>,
 }
@@ -95,7 +98,7 @@ impl SessionAction<RefinementState> for AskRefine {
             ],
         );
         let map_file = explore::map_file_path(&self.artifacts_dir);
-        let prefix = explore::repo_context(open.ctx, self.explore, &map_file);
+        let prefix = explore::repo_context(open.ctx, self.explore, &map_file, self.disk.as_ref());
         let hierarchy = &open.state.hierarchy;
         let prompt = if hierarchy.is_empty() {
             format!("{prefix}\n\n{filled}")
@@ -117,14 +120,14 @@ impl SessionAction<RefinementState> for AskRefine {
     }
 }
 
-/// La moitié « écrit » de l'ex-`router_named_sections` : pose `state.wanted`
-/// depuis la réponse du routeur.
+/// The "write" half of the former `router_named_sections`: sets
+/// `state.wanted` from the router's reply.
 ///
-/// Une action locale, glissée après la session — même scission que
+/// A local action, slipped in after the session — the same split as
 /// `dev_loop::action::actions`.
 pub struct RecordWantedSections {
-    /// Le nom du stage du routeur, sous lequel sa réponse est rangée dans
-    /// `ctx.results`. Reçu de la table, jamais écrit en dur ici.
+    /// The router's stage name, under which its reply is stored in
+    /// `ctx.results`. Received from the table, never hard-coded here.
     pub router: String,
 }
 

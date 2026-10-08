@@ -87,6 +87,7 @@ pub async fn run(
         sessions: Rc::clone(&built.sessions),
         spending: Rc::clone(&built.spending),
         locks: Rc::clone(&built.locks),
+        disk: Rc::clone(&built.disk),
     };
     let config = Config {
         refinement_dir,

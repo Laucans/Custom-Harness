@@ -90,6 +90,7 @@ fn paid(
                 context: config.context.clone(),
                 artifacts_dir: config.artifacts_dir.clone(),
                 explore: config.explore,
+                disk: Rc::clone(&ports.disk),
                 spending: Rc::clone(&ports.spending),
             })],
         },
@@ -180,6 +181,7 @@ pub fn publish(ports: &Ports, config: &Config, phase: Phase) -> Stage<Refinement
                 coherence: COHERENCE.to_string(),
                 advice: (phase == Phase::Business).then(|| ADVICE.to_string()),
                 refinement_dir: config.refinement_dir.clone(),
+                disk: Rc::clone(&ports.disk),
             })],
         },
     }
@@ -253,11 +255,11 @@ mod tests {
         let config = config_fake::config();
         for phase in [Phase::Business, Phase::Technical] {
             for key in phase.keys() {
-                assert!(!template_of(key).is_empty());
-                assert!(!spec_of(&config, key).model.is_empty());
+                assert_ne!(template_of(key), "");
+                assert_ne!(spec_of(&config, key).model, "");
             }
         }
-        assert!(!template_of(ADVICE).is_empty());
+        assert_ne!(template_of(ADVICE), "");
     }
 
     #[test]

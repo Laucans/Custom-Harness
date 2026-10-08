@@ -9,6 +9,7 @@ use std::rc::Rc;
 use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Action, Context};
+use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 
 use crate::common::labels;
@@ -27,6 +28,8 @@ pub struct Write {
     pub advice: Option<String>,
     /// The artifacts folder for this issue.
     pub refinement_dir: PathBuf,
+    /// What keeps the body on disk before it is posted.
+    pub disk: Rc<dyn Disk>,
 }
 
 impl Write {
@@ -124,17 +127,23 @@ impl Action<RefinementState> for Write {
                  and the body carried none"
             )));
         }
+        // What the canonical sections do not cover stays: a session's
+        // `## Assumptions (autonomous run)`, a human's `## Owner Decisions`.
+        // A round rewrites the body; it must not erase what it never read.
+        let extras = sections::unknown(&issue.body);
+        let body = if extras.is_empty() {
+            body
+        } else {
+            format!("{body}\n{extras}\n")
+        };
 
         let path = self
             .refinement_dir
             .join(format!("{num}-r{:02}-body.md", ctx.state.round_no));
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Halt::Failed(format!("impossible de créer {} : {e}", parent.display()))
-            })?;
+            self.disk.create_dir_all(parent)?;
         }
-        std::fs::write(&path, &body)
-            .map_err(|e| Halt::Failed(format!("failed to write {}: {e}", path.display())))?;
+        self.disk.write_to_string(&path, &body)?;
 
         self.gh.set_body(num, &body).await?;
 
@@ -186,6 +195,7 @@ impl Action<RefinementState> for Write {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::fake_disk::FakeDisk;
     use crate::common::fake_github::{FakeGitHub, Wrote};
     use crate::refinement::data::phase::Phase;
     use harness_core::domain::{Issue, Spend};
@@ -197,13 +207,9 @@ mod tests {
     const COHERENCE: &str = "coherence";
     const ADVICE: &str = "human-advice";
 
+    /// Where the body lands on the fake disk — never a real folder.
     fn dir(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "harness-refinement-publish-{}-{name}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        path
+        PathBuf::from(format!("/refinement-{name}"))
     }
 
     fn state(round_no: u32, issue_labels: &[&str]) -> RefinementState {
@@ -249,6 +255,7 @@ mod tests {
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
         };
         let mut context = ctx(1, &[labels::REFINEMENT]);
         write.run(&mut context).await.expect("written");
@@ -260,7 +267,6 @@ mod tests {
         );
         assert!(writes.contains(&Wrote::Unlabelled(25, labels::REFINEMENT.to_string())));
         assert!(writes.contains(&Wrote::Label(25, labels::SPEC_WRITTEN.to_string())));
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 
     #[tokio::test]
@@ -272,6 +278,7 @@ mod tests {
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
         };
         let mut context = ctx(2, &[]);
         write.run(&mut context).await.expect("written");
@@ -279,7 +286,6 @@ mod tests {
             gh.writes()
                 .contains(&Wrote::Label(25, labels::SPEC_WRITTEN.to_string()))
         );
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 
     #[tokio::test]
@@ -291,6 +297,7 @@ mod tests {
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
         };
         let mut context = ctx(1, &[labels::HUMAN]);
         write.run(&mut context).await.expect("written");
@@ -298,7 +305,6 @@ mod tests {
             gh.writes()
                 .contains(&Wrote::Label(25, labels::SPEC_WRITTEN.to_string()))
         );
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 
     #[tokio::test]
@@ -310,6 +316,7 @@ mod tests {
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
         };
         let mut context = ctx(1, &[]);
         context.results.insert(
@@ -346,7 +353,6 @@ mod tests {
         );
         assert!(body.contains("a paid service"));
         assert!(body.contains(labels::TECH_REFINEMENT));
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 
     /// A business round whose advice says `text`, on an issue carrying `labels`.
@@ -358,6 +364,7 @@ mod tests {
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
         };
         let mut context = ctx(1, issue_labels);
         context.results.insert(
@@ -369,7 +376,6 @@ mod tests {
             },
         );
         write.run(&mut context).await.expect("written");
-        let _ = std::fs::remove_dir_all(&review_dir);
         gh.writes()
     }
 
@@ -442,6 +448,7 @@ mod tests {
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
         };
         let mut context = ctx(1, &[]);
         context.results.insert(
@@ -458,7 +465,6 @@ mod tests {
             gh.writes()
                 .contains(&Wrote::Comment(25, "refinement round: 1".to_string()))
         );
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 
     #[tokio::test]
@@ -470,6 +476,7 @@ mod tests {
             coherence: COHERENCE.to_string(),
             advice: None,
             refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
         };
         let mut context = ctx(1, &[labels::TECH_REFINEMENT]);
         context.state.phase = Phase::Technical;
@@ -482,7 +489,6 @@ mod tests {
             25,
             "technical refinement round: 1".to_string()
         )));
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 
     #[tokio::test]
@@ -494,6 +500,7 @@ mod tests {
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
         };
         let mut context = ctx(1, &[]);
         write.run(&mut context).await.expect("written");
@@ -503,18 +510,19 @@ mod tests {
             .position(|w| matches!(w, Wrote::Comment(25, b) if b == "refinement round: 1"));
         assert!(comment.is_some());
         assert_eq!(comment.unwrap(), writes.len() - 1, "posted last");
-        let _ = std::fs::remove_dir_all(&review_dir);
     }
 
     #[tokio::test]
     async fn a_coherence_pass_that_drops_a_section_is_ignored_rather_than_applied() {
         let review_dir = dir("coherence-drops");
         let gh = Rc::new(FakeGitHub::default());
+        let disk = Rc::new(FakeDisk::default());
         let write = Write {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
             refinement_dir: review_dir.clone(),
+            disk: Rc::clone(&disk) as Rc<dyn Disk>,
         };
         let mut context = ctx(1, &[]);
         context.results.insert(
@@ -527,8 +535,46 @@ mod tests {
             },
         );
         write.run(&mut context).await.expect("published anyway");
-        let body = std::fs::read_to_string(review_dir.join("25-r01-body.md")).expect("written");
+        let body = disk
+            .written_to(&review_dir.join("25-r01-body.md"))
+            .expect("written");
         assert!(body.contains("the lot goal"), "original merge held");
-        let _ = std::fs::remove_dir_all(&review_dir);
+    }
+
+    #[tokio::test]
+    async fn a_section_under_a_heading_no_stage_owns_survives_the_round() {
+        // The loss this prevents: `## Assumptions (autonomous run)` written by
+        // the dev loop vanished the next time a refinement rewrote the body.
+        let gh = Rc::new(FakeGitHub::default());
+        let write = Write {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            coherence: COHERENCE.to_string(),
+            advice: None,
+            refinement_dir: dir("extras"),
+            disk: Rc::new(FakeDisk::default()),
+        };
+        let mut context = ctx(1, &[]);
+        if let Some(issue) = context.state.issue.as_mut() {
+            issue.body = "## Business Goal\n\nold goal\n\n\
+                          ## Assumptions (autonomous run)\n\n- the API is v2\n"
+                .to_string();
+        }
+        write.run(&mut context).await.expect("written");
+        let body = gh
+            .writes()
+            .into_iter()
+            .find_map(|w| match w {
+                Wrote::Body(25, b) => Some(b),
+                _ => None,
+            })
+            .expect("a body");
+        assert!(
+            body.starts_with("## Business Goal\n\nthe lot goal"),
+            "{body}"
+        );
+        assert!(
+            body.contains("## Assumptions (autonomous run)\n\n- the API is v2"),
+            "{body}"
+        );
     }
 }

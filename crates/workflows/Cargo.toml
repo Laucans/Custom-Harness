@@ -1,6 +1,6 @@
 [package]
 name = "harness-workflows"
-description = "Les workflows : les instances déclarées contre le framework de core."
+description = "The workflows: the instances declared against core's framework."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

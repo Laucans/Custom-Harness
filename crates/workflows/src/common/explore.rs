@@ -305,6 +305,9 @@ pub struct Keep {
     pub artifacts_dir: PathBuf,
     /// What answers which commit the map was drawn at.
     pub repo: Rc<dyn Repo>,
+    /// What keeps the map and its commit — the port, so a test reads them
+    /// back without a folder.
+    pub disk: Rc<dyn Disk>,
 }
 
 #[async_trait(?Send)]
@@ -329,26 +332,26 @@ impl<S: Explored> Verification<S> for Keep {
             ));
         }
         if let Some(parent) = map_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(broke) = std::fs::write(&map_file, &said) {
-            ctx.traces.warn(&format!(
-                "the repo map could not be kept on disk ({broke}) — this \
-                 round is fine, a resumed one would pay to redraw it"
-            ));
+            let _ = self.disk.create_dir_all(parent);
         }
         // The commit last, and only if the map landed: a recorded commit with
         // no map beside it would claim a cache that does not exist.
-        if map_file.exists() {
-            match self.repo.head_sha().await {
+        match self.disk.write_to_string(&map_file, &said) {
+            Err(broke) => ctx.traces.warn(&format!(
+                "the repo map could not be kept on disk ({broke}) — this \
+                 round is fine, a resumed one would pay to redraw it"
+            )),
+            Ok(()) => match self.repo.head_sha().await {
                 Ok(head) => {
-                    let _ = std::fs::write(sha_file_path(&self.artifacts_dir), head.trim());
+                    let _ = self
+                        .disk
+                        .write_to_string(&sha_file_path(&self.artifacts_dir), head.trim());
                 }
                 Err(broke) => ctx.traces.warn(&format!(
                     "the map was kept but the commit it was drawn at could not \
                      be read ({broke}) — the next round will redraw it"
                 )),
-            }
+            },
         }
         ctx.traces.say(&format!(
             "repo map established — {} characters served to every stage of \
@@ -384,12 +387,12 @@ pub fn sha_file_path(artifacts_dir: &Path) -> PathBuf {
 ///
 /// Both files are required: a map with no recorded commit cannot be known to
 /// be current, and a recorded commit with no map serves nothing.
-fn mapped_at(artifacts_dir: &Path) -> Option<String> {
-    let map = std::fs::read_to_string(map_file_path(artifacts_dir)).ok()?;
+fn mapped_at(disk: &dyn Disk, artifacts_dir: &Path) -> Option<String> {
+    let map = disk.read_to_string(&map_file_path(artifacts_dir))?;
     if map.trim().is_empty() {
         return None;
     }
-    let sha = std::fs::read_to_string(sha_file_path(artifacts_dir)).ok()?;
+    let sha = disk.read_to_string(&sha_file_path(artifacts_dir))?;
     let sha = sha.trim();
     (!sha.is_empty()).then(|| sha.to_string())
 }
@@ -407,6 +410,8 @@ fn mapped_at(artifacts_dir: &Path) -> Option<String> {
 pub struct AlreadyMapped {
     /// What answers which commit the checkout is on.
     pub repo: Rc<dyn Repo>,
+    /// What reads the kept map and its commit back.
+    pub disk: Rc<dyn Disk>,
     /// The artifacts folder for this target.
     pub artifacts_dir: PathBuf,
 }
@@ -414,7 +419,7 @@ pub struct AlreadyMapped {
 #[async_trait(?Send)]
 impl<S> Verification<S> for AlreadyMapped {
     async fn verify(&self, _ctx: &Context<S>) -> Outcome<Verdict> {
-        let Some(drawn_at) = mapped_at(&self.artifacts_dir) else {
+        let Some(drawn_at) = mapped_at(self.disk.as_ref(), &self.artifacts_dir) else {
             return Ok(Verdict::Continue);
         };
         // A `HEAD` we cannot read is not a match: exploring again is the
@@ -442,7 +447,12 @@ impl<S> Verification<S> for AlreadyMapped {
 /// to give the repo to stages would serve them a map from a
 /// previous run left behind.
 #[must_use]
-pub fn repo_context<S>(ctx: &Context<S>, explore: bool, map_file: &Path) -> String {
+pub fn repo_context<S>(
+    ctx: &Context<S>,
+    explore: bool,
+    map_file: &Path,
+    disk: &dyn Disk,
+) -> String {
     if explore {
         return UNMAPPED.to_string();
     }
@@ -455,8 +465,8 @@ pub fn repo_context<S>(ctx: &Context<S>, explore: bool, map_file: &Path) -> Stri
     // Stage was skipped without being a dry-run — latent today, because
     // nothing here runs `--stages`; a resume would find it on
     // disk rather than lose the map.
-    match std::fs::read_to_string(map_file) {
-        Ok(said) if !said.trim().is_empty() => block(said.trim()),
+    match disk.read_to_string(map_file) {
+        Some(said) if !said.trim().is_empty() => block(said.trim()),
         _ => UNMAPPED.to_string(),
     }
 }
@@ -538,6 +548,7 @@ pub fn entries<S: Explored + 'static>(ports: &Ports, config: &Config) -> [Stage<
                 // a kept map must not resurrect one.
                 Box::new(AlreadyMapped {
                     repo: Rc::clone(&ports.repo),
+                    disk: Rc::clone(&ports.disk),
                     artifacts_dir: config.artifacts_dir.clone(),
                 }),
             ],
@@ -547,6 +558,7 @@ pub fn entries<S: Explored + 'static>(ports: &Ports, config: &Config) -> [Stage<
             checks: vec![Box::new(Keep {
                 artifacts_dir: config.artifacts_dir.clone(),
                 repo: Rc::clone(&ports.repo),
+                disk: Rc::clone(&ports.disk),
             })],
         }),
         body: StageBody::Session {
@@ -771,11 +783,21 @@ mod tests {
 
     // --- the map cache -----------------------------------------------------
 
-    fn anywhere(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("harness-map-{tag}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("a test directory");
-        dir
+    use crate::common::fake_disk::FakeDisk;
+
+    const ARTIFACTS: &str = "/artifacts";
+
+    /// A disk holding the map and/or the commit it was drawn at.
+    fn kept(map: Option<&str>, sha: Option<&str>) -> FakeDisk {
+        let dir = Path::new(ARTIFACTS);
+        let mut disk = FakeDisk::default();
+        if let Some(map) = map {
+            disk.existing.insert(map_file_path(dir), map.to_string());
+        }
+        if let Some(sha) = sha {
+            disk.existing.insert(sha_file_path(dir), sha.to_string());
+        }
+        disk
     }
 
     fn live() -> Context<()> {
@@ -790,10 +812,11 @@ mod tests {
         )
     }
 
-    async fn verdict_for(dir: &Path) -> Verdict {
+    async fn verdict_for(disk: FakeDisk) -> Verdict {
         AlreadyMapped {
             repo: Rc::new(fake::OneFileRepo),
-            artifacts_dir: dir.to_path_buf(),
+            disk: Rc::new(disk),
+            artifacts_dir: PathBuf::from(ARTIFACTS),
         }
         .verify(&live())
         .await
@@ -804,51 +827,104 @@ mod tests {
     async fn a_map_drawn_at_the_current_commit_is_served_not_redrawn() {
         // The saving this exists for: thirteen explorations of one repository
         // because the filename carried the round.
-        let dir = anywhere("current");
-        std::fs::write(map_file_path(&dir), "# the map").expect("a map");
-        std::fs::write(sha_file_path(&dir), fake::HEAD).expect("a commit");
-        let said = verdict_for(&dir).await;
+        let said = verdict_for(kept(Some("# the map"), Some(fake::HEAD))).await;
         assert!(matches!(said, Verdict::Skip(_)), "{said:?}");
         let Verdict::Skip(why) = said else {
             unreachable!()
         };
         assert!(why.contains(&fake::HEAD[..12]), "{why}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_moved_commit_redraws_rather_than_serving_a_stale_map() {
-        let dir = anywhere("moved");
-        std::fs::write(map_file_path(&dir), "# the map").expect("a map");
-        std::fs::write(sha_file_path(&dir), "aaaaaaaaaaaa").expect("a commit");
-        assert_eq!(verdict_for(&dir).await, Verdict::Continue);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            verdict_for(kept(Some("# the map"), Some("aaaaaaaaaaaa"))).await,
+            Verdict::Continue
+        );
     }
 
     #[tokio::test]
     async fn no_map_at_all_explores() {
-        let dir = anywhere("absent");
-        assert_eq!(verdict_for(&dir).await, Verdict::Continue);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(verdict_for(kept(None, None)).await, Verdict::Continue);
     }
 
     #[tokio::test]
     async fn a_map_whose_commit_was_not_recorded_cannot_be_trusted() {
         // It may predate any commit we know about; exploring again is the
         // answer that cannot be wrong.
-        let dir = anywhere("unsigned");
-        std::fs::write(map_file_path(&dir), "# the map").expect("a map");
-        assert_eq!(verdict_for(&dir).await, Verdict::Continue);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            verdict_for(kept(Some("# the map"), None)).await,
+            Verdict::Continue
+        );
     }
 
     #[tokio::test]
     async fn an_empty_map_beside_a_commit_serves_nothing() {
-        let dir = anywhere("empty");
-        std::fs::write(map_file_path(&dir), "   \n").expect("a map");
-        std::fs::write(sha_file_path(&dir), fake::HEAD).expect("a commit");
-        assert_eq!(verdict_for(&dir).await, Verdict::Continue);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            verdict_for(kept(Some("   \n"), Some(fake::HEAD))).await,
+            Verdict::Continue
+        );
+    }
+
+    /// The smallest state the two entries accept.
+    #[derive(Default)]
+    struct Mapped(String);
+
+    impl Explored for Mapped {
+        fn brief_mut(&mut self) -> &mut String {
+            &mut self.0
+        }
+        fn subject(&self) -> String {
+            "#7".to_string()
+        }
+        fn round_no(&self) -> u32 {
+            1
+        }
+        fn task(&self) -> String {
+            "#7".to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_map_is_kept_through_the_disk_port_then_its_commit() {
+        use harness_core::domain::Spend;
+        use harness_core::execution::Settings;
+        use harness_core::ports::agent::Reply;
+        let disk = Rc::new(FakeDisk::default());
+        let mut ctx: Context<Mapped> = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            Mapped::default(),
+            Logbook::null(),
+        );
+        ctx.results.insert(
+            SKILL.to_string(),
+            Reply {
+                text: "# the map".to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        Keep {
+            artifacts_dir: PathBuf::from(ARTIFACTS),
+            repo: Rc::new(fake::OneFileRepo),
+            disk: Rc::clone(&disk) as Rc<dyn Disk>,
+        }
+        .verify(&ctx)
+        .await
+        .expect("kept");
+        let written = disk.written.borrow();
+        let dir = Path::new(ARTIFACTS);
+        assert_eq!(
+            *written,
+            vec![
+                (map_file_path(dir), "# the map".to_string()),
+                (sha_file_path(dir), fake::HEAD.to_string()),
+            ],
+            "the map first, then the commit it was drawn at"
+        );
     }
 
     #[test]
@@ -874,7 +950,7 @@ mod tests {
         );
         // --explore wins even over a dry-run.
         assert_eq!(
-            repo_context(&ctx, true, Path::new("/tmp/never-read")),
+            repo_context(&ctx, true, Path::new("/never-read"), &fake::NoDocs),
             UNMAPPED
         );
     }
@@ -892,7 +968,7 @@ mod tests {
             Logbook::null(),
         );
         assert_eq!(
-            repo_context(&ctx, false, Path::new("/tmp/jamais-lu")),
+            repo_context(&ctx, false, Path::new("/never-read"), &fake::NoDocs),
             DRY_RUN
         );
     }
@@ -919,9 +995,30 @@ mod tests {
                 spend: Spend::default(),
             },
         );
-        let said = repo_context(&ctx, false, Path::new("/tmp/never-read"));
+        let said = repo_context(&ctx, false, Path::new("/never-read"), &fake::NoDocs);
         assert!(said.contains("### Constraints"));
         assert!(said.starts_with("--- REPO MAP (established once for this run) ---"));
         assert!(said.contains("--- END REPO MAP ---"));
+    }
+
+    #[test]
+    fn repo_context_falls_back_to_the_kept_map_through_the_disk_port() {
+        // A resumed run that skipped the stage finds the map where the last
+        // one kept it — read through the port, not the filesystem.
+        use harness_core::execution::{Context, Settings};
+        use harness_core::traces::Logbook;
+        let ctx: Context<()> = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            (),
+            Logbook::null(),
+        );
+        let disk = kept(Some("### Kept\n..."), None);
+        let said = repo_context(&ctx, false, &map_file_path(Path::new(ARTIFACTS)), &disk);
+        assert!(said.contains("### Kept"), "{said}");
+        let unmapped = repo_context(&ctx, false, Path::new("/never-read"), &fake::NoDocs);
+        assert_eq!(unmapped, UNMAPPED);
     }
 }

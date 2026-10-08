@@ -2811,7 +2811,7 @@ mod tests {
         assert!(shapes(&scene).contains(&"cone"), "traffic cones are cones");
         let outside = build(&Snapshot::default(), &View::A);
         assert!(outside.labels.iter().any(|l| l.text == "no GitHub board"));
-        assert!(!outside.props.is_empty());
+        assert_ne!(outside.props, [] as [Prop; 0]);
         let inside = build(&Snapshot::default(), &View::B);
         assert_eq!(
             panes(&inside, "steward"),

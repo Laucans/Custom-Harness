@@ -235,7 +235,7 @@ mod tests {
         first.mark("code");
         let next = first.turned();
         assert_eq!(next.milestone.number, "4", "the milestone stays");
-        assert!(next.done().is_empty());
+        assert_eq!(next.done(), [] as [String; 0]);
         assert!(!next.has_task());
     }
 }

@@ -130,8 +130,8 @@ impl Verification<Loop> for CodeAlreadyDelivered {
             return Ok(Verdict::Continue);
         }
         Ok(Verdict::Skip(format!(
-            "#{number} est déjà livrée sur {} — /code saute plutôt que d'être \
-             repayé (--restart pour le rejouer)",
+            "#{number} is already delivered on {} — /code skips rather than \
+             being paid again (--restart to replay it)",
             self.integration_branch
         )))
     }
@@ -425,7 +425,7 @@ mod tests {
         );
         // The "judge" half applies no label: the action will, and the borrow
         // checker enforces it.
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]

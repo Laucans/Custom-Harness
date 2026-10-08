@@ -105,7 +105,7 @@ mod tests {
             .run(&mut context)
             .await
             .expect("nothing to consume");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]
@@ -116,7 +116,7 @@ mod tests {
             .run(&mut context)
             .await
             .expect("nothing to do");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]
@@ -128,6 +128,6 @@ mod tests {
             .await
             .expect_err("must fail");
         assert!(matches!(err, Halt::Failed(_)));
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 }

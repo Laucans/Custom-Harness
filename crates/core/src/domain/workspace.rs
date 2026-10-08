@@ -247,13 +247,30 @@ impl Workspace {
         self.state_root.join(DEFAULT_BASE)
     }
 
+    /// Where workspaces land when `base` (`AGENTIC_WORKSPACES_DIR`) names a
+    /// folder; [`Self::workspaces`] when it is empty.
+    ///
+    /// A relative `base` is read from the repo, never from the current
+    /// directory: the loop runs from anywhere — a cron, a hook, another
+    /// checkout — and a relative base would otherwise place a clone of
+    /// hundreds of megabytes where the shell happens to be. One rule, used by
+    /// the mount and by the doctor that later looks for what was mounted.
+    #[must_use]
+    pub fn workspaces_in(&self, base: &str) -> PathBuf {
+        if base.is_empty() {
+            self.workspaces()
+        } else {
+            self.root.join(base)
+        }
+    }
+
     /// This path, relative to one of the two roots when possible.
     ///
     /// **Code first, accounting last**, and order matters: the
     /// workspace lives *under* the accounting root when no one has said otherwise. Accounting
-    /// first would have made every code path
-    /// précédé de `.llocal/agentic_workspaces/<nom>/`, et la racine du code
-    /// n'était jamais atteinte.
+    /// first would have prefixed every code path with
+    /// `.llocal/agentic_workspaces/<name>/`, and the code root would never
+    /// have been reached.
     #[must_use]
     pub fn rel(&self, path: &Path) -> String {
         for base in [&self.root, &self.state_root] {
@@ -270,9 +287,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_workspaces_base_is_the_default_or_a_path_read_from_the_repo() {
+        let here = Workspace::new(Path::new("/depot"));
+        assert_eq!(here.workspaces_in(""), here.workspaces());
+        assert_eq!(
+            here.workspaces_in("../harness-workspaces"),
+            Path::new("/depot/../harness-workspaces")
+        );
+        assert_eq!(here.workspaces_in("/elsewhere"), Path::new("/elsewhere"));
+    }
+
+    #[test]
     fn a_misspelled_strategy_is_none_rather_than_a_silent_default() {
-        // Retomber sur Tmp ferait supprimer, une fois par run et sans rien
-        // dire, le workspace que l'humain croyait garder.
+        // Falling back to Tmp would delete, once per run and without a word,
+        // the workspace the human thought they were keeping.
         assert_eq!(Strategy::parse("permanant"), None);
         assert_eq!(Strategy::parse(""), None);
         assert_eq!(Strategy::parse(" TMP "), Some(Strategy::Tmp));
@@ -294,8 +322,8 @@ mod tests {
 
     #[test]
     fn moving_the_code_leaves_the_bookkeeping_where_it_was() {
-        // C'est ce qui rend un workspace jetable : le dossier de code
-        // disparaît, `costs.tsv` répond toujours.
+        // What makes a workspace disposable: the code folder disappears,
+        // `costs.tsv` still answers.
         let moved = Workspace::new(Path::new("/depot")).at(Path::new("/depot/.llocal/w/clone"));
         assert_eq!(moved.root(), Path::new("/depot/.llocal/w/clone"));
         assert_eq!(
@@ -306,8 +334,8 @@ mod tests {
 
     #[test]
     fn a_code_path_is_relative_to_the_code_root_not_to_the_state_root() {
-        // Le mode de panne que ça évite : tout chemin de code affiché précédé
-        // de `.llocal/agentic_workspaces/<nom>/`.
+        // The failure mode this avoids: every displayed code path prefixed
+        // with `.llocal/agentic_workspaces/<name>/`.
         let moved = Workspace::new(Path::new("/depot")).at(Path::new("/depot/.llocal/w/clone"));
         assert_eq!(
             moved.rel(Path::new("/depot/.llocal/w/clone/src/main.rs")),

@@ -181,6 +181,26 @@ pub fn parse(body: &str) -> HashMap<String, String> {
     found
 }
 
+/// The sections under headings this module does not know, verbatim.
+///
+/// What [`render`] leaves out, so a round that rewrites the body keeps what
+/// it never read: a session's `## Assumptions (autonomous run)`, a human's
+/// `## Owner Decisions`. Text before the first `##` is not a section and is
+/// not kept. Empty when every heading is a canonical one.
+#[must_use]
+pub fn unknown(body: &str) -> String {
+    let marks = heading_marks(body);
+    let mut kept: Vec<&str> = Vec::new();
+    for (i, mark) in marks.iter().enumerate() {
+        if by_heading(&mark.title).is_some() {
+            continue;
+        }
+        let end = marks.get(i + 1).map_or(body.len(), |next| next.line_start);
+        kept.push(body[mark.line_start..end].trim());
+    }
+    kept.join("\n\n")
+}
+
 /// The body without the sections these headings name, everything else
 /// verbatim.
 ///
@@ -329,6 +349,19 @@ mod tests {
             Some("the goal")
         );
         assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_heading_is_kept_verbatim_and_a_known_one_is_not() {
+        let body = "intro\n\n## Business Goal\n\nthe goal\n\n\
+                    ## Assumptions (autonomous run)\n\n- one\n- two\n\n\
+                    ## Technical\n\nthe design\n\n## Owner Decisions\n\nyes\n";
+        assert_eq!(
+            unknown(body),
+            "## Assumptions (autonomous run)\n\n- one\n- two\n\n## Owner Decisions\n\nyes"
+        );
+        assert_eq!(unknown("## Business Goal\n\nthe goal\n"), "");
+        assert_eq!(unknown("no heading at all"), "");
     }
 
     #[test]

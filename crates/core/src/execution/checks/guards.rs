@@ -180,6 +180,6 @@ mod tests {
         .run(&mut context)
         .await
         .expect("nothing to mark");
-        assert!(context.state.done().is_empty());
+        assert_eq!(context.state.done(), [] as [String; 0]);
     }
 }

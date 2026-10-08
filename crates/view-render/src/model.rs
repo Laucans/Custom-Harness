@@ -433,7 +433,7 @@ mod tests {
             .expect("parses");
         assert_eq!(snap.project.name, "dnd_helper");
         assert!(snap.factory.idle);
-        assert!(snap.lines.is_empty());
+        assert_eq!(snap.lines, [] as [Line; 0]);
     }
 
     #[test]

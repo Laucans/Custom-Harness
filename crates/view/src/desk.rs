@@ -304,7 +304,7 @@ mod tests {
         let desk = Desk::new(factory.clone());
         assert!(!desk.is_live());
         let (mut first, replay) = desk.attach(80, 24).expect("attach");
-        assert!(replay.is_empty());
+        assert_eq!(replay, [] as [u8; 0]);
         assert!(desk.is_live());
         desk.write(b"hello").expect("write");
         assert_eq!(next(&mut first).await, b"hello");

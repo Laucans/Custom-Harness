@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# clippy with CI's flags before anything leaves this machine. Formatting is
+# checked at commit time (pre-commit); this is the slower gate, run once per
+# push rather than once per commit.
+set -euo pipefail
+
+echo "pre-push: cargo clippy --workspace --all-targets --all-features -- -D warnings" >&2
+if ! cargo clippy --workspace --all-targets --all-features -- -D warnings; then
+  echo >&2
+  echo "pre-push: clippy refused — fix the warnings above, or push with --no-verify to let CI say it instead." >&2
+  exit 1
+fi

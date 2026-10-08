@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn a_later_round_with_context_defers_entirely_to_the_router() {
-        assert!(planned(Phase::Business, 2, true).is_empty());
+        assert_eq!(planned(Phase::Business, 2, true), [] as [&str; 0]);
         assert!(routed(2, true));
         assert!(!routed(1, true));
     }
@@ -215,12 +215,18 @@ mod tests {
 
     #[test]
     fn a_section_of_the_other_phase_is_ignored() {
-        assert!(wanted_from("technical", Phase::Business).is_empty());
+        assert_eq!(
+            wanted_from("technical", Phase::Business),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]
     fn naming_nothing_recognisable_wants_nothing() {
-        assert!(wanted_from("do something, anything", Phase::Business).is_empty());
+        assert_eq!(
+            wanted_from("do something, anything", Phase::Business),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]

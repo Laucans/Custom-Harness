@@ -134,7 +134,7 @@ mod tests {
         escalate(&again, &decided, &pr("68", "chore/rust"))
             .await
             .expect("nothing to do");
-        assert!(again.writes().is_empty());
+        assert_eq!(again.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]

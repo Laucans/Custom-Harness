@@ -429,7 +429,7 @@ mod tests {
         // log for nothing.
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{
             "status":"allowed","rateLimitType":"five_hour","utilization":0.03}}"#;
-        assert!(render(line).is_empty());
+        assert_eq!(render(line), [] as [std::string::String; 0]);
     }
 
     /// A real event, with the nested shape the CLI actually emits.
@@ -516,8 +516,8 @@ mod tests {
 
     #[test]
     fn an_empty_line_produces_nothing() {
-        assert!(render("").is_empty());
-        assert!(render("   \n").is_empty());
+        assert_eq!(render(""), [] as [std::string::String; 0]);
+        assert_eq!(render("   \n"), [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -525,8 +525,14 @@ mod tests {
         // It arrives several times per reasoning block; `(thinking)` already
         // says the session is reasoning. The CLI sends it as a `system`
         // subtype, which is where the first attempt at this filter missed it.
-        assert!(render(r#"{"type":"system","subtype":"thinking_tokens","count":12}"#).is_empty());
-        assert!(render(r#"{"type":"thinking_tokens","count":12}"#).is_empty());
+        assert_eq!(
+            render(r#"{"type":"system","subtype":"thinking_tokens","count":12}"#),
+            [] as [std::string::String; 0]
+        );
+        assert_eq!(
+            render(r#"{"type":"thinking_tokens","count":12}"#),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]

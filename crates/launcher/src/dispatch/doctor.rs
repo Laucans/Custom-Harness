@@ -93,11 +93,91 @@ async fn session_is_running() -> bool {
 ///
 /// [`Halt::Halted`] while a session is running — a correct refusal, naming
 /// what to wait for. Otherwise whatever [`treat`] propagates.
-pub async fn treat_by_hand(here: &Path, dry_run: bool, log: &Logbook) -> Outcome<Repair> {
+pub async fn treat_by_hand(
+    here: &Path,
+    workspaces_dir: &str,
+    dry_run: bool,
+    log: &Logbook,
+) -> Outcome<Repair> {
     if let Some(refused) = refusal(dry_run, session_is_running().await) {
         return Err(refused);
     }
-    treat(here, dry_run, log).await
+    for stray in stray_folders(&Workspace::new(here)) {
+        log.say(&format!("doctor: {stray}"));
+    }
+    treat(here, workspaces_dir, dry_run, log).await
+}
+
+/// The folders directly under `.llocal/` that no code of this harness names.
+///
+/// `.llocal/` drifts: a hand-made `archive/` of an old clone, a `postgres/`
+/// a target's tests left behind. None of it breaks a run, but a folder
+/// nobody can account for is where disk goes and where a human tidying up
+/// by hand deletes the wrong thing — so `harness doctor` names them, with
+/// their weight, and touches nothing.
+#[must_use]
+pub fn stray_folders(source: &Workspace) -> Vec<String> {
+    let llocal = source.state_root().join(".llocal");
+    let Ok(entries) = std::fs::read_dir(&llocal) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            !name.is_some_and(|name| KNOWN_LLOCAL.contains(&name.as_str()))
+        })
+        .map(|path| {
+            format!(
+                "{} is not a folder this harness writes ({} MB) — a leftover to \
+                 archive elsewhere or delete by hand",
+                source.rel(&path),
+                weight_of(&path) / (1024 * 1024)
+            )
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Every folder the harness itself creates under `.llocal/`.
+///
+/// Kept in one place on purpose: a new store added without its name here
+/// shows up in `harness doctor` as a stray, which is the reminder to add it.
+const KNOWN_LLOCAL: [&str; 8] = [
+    "agentic_workspaces",
+    "logs",
+    "grill",
+    "init",
+    "lanes",
+    "planner-locks",
+    "split-locks",
+    "pr-fix-locks",
+];
+
+/// The bytes under a folder, following nothing: a leftover is measured,
+/// never walked through a symlink into the rest of the disk.
+fn weight_of(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| {
+            let Ok(kind) = entry.file_type() else {
+                return 0;
+            };
+            if kind.is_dir() {
+                weight_of(&entry.path())
+            } else if kind.is_file() {
+                entry.metadata().map_or(0, |m| m.len())
+            } else {
+                0
+            }
+        })
+        .sum()
 }
 
 /// Whether to refuse, given whether this is a dry run and whether a session is
@@ -130,8 +210,14 @@ fn refusal(dry_run: bool, session_is_running: bool) -> Option<Halt> {
 ///
 /// An unreadable ledger, or a `git` that refuses in a workspace. A repair that
 /// half-happened must not be reported as done.
-pub async fn treat(here: &Path, dry_run: bool, log: &Logbook) -> Outcome<Repair> {
+pub async fn treat(
+    here: &Path,
+    workspaces_dir: &str,
+    dry_run: bool,
+    log: &Logbook,
+) -> Outcome<Repair> {
     let source = Workspace::new(here);
+    let mounted_under = source.workspaces_in(workspaces_dir);
     let ledger = ErrorLedger::new(&source.error_ledger());
     let Some(last) = ledger.last()? else {
         log.debug("doctor: nothing has stopped the harness yet");
@@ -168,12 +254,12 @@ pub async fn treat(here: &Path, dry_run: bool, log: &Logbook) -> Outcome<Repair>
     match repair {
         Repair::Nothing => Ok(Repair::Nothing),
         Repair::CleanWorkspace => {
-            clean_workspaces(&source, log).await?;
+            clean_workspaces(&source, &mounted_under, log).await?;
             record_repair(&source, repair, log);
             Ok(repair)
         }
         Repair::InstallDependencies => {
-            install_dependencies(&source, log).await?;
+            install_dependencies(&source, &mounted_under, log).await?;
             record_repair(&source, repair, log);
             Ok(repair)
         }
@@ -196,8 +282,12 @@ const INSTALL_TIMEOUT: Duration = Duration::from_mins(20);
 ///
 /// Run through `sh -c` because a remedy is a shell line, `&&` included
 /// (`python -m venv .venv && pip install -r requirements.txt`).
-async fn install_dependencies(source: &Workspace, log: &Logbook) -> Outcome<()> {
-    let mounted = workspaces_under(&source.workspaces());
+async fn install_dependencies(
+    source: &Workspace,
+    mounted_under: &Path,
+    log: &Logbook,
+) -> Outcome<()> {
+    let mounted = workspaces_under(mounted_under);
     if mounted.is_empty() {
         log.say("doctor: no workspace mounted — nothing to install");
         return Ok(());
@@ -275,8 +365,8 @@ fn record_repair(source: &Workspace, repair: Repair, log: &Logbook) {
 /// which folder it mounted, and a clean tree is the correct state for all of
 /// them. A read-only checkout has nothing to discard, so the gesture is a
 /// no-op there.
-async fn clean_workspaces(source: &Workspace, log: &Logbook) -> Outcome<()> {
-    let mounted = workspaces_under(&source.workspaces());
+async fn clean_workspaces(source: &Workspace, mounted_under: &Path, log: &Logbook) -> Outcome<()> {
+    let mounted = workspaces_under(mounted_under);
     if mounted.is_empty() {
         log.say("doctor: no workspace mounted — nothing to clean");
         return Ok(());
@@ -350,10 +440,41 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_under_llocal_the_harness_never_writes_is_named_with_its_weight() {
+        let dir = Dir::new("strays");
+        let llocal = dir.0.join(".llocal");
+        std::fs::create_dir_all(llocal.join("logs")).expect("a known folder");
+        std::fs::create_dir_all(llocal.join("archive/old")).expect("a stray");
+        std::fs::write(
+            llocal.join("archive/old/dump.sql"),
+            vec![0u8; 3 * 1024 * 1024],
+        )
+        .expect("three megabytes");
+        std::fs::write(llocal.join("costs.tsv"), "a file, not a folder").expect("a file");
+        let said = stray_folders(&Workspace::new(&dir.0));
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].starts_with(".llocal/archive is not a folder"),
+            "{}",
+            said[0]
+        );
+        assert!(said[0].contains("(3 MB)"), "{}", said[0]);
+    }
+
+    #[test]
+    fn a_checkout_without_llocal_has_no_strays() {
+        let dir = Dir::new("no-llocal");
+        assert_eq!(
+            stray_folders(&Workspace::new(&dir.0)),
+            [] as [std::string::String; 0]
+        );
+    }
+
+    #[test]
     fn a_folder_without_git_is_not_a_workspace_to_touch() {
         let dir = Dir::new("not-git");
         std::fs::create_dir_all(dir.0.join("by-hand")).expect("a folder");
-        assert!(workspaces_under(&dir.0).is_empty());
+        assert_eq!(workspaces_under(&dir.0), [] as [std::path::PathBuf; 0]);
     }
 
     #[test]
@@ -361,7 +482,10 @@ mod tests {
         let dir = Dir::new("found");
         std::fs::create_dir_all(dir.0.join("clone/.git")).expect("a clone");
         assert_eq!(workspaces_under(&dir.0), vec![dir.0.join("clone")]);
-        assert!(workspaces_under(&dir.0.join("nowhere")).is_empty());
+        assert_eq!(
+            workspaces_under(&dir.0.join("nowhere")),
+            [] as [std::path::PathBuf; 0]
+        );
     }
 
     #[tokio::test]
@@ -370,7 +494,7 @@ mod tests {
         // asks precisely while something is in flight.
         let dir = Dir::new("by-hand-dry");
         assert_eq!(
-            treat_by_hand(&dir.0, true, &Logbook::null())
+            treat_by_hand(&dir.0, "", true, &Logbook::null())
                 .await
                 .expect("a verdict"),
             Repair::Nothing
@@ -414,7 +538,7 @@ mod tests {
     #[tokio::test]
     async fn with_no_history_there_is_nothing_to_repair() {
         let dir = Dir::new("empty");
-        let said = treat(&dir.0, false, &Logbook::null())
+        let said = treat(&dir.0, "", false, &Logbook::null())
             .await
             .expect("a verdict");
         assert_eq!(said, Repair::Nothing);
@@ -433,7 +557,7 @@ mod tests {
             ))
             .expect("a row");
         assert_eq!(
-            treat(&dir.0, true, &Logbook::null())
+            treat(&dir.0, "", true, &Logbook::null())
                 .await
                 .expect("a verdict"),
             Repair::CleanWorkspace
@@ -461,7 +585,7 @@ mod tests {
             .expect("a row");
         // No workspace mounted: the gesture is a no-op, the bookkeeping is not.
         assert_eq!(
-            treat(&dir.0, false, &Logbook::null())
+            treat(&dir.0, "", false, &Logbook::null())
                 .await
                 .expect("a verdict"),
             Repair::CleanWorkspace
@@ -474,7 +598,7 @@ mod tests {
         assert_eq!(last.workflow, error_ledger::DOCTOR);
         // And a second pass finds nothing left to do.
         assert_eq!(
-            treat(&dir.0, false, &Logbook::null())
+            treat(&dir.0, "", false, &Logbook::null())
                 .await
                 .expect("a verdict"),
             Repair::Nothing
@@ -501,7 +625,7 @@ mod tests {
             ))
             .expect("a row");
         assert_eq!(
-            treat(&dir.0, true, &Logbook::null())
+            treat(&dir.0, "", true, &Logbook::null())
                 .await
                 .expect("a verdict"),
             Repair::InstallDependencies
@@ -509,7 +633,7 @@ mod tests {
         // No workspace mounted: nothing to install, and the bookkeeping still
         // says the stop was treated, so the next tick does not redo it.
         assert_eq!(
-            treat(&dir.0, false, &Logbook::null())
+            treat(&dir.0, "", false, &Logbook::null())
                 .await
                 .expect("a verdict"),
             Repair::InstallDependencies
@@ -520,7 +644,7 @@ mod tests {
             .expect("a row");
         assert_eq!(last.kind, "INSTALLED");
         assert_eq!(
-            treat(&dir.0, false, &Logbook::null())
+            treat(&dir.0, "", false, &Logbook::null())
                 .await
                 .expect("a verdict"),
             Repair::Nothing
@@ -540,7 +664,7 @@ mod tests {
             ))
             .expect("a row");
         assert_eq!(
-            treat(&dir.0, false, &Logbook::null())
+            treat(&dir.0, "", false, &Logbook::null())
                 .await
                 .expect("a verdict"),
             Repair::Nothing

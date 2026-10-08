@@ -100,6 +100,7 @@ pub fn plan(ports: &Ports, config: &Config) -> Stage<PlannerState> {
                 template: PLAN_PROMPT,
                 artifacts_dir: config.artifacts_dir.clone(),
                 explore: config.explore,
+                disk: Rc::clone(&ports.disk),
                 spending: Rc::clone(&ports.spending),
             })],
         },

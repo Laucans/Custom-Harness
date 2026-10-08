@@ -1,10 +1,10 @@
-//! Ce qui séquence : la table d'un round, le round lui-même, et la boucle qui
-//! en répète N.
+//! What sequences: the table of a round, the round itself, and the loop that
+//! repeats it N times.
 //!
-//! **`stages` est la surface de design du workflow.** L'ordre de sa table
-//! *est* l'ordre d'exécution ; `round` porte ce qui l'entoure (le choix de la
-//! task, la post-condition), et `workflow` compte les tours et appelle le
-//! round une fois par tour.
+//! **`stages` is the workflow's design surface.** The order of its table
+//! *is* the execution order; `round` carries what surrounds it (the choice
+//! of task, the post-condition), and `workflow` counts the turns and calls
+//! the round once per turn.
 
 pub mod round;
 pub mod stages;

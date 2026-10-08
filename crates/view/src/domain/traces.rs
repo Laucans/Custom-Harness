@@ -736,7 +736,7 @@ mod tests {
         );
         let log = parse_run_log(&text, &[]);
         assert_eq!(log.round, Some((2, 3)));
-        assert!(log.done.is_empty());
+        assert_eq!(log.done, [] as [String; 0]);
         assert_eq!(log.task.expect("task").number, 63);
         assert!(log.delivered.expect("delivered").contains("PR #70"));
     }

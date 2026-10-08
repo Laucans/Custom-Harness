@@ -1,9 +1,9 @@
-//! Ce que le raffinage **fait** : demander une étape, consigner ce que le
-//! routeur a nommé, réécrire le corps de l'issue.
+//! What refinement **does**: ask for a stage, record what the router named,
+//! rewrite the issue body.
 //!
-//! Le pendant de `checks` : une `Verification` juge et n'écrit pas, donc tout
-//! ce qui écrit vit ici — y compris la moitié « écrit » de l'ancienne
-//! `router_named_sections`.
+//! The counterpart of `checks`: a `Verification` judges and does not write,
+//! so everything that writes lives here — including the "write" half of the
+//! former `router_named_sections`.
 
 pub mod actions;
 pub mod publish;

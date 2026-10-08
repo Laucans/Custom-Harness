@@ -32,7 +32,7 @@ use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug, Verdict};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Route, Snapshot};
-use harness_workflows::common::{branching, labels, review};
+use harness_workflows::common::{branching, hierarchy, labels, review};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
 use harness_workflows::main_agent_merge::data::report::Outcome as MergeReport;
@@ -290,7 +290,7 @@ async fn dispatch(
         if args.no_doctor {
             return;
         }
-        match crate::dispatch::doctor::treat(here, args.dry_run, log).await {
+        match crate::dispatch::doctor::treat(here, &args.workspaces_dir, args.dry_run, log).await {
             Ok(Repair::Nothing) => {}
             Ok(done) => log.say(&format!("watch: doctor -> {}", done.outcome())),
             Err(broke) => log.warn(&format!("watch: doctor -> {}", broke.reason())),
@@ -385,11 +385,13 @@ async fn dispatched(
         Route::MergeMainAgent { milestone } => {
             run_main_agent_merge(args, here, milestone, log).await
         }
-        Route::Refinement { issue } => refine_here(args, here, Phase::Business, issue, log).await,
+        Route::Refinement { issue } => {
+            refine_here(args, here, gh, Phase::Business, issue, log).await
+        }
         // Sequential on purpose, even under `--parallel`: the technical half
         // reads code a task may be changing, so it is not spread over lanes.
         Route::TechRefinement { issue } => {
-            refine_here(args, here, Phase::Technical, issue, log).await
+            refine_here(args, here, gh, Phase::Technical, issue, log).await
         }
     }
 }
@@ -398,6 +400,7 @@ async fn dispatched(
 async fn refine_here(
     args: &WatchArgs,
     here: &Path,
+    gh: &dyn GitHub,
     phase: Phase,
     issue: u64,
     log: &Logbook,
@@ -406,19 +409,49 @@ async fn refine_here(
         Phase::Business => "refinement",
         Phase::Technical => "tech_refinement",
     };
+    let branch = match gh.issue(issue).await {
+        Ok(task) => refinement_branch(gh, &args.branch, &task).await,
+        Err(_) => args.branch.clone(),
+    };
+    let checkout = crate::dispatch::shared::Checkout {
+        branch: &branch,
+        ..shared_checkout(args)
+    };
     report_failure(
         workflow,
         crate::dispatch::refinement::run(
             phase,
             issue,
             here,
-            &shared_checkout(args),
+            &checkout,
             &args.permission_mode,
             args.dry_run,
         )
         .await,
         log,
     )
+}
+
+/// The branch a refinement of this task reads: its milestone's own when that
+/// branch already exists on the remote, else the integration branch.
+///
+/// The map `explore` draws describes the checkout it reads. Drawn on
+/// `main_agent`, the last task of a milestone saw a repository with none of
+/// its sisters' work in it and listed "base unresolved" as its first
+/// contradiction. A milestone whose branch `split` has not created yet has no
+/// sisters' work to see, and reads the integration branch as before.
+async fn refinement_branch(gh: &dyn GitHub, fallback: &str, task: &Issue) -> String {
+    let Ok(Some(scope)) = hierarchy::around(gh, task).await else {
+        return fallback.to_string();
+    };
+    let Ok(number) = scope.milestone.number.parse::<u64>() else {
+        return fallback.to_string();
+    };
+    let branch = branching::milestone_branch(number, &scope.milestone.title);
+    match gh.branch_sha(&branch).await {
+        Ok(Some(_)) => branch,
+        _ => fallback.to_string(),
+    }
 }
 
 /// The shared read-only checkout a refinement run in this process reads.
@@ -526,24 +559,31 @@ async fn run_router_lanes(
         .filter(|number| !running.contains(number))
         .collect();
     splits.sort_unstable();
-    let mut refines: Vec<u64> = refining
+    let mut refining: Vec<&Issue> = refining
         .iter()
-        .filter(|issue| issue.is_open())
-        .map(|issue| issue.number)
-        .filter(|number| !running.contains(number))
+        .filter(|issue| issue.is_open() && !running.contains(&issue.number))
         .collect();
-    refines.sort_unstable();
+    refining.sort_unstable_by_key(|issue| issue.number);
+    let mut refines: Vec<(u64, String)> = Vec::with_capacity(refining.len());
+    for issue in refining {
+        let branch = refinement_branch(gh, &args.branch, issue).await;
+        refines.push((issue.number, branch));
+    }
     let work = splits
         .into_iter()
-        .map(|number| ("split", number))
-        .chain(refines.into_iter().map(|number| ("refine", number)));
+        .map(|number| ("split", number, args.branch.clone()))
+        .chain(
+            refines
+                .into_iter()
+                .map(|(number, branch)| ("refine", number, branch)),
+        );
     let mut started = 0usize;
-    for (what, number) in work {
+    for (what, number, branch) in work {
         let Some(slot) = lanes.free_slot() else {
             log.say("watch: router lanes -> every lane is busy");
             break;
         };
-        let Some(command) = router_lane_command(args, here, what, number, slot) else {
+        let Some(command) = router_lane_command(args, here, what, number, &branch, slot) else {
             log.warn("watch: router lanes -> cannot find this executable");
             return None;
         };
@@ -571,6 +611,7 @@ fn router_lane_command(
     here: &Path,
     what: &str,
     number: u64,
+    branch: &str,
     slot: usize,
 ) -> Option<tokio::process::Command> {
     let mut command = tokio::process::Command::new(std::env::current_exe().ok()?);
@@ -583,7 +624,7 @@ fn router_lane_command(
         .arg("--target-repo-url")
         .arg(&args.target_repo_url)
         .arg("--branch")
-        .arg(&args.branch)
+        .arg(branch)
         .arg("--permission-mode")
         .arg(&args.permission_mode);
     if args.dry_run {

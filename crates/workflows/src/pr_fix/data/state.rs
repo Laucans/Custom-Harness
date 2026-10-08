@@ -42,6 +42,6 @@ mod tests {
     fn a_fresh_state_has_no_pr_and_nothing_broken_yet() {
         let state = FixState::default();
         assert!(state.pr.is_none());
-        assert!(state.failing.is_empty());
+        assert_eq!(state.failing, [] as [std::string::String; 0]);
     }
 }

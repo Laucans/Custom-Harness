@@ -307,7 +307,7 @@ mod tests {
         let cli = Cli::try_parse_from(["harness-view"]).expect("parses");
         let project = project_of(&cli, Path::new("/somewhere/Custom-Harness"));
         assert_eq!(project.name, "Custom-Harness");
-        assert!(project.url.is_empty());
+        assert_eq!(project.url, "");
     }
 
     #[test]

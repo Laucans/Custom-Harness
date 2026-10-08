@@ -1,8 +1,7 @@
-//! Ce que la revue **fait** : demander les deux passes, publier le
-//! commentaire.
+//! What the review **does**: ask for the two passes, publish the comment.
 //!
-//! Le pendant de `checks` : une `Verification` juge et n'écrit pas, donc tout
-//! ce qui écrit vit ici.
+//! The counterpart of `checks`: a `Verification` judges and does not write,
+//! so everything that writes lives here.
 
 pub mod actions;
 pub mod publish;

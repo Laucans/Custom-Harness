@@ -97,7 +97,10 @@ mod tests {
     fn a_rust_project_needs_nothing_installed() {
         // Cargo fetches on build. The old hard-coded list told a Rust
         // target to run `npm install`.
-        assert!(needed(&found(&["Cargo.toml"])).is_empty());
+        assert_eq!(
+            needed(&found(&["Cargo.toml"])),
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     #[test]
@@ -105,7 +108,10 @@ mod tests {
         // A fresh target repo carries a README and little else. Demanding
         // `node_modules` there refused a run over a directory the repo
         // could never have had.
-        assert!(needed(&[]).is_empty());
+        assert_eq!(
+            needed(&[]),
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     #[test]
