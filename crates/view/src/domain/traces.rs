@@ -418,6 +418,10 @@ pub struct Costs {
     pub by_task: Vec<Bucket>,
     /// By outcome: `ok`, `STOP`, `FAILED`, `QUOTA`.
     pub by_outcome: Vec<Bucket>,
+    /// By side of the architecture the task is on — `data-layer` (built on
+    /// the strongest model), `other`, or `unknown` for a task the board no
+    /// longer lists. Filled by [`attribute_sides`].
+    pub by_side: Vec<Bucket>,
     /// Token totals.
     pub tokens: Tokens,
     /// The newest rows, newest first.
@@ -543,6 +547,24 @@ pub fn stage_logs(
         .collect()
 }
 
+/// Fills `by_side` from the ledger: `is_data_layer(task)` says which side a
+/// task is on, `None` when the board does not know it.
+pub fn attribute_sides(
+    costs: &mut Costs,
+    rows: &[LedgerRow],
+    is_data_layer: impl Fn(&str) -> Option<bool>,
+) {
+    costs.by_side.clear();
+    for row in rows {
+        let key = match is_data_layer(&row.task) {
+            Some(true) => "data-layer",
+            Some(false) => "other",
+            None => "unknown",
+        };
+        bump(&mut costs.by_side, key, row.cost_usd.unwrap_or(0.0));
+    }
+}
+
 /// The last `max` bytes of `text`, cut on a line boundary.
 fn tail_of(text: &str, max: usize) -> String {
     if text.len() <= max {
@@ -560,6 +582,44 @@ fn tail_of(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn ledger_row(task: &str, usd: f64) -> LedgerRow {
+        LedgerRow {
+            when: String::new(),
+            run: String::new(),
+            round: String::new(),
+            task: task.to_string(),
+            stage: "code".to_string(),
+            cost_usd: Some(usd),
+            turns: None,
+            duration_ms: None,
+            input: None,
+            output: None,
+            cache_read: None,
+            cache_write: None,
+            outcome: "ok".to_string(),
+        }
+    }
+
+    #[test]
+    fn spending_is_attributed_to_the_side_of_the_task() {
+        let rows = vec![
+            ledger_row("64", 2.0),
+            ledger_row("64", 1.0),
+            ledger_row("65", 0.5),
+            ledger_row("9", 0.25),
+        ];
+        let mut costs = Costs::default();
+        attribute_sides(&mut costs, &rows, |task| match task {
+            "64" => Some(true),
+            "65" => Some(false),
+            _ => None,
+        });
+        let usd = |key: &str| costs.by_side.iter().find(|b| b.key == key).map(|b| b.usd);
+        assert_eq!(usd("data-layer"), Some(3.0));
+        assert_eq!(usd("other"), Some(0.5));
+        assert_eq!(usd("unknown"), Some(0.25));
+    }
+
     #[test]
     fn a_lane_run_names_its_issue_and_a_bare_run_none() {
         assert_eq!(issue_of_run("20261008-152126-64"), Some(64));

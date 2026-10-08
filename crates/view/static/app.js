@@ -656,6 +656,10 @@
     dashboards(p) {
       const c = S.snap.costs, q = S.snap.quota;
       let h = tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
+      // The data layer runs on the strongest model: what it costs against the rest.
+      const dl = (c.by_side || []).find((b) => b.key === 'data-layer');
+      if (dl) h += tiles([[usd(dl.usd), 'data layer (strongest model)'], [c.total_usd > 0 ? Math.round(100 * dl.usd / c.total_usd) + '%' : '—', 'of all spending'], [dl.count, 'sessions']]);
+      if ((c.by_side || []).length) h += '<h3>By side of the architecture</h3>' + bars(c.by_side);
       h += '<h3 id="dash-costs">By day</h3>' + bars(c.by_day.slice(-14));
       h += '<h3>By stage</h3>' + bars(c.by_stage);
       h += '<h3>By task</h3>' + bars(c.by_task);

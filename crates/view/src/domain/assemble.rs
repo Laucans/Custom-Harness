@@ -583,6 +583,24 @@ fn versions(project: &Project, board: Option<&BoardReading>) -> Versions {
 pub fn snapshot(inputs: &Inputs<'_>) -> Snapshot {
     let (lines, employees) = lines_and_employees(inputs);
     let watch = &inputs.observed.watch;
+    let board = inputs.board.map(|b| board_view(b, inputs.project));
+    // The side a task is on, from the board: a task of a milestone the board
+    // no longer lists is `unknown`, never guessed.
+    let sides: std::collections::HashMap<String, bool> = board
+        .iter()
+        .flat_map(|b| b.milestones.iter())
+        .flat_map(|m| m.tasks.iter())
+        .map(|t| {
+            (
+                t.number.to_string(),
+                t.labels.iter().any(|l| l == labels::DATA_LAYER),
+            )
+        })
+        .collect();
+    let mut costs = summarize_costs(&inputs.observed.ledger, LEDGER_ROWS_SHOWN);
+    traces::attribute_sides(&mut costs, &inputs.observed.ledger, |task| {
+        sides.get(task).copied()
+    });
     Snapshot {
         at: String::new(),
         project: inputs.project.clone(),
@@ -597,9 +615,9 @@ pub fn snapshot(inputs: &Inputs<'_>) -> Snapshot {
         employees,
         lines,
         rooms: blueprint::ROOMS.to_vec(),
-        board: inputs.board.map(|b| board_view(b, inputs.project)),
+        board,
         versions: versions(inputs.project, inputs.board),
-        costs: summarize_costs(&inputs.observed.ledger, LEDGER_ROWS_SHOWN),
+        costs,
         quota: inputs.observed.quota.clone(),
         errors: inputs
             .observed
