@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 
-use crate::common::architecture::Declaration;
+use crate::common::architecture::{Declaration, Unit};
 use crate::common::sections;
 use crate::refinement::data::rounds;
 use crate::refinement::data::state::RefinementState;
@@ -133,15 +133,35 @@ pub fn layout_violation(key: &str, architecture: &str, text: &str) -> Option<Str
         return None;
     }
     let declaration = Declaration::parse(architecture)?;
-    if !declaration.unit.is_rust() || names_a_crate(text) {
+    if !declaration.unit.is_rust() {
+        return None;
+    }
+    if !names_a_crate(text) {
+        return Some(format!(
+            "{key}: the task declares a {} — a Rust unit, under crates/ — and the \
+             section names no path under crates/<system>/. The stack rule binds in \
+             a TypeScript host too: the unit is a crate, compiled to WebAssembly \
+             if the host must load it. Write that design, not a waiver, a fallback \
+             or a question for the human.",
+            declaration.unit.key()
+        ));
+    }
+    let slot = match declaration.unit {
+        Unit::Capability => Some(("capabilities/", "crates/<system>/capabilities/<name>/")),
+        Unit::DataCapability => Some((
+            "data-capabilities/",
+            "crates/dataguard/data-capabilities/<name>/",
+        )),
+        _ => None,
+    };
+    let (marker, slot) = slot?;
+    if text.contains(marker) {
         return None;
     }
     Some(format!(
-        "{key}: the task declares a {} — a Rust unit, under crates/ — and the \
-         section names no path under crates/<system>/. The stack rule binds in \
-         a TypeScript host too: the unit is a crate, compiled to WebAssembly \
-         if the host must load it. Write that design, not a waiver, a fallback \
-         or a question for the human.",
+        "{key}: a {} lives at {slot}, with its manifest beside it, and the section \
+         names no path under {marker} — the code gate reads that folder and nothing \
+         else. Place the crate where the layout says.",
         declaration.unit.key()
     ))
 }
@@ -209,6 +229,18 @@ mod tests {
         let crate_plan = "Step 1 creates `crates/bestiary/capabilities/actors24-entry/` with its \
                           capability.json, built to wasm by wasm-pack.";
         assert_eq!(layout_violation("technical", CAPABILITY, crate_plan), None);
+    }
+
+    #[test]
+    fn a_capability_crate_outside_capabilities_is_misplaced() {
+        let beside = "Crate: `crates/bestiary/actors24-entry/`, compiled to wasm.";
+        let why = layout_violation("technical", CAPABILITY, beside).expect("misplaced");
+        assert!(
+            why.contains("crates/<system>/capabilities/<name>/"),
+            "{why}"
+        );
+        let plumbing = "unit: infrastructure\nsystem: bestiary\nside: harness:write-side";
+        assert_eq!(layout_violation("technical", plumbing, beside), None);
     }
 
     #[test]

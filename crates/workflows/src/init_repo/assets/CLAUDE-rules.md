@@ -34,6 +34,7 @@ apps/<system>/<micro-ui>/          one Micro-UI (TypeScript) + micro-ui.json (co
 apps/screens/<screen>.json         one frozen screen composition (contract E)
 crates/<system>/capabilities/<name>/   one Capability crate + capability.json (contract B)
 crates/<system>/queries/<name>.graphql persisted queries, registered in queries/registry.json (contract C)
+crates/<system>/<name>/            one infrastructure crate of the system (an adapter, a source, the Data layer's plumbing)
 crates/dataguard/                  the write side: DataQueue, DataGuard, Resolver
 crates/dataguard/data-capabilities/<name>/  one DataCapability + data-capability.json (contract F)
 crates/dataguard/aggregates/<Aggregate>/aggregate.json   criticality, invariants, relations (contract I)
