@@ -41,6 +41,8 @@ pub struct Station {
     pub stage: Option<String>,
     /// The model a paid station opens by default.
     pub model: Option<String>,
+    /// What it is for, in a sentence — what the pane's `?` says.
+    pub purpose: String,
 }
 
 /// One production line: a workflow, as the plant shows it.
@@ -54,6 +56,9 @@ pub struct Line {
     pub trigger: String,
     /// In belt order.
     pub stations: Vec<Station>,
+    /// What the whole workflow is for, in a sentence — what the pane's `?`
+    /// says on the line and its start belt.
+    pub purpose: String,
 }
 
 /// How far along a room is.
@@ -136,20 +141,21 @@ pub const ROOMS: [Room; 6] = [
     },
 ];
 
-fn free(stage: &str, label: &str, kind: Kind) -> Station {
+fn free(stage: &str, label: &str, kind: Kind, purpose: &str) -> Station {
     Station {
         id: stage.to_string(),
         label: label.to_string(),
         kind,
         stage: Some(stage.to_string()),
         model: None,
+        purpose: purpose.to_string(),
     }
 }
 
 /// A paid stage as the belt shows it: the gate before, the robot, the gate
 /// after. Every `Stage` in core carries a `pre` and a `post` gate, so the
 /// shape is the same for all of them.
-fn paid(stage: &str, label: &str, kind: Kind, model: &str) -> Vec<Station> {
+fn paid(stage: &str, label: &str, kind: Kind, model: &str, purpose: &str) -> Vec<Station> {
     vec![
         Station {
             id: format!("{stage}.pre"),
@@ -157,6 +163,10 @@ fn paid(stage: &str, label: &str, kind: Kind, model: &str) -> Vec<Station> {
             kind: Kind::Scanner,
             stage: None,
             model: None,
+            purpose: format!(
+                "A gate before \"{label}\": it checks what the stage needs before a session \
+                 is paid for, and skips the stage or halts the round when it is missing."
+            ),
         },
         Station {
             id: stage.to_string(),
@@ -164,6 +174,7 @@ fn paid(stage: &str, label: &str, kind: Kind, model: &str) -> Vec<Station> {
             kind,
             stage: Some(stage.to_string()),
             model: Some(model.to_string()),
+            purpose: purpose.to_string(),
         },
         Station {
             id: format!("{stage}.post"),
@@ -171,16 +182,21 @@ fn paid(stage: &str, label: &str, kind: Kind, model: &str) -> Vec<Station> {
             kind: Kind::Scanner,
             stage: None,
             model: None,
+            purpose: format!(
+                "A gate after \"{label}\": it checks the stage delivered what it promised, \
+                 and halts the round here when it did not."
+            ),
         },
     ]
 }
 
-fn line(id: &str, title: &str, trigger: &str, parts: Vec<Vec<Station>>) -> Line {
+fn line(id: &str, title: &str, trigger: &str, purpose: &str, parts: Vec<Vec<Station>>) -> Line {
     Line {
         id: id.to_string(),
         title: title.to_string(),
         trigger: trigger.to_string(),
         stations: parts.into_iter().flatten().collect(),
+        purpose: purpose.to_string(),
     }
 }
 
@@ -188,99 +204,291 @@ fn line(id: &str, title: &str, trigger: &str, parts: Vec<Vec<Station>>) -> Line 
 #[must_use]
 pub fn lines() -> Vec<Line> {
     vec![
-        line(
-            "agent-loop",
-            "Dev loop",
-            "harness:ready on a task",
-            vec![
-                vec![free(PICK, "pick the task", Kind::Printer)],
-                paid(
-                    "technical-refinement",
-                    "technical refinement",
-                    Kind::Builder,
-                    "opus",
-                ),
-                paid("code", "code", Kind::Builder, "sonnet"),
-                paid("create-test", "create test", Kind::Builder, "sonnet"),
-                vec![free(DELIVER, "mark delivered", Kind::Arm)],
-            ],
-        ),
-        line(
-            "refinement",
-            "Refinement",
-            "harness:refinement on an issue",
-            vec![
-                vec![free("ground", "ground the map", Kind::Printer)],
-                paid("explore", "explore the repo", Kind::Inspector, "sonnet"),
-                paid("router", "route the sections", Kind::Inspector, "sonnet"),
-                paid("sections", "write the sections", Kind::Builder, "sonnet"),
-                paid("coherence", "check coherence", Kind::Inspector, "sonnet"),
-                paid(
-                    "human-advice",
-                    "advise on a human",
-                    Kind::Inspector,
-                    "sonnet",
-                ),
-                vec![free("publish", "publish the body", Kind::Arm)],
-            ],
-        ),
-        line(
-            "planner",
-            "Planner",
-            "harness:ready on a roadmap item",
-            vec![
-                vec![free("ground", "ground the map", Kind::Printer)],
-                paid("explore", "explore the repo", Kind::Inspector, "sonnet"),
-                vec![free("context", "gather the context", Kind::Printer)],
-                paid("plan", "plan the milestones", Kind::Builder, "sonnet"),
-                vec![free("publish", "open the milestones", Kind::Arm)],
-            ],
-        ),
-        line(
-            "split",
-            "Split",
-            "harness:ready on a milestone",
-            vec![
-                vec![free("context", "gather the context", Kind::Printer)],
-                paid("slice", "slice into tasks", Kind::Builder, "sonnet"),
-                vec![free("publish", "open the tasks", Kind::Arm)],
-            ],
-        ),
-        line(
-            "pr-review",
-            "PR review",
-            "harness:to-review on a pull request",
-            vec![
-                paid("inline", "review inline", Kind::Inspector, "sonnet"),
-                paid("brief", "write the brief", Kind::Inspector, "sonnet"),
-                vec![free("publish", "post the review", Kind::Arm)],
-            ],
-        ),
-        line(
-            "pr-fix",
-            "PR fix",
-            "harness:pr-fix on a red pull request",
-            vec![
-                vec![free("context", "read what broke", Kind::Printer)],
-                paid("fix", "repair and push", Kind::Builder, "sonnet"),
-            ],
-        ),
-        line(
-            "milestone-merge",
-            "Milestone merge",
-            "every task delivered, CI green",
-            vec![
-                vec![free(
-                    "tasks-delivered",
-                    "every task delivered",
-                    Kind::Scanner,
-                )],
-                vec![free("ci-green", "CI is green", Kind::Scanner)],
-                vec![free("open-pr", "open the PR", Kind::Arm)],
-                vec![free("merge", "merge it", Kind::Arm)],
-            ],
-        ),
+        agent_loop_line(),
+        refinement_line(),
+        planner_line(),
+        split_line(),
+        pr_review_line(),
+        pr_fix_line(),
+        milestone_merge_line(),
     ]
+}
+
+fn agent_loop_line() -> Line {
+    line(
+        "agent-loop",
+        "Dev loop",
+        "harness:ready on a task",
+        "Builds one task end to end: plans it against the code, writes it, tests it, and \
+         delivers it as a pull request on its milestone's branch.",
+        vec![
+            vec![free(
+                PICK,
+                "pick the task",
+                Kind::Printer,
+                "Takes the next ready, unblocked task of the current milestone and mounts \
+                 its branch.",
+            )],
+            paid(
+                "technical-refinement",
+                "technical refinement",
+                Kind::Builder,
+                "opus",
+                "Reads the code the task touches and writes its Technical section and its \
+                 implementation plan into the issue.",
+            ),
+            paid(
+                "code",
+                "code",
+                Kind::Builder,
+                "sonnet",
+                "Builds the plan on the task's branch, runs the checks, and opens the pull \
+                 request.",
+            ),
+            paid(
+                "create-test",
+                "create test",
+                Kind::Builder,
+                "sonnet",
+                "Adds the tests the change actually warrants, each proven red then green.",
+            ),
+            vec![free(
+                DELIVER,
+                "mark delivered",
+                Kind::Arm,
+                "Marks the task delivered once its PR is merged — or review-pending while a \
+                 write-side PR waits for its merge.",
+            )],
+        ],
+    )
+}
+
+fn refinement_line() -> Line {
+    line(
+        "refinement",
+        "Refinement",
+        "harness:refinement on an issue",
+        "Turns an issue into its spec: the business sections first (a task or a milestone), \
+         the technical ones later (a task only).",
+        vec![
+            vec![free(
+                "ground",
+                "ground the map",
+                Kind::Printer,
+                "Builds the repository map once, shared by every stage of the round.",
+            )],
+            paid(
+                "explore",
+                "explore the repo",
+                Kind::Inspector,
+                "sonnet",
+                "Reads the repository so the sections rest on facts, not guesses.",
+            ),
+            paid(
+                "router",
+                "route the sections",
+                Kind::Inspector,
+                "sonnet",
+                "From the second round on, picks which sections this round rewrites.",
+            ),
+            paid(
+                "sections",
+                "write the sections",
+                Kind::Builder,
+                "sonnet",
+                "Writes each section of the phase: Business Goal, Acceptance Criteria, \
+                 Business Rules — or Technical and its plan.",
+            ),
+            paid(
+                "coherence",
+                "check coherence",
+                Kind::Inspector,
+                "sonnet",
+                "Reads the round's sections together and fixes what contradicts.",
+            ),
+            paid(
+                "human-advice",
+                "advise on a human",
+                Kind::Inspector,
+                "sonnet",
+                "Says whether the technical half of a task needs a human decision first.",
+            ),
+            vec![free(
+                "publish",
+                "publish the body",
+                Kind::Arm,
+                "Writes the body back into the issue and swaps the labels.",
+            )],
+        ],
+    )
+}
+
+fn planner_line() -> Line {
+    line(
+        "planner",
+        "Planner",
+        "harness:ready on a roadmap item",
+        "Turns a ready roadmap item into the chain of milestones that delivers it.",
+        vec![
+            vec![free(
+                "ground",
+                "ground the map",
+                Kind::Printer,
+                "Builds the repository map once, shared by every stage.",
+            )],
+            paid(
+                "explore",
+                "explore the repo",
+                Kind::Inspector,
+                "sonnet",
+                "Reads the repository to see what already exists.",
+            ),
+            vec![free(
+                "context",
+                "gather the context",
+                Kind::Printer,
+                "Reads the roadmap item and the milestones already open under it.",
+            )],
+            paid(
+                "plan",
+                "plan the milestones",
+                Kind::Builder,
+                "sonnet",
+                "Draws the milestones, write side before the readers that need it, in \
+                 delivery order.",
+            ),
+            vec![free(
+                "publish",
+                "open the milestones",
+                Kind::Arm,
+                "Opens the milestones, links them to the roadmap item and chains them with \
+                 blocked_by.",
+            )],
+        ],
+    )
+}
+
+fn split_line() -> Line {
+    line(
+        "split",
+        "Split",
+        "harness:ready on a milestone",
+        "Turns a ready, refined milestone into its tasks — once the milestone before it is \
+         delivered.",
+        vec![
+            vec![free(
+                "context",
+                "gather the context",
+                Kind::Printer,
+                "Reads the milestone, its roadmap item and the repository's architecture.",
+            )],
+            paid(
+                "slice",
+                "slice into tasks",
+                Kind::Builder,
+                "sonnet",
+                "Cuts the milestone into tasks, one unit of the architecture each, chained \
+                 where one builds on another.",
+            ),
+            vec![free(
+                "publish",
+                "open the tasks",
+                Kind::Arm,
+                "Opens the tasks with their branch and side, chained with blocked_by.",
+            )],
+        ],
+    )
+}
+
+fn pr_review_line() -> Line {
+    line(
+        "pr-review",
+        "PR review",
+        "harness:to-review on a pull request",
+        "Gives a pull request an agent review before it is merged.",
+        vec![
+            paid(
+                "inline",
+                "review inline",
+                Kind::Inspector,
+                "sonnet",
+                "Reads the diff and comments where the code is wrong or risky.",
+            ),
+            paid(
+                "brief",
+                "write the brief",
+                Kind::Inspector,
+                "sonnet",
+                "Writes the review's summary and verdict.",
+            ),
+            vec![free(
+                "publish",
+                "post the review",
+                Kind::Arm,
+                "Posts the review on the pull request.",
+            )],
+        ],
+    )
+}
+
+fn pr_fix_line() -> Line {
+    line(
+        "pr-fix",
+        "PR fix",
+        "harness:pr-fix on a red pull request",
+        "Makes one repair attempt on a pull request whose CI went red.",
+        vec![
+            vec![free(
+                "context",
+                "read what broke",
+                Kind::Printer,
+                "Reads the failing checks and their logs.",
+            )],
+            paid(
+                "fix",
+                "repair and push",
+                Kind::Builder,
+                "sonnet",
+                "Repairs the branch and pushes once — no second attempt without a human.",
+            ),
+        ],
+    )
+}
+
+fn milestone_merge_line() -> Line {
+    line(
+        "milestone-merge",
+        "Milestone merge",
+        "every task delivered, CI green",
+        "Closes a milestone: once every task is merged into its branch and CI is green, \
+         merges that branch into the integration branch.",
+        vec![
+            vec![free(
+                "tasks-delivered",
+                "every task delivered",
+                Kind::Scanner,
+                "Asks git, not the labels: every task of the milestone has its PR merged.",
+            )],
+            vec![free(
+                "ci-green",
+                "CI is green",
+                Kind::Scanner,
+                "Every check on the milestone's pull request succeeded.",
+            )],
+            vec![free(
+                "open-pr",
+                "open the PR",
+                Kind::Arm,
+                "Opens the pull request from the milestone branch to the integration branch.",
+            )],
+            vec![free(
+                "merge",
+                "merge it",
+                Kind::Arm,
+                "Merges it and marks the milestone waiting for its merge to main.",
+            )],
+        ],
+    )
 }
 
 /// The models the lines open by default, in order of first appearance — one
@@ -317,6 +525,25 @@ mod tests {
     use crate::domain::traces::workflow_of_route;
 
     #[test]
+    fn every_line_and_station_says_what_it_is_for() {
+        for line in lines() {
+            assert!(
+                !line.purpose.trim().is_empty(),
+                "{} has no purpose",
+                line.id
+            );
+            for station in &line.stations {
+                assert!(
+                    !station.purpose.trim().is_empty(),
+                    "{}/{} has no purpose",
+                    line.id,
+                    station.id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn station_ids_are_unique_within_a_line() {
         for line in lines() {
             let mut ids: Vec<&str> = line.stations.iter().map(|s| s.id.as_str()).collect();
@@ -347,7 +574,7 @@ mod tests {
 
     #[test]
     fn a_paid_stage_is_a_gate_a_robot_and_a_gate() {
-        let stations = paid("code", "code", Kind::Builder, "sonnet");
+        let stations = paid("code", "code", Kind::Builder, "sonnet", "builds");
         let kinds: Vec<Kind> = stations.iter().map(|s| s.kind).collect();
         assert_eq!(kinds, [Kind::Scanner, Kind::Builder, Kind::Scanner]);
         assert_eq!(stations[1].stage.as_deref(), Some("code"));

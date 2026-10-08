@@ -135,6 +135,7 @@ fn stations(
                 kind: station.kind,
                 stage: station.stage.clone(),
                 model: station.model.clone(),
+                purpose: station.purpose.clone(),
                 state,
             }
         })
@@ -363,6 +364,7 @@ fn lines_and_employees(inputs: &Inputs<'_>) -> (Vec<LineView>, Vec<Employee>) {
             id: line.id.clone(),
             title: line.title.clone(),
             trigger: line.trigger.clone(),
+            purpose: line.purpose.clone(),
             stations: views,
             runs: observed.map_or(0, |l| l.runs),
             last_run: run.map(last_run),

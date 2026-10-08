@@ -204,14 +204,23 @@ fn failing_checks(rows: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// Whether every row of a `gh pr checks --json state` response says
-/// `SUCCESS`. An empty list is **not** green — proof that CI ran is the
-/// point, not the absence of a reason to refuse.
+/// Whether a `gh pr checks --json state` response is green: at least one
+/// check `SUCCESS`, and every other one `SUCCESS`, `SKIPPED` or `NEUTRAL`.
+///
+/// An empty list is **not** green — proof that CI ran is the point, not the
+/// absence of a reason to refuse. A skipped check is not a refusal either: a
+/// gate declared but not implemented yet (`if: false`) reports `SKIPPED`
+/// forever, and read as red it would hold every PR of the repository back.
 fn checks_are_green(rows: &[Value]) -> bool {
-    !rows.is_empty()
+    rows.iter().any(|row| state_of(row) == "SUCCESS")
         && rows
             .iter()
-            .all(|row| row.get("state").and_then(Value::as_str) == Some("SUCCESS"))
+            .all(|row| matches!(state_of(row), "SUCCESS" | "SKIPPED" | "NEUTRAL"))
+}
+
+/// A check row's `state`, or empty.
+fn state_of(row: &Value) -> &str {
+    row.get("state").and_then(Value::as_str).unwrap_or("")
 }
 
 /// The array from a response. `null` counts as empty, anything else is unreadable.
@@ -1177,6 +1186,13 @@ mod tests {
     fn one_pending_check_is_not_green() {
         let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "PENDING"})];
         assert!(!checks_are_green(&rows));
+    }
+
+    #[test]
+    fn a_skipped_gate_does_not_hold_a_green_pr_back_but_is_not_green_alone() {
+        let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "SKIPPED"})];
+        assert!(checks_are_green(&rows));
+        assert!(!checks_are_green(&[json!({"state": "SKIPPED"})]));
     }
 
     #[test]

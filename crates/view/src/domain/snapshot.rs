@@ -83,6 +83,8 @@ pub struct StationView {
     pub stage: Option<String>,
     /// From the blueprint.
     pub model: Option<String>,
+    /// From the blueprint: what it is for.
+    pub purpose: String,
     /// From the latest run.
     pub state: StationState,
 }
@@ -117,6 +119,8 @@ pub struct LineView {
     pub title: String,
     /// What starts it.
     pub trigger: String,
+    /// What the whole workflow is for.
+    pub purpose: String,
     /// In belt order.
     pub stations: Vec<StationView>,
     /// How many runs this line has logged.

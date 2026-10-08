@@ -258,3 +258,10 @@ button.mini:hover { color: var(--bad); border-color: var(--bad); }
 .crew-bubble .who { display: flex; flex-direction: column; min-width: 0; }
 .crew-bubble .who b, .crew-bubble .who small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .crew-bubble .who small { color: var(--dim); }
+
+/* A pane's `?`: what the element is for, in a sentence. */
+.tabs .help-btn {
+  margin-left: auto; width: 26px; height: 26px; padding: 0; border-radius: 50%;
+  font-weight: 700;
+}
+.callout.purpose { margin: 4px 0 12px; }

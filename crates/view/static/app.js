@@ -244,6 +244,8 @@
     if (tab && S.pane && S.pane.kind === 'employee') { S.pane.file = tab.dataset.file; renderPane(S.pane, false); return undefined; }
     const machine = e.target.closest('[data-stage-idx]');
     if (machine && S.pane && S.pane.kind === 'employee') { S.pane.file = null; S.pane.stageIdx = Number(machine.dataset.stageIdx); renderPane(S.pane, false); return undefined; }
+    const help = e.target.closest('[data-help]');
+    if (help && S.pane) { S.pane.help = !S.pane.help; renderPane(S.pane, false); return undefined; }
     const paneTab = e.target.closest('[data-tab]');
     if (paneTab && S.pane) { S.pane.tab = paneTab.dataset.tab; renderPane(S.pane, false); return undefined; }
     const pane = e.target.closest('[data-pane]');
@@ -336,8 +338,11 @@
 
   const kv = (pairs) => '<dl class="kv">' + pairs.filter(([, v]) => v != null && v !== '').map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('') + '</dl>';
   const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
-  // A pane's two tabs: what the element is, and who recently worked on it.
-  const paneTabs = (p) => '<div class="tabs">' + [['details', 'Details'], ['recent', 'Recent work']].map(([k, label]) => `<button data-tab="${k}" class="${(p.tab || 'details') === k ? 'on' : ''}">${label}</button>`).join('') + '</div>';
+  // A pane's two tabs — what the element is, and who recently worked on it —
+  // and its `?`, which says in a sentence what the element is for.
+  const paneTabs = (p, purpose) => '<div class="tabs">' + [['details', 'Details'], ['recent', 'Recent work']].map(([k, label]) => `<button data-tab="${k}" class="${(p.tab || 'details') === k ? 'on' : ''}">${label}</button>`).join('')
+    + (purpose ? `<button class="help-btn ${p.help ? 'on' : ''}" data-help title="What is this for?">?</button>` : '') + '</div>'
+    + (purpose && p.help ? `<div class="callout purpose">${esc(purpose)}</div>` : '');
   // The runs of a line, newest first, each a link to its agent — opened on
   // `stage` when the list comes from a machine.
   function recentWork(line, runs, stage) {
@@ -461,7 +466,7 @@
       if (p.tab === 'recent') {
         // A machine's work: the runs that finished its stage, or stand at it.
         const here = (line.recent_work || []).filter((r) => (st.stage && r.stages.includes(st.stage)) || S.snap.employees.some((e) => e.workflow === line.id && e.run_id === r.run_id && e.station === st.id) || !st.stage);
-        return [st.label, paneTabs(p) + recentWork(line, here, st.stage)];
+        return [st.label, paneTabs(p, st.purpose) + recentWork(line, here, st.stage)];
       }
       const bucket = st.stage ? S.snap.costs.by_stage.find((b) => b.key === st.stage) : null;
       const rows = st.stage ? S.snap.costs.last.filter((r) => r.stage === st.stage) : [];
@@ -476,13 +481,13 @@
         h += '<h3>Last sessions on it</h3><table class="rows"><tr><th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th></tr>' + rows.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
-      return [st.label, paneTabs(p) + h];
+      return [st.label, paneTabs(p, st.purpose) + h];
     },
 
     line(p) {
       const line = S.snap.lines.find((l) => l.id === p.id);
       if (!line) return ['Line', ''];
-      if (p.tab === 'recent') return [line.title, paneTabs(p) + recentWork(line, line.recent_work || [], null)];
+      if (p.tab === 'recent') return [line.title, paneTabs(p, line.purpose) + recentWork(line, line.recent_work || [], null)];
       const lr = line.last_run;
       let h = kv([['trigger', esc(line.trigger)], ['log folder', `<code>.llocal/logs/${esc(line.id)}/</code>`], ['runs', line.runs], ['status', line.active ? tag('at work', 'ok') : tag('idle')]]);
       if (lr) {
@@ -491,7 +496,7 @@
         h += `<button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: `${line.id}/${lr.run_id}`, last: emp || null }))}'>open its logs →</button>`;
       }
       h += '<h3>Stations</h3><ul class="issues">' + line.stations.map((s) => `<li><span class="n">${esc(s.kind)}</span><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'station', line: line.id, id: s.id }))}'>${esc(s.label)}</button></span>${s.model ? tag(s.model, s.model) : ''}<span class="st ${s.state === 'done' ? 'done' : s.state === 'active' ? 'ready' : 'todo'}">${s.state}</span></li>`).join('') + '</ul>';
-      return [line.title, paneTabs(p) + h];
+      return [line.title, paneTabs(p, line.purpose) + h];
     },
 
     chimney(p) {
