@@ -81,17 +81,47 @@ pub fn merged_note(branch: &str, pr_ref: &str) -> String {
 /// cannot be mistaken for shipped code, however it happens to be labelled.
 ///
 /// `merged` is the merged PRs of the branch the tasks landed on.
+///
+/// A human's task (`harness:human`) ships no PR: it is done once closed,
+/// whatever closed it — a commit on the integration branch, a setting
+/// changed, a decision taken.
 #[must_use]
 pub fn every_task_merged(tasks: &[Issue], merged: &[Issue]) -> bool {
     !tasks.is_empty()
-        && tasks
-            .iter()
-            .all(|task| first_closing(merged, task.number).is_some())
+        && tasks.iter().all(|task| {
+            if task.has(crate::common::labels::HUMAN) {
+                task.is_closed()
+            } else {
+                first_closing(merged, task.number).is_some()
+            }
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closed_human_task_needs_no_merged_pr() {
+        let human = Issue {
+            number: 67,
+            state: "closed".to_string(),
+            labels: vec![crate::common::labels::HUMAN.to_string()],
+            ..Issue::default()
+        };
+        let agent = Issue {
+            number: 64,
+            state: "open".to_string(),
+            ..Issue::default()
+        };
+        let merged = vec![pr(68, "Closes #64")];
+        assert!(every_task_merged(&[agent.clone(), human.clone()], &merged));
+        let open_human = Issue {
+            state: "open".to_string(),
+            ..human
+        };
+        assert!(!every_task_merged(&[agent, open_human], &merged));
+    }
 
     fn pr(number: u64, body: &str) -> Issue {
         Issue {
