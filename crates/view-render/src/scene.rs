@@ -1759,9 +1759,11 @@ fn lines_room(snap: &Snapshot) -> Scene {
             );
         }
         // Everyone at work on this line, by station: a parallel watch puts
-        // several lanes on one line, and two of them may stand at the same
-        // station. A crew of one opens its own pane; a crew of several fans
-        // out toward the camera and opens the pane that lets you pick one.
+        // several lanes on one line, and many of them may stand at the same
+        // station. A crew of one is its own figure and opens its own pane; a
+        // crew of several is one figure with one label — fanned out, their
+        // labels stacked into an unreadable column — and opens the pane that
+        // lets you pick one.
         let crew: Vec<&Employee> = snap
             .employees
             .iter()
@@ -1775,38 +1777,65 @@ fn lines_room(snap: &Snapshot) -> Scene {
                     e.station.as_ref() == Some(&station.id) || (e.station.is_none() && k == 0)
                 })
                 .collect();
-            for (i, e) in here.iter().enumerate() {
-                // In front of the belt, between their station and the next,
-                // so their card covers neither stage name; the next member a
-                // step toward the camera and a little to the right.
-                let x = x0 + 0.3 + k as f32 * sp + 0.8 + i as f32 * 0.25;
-                let hot = if here.len() > 1 {
-                    pane(
-                        serde_json::json!({"kind": "crew", "line": line.id, "station": station.id}),
-                        &format!(
-                            "{} at work here — click to pick one:\n{}",
-                            here.len(),
-                            here.iter()
-                                .map(|m| m.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        ),
-                    )
-                } else {
-                    employee_hot(e)
-                };
+            let Some(first) = here.first() else {
+                continue;
+            };
+            // In front of the belt, between their station and the next, so
+            // their card covers neither stage name.
+            let x = x0 + 0.3 + k as f32 * sp + 0.8;
+            if here.len() == 1 {
                 person(
                     &mut b,
                     x,
-                    z + 1.3 + i as f32 * 0.8,
-                    e.model.as_deref(),
-                    &e.name,
-                    &hot,
+                    z + 1.3,
+                    first.model.as_deref(),
+                    &first.name,
+                    &employee_hot(first),
                 );
+                continue;
             }
+            let hot = pane(
+                serde_json::json!({"kind": "crew", "line": line.id, "station": station.id}),
+                &format!(
+                    "{} at work here — click to pick one:\n{}",
+                    here.len(),
+                    here.iter()
+                        .map(|m| m.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            );
+            // The figure wears the crew's model only when they all share it.
+            let model = first
+                .model
+                .as_deref()
+                .filter(|m| here.iter().all(|e| e.model.as_deref() == Some(*m)));
+            person(
+                &mut b,
+                x,
+                z + 1.3,
+                model,
+                &crew_label(&line.title, &here),
+                &hot,
+            );
         }
     }
     b.scene
+}
+
+/// One label for a crew of several: how many, on which line, then each
+/// member's issue (`#20 #21`) when their names carry one.
+fn crew_label(line_title: &str, crew: &[&Employee]) -> String {
+    let issues: Vec<&str> = crew
+        .iter()
+        .filter_map(|e| e.name.split_whitespace().find(|w| w.starts_with('#')))
+        .collect();
+    let head = format!("{} × {line_title}", crew.len());
+    if issues.is_empty() {
+        head
+    } else {
+        format!("{head}\n{}", issues.join(" "))
+    }
 }
 
 fn age(secs: u64) -> String {
@@ -2418,7 +2447,7 @@ mod tests {
     }
 
     #[test]
-    fn two_workers_at_one_station_fan_out_and_open_the_crew_pane() {
+    fn two_workers_at_one_station_are_one_figure_that_opens_the_crew_pane() {
         let mut snap = picture();
         let mut second = snap.employees[0].clone();
         second.id = "agent-loop/20261007-150000".to_string();
@@ -2430,7 +2459,7 @@ mod tests {
                 room: "lines".to_string(),
             },
         );
-        let workers: Vec<&Prop> = scene
+        let workers = scene
             .props
             .iter()
             .filter(|p| {
@@ -2442,16 +2471,19 @@ mod tests {
                     }
                 )
             })
-            .collect();
-        assert_eq!(workers.len(), 2);
+            .count();
+        assert_eq!(workers, 1, "one figure, not a stack of labels");
         assert!(
-            (workers[0].at[2] - workers[1].at[2]).abs() > 0.5,
-            "fanned out toward the camera, not stacked"
+            scene
+                .labels
+                .iter()
+                .any(|l| l.text.starts_with("2 × ") && l.text.contains("#66 #67")),
+            "one label: how many, and each one's issue"
         );
         assert_eq!(
             panes(&scene, "crew"),
-            4,
-            "both cards and both shadows open the crew pane"
+            2,
+            "the card and its shadow open the crew pane"
         );
         assert_eq!(
             panes(&scene, "employee"),
