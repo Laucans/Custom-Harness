@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use harness_core::execution::{Gate, Stage, StageBody};
 
-use crate::pr_fix::action::actions::{AskForFix, ReadBreakage};
+use crate::pr_fix::action::actions::{AskForFix, ReadBreakage, RecordAttempt};
 use crate::pr_fix::action::publish::ConsumeRequest;
 use crate::pr_fix::checks::gates::SomethingIsRed;
 use crate::pr_fix::config::Config;
@@ -23,7 +23,9 @@ pub const CONTEXT: &str = "context";
 /// The paid repair stage name.
 pub const FIX: &str = "fix";
 
-const FIX_PROMPT: &str = r#"Pull request #{num} — "{title}" ({head} -> {base}) has red CI.
+const FIX_PROMPT: &str = r#"Pull request #{num} — "{title}" ({head} -> {base}) needs a repair: its
+CI went red, or its agent review (the last `🤖 Review notes` comment below,
+its `VERDICT: blocking` line) asked for changes before it is merged.
 This checkout is already on `{head}`, the PR's own branch.
 
 The checks that have failed:
@@ -50,8 +52,9 @@ Hard rules, and they are the point of this run:
 - **Fix the cause, not the signal.** Never delete, skip, `#[ignore]`, or
   weaken the failing test or check. Never edit the CI workflow to make it
   pass. A check that is wrong is a finding to report, not a file to edit.
-- **Stay inside this PR's scope.** You are making this change's CI green,
-  not improving the code around it. An adjacent problem is something you
+- **Stay inside this PR's scope.** You are making this change's CI green and
+  answering what its review called blocking, not improving the code around
+  it — the review's non-blocking remarks are not yours to address. An adjacent problem is something you
   name in your answer, not something you commit here.
 - **Never merge, never force-push, never rebase onto another branch, never
   close the PR, and never touch a `harness:*` label.** Something else
@@ -84,6 +87,12 @@ pub fn context(ports: &Ports) -> Stage<FixState> {
                     gh: Rc::clone(&ports.gh),
                 }),
                 Box::new(ConsumeRequest {
+                    gh: Rc::clone(&ports.gh),
+                }),
+                // Before the paid session, not after it: an attempt that
+                // fails still counts, so a blocking review buys at most
+                // `MAX_FIXES` sessions however the repairs end.
+                Box::new(RecordAttempt {
                     gh: Rc::clone(&ports.gh),
                 }),
             ],

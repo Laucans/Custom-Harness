@@ -227,8 +227,8 @@ fn milestone_merge_line() -> Line {
                 "reviewed",
                 "reviewed",
                 Kind::Scanner,
-                "The agent review has run on the pull request: the review route always goes \
-                 first.",
+                "The last agent review lets it through: its verdict is clean, on the latest \
+                 repair.",
             )],
             vec![free(
                 "ci-green",
@@ -445,7 +445,8 @@ fn pr_review_line() -> Line {
         "pr-review",
         "PR review",
         "harness:to-review on a pull request",
-        "Gives a pull request an agent review before it is merged.",
+        "Gives a pull request an agent review before it is merged, ending on a verdict: \
+         a blocking one sends a repair, a clean one lets the merge happen.",
         vec![
             paid(
                 "inline",
@@ -459,7 +460,8 @@ fn pr_review_line() -> Line {
                 "write the brief",
                 Kind::Inspector,
                 "sonnet",
-                "Writes the review's summary and verdict.",
+                "Writes the review's summary, and its last line: VERDICT blocking (a correctness \
+                 or security defect, a bypassable gate) or clean.",
             ),
             vec![free(
                 "publish",
@@ -476,7 +478,8 @@ fn pr_fix_line() -> Line {
         "pr-fix",
         "PR fix",
         "harness:pr-fix on a red pull request",
-        "Makes one repair attempt on a pull request whose CI went red.",
+        "Makes one repair attempt on a pull request whose CI went red or whose agent review \
+         blocks it — two per blocking review at most, then a human decides.",
         vec![
             vec![free(
                 "context",

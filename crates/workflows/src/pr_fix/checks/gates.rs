@@ -18,9 +18,10 @@ pub struct SomethingIsRed;
 #[async_trait(?Send)]
 impl Verification<FixState> for SomethingIsRed {
     async fn verify(&self, ctx: &Context<FixState>) -> Outcome<Verdict> {
-        if ctx.state.failing.is_empty() {
+        if ctx.state.failing.is_empty() && !ctx.state.review_blocking {
             return Ok(Verdict::Skip(
-                "no check has failed — nothing to repair".to_string(),
+                "no check has failed and the review asks for nothing — nothing to repair"
+                    .to_string(),
             ));
         }
         Ok(Verdict::Continue)
@@ -44,9 +45,24 @@ mod tests {
                 pr: Some(Pr::default()),
                 failing: failing.iter().map(|f| (*f).to_string()).collect(),
                 comments: String::new(),
+                review_blocking: false,
             },
             Logbook::null(),
         )
+    }
+
+    #[tokio::test]
+    async fn a_blocking_review_is_reason_enough_with_every_check_green() {
+        let mut context = ctx(&[]);
+        assert!(matches!(
+            SomethingIsRed.verify(&context).await.expect("verdict"),
+            Verdict::Skip(_)
+        ));
+        context.state.review_blocking = true;
+        assert_eq!(
+            SomethingIsRed.verify(&context).await.expect("verdict"),
+            Verdict::Continue
+        );
     }
 
     #[tokio::test]

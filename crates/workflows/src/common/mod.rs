@@ -21,6 +21,7 @@ pub mod explore;
 pub mod hierarchy;
 pub mod json_reply;
 pub mod labels;
+pub mod review;
 pub mod routing;
 pub mod sections;
 

@@ -13,6 +13,7 @@ use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_reco
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
+use crate::common::review;
 use crate::pr_fix::data::state::FixState;
 
 /// Reads, for free, what the paid step needs to know: which checks broke,
@@ -30,24 +31,37 @@ impl Action<FixState> for ReadBreakage {
         // here must leave the label in place, so the next poll can retry
         // rather than silently swallow an attempt nobody got.
         let failing = self.gh.pr_failing_checks(&num).await?;
-        if failing.is_empty() {
-            ctx.traces
-                .say(&format!("nothing has failed on #{num} — nothing to repair"));
+        let comments = self.gh.pr_comments(&num).await?;
+        let blocking = review::status(&comments).wants_a_fix();
+        if failing.is_empty() && !blocking {
+            ctx.traces.say(&format!(
+                "nothing has failed on #{num} and its review asks for nothing — nothing to repair"
+            ));
             return Ok(Verdict::Continue);
         }
-        ctx.traces.say(&format!(
-            "#{num}: {} failing check(s) — {}",
-            failing.len(),
-            failing.join("; ")
-        ));
-        ctx.state.comments = self.gh.pr_comments(&num).await?;
+        if !failing.is_empty() {
+            ctx.traces.say(&format!(
+                "#{num}: {} failing check(s) — {}",
+                failing.len(),
+                failing.join("; ")
+            ));
+        }
+        if blocking {
+            ctx.traces
+                .say(&format!("#{num}: its agent review asks for changes"));
+        }
+        ctx.state.comments = comments;
         ctx.state.failing = failing;
+        ctx.state.review_blocking = blocking;
         Ok(Verdict::Continue)
     }
 }
 
 /// What broke, rendered for the prompt.
 fn failing_block(failing: &[String]) -> String {
+    if failing.is_empty() {
+        return "  (none — every check is green; the review below is why you are here)".to_string();
+    }
     failing
         .iter()
         .map(|line| format!("  - {line}"))
@@ -99,6 +113,45 @@ impl SessionAction<FixState> for AskForFix {
         );
         let task = format!("#{}", pr.num);
         ask_and_record(open, &prompt, &self.stage, 1, &task, self.spending.as_ref()).await?;
+        Ok(Verdict::Continue)
+    }
+}
+
+/// Leaves the attempt's marker on the PR, before the paid session.
+///
+/// It is what owes the PR a new review once the repair is done, and what
+/// counts the repairs a blocking review gets — a session that fails still
+/// used one.
+pub struct RecordAttempt {
+    /// What posts the marker.
+    pub gh: Rc<dyn GitHub>,
+}
+
+#[async_trait(?Send)]
+impl Action<FixState> for RecordAttempt {
+    async fn run(&self, ctx: &mut Context<FixState>) -> Outcome<Verdict> {
+        let nothing_to_repair = ctx.state.failing.is_empty() && !ctx.state.review_blocking;
+        if ctx.settings.dry_run || nothing_to_repair {
+            return Ok(Verdict::Continue);
+        }
+        let pr = ctx.state.pr().clone();
+        let Ok(number) = pr.num.parse::<u64>() else {
+            return Ok(Verdict::Continue);
+        };
+        let why = if ctx.state.review_blocking {
+            "the agent review asked for changes"
+        } else {
+            "a check went red"
+        };
+        self.gh
+            .post_issue_comment(
+                number,
+                &format!(
+                    "{}\nRepair attempt by `pr_fix` — {why}. The PR is owed a new review.",
+                    review::FIX_MARKER
+                ),
+            )
+            .await?;
         Ok(Verdict::Continue)
     }
 }

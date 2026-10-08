@@ -14,6 +14,9 @@ pub struct FixState {
     /// The PR's comments, as one blob — a review, or a human, may already
     /// have said what is wrong.
     pub comments: String,
+    /// Its last agent review asks for changes, and the repairs it gets are
+    /// not used up — a reason to repair even with every check green.
+    pub review_blocking: bool,
 }
 
 impl FixState {

@@ -8,7 +8,7 @@
 
 use harness_core::domain::Pr;
 
-use crate::pr_review::data::notes;
+use crate::common::review;
 
 /// Why this PR doesn't need review, or `None`.
 ///
@@ -36,9 +36,11 @@ pub fn skip_reason(force: bool, base: &str, pr: &Pr, comments: &str) -> Option<S
              PR (--force to review it anyway)"
         ));
     }
-    if comments.contains(notes::MARKER) {
+    // Reviewed since its last repair: a repair pushed after the review owes
+    // the PR a new one, which is what checks the repair.
+    if review::status(comments) != review::Status::Unreviewed {
         return Some(format!(
-            "PR #{num} already carries an agent review (--force to redo)"
+            "PR #{num} already carries an agent review of its latest repair (--force to redo)"
         ));
     }
     None
@@ -80,6 +82,17 @@ mod tests {
         test_pr.head = "test/cities".to_string();
         let said = skip_reason(false, "main_agent", &test_pr, "").expect("un saut");
         assert!(said.contains("already reviewed"));
+    }
+
+    #[test]
+    fn a_pr_repaired_since_its_review_is_reviewed_again() {
+        let comments = format!(
+            "{}\n...\n{}\n{}\n",
+            review::MARKER,
+            review::BLOCKING,
+            review::FIX_MARKER
+        );
+        assert!(skip_reason(false, "main_agent", &pr(), &comments).is_none());
     }
 
     #[test]

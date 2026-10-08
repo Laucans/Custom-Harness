@@ -32,7 +32,7 @@ use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug, Verdict};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Route, Snapshot};
-use harness_workflows::common::{branching, labels};
+use harness_workflows::common::{branching, labels, review};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
 use harness_workflows::pr_review::data::skip_rules;
@@ -198,12 +198,23 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
 /// The pairing is the point: the label alone would send a paid session at a
 /// PR that is merely still building.
 async fn lowest_red_pr(gh: &dyn GitHub) -> Outcome<Option<Pr>> {
+    let mut found: Vec<Pr> = Vec::new();
     for candidate in by_number(gh.open_prs_labelled(labels::PR_FIX).await?) {
         if !gh.pr_failing_checks(&candidate.num).await?.is_empty() {
-            return Ok(Some(candidate));
+            found.push(candidate);
+            break;
         }
     }
-    Ok(None)
+    // A blocking agent review asks for a repair as a red check does — the
+    // label is posed for it at dispatch, the same request a human makes.
+    for candidate in by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?) {
+        let comments = gh.pr_comments(&candidate.num).await?;
+        if review::status(&comments).wants_a_fix() {
+            found.push(candidate);
+            break;
+        }
+    }
+    Ok(by_number(found).into_iter().next())
 }
 
 /// The lowest-numbered open PR that carries `harness:to-review` and that the
@@ -335,18 +346,24 @@ async fn dispatched(
             .await,
             log,
         ),
-        Route::PrFix { pr } => report_failure(
-            "pr_fix",
-            crate::dispatch::pr_fix::run(
-                &pr,
-                here,
-                &args.target_repo_url,
-                &args.permission_mode,
-                args.dry_run,
+        Route::PrFix { pr } => {
+            if let Err(halt) = ask_for_the_repair(gh, &pr, args.dry_run).await {
+                log.warn(&format!("watch: pr_fix -> {}", halt.reason()));
+                return Some(("pr_fix", halt));
+            }
+            report_failure(
+                "pr_fix",
+                crate::dispatch::pr_fix::run(
+                    &pr,
+                    here,
+                    &args.target_repo_url,
+                    &args.permission_mode,
+                    args.dry_run,
+                )
+                .await,
+                log,
             )
-            .await,
-            log,
-        ),
+        }
         Route::PrReview { pr, base } => report_failure(
             "pr_review",
             crate::dispatch::pr_review::run(
@@ -426,10 +443,37 @@ async fn green_task_pr(gh: &dyn GitHub, tasks: &[Issue]) -> Outcome<Option<(u64,
     let Some((task, pr)) = harness_workflows::milestone_merge::candidate(tasks, &open) else {
         return Ok(None);
     };
+    // Its last review must let it through: a blocking one is the repair
+    // route's, and one its repairs did not clear is a human's.
+    match review::status(&gh.pr_comments(&pr.num).await?) {
+        review::Status::Clean => {}
+        status if status.exhausted() => {
+            harness_workflows::milestone_merge::escalate(gh, task, pr).await?;
+            return Ok(None);
+        }
+        _ => return Ok(None),
+    }
     if !gh.pr_checks_green(&pr.num).await? {
         return Ok(None);
     }
     Ok(Some((task.number, pr.clone())))
+}
+
+/// Poses `harness:pr-fix` on a PR the route found blocked by its review —
+/// the request `pr_fix` consumes, made on the review's behalf.
+async fn ask_for_the_repair(gh: &dyn GitHub, pr_ref: &str, dry_run: bool) -> Outcome<()> {
+    if dry_run {
+        return Ok(());
+    }
+    let pr = gh.pr(pr_ref).await?;
+    if pr.has(labels::PR_FIX) {
+        return Ok(());
+    }
+    let number = pr
+        .num
+        .parse::<u64>()
+        .map_err(|_| Halt::Failed(format!("{:?} is not a PR number", pr.num)))?;
+    gh.add_label(number, labels::PR_FIX).await
 }
 
 /// The milestones, with the blockers of every split candidate read — what

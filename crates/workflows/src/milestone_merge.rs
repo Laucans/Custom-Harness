@@ -58,6 +58,28 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
     gh.add_label(task.number, labels::WAITING_MERGE).await
 }
 
+/// Hands `task` to a human: its PR's review stayed blocking after every
+/// repair it gets. `needs-decision` on the task, once, with the PR named.
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from the label or the comment write.
+pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
+    if task.has(labels::NEEDS_DECISION) {
+        return Ok(());
+    }
+    gh.post_issue_comment(
+        task.number,
+        &format!(
+            "PR {} is still blocked by its agent review after {} repair attempts — \
+             a human decides: fix it by hand, or merge it as it is.",
+            pr.reference(),
+            crate::common::review::MAX_FIXES
+        ),
+    )
+    .await?;
+    gh.add_label(task.number, labels::NEEDS_DECISION).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +116,25 @@ mod tests {
         assert_eq!(found.number, 64);
         assert_eq!(its_pr.num, "68");
         assert!(candidate(&board, &[pr("70", "chore/ts")]).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_review_its_repairs_did_not_clear_goes_to_a_human_once() {
+        let gh = FakeGitHub::default();
+        let stuck = task(64, &[labels::AGENT, labels::REVIEW_PENDING], "chore/rust");
+        escalate(&gh, &stuck, &pr("68", "chore/rust"))
+            .await
+            .expect("escalated");
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Label(64, labels::NEEDS_DECISION.to_string()))
+        );
+        let decided = task(64, &[labels::AGENT, labels::NEEDS_DECISION], "chore/rust");
+        let again = FakeGitHub::default();
+        escalate(&again, &decided, &pr("68", "chore/rust"))
+            .await
+            .expect("nothing to do");
+        assert!(again.writes().is_empty());
     }
 
     #[tokio::test]

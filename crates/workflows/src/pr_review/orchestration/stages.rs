@@ -86,7 +86,18 @@ Write clearly, the way a colleague leaves review notes. Be concrete and
 specific to this diff — no generic advice, no praise, no summary of your own
 process. If the change is small and clean, say so briefly rather than
 inflating it. Do not edit any file and do not post anything yourself; the
-script posts what you output.";
+script posts what you output.
+
+End the comment with ONE last line, alone, that the loop reads to decide
+what happens next:
+  VERDICT: blocking — <the defect, in a few words>
+when the batch must not be merged as it is: a correctness bug, a security
+hole, a gate or test that can pass without checking what it claims, or a
+spec requirement missing. A repair session will be sent with your notes.
+  VERDICT: clean
+otherwise — style, naming, simplifications, nice-to-haves and open questions
+never block. When in doubt, it is clean: a blocking verdict costs a repair
+round.";
 
 /// The line-by-line pass: `/code-review`, skipped under `--no-inline`.
 #[must_use]

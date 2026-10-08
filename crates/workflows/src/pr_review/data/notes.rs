@@ -10,11 +10,11 @@
 use harness_core::domain::prompts::splice;
 
 /// What says a PR already has a review from this harness.
-pub const MARKER: &str = "<!-- agent-review -->";
+pub use crate::common::review::MARKER;
 
 const FOOTER: &str = "_Automated review (`harness`, workflow `pr_review`) — {passes}{cost}. \
-Informational: it doesn't block anything and the batch may have been merged \
-in the meantime. Line-by-line findings are in the **Files changed** tab._";
+Its last line is its verdict: a blocking one sends a repair before the merge. \
+Line-by-line findings are in the **Files changed** tab._";
 
 /// The footer, with passes and cost substituted.
 #[must_use]
@@ -25,12 +25,21 @@ pub fn footer(passes: &str, cost: &str) -> String {
 /// The complete comment, as posted.
 #[must_use]
 pub fn comment(stamp: &str, body: &str, footer: &str) -> String {
-    format!("{MARKER}\n## 🤖 Review notes — {stamp}\n\n{body}\n\n---\n{footer}\n")
+    let verdict = crate::common::review::verdict_marker(body);
+    format!("{MARKER}\n## 🤖 Review notes — {stamp}\n\n{body}\n\n---\n{footer}\n{verdict}\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_comment_carries_the_summary_s_verdict() {
+        let blocking = comment("t", "notes\nVERDICT: blocking — bypassable gate", "f");
+        assert!(blocking.contains(crate::common::review::BLOCKING));
+        let clean = comment("t", "notes\nVERDICT: clean", "f");
+        assert!(clean.contains(crate::common::review::CLEAN));
+    }
 
     #[test]
     fn the_footer_substitutes_both_fields() {

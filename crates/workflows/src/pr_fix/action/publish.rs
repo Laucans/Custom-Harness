@@ -33,9 +33,10 @@ impl Action<FixState> for ConsumeRequest {
         if ctx.settings.dry_run {
             return Ok(Verdict::Continue);
         }
-        // Nothing broke, so nothing was asked of anyone: leaving the label
-        // in place lets the poll that finds a real failure use it.
-        if ctx.state.failing.is_empty() {
+        // Nothing broke and the review asks for nothing, so nothing was asked
+        // of anyone: leaving the label in place lets the poll that finds a
+        // real failure use it.
+        if ctx.state.failing.is_empty() && !ctx.state.review_blocking {
             return Ok(Verdict::Continue);
         }
         let pr = ctx.state.pr();
@@ -76,6 +77,7 @@ mod tests {
                 }),
                 failing: failing.iter().map(|f| (*f).to_string()).collect(),
                 comments: String::new(),
+                review_blocking: false,
             },
             Logbook::null(),
         )
