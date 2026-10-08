@@ -57,6 +57,29 @@ async fn main() -> ExitCode {
                 Err(halt) => halt_to_code(&halt),
             }
         }
+        Some(cli::Command::Refine(sub)) => {
+            let ran = dispatch::refinement::run(
+                harness_workflows::refinement::data::phase::Phase::Business,
+                sub.issue,
+                &here,
+                &checkout_of(&sub.lane),
+                &sub.lane.permission_mode,
+                sub.lane.dry_run,
+            )
+            .await;
+            lane_exit("refine", sub.issue, ran)
+        }
+        Some(cli::Command::Split(sub)) => {
+            let ran = dispatch::split::run(
+                sub.milestone,
+                &here,
+                &checkout_of(&sub.lane),
+                &sub.lane.permission_mode,
+                sub.lane.dry_run,
+            )
+            .await;
+            lane_exit("split", sub.milestone, ran)
+        }
         None => match dispatch::dev_loop::run(&args.run, &here).await {
             Ok(ran) => {
                 if let Verdict::NothingLeft(why) = &ran.verdict {
@@ -99,6 +122,30 @@ fn walk_up(from: &Path) -> Option<PathBuf> {
     from.ancestors()
         .find(|parent| parent.join(".git").exists())
         .map(Path::to_path_buf)
+}
+
+/// The checkout a lane's arguments name.
+fn checkout_of(lane: &cli::LaneArgs) -> dispatch::shared::Checkout<'_> {
+    dispatch::shared::Checkout {
+        target_repo_url: &lane.target_repo_url,
+        branch: &lane.branch,
+        workspace: (!lane.use_workspace.is_empty()).then_some(lane.use_workspace.as_str()),
+    }
+}
+
+/// What a lane's child prints and returns once its workflow is done.
+fn lane_exit(
+    what: &str,
+    issue: u64,
+    ran: harness_core::domain::Outcome<harness_core::domain::Verdict>,
+) -> ExitCode {
+    match ran {
+        Ok(verdict) => {
+            println!("{what} #{issue}: {verdict:?}");
+            ExitCode::SUCCESS
+        }
+        Err(halt) => halt_to_code(&halt),
+    }
 }
 
 #[cfg(test)]

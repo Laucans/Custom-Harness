@@ -81,8 +81,8 @@ gh api -X POST repos/{owner}/{repo}/issues/<roadmap>/sub_issues \
 # 4. chain it after the previous milestone, if there is one
 gh api -X POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by \
   -F issue_id=<id of the previous milestone>
-# 5. leave it for /refinement to flesh out, and say which side it is on
-gh issue edit <n> --add-label harness:refinement --add-label harness:read-side
+# 5. leave it for /refinement to flesh out
+gh issue edit <n> --add-label harness:refinement
 ```
 
 Long bodies go through `--body-file`, never inline: a body typed on the
@@ -114,8 +114,9 @@ one task at a time. The read side — Capabilities, Micro-UIs, Concepts,
 persisted queries, compositions — runs in parallel, unreviewed, behind CI
 gates. So: a milestone that defines a system's write side comes **before**
 the milestones whose readers depend on it, and a milestone stays inside one
-system where possible. Label it `harness:write-side` if any of its work is
-on the write side, `harness:read-side` otherwise.
+system where possible. Say in its body's `side:` line whether any of its
+work is on the write side — never as a label: `harness:read-side` and
+`harness:write-side` belong to tasks, which `/split` places one by one.
 
 ### Never add `harness:ready`
 

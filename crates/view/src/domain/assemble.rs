@@ -14,7 +14,8 @@ use crate::domain::blueprint::{self, Line};
 use crate::domain::observe::{Observed, ObservedLine, ObservedRun};
 use crate::domain::snapshot::{
     BoardView, Chimney, Employee, Factory, IssueStatus, IssueView, LastRun, LineView,
-    MilestoneView, Project, Snapshot, StationState, StationView, Version, Versions,
+    MilestoneView, Project, RecentRun, Snapshot, StationState, StationView, Tokens, Version,
+    Versions,
 };
 use crate::domain::traces::{self, Watch, summarize_costs};
 use crate::ports::{BoardReading, LedgerRow};
@@ -68,6 +69,11 @@ fn current_run_id(observed: Option<&ObservedLine>) -> String {
 
 /// Whether a run of `line` is still at work.
 fn is_live(watch: &Watch, line: &str, run: &ObservedRun, demo_pick: bool) -> bool {
+    // The process's own lock decides when the run has one: no guessing from
+    // file ages, and no ghost of a run that stopped a minute ago.
+    if let Some(alive) = run.alive {
+        return alive || demo_pick;
+    }
     let age = run.age_secs.unwrap_or(u64::MAX);
     let dispatched = watch
         .in_flight
@@ -158,22 +164,26 @@ fn employee(
     station: Option<String>,
     at_work: bool,
     subject: Option<&str>,
+    ledger: &[LedgerRow],
 ) -> Employee {
     let stage = line
         .stations
         .iter()
         .find(|s| Some(&s.id) == station.as_ref())
         .and_then(|s| s.stage.clone());
+    // The run's own issue before the watch's subject: on a parallel watch,
+    // the subject is one lane's, and this run may be on another.
     let who = run
         .log
         .task
         .as_ref()
         .map(|task| format!("#{}", task.number))
+        .or_else(|| traces::issue_of_run(&run.run_id).map(|n| format!("#{n}")))
         .or_else(|| subject.map(ToString::to_string))
         .unwrap_or_else(|| run.run_id.clone());
     Employee {
         id: format!("{}/{}", line.id, run.run_id),
-        name: format!("{} · {who}", line.title),
+        name: agent_name(&line.title, &who),
         workflow: line.id.clone(),
         run_id: run.run_id.clone(),
         model: model_of(run, line, station.as_deref()),
@@ -190,7 +200,82 @@ fn employee(
             run.session_tail.clone()
         },
         active: at_work,
+        tokens: tokens_of(ledger, &run.run_id),
     }
+}
+
+/// An agent's name: the issue it works first, so the plant reads as "who is
+/// on what" — `#64 · Dev loop`; a run on no issue keeps the line first.
+fn agent_name(title: &str, who: &str) -> String {
+    if who.starts_with('#') {
+        format!("{who} · {title}")
+    } else {
+        format!("{title} · {who}")
+    }
+}
+
+/// A line's last runs, newest first, from their folder names and the
+/// ledger rows they wrote — no run file is read.
+fn recent_work(
+    line: &Line,
+    observed: Option<&ObservedLine>,
+    ledger: &[LedgerRow],
+    employees: &[Employee],
+) -> Vec<RecentRun> {
+    let Some(observed) = observed else {
+        return Vec::new();
+    };
+    observed
+        .run_ids
+        .iter()
+        .rev()
+        .map(|run_id| {
+            let mut rows: Vec<&LedgerRow> =
+                ledger.iter().filter(|row| &row.run == run_id).collect();
+            rows.sort_by(|a, b| a.when.cmp(&b.when));
+            let mut stages: Vec<String> = Vec::new();
+            for row in &rows {
+                if !stages.contains(&row.stage) {
+                    stages.push(row.stage.clone());
+                }
+            }
+            let issue = traces::issue_of_run(run_id)
+                .or_else(|| rows.iter().find_map(|row| row.task.parse().ok()));
+            let who = issue.map_or_else(|| run_id.clone(), |n| format!("#{n}"));
+            RecentRun {
+                run_id: run_id.clone(),
+                name: agent_name(&line.title, &who),
+                issue,
+                stages,
+                tokens: tokens_of(ledger, run_id),
+                active: employees
+                    .iter()
+                    .any(|e| e.workflow == line.id && &e.run_id == run_id),
+            }
+        })
+        .collect()
+}
+
+/// What run `run_id` consumed, from the ledger rows it wrote; `None` when it
+/// has written none yet.
+fn tokens_of(ledger: &[LedgerRow], run_id: &str) -> Option<Tokens> {
+    let mut sum = Tokens::default();
+    for row in ledger.iter().filter(|row| row.run == run_id) {
+        sum.input = sum.input.saturating_add(row.input.unwrap_or(0));
+        sum.output = sum.output.saturating_add(row.output.unwrap_or(0));
+        sum.cache_read = sum.cache_read.saturating_add(row.cache_read.unwrap_or(0));
+        sum.cache_write = sum.cache_write.saturating_add(row.cache_write.unwrap_or(0));
+        sum.stages = sum.stages.saturating_add(1);
+    }
+    if sum.stages == 0 {
+        return None;
+    }
+    sum.total = sum
+        .input
+        .saturating_add(sum.output)
+        .saturating_add(sum.cache_read)
+        .saturating_add(sum.cache_write);
+    Some(sum)
 }
 
 fn last_run(run: &ObservedRun) -> LastRun {
@@ -263,9 +348,18 @@ fn lines_and_employees(inputs: &Inputs<'_>) -> (Vec<LineView>, Vec<Employee>) {
             } else {
                 stations(line, Some(run), true).1
             };
-            employees.push(employee(line, run, at, true, subject));
+            employees.push(employee(
+                line,
+                run,
+                at,
+                true,
+                subject,
+                &inputs.observed.ledger,
+            ));
         }
+        let recent_work = recent_work(line, observed, &inputs.observed.ledger, &employees);
         lines.push(LineView {
+            recent_work,
             id: line.id.clone(),
             title: line.title.clone(),
             trigger: line.trigger.clone(),
@@ -542,6 +636,7 @@ mod tests {
             age_secs: Some(age),
             model_seen: None,
             session_tail: String::new(),
+            alive: None,
         }
     }
 
@@ -553,6 +648,7 @@ mod tests {
                 runs: 1,
                 latest: Some(run),
                 recent: Vec::new(),
+                run_ids: Vec::new(),
             }],
             ledger: vec![],
             errors: vec![],
@@ -607,7 +703,7 @@ mod tests {
         assert_eq!(worker.stage.as_deref(), Some("code"));
         assert_eq!(worker.model.as_deref(), Some("sonnet"));
         assert_eq!(worker.task.as_deref(), Some("#62 Asset folder rule"));
-        assert_eq!(worker.name, "Dev loop · #62");
+        assert_eq!(worker.name, "#62 · Dev loop");
         assert!(worker.active);
 
         let dev = snap
@@ -786,6 +882,51 @@ mod tests {
         assert!(snap.board.is_none());
         assert_eq!(snap.lines.len(), lines.len());
         assert_eq!(snap.rooms.len(), 6);
+    }
+
+    fn row(run: &str, input: u64, output: u64, cache_read: u64) -> LedgerRow {
+        LedgerRow {
+            when: String::new(),
+            run: run.to_string(),
+            round: String::new(),
+            task: String::new(),
+            stage: "code".to_string(),
+            cost_usd: None,
+            turns: None,
+            duration_ms: None,
+            input: Some(input),
+            output: Some(output),
+            cache_read: Some(cache_read),
+            cache_write: None,
+            outcome: "ok".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_dead_run_is_no_one_at_work_however_fresh_and_a_live_one_is() {
+        let watch = Watch::default();
+        let mut run = dev_run(MID_RUN, 5);
+        run.alive = Some(false);
+        assert!(!is_live(&watch, "agent-loop", &run, false));
+        run.alive = Some(true);
+        run.age_secs = Some(10_000);
+        assert!(is_live(&watch, "agent-loop", &run, false));
+    }
+
+    #[test]
+    fn a_run_s_tokens_are_the_sum_of_its_own_ledger_rows_only() {
+        let ledger = vec![
+            row("20261008-152126-64", 10, 20, 300),
+            row("20261008-152126-64", 1, 2, 30),
+            row("20261008-152126-65", 1_000, 1_000, 1_000),
+        ];
+        let tokens = tokens_of(&ledger, "20261008-152126-64").expect("two rows");
+        assert_eq!(tokens.input, 11);
+        assert_eq!(tokens.output, 22);
+        assert_eq!(tokens.cache_read, 330);
+        assert_eq!(tokens.total, 363);
+        assert_eq!(tokens.stages, 2);
+        assert!(tokens_of(&ledger, "20261008-000000").is_none());
     }
 
     #[test]

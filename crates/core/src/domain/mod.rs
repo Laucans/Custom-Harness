@@ -23,7 +23,7 @@ pub use halt::{Halt, Severity};
 pub use issue::Issue;
 pub use prompts::{Named, Scope, Scoped, Sibling};
 pub use pulls::Pr;
-pub use remote::{Slug, same_repo};
+pub use remote::{Slug, clone_url, same_repo};
 pub use resumable::Resumable;
 pub use spend::{Spend, Tokens};
 pub use verdict::{Outcome, Verdict};

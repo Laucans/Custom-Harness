@@ -1,7 +1,8 @@
-//! Where a task sits: its roadmap item, its milestone, its sibling tasks.
+//! Where a task sits: its roadmap item, its milestone, its sibling tasks —
+//! and where a milestone sits: its roadmap item, its sibling milestones.
 //!
-//! Read by the loop and by the refinement, so every session that works on a
-//! task knows what its neighbours own.
+//! Read by the loop and by the refinement, so every session that works on an
+//! issue knows what its neighbours own.
 
 use harness_core::domain::{Issue, Named, Outcome, Scope, Sibling};
 use harness_core::ports::shell::github::GitHub;
@@ -163,6 +164,15 @@ pub fn sibling(task: &Issue) -> Sibling {
     }
 }
 
+/// What sits above a milestone: its roadmap item and every milestone of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Above {
+    /// The roadmap item, its boundaries only — see `ROADMAP_KEPT`.
+    pub roadmap: Named,
+    /// The roadmap's milestones, the one asked about included.
+    pub milestones: Vec<Sibling>,
+}
+
 /// The open roadmap item that holds this milestone as a sub-issue.
 ///
 /// The roadmap is context, not a requirement: none found is `None`, but a
@@ -172,14 +182,24 @@ pub fn sibling(task: &Issue) -> Sibling {
 ///
 /// A failed GitHub read.
 pub async fn roadmap_of(gh: &dyn GitHub, milestone: u64) -> Outcome<Option<Named>> {
+    Ok(above(gh, milestone).await?.map(|found| found.roadmap))
+}
+
+/// The open roadmap item that holds this milestone, and its milestones.
+///
+/// `None` when no open roadmap item holds it.
+///
+/// # Errors
+///
+/// A failed GitHub read.
+pub async fn above(gh: &dyn GitHub, milestone: u64) -> Outcome<Option<Above>> {
     for item in gh.issues_labelled(labels::ROADMAP, "open").await? {
-        if gh
-            .sub_issues(item.number)
-            .await?
-            .iter()
-            .any(|sub| sub.number == milestone)
-        {
-            return Ok(Some(Named {
+        let subs = gh.sub_issues(item.number).await?;
+        if !subs.iter().any(|sub| sub.number == milestone) {
+            continue;
+        }
+        return Ok(Some(Above {
+            roadmap: Named {
                 number: item.number.to_string(),
                 title: item.title,
                 // The boundaries, not the narrative — see `ROADMAP_KEPT`. Done
@@ -187,8 +207,9 @@ pub async fn roadmap_of(gh: &dyn GitHub, milestone: u64) -> Outcome<Option<Named
                 // refinement cannot end up carrying two different versions of
                 // it.
                 body: sections::keeping(&item.body, &ROADMAP_KEPT),
-            }));
-        }
+            },
+            milestones: subs.iter().map(sibling).collect(),
+        }));
     }
     Ok(None)
 }
@@ -255,6 +276,25 @@ mod tests {
         assert_eq!(found.milestone.number, "4");
         assert_eq!(found.roadmap.expect("roadmap").number, "2");
         assert_eq!(found.siblings.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_milestone_is_placed_under_its_roadmap_among_its_neighbours() {
+        let gh = FakeGitHub {
+            issues: vec![issue(2, &[labels::ROADMAP])],
+            subs: vec![(
+                2,
+                vec![
+                    issue(4, &[labels::MILESTONE]),
+                    issue(5, &[labels::MILESTONE]),
+                ],
+            )],
+            ..FakeGitHub::default()
+        };
+        let found = above(&gh, 5).await.expect("read").expect("a roadmap");
+        assert_eq!(found.roadmap.number, "2");
+        assert_eq!(found.milestones.len(), 2);
+        assert!(above(&gh, 9).await.expect("read").is_none());
     }
 
     #[test]

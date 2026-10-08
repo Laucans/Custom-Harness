@@ -40,6 +40,9 @@ pub struct ObservedRun {
     pub model_seen: Option<String>,
     /// The last line of its `session.log`.
     pub session_tail: String,
+    /// Its process still holds its `alive.lock`; `None` for a run older
+    /// than that file.
+    pub alive: Option<bool>,
 }
 
 /// One line, as read.
@@ -55,7 +58,13 @@ pub struct ObservedLine {
     /// when a parallel watch runs this line on more than one lane. The
     /// latest is among them when it is fresh.
     pub recent: Vec<ObservedRun>,
+    /// The ids of its last [`RECENT_WORK`] runs, oldest first — what its
+    /// "recent work" lists, read from the folder names alone.
+    pub run_ids: Vec<String>,
 }
+
+/// How many of a line's last runs its "recent work" lists.
+pub const RECENT_WORK: usize = 20;
 
 /// How many of a line's last runs are looked at for freshness.
 pub const RECENT_RUNS: usize = 8;
@@ -111,6 +120,7 @@ fn observe_run(traces: &dyn Traces, line: &Line, run: &str) -> ObservedRun {
         age_secs: traces.age_secs(&line.id, run),
         model_seen,
         session_tail,
+        alive: traces.alive(&line.id, run),
     }
 }
 
@@ -130,9 +140,13 @@ pub fn observe(traces: &dyn Traces, lines: &[Line]) -> Observed {
                 .rev()
                 .take(RECENT_RUNS)
                 .filter(|run| {
-                    traces
-                        .age_secs(&line.id, run)
-                        .is_some_and(|age| age <= RECENT_SECS)
+                    // A live process is at work however long ago it wrote;
+                    // a dead one is not, however recently.
+                    traces.alive(&line.id, run).unwrap_or_else(|| {
+                        traces
+                            .age_secs(&line.id, run)
+                            .is_some_and(|age| age <= RECENT_SECS)
+                    })
                 })
                 .map(|run| observe_run(traces, line, run))
                 .collect();
@@ -145,6 +159,11 @@ pub fn observe(traces: &dyn Traces, lines: &[Line]) -> Observed {
                     .unwrap_or_else(|| observe_run(traces, line, run))
             });
             ObservedLine {
+                run_ids: runs
+                    .iter()
+                    .skip(runs.len().saturating_sub(RECENT_WORK))
+                    .cloned()
+                    .collect(),
                 workflow: line.id.clone(),
                 runs: u32::try_from(runs.len()).unwrap_or(u32::MAX),
                 latest,
@@ -225,6 +244,10 @@ pub mod fake {
 
         fn head(&self, workflow: &str, run: &str, file: &str, _max: u64) -> Option<String> {
             self.get(workflow, run, file)
+        }
+
+        fn alive(&self, _: &str, _: &str) -> Option<bool> {
+            None
         }
 
         fn age_secs(&self, workflow: &str, run: &str) -> Option<u64> {

@@ -50,6 +50,12 @@ fn stamped(at: &str, line: &str) -> String {
 pub struct Both {
     path: PathBuf,
     file: RefCell<Option<std::fs::File>>,
+    /// `alive.lock` beside the log, held with an OS lock for as long as this
+    /// run lives — the OS releases it when the process dies, which is how the
+    /// view tells a run at work from one that stopped. `None` when the lock
+    /// could not be taken: the run goes on, the view falls back to the age of
+    /// its files.
+    _alive: Option<std::fs::File>,
 }
 
 impl Both {
@@ -70,9 +76,21 @@ impl Both {
             .create(true)
             .append(true)
             .open(path)?;
+        let alive = path
+            .parent()
+            .and_then(|dir| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(dir.join(harness_core::traces::RUN_ALIVE))
+                    .ok()
+            })
+            .filter(|lock| lock.try_lock().is_ok());
         Ok(Self {
             path: path.to_path_buf(),
             file: RefCell::new(Some(file)),
+            _alive: alive,
         })
     }
 

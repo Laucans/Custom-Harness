@@ -12,7 +12,7 @@ use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 
 use crate::common::architecture::{Declaration, Unit};
-use crate::common::sections;
+use crate::common::{labels, sections};
 use crate::refinement::data::rounds;
 use crate::refinement::data::state::RefinementState;
 
@@ -217,6 +217,27 @@ impl Verification<RefinementState> for NothingIsWritten {
     }
 }
 
+/// The advice weighs a task's technical refinement, which a milestone never
+/// gets: a milestone skips it.
+pub struct IssueIsATask;
+
+#[async_trait(?Send)]
+impl Verification<RefinementState> for IssueIsATask {
+    async fn verify(&self, ctx: &Context<RefinementState>) -> Outcome<Verdict> {
+        let milestone = ctx
+            .state
+            .issue
+            .as_ref()
+            .is_some_and(|issue| issue.has(labels::MILESTONE));
+        if !milestone {
+            return Ok(Verdict::Continue);
+        }
+        Ok(Verdict::Skip(
+            "a milestone — no technical refinement to advise on".to_string(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +329,27 @@ mod tests {
         };
         assert_eq!(
             gate.verify(&context).await.expect("verdict"),
+            Verdict::Continue
+        );
+    }
+
+    #[tokio::test]
+    async fn a_milestone_skips_the_advice_and_a_task_gets_it() {
+        let mut context = ctx(false);
+        context.state.issue = Some(harness_core::domain::Issue {
+            labels: vec![labels::MILESTONE.to_string()],
+            ..Default::default()
+        });
+        assert!(matches!(
+            IssueIsATask.verify(&context).await.expect("verdict"),
+            Verdict::Skip(_)
+        ));
+        context.state.issue = Some(harness_core::domain::Issue {
+            labels: vec![labels::AGENT.to_string()],
+            ..Default::default()
+        });
+        assert_eq!(
+            IssueIsATask.verify(&context).await.expect("verdict"),
             Verdict::Continue
         );
     }

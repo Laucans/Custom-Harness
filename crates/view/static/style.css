@@ -229,3 +229,32 @@ button.mini:hover { color: var(--bad); border-color: var(--bad); }
 .chips button:hover { background: rgba(199, 210, 254, 0.12); }
 #term { flex: 1; min-height: 240px; background: #070b10; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
 #term .xterm { height: 100%; }
+
+/* The agents at work, as faces down the left edge of the plant. */
+#crew-bar {
+  position: absolute; left: 10px; top: 10px; z-index: 5;
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: calc(100% - 20px); overflow-y: auto;
+  pointer-events: none;
+}
+#crew-bar[hidden] { display: none; }
+.crew-bubble {
+  pointer-events: auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px 4px 4px; max-width: 240px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text); font: 12px var(--sans); text-align: left; cursor: pointer;
+}
+.crew-bubble:hover { border-color: var(--accent); }
+.crew-bubble .face {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 20px;
+  background: var(--panel-2); border: 2px solid var(--line);
+}
+.crew-bubble .face.opus { border-color: var(--opus); }
+.crew-bubble .face.sonnet { border-color: var(--sonnet); }
+.crew-bubble .face.haiku { border-color: var(--haiku); }
+.crew-bubble .who { display: flex; flex-direction: column; min-width: 0; }
+.crew-bubble .who b, .crew-bubble .who small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crew-bubble .who small { color: var(--dim); }

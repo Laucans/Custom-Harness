@@ -8,7 +8,8 @@
 //!
 //! Priority, top to bottom: a roadmap item that's `harness:ready` and has no
 //! milestone yet outranks everything, because nothing else can be planned
-//! against it; a milestone ready to split comes next; then the two things
+//! against it; a milestone ready to split comes next, once no refinement is
+//! pending on it; then the two things
 //! that can be wrong with a pull request already in flight — a red one to
 //! repair before a green one to review, since reviewing a change whose CI
 //! is broken reviews something about to change; then finishing a milestone
@@ -129,7 +130,7 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     if let Some(ready) = snapshot
         .milestones
         .iter()
-        .filter(|issue| issue.is_open() && issue.has(labels::READY))
+        .filter(|issue| splittable(issue))
         .min_by_key(|issue| issue.number)
     {
         return Route::Split {
@@ -162,6 +163,35 @@ pub fn decide(snapshot: &Snapshot) -> Route {
         return Route::DevLoop { milestone };
     }
     Route::Nothing
+}
+
+/// Whether this milestone is a candidate for a split, its blockers aside:
+/// open, `harness:ready`, and no refinement pending.
+///
+/// A milestone still waiting on its refinement is split once that round is
+/// written: tasks cut from the planner's draft would miss it.
+#[must_use]
+pub fn split_candidate(milestone: &Issue) -> bool {
+    milestone.is_open() && milestone.has(labels::READY) && !milestone.has(labels::REFINEMENT)
+}
+
+/// Whether this milestone is ready to be split now: a candidate, and every
+/// milestone it is `blocked_by` delivered — closed, or `waiting-merge` with
+/// its code on the integration branch.
+///
+/// Its tasks are cut against the code the previous milestone leaves: split
+/// before that code exists, they plan for a guess. `milestone.blocked_by`
+/// must have been read ([`GitHub::with_blockers`]); empty reads as nothing
+/// blocking.
+///
+/// [`GitHub::with_blockers`]: harness_core::ports::shell::github::GitHub::with_blockers
+#[must_use]
+pub fn splittable(milestone: &Issue) -> bool {
+    split_candidate(milestone)
+        && milestone
+            .blocked_by
+            .iter()
+            .all(|blocker| blocker.is_closed() || blocker.has(labels::WAITING_MERGE))
 }
 
 /// The lowest-numbered open issue, if any.
@@ -256,6 +286,35 @@ mod tests {
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::Split { milestone: 9 });
+    }
+
+    #[test]
+    fn a_milestone_is_split_only_once_the_one_before_is_delivered() {
+        let mut next = issue(9, &[labels::MILESTONE, labels::READY]);
+        next.blocked_by = vec![issue(8, &[labels::MILESTONE])];
+        let snapshot = Snapshot {
+            milestones: vec![next.clone()],
+            ..empty()
+        };
+        assert_eq!(decide(&snapshot), Route::Nothing);
+
+        next.blocked_by = vec![issue(8, &[labels::MILESTONE, labels::WAITING_MERGE])];
+        let snapshot = Snapshot {
+            milestones: vec![next],
+            ..empty()
+        };
+        assert_eq!(decide(&snapshot), Route::Split { milestone: 9 });
+    }
+
+    #[test]
+    fn a_ready_milestone_is_refined_before_it_is_split() {
+        let pending = issue(9, &[labels::MILESTONE, labels::READY, labels::REFINEMENT]);
+        let snapshot = Snapshot {
+            milestones: vec![pending.clone()],
+            refining: vec![pending],
+            ..empty()
+        };
+        assert_eq!(decide(&snapshot), Route::Refinement { issue: 9 });
     }
 
     #[test]

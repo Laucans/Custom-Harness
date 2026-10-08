@@ -173,6 +173,25 @@ pub fn merge_claude_md(existing: Option<&str>, force: bool) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// GitHub refuses a workflow that is not valid YAML and runs nothing:
+    /// a plain `run:` scalar holding `: ` is the mistake that made the
+    /// installed gates never run.
+    #[test]
+    fn no_unquoted_run_line_of_the_gates_holds_a_colon_space() {
+        let gates = include_str!("../assets/gates.yml");
+        for (n, line) in gates.lines().enumerate() {
+            let Some(value) = line.trim_start().strip_prefix("- run: ") else {
+                continue;
+            };
+            let quoted = value.starts_with('\'') || value.starts_with('"');
+            assert!(
+                quoted || !value.contains(": "),
+                "gates.yml line {}: an unquoted `run:` value holds `: `",
+                n + 1
+            );
+        }
+    }
+
     #[test]
     fn every_asset_is_in_place_and_the_rules_carry_both_markers() {
         for asset in &FILES {

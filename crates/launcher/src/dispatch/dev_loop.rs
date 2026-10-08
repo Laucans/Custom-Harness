@@ -67,7 +67,9 @@ pub struct Ran {
 /// refuses, a session that stops on its own, a quota exhausted. Its
 /// `exit_code` is what the caller returns to the system.
 pub async fn run(args: &RunArgs, here: &Path) -> harness_core::domain::Outcome<Ran> {
-    let run_id = spending::run_id();
+    let run_id = args
+        .task
+        .map_or_else(spending::run_id, spending::run_id_for);
     let source = Workspace::new(here);
     let sink = Rc::new(
         Both::new(&source.loop_dir().join(&run_id).join("run.log")).map_err(|e| {
@@ -238,8 +240,9 @@ async fn mount(
         keep: args.keep_workspace,
         force_reset: args.force_reset,
         // `--use-workspace` is a human naming a workspace they already have:
-        // a typo must be refused, never cloned beside it.
-        create_if_missing: false,
+        // a typo must be refused, never cloned beside it. A lane's workspace
+        // is named by the watch, and the first run on it creates it.
+        create_if_missing: args.lane,
     };
     Provisioner {
         repos: Rc::clone(repos),

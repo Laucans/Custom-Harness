@@ -22,8 +22,8 @@ use crate::adapters::sink::Both;
 use crate::adapters::spending;
 use crate::dispatch::shared;
 
-/// Splits one milestone into tasks: mounts the shared checkout, runs the
-/// workflow, unmounts.
+/// Splits one milestone into tasks: mounts the checkout, runs the workflow,
+/// unmounts.
 ///
 /// # Errors
 /// Whatever the workflow propagates — a precheck refusal, a session
@@ -31,12 +31,12 @@ use crate::dispatch::shared;
 pub async fn run(
     milestone: u64,
     here: &Path,
-    target_repo_url: &str,
-    branch: &str,
+    checkout: &shared::Checkout<'_>,
     permission_mode: &str,
     dry_run: bool,
 ) -> Outcome<Verdict> {
-    let run_id = spending::run_id();
+    let run_id = spending::run_id_for(milestone);
+    let branch = checkout.branch;
     let sink = Rc::new(
         Both::new(
             &Workspace::new(here)
@@ -50,7 +50,7 @@ pub async fn run(
     );
     let log = Logbook::new(Rc::clone(&sink) as Rc<dyn Sink>, Verbosity::Normal);
 
-    let mount = shared::mount_shared(here, target_repo_url, branch, &run_id, dry_run, &log).await?;
+    let mount = shared::mount_checkout(here, checkout, &run_id, dry_run, &log).await?;
     let workspace = &mount.workspace;
     let built = shared::adapters(
         workspace,

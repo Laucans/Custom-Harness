@@ -250,7 +250,7 @@ its precheck, its lock and its trigger.
 
 | | `dev_loop` | `refinement` | `planner` | `split` |
 | --- | --- | --- | --- | --- |
-| what it does | picks a task (or the one `--task` names, as a lane of a parallel watch), runs it through its stages, observes delivery — a merged PR on the read side, an open reviewed PR marked `review-pending` on the write side | rewrites an issue body into its five refined sections, never `Scope` or `Architecture` | opens the milestones of a roadmap item, each placed in the architecture (`systems`, `concepts`, side) | opens the tasks of a milestone, each one unit of the architecture, chained only where one builds on another |
+| what it does | picks a task (or the one `--task` names, as a lane of a parallel watch), runs it through its stages, observes delivery — a merged PR on the read side, an open reviewed PR marked `review-pending` on the write side | rewrites an issue body into its five refined sections, never `Scope` or `Architecture` — a milestone gets the three business ones only, before `split` cuts it | opens the milestones of a roadmap item, each placed in the architecture (`systems`, `concepts`, side) | opens the tasks of a milestone, each one unit of the architecture, chained only where one builds on another |
 | trigger | the `harness` binary, or the router | the `harness:refinement` label | `harness:ready` on a roadmap item with no milestone yet | `harness:ready` on a milestone |
 | state | `Loop` (`Resumable` + `Scoped`) | `RefinementState` (`Explored`) | `PlannerState` (`Explored`) | `SplitState` |
 | `remaining` | the `--rounds` budget | 1 | 1 | 1 |

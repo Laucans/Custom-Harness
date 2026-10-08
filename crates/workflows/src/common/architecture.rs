@@ -200,7 +200,14 @@ impl Declaration {
     pub fn render(&self) -> String {
         let mut lines = vec![
             format!("unit: {}", self.unit.key()),
-            format!("system: {}", self.system),
+            format!(
+                "system: {}",
+                if self.system.is_empty() {
+                    "-"
+                } else {
+                    &self.system
+                }
+            ),
         ];
         if let Some(concept) = &self.concept {
             lines.push(format!("concept: {concept}"));
@@ -242,7 +249,15 @@ impl Declaration {
                 .as_str()
             {
                 "unit" => unit = Unit::parse(value),
-                "system" => system = value.to_string(),
+                // `-` is how a body says "no system" — infrastructure, a
+                // cross-cutting unit — never a system named `-`.
+                "system" => {
+                    system = if value == "-" {
+                        String::new()
+                    } else {
+                        value.to_string()
+                    }
+                }
                 "concept" => {
                     concept = (!value.is_empty() && value != "-").then(|| value.to_string());
                 }
@@ -389,6 +404,14 @@ mod tests {
         assert_eq!(parsed.concept, None);
         assert!(parsed.touches.is_empty());
         assert_eq!(Declaration::parse("system: credit\nsome prose"), None);
+    }
+
+    #[test]
+    fn a_dash_system_is_no_system_and_renders_back_as_a_dash() {
+        let read = Declaration::parse("unit: infrastructure\nsystem: -\nside: harness:write-side")
+            .expect("a unit");
+        assert!(read.system.is_empty());
+        assert!(read.render().contains("system: -"));
         assert_eq!(Declaration::parse(""), None);
     }
 

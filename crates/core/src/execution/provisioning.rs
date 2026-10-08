@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::domain::workspace::{Strategy, Wanted, Workspace};
-use crate::domain::{Halt, Outcome, same_repo};
+use crate::domain::{Halt, Outcome, clone_url, same_repo};
 use crate::ports::shell::disk::Disk;
 use crate::ports::shell::git::{Repo, Repos};
 use crate::traces::Logbook;
@@ -270,7 +270,7 @@ impl Provisioner {
     /// The URL to clone: what was asked, else the `origin` of the source repo.
     async fn url_for(&self, run: &Run<'_>) -> Outcome<String> {
         if !run.wanted.url.is_empty() {
-            return Ok(run.wanted.url.clone());
+            return Ok(clone_url(&run.wanted.url));
         }
         let url = self
             .repos

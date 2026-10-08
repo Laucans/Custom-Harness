@@ -33,7 +33,7 @@ use tokio_stream::{Stream, StreamExt as _};
 use crate::desk::Desk;
 use crate::domain::snapshot::Snapshot;
 use crate::domain::steward::Status;
-use crate::domain::traces::is_run_id;
+use crate::domain::traces::{is_run_id, stage_logs};
 use crate::ports::{BoardReading, Traces};
 
 /// What every handler can reach.
@@ -84,6 +84,7 @@ pub fn router(state: AppState) -> Router {
         .route("/vendor/addon-fit.js", get(xterm_fit))
         .route("/api/snapshot", get(snapshot))
         .route("/api/events", get(events))
+        .route("/api/runs/{workflow}/{run}/stages", get(run_stages))
         .route("/api/runs/{workflow}/{run}/{file}", get(run_file))
         .route("/api/issues/{number}", get(issue))
         .route("/api/steward", get(steward))
@@ -244,6 +245,34 @@ async fn run_file(
                     .into_response()
             },
         )
+}
+
+/// A run's sessions, one per machine it went through, each named after its
+/// stage — what an agent's pane lists, and what a click on one shows.
+async fn run_stages(
+    State(state): State<AppState>,
+    Path((workflow, run)): Path<(String, String)>,
+) -> Response {
+    if !is_workflow(&workflow) || !is_run_id(&run) {
+        return not_found("no such run");
+    }
+    let Some(run_log) = state.traces.read(&workflow, &run, "run.log") else {
+        return not_found("no such run");
+    };
+    let session_log = state
+        .traces
+        .read(&workflow, &run, "session.log")
+        .unwrap_or_default();
+    let mut rows: Vec<_> = state
+        .traces
+        .ledger()
+        .into_iter()
+        .filter(|row| row.run == run)
+        .collect();
+    rows.sort_by(|a, b| a.when.cmp(&b.when));
+    let ledger_stages: Vec<String> = rows.into_iter().map(|row| row.stage).collect();
+    let tail = usize::try_from(TAIL_DEFAULT).unwrap_or(usize::MAX);
+    json(&stage_logs(&run_log, &session_log, &ledger_stages, tail))
 }
 
 /// An issue with its body, as the office shows it.
@@ -499,6 +528,37 @@ mod tests {
         let (status, body) = get(state(Shelf::default(), None), "/vendor/xterm.js").await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.len() > 100_000, "xterm.js is embedded whole");
+    }
+
+    #[tokio::test]
+    async fn a_run_s_sessions_come_back_one_per_stage() {
+        let mut shelf = Shelf::default();
+        shelf.put(
+            "agent-loop",
+            "20261008-152126-64",
+            "run.log",
+            "[2026-10-08T15:21:29Z] [code] session opens\n",
+        );
+        shelf.put(
+            "agent-loop",
+            "20261008-152126-64",
+            "session.log",
+            "── turn 1 /code ──\nbuilt it\n",
+        );
+        let (status, body) = get(
+            state(shelf, None),
+            "/api/runs/agent-loop/20261008-152126-64/stages",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"stage\":\"code\""), "{body}");
+        assert!(body.contains("built it"), "{body}");
+        let (status, _) = get(
+            state(Shelf::default(), None),
+            "/api/runs/agent-loop/..%2Fx/stages",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

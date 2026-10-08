@@ -3,8 +3,19 @@
 //! A `mkdir`, not a witness file: directory creation is atomic on every
 //! filesystem we care about, so two processes starting at once cannot both
 //! get it.
+//!
+//! **And an owner inside it, held with an OS file lock.** A directory alone
+//! outlives the process that made it: a run killed mid-flight left its lock
+//! behind, and the issue stayed taken forever. The holder now keeps an
+//! exclusive `flock` on `<lock>/owner` for as long as it holds the lock; the
+//! OS drops that lock the moment the process dies, however it dies. A lock
+//! directory whose owner can be locked again is a dead holder's, and is taken
+//! over.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::domain::{Halt, Outcome};
 use crate::ports::store::lock::Locks;
@@ -12,9 +23,37 @@ use crate::ports::store::lock::Locks;
 /// A lock that is actually a directory on disk.
 pub struct DirLocks;
 
+/// The owner files this process holds locked, by lock directory: dropping
+/// one releases its OS lock.
+fn held() -> &'static Mutex<HashMap<PathBuf, File>> {
+    static HELD: OnceLock<Mutex<HashMap<PathBuf, File>>> = OnceLock::new();
+    HELD.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 impl DirLocks {
-    fn path(dir: &Path, name: &str) -> std::path::PathBuf {
+    fn path(dir: &Path, name: &str) -> PathBuf {
         dir.join(format!(".lock-{name}"))
+    }
+
+    /// Takes the OS lock on `lock`'s owner file. `Ok(false)`: a live process
+    /// holds it.
+    fn own(lock: &Path) -> std::io::Result<bool> {
+        let owner = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock.join("owner"))?;
+        match owner.try_lock() {
+            Ok(()) => {
+                held()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(lock.to_path_buf(), owner);
+                Ok(true)
+            }
+            Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+            Err(std::fs::TryLockError::Error(e)) => Err(e),
+        }
     }
 }
 
@@ -26,18 +65,38 @@ impl Locks for DirLocks {
                 dir.display()
             ))
         })?;
-        match std::fs::create_dir(Self::path(dir, name)) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(Halt::Failed(format!(
+        let lock = Self::path(dir, name);
+        let failed = |e: std::io::Error| {
+            Halt::Failed(format!(
                 "cannot place lock {name} in {}: {e}",
                 dir.display()
-            ))),
+            ))
+        };
+        match std::fs::create_dir(&lock) {
+            Ok(()) => Self::own(&lock).map_err(failed),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Held by a live process, or left behind by a dead one. A
+                // directory with no owner file yet is a holder between its
+                // `mkdir` and its `own` — taken, not stale.
+                if lock.join("owner").exists() {
+                    Self::own(&lock).map_err(failed)
+                } else {
+                    Ok(false)
+                }
+            }
+            Err(e) => Err(failed(e)),
         }
     }
 
     fn release(&self, dir: &Path, name: &str) {
-        let _ = std::fs::remove_dir(Self::path(dir, name));
+        let lock = Self::path(dir, name);
+        let owned = held()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&lock);
+        let _ = std::fs::remove_file(lock.join("owner"));
+        let _ = std::fs::remove_dir(&lock);
+        drop(owned);
     }
 }
 
@@ -102,5 +161,19 @@ mod tests {
         let dir = Dir::new("two-names");
         assert!(DirLocks.acquire(&dir.0, "32").expect("first"));
         assert!(DirLocks.acquire(&dir.0, "99").expect("second, unrelated"));
+    }
+
+    #[test]
+    fn a_lock_its_holder_died_with_is_taken_over() {
+        let dir = Dir::new("dead-holder");
+        // What a killed run leaves: the directory and its owner file, with
+        // no process holding the OS lock any more.
+        let lock = dir.0.join(".lock-32");
+        std::fs::create_dir_all(&lock).expect("lock dir");
+        std::fs::write(lock.join("owner"), "").expect("owner");
+        assert!(DirLocks.acquire(&dir.0, "32").expect("taken over"));
+        assert!(!DirLocks.acquire(&dir.0, "32").expect("now held"));
+        DirLocks.release(&dir.0, "32");
+        assert!(!lock.exists());
     }
 }

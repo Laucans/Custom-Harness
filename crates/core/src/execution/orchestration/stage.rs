@@ -74,6 +74,7 @@ impl<S> Executable<S> for Stage<S> {
                 sessions,
                 actions,
             } => {
+                ctx.traces.say(&crate::traces::session_opens(&self.name));
                 let mut backend = sessions.open(spec).await?;
                 let mut open = Open {
                     ctx,

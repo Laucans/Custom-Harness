@@ -41,12 +41,12 @@ pub const BUSINESS_GOAL_PROMPT: &str =
 refinement round {round}, and you write one section of its body: the
 **Business Goal**.
 
-Say what this task is for, at the altitude a product owner states it: the
+Say what this issue is for, at the altitude a product owner states it: the
 outcome someone gets once it ships, who that someone is, and why it is worth
 doing now. A short paragraph, or a paragraph and three or four bullets — no
 more. Name the user-visible change, not the code that makes it. Leave the how
 out entirely: the Technical section and the Technical Implementation Plan
-carry it. If this task is plumbing with no user-visible outcome, say what it
+carry it. If this issue is plumbing with no user-visible outcome, say what it
 unblocks instead of inventing a user for it.
 
 Here is the body of the issue as it stands right now:
@@ -142,7 +142,7 @@ pub const ACCEPTANCE_CRITERIA_PROMPT: &str =
 refinement round {round}, and you write one section of its body: the
 **Acceptance Criteria**.
 
-List what has to be true for this task to be called done. A flat markdown
+List what has to be true for this issue to be called done. A flat markdown
 list, four to twelve bullets, each one a single statement someone can check
 and get a yes or a no on — not a task to perform, not a step to follow. Cover
 the happy path, the edge cases that actually matter here, what happens on

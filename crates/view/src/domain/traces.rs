@@ -58,17 +58,26 @@ pub fn unix(at: &str) -> Option<i64> {
 }
 
 /// A run id as the launcher names a run folder: `20261006-202608` — eight
-/// digits, a dash, six digits. What tells a run folder from a ledger or a
+/// digits, a dash, six digits — optionally followed by a dash and the issue a
+/// lane ran (`20261006-202608-17`). What tells a run folder from a ledger or a
 /// loose file in the same directory, and what a URL segment must look like
 /// before the server opens anything under it.
 #[must_use]
 pub fn is_run_id(name: &str) -> bool {
-    name.len() == 15
-        && name.as_bytes().get(8) == Some(&b'-')
-        && name
+    let (clock, issue) = match name.get(15..) {
+        Some("") | None => (name, None),
+        Some(rest) => (name.get(..15).unwrap_or_default(), rest.strip_prefix('-')),
+    };
+    let clock_ok = clock.len() == 15
+        && clock.as_bytes().get(8) == Some(&b'-')
+        && clock
             .chars()
             .enumerate()
-            .all(|(i, c)| i == 8 || c.is_ascii_digit())
+            .all(|(i, c)| i == 8 || c.is_ascii_digit());
+    let issue_ok = issue.is_none_or(|digits| {
+        !digits.is_empty() && digits.len() <= 10 && digits.chars().all(|c| c.is_ascii_digit())
+    });
+    clock_ok && issue_ok && !(name.len() > 15 && issue.is_none())
 }
 
 /// The log folder a route's dispatch writes into, or `None` for a route the
@@ -464,8 +473,126 @@ pub fn summarize_costs(rows: &[LedgerRow], keep_last: usize) -> Costs {
     costs
 }
 
+/// The issue a lane's run worked, from its id: `20261008-152126-64` → 64.
+/// `None` for a bare clock — a run in the watch's own process.
+#[must_use]
+pub fn issue_of_run(run_id: &str) -> Option<u64> {
+    if !is_run_id(run_id) {
+        return None;
+    }
+    run_id.get(16..)?.parse().ok()
+}
+
+/// One stage of a run, with the session it opened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StageLog {
+    /// The stage, as the run named it (`code`), or `session <n>` when no
+    /// trace names it.
+    pub stage: String,
+    /// That session's lines of `session.log`, the tail when it is long.
+    pub text: String,
+}
+
+/// A run's `session.log`, cut into one entry per session and each named
+/// after its stage.
+///
+/// Every session opens with a `── turn 1 …` header, in the order they
+/// opened. The names come from the journal's `[stage] session opens` lines,
+/// in that same order; a run older than those lines falls back on
+/// `ledger_stages` — the stages its ledger rows name, oldest first.
+#[must_use]
+pub fn stage_logs(
+    run_log: &str,
+    session_log: &str,
+    ledger_stages: &[String],
+    tail_bytes: usize,
+) -> Vec<StageLog> {
+    let opened: Vec<&str> = run_log
+        .lines()
+        .filter_map(|line| stamped(line).map(|s| s.rest))
+        .filter_map(harness_core::traces::stage_opening)
+        .collect();
+    let mut sessions: Vec<Vec<&str>> = Vec::new();
+    for line in session_log.lines() {
+        if line.starts_with("── turn 1 ") || sessions.is_empty() {
+            sessions.push(Vec::new());
+        }
+        if let Some(current) = sessions.last_mut() {
+            current.push(line);
+        }
+    }
+    sessions
+        .into_iter()
+        .enumerate()
+        .map(|(n, lines)| {
+            let stage = opened
+                .get(n)
+                .map(ToString::to_string)
+                .or_else(|| {
+                    (opened.is_empty())
+                        .then(|| ledger_stages.get(n).cloned())
+                        .flatten()
+                })
+                .unwrap_or_else(|| format!("session {}", n.saturating_add(1)));
+            StageLog {
+                stage,
+                text: tail_of(&lines.join("\n"), tail_bytes),
+            }
+        })
+        .collect()
+}
+
+/// The last `max` bytes of `text`, cut on a line boundary.
+fn tail_of(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut start = text.len().saturating_sub(max);
+    while !text.is_char_boundary(start) {
+        start = start.saturating_add(1);
+    }
+    let cut = text.get(start..).unwrap_or_default();
+    cut.split_once('\n')
+        .map_or(cut, |(_, rest)| rest)
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_lane_run_names_its_issue_and_a_bare_run_none() {
+        assert_eq!(issue_of_run("20261008-152126-64"), Some(64));
+        assert_eq!(issue_of_run("20261008-152126"), None);
+        assert_eq!(issue_of_run("costs.tsv"), None);
+    }
+
+    #[test]
+    fn each_session_is_named_by_the_stage_that_opened_it() {
+        let run_log = "[2026-10-08T15:21:28Z] run 1\n\
+                       [2026-10-08T15:21:29Z] [technical-refinement] session opens\n\
+                       [2026-10-08T15:27:06Z] [code] session opens\n";
+        let session_log = "── turn 1 /tech-analyst ──\nplan\n── turn 1 /code ──\nbuild\n── turn 2 /code ──\nfix\n";
+        let stages = stage_logs(run_log, session_log, &[], 10_000);
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[0].stage, "technical-refinement");
+        assert!(stages[0].text.contains("plan"));
+        assert_eq!(stages[1].stage, "code");
+        assert!(stages[1].text.contains("fix"));
+    }
+
+    #[test]
+    fn an_older_run_falls_back_on_its_ledger_then_on_a_number() {
+        let session_log = "── turn 1 a ──\nx\n── turn 1 b ──\ny\n── turn 1 c ──\nz\n";
+        let stages = stage_logs(
+            "",
+            session_log,
+            &["technical-refinement".to_string(), "code".to_string()],
+            10_000,
+        );
+        let names: Vec<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
+        assert_eq!(names, ["technical-refinement", "code", "session 3"]);
+    }
+
     use super::*;
     use proptest::prelude::*;
 
@@ -504,6 +631,10 @@ mod tests {
         assert!(!is_run_id("flow-20261007-055756.jsonl"));
         assert!(!is_run_id("../20261006-202608"));
         assert!(!is_run_id("2026100-6202608"));
+        assert!(is_run_id("20261006-202608-17"));
+        assert!(!is_run_id("20261006-202608-"));
+        assert!(!is_run_id("20261006-202608x17"));
+        assert!(!is_run_id("20261006-202608-../x"));
     }
 
     #[test]

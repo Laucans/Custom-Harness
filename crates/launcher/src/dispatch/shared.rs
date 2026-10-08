@@ -38,6 +38,43 @@ use crate::adapters::spending::{self, LedgerSpending};
 /// distinct from `dev_loop`'s own, which is named after the repo by default.
 const SHARED_WORKSPACE_ID: &str = "router-readonly";
 
+/// Which checkout a router-dispatched workflow reads the repository from.
+pub struct Checkout<'a> {
+    /// The target repository.
+    pub target_repo_url: &'a str,
+    /// The branch the checkout sits on.
+    pub branch: &'a str,
+    /// A checkout of its own, by id — a lane of a parallel `watch`, so two
+    /// children never run `git` in the same clone at once. `None`: the
+    /// shared read-only checkout.
+    pub workspace: Option<&'a str>,
+}
+
+/// Mounts the checkout `checkout` names: its own when it has an id, the
+/// shared read-only one otherwise.
+///
+/// # Errors
+/// Whatever [`mount_named`] propagates.
+pub async fn mount_checkout(
+    here: &Path,
+    checkout: &Checkout<'_>,
+    run_id: &str,
+    dry_run: bool,
+    log: &Logbook,
+) -> Outcome<Mount> {
+    mount_named(
+        here,
+        checkout.target_repo_url,
+        checkout.branch,
+        checkout.workspace.unwrap_or(SHARED_WORKSPACE_ID),
+        false,
+        run_id,
+        dry_run,
+        log,
+    )
+    .await
+}
+
 /// Mounts, or refreshes, the shared read-only checkout.
 ///
 /// # Errors

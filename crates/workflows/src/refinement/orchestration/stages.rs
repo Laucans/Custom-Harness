@@ -24,7 +24,8 @@ use harness_core::ports::agent::SessionSpec;
 use crate::refinement::action::actions::{AskRefine, RecordWantedSections};
 use crate::refinement::action::publish::Write;
 use crate::refinement::checks::gates::{
-    NothingIsWritten, RouterIsOff, RouterNamedSections, SectionIsWanted, SectionSitsInTheLayout,
+    IssueIsATask, NothingIsWritten, RouterIsOff, RouterNamedSections, SectionIsWanted,
+    SectionSitsInTheLayout,
 };
 use crate::refinement::config::Config;
 use crate::refinement::data::phase::Phase;
@@ -151,10 +152,16 @@ pub fn coherence(ports: &Ports, config: &Config, phase: Phase) -> Stage<Refineme
 }
 
 /// Advice: reads the finished business half, says whether the technical half
-/// wants a human on the issue. Posted as a comment by [`publish`].
+/// wants a human on the issue. Posted as a comment by [`publish`]. Skipped
+/// on a milestone, which has no technical half.
 #[must_use]
 pub fn advice(ports: &Ports, config: &Config, phase: Phase) -> Stage<RefinementState> {
-    paid(ports, config, phase, ADVICE, config.advice.clone())
+    let mut stage = paid(ports, config, phase, ADVICE, config.advice.clone());
+    stage.pre = Some(Gate {
+        name: "advice requires",
+        checks: vec![Box::new(IssueIsATask)],
+    });
+    stage
 }
 
 /// Publishing: a local stage, which costs nothing.

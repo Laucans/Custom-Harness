@@ -106,6 +106,17 @@ pub fn run_id() -> String {
     jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string()
 }
 
+/// A run ID for one issue's run: the timestamp, then the issue.
+///
+/// Lanes of a parallel `watch` start in the same second; on the bare
+/// timestamp their runs would write one log directory between them, and the
+/// view would show one run where several are going. The suffix is also how
+/// the view names the agent after the issue it works.
+#[must_use]
+pub fn run_id_for(issue: u64) -> String {
+    format!("{}-{issue}", run_id())
+}
+
 /// The machine name, or `?`.
 ///
 /// Via the `hostname` binary and the process adapter: it's an external call,

@@ -1,13 +1,17 @@
-//! The lanes of a parallel `watch`: one child process per task, up to
+//! The lanes of a parallel `watch`: one child process per issue, up to
 //! `--parallel` at once, each in its own workspace.
 //!
 //! The harness keeps driving **one session per process** (decision #3,
 //! `?Send` throughout): parallelism is processes, not threads. The watch
 //! spawns `harness --task <n> --use-workspace lane-<k>` for every runnable
-//! task the board offers that no lane is on, reaps the children on each
-//! tick, and frees their lane. What makes two tasks safe to run at once is
-//! the architecture's read side — `split` chains the write side, so at most
-//! one of those is ever runnable.
+//! task the board offers that no lane is on — or `harness split <n>` /
+//! `harness refine <n>` with `--use-workspace router-lane-<k>` for every
+//! milestone ready to split, then every issue waiting on its business
+//! refinement — reaps the children on each tick, and frees their lane. What
+//! makes two tasks safe to run at once is the architecture's read side —
+//! `split` chains the write side, so at most one of those is ever runnable;
+//! two splits cut two different milestones, two refinements write two
+//! different issue bodies, and nothing else is shared.
 //!
 //! A lane's output goes to `.llocal/lanes/lane-<k>.log`; the run itself
 //! writes its own `run.log` under `.llocal/logs/`, which is what the view

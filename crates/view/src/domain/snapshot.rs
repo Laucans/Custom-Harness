@@ -125,6 +125,26 @@ pub struct LineView {
     pub last_run: Option<LastRun>,
     /// Someone is on it right now.
     pub active: bool,
+    /// Its last runs, newest first — who worked here, and on what.
+    pub recent_work: Vec<RecentRun>,
+}
+
+/// One past or present run of a line, as its "recent work" lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecentRun {
+    /// `20261008-152126-64`.
+    pub run_id: String,
+    /// `#64 · Dev loop`, the same name its employee carries.
+    pub name: String,
+    /// The issue it worked, when known.
+    pub issue: Option<u64>,
+    /// The stages its ledger rows name, oldest first — the machines it went
+    /// through and finished.
+    pub stages: Vec<String>,
+    /// What it consumed, its finished stages summed.
+    pub tokens: Option<Tokens>,
+    /// Still at work.
+    pub active: bool,
 }
 
 /// A running process, drawn as a person.
@@ -132,7 +152,7 @@ pub struct LineView {
 pub struct Employee {
     /// `agent-loop/20261006-202608`.
     pub id: String,
-    /// `Dev loop · #62`.
+    /// `#62 · Dev loop` — the issue first.
     pub name: String,
     /// The line they stand on.
     pub workflow: String,
@@ -158,6 +178,26 @@ pub struct Employee {
     pub last_line: String,
     /// Still believed to be working.
     pub active: bool,
+    /// What the run has consumed so far — its finished stages, as the cost
+    /// ledger records them. `None` until its first stage ends.
+    pub tokens: Option<Tokens>,
+}
+
+/// The tokens a run consumed, summed over the ledger rows it wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Tokens {
+    /// Input tokens, cache excluded.
+    pub input: u64,
+    /// Output tokens.
+    pub output: u64,
+    /// Tokens read from cache.
+    pub cache_read: u64,
+    /// Tokens written to cache.
+    pub cache_write: u64,
+    /// All four together.
+    pub total: u64,
+    /// How many finished stages the sum covers.
+    pub stages: u32,
 }
 
 /// Where an issue stands, from its labels.

@@ -80,6 +80,11 @@ pub trait Traces: Send + Sync {
     /// Seconds since the newest file of this run was written.
     fn age_secs(&self, workflow: &str, run: &str) -> Option<u64>;
 
+    /// Whether this run's process is still alive, from the OS lock it holds
+    /// on its `alive.lock`. `None` when the run has no such file — one
+    /// older than it — and only the age of its files can say.
+    fn alive(&self, workflow: &str, run: &str) -> Option<bool>;
+
     /// The last `max_bytes` of the watch journal.
     fn watch_log(&self, max_bytes: u64) -> Option<String>;
 

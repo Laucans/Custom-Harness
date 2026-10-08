@@ -133,6 +133,19 @@ TASKS OF THIS MILESTONE (what each neighbour covers)
 {siblings}
 --- END HIERARCHY ---";
 
+const MILESTONE_HIERARCHY: &str = "--- HIERARCHY (injected by {injector}) ---
+Where issue #{num} sits, for context only. Issue #{num} is a **milestone**:
+one step of the roadmap, the batch of tasks `/split` will cut from this very
+body once it is refined. Write it at that altitude — the outcome of the whole
+batch, criteria checkable once every one of its tasks is merged, rules every
+one of those tasks must respect. Do not cut it into tasks, and do not
+specify, plan or rewrite the roadmap or the other milestones: they are here
+so you understand what each neighbour owns.
+{roadmap_block}
+MILESTONES OF THIS ROADMAP (what each neighbour covers)
+{siblings}
+--- END HIERARCHY ---";
+
 /// An issue as a session must see it: its number, its title, its body.
 ///
 /// Serializable because it enters the resume point: it is the scope that an
@@ -266,7 +279,11 @@ pub fn preamble(branch: &str, injector: &str) -> String {
 }
 
 fn roadmap_block(scope: &Scope) -> String {
-    scope.roadmap.as_ref().map_or_else(String::new, |roadmap| {
+    roadmap_section(scope.roadmap.as_ref())
+}
+
+fn roadmap_section(roadmap: Option<&Named>) -> String {
+    roadmap.map_or_else(String::new, |roadmap| {
         format!(
             "\nROADMAP #{} — {}\n{}\n",
             roadmap.number,
@@ -301,14 +318,19 @@ fn indented(text: &str) -> String {
 }
 
 fn siblings_list(scope: &Scope) -> String {
-    if scope.siblings.is_empty() {
+    neighbours(&scope.siblings, &scope.task.number)
+}
+
+/// The neighbours of issue `current`, one line each with their gist under it.
+fn neighbours(siblings: &[Sibling], current: &str) -> String {
+    if siblings.is_empty() {
         return "(none listed)".to_string();
     }
     let mut lines: Vec<String> = Vec::new();
     let mut spent = 0usize;
     let mut trimmed = false;
-    for task in &scope.siblings {
-        let here = if task.number == scope.task.number {
+    for task in siblings {
+        let here = if task.number == current {
             " <- CURRENT"
         } else {
             ""
@@ -319,7 +341,7 @@ fn siblings_list(scope: &Scope) -> String {
         ));
         // The current issue's own body is injected whole, further down: its
         // gist here would be the same text twice.
-        if task.number == scope.task.number {
+        if task.number == current {
             continue;
         }
         let gist = task.gist.trim();
@@ -393,6 +415,27 @@ pub fn hierarchy_block(scope: &Scope, injector: &str) -> String {
             ("milestone_title", &scope.milestone.title),
             ("milestone_body", &non_empty(&scope.milestone.body)),
             ("num", &scope.task.number),
+        ],
+    )
+}
+
+/// The hierarchy above a milestone: its roadmap item and the other
+/// milestones of that item, for a prompt that carries the milestone's body
+/// itself (the refinement).
+#[must_use]
+pub fn milestone_hierarchy_block(
+    roadmap: Option<&Named>,
+    milestones: &[Sibling],
+    current: &str,
+    injector: &str,
+) -> String {
+    splice(
+        MILESTONE_HIERARCHY,
+        &[
+            ("injector", injector),
+            ("roadmap_block", &roadmap_section(roadmap)),
+            ("siblings", &neighbours(milestones, current)),
+            ("num", current),
         ],
     )
 }
@@ -668,6 +711,19 @@ mod tests {
         assert!(said.contains("- #34 — The grid [open] <- CURRENT"));
         assert!(!said.contains("the SPEC"));
         assert!(said.contains("Your work is issue #34 alone"));
+    }
+
+    #[test]
+    fn a_milestone_is_placed_under_its_roadmap_among_the_other_milestones() {
+        let scope = scope();
+        let said =
+            milestone_hierarchy_block(scope.roadmap.as_ref(), &scope.siblings, "34", INJECTOR);
+        assert!(said.contains("ROADMAP #5"));
+        assert!(said.contains("is a **milestone**"));
+        assert!(said.contains("- #34 — The grid [open] <- CURRENT"));
+        assert!(said.contains("covers the fence, not the gate"));
+        // Its own body is the prompt's, never repeated here.
+        assert!(!said.contains("the SPEC"));
     }
 
     #[test]

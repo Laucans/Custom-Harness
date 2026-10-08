@@ -37,7 +37,7 @@ pub async fn run(
     permission_mode: &str,
     dry_run: bool,
 ) -> Outcome<Verdict> {
-    let run_id = spending::run_id();
+    let run_id = spending::run_id_for(roadmap);
     let sink = Rc::new(
         Both::new(
             &Workspace::new(here)

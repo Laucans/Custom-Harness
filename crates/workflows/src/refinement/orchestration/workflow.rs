@@ -1,8 +1,9 @@
 //! The whole round: what refinement establishes before paying, and the lock
 //! it holds.
 //!
-//! The four refusals are in `precheck`, before any session: a closed issue, an
-//! issue that is not a task, an unlabelled issue, and a comment read that
+//! The refusals are in `precheck`, before any session: a closed issue, an
+//! issue that is neither a task nor a milestone, a milestone asked for its
+//! technical half, an unlabelled issue, and a comment read that
 //! doesn't come back — that one especially, because an empty list would send
 //! the counter back to 1 and rewrite the whole body.
 //!
@@ -70,13 +71,24 @@ impl Workflow<RefinementState> for RefinementRun {
                 self.issue
             )));
         }
-        if !(issue.has(labels::AGENT) || issue.has(labels::HUMAN)) {
+        let milestone = issue.has(labels::MILESTONE);
+        if !(milestone || issue.has(labels::AGENT) || issue.has(labels::HUMAN)) {
             return Err(Halt::Halted(format!(
-                "#{} carries neither {} nor {} — refinement works a task: add \
-                 one of the two to it, or refine another issue",
+                "#{} carries none of {}, {} or {} — refinement works a task or \
+                 a milestone: add one to it, or refine another issue",
                 self.issue,
                 labels::AGENT,
-                labels::HUMAN
+                labels::HUMAN,
+                labels::MILESTONE
+            )));
+        }
+        // A milestone has no code of its own to design: its technical half is
+        // written task by task, once `split` has cut it.
+        if milestone && self.phase == Phase::Technical {
+            return Err(Halt::Halted(format!(
+                "#{} is a milestone — the technical refinement works a task: \
+                 refine one of its tasks instead",
+                self.issue
             )));
         }
         let asked = self.phase.requested_by();
@@ -117,10 +129,24 @@ impl Workflow<RefinementState> for RefinementRun {
             self.issue
         ));
 
-        ctx.state.hierarchy = hierarchy::around(self.gh.as_ref(), &issue)
-            .await?
-            .map(|scope| prompts::hierarchy_block(&scope, prompts::INJECTOR))
-            .unwrap_or_default();
+        ctx.state.hierarchy = if milestone {
+            hierarchy::above(self.gh.as_ref(), issue.number)
+                .await?
+                .map(|found| {
+                    prompts::milestone_hierarchy_block(
+                        Some(&found.roadmap),
+                        &found.milestones,
+                        &issue.number.to_string(),
+                        prompts::INJECTOR,
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            hierarchy::around(self.gh.as_ref(), &issue)
+                .await?
+                .map(|scope| prompts::hierarchy_block(&scope, prompts::INJECTOR))
+                .unwrap_or_default()
+        };
         ctx.state.issue = Some(issue);
         ctx.state.phase = self.phase;
         ctx.state.round_no = round_no;
@@ -269,7 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_issue_that_is_not_a_task_is_refused() {
+    async fn an_issue_that_is_neither_a_task_nor_a_milestone_is_refused() {
         let gh = Rc::new(FakeGitHub {
             issues: vec![issue(25, "open", &[labels::REFINEMENT], "")],
             ..FakeGitHub::default()
@@ -277,7 +303,53 @@ mod tests {
         let round = built(&gh, false, "", dir("not-a-task"));
         let mut context = ctx(true);
         let err = round.execute(&mut context).await.expect_err("must stop");
-        assert!(err.reason().contains("neither"));
+        assert!(err.reason().contains("none of"));
+    }
+
+    #[tokio::test]
+    async fn a_milestone_is_refined_under_its_roadmap() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![
+                issue(2, "open", &[labels::ROADMAP], ""),
+                issue(25, "open", &[labels::MILESTONE, labels::REFINEMENT], ""),
+            ],
+            subs: vec![(
+                2,
+                vec![issue(
+                    25,
+                    "open",
+                    &[labels::MILESTONE, labels::REFINEMENT],
+                    "",
+                )],
+            )],
+            ..FakeGitHub::default()
+        });
+        let round = built(&gh, false, "", dir("milestone"));
+        let mut context = ctx(true);
+        round.execute(&mut context).await.expect("a success");
+        assert!(context.state.hierarchy.contains("ROADMAP #2"));
+        assert!(context.state.hierarchy.contains("is a **milestone**"));
+    }
+
+    #[tokio::test]
+    async fn a_milestone_has_no_technical_refinement() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(
+                25,
+                "open",
+                &[
+                    labels::MILESTONE,
+                    labels::TECH_REFINEMENT,
+                    labels::SPEC_WRITTEN,
+                ],
+                "",
+            )],
+            ..FakeGitHub::default()
+        });
+        let round = built_for(Phase::Technical, &gh, false, "", dir("milestone-tech"));
+        let mut context = ctx(true);
+        let err = round.execute(&mut context).await.expect_err("must stop");
+        assert!(err.reason().contains("is a milestone"));
     }
 
     #[tokio::test]

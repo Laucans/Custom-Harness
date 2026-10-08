@@ -28,7 +28,7 @@ use clap::Parser as _;
 use harness_core::adapters::shell::github::GhCli;
 use harness_core::domain::doctor::Repair;
 use harness_core::domain::workspace::Workspace;
-use harness_core::domain::{Halt, Outcome, Pr, Slug, Verdict};
+use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug, Verdict};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Route, Snapshot};
@@ -153,7 +153,8 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
         Some(lowest) => !gh.sub_issues(lowest.number).await?.is_empty(),
         None => false,
     };
-    let milestones = gh.issues_labelled(labels::MILESTONE, "open").await?;
+    let milestones =
+        with_split_blockers(gh, gh.issues_labelled(labels::MILESTONE, "open").await?).await?;
     let pr_to_fix = lowest_red_pr(gh).await?;
     let pr_to_review = lowest_pr_worth_reviewing(gh).await?;
     let ready_to_merge = lowest_ready_to_merge(gh, &milestones).await?;
@@ -312,13 +313,17 @@ async fn dispatched(
             .await,
             log,
         ),
+        Route::Split { .. } | Route::Refinement { .. } if args.parallel > 1 => {
+            run_router_lanes(args, here, gh, lanes, log)
+                .await
+                .map(|halt| ("router_lanes", halt))
+        }
         Route::Split { milestone } => report_failure(
             "split",
             crate::dispatch::split::run(
                 milestone,
                 here,
-                &args.target_repo_url,
-                &args.branch,
+                &shared_checkout(args),
                 &args.permission_mode,
                 args.dry_run,
             )
@@ -360,22 +365,22 @@ async fn dispatched(
                 Phase::Business,
                 issue,
                 here,
-                &args.target_repo_url,
-                &args.branch,
+                &shared_checkout(args),
                 &args.permission_mode,
                 args.dry_run,
             )
             .await,
             log,
         ),
+        // Sequential on purpose, even under `--parallel`: the technical half
+        // reads code a task may be changing, so it is not spread over lanes.
         Route::TechRefinement { issue } => report_failure(
             "tech_refinement",
             crate::dispatch::refinement::run(
                 Phase::Technical,
                 issue,
                 here,
-                &args.target_repo_url,
-                &args.branch,
+                &shared_checkout(args),
                 &args.permission_mode,
                 args.dry_run,
             )
@@ -383,6 +388,130 @@ async fn dispatched(
             log,
         ),
     }
+}
+
+/// The shared read-only checkout a refinement run in this process reads.
+fn shared_checkout(args: &WatchArgs) -> crate::dispatch::shared::Checkout<'_> {
+    crate::dispatch::shared::Checkout {
+        target_repo_url: &args.target_repo_url,
+        branch: &args.branch,
+        workspace: None,
+    }
+}
+
+/// The milestones, with the blockers of every split candidate read — what
+/// [`routing::splittable`] needs. Only the candidates: the others are not
+/// split whatever blocks them, and each read is one `gh api` call per tick.
+async fn with_split_blockers(gh: &dyn GitHub, milestones: Vec<Issue>) -> Outcome<Vec<Issue>> {
+    let (candidates, others): (Vec<Issue>, Vec<Issue>) =
+        milestones.into_iter().partition(routing::split_candidate);
+    let mut all = gh.with_blockers(candidates).await?;
+    all.extend(others);
+    Ok(all)
+}
+
+/// Fills the free lanes with the router's own work, splits first: every
+/// milestone ready to split, then every issue waiting on its **business**
+/// refinement, that no lane is on — each a `harness split <n>` or `harness
+/// refine <n>` child in a checkout of its own (`router-lane-<k>`), up to
+/// `--parallel` at once. Two splits cut two different milestones, two
+/// refinements write two different bodies, and a milestone is never split
+/// while its refinement is pending: nothing here waits on anything else.
+async fn run_router_lanes(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    lanes: &mut Lanes,
+    log: &Logbook,
+) -> Option<Halt> {
+    let listed = async {
+        let milestones =
+            with_split_blockers(gh, gh.issues_labelled(labels::MILESTONE, "open").await?).await?;
+        let refining = gh.issues_labelled(labels::REFINEMENT, "open").await?;
+        Ok::<_, Halt>((milestones, refining))
+    };
+    let (milestones, refining) = match listed.await {
+        Ok(found) => found,
+        Err(halt) => {
+            log.warn(&format!(
+                "watch: router lanes -> cannot list the work: {}",
+                halt.reason()
+            ));
+            return Some(halt);
+        }
+    };
+    let running = lanes.running();
+    let mut splits: Vec<u64> = milestones
+        .iter()
+        .filter(|issue| routing::splittable(issue))
+        .map(|issue| issue.number)
+        .filter(|number| !running.contains(number))
+        .collect();
+    splits.sort_unstable();
+    let mut refines: Vec<u64> = refining
+        .iter()
+        .filter(|issue| issue.is_open())
+        .map(|issue| issue.number)
+        .filter(|number| !running.contains(number))
+        .collect();
+    refines.sort_unstable();
+    let work = splits
+        .into_iter()
+        .map(|number| ("split", number))
+        .chain(refines.into_iter().map(|number| ("refine", number)));
+    let mut started = 0usize;
+    for (what, number) in work {
+        let Some(slot) = lanes.free_slot() else {
+            log.say("watch: router lanes -> every lane is busy");
+            break;
+        };
+        let Some(command) = router_lane_command(args, here, what, number, slot) else {
+            log.warn("watch: router lanes -> cannot find this executable");
+            return None;
+        };
+        match lanes.spawn(slot, number, command, here) {
+            Ok(pid) => {
+                started += 1;
+                log.say(&format!(
+                    "watch: router lanes -> lane {slot} {what}s #{number} (pid {pid})"
+                ));
+            }
+            Err(e) => log.warn(&format!(
+                "watch: router lanes -> cannot start {what} #{number}: {e}"
+            )),
+        }
+    }
+    if started == 0 && lanes.free_slot().is_some() {
+        log.say("watch: router lanes -> every split and refinement is already on a lane");
+    }
+    None
+}
+
+/// `harness <what> <number>` on lane `slot`, in its own checkout.
+fn router_lane_command(
+    args: &WatchArgs,
+    here: &Path,
+    what: &str,
+    number: u64,
+    slot: usize,
+) -> Option<tokio::process::Command> {
+    let mut command = tokio::process::Command::new(std::env::current_exe().ok()?);
+    command
+        .current_dir(here)
+        .arg(what)
+        .arg(number.to_string())
+        .arg("--use-workspace")
+        .arg(format!("router-lane-{slot}"))
+        .arg("--target-repo-url")
+        .arg(&args.target_repo_url)
+        .arg("--branch")
+        .arg(&args.branch)
+        .arg("--permission-mode")
+        .arg(&args.permission_mode);
+    if args.dry_run {
+        command.arg("--dry-run");
+    }
+    Some(command)
 }
 
 /// Merges one milestone, and says so. Its own function only because the
@@ -482,6 +611,7 @@ async fn run_lanes(
             .arg(&branch)
             .arg("--use-workspace")
             .arg(format!("lane-{slot}"))
+            .arg("--lane")
             .arg("--quiet");
         if args.force_reset {
             command.arg("--force-reset");

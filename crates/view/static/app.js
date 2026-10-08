@@ -26,6 +26,11 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const usd = (v) => '$' + Number(v || 0).toFixed(2);
   const kfmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : String(n || 0));
+  // A run's consumed tokens: the total, then where they went. Its ledger
+  // rows land as each stage ends, so a run still in its first stage has none.
+  const fmtTokens = (t) => (t
+    ? `<b>${kfmt(t.total)}</b> · in ${kfmt(t.input)} · out ${kfmt(t.output)} · cache ${kfmt(t.cache_read)} read / ${kfmt(t.cache_write)} written · ${t.stages} stage${t.stages > 1 ? 's' : ''} done`
+    : '— (first stage still running)');
   const hhmm = (iso) => (iso ? iso.slice(11, 19) + 'Z' : '—');
   function fmtAge(secs) {
     if (secs == null) return '—';
@@ -104,6 +109,7 @@
   }
   function onSnapshot() {
     status();
+    crewBar();
     crumbs();
     pushPicture();
     // An issue is fetched once; the steward's terminal is a live connection.
@@ -117,6 +123,31 @@
       try { openPane(JSON.parse(wanted)); } catch (e) { /* not a pane */ }
     }
   }
+  // The agents at work, as faces down the left edge of the plant: a glance
+  // says who is on what, a click opens their pane.
+  const FACES = ['🧑‍🔧', '👷', '🧑‍💻', '🧑‍🔬', '🧑‍🚀', '🧑‍🏭'];
+  function faceOf(id) {
+    let h = 0;
+    for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    return FACES[h % FACES.length];
+  }
+  function crewBar() {
+    const bar = $('crew-bar');
+    if (!bar) return;
+    const at = S.snap.employees.filter((e) => e.active);
+    bar.hidden = !at.length;
+    bar.innerHTML = at.map((e) => {
+      const open = esc(JSON.stringify({ kind: 'employee', id: e.id }));
+      const ring = e.model ? ` ${esc(e.model)}` : '';
+      const tip = esc(`${e.name}${e.stage ? ' — ' + e.stage : ''}`);
+      return `<button class="crew-bubble" data-crew='${open}' title="${tip}"><span class="face${ring}">${faceOf(e.id)}</span><span class="who"><b>${esc(e.name)}</b><small>${esc(e.stage || 'starting')}</small></span></button>`;
+    }).join('');
+  }
+  $('crew-bar').addEventListener('click', (ev) => {
+    const bubble = ev.target.closest('[data-crew]');
+    if (bubble) openPane(JSON.parse(bubble.dataset.crew));
+  });
+
   function status() {
     const f = S.snap.factory;
     $('watch-dot').className = 'dot ' + (f.watching ? 'on' : 'off');
@@ -210,7 +241,11 @@
     const issue = e.target.closest('[data-issue]');
     if (issue) return openPane({ kind: 'issue', number: Number(issue.dataset.issue) });
     const tab = e.target.closest('[data-file]');
-    if (tab && S.pane && S.pane.kind === 'employee') { S.pane.file = tab.dataset.file; renderPane(S.pane, false); }
+    if (tab && S.pane && S.pane.kind === 'employee') { S.pane.file = tab.dataset.file; renderPane(S.pane, false); return undefined; }
+    const machine = e.target.closest('[data-stage-idx]');
+    if (machine && S.pane && S.pane.kind === 'employee') { S.pane.file = null; S.pane.stageIdx = Number(machine.dataset.stageIdx); renderPane(S.pane, false); return undefined; }
+    const paneTab = e.target.closest('[data-tab]');
+    if (paneTab && S.pane) { S.pane.tab = paneTab.dataset.tab; renderPane(S.pane, false); return undefined; }
     const pane = e.target.closest('[data-pane]');
     if (pane) return openPane(JSON.parse(pane.dataset.pane));
     return undefined;
@@ -301,6 +336,19 @@
 
   const kv = (pairs) => '<dl class="kv">' + pairs.filter(([, v]) => v != null && v !== '').map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('') + '</dl>';
   const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
+  // A pane's two tabs: what the element is, and who recently worked on it.
+  const paneTabs = (p) => '<div class="tabs">' + [['details', 'Details'], ['recent', 'Recent work']].map(([k, label]) => `<button data-tab="${k}" class="${(p.tab || 'details') === k ? 'on' : ''}">${label}</button>`).join('') + '</div>';
+  // The runs of a line, newest first, each a link to its agent — opened on
+  // `stage` when the list comes from a machine.
+  function recentWork(line, runs, stage) {
+    if (!runs.length) return '<div class="muted">nobody has worked here yet</div>';
+    return '<ul class="issues">' + runs.map((r) => {
+      const last = { id: `${line.id}/${r.run_id}`, name: r.name, workflow: line.id, run_id: r.run_id, tokens: r.tokens, active: r.active };
+      const open = { kind: 'employee', id: last.id, last, stage: stage || null };
+      const when = r.run_id.slice(9, 11) + ':' + r.run_id.slice(11, 13) + ' · ' + r.run_id.slice(4, 6) + '/' + r.run_id.slice(6, 8);
+      return `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify(open))}'>${esc(r.name)}</button></span><span class="muted">${esc(when)} · ${esc(r.stages.join(' → ') || 'no stage finished')}${r.tokens ? ' · ' + kfmt(r.tokens.total) + ' tok' : ''}</span>${r.active ? tag('at work', 'ok') : ''}</li>`;
+    }).join('') + '</ul>';
+  }
   const ext = (url, text = 'GitHub ↗') => (url ? `<a class="ext" href="${esc(url)}" target="_blank" rel="noopener">${esc(text)}</a>` : '');
   function issueList(items) {
     if (!items.length) return '<div class="muted">nothing</div>';
@@ -344,35 +392,54 @@
       const e = S.snap.employees.find((x) => x.id === p.id) || p.last;
       if (!e) return ['Employee', '<div class="callout">This employee has clocked out — the run is over.</div>'];
       p.last = e;
-      p.file = p.file || 'session.log';
       const head = kv([
         ['line', esc(e.workflow)], ['run', esc(e.run_id)],
+        ['tokens', fmtTokens(e.tokens)],
         ['stage', `${esc(e.stage || '—')} ${e.model ? tag(e.model, e.model) : ''}`],
         ['task', esc(e.task || '—')], ['milestone', esc(e.milestone || '—')], ['round', esc(e.round || '—')],
-        ['since', `${hhmm(e.since)} · last write ${fmtAge(e.age_secs)} ago`],
+        ['since', e.since ? `${hhmm(e.since)} · last write ${fmtAge(e.age_secs)} ago` : null],
         ['status', e.active ? tag('at work', 'ok') : tag('clocked out', '')],
       ]);
-      const tabs = '<div class="tabs">' + ['session.log', 'run.log', 'prompts.md'].map((f) => `<button data-file="${f}" class="${f === p.file ? 'on' : ''}">${f}</button>`).join('') + '</div>';
-      const html = `<div id="emp-head">${head}</div>${tabs}<pre class="log" id="live-log">loading…</pre>`;
+      // The logs are read machine by machine: one button per stage the run
+      // went through (its session in session.log), then the run's own files.
+      const html = `<div id="emp-head">${head}</div><h3>Machines it went through</h3><div class="tabs" id="emp-machines"><span class="muted">loading…</span></div><pre class="log" id="live-log">loading…</pre>`;
       const after = (isRefresh) => {
         if (isRefresh) { const h = $('emp-head'); if (h) h.innerHTML = head; return; }
         const pull = async () => {
           try {
-            const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/${p.file}?bytes=14000`);
+            const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/stages`);
+            const stages = r.ok ? await r.json() : [];
             const pre = $('live-log');
-            if (!pre) return;
-            // A run that stopped at its gates never opened a session, so it
-            // has no session.log: show its run.log instead of a 404.
-            if (r.status === 404 && p.file === 'session.log' && !p.fellBack) {
-              p.fellBack = true; p.file = 'run.log';
-              renderPane(p, false);
-              return;
+            const bar = $('emp-machines');
+            if (!pre || !bar) return;
+            // A run that stopped at its gates opened no session: its run.log
+            // is all there is.
+            if (!stages.length && !p.file) p.file = 'run.log';
+            if (!p.file && (p.stageIdx == null || p.stageIdx >= stages.length)) {
+              const wanted = p.stage ? stages.map((x) => x.stage).lastIndexOf(p.stage) : -1;
+              p.stageIdx = wanted >= 0 ? wanted : stages.length - 1;
+            }
+            const seen = {};
+            const labels = stages.map((x) => { seen[x.stage] = (seen[x.stage] || 0) + 1; return seen[x.stage] > 1 ? `${x.stage} (${seen[x.stage]})` : x.stage; });
+            bar.innerHTML = (stages.length ? '' : '<span class="muted">no machine reached — this run stopped before it opened a session; its run.log says why</span> ')
+              + labels.map((label, i) => `<button data-stage-idx="${i}" class="${!p.file && i === p.stageIdx ? 'on' : ''}">${esc(label)}</button>`).join('')
+              + ['run.log', 'prompts.md'].map((f) => `<button data-file="${f}" class="muted ${f === p.file ? 'on' : ''}">${f}</button>`).join('');
+            let text;
+            if (p.file) {
+              const f = await fetch(`/api/runs/${e.workflow}/${e.run_id}/${p.file}?bytes=14000`);
+              text = f.ok ? (await f.text()) || '(empty)' : `(${f.status}) ${await f.text()}`;
+            } else {
+              text = (stages[p.stageIdx] && stages[p.stageIdx].text) || '(empty)';
             }
             const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
-            pre.textContent = r.ok ? (await r.text()) || '(empty)' : `(${r.status}) ${await r.text()}`;
-            if (atBottom) pre.scrollTop = pre.scrollHeight;
+            if (pre.textContent !== text) {
+              pre.textContent = text;
+              if (atBottom || p.jump) pre.scrollTop = pre.scrollHeight;
+            }
+            p.jump = false;
           } catch (err) { /* the next pull will say */ }
         };
+        p.jump = true;
         pull();
         clearInterval(S.logTimer);
         S.logTimer = setInterval(pull, 2000);
@@ -391,6 +458,11 @@
       const line = S.snap.lines.find((l) => l.id === p.line);
       const st = line && line.stations.find((s) => s.id === p.id);
       if (!st) return ['Station', '<div class="callout">Unknown station.</div>'];
+      if (p.tab === 'recent') {
+        // A machine's work: the runs that finished its stage, or stand at it.
+        const here = (line.recent_work || []).filter((r) => (st.stage && r.stages.includes(st.stage)) || S.snap.employees.some((e) => e.workflow === line.id && e.run_id === r.run_id && e.station === st.id) || !st.stage);
+        return [st.label, paneTabs(p) + recentWork(line, here, st.stage)];
+      }
       const bucket = st.stage ? S.snap.costs.by_stage.find((b) => b.key === st.stage) : null;
       const rows = st.stage ? S.snap.costs.last.filter((r) => r.stage === st.stage) : [];
       let h = kv([
@@ -404,12 +476,13 @@
         h += '<h3>Last sessions on it</h3><table class="rows"><tr><th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th></tr>' + rows.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
-      return [st.label, h];
+      return [st.label, paneTabs(p) + h];
     },
 
     line(p) {
       const line = S.snap.lines.find((l) => l.id === p.id);
       if (!line) return ['Line', ''];
+      if (p.tab === 'recent') return [line.title, paneTabs(p) + recentWork(line, line.recent_work || [], null)];
       const lr = line.last_run;
       let h = kv([['trigger', esc(line.trigger)], ['log folder', `<code>.llocal/logs/${esc(line.id)}/</code>`], ['runs', line.runs], ['status', line.active ? tag('at work', 'ok') : tag('idle')]]);
       if (lr) {
@@ -418,7 +491,7 @@
         h += `<button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: `${line.id}/${lr.run_id}`, last: emp || null }))}'>open its logs →</button>`;
       }
       h += '<h3>Stations</h3><ul class="issues">' + line.stations.map((s) => `<li><span class="n">${esc(s.kind)}</span><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'station', line: line.id, id: s.id }))}'>${esc(s.label)}</button></span>${s.model ? tag(s.model, s.model) : ''}<span class="st ${s.state === 'done' ? 'done' : s.state === 'active' ? 'ready' : 'todo'}">${s.state}</span></li>`).join('') + '</ul>';
-      return [line.title, h];
+      return [line.title, paneTabs(p) + h];
     },
 
     chimney(p) {

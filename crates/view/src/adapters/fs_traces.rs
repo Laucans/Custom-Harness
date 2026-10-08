@@ -109,6 +109,21 @@ impl Traces for FsTraces {
         head_of(&self.run_dir(workflow, run).join(file), max_bytes)
     }
 
+    fn alive(&self, workflow: &str, run: &str) -> Option<bool> {
+        let lock = fs::File::open(
+            self.run_dir(workflow, run)
+                .join(harness_core::traces::RUN_ALIVE),
+        )
+        .ok()?;
+        // A shared lock taken and dropped at once: it only succeeds when no
+        // live process holds the run's exclusive one.
+        match lock.try_lock_shared() {
+            Ok(()) => Some(false),
+            Err(fs::TryLockError::WouldBlock) => Some(true),
+            Err(fs::TryLockError::Error(_)) => None,
+        }
+    }
+
     fn age_secs(&self, workflow: &str, run: &str) -> Option<u64> {
         let entries = fs::read_dir(self.run_dir(workflow, run)).ok()?;
         let newest = entries

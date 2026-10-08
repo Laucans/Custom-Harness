@@ -47,6 +47,65 @@ pub enum Command {
     /// The same code `watch` runs on its next tick after a failure. By hand,
     /// it answers "why is the loop not moving" and unblocks it.
     Doctor(DoctorArgs),
+    /// Run one round of the **business** refinement on one issue.
+    ///
+    /// What a parallel `watch` gives each of its refinement lanes; by hand,
+    /// it refines one task or milestone without the router.
+    Refine(RefineArgs),
+    /// Split one milestone into its tasks.
+    ///
+    /// What a parallel `watch` gives each of its split lanes; by hand, it
+    /// splits one `harness:ready` milestone without the router.
+    Split(SplitArgs),
+}
+
+/// `harness refine`'s own arguments.
+#[derive(Debug, Args)]
+pub struct RefineArgs {
+    /// The issue to refine: a task or a milestone carrying
+    /// `harness:refinement`.
+    pub issue: u64,
+
+    /// Where it reads the repository from.
+    #[command(flatten)]
+    pub lane: LaneArgs,
+}
+
+/// `harness split`'s own arguments.
+#[derive(Debug, Args)]
+pub struct SplitArgs {
+    /// The milestone to split into tasks.
+    pub milestone: u64,
+
+    /// Where it reads the repository from.
+    #[command(flatten)]
+    pub lane: LaneArgs,
+}
+
+/// What a workflow a parallel `watch` gives a lane needs to know: which
+/// checkout, which repository, how to run `claude -p`.
+#[derive(Debug, Args)]
+pub struct LaneArgs {
+    /// The checkout to read the repository from, by id. Empty: the shared
+    /// read-only checkout the router uses.
+    #[arg(long, default_value = "")]
+    pub use_workspace: String,
+
+    /// The target repository. Empty: this checkout's own `origin`.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
+
+    /// The branch the checkout sits on.
+    #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
+    pub branch: String,
+
+    /// Passed to `claude -p`.
+    #[arg(long, env = "PERMISSION_MODE", default_value = "bypassPermissions")]
+    pub permission_mode: String,
+
+    /// Write the prompts, run nothing paid, change no issue.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// `harness doctor`'s own arguments.
@@ -287,6 +346,12 @@ pub struct RunArgs {
     #[arg(long, default_value = "")]
     pub use_workspace: String,
 
+    /// This run is a lane of a parallel `watch`: the harness named its
+    /// workspace, so a missing one is cloned rather than refused. Passed by
+    /// the watch only — a name a human types stays strict.
+    #[arg(long, hide = true)]
+    pub lane: bool,
+
     /// The directory that contains workspaces.
     #[arg(long, env = "AGENTIC_WORKSPACES_DIR", default_value = "")]
     pub workspaces_dir: String,
@@ -510,6 +575,38 @@ mod tests {
         };
         assert_eq!(args.url, "https://github.com/o/r");
         assert!(!args.dry_run);
+    }
+
+    #[test]
+    #[serial]
+    fn refine_parses_an_issue_and_its_own_checkout() {
+        let cli = Cli::try_parse_from([
+            "harness",
+            "refine",
+            "14",
+            "--use-workspace",
+            "refine-lane-1",
+        ])
+        .expect("must parse");
+        let Some(Command::Refine(args)) = cli.command else {
+            panic!("expected Command::Refine");
+        };
+        assert_eq!(args.issue, 14);
+        assert_eq!(args.lane.use_workspace, "refine-lane-1");
+        assert!(!args.lane.dry_run);
+    }
+
+    #[test]
+    #[serial]
+    fn split_parses_a_milestone_and_its_own_checkout() {
+        let cli =
+            Cli::try_parse_from(["harness", "split", "18", "--use-workspace", "router-lane-0"])
+                .expect("must parse");
+        let Some(Command::Split(args)) = cli.command else {
+            panic!("expected Command::Split");
+        };
+        assert_eq!(args.milestone, 18);
+        assert_eq!(args.lane.use_workspace, "router-lane-0");
     }
 
     #[test]

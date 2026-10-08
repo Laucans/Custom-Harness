@@ -39,7 +39,7 @@ fn spec() -> SessionSpec {
     }
 }
 
-/// Refines one issue's body: mounts the shared checkout, runs the workflow,
+/// Refines one issue's body: mounts the checkout, runs the workflow,
 /// unmounts.
 ///
 /// # Errors
@@ -49,12 +49,11 @@ pub async fn run(
     phase: Phase,
     issue: u64,
     here: &Path,
-    target_repo_url: &str,
-    branch: &str,
+    checkout: &shared::Checkout<'_>,
     permission_mode: &str,
     dry_run: bool,
 ) -> Outcome<Verdict> {
-    let run_id = spending::run_id();
+    let run_id = spending::run_id_for(issue);
     let sink = Rc::new(
         Both::new(
             &Workspace::new(here)
@@ -68,7 +67,7 @@ pub async fn run(
     );
     let log = Logbook::new(Rc::clone(&sink) as Rc<dyn Sink>, Verbosity::Normal);
 
-    let mount = shared::mount_shared(here, target_repo_url, branch, &run_id, dry_run, &log).await?;
+    let mount = shared::mount_checkout(here, checkout, &run_id, dry_run, &log).await?;
     let workspace = &mount.workspace;
     let built = shared::adapters(
         workspace,

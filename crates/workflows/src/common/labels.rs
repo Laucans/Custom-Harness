@@ -108,8 +108,8 @@ pub const PR_FIX: &str = "harness:pr-fix";
 /// they touch is shared.
 ///
 /// Posed by `split` from the task's `## Architecture` section
-/// ([`crate::common::architecture`]), and by `planner` on a milestone whose
-/// work is all read-side.
+/// ([`crate::common::architecture`]). Never on a milestone: its side is a
+/// line of its body, and its tasks each carry their own.
 pub const READ_SIDE: &str = "harness:read-side";
 
 /// The task touches the **write side** of the architecture.
@@ -120,7 +120,7 @@ pub const READ_SIDE: &str = "harness:read-side";
 /// so its PR is never merged by the session: it waits for a human merge
 /// under [`REVIEW_PENDING`].
 ///
-/// Posed by `split` (task) and `planner` (milestone), like [`READ_SIDE`].
+/// Posed by `split` on a task, like [`READ_SIDE`] — never on a milestone.
 pub const WRITE_SIDE: &str = "harness:write-side";
 
 /// A write-side task's PR is open and waits for a human merge.

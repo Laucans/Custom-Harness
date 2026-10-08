@@ -85,6 +85,20 @@ pub fn same_repo(one: &str, other: &str) -> bool {
     key(one) == key(other)
 }
 
+/// The URL `git clone` accepts for what a human wrote.
+///
+/// The `owner/name` shorthand becomes its github.com URL — `init-repo`
+/// writes the shorthand into `.env.local`, and `git` reads it as a local
+/// path. Every other form is returned as written.
+#[must_use]
+pub fn clone_url(text: &str) -> String {
+    let shorthand = !text.contains("://") && !text.contains('@') && !text.contains(':');
+    match Slug::parse(text) {
+        Some(slug) if shorthand => format!("https://github.com/{slug}.git"),
+        _ => text.to_string(),
+    }
+}
+
 fn key(url: &str) -> String {
     let mut text = url.trim_end_matches('/');
     text = text.strip_suffix(".git").unwrap_or(text);
@@ -117,6 +131,21 @@ mod tests {
             "laucans/dnd_helper"
         ));
         assert!(!same_repo("Laucans/dnd_helper", "Laucans/other"));
+    }
+
+    #[test]
+    fn the_shorthand_is_cloned_from_github_and_a_url_is_left_alone() {
+        assert_eq!(
+            clone_url("Laucans/dnd_helper"),
+            "https://github.com/Laucans/dnd_helper.git"
+        );
+        for url in [
+            "https://github.com/Laucans/dnd_helper",
+            "git@github.com:Laucans/dnd_helper.git",
+            "/tmp/some/repo",
+        ] {
+            assert_eq!(clone_url(url), url);
+        }
     }
 
     #[test]
