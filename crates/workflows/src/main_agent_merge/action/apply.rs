@@ -43,6 +43,7 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
         if ports.gh.pr_checks_green(&pr.num).await? {
             ports.gh.merge_pr(&pr.num).await?;
             ports.gh.add_label(milestone, labels::WAITING_MERGE).await?;
+            close_delivered(ports, &tasks, &pr.reference()).await?;
             Ok(MergeOutcome::Merged)
         } else {
             Ok(MergeOutcome::WaitingOnChecks)
@@ -56,6 +57,34 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             .await?;
         Ok(MergeOutcome::OpenedPr(url))
     }
+}
+
+/// Closes every task still open once its milestone is in the integration
+/// branch: a PR merged into a milestone branch closes nothing — GitHub's
+/// closing keywords fire only on the default branch — so the tasks waited
+/// in `waiting-merge` with their code already integrated.
+async fn close_delivered(
+    ports: &Ports,
+    tasks: &[harness_core::domain::Issue],
+    pr: &str,
+) -> Outcome<()> {
+    for task in tasks.iter().filter(|task| task.is_open()) {
+        ports
+            .gh
+            .post_issue_comment(
+                task.number,
+                &format!(
+                    "Delivered: its milestone was merged into the integration branch by PR {pr}."
+                ),
+            )
+            .await?;
+        ports
+            .gh
+            .remove_label(task.number, labels::WAITING_MERGE)
+            .await?;
+        ports.gh.close_issue(task.number).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -194,6 +223,41 @@ mod tests {
             .expect("a verdict");
         assert_eq!(outcome, MergeOutcome::WaitingOnChecks);
         assert!(gh.writes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_merge_closes_the_tasks_it_integrated() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(4, "open", "Territory tooling", &[labels::MILESTONE])],
+            subs: vec![(
+                4,
+                vec![issue(11, "open", "a task", &[labels::WAITING_MERGE])],
+            )],
+            merged: merged_closing(&[11]),
+            prs: vec![(
+                "milestone/4-territory-tooling".to_string(),
+                Pr {
+                    num: "99".to_string(),
+                    base: "main_agent".to_string(),
+                    head: "milestone/4-territory-tooling".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            pr_checks: HashMap::from([("99".to_string(), true)]),
+            ..FakeGitHub::default()
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(outcome, MergeOutcome::Merged);
+        let writes = gh.writes();
+        assert!(writes.contains(&crate::common::fake_github::Wrote::Closed(11)));
+        assert!(
+            writes.contains(&crate::common::fake_github::Wrote::Unlabelled(
+                11,
+                labels::WAITING_MERGE.to_string()
+            ))
+        );
     }
 
     #[tokio::test]
