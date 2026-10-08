@@ -1,0 +1,70 @@
+[package]
+name = "harness-view-render"
+description = "The plant, drawn: a Bevy scene compiled to WebAssembly and bound to the view's canvas."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# `cdylib` is what wasm-bindgen turns into the browser bundle; `rlib` is what
+# the native tests and the workspace build compile.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tiny-skia.workspace = true
+# Only what drawing boxes under a light needs. No audio, no gltf, no scenes:
+# every feature left out is wasm the browser does not download.
+bevy = { workspace = true, features = [
+  "std",
+  "async_executor",
+  "bevy_log",
+  "bevy_winit",
+  "bevy_window",
+  "bevy_asset",
+  "bevy_color",
+  "bevy_render",
+  "bevy_core_pipeline",
+  "bevy_pbr",
+  "bevy_ui",
+  "bevy_ui_render",
+  "bevy_text",
+  "default_font",
+  "bevy_picking",
+  "mesh_picking",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { workspace = true, features = ["web", "webgl2"] }
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+web-sys = { workspace = true, features = ["console"] }
+console_error_panic_hook.workspace = true
+# `uuid` and friends draw randomness through `getrandom`, which on wasm needs
+# to be told the browser is the source.
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The native build of this crate (CI, tests) needs one display backend to
+# compile winit; `x11` loads the library at run time and links nothing.
+bevy = { workspace = true, features = ["x11"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bevy = { workspace = true, features = ["multi_threaded"] }
+
+# wasm-pack's own wasm-opt call knows nothing of the bulk-memory and
+# reference-types instructions recent rustc emits, and refuses the module.
+# `scripts/build-render.sh` runs wasm-opt itself with those features enabled.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.wasm-release]
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.wasm-dev]
+wasm-opt = false

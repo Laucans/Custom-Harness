@@ -1,0 +1,502 @@
+// The plant's page: data, navigation, panes, the steward's terminal — and a
+// bridge to the renderer, a Bevy scene compiled to WebAssembly that owns the
+// canvas (crates/view-render).
+//
+//   A  the factory from outside       B  inside: six rooms
+//   C  one room                        D  a pane over three quarters of the screen
+//
+// The renderer draws; this file decides. Every pointer event the scene sees
+// comes back here as `{kind, hot}` and is acted on exactly as before: open a
+// pane, enter a level, open GitHub, show a tooltip.
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+
+  const S = {
+    snap: null,
+    level: 'A', room: null, pane: null,
+    render: null,          // the wasm module, once it loaded
+    renderReady: false,
+    logTimer: null,
+    term: null,
+  };
+
+  // ---- helpers -------------------------------------------------------------
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const usd = (v) => '$' + Number(v || 0).toFixed(2);
+  const kfmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : String(n || 0));
+  const hhmm = (iso) => (iso ? iso.slice(11, 19) + 'Z' : '—');
+  function fmtAge(secs) {
+    if (secs == null) return '—';
+    if (secs < 60) return secs + 's';
+    if (secs < 3600) return Math.floor(secs / 60) + 'm';
+    if (secs < 86400) return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
+    return Math.floor(secs / 86400) + 'd';
+  }
+  const roomByKey = (key) => (S.snap ? S.snap.rooms.find((r) => r.key === key) : null);
+
+  // ---- the renderer --------------------------------------------------------
+  // `window.harnessRender.onEvent` is what the scene calls back. Defined
+  // before the module loads, so the first event finds it.
+  window.harnessRender = {
+    onEvent(json) {
+      let ev;
+      try { ev = JSON.parse(json); } catch (e) { return; }
+      if (ev.kind === 'ready') { S.renderReady = true; pushPicture(); pushView(); return; }
+      if (ev.kind === 'click') return act(ev.hot || {});
+      if (ev.kind === 'hover') return showTip(ev.tip, ev.x, ev.y);
+      if (ev.kind === 'leave') return hideTip();
+      return undefined;
+    },
+  };
+  function pushPicture() {
+    if (S.render && S.renderReady && S.snap) S.render.setSnapshot(JSON.stringify(S.snap));
+  }
+  function pushView() {
+    if (!S.render || !S.renderReady) return;
+    const view = S.level === 'C' ? { level: 'C', room: S.room || 'construction' } : { level: S.level };
+    S.render.setView(JSON.stringify(view));
+  }
+  async function loadRenderer() {
+    const notice = $('render-notice');
+    try {
+      const mod = await import('/render/render.js');
+      await mod.default();
+      S.render = mod;
+      mod.start('#scene');
+      if (notice) notice.hidden = true;
+    } catch (e) {
+      if (notice) {
+        notice.hidden = false;
+        notice.innerHTML = `<b>The renderer is not built.</b><br>Run <code>scripts/build-render.sh</code> (needs wasm-pack and the wasm32 target), then reload.<br><span class="muted">${esc(e && e.message ? e.message : e)}</span>`;
+      }
+    }
+  }
+
+  // ---- tooltip ---------------------------------------------------------------
+  function showTip(text, x, y) {
+    const tip = $('tooltip');
+    if (!text) return hideTip();
+    tip.hidden = false;
+    tip.textContent = text;
+    const stage = $('stage').getBoundingClientRect();
+    tip.style.left = Math.min(x + 16, stage.width - tip.offsetWidth - 8) + 'px';
+    tip.style.top = Math.min(y + 16, stage.height - tip.offsetHeight - 8) + 'px';
+    return undefined;
+  }
+  function hideTip() { $('tooltip').hidden = true; }
+
+  // ---- data ----------------------------------------------------------------
+  async function load() {
+    try {
+      const r = await fetch('/api/snapshot');
+      S.snap = await r.json();
+      onSnapshot();
+    } catch (e) {
+      $('watch-text').textContent = 'cannot reach the server';
+    }
+  }
+  function subscribe() {
+    const es = new EventSource('/api/events');
+    es.addEventListener('snapshot', (e) => { S.snap = JSON.parse(e.data); onSnapshot(); });
+    es.onerror = () => { $('watch-dot').className = 'dot warn'; $('watch-text').textContent = 'reconnecting…'; };
+  }
+  function onSnapshot() {
+    status();
+    crumbs();
+    pushPicture();
+    // An issue is fetched once; the steward's terminal is a live connection.
+    // Everything else is redrawn from the new picture.
+    if (S.pane && S.pane.kind !== 'issue' && S.pane.kind !== 'steward') renderPane(S.pane, true);
+    // `?open={"kind":"board"}` opens a pane straight from the URL — a deep
+    // link to a station, an employee, the dashboards.
+    const wanted = new URLSearchParams(location.search).get('open');
+    if (wanted && !S.openedFromUrl) {
+      S.openedFromUrl = true;
+      try { openPane(JSON.parse(wanted)); } catch (e) { /* not a pane */ }
+    }
+  }
+  function status() {
+    const f = S.snap.factory;
+    $('watch-dot').className = 'dot ' + (f.watching ? 'on' : 'off');
+    let s = f.watching ? 'watch polling' : 'watch off';
+    if (f.last_tick_at) s += ` · last tick ${hhmm(f.last_tick_at)}`;
+    if (f.in_flight) s += ` · running ${f.in_flight.workflow}${f.in_flight.subject ? ' (' + f.in_flight.subject + ')' : ''}`;
+    else if (f.idle) s += ' · nobody at work';
+    else s += ` · ${S.snap.employees.length} at work`;
+    if (S.snap.demo) s += ' · DEMO';
+    $('watch-text').textContent = s;
+  }
+
+  // ---- navigation ----------------------------------------------------------
+  // Where you are is in the URL hash — `#B`, `#C/lines` — so a place can be
+  // bookmarked or opened straight from a link.
+  function go(level, room = null) {
+    S.level = level; S.room = room;
+    closePane();
+    hideTip();
+    crumbs();
+    pushView();
+    const hash = level === 'A' ? '' : level === 'B' ? '#B' : `#C/${room}`;
+    if (location.hash !== hash) history.replaceState(null, '', location.pathname + location.search + hash);
+  }
+  function fromHash() {
+    const m = /^#(B|C\/([a-z]+))$/.exec(location.hash);
+    if (!m) { S.level = 'A'; S.room = null; return; }
+    S.level = m[1] === 'B' ? 'B' : 'C';
+    S.room = m[2] || null;
+  }
+  window.addEventListener('hashchange', () => { fromHash(); closePane(); crumbs(); pushView(); });
+  function back() {
+    if (S.pane) return closePane();
+    if (S.level === 'C') return go('B');
+    if (S.level === 'B') return go('A');
+    return undefined;
+  }
+  function crumbs() {
+    const parts = [{ label: '🏭 ' + (S.snap ? S.snap.project.name : 'factory'), go: 'A' }];
+    if (S.level !== 'A') parts.push({ label: 'inside', go: 'B' });
+    if (S.level === 'C') {
+      const r = roomByKey(S.room);
+      parts.push({ label: r ? `room ${r.id} · ${r.name}` : S.room, go: 'C', room: S.room });
+    }
+    $('crumbs').innerHTML = parts
+      .map((p, i) => `${i ? '<span class="sep">›</span>' : ''}<button data-go="${p.go}" data-room="${p.room || ''}" class="${i === parts.length - 1 ? 'here' : ''}">${esc(p.label)}</button>`)
+      .join('');
+  }
+  $('crumbs').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || b.classList.contains('here')) return;
+    go(b.dataset.go, b.dataset.room || null);
+  });
+  window.addEventListener('keydown', (e) => {
+    // Inside the steward's terminal every key belongs to the terminal.
+    if (e.target.closest && e.target.closest('#term')) return;
+    if (e.key === 'Escape' || e.key === 'Backspace') { if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'CANVAS') back(); else if (e.key === 'Escape') back(); }
+  });
+  $('hud-steward').addEventListener('click', () => {
+    if (S.pane && S.pane.kind === 'steward') closePane(); else openPane({ kind: 'steward' });
+  });
+  function act(h) {
+    if (h.go) return go(h.go, h.room || null);
+    if (h.url) return window.open(h.url, '_blank', 'noopener');
+    if (h.pane) return openPane(h.pane);
+    return undefined;
+  }
+
+  // ---- D · the pane ------------------------------------------------------------
+  function openPane(p) {
+    clearInterval(S.logTimer); S.logTimer = null;
+    teardownTerminal();
+    S.pane = Object.assign({}, p);
+    document.body.classList.add('split');
+    $('pane').hidden = false;
+    $('pane-body').classList.toggle('terminal', p.kind === 'steward');
+    hideTip();
+    renderPane(S.pane, false);
+  }
+  function closePane() {
+    if (!S.pane) return;
+    S.pane = null;
+    clearInterval(S.logTimer); S.logTimer = null;
+    teardownTerminal();
+    document.body.classList.remove('split');
+    $('pane').hidden = true;
+    $('pane-body').classList.remove('terminal');
+  }
+  $('pane-close').addEventListener('click', closePane);
+  $('pane-body').addEventListener('click', (e) => {
+    const issue = e.target.closest('[data-issue]');
+    if (issue) return openPane({ kind: 'issue', number: Number(issue.dataset.issue) });
+    const tab = e.target.closest('[data-file]');
+    if (tab && S.pane && S.pane.kind === 'employee') { S.pane.file = tab.dataset.file; renderPane(S.pane, false); }
+    const pane = e.target.closest('[data-pane]');
+    if (pane) return openPane(JSON.parse(pane.dataset.pane));
+    return undefined;
+  });
+
+  // ---- the steward's terminal --------------------------------------------------
+  // xterm.js in the pane, a WebSocket to the desk. Closing the pane closes the
+  // socket and nothing else: the program behind it keeps running, and the next
+  // visit replays its screen.
+  const CHIPS = [
+    ['Is the plant running?', 'Is the plant running? Give me the status.'],
+    ['Start the plant', 'Start the plant.'],
+    ['Stop the plant', 'Stop the plant.'],
+    ['What is blocking?', 'What is blocking the board right now, and what should I do?'],
+    ['What did it cost today?', 'What did the plant spend today, and on what?'],
+  ];
+  function teardownTerminal() {
+    if (!S.term) return;
+    try { S.term.ro.disconnect(); } catch (e) { /* already gone */ }
+    try { S.term.ws.close(); } catch (e) { /* already gone */ }
+    try { S.term.term.dispose(); } catch (e) { /* already gone */ }
+    S.term = null;
+  }
+  function stewardStatus(text) { const el = $('steward-status'); if (el) el.textContent = text; }
+  async function mountTerminal() {
+    const el = $('term');
+    if (!el) return;
+    let status = null;
+    try { status = await (await fetch('/api/steward')).json(); } catch (e) { /* shown below */ }
+    if (!status || !status.available) {
+      $('pane-body').classList.remove('terminal');
+      $('pane-body').innerHTML = '<div class="callout">No steward: the view runs with <code>--no-steward</code>, or the server is unreachable.</div>';
+      return;
+    }
+    if (typeof Terminal === 'undefined' || typeof FitAddon === 'undefined') {
+      el.textContent = 'xterm.js did not load';
+      return;
+    }
+    const term = new Terminal({
+      cursorBlink: true, fontSize: 13, lineHeight: 1.15, scrollback: 5000,
+      fontFamily: 'ui-monospace, Menlo, "SF Mono", Consolas, monospace',
+      theme: { background: '#070b10', foreground: '#e6edf3', cursor: '#5ad1e6', selectionBackground: 'rgba(90,209,230,0.3)', black: '#111821', brightBlack: '#4b5563' },
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(el);
+    try { fit.fit(); } catch (e) { /* not laid out yet */ }
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/api/steward/term?cols=${term.cols}&rows=${term.rows}`);
+    ws.binaryType = 'arraybuffer';
+    const enc = new TextEncoder();
+    const send = (bytes) => { if (ws.readyState === 1) ws.send(bytes); };
+    stewardStatus(`connecting · ${status.command}`);
+    ws.onopen = () => { stewardStatus(`at the desk · ${status.command}`); term.focus(); };
+    ws.onmessage = (ev) => { term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data)); };
+    ws.onclose = () => stewardStatus('disconnected — reopen the pane to sit down again');
+    ws.onerror = () => stewardStatus('the connection failed');
+    term.onData((data) => send(enc.encode(data)));
+    const ro = new ResizeObserver(() => {
+      try { fit.fit(); send(JSON.stringify({ t: 'size', cols: term.cols, rows: term.rows })); } catch (e) { /* mid-layout */ }
+    });
+    ro.observe(el);
+    S.term = { term, ws, ro };
+    const restart = $('term-restart');
+    if (restart) restart.onclick = () => {
+      if (ws.readyState === 1 && window.confirm('Kill the steward\'s Claude Code and start a fresh one?')) {
+        term.reset();
+        send(JSON.stringify({ t: 'restart' }));
+      }
+    };
+    // A chip types its sentence, then presses Enter a beat later — the way a
+    // hand would, so the program sees a line and not a paste.
+    $('pane-body').querySelectorAll('[data-type]').forEach((b) => {
+      b.onclick = () => {
+        send(enc.encode(b.dataset.type));
+        setTimeout(() => { send(enc.encode('\r')); term.focus(); }, 180);
+      };
+    });
+  }
+
+  function renderPane(p, refresh) {
+    const fn = PANES[p.kind] || PANES.placeholder;
+    const [title, html, after] = fn(p, refresh);
+    $('pane-title').textContent = title;
+    if (!(refresh && p.kind === 'employee')) $('pane-body').innerHTML = html;
+    if (after) after(refresh);
+  }
+
+  const kv = (pairs) => '<dl class="kv">' + pairs.filter(([, v]) => v != null && v !== '').map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('') + '</dl>';
+  const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
+  const ext = (url, text = 'GitHub ↗') => (url ? `<a class="ext" href="${esc(url)}" target="_blank" rel="noopener">${esc(text)}</a>` : '');
+  function issueList(items) {
+    if (!items.length) return '<div class="muted">nothing</div>';
+    return '<ul class="issues">' + items.map((t) => `<li><span class="n">#${t.number}</span><span class="t"><button class="link" data-issue="${t.number}">${esc(t.title)}</button></span><span class="st ${t.status}">${t.status}</span>${t.url ? `<a class="ext" href="${esc(t.url)}" target="_blank" rel="noopener" title="GitHub">↗</a>` : ''}</li>`).join('') + '</ul>';
+  }
+  function bars(buckets, cls = '', fmt = (b) => `${usd(b.usd)} · ${b.count}`) {
+    if (!buckets.length) return '<div class="muted">no rows</div>';
+    const max = Math.max(...buckets.map((b) => b.usd), 0.0001);
+    return '<div class="bars">' + buckets.map((b) => `<div class="k" title="${esc(b.key)}">${esc(b.key)}</div><div class="bar ${cls}"><span style="width:${Math.max(1, Math.round(100 * b.usd / max))}%"></span></div><div class="v">${fmt(b)}</div>`).join('') + '</div>';
+  }
+  const tiles = (items) => '<div class="tiles">' + items.map(([v, l]) => `<div class="tile"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`).join('') + '</div>';
+  const KIND_TIP = {
+    scanner: 'gate · a deterministic check',
+    builder: 'LLM that writes',
+    inspector: 'LLM that reads and judges',
+    printer: 'gathers the context',
+    arm: 'acts on the code or on GitHub',
+  };
+
+  const PANES = {
+    board() {
+      const b = S.snap.board;
+      if (!b) return ['Board', '<div class="callout">No GitHub board yet: the view runs with <code>--no-board</code>, or <code>gh</code> has not answered.</div>'];
+      let h = '';
+      if (b.roadmap.length) h += '<h3>Roadmap</h3>' + issueList(b.roadmap);
+      if (b.needs_human.length) h += '<h3>Waiting on you</h3>' + issueList(b.needs_human);
+      for (const m of b.milestones) {
+        const pct = m.total ? Math.round((100 * m.done) / m.total) : 0;
+        h += `<h3>${m.issue.state === 'closed' ? '✓ ' : ''}<button class="link" data-issue="${m.issue.number}">#${m.issue.number} ${esc(m.issue.title)}</button> <span class="muted">· ${m.done}/${m.total}</span></h3>`;
+        h += `<div class="progress"><span style="width:${pct}%"></span></div>`;
+        h += `<div class="muted" style="margin:4px 0 8px;font:11px var(--mono)">${esc(m.branch)} ${m.branch_url ? '· ' + ext(m.branch_url, 'branch ↗') : ''}</div>`;
+        for (const [st, label] of [['ready', 'Ready — next up'], ['todo', 'To do'], ['blocked', 'Blocked'], ['human', 'A human must act'], ['delivered', 'Delivered, waiting for the merge'], ['done', 'Done']]) {
+          const items = m.tasks.filter((t) => t.status === st);
+          if (items.length) h += `<div class="muted" style="font-size:12px;margin-top:8px">${label}</div>` + issueList(items);
+        }
+      }
+      return ['Board · ' + S.snap.project.name, h];
+    },
+
+    employee(p, refresh) {
+      const e = S.snap.employees.find((x) => x.id === p.id) || p.last;
+      if (!e) return ['Employee', '<div class="callout">This employee has clocked out — the run is over.</div>'];
+      p.last = e;
+      p.file = p.file || 'session.log';
+      const head = kv([
+        ['line', esc(e.workflow)], ['run', esc(e.run_id)],
+        ['stage', `${esc(e.stage || '—')} ${e.model ? tag(e.model, e.model) : ''}`],
+        ['task', esc(e.task || '—')], ['milestone', esc(e.milestone || '—')], ['round', esc(e.round || '—')],
+        ['since', `${hhmm(e.since)} · last write ${fmtAge(e.age_secs)} ago`],
+        ['status', e.active ? tag('at work', 'ok') : tag('clocked out', '')],
+      ]);
+      const tabs = '<div class="tabs">' + ['session.log', 'run.log', 'prompts.md'].map((f) => `<button data-file="${f}" class="${f === p.file ? 'on' : ''}">${f}</button>`).join('') + '</div>';
+      const html = `<div id="emp-head">${head}</div>${tabs}<pre class="log" id="live-log">loading…</pre>`;
+      const after = (isRefresh) => {
+        if (isRefresh) { const h = $('emp-head'); if (h) h.innerHTML = head; return; }
+        const pull = async () => {
+          try {
+            const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/${p.file}?bytes=14000`);
+            const pre = $('live-log');
+            if (!pre) return;
+            // A run that stopped at its gates never opened a session, so it
+            // has no session.log: show its run.log instead of a 404.
+            if (r.status === 404 && p.file === 'session.log' && !p.fellBack) {
+              p.fellBack = true; p.file = 'run.log';
+              renderPane(p, false);
+              return;
+            }
+            const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+            pre.textContent = r.ok ? (await r.text()) || '(empty)' : `(${r.status}) ${await r.text()}`;
+            if (atBottom) pre.scrollTop = pre.scrollHeight;
+          } catch (err) { /* the next pull will say */ }
+        };
+        pull();
+        clearInterval(S.logTimer);
+        S.logTimer = setInterval(pull, 2000);
+      };
+      return [e.name, html, after];
+    },
+
+    station(p) {
+      const line = S.snap.lines.find((l) => l.id === p.line);
+      const st = line && line.stations.find((s) => s.id === p.id);
+      if (!st) return ['Station', '<div class="callout">Unknown station.</div>'];
+      const bucket = st.stage ? S.snap.costs.by_stage.find((b) => b.key === st.stage) : null;
+      const rows = st.stage ? S.snap.costs.last.filter((r) => r.stage === st.stage) : [];
+      let h = kv([
+        ['line', esc(line.title)], ['kind', `${esc(st.kind)} — ${esc(KIND_TIP[st.kind])}`],
+        ['stage', st.stage ? esc(st.stage) : '<span class="muted">a gate of the stage beside it</span>'],
+        ['model', st.model ? tag(st.model, st.model) : null],
+        ['state', tag(st.state, st.state === 'active' ? 'acc' : st.state === 'done' ? 'ok' : '')],
+      ]);
+      if (bucket) h += '<h3>What this stage cost, all runs</h3>' + tiles([[usd(bucket.usd), 'total'], [bucket.count, 'sessions'], [usd(bucket.usd / Math.max(1, bucket.count)), 'per session']]);
+      if (rows.length) {
+        h += '<h3>Last sessions on it</h3><table class="rows"><tr><th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th></tr>' + rows.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
+      }
+      if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
+      return [st.label, h];
+    },
+
+    line(p) {
+      const line = S.snap.lines.find((l) => l.id === p.id);
+      if (!line) return ['Line', ''];
+      const lr = line.last_run;
+      let h = kv([['trigger', esc(line.trigger)], ['log folder', `<code>.llocal/logs/${esc(line.id)}/</code>`], ['runs', line.runs], ['status', line.active ? tag('at work', 'ok') : tag('idle')]]);
+      if (lr) {
+        h += '<h3>Latest run</h3>' + kv([['run', esc(lr.run_id)], ['started', hhmm(lr.started_at)], ['last line at', `${hhmm(lr.last_at)} · ${fmtAge(lr.age_secs)} ago`], ['task', esc(lr.task || '—')], ['round', esc(lr.round || '—')], ['last line', `<code>${esc(lr.last_line)}</code>`], ['warning', lr.warning ? `<span class="tag warn">${esc(lr.warning)}</span>` : null]]);
+        const emp = S.snap.employees.find((e) => e.workflow === line.id);
+        h += `<button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: `${line.id}/${lr.run_id}`, last: emp || null }))}'>open its logs →</button>`;
+      }
+      h += '<h3>Stations</h3><ul class="issues">' + line.stations.map((s) => `<li><span class="n">${esc(s.kind)}</span><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'station', line: line.id, id: s.id }))}'>${esc(s.label)}</button></span>${s.model ? tag(s.model, s.model) : ''}<span class="st ${s.state === 'done' ? 'done' : s.state === 'active' ? 'ready' : 'todo'}">${s.state}</span></li>`).join('') + '</ul>';
+      return [line.title, h];
+    },
+
+    chimney(p) {
+      const ch = S.snap.factory.chimneys.find((c) => c.model === p.model);
+      if (!ch) return ['Chimney', ''];
+      const on = S.snap.employees.filter((e) => e.active && e.model === ch.model);
+      const stages = S.snap.lines.flatMap((l) => l.stations.filter((s) => s.model === ch.model).map((s) => `${l.title} · ${s.stage}`));
+      let h = kv([['model', tag(ch.model, ch.model)], ['state', ch.smoking ? tag(`smoking · ${ch.runs} open`, 'ok') : tag('cold')], ['spent', `${usd(ch.usd)} <span class="muted">— on the stages that open this model by default; the ledger has no model column</span>`]]);
+      h += '<h3>At work on it</h3>' + (on.length ? '<ul class="issues">' + on.map((e) => `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: e.id }))}'>${esc(e.name)}</button></span><span class="muted">${esc(e.stage || '')}</span></li>`).join('') + '</ul>' : '<div class="muted">nobody</div>');
+      h += '<h3>Stations on this model</h3>' + (stages.length ? '<ul class="issues">' + stages.map((s) => `<li><span class="t">${esc(s)}</span></li>`).join('') + '</ul>' : '<div class="muted">none by default</div>');
+      return [`${ch.model} chimney`, h];
+    },
+
+    issue(p) {
+      const html = `<div id="issue-body"><div class="muted">loading #${p.number}…</div></div>`;
+      const after = async () => {
+        const el = $('issue-body');
+        try {
+          const r = await fetch(`/api/issues/${p.number}`);
+          if (!r.ok) { el.innerHTML = `<div class="callout">${esc(await r.text())}</div>`; return; }
+          const i = await r.json();
+          $('pane-title').textContent = `#${i.number} ${i.title}`;
+          el.innerHTML = kv([['state', tag(i.state, i.state === 'open' ? 'ok' : '')], ['labels', i.labels.map((l) => tag(l.replace('harness:', ''), l.endsWith('ready') ? 'warn' : l.endsWith('human') || l.endsWith('needs-decision') ? 'bad' : '')).join('')], ['blocked by', i.blocked_by.length ? i.blocked_by.map((b) => `<button class="link" data-issue="${b.number}">#${b.number} ${esc(b.title)}</button> ${tag(b.state, b.state === 'closed' ? 'ok' : 'warn')}`).join('<br>') : null], ['on GitHub', ext(i.url)]])
+            + '<div class="callout soon">Discuss this issue with Claude Code from here — coming. The office is read-only for now.</div>'
+            + `<h3>Body</h3><pre class="md">${esc(i.body || '(empty)')}</pre>`;
+        } catch (err) { el.innerHTML = '<div class="callout">cannot reach the server</div>'; }
+      };
+      return [`#${p.number}`, html, after];
+    },
+
+    features() {
+      const b = S.snap.board;
+      if (!b) return ['Features', '<div class="callout">No GitHub board: the feature list is the milestones, and they were not read.</div>'];
+      let h = '<div class="callout">A feature is a milestone: delivered once its branch merged into the agents\' version. Its tasks are the feature\'s pieces.</div>';
+      for (const m of b.milestones) {
+        h += `<h3>${m.issue.state === 'closed' ? '✓ delivered · ' : m.done === m.total && m.total ? '◐ waiting for the merge · ' : '○ in progress · '}<button class="link" data-issue="${m.issue.number}">#${m.issue.number} ${esc(m.issue.title)}</button></h3>` + issueList(m.tasks);
+      }
+      return ['Features · ' + S.snap.project.name, h];
+    },
+
+    dashboards(p) {
+      const c = S.snap.costs, q = S.snap.quota;
+      let h = tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
+      h += '<h3 id="dash-costs">By day</h3>' + bars(c.by_day.slice(-14));
+      h += '<h3>By stage</h3>' + bars(c.by_stage);
+      h += '<h3>By task</h3>' + bars(c.by_task);
+      h += '<h3>By outcome</h3>' + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
+      h += '<h3 id="dash-quota">Rate-limit windows</h3>';
+      if (q) {
+        h += '<div class="gauges">' + q.windows.map((w) => { const pct = Math.round(w.utilization * 100); const reset = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString() : 'unknown'; return `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(w.name)} · ${pct}% used</div><div class="bar"><span style="width:${pct}%"></span></div><div class="muted">resets ${esc(reset)}</div></div>`; }).join('') + '</div>' + `<div class="muted" style="margin-top:6px;font:11px var(--mono)">read ${new Date(q.at * 1000).toLocaleString()}</div>`;
+      } else h += '<div class="muted">no reading yet</div>';
+      h += '<h3 id="dash-errors">Last stops</h3>';
+      h += S.snap.errors.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + S.snap.errors.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>';
+      h += '<h3 id="dash-journal">Watch journal</h3><pre class="log">' + esc(S.snap.recent.join('\n') || '(empty)') + '</pre>';
+      h += '<h3>Last paid sessions</h3><table class="rows"><tr><th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th></tr>' + c.last.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
+      const after = (refresh) => { if (!refresh && p.focus) { const el = $('dash-' + p.focus); if (el) el.scrollIntoView({ block: 'start' }); } };
+      return ['Control room', h, after];
+    },
+
+    versions() {
+      const v = S.snap.versions;
+      let h = kv([['repository', ext(v.repo_url, v.repo_url || '—')]]);
+      h += '<h3>On sale</h3><ul class="issues">';
+      h += `<li><span class="n">main</span><span class="t">${esc(v.main.label)}</span>${ext(v.main.url, 'open ↗')}</li>`;
+      h += `<li><span class="n">${esc(v.integration.name)}</span><span class="t">${esc(v.integration.label)}</span>${ext(v.integration.url, 'open ↗')}</li>`;
+      h += '</ul><h3>In development — one branch per open milestone</h3>';
+      h += v.milestones.length ? '<ul class="issues">' + v.milestones.map((m) => `<li><span class="n">${esc(m.name.replace(/^milestone\/(\d+).*$/, '#$1'))}</span><span class="t">${esc(m.label)}<div class="muted" style="font:11px var(--mono)">${esc(m.name)}</div></span>${ext(m.url, 'open ↗')}</li>`).join('') + '</ul>' : '<div class="muted">none open</div>';
+      return ['Distribution', h];
+    },
+
+    steward() {
+      const html = `<div class="steward-bar"><span id="steward-status">connecting…</span><span class="spacer"></span><button class="mini" id="term-restart" title="kill this Claude Code and start a fresh one">restart</button></div>`
+        + '<div class="chips">' + CHIPS.map(([label, say]) => `<button data-type="${esc(say)}">${esc(label)}</button>`).join('') + '</div>'
+        + '<div id="term"></div>';
+      return ['The steward · Claude Code in the harness checkout', html, () => { mountTerminal(); }];
+    },
+
+    placeholder(p) {
+      return [p.title || 'Coming', `<div class="callout soon">${esc(p.text || 'Not built yet.')}</div>`];
+    },
+  };
+
+  // ---- go --------------------------------------------------------------------
+  fromHash();
+  crumbs();
+  loadRenderer();
+  load().then(subscribe);
+})();

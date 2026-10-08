@@ -567,6 +567,11 @@ mod tests {
         ("TARGET_REPO_URL", ""),
         ("AGENTIC_WORKSPACES_DIR", ""),
         ("KEEP_WORKSPACE", ""),
+        // Read by `harness-view`, not by this binary: the template is shared
+        // by the two outer rings, and a variable the launcher ignores must
+        // still parse as part of a fresh `.env.local`.
+        ("HARNESS_VIEW_PORT", "7878"),
+        ("STEWARD_MODEL", "claude-sonnet-5-5"),
     ];
 
     #[test]

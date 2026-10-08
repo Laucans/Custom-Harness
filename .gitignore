@@ -23,3 +23,6 @@
 
 # the loop's own state — costs.tsv, the checkpoint, flow-*.jsonl are not logs
 /.llocal/
+
+# the renderer bundle, built by scripts/build-render.sh
+/crates/view/static/render/

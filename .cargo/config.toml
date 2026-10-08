@@ -1,0 +1,5 @@
+# The renderer's browser target. `getrandom` 0.3+ refuses to guess where a
+# wasm32-unknown-unknown build gets its randomness from; this names the
+# browser, and only the renderer is ever built for this target.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

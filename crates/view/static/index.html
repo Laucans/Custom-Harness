@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness · factory</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="hud">
+  <nav id="crumbs" aria-label="where you are"></nav>
+  <button id="hud-steward" class="hud-btn" title="Talk to the steward — a Claude Code terminal in the harness checkout">🧙 steward</button>
+  <div id="status"><span id="watch-dot" class="dot"></span><span id="watch-text">connecting…</span></div>
+  <div id="help">drag to pan · wheel to zoom · click to enter · Esc to go back</div>
+</header>
+<main id="stage">
+  <canvas id="scene"></canvas>
+  <div id="render-notice" class="notice" hidden></div>
+  <div id="tooltip" hidden></div>
+</main>
+<aside id="pane" hidden>
+  <div id="pane-head">
+    <h2 id="pane-title"></h2>
+    <button id="pane-close" title="close (Esc)">×</button>
+  </div>
+  <div id="pane-body"></div>
+</aside>
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

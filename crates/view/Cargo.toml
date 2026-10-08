@@ -1,0 +1,37 @@
+[package]
+name = "harness-view"
+description = "The factory view: a local web server that renders the harness as an isometric plant."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "harness-view"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+clap.workspace = true
+harness-core.workspace = true
+harness-workflows.workspace = true
+jiff.workspace = true
+portable-pty.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# `net` for the listening socket, `sync` for the snapshot channel the pollers
+# publish on and the SSE handlers subscribe to. Nothing else beyond what the
+# workspace already enables.
+# `fs` reads the renderer bundle off the disk without blocking the page.
+tokio = { workspace = true, features = ["net", "sync", "signal", "fs"] }
+tokio-stream.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tokio.workspace = true
+# `oneshot`, to drive the router in a test without a socket.
+tower.workspace = true
