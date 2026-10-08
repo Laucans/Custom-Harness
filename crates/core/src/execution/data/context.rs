@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::ports::agent::Reply;
+use crate::ports::agent::{Reply, SessionSpec};
 use crate::traces::Logbook;
 
 /// What execution holds during a run, generic over `S` — the workflow-specific
@@ -26,6 +26,11 @@ pub struct Context<S> {
     /// none of them; PR review reads the inline pass to write its notes,
     /// refinement reads the router and sections for the coherence pass.
     pub results: HashMap<String, Reply>,
+    /// The spec every session of the round opens with, when a fact of the
+    /// run decides it over the table — a workflow sets it once it knows
+    /// (the dev loop, on a task labelled for its strongest model), the
+    /// stage runner reads it. `None`: each stage keeps its own.
+    pub session_spec: Option<SessionSpec>,
 }
 
 impl<S> Context<S> {
@@ -37,6 +42,7 @@ impl<S> Context<S> {
             state,
             traces,
             results: HashMap::new(),
+            session_spec: None,
         }
     }
 }

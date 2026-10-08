@@ -47,7 +47,7 @@ pub trait Session {
 ///
 /// Pure data — a tmux or stream-json carrier does what it wants with it, but
 /// neither changes what a caller has the right to ask for.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSpec {
     /// The requested model (`"opus"`, `"sonnet"`, …).
     pub model: String,

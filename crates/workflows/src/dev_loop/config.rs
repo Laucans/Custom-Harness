@@ -24,6 +24,11 @@ pub struct Config {
     pub model: String,
     /// Effort override for the entire run. Empty: same.
     pub effort: String,
+    /// The model a `harness:data-layer` task runs every stage on — the
+    /// strongest one, where the data design is decided.
+    pub data_layer_model: String,
+    /// Its effort.
+    pub data_layer_effort: String,
     /// Replay a stage that resumption would skip.
     pub restart: bool,
     /// The repository's own build and test configuration, verbatim — see
@@ -56,6 +61,14 @@ impl Config {
         }
     }
 
+    /// The spec every stage opens with on a `harness:data-layer` task, the
+    /// run overrides applied as everywhere: `--model` forces the entire run,
+    /// data layer included.
+    #[must_use]
+    pub fn data_layer_spec(&self) -> harness_core::ports::agent::SessionSpec {
+        self.spec(&self.data_layer_model, &self.data_layer_effort)
+    }
+
     /// The name cited as the injector in this workflow's prompts.
     #[must_use]
     pub const fn injector(&self) -> &'static str {
@@ -83,6 +96,8 @@ pub(crate) mod fake {
             integration_branch: "main_agent".to_string(),
             model: String::new(),
             effort: String::new(),
+            data_layer_model: "opus".to_string(),
+            data_layer_effort: "high".to_string(),
             restart: false,
             stack: String::new(),
             signatures: std::rc::Rc::default(),

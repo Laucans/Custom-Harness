@@ -253,6 +253,16 @@ pub struct RunArgs {
     #[arg(long, env = "EFFORT", default_value = "")]
     pub effort: String,
 
+    /// The model every stage of a `harness:data-layer` task runs on — the
+    /// milestone's data layer, where the data design is decided. `--model`
+    /// still forces the entire run.
+    #[arg(long, env = "DATA_LAYER_MODEL", default_value = "opus")]
+    pub data_layer_model: String,
+
+    /// Its effort.
+    #[arg(long, env = "DATA_LAYER_EFFORT", default_value = "high")]
+    pub data_layer_effort: String,
+
     /// Maximum number of rounds.
     #[arg(long, env = "MAX_ROUNDS", default_value_t = 3)]
     pub rounds: u32,
@@ -454,6 +464,8 @@ mod tests {
             "STAGES",
             "MODEL",
             "EFFORT",
+            "DATA_LAYER_MODEL",
+            "DATA_LAYER_EFFORT",
             "MAX_ROUNDS",
             "INTEGRATION_BRANCH",
             "PERMISSION_MODE",
@@ -695,6 +707,8 @@ mod tests {
         ("STAGES", ""),
         ("MODEL", ""),
         ("EFFORT", ""),
+        ("DATA_LAYER_MODEL", "opus"),
+        ("DATA_LAYER_EFFORT", "high"),
         ("MAX_ROUNDS", "3"),
         ("INTEGRATION_BRANCH", "main_agent"),
         ("PERMISSION_MODE", "bypassPermissions"),

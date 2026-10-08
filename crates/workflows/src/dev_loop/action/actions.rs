@@ -63,6 +63,9 @@ pub struct PickTask {
     /// watch. Picked if runnable, refused by name otherwise — never traded
     /// for the board's own choice, which another lane may be running.
     pub wanted: Option<u64>,
+    /// What every stage of the round opens with when the task carries
+    /// `harness:data-layer` — the strongest model, for the data design.
+    pub data_layer: harness_core::ports::agent::SessionSpec,
 }
 
 #[async_trait(?Send)]
@@ -127,6 +130,11 @@ impl Action<Loop> for PickTask {
         ctx.state.tech_written = tasks::tech_written(task);
         ctx.state.resumed = resumed.is_some();
         ctx.state.write_side = tasks::is_write_side(task);
+        // Set on every pick, cleared otherwise: the next round's task may
+        // not be one.
+        ctx.session_spec = task
+            .has(labels::DATA_LAYER)
+            .then(|| self.data_layer.clone());
         ctx.traces.say(&format!(
             "task {}: {} [{}, {}]",
             task.reference(),
@@ -138,6 +146,12 @@ impl Action<Loop> for PickTask {
                 labels::READ_SIDE
             }
         ));
+        if let Some(spec) = &ctx.session_spec {
+            ctx.traces.say(&format!(
+                "data layer — every session of this round opens on {}/{}",
+                spec.model, spec.effort
+            ));
+        }
         Ok(Verdict::Continue)
     }
 }
@@ -429,6 +443,60 @@ mod tests {
 
     // --- PickTask ----------------------------------------------------------
 
+    fn opus_high() -> harness_core::ports::agent::SessionSpec {
+        harness_core::ports::agent::SessionSpec {
+            model: "opus".to_string(),
+            effort: "high".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_data_layer_task_opens_every_session_on_the_strongest_model() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![milestone(4)],
+            subs: vec![(
+                4,
+                vec![issue(
+                    11,
+                    &[labels::AGENT, labels::READY, labels::DATA_LAYER],
+                )],
+            )],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(Loop::default());
+        PickTask {
+            gh,
+            resuming: None,
+            wanted: None,
+            data_layer: opus_high(),
+        }
+        .run(&mut context)
+        .await
+        .expect("picked");
+        assert_eq!(context.session_spec, Some(opus_high()));
+    }
+
+    #[tokio::test]
+    async fn a_plain_task_leaves_every_stage_on_its_own_model() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![milestone(4)],
+            subs: vec![(4, vec![task(11)])],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(Loop::default());
+        context.session_spec = Some(opus_high());
+        PickTask {
+            gh,
+            resuming: None,
+            wanted: None,
+            data_layer: opus_high(),
+        }
+        .run(&mut context)
+        .await
+        .expect("picked");
+        assert_eq!(context.session_spec, None, "cleared on every pick");
+    }
+
     #[tokio::test]
     async fn picking_fills_the_scope_so_no_session_starts_blind() {
         let gh = Rc::new(FakeGitHub {
@@ -441,6 +509,7 @@ mod tests {
             gh,
             resuming: None,
             wanted: None,
+            data_layer: opus_high(),
         }
         .run(&mut context)
         .await
@@ -468,6 +537,7 @@ mod tests {
             gh,
             resuming: None,
             wanted: None,
+            data_layer: opus_high(),
         }
         .run(&mut context)
         .await
@@ -502,6 +572,7 @@ mod tests {
             gh,
             resuming: Some("11".to_string()),
             wanted: None,
+            data_layer: opus_high(),
         }
         .run(&mut context)
         .await
@@ -524,6 +595,7 @@ mod tests {
             gh,
             resuming: None,
             wanted: None,
+            data_layer: opus_high(),
         }
         .run(&mut context)
         .await
@@ -545,6 +617,7 @@ mod tests {
             gh,
             resuming: None,
             wanted: None,
+            data_layer: opus_high(),
         }
         .run(&mut context)
         .await
@@ -565,6 +638,7 @@ mod tests {
             gh,
             resuming: None,
             wanted: None,
+            data_layer: opus_high(),
         }
         .run(&mut context)
         .await

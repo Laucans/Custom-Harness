@@ -516,6 +516,8 @@ async fn turns(
         integration_branch: args.branch.clone(),
         model: args.model.clone(),
         effort: args.effort.clone(),
+        data_layer_model: args.data_layer_model.clone(),
+        data_layer_effort: args.data_layer_effort.clone(),
         restart: args.restart,
         stack: configuration_digest(workspace, disk.as_ref(), log).await,
         signatures,
@@ -566,6 +568,11 @@ fn announce(args: &RunArgs, ports: &Ports, config: &Config, run_id: &str, log: &
         if args.dry_run { " [dry-run]" } else { "" }
     ));
     log.say(&format!("pipeline: {}", stages::summary(&table, &cfg)));
+    let data_layer = config.data_layer_spec();
+    log.say(&format!(
+        "data layer (harness:data-layer): every stage on {}/{}",
+        data_layer.model, data_layer.effort
+    ));
     // A run with `--stages code` said nothing about the stages it left out,
     // which reads as a pipeline that lost them.
     let left_out = stages::filtered_out(&table, &cfg);

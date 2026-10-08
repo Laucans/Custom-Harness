@@ -187,6 +187,8 @@ fn rounds(
     let branch = config.integration_branch.clone();
     let model = config.model.clone();
     let effort = config.effort.clone();
+    let data_layer_model = config.data_layer_model.clone();
+    let data_layer_effort = config.data_layer_effort.clone();
     let restart = config.restart;
     let stack = config.stack.clone();
     let signatures = Rc::clone(&config.signatures);
@@ -202,6 +204,8 @@ fn rounds(
             integration_branch: branch.clone(),
             model: model.clone(),
             effort: effort.clone(),
+            data_layer_model: data_layer_model.clone(),
+            data_layer_effort: data_layer_effort.clone(),
             restart,
             stack: stack.clone(),
             signatures: Rc::clone(&signatures),
@@ -213,6 +217,7 @@ fn rounds(
                 gh: Rc::clone(&gh),
                 resuming: if turn == 1 { resuming.clone() } else { None },
                 wanted,
+                data_layer: config.data_layer_spec(),
             },
             stages: stages::table(&ports, &config, turn),
             delivered: MarkWaitingMerge {

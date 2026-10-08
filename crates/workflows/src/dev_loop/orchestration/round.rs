@@ -112,6 +112,7 @@ mod tests {
                 gh: Rc::clone(&port),
                 resuming: None,
                 wanted: None,
+                data_layer: config.data_layer_spec(),
             },
             stages: stages::table(&ports, &config, 1),
             delivered: MarkWaitingMerge {
