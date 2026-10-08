@@ -455,6 +455,17 @@ fn now_seconds() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
+/// The task an interrupted run left in the pointer, if this run should take
+/// it back.
+///
+/// The pointer sits in the harness's own `.llocal`, shared by every lane of
+/// a parallel watch: a lane given its task (`--task`) resumes it only when
+/// the pointer names that same task. Otherwise the pointer is another lane's,
+/// and taking it would run that lane's task twice and this one's never.
+fn resumable(pointer: Option<String>, own: Option<u64>) -> Option<String> {
+    pointer.filter(|task| own.is_none_or(|own| task.trim_start_matches('#') == own.to_string()))
+}
+
 /// The workflow, wired against the mounted workspace, then executed.
 async fn turns(
     args: &RunArgs,
@@ -491,7 +502,7 @@ async fn turns(
     let resuming = if args.no_resume {
         None
     } else {
-        store.pointer()?.task
+        resumable(store.pointer()?.task, args.task)
     };
     if let Some(task) = &resuming {
         log.say(&format!("resuming: task #{task} (use --no-resume to skip)"));
@@ -594,6 +605,21 @@ mod tests {
     //! `harness_workflows::dev_loop::run`, with the fakes of that crate.
 
     use super::*;
+
+    #[test]
+    fn a_lane_resumes_its_own_task_only() {
+        assert_eq!(
+            super::resumable(Some("14".into()), Some(14)),
+            Some("14".into())
+        );
+        assert_eq!(super::resumable(Some("13".into()), Some(14)), None);
+        assert_eq!(super::resumable(None, Some(14)), None);
+    }
+
+    #[test]
+    fn a_run_without_a_task_resumes_whatever_the_pointer_names() {
+        assert_eq!(super::resumable(Some("13".into()), None), Some("13".into()));
+    }
     use harness_core::domain::{Halt, Outcome};
     use harness_core::ports::shell::process;
     use serial_test::serial;
