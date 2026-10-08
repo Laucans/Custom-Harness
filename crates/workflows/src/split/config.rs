@@ -20,6 +20,8 @@ pub struct Config {
     pub base_branch: String,
     /// Model and effort for the slice step.
     pub slice: SessionSpec,
+    /// The checkout's root — where the architecture's manifests are read.
+    pub root: PathBuf,
 }
 
 #[cfg(test)]
@@ -41,6 +43,7 @@ pub(crate) mod fake {
                 model: "sonnet".to_string(),
                 effort: "high".to_string(),
             },
+            root: PathBuf::from("/tmp/split-root"),
         }
     }
 

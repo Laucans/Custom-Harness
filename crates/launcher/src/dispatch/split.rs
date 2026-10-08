@@ -67,6 +67,7 @@ pub async fn run(
         sessions: Rc::clone(&built.sessions),
         spending: Rc::clone(&built.spending),
         locks: Rc::clone(&built.locks),
+        disk: Rc::clone(&built.disk),
     };
     let config = Config {
         split_dir: workspace.state_root().join(".llocal/split-locks"),
@@ -75,6 +76,7 @@ pub async fn run(
             model: "opus".to_string(),
             effort: "high".to_string(),
         },
+        root: workspace.root().to_path_buf(),
     };
 
     let workflow = run::build(

@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use harness_core::ports::agent::SessionFactory;
+use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
 use harness_core::ports::store::spending::Spending;
@@ -20,6 +21,8 @@ pub struct Ports {
     pub spending: Rc<dyn Spending>,
     /// What holds the lock — one split run per milestone at a time.
     pub locks: Rc<dyn Locks>,
+    /// What reads the checkout's manifests — the architecture's inventory.
+    pub disk: Rc<dyn Disk>,
 }
 
 #[cfg(test)]
@@ -60,6 +63,7 @@ pub(crate) mod fake {
             sessions: Rc::new(Rehearsal::new(Logbook::null())),
             spending: Rc::new(Nowhere),
             locks: Rc::new(Grants),
+            disk: Rc::new(crate::common::fake_disk::FakeDisk::default()),
         }
     }
 }

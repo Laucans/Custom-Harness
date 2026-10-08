@@ -10,6 +10,10 @@ pub struct SplitState {
     /// Task slices already open under this milestone, oldest first — the
     /// context that stops the plan from reopening what already exists.
     pub existing: Vec<Issue>,
+    /// What the checkout already holds of the architecture — systems,
+    /// Concepts, Capabilities, aggregates, `DataCapabilities`, Micro-UIs —
+    /// rendered for the prompt, so the plan names what exists.
+    pub inventory: String,
 }
 
 impl SplitState {

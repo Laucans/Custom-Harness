@@ -4,15 +4,18 @@
 //! with the table that sends them (`orchestration::stages`), and an action
 //! that went to read them would reverse the composition's direction.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
 use harness_core::domain::prompts::splice;
 use harness_core::domain::{Issue, Outcome, Verdict, prompts};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
+use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
+use crate::dev_loop::checks::architecture::Tree;
 use crate::split::data::plan;
 use crate::split::data::state::SplitState;
 
@@ -72,6 +75,169 @@ fn existing_block(existing: &[Issue]) -> String {
 /// because a model asked to emit nothing but JSON sometimes doesn't on the
 /// first try. If the second attempt still doesn't parse, this action does
 /// not fail: the stage's post-gate (`checks::gates::SliceParses`) does, so
+/// Reads, for free, what the checkout already holds of the architecture.
+///
+/// The plan must name the systems, Concepts, aggregates and `DataCapabilities`
+/// that exist — the loop's architecture check refuses, after `code`, a unit
+/// of a system nobody has. Read before the paid stage, from the same tree
+/// that check reads after it, so the two cannot disagree.
+pub struct ReadInventory {
+    /// What reads the manifests.
+    pub disk: Rc<dyn Disk>,
+    /// The checkout's root.
+    pub root: PathBuf,
+}
+
+#[async_trait(?Send)]
+impl Action<SplitState> for ReadInventory {
+    async fn run(&self, ctx: &mut Context<SplitState>) -> Outcome<Verdict> {
+        let tree = Tree::read(self.disk.as_ref(), &self.root);
+        ctx.state.inventory = inventory_block(&tree);
+        ctx.traces.say(&format!(
+            "architecture inventory: {} system(s), {} concept(s), {} capabilit(ies), {} aggregate(s), \
+             {} data-capabilit(ies), {} micro-ui(s)",
+            tree.systems.len(),
+            tree.concepts.len(),
+            tree.capabilities.len(),
+            tree.aggregates.len(),
+            tree.data_capabilities.len(),
+            tree.micro_uis.len()
+        ));
+        Ok(Verdict::Continue)
+    }
+}
+
+/// A manifest's string field, or `?` when it is missing or not JSON.
+fn field(json: Option<&serde_json::Value>, key: &str) -> String {
+    json.and_then(|j| j.get(key))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("?")
+        .to_string()
+}
+
+/// One line per Capability: id, system, the Concept it implements.
+fn capability_lines(tree: &Tree) -> Vec<String> {
+    tree.capabilities
+        .iter()
+        .map(|c| {
+            let json = c.manifest.as_ref().and_then(|m| m.json.as_ref());
+            let implements = json
+                .and_then(|j| j.get("implements"))
+                .and_then(serde_json::Value::as_str)
+                .map(|i| format!(", implements {i}"))
+                .unwrap_or_default();
+            format!(
+                "{} (system {}{implements})",
+                field(json, "capability"),
+                c.system
+            )
+        })
+        .collect()
+}
+
+/// One line per aggregate: id, its fields, its invariants.
+fn aggregate_lines(tree: &Tree) -> Vec<String> {
+    tree.aggregates
+        .iter()
+        .map(|m| {
+            let json = m.json.as_ref();
+            let invariants: Vec<String> = json
+                .and_then(|j| j.get("invariants"))
+                .and_then(serde_json::Value::as_array)
+                .map(|a| a.iter().map(|i| field(Some(i), "id")).collect())
+                .unwrap_or_default();
+            let fields: Vec<String> = json
+                .and_then(|j| j.get("fields"))
+                .and_then(serde_json::Value::as_object)
+                .map(|o| o.keys().cloned().collect())
+                .unwrap_or_default();
+            format!(
+                "{} [fields: {}; invariants: {}]",
+                field(json, "aggregate"),
+                listed(&fields),
+                listed(&invariants)
+            )
+        })
+        .collect()
+}
+
+/// One line per `DataCapability`: id, effect, the aggregate it targets.
+fn data_capability_lines(tree: &Tree) -> Vec<String> {
+    tree.data_capabilities
+        .iter()
+        .map(|m| {
+            let json = m.json.as_ref();
+            let target = json
+                .and_then(|j| j.get("target"))
+                .and_then(|t| t.get("aggregate"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?");
+            format!(
+                "{} ({} on {target})",
+                field(json, "dataCapability"),
+                field(json, "effect")
+            )
+        })
+        .collect()
+}
+
+/// Items joined, or `(none)`.
+fn listed(items: &[String]) -> String {
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
+/// What exists, rendered for the prompt — or the fact that nothing does.
+#[must_use]
+pub fn inventory_block(tree: &Tree) -> String {
+    let empty = tree.systems.is_empty()
+        && tree.concepts.is_empty()
+        && tree.capabilities.is_empty()
+        && tree.aggregates.is_empty()
+        && tree.data_capabilities.is_empty()
+        && tree.micro_uis.is_empty();
+    if empty {
+        return "The repository holds no unit of the architecture yet: this milestone's data \
+                layer is the first, and every id it declares is new."
+            .to_string();
+    }
+    let micro_uis: Vec<String> = tree
+        .micro_uis
+        .iter()
+        .map(|(system, m)| format!("{} (system {system})", field(m.json.as_ref(), "microUi")))
+        .collect();
+    let concepts: Vec<String> = tree
+        .concepts
+        .iter()
+        .map(|(name, version)| format!("{name}@{version}"))
+        .collect();
+    format!(
+        "What the repository already holds of the architecture — name these exactly when a \
+         slice builds on them, and invent no id that is not here:\n\
+         - systems with Rust code: {}\n\
+         - Concepts: {}\n\
+         - Capabilities: {}\n\
+         - aggregates: {}\n\
+         - DataCapabilities: {}\n\
+         - Micro-UIs: {}\n\
+         - queries/registry.json: {}",
+        listed(&tree.systems),
+        listed(&concepts),
+        listed(&capability_lines(tree)),
+        listed(&aggregate_lines(tree)),
+        listed(&data_capability_lines(tree)),
+        listed(&micro_uis),
+        if tree.has_query_registry {
+            "present"
+        } else {
+            "absent"
+        }
+    )
+}
+
 /// the judgment stays out of the action that sends the prompt.
 pub struct AskForSlice {
     /// The stage name, for the journal and the `stage` column of the registry.
@@ -102,6 +268,7 @@ impl SessionAction<SplitState> for AskForSlice {
                 ("title", &milestone.title),
                 ("body", &body),
                 ("existing", &existing),
+                ("inventory", &open.state.inventory),
             ],
         );
         let task = format!("#{}", milestone.number);
@@ -132,6 +299,54 @@ impl SessionAction<SplitState> for AskForSlice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_checkout_says_the_data_layer_is_the_first() {
+        let said = inventory_block(&Tree::default());
+        assert!(said.contains("no unit of the architecture yet"));
+    }
+
+    #[test]
+    fn the_inventory_names_what_exists_exactly() {
+        use crate::dev_loop::checks::architecture::{CapabilityCrate, Manifest};
+        let manifest = |path: &str, json: &str| Manifest {
+            path: path.to_string(),
+            json: serde_json::from_str(json).ok(),
+        };
+        let tree = Tree {
+            systems: vec!["campagne".to_string(), "dataguard".to_string()],
+            concepts: vec![("NiveauDuGroupe".to_string(), 1)],
+            capabilities: vec![CapabilityCrate {
+                dir: "crates/campagne/capabilities/niveau".to_string(),
+                system: "campagne".to_string(),
+                manifest: Some(manifest(
+                    "x",
+                    r#"{"capability":"campagne.niveau","implements":"NiveauDuGroupe@1"}"#,
+                )),
+                cargo_toml: None,
+            }],
+            aggregates: vec![manifest(
+                "a",
+                r#"{"aggregate":"Campagne","fields":{"nom":{}},"invariants":[{"id":"nom-unique"}]}"#,
+            )],
+            data_capabilities: vec![manifest(
+                "d",
+                r#"{"dataCapability":"campagne.creer","effect":"insert","target":{"aggregate":"Campagne"}}"#,
+            )],
+            ..Tree::default()
+        };
+        let said = inventory_block(&tree);
+        for expected in [
+            "campagne, dataguard",
+            "NiveauDuGroupe@1",
+            "campagne.niveau (system campagne, implements NiveauDuGroupe@1)",
+            "Campagne [fields: nom; invariants: nom-unique]",
+            "campagne.creer (insert on Campagne)",
+            "Micro-UIs: (none)",
+        ] {
+            assert!(said.contains(expected), "{expected} missing from:\n{said}");
+        }
+    }
 
     fn issue(number: u64, state: &str) -> Issue {
         Issue {

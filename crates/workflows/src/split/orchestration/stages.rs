@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use harness_core::execution::{Gate, Stage, StageBody};
 
-use crate::split::action::actions::{AskForSlice, ReadExistingTasks};
+use crate::split::action::actions::{AskForSlice, ReadExistingTasks, ReadInventory};
 use crate::split::action::publish::Write;
 use crate::split::checks::gates::SliceParses;
 use crate::split::config::Config;
@@ -66,6 +66,17 @@ slices one builds on.
 
 {existing}
 
+{inventory}
+
+Every unit ships its manifest, validated in CI against `contracts/`; a slice
+that opens one must say so in its brief, with the required fields:
+`capability.json` (capability, system, version, description, reads),
+`data-capability.json` (dataCapability, owner, version, effect, target,
+touches, payload, mode, invariants, permissions, callableBy, idempotencyKey),
+`aggregate.json` (aggregate, fields, invariants, relations, holds),
+`micro-ui.json` (microUi, system, description, needs, props),
+`concept.json` (concept, version, kind, definition, output, conformance).
+
 Answer with a JSON array and nothing else, one object per slice, in the
 order tasks must be taken:
 ```json
@@ -76,15 +87,21 @@ An empty array `[]` means this milestone needs no further task."#;
 /// The free context-reading stage: task slices already open. Costs nothing,
 /// so no `pre`/`post` gate is needed.
 #[must_use]
-pub fn context(ports: &Ports) -> Stage<SplitState> {
+pub fn context(ports: &Ports, config: &Config) -> Stage<SplitState> {
     Stage {
         name: CONTEXT.to_string(),
         pre: None,
         post: None,
         body: StageBody::Local {
-            actions: vec![Box::new(ReadExistingTasks {
-                gh: Rc::clone(&ports.gh),
-            })],
+            actions: vec![
+                Box::new(ReadExistingTasks {
+                    gh: Rc::clone(&ports.gh),
+                }),
+                Box::new(ReadInventory {
+                    disk: Rc::clone(&ports.disk),
+                    root: config.root.clone(),
+                }),
+            ],
         },
     }
 }
@@ -134,7 +151,11 @@ pub fn publish(ports: &Ports, config: &Config) -> Stage<SplitState> {
 /// Context, slice, publish — in order.
 #[must_use]
 pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<SplitState>> {
-    vec![context(ports), slice(ports, config), publish(ports, config)]
+    vec![
+        context(ports, config),
+        slice(ports, config),
+        publish(ports, config),
+    ]
 }
 
 #[cfg(test)]
@@ -154,7 +175,7 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_every_placeholder_the_action_fills() {
-        for placeholder in ["{num}", "{title}", "{body}", "{existing}"] {
+        for placeholder in ["{num}", "{title}", "{body}", "{existing}", "{inventory}"] {
             assert!(
                 SLICE_PROMPT.contains(placeholder),
                 "{placeholder} missing from SLICE_PROMPT"
