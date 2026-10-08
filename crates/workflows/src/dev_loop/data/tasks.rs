@@ -29,7 +29,8 @@
 
 use harness_core::domain::Issue;
 
-use crate::common::labels;
+use crate::common::architecture::{Declaration, Side};
+use crate::common::{labels, sections};
 
 /// True if the issue is a task the agent can run.
 #[must_use]
@@ -67,6 +68,44 @@ pub fn waiting_merge(issue: &Issue) -> bool {
     issue.has(labels::WAITING_MERGE)
 }
 
+/// True if the task's PR is open and waits for a human merge — the write
+/// side's own waiting state, before `waiting-merge`.
+#[must_use]
+pub fn review_pending(issue: &Issue) -> bool {
+    issue.has(labels::REVIEW_PENDING)
+}
+
+/// True if the task is on the write side of the architecture.
+///
+/// The label decides first; a task opened by hand, without one, is read from
+/// its `## Architecture` section; a task that declares nothing is read-side —
+/// the behaviour every task had before the sides existed, and the harmless
+/// reading when wrong here: its PR merges on its own, as they all did.
+#[must_use]
+pub fn is_write_side(issue: &Issue) -> bool {
+    if issue.has(labels::WRITE_SIDE) {
+        return true;
+    }
+    if issue.has(labels::READ_SIDE) {
+        return false;
+    }
+    sections::parse(&issue.body)
+        .get(sections::ARCHITECTURE)
+        .and_then(|text| Declaration::parse(text))
+        .is_some_and(|declaration| declaration.side() == Side::Write)
+}
+
+/// The branch the task's body declares — the `branch: <type>/<slug>` line
+/// `split` writes under Scope — if any.
+#[must_use]
+pub fn declared_branch(body: &str) -> Option<String> {
+    body.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("branch:"))
+        .map(|branch| branch.trim().trim_matches('`').to_string())
+        .filter(|branch| !branch.is_empty())
+}
+
 /// `human` or `auto` — how the log names the task kind.
 #[must_use]
 pub fn kind(issue: &Issue) -> &'static str {
@@ -101,7 +140,18 @@ pub fn runnable(issue: &Issue) -> bool {
         && is_agent(issue)
         && is_ready(issue)
         && !waiting_merge(issue)
+        && !review_pending(issue)
         && blockers_pending(issue).is_empty()
+}
+
+/// Every runnable open task, in number order — what a parallel watch
+/// spreads over its lanes, where a single loop takes only the first.
+#[must_use]
+pub fn runnable_tasks(issues: &[Issue]) -> Vec<&Issue> {
+    open_agent_tasks(issues)
+        .into_iter()
+        .filter(|issue| runnable(issue))
+        .collect()
 }
 
 /// Why this task cannot run, stated for a human.
@@ -117,6 +167,13 @@ pub fn why_not(issue: &Issue) -> String {
         return format!(
             "{} {}: delivered on the integration branch, waiting for the merge \
              that closes it",
+            issue.reference(),
+            issue.title
+        );
+    }
+    if review_pending(issue) {
+        return format!(
+            "{} {}: on the write side — its PR is open and waits for your merge",
             issue.reference(),
             issue.title
         );
@@ -393,5 +450,59 @@ mod tests {
         ];
         assert_eq!(first_closing(&prs, 42).expect("a PR").number, 2);
         assert!(first_closing(&prs, 99).is_none());
+    }
+
+    // --- the write side ----------------------------------------------------
+
+    #[test]
+    fn a_task_whose_pr_waits_for_a_human_is_not_runnable_and_still_blocks_the_next() {
+        let waiting = issue(11, &[labels::AGENT, labels::READY, labels::REVIEW_PENDING]);
+        assert!(!runnable(&waiting));
+        assert!(why_not(&waiting).contains("waits for your merge"));
+        let mut next = task(12);
+        next.blocked_by = vec![waiting];
+        assert!(!runnable(&next), "its code is not on the branch yet");
+    }
+
+    #[test]
+    fn the_side_is_read_from_the_label_first_then_from_the_body() {
+        assert!(is_write_side(&issue(
+            1,
+            &[labels::AGENT, labels::WRITE_SIDE]
+        )));
+        assert!(!is_write_side(&issue(
+            2,
+            &[labels::AGENT, labels::READ_SIDE]
+        )));
+        let mut by_body = issue(3, &[labels::AGENT]);
+        by_body.body =
+            "## Scope\n\nbranch: feat/x\n\n## Architecture\n\nunit: migration\nsystem: credit\n"
+                .to_string();
+        assert!(is_write_side(&by_body));
+        by_body.body = "## Architecture\n\nunit: capability\n".to_string();
+        assert!(!is_write_side(&by_body));
+        assert!(
+            !is_write_side(&issue(4, &[labels::AGENT])),
+            "nothing declared: read side"
+        );
+    }
+
+    #[test]
+    fn the_declared_branch_is_the_scope_s_branch_line() {
+        assert_eq!(
+            declared_branch("## Scope\n\nbranch: `feat/risk-badge`\n\ncovers A").as_deref(),
+            Some("feat/risk-badge")
+        );
+        assert_eq!(declared_branch("no branch here"), None);
+        assert_eq!(declared_branch("branch:   "), None);
+    }
+
+    #[test]
+    fn every_runnable_task_is_listed_in_number_order() {
+        let mut blocked = task(9);
+        blocked.blocked_by = vec![task(7)];
+        let issues = [task(8), blocked, task(7), issue(6, &[labels::AGENT])];
+        let numbers: Vec<u64> = runnable_tasks(&issues).iter().map(|t| t.number).collect();
+        assert_eq!(numbers, [7, 8]);
     }
 }

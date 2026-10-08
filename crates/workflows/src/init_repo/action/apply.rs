@@ -1,12 +1,13 @@
 //! Sequences the writes `init-repo` makes, honoring `--dry-run`/`--no-env`.
 //!
 //! The one place that follows the spec's steps 2 through 7 in order:
-//! preconditions, labels, the branch, the read-only audit, the link, the
-//! verdict.
+//! preconditions, labels, the branch, the install of the architecture's
+//! files, the read-only audit, the link, the verdict.
 
 use harness_core::domain::{Halt, Outcome};
 
 use crate::common::labels;
+use crate::init_repo::action::install;
 use crate::init_repo::config::Config;
 use crate::init_repo::data::audit::{self, Audit};
 use crate::init_repo::data::env_file;
@@ -33,13 +34,15 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<(Report, Verdict)> {
         .await?
         .ok_or_else(|| Halt::Unreadable(format!("default branch {default} has no sha")))?;
     let branch_sha_now = ports.gh.branch_sha(&config.branch).await?;
-    let audit = read_audit(ports, config).await?;
     let plan = Plan::new(&existing, branch_sha_now.as_deref(), &default_sha);
 
     let labels_created = create_missing_labels(ports, config, &plan).await?;
     create_grill_backlog_label_if_needed(ports, config, &existing).await?;
     let branch_line = create_branch_if_needed(ports, config, &plan, &default).await?;
     let (guard_lines, protection_advisory) = guard_branches(ports, config, &default).await?;
+    let install_lines = install::run(ports, config).await?;
+    // After the install: a `CLAUDE.md` it just pushed is one the map reads.
+    let audit = read_audit(ports, config).await?;
     let env_line = if config.write_env {
         apply_env_file(ports, config)?
     } else {
@@ -62,6 +65,7 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<(Report, Verdict)> {
             labels_kept: labels::ALL.len() - plan.missing_labels.len(),
             branch_line,
             guard_lines,
+            install_lines,
             env_line,
             blocking,
             advisory,
@@ -457,6 +461,7 @@ mod tests {
         let ports = ports_fake::with_disk(gh, Rc::clone(&disk));
         let mut config = config_fake::config();
         config.write_env = false;
+        config.install = false;
 
         let (report, _) = run(&ports, &config).await.expect("run");
         assert_eq!(report.env_line, "skipped (--no-env)");

@@ -8,6 +8,9 @@ use std::path::PathBuf;
 use harness_core::domain::Slug;
 
 /// The settings for one `init-repo` invocation.
+// Five flags, because that is what the command line is: a flag present or
+// absent, each independent of the others.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Config {
     /// The target repository.
     pub slug: Slug,
@@ -21,6 +24,12 @@ pub struct Config {
     pub force: bool,
     /// Read everything, write nothing.
     pub dry_run: bool,
+    /// Where the target is cloned for the install — one folder per
+    /// repository under it, reused across runs.
+    pub workdir: PathBuf,
+    /// Install the architecture's files in the repository at all — `false`
+    /// under `--no-install`.
+    pub install: bool,
 }
 
 #[cfg(test)]
@@ -45,6 +54,8 @@ pub(crate) mod fake {
             write_env: true,
             force: false,
             dry_run: false,
+            workdir: PathBuf::from("/tmp/init"),
+            install: true,
         }
     }
 }

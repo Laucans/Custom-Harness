@@ -36,12 +36,29 @@ everything else is `needs_human: false`. Order so something testable exists
 early, and make the last slice the one that proves the whole milestone runs
 end to end.
 
+The repository follows the agent-native architecture (`docs/ARCHITECTURE.md`
+in the repository map): every slice is exactly one unit of it. Name the
+`unit` — `capability`, `micro-ui`, `concept`, `data-capability`,
+`persisted-query`, `composition`, `invariant`, `migration` or
+`infrastructure` — the `system` it belongs to (the bounded context, e.g.
+`credit`), the `concept` it implements when there is one (`Risk@3`), and for
+a `data-capability` its `effect` (`insert`, `update`, `delete`, `upsert`) and
+the existing fields it `touches` (empty for a pure insert). The read side —
+capability, micro-ui, concept, persisted-query, composition, an insert-only
+data-capability — is independent by design: give such a slice no
+`depends_on` unless it really reads what another slice produces, so the
+slices run in parallel. The write side — a data-capability that mutates, an
+invariant, a migration, infrastructure — runs one slice at a time and a
+human merges each one: put those first, so the readers build on them.
+`depends_on` lists the 0-based indexes, in this same array, of the slices
+one builds on.
+
 {existing}
 
 Answer with a JSON array and nothing else, one object per slice, in the
 order tasks must be taken:
 ```json
-[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false}]
+[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false, "unit": "capability", "system": "credit", "concept": "Risk@3", "effect": null, "touches": [], "depends_on": []}]
 ```
 An empty array `[]` means this milestone needs no further task."#;
 

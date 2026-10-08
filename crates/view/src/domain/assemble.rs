@@ -58,7 +58,15 @@ fn round(log: &traces::RunLog) -> Option<String> {
     log.round.map(|(n, total)| format!("{n}/{total}"))
 }
 
-/// Whether the latest run of `line` is still at work.
+/// The latest run's id, to tell it from the rest of the crew.
+fn current_run_id(observed: Option<&ObservedLine>) -> String {
+    observed
+        .and_then(|l| l.latest.as_ref())
+        .map(|r| r.run_id.clone())
+        .unwrap_or_default()
+}
+
+/// Whether a run of `line` is still at work.
 fn is_live(watch: &Watch, line: &str, run: &ObservedRun, demo_pick: bool) -> bool {
     let age = run.age_secs.unwrap_or(u64::MAX);
     let dispatched = watch
@@ -222,24 +230,46 @@ fn lines_and_employees(inputs: &Inputs<'_>) -> (Vec<LineView>, Vec<Employee>) {
         let observed: Option<&ObservedLine> =
             inputs.observed.lines.iter().find(|l| l.workflow == line.id);
         let run = observed.and_then(|l| l.latest.as_ref());
-        let live = run
-            .is_some_and(|run| is_live(watch, &line.id, run, demo_line == Some(line.id.as_str())));
-        let (stations, current) = stations(line, run, live);
+        let demo_pick = demo_line == Some(line.id.as_str());
+        let live = run.is_some_and(|run| is_live(watch, &line.id, run, demo_pick));
+        let (views, current) = stations(line, run, live);
+        // One employee per run at work: a parallel watch runs a line on
+        // several lanes, and each lane is somebody standing at a station.
+        let subject = watch
+            .in_flight
+            .as_ref()
+            .filter(|flight| flight.workflow == line.id)
+            .and_then(|flight| flight.subject.as_deref());
+        let mut crew: Vec<&ObservedRun> = observed
+            .map(|l| {
+                l.recent
+                    .iter()
+                    .filter(|r| {
+                        let is_latest = run.is_some_and(|latest| latest.run_id == r.run_id);
+                        is_live(watch, &line.id, r, demo_pick && is_latest)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Some(run) = run
             && live
+            && !crew.iter().any(|r| r.run_id == run.run_id)
         {
-            let subject = watch
-                .in_flight
-                .as_ref()
-                .filter(|flight| flight.workflow == line.id)
-                .and_then(|flight| flight.subject.as_deref());
-            employees.push(employee(line, run, current, live, subject));
+            crew.push(run);
+        }
+        for run in crew {
+            let at = if run.run_id == current_run_id(observed) {
+                current.clone()
+            } else {
+                stations(line, Some(run), true).1
+            };
+            employees.push(employee(line, run, at, true, subject));
         }
         lines.push(LineView {
             id: line.id.clone(),
             title: line.title.clone(),
             trigger: line.trigger.clone(),
-            stations,
+            stations: views,
             runs: observed.map_or(0, |l| l.runs),
             last_run: run.map(last_run),
             active: live,
@@ -522,6 +552,7 @@ mod tests {
                 workflow: workflow.to_string(),
                 runs: 1,
                 latest: Some(run),
+                recent: Vec::new(),
             }],
             ledger: vec![],
             errors: vec![],
@@ -755,5 +786,26 @@ mod tests {
         assert!(snap.board.is_none());
         assert_eq!(snap.lines.len(), lines.len());
         assert_eq!(snap.rooms.len(), 6);
+    }
+
+    #[test]
+    fn every_fresh_run_of_a_line_is_an_employee_of_its_own() {
+        // Two lanes on the dev loop: two workers, each at their own station,
+        // and the line's stations read from the latest run.
+        let latest = dev_run(MID_RUN, 12);
+        let mut other = dev_run("[2026-10-06T20:26:21Z] task #63: Other [auto]\n", 40);
+        other.run_id = "20261006-202000".to_string();
+        let mut observed = observed_with(
+            "agent-loop",
+            latest.clone(),
+            in_flight("agent-loop", "2026-10-06T20:26:00Z"),
+        );
+        observed.lines[0].recent = vec![other, latest];
+        let snap = assemble(&observed, false);
+        assert_eq!(snap.employees.len(), 2);
+        let ids: Vec<&str> = snap.employees.iter().map(|e| e.id.as_str()).collect();
+        assert!(ids.contains(&"agent-loop/20261006-202000"));
+        assert!(ids.contains(&"agent-loop/20261006-202608"));
+        assert!(snap.employees.iter().all(|e| e.active));
     }
 }

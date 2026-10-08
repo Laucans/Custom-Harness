@@ -51,8 +51,8 @@ These rules override the skill's interactive stopping points:
 3. The integration branch for this run is `@BRANCH@`. Wherever a skill says
    `main` as the PR base or the branch-off point, read `@BRANCH@`: branch
    off it, and `gh pr create --base @BRANCH@`. The rest of CLAUDE.md's
-   Repository etiquette stands unchanged — branch -> PR ->
-   `gh pr merge --rebase`, and never a direct push.
+   Repository etiquette stands unchanged — branch -> PR, merged the way this
+   stage's own instructions say, and never a direct push.
 4. Stage by name, never `git add -A`. The tree may carry unrelated
    in-flight work that is not yours to commit.
 5. Do not start another pipeline stage as its own process, and do not
@@ -64,9 +64,9 @@ These rules override the skill's interactive stopping points:
 --- END EXECUTION CONTEXT ---";
 
 const SCOPE: &str = "--- SCOPE (injected by {injector}) ---
-The issues below are the whole brief, from the widest to the narrowest; there
-is no docs/current/ any more. All of them are GitHub issues: what you produce
-goes back into the issue, not into a file under docs/.
+The issues below are the whole brief, from the widest to the narrowest. All
+of them are GitHub issues: what you produce goes back into the issue, never
+into a file under docs/.
 
 Only ISSUE #{num} is yours to work on. The roadmap, the milestone and the
 sibling tasks are there so you understand where it sits and what its
@@ -100,34 +100,21 @@ CURRENT ISSUE #{num} — {title}
 --- END SCOPE ---";
 
 const STACK: &str = "--- REPOSITORY CONFIGURATION (injected by {injector}) ---
-The files below are this checkout's own configuration, copied verbatim and
-current as of this run. They are here so you do not spend turns discovering how
-the project is built, tested and linted: read the scripts and the runner
-configuration from here rather than opening these files again.
-
-Two limits, and they matter:
-
-1. This is configuration only — never the source. It says how to run things,
-   nothing about what the code does.
-2. If a command taken from here fails, the file on disk wins: re-read it and
-   carry on. Nothing below has been edited or summarized, but a session of this
-   same run may have changed it since.
+This checkout's own configuration, verbatim: how the project is built, tested
+and linted. Read the scripts and runner settings from here instead of opening
+these files again. Configuration only, never the source; if a command taken
+from here fails, the file on disk wins — re-read it and carry on.
 
 {files}
 --- END REPOSITORY CONFIGURATION ---";
 
 const SIGNATURES: &str = "--- PUBLIC SIGNATURES (injected by {injector}) ---
-The public shape of the files this task names: what you can call, and with what
-arguments. Bodies are gone on purpose — this says nothing about how any of it
-works, only about its interface.
-
-Read it instead of opening these files to learn their API. Two limits:
-
-1. Only what is public, and only the files named in the issue. A neighbour this
-   does not list is a file you still have to open.
-2. For every language but TypeScript it is derived from the checkout by pattern,
-   not by a compiler. If a signature here does not match what the code does, the
-   code wins.
+The public shape of the files this task names — what you can call, with what
+arguments; bodies left out on purpose. Read it instead of opening these files
+to learn their API. Only public items, only the files the issue names: a
+neighbour not listed here is a file you still open. Outside TypeScript it is
+derived by pattern, not by a compiler — where it disagrees with the code, the
+code wins.
 
 {files}
 --- END PUBLIC SIGNATURES ---";

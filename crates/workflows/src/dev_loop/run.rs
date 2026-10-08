@@ -40,6 +40,9 @@ pub struct Request {
     /// The task the resume point designates, if there is one. Only applies to
     /// the first turn — see the `rounds` factory below.
     pub resuming: Option<String>,
+    /// The one task this run is for (`--task`), if any — a lane of a
+    /// parallel watch. Applies to every turn.
+    pub wanted: Option<u64>,
 }
 
 /// Mounts the entire loop, from its wiring and what must hold before the first
@@ -56,7 +59,13 @@ pub fn build(
     DevLoop {
         pre,
         remaining: Cell::new(request.rounds_budget),
-        rounds: rounds(ports, config, request.stages_filter, request.resuming),
+        rounds: rounds(
+            ports,
+            config,
+            request.stages_filter,
+            request.resuming,
+            request.wanted,
+        ),
         store,
         flow_id,
     }
@@ -169,6 +178,7 @@ fn rounds(
     config: &Config,
     stages_filter: String,
     resuming: Option<String>,
+    wanted: Option<u64>,
 ) -> Box<dyn Fn(u32) -> TaskRound> {
     let gh = Rc::clone(&ports.gh);
     let sessions = Rc::clone(&ports.sessions);
@@ -200,6 +210,7 @@ fn rounds(
             pick: PickTask {
                 gh: Rc::clone(&gh),
                 resuming: if turn == 1 { resuming.clone() } else { None },
+                wanted,
             },
             stages: stages::table(&ports, &config, turn),
             delivered: MarkWaitingMerge {
@@ -243,6 +254,7 @@ mod tests {
             rounds_budget: 3,
             stages_filter: String::new(),
             resuming,
+            wanted: None,
         }
     }
 
@@ -264,6 +276,7 @@ mod tests {
             &config_fake::config(),
             String::new(),
             Some("11".to_string()),
+            None,
         );
         assert_eq!(built(1).pick.resuming.as_deref(), Some("11"));
         assert_eq!(built(2).pick.resuming, None);
@@ -275,6 +288,7 @@ mod tests {
             &ports_fake::ports(),
             &config_fake::config(),
             String::new(),
+            None,
             None,
         );
         assert_eq!(built(3).turn, 3);
@@ -289,6 +303,7 @@ mod tests {
             &ports_fake::ports(),
             &config_fake::config(),
             "code".to_string(),
+            None,
             None,
         );
         assert_eq!(built(1).stages.len(), 3);

@@ -21,7 +21,7 @@ router about what a label means or what a milestone's branch is called.
 | --- | --- | --- |
 | **A** the plant | one chimney per model, smoking while a session on it is open; a sign (to do / done); a door | the latest run of each line; `costs.tsv`; the GitHub board |
 | **B** inside | six rooms: lines, office, store, value, control, construction | the blueprint; the same picture |
-| **C** a room | the lines station by station, the product on the belt, an employee beside the station in progress | `run.log`, `prompts.md`, `stream.jsonl` of the latest run; `watch.log` |
+| **C** a room | the lines station by station, the product on the belt, an employee beside each station in progress — several when a parallel watch runs the line on several lanes; a crew that shares a station fans out and opens a pane to pick one | `run.log`, `prompts.md`, `stream.jsonl` of every fresh run; `watch.log` |
 | **D** a pane | logs live, a station's cost, an issue body, the dashboards, the versions | `/api/runs/…` tails; `/api/issues/…`; the picture |
 
 An **employee** is a run believed to be at work: the watch dispatched its

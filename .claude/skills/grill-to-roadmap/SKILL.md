@@ -119,6 +119,15 @@ itself, in two passes:
 This section has no length cap. It is the one part of the body that may not
 be compressed, because everything else is unreadable without it.
 
+## Systems and Concepts
+The bounded contexts the product is made of, one line each — name, namespace,
+owner (`credit.*` — the credit team's system) — and the Concepts that cross
+them, one line each — name, version, derived or authoritative
+(`Risk@3 — derived`). Every repository follows the agent-native architecture
+(`docs/ARCHITECTURE.md`): `planner` draws each milestone inside one of these
+systems, `split` names each task's unit in it, and a value that is
+authoritative here is one only the DataGuard will ever change.
+
 ## Starting point
 Who has the problem, how they cope today, and what the repo actually holds —
 checkable, not an impression. Three lines.

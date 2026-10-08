@@ -1002,12 +1002,14 @@ fn employee_hot(e: &Employee) -> Hot {
     pane(
         serde_json::json!({"kind": "employee", "id": e.id}),
         &format!(
-            "{}\n{}{}\n{}",
+            "{}\n{}{} · round {}\nlast write {} ago\n{}",
             e.name,
             e.stage.as_deref().unwrap_or("—"),
             e.model
                 .as_ref()
                 .map_or_else(String::new, |m| format!(" · {m}")),
+            e.round.as_deref().unwrap_or("—"),
+            e.age_secs.map_or_else(|| "?".to_string(), age),
             e.last_line
         ),
     )
@@ -1410,9 +1412,10 @@ fn interior(snap: &Snapshot) -> Scene {
             .iter()
             .position(|l| l.id == e.workflow)
             .unwrap_or(0);
+        // Side by side, not stacked: a tenth of a tile apart they read as one.
         person(
             &mut b,
-            gap + 0.2 + i as f32 * 0.1,
+            gap + 0.2 + (i % 4) as f32 * 0.9,
             gap + 0.3 + k as f32 * 0.78,
             e.model.as_deref(),
             &e.name,
@@ -1561,30 +1564,52 @@ fn lines_room(snap: &Snapshot) -> Scene {
                 Some(tx),
             );
         }
-        if let Some(e) = snap.employees.iter().find(|e| e.workflow == line.id) {
-            let k = line
-                .stations
+        // Everyone at work on this line, by station: a parallel watch puts
+        // several lanes on one line, and two of them may stand at the same
+        // station. A crew of one opens its own pane; a crew of several fans
+        // out toward the camera and opens the pane that lets you pick one.
+        let crew: Vec<&Employee> = snap
+            .employees
+            .iter()
+            .filter(|e| e.workflow == line.id)
+            .collect();
+        for (k, station) in line.stations.iter().enumerate() {
+            let here: Vec<&Employee> = crew
                 .iter()
-                .position(|s| Some(&s.id) == e.station.as_ref())
-                .unwrap_or(0);
-            // In front of the belt, between their station and the next, so
-            // their card covers neither stage name.
-            let x = x0 + 0.3 + k as f32 * sp + 0.8;
-            let hot = pane(
-                serde_json::json!({"kind": "employee", "id": e.id}),
-                &format!(
-                    "{}\n{}{} · round {}\nlast write {} ago\n{}",
-                    e.name,
-                    e.stage.as_deref().unwrap_or("—"),
-                    e.model
-                        .as_ref()
-                        .map_or_else(String::new, |m| format!(" · {m}")),
-                    e.round.as_deref().unwrap_or("—"),
-                    e.age_secs.map_or_else(|| "?".to_string(), age),
-                    e.last_line
-                ),
-            );
-            person(&mut b, x, z + 1.3, e.model.as_deref(), &e.name, &hot);
+                .copied()
+                .filter(|e| {
+                    e.station.as_ref() == Some(&station.id) || (e.station.is_none() && k == 0)
+                })
+                .collect();
+            for (i, e) in here.iter().enumerate() {
+                // In front of the belt, between their station and the next,
+                // so their card covers neither stage name; the next member a
+                // step toward the camera and a little to the right.
+                let x = x0 + 0.3 + k as f32 * sp + 0.8 + i as f32 * 0.25;
+                let hot = if here.len() > 1 {
+                    pane(
+                        serde_json::json!({"kind": "crew", "line": line.id, "station": station.id}),
+                        &format!(
+                            "{} at work here — click to pick one:\n{}",
+                            here.len(),
+                            here.iter()
+                                .map(|m| m.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ),
+                    )
+                } else {
+                    employee_hot(e)
+                };
+                person(
+                    &mut b,
+                    x,
+                    z + 1.3 + i as f32 * 0.8,
+                    e.model.as_deref(),
+                    &e.name,
+                    &hot,
+                );
+            }
         }
     }
     b.scene
@@ -2195,6 +2220,60 @@ mod tests {
             backing(&lines, "✓ pick"),
             Some(Backing::None),
             "a stage name written on the ground"
+        );
+    }
+
+    #[test]
+    fn two_workers_at_one_station_fan_out_and_open_the_crew_pane() {
+        let mut snap = picture();
+        let mut second = snap.employees[0].clone();
+        second.id = "agent-loop/20261007-150000".to_string();
+        second.name = "Dev loop · #67".to_string();
+        snap.employees.push(second);
+        let scene = build(
+            &snap,
+            &View::C {
+                room: "lines".to_string(),
+            },
+        );
+        let workers: Vec<&Prop> = scene
+            .props
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.shape,
+                    Shape::Card {
+                        figure: Figure::Follower { .. },
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(workers.len(), 2);
+        assert!(
+            (workers[0].at[2] - workers[1].at[2]).abs() > 0.5,
+            "fanned out toward the camera, not stacked"
+        );
+        assert_eq!(
+            panes(&scene, "crew"),
+            4,
+            "both cards and both shadows open the crew pane"
+        );
+        assert_eq!(
+            panes(&scene, "employee"),
+            0,
+            "a crew of two never opens one member blind"
+        );
+        let single = build(
+            &picture(),
+            &View::C {
+                room: "lines".to_string(),
+            },
+        );
+        assert_eq!(
+            panes(&single, "employee"),
+            2,
+            "alone, the worker opens their own pane"
         );
     }
 

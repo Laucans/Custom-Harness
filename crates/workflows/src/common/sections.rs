@@ -11,10 +11,12 @@
 //! three string comparisons, and a dependency doesn't warrant that — same
 //! reason as `dev_loop::tasks::closes`.
 //!
-//! # The one section nobody rewrites
+//! # The two sections nobody rewrites
 //!
-//! [`SCOPE`] is written once, by `split`, and belongs to no refinement phase —
-//! so every round carries it through untouched. It exists because the boundary
+//! [`SCOPE`] and [`ARCHITECTURE`] are written once, by `split`, and belong to
+//! no refinement phase — so every round carries them through untouched. The
+//! second says what the task *is* in the agent-native architecture (see
+//! [`crate::common::architecture`]). The first exists because the boundary
 //! a slice states ("covers this, does not cover that") was the most useful
 //! sentence in a task's body and the refinement used to overwrite it: the body
 //! was replaced by the five sections it knows, and the only record of what the
@@ -36,11 +38,24 @@ pub struct Section {
 /// The key of the section `split` writes and no refinement phase touches.
 pub const SCOPE: &str = "scope";
 
+/// The key of the other section `split` writes and no phase touches.
+///
+/// What the task is in the agent-native architecture — its unit, its
+/// system, the Concept it implements, the effect of a `DataCapability`.
+/// Read back by [`crate::common::architecture`]; the loop derives the
+/// task's side from it, so a refinement that rewrote it could move a task
+/// across the read/write frontier behind the labels' back.
+pub const ARCHITECTURE: &str = "architecture";
+
 /// The canonical order: how the body is rewritten, and how stages run.
-pub const SECTIONS: [Section; 6] = [
+pub const SECTIONS: [Section; 7] = [
     Section {
         key: SCOPE,
         heading: "Scope",
+    },
+    Section {
+        key: ARCHITECTURE,
+        heading: "Architecture",
     },
     Section {
         key: "business-goal",
@@ -65,8 +80,9 @@ pub const SECTIONS: [Section; 6] = [
 ];
 
 /// The keys, in canonical order.
-pub const KEYS: [&str; 6] = [
+pub const KEYS: [&str; 7] = [
     SCOPE,
+    ARCHITECTURE,
     "business-goal",
     "acceptance-criteria",
     "business-rules",

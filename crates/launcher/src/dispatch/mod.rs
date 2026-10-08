@@ -32,6 +32,7 @@
 pub mod dev_loop;
 pub mod doctor;
 pub mod init_repo;
+pub mod lanes;
 pub mod milestone_merge;
 pub mod planner;
 pub mod pr_fix;

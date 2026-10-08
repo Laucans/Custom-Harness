@@ -81,17 +81,41 @@ gh api -X POST repos/{owner}/{repo}/issues/<roadmap>/sub_issues \
 # 4. chain it after the previous milestone, if there is one
 gh api -X POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by \
   -F issue_id=<id of the previous milestone>
-# 5. leave it for /refinement to flesh out
-gh issue edit <n> --add-label harness:refinement
+# 5. leave it for /refinement to flesh out, and say which side it is on
+gh issue edit <n> --add-label harness:refinement --add-label harness:read-side
 ```
 
 Long bodies go through `--body-file`, never inline: a body typed on the
 command line gets mangled by the shell.
 
 **The milestone body** is a few sentences on what it achieves — `Problem`
-and `Goal` is enough. `/refinement` is what expands it into the full
-section structure a task's `/business-analyst` pass will read; writing
-more here is work `/refinement` redoes.
+and `Goal` is enough — followed by its place in the agent-native
+architecture (`docs/ARCHITECTURE.md`), as `key: value` lines under its own
+heading:
+
+```markdown
+## Architecture
+
+systems: credit            # the bounded context(s) — one, where possible
+concepts: Risk@3           # the versioned Concepts it defines or implements
+side: harness:read-side    # harness:write-side if any of its work mutates
+                           # data or the rules that guard it
+```
+
+`/refinement` is what expands the rest into the full section structure a
+task's `/business-analyst` pass will read; writing more here is work
+`/refinement` redoes.
+
+### Draw milestones along the architecture's frontier
+
+The write side — DataCapabilities that mutate, invariants, relations,
+migrations, the DataGuard's own plumbing — is reviewed by a human and runs
+one task at a time. The read side — Capabilities, Micro-UIs, Concepts,
+persisted queries, compositions — runs in parallel, unreviewed, behind CI
+gates. So: a milestone that defines a system's write side comes **before**
+the milestones whose readers depend on it, and a milestone stays inside one
+system where possible. Label it `harness:write-side` if any of its work is
+on the write side, `harness:read-side` otherwise.
 
 ### Never add `harness:ready`
 

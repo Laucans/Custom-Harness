@@ -59,6 +59,10 @@ pub struct PickTask {
     /// after `/code` merges works on an already-closed issue that nothing else
     /// would offer, and `/create-test` would be lost.
     pub resuming: Option<String>,
+    /// The one task this run is for (`--task`), if any: a lane of a parallel
+    /// watch. Picked if runnable, refused by name otherwise — never traded
+    /// for the board's own choice, which another lane may be running.
+    pub wanted: Option<u64>,
 }
 
 #[async_trait(?Send)]
@@ -80,7 +84,28 @@ impl Action<Loop> for PickTask {
             here.milestone.title
         ));
         let resumed = self.resuming.as_deref().and_then(|key| here.find(key));
-        let Some(task) = resumed.or_else(|| here.next()) else {
+        let chosen = match (resumed, self.wanted) {
+            (Some(task), _) => Some(task),
+            (None, Some(number)) => {
+                let Some(task) = here.wanted(number) else {
+                    let why = here.tasks.iter().find(|t| t.number == number).map_or_else(
+                        || {
+                            format!(
+                                "#{number} is not a task of milestone {}",
+                                here.milestone.reference()
+                            )
+                        },
+                        tasks::why_not,
+                    );
+                    return Err(Halt::Halted(format!(
+                        "asked for #{number}, which cannot run: {why}"
+                    )));
+                };
+                Some(task)
+            }
+            (None, None) => here.next(),
+        };
+        let Some(task) = chosen else {
             if !here.open_agents().is_empty() {
                 return Err(Halt::Halted(here.stuck()));
             }
@@ -101,11 +126,17 @@ impl Action<Loop> for PickTask {
         ctx.state.spec_written = tasks::spec_written(task);
         ctx.state.tech_written = tasks::tech_written(task);
         ctx.state.resumed = resumed.is_some();
+        ctx.state.write_side = tasks::is_write_side(task);
         ctx.traces.say(&format!(
-            "task {}: {} [{}]",
+            "task {}: {} [{}, {}]",
             task.reference(),
             task.title,
-            tasks::kind(task)
+            tasks::kind(task),
+            if ctx.state.write_side {
+                labels::WRITE_SIDE
+            } else {
+                labels::READ_SIDE
+            }
         ));
         Ok(Verdict::Continue)
     }
@@ -190,8 +221,16 @@ impl Action<Loop> for MarkWaitingMerge {
         }
         let merged = self.gh.merged_prs(&self.integration_branch).await?;
         let Some(shipped) = tasks::first_closing(&merged, number) else {
-            return Ok(Verdict::Continue);
+            return self.note_review_pending(ctx, &here, number).await;
         };
+        // The human merged what the write side had left open: the review
+        // is done, and the board says so.
+        if tasks::review_pending(&here) {
+            self.gh.remove_label(number, labels::REVIEW_PENDING).await?;
+            if here.has(labels::NEEDS_DECISION) {
+                self.gh.remove_label(number, labels::NEEDS_DECISION).await?;
+            }
+        }
         ctx.traces.say(&format!(
             "#{number} delivered by PR {}, merged on {} — marked {}, now you \
              close it by merging to the default branch",
@@ -206,6 +245,59 @@ impl Action<Loop> for MarkWaitingMerge {
             )
             .await?;
         self.gh.add_label(number, labels::WAITING_MERGE).await?;
+        Ok(Verdict::Continue)
+    }
+}
+
+impl MarkWaitingMerge {
+    /// The write side's own delivery: no merged PR, but an open one carrying
+    /// `harness:to-review` on the task's declared branch. The task is then
+    /// marked `review-pending` — the loop stops replaying it, the next task
+    /// waits, and `needs-decision` tells the human what is theirs to do.
+    ///
+    /// Nothing is marked without the PR: a session that stopped before
+    /// opening it leaves the round to its postcondition, which names it.
+    async fn note_review_pending(
+        &self,
+        ctx: &Context<Loop>,
+        here: &harness_core::domain::Issue,
+        number: u64,
+    ) -> Outcome<Verdict> {
+        if !ctx.state.write_side || tasks::review_pending(here) {
+            return Ok(Verdict::Continue);
+        }
+        let branch = tasks::declared_branch(&here.body);
+        let open = self.gh.open_prs_labelled(labels::TO_REVIEW).await?;
+        let Some(pr) = open
+            .iter()
+            .find(|pr| branch.as_deref() == Some(pr.head.as_str()))
+        else {
+            ctx.traces.say(&format!(
+                "#{number} is on the write side and no open PR carrying {} is on its \
+                 branch {} yet",
+                labels::TO_REVIEW,
+                branch.as_deref().unwrap_or("(undeclared)")
+            ));
+            return Ok(Verdict::Continue);
+        };
+        ctx.traces.say(&format!(
+            "#{number} is on the write side: PR {} is open and waits for a human \
+             merge — marked {}",
+            pr.reference(),
+            labels::REVIEW_PENDING
+        ));
+        self.gh
+            .post_issue_comment(
+                number,
+                &format!(
+                    "PR {} is open on the write side of the architecture and waits for \
+                     a human merge — the loop will not touch this task until then.",
+                    pr.url
+                ),
+            )
+            .await?;
+        self.gh.add_label(number, labels::REVIEW_PENDING).await?;
+        self.gh.add_label(number, labels::NEEDS_DECISION).await?;
         Ok(Verdict::Continue)
     }
 }
@@ -227,6 +319,9 @@ pub struct Ask {
     /// Instructions specific to this stage. Empty: preamble and scope are
     /// enough, as for `/create-test`.
     pub instructions: String,
+    /// The instructions when the task is on the write side, if the stage
+    /// has different ones — `code` opens a PR and stops instead of merging.
+    pub write_side_instructions: Option<String>,
     /// How much of the brief this stage's prompt carries — see
     /// [`Cut`](crate::dev_loop::data::brief::Cut).
     pub cut: Cut,
@@ -270,13 +365,11 @@ impl SessionAction<Loop> for Ask {
             Cut::Situated(_) => prompts::Brief::Situated(&scope),
             Cut::TaskOnly(_) => prompts::Brief::TaskOnly(&scope),
         };
-        let extra = prompts::extra_for(
-            &self.instructions,
-            brief,
-            &self.stack,
-            &carried,
-            self.injector,
-        );
+        let instructions = match (&self.write_side_instructions, open.state.write_side) {
+            (Some(text), true) => text.as_str(),
+            _ => self.instructions.as_str(),
+        };
+        let extra = prompts::extra_for(instructions, brief, &self.stack, &carried, self.injector);
         let prompt = prompts::build(&self.lead, &self.branch, &extra, self.injector);
         let task = open.state.task_key.clone();
         ask_and_record(
@@ -343,10 +436,14 @@ mod tests {
             ..FakeGitHub::default()
         });
         let mut context = ctx(Loop::default());
-        PickTask { gh, resuming: None }
-            .run(&mut context)
-            .await
-            .expect("a task");
+        PickTask {
+            gh,
+            resuming: None,
+            wanted: None,
+        }
+        .run(&mut context)
+        .await
+        .expect("a task");
         assert_eq!(context.state.milestone.number, "4");
         assert_eq!(context.state.task.number, "11");
         assert_eq!(context.state.task_key, "11");
@@ -366,10 +463,14 @@ mod tests {
             ..FakeGitHub::default()
         });
         let mut context = ctx(Loop::default());
-        PickTask { gh, resuming: None }
-            .run(&mut context)
-            .await
-            .expect("a task");
+        PickTask {
+            gh,
+            resuming: None,
+            wanted: None,
+        }
+        .run(&mut context)
+        .await
+        .expect("a task");
         let found = context.state.roadmap.expect("the roadmap");
         assert_eq!(
             (found.number.as_str(), found.body.as_str()),
@@ -399,6 +500,7 @@ mod tests {
         PickTask {
             gh,
             resuming: Some("11".to_string()),
+            wanted: None,
         }
         .run(&mut context)
         .await
@@ -417,10 +519,14 @@ mod tests {
             ..FakeGitHub::default()
         });
         let mut context = ctx(Loop::default());
-        PickTask { gh, resuming: None }
-            .run(&mut context)
-            .await
-            .expect("nothing to pick, not a failure");
+        PickTask {
+            gh,
+            resuming: None,
+            wanted: None,
+        }
+        .run(&mut context)
+        .await
+        .expect("nothing to pick, not a failure");
         assert!(!context.state.has_task());
     }
 
@@ -434,10 +540,14 @@ mod tests {
             ..FakeGitHub::default()
         });
         let mut context = ctx(Loop::default());
-        let err = PickTask { gh, resuming: None }
-            .run(&mut context)
-            .await
-            .expect_err("must stop");
+        let err = PickTask {
+            gh,
+            resuming: None,
+            wanted: None,
+        }
+        .run(&mut context)
+        .await
+        .expect_err("must stop");
         assert!(matches!(err, Halt::Halted(_)));
         assert!(!context.state.has_task(), "especially not picked");
         assert!(err.reason().contains(labels::READY));
@@ -450,10 +560,14 @@ mod tests {
             ..FakeGitHub::default()
         });
         let mut context = ctx(Loop::default());
-        let err = PickTask { gh, resuming: None }
-            .run(&mut context)
-            .await
-            .expect_err("must fail");
+        let err = PickTask {
+            gh,
+            resuming: None,
+            wanted: None,
+        }
+        .run(&mut context)
+        .await
+        .expect_err("must fail");
         assert!(matches!(err, Halt::Unreadable(_)));
         assert!(!context.state.has_task());
     }
@@ -577,6 +691,102 @@ mod tests {
         .await
         .expect("nothing to mark");
         assert!(gh.writes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_write_side_task_with_an_open_reviewed_pr_is_marked_review_pending() {
+        let mut task = issue(11, &[labels::AGENT, labels::WRITE_SIDE]);
+        task.body = "## Scope\n\nbranch: feat/limit\n\nraise limits".to_string();
+        let pr = harness_core::domain::Pr {
+            num: "77".to_string(),
+            head: "feat/limit".to_string(),
+            url: "https://github.com/o/r/pull/77".to_string(),
+            labels: vec![labels::TO_REVIEW.to_string()],
+            ..harness_core::domain::Pr::default()
+        };
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![task],
+            prs_labelled: std::collections::HashMap::from([(
+                labels::TO_REVIEW.to_string(),
+                vec![pr],
+            )]),
+            ..FakeGitHub::default()
+        });
+        let mut state = with_task("11");
+        state.write_side = true;
+        let mut context = ctx(state);
+        MarkWaitingMerge {
+            gh: gh.clone(),
+            integration_branch: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("marked");
+        let writes = gh.writes();
+        assert!(matches!(&writes[0], Wrote::Comment(11, text) if text.contains("pull/77")));
+        assert_eq!(
+            writes[1],
+            Wrote::Label(11, labels::REVIEW_PENDING.to_string())
+        );
+        assert_eq!(
+            writes[2],
+            Wrote::Label(11, labels::NEEDS_DECISION.to_string())
+        );
+        assert_eq!(writes.len(), 3, "never waiting-merge: nothing merged yet");
+    }
+
+    #[tokio::test]
+    async fn a_write_side_task_without_its_pr_yet_is_left_to_the_gate() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(11, &[labels::AGENT, labels::WRITE_SIDE])],
+            prs_labelled: std::collections::HashMap::from([(
+                labels::TO_REVIEW.to_string(),
+                Vec::new(),
+            )]),
+            ..FakeGitHub::default()
+        });
+        let mut state = with_task("11");
+        state.write_side = true;
+        let mut context = ctx(state);
+        MarkWaitingMerge {
+            gh: gh.clone(),
+            integration_branch: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("nothing to mark");
+        assert!(gh.writes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_human_s_merge_of_a_write_side_pr_trades_review_pending_for_waiting_merge() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(
+                11,
+                &[
+                    labels::AGENT,
+                    labels::WRITE_SIDE,
+                    labels::REVIEW_PENDING,
+                    labels::NEEDS_DECISION,
+                ],
+            )],
+            merged: vec![delivered_by(77, 11)],
+            ..FakeGitHub::default()
+        });
+        let mut state = with_task("11");
+        state.write_side = true;
+        let mut context = ctx(state);
+        MarkWaitingMerge {
+            gh: gh.clone(),
+            integration_branch: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("marked");
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Unlabelled(11, labels::REVIEW_PENDING.to_string())));
+        assert!(writes.contains(&Wrote::Unlabelled(11, labels::NEEDS_DECISION.to_string())));
+        assert!(writes.contains(&Wrote::Label(11, labels::WAITING_MERGE.to_string())));
     }
 
     #[tokio::test]
@@ -734,6 +944,7 @@ mod tests {
             stage: "code".to_string(),
             lead: "/tech-analyst".to_string(),
             instructions: "the task is #{num} (\"{title}\")".to_string(),
+            write_side_instructions: None,
             cut,
             round: 3,
             branch: "main_agent".to_string(),
@@ -858,6 +1069,7 @@ mod tests {
             stage: "create-test".to_string(),
             lead: "/create-test".to_string(),
             instructions: String::new(),
+            write_side_instructions: None,
             cut: Cut::TaskOnly(&["Technical"]),
             round: 1,
             branch: "main_agent".to_string(),

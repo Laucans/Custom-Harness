@@ -1,11 +1,12 @@
 //! The wiring of `harness init-repo`: the only place that builds
-//! `GhCli::for_slug`.
+//! `GhCli::for_slug`, and a `GitRepos` for the install clone.
 
 use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
 use harness_core::adapters::shell::disk::RealDisk;
+use harness_core::adapters::shell::git::GitRepos;
 use harness_core::adapters::shell::github::GhCli;
 use harness_core::domain::Slug;
 use harness_workflows::init_repo::config::Config;
@@ -36,6 +37,7 @@ pub async fn run(args: &InitRepoArgs, here: &Path) -> ExitCode {
     let ports = Ports {
         gh: Rc::new(GhCli::for_slug(&slug)),
         disk: Rc::new(RealDisk),
+        repos: Rc::new(GitRepos),
     };
     let config = Config {
         slug,
@@ -44,6 +46,9 @@ pub async fn run(args: &InitRepoArgs, here: &Path) -> ExitCode {
         write_env: !args.no_env,
         force: args.force,
         dry_run: args.dry_run,
+        // Under the harness's own local state, never in the target.
+        workdir: here.join(".llocal").join("init"),
+        install: !args.no_install,
     };
     let built = run::build(&ports, &config, run::Request);
 

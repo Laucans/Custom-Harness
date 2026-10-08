@@ -46,6 +46,15 @@ impl Board {
         tasks::next_task(&self.tasks)
     }
 
+    /// The task with this number, if it can run right now — what a
+    /// `--task` run picks instead of the board's own choice.
+    #[must_use]
+    pub fn wanted(&self, number: u64) -> Option<&Issue> {
+        self.tasks
+            .iter()
+            .find(|task| task.number == number && tasks::runnable(task))
+    }
+
     /// The sub-issue of this milestone with this number, **open or not**.
     ///
     /// Closed included, by design: a round interrupted after `/code` merged

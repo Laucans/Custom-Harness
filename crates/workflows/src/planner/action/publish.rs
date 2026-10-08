@@ -2,7 +2,8 @@
 //!
 //! The session decided *what* the milestones are — this is the only place
 //! that decides *how* they land on GitHub: created, linked to the roadmap
-//! item, chained by `blocked_by`, labelled for refinement.
+//! item, chained by `blocked_by`, labelled for refinement and with the side
+//! of the architecture their work is on.
 
 use std::rc::Rc;
 
@@ -54,7 +55,11 @@ impl Action<PlannerState> for Write {
         for item in &items {
             let number = self
                 .gh
-                .create_issue(&item.title, &item.goal, &[labels::MILESTONE])
+                .create_issue(
+                    &item.title,
+                    &item.body(),
+                    &[labels::MILESTONE, item.side().label()],
+                )
                 .await?;
             self.gh
                 .create_sub_issue_link(roadmap_number, number)
@@ -123,15 +128,17 @@ mod tests {
             vec![
                 Wrote::CreatedIssue(
                     "A".to_string(),
-                    "do A".to_string(),
-                    vec![labels::MILESTONE.to_string()]
+                    "do A\n\n## Architecture\n\nsystems: -\nconcepts: -\nside: harness:read-side"
+                        .to_string(),
+                    vec![labels::MILESTONE.to_string(), labels::READ_SIDE.to_string()]
                 ),
                 Wrote::SubIssueLink(4, 1),
                 Wrote::Label(1, labels::REFINEMENT.to_string()),
                 Wrote::CreatedIssue(
                     "B".to_string(),
-                    "do B".to_string(),
-                    vec![labels::MILESTONE.to_string()]
+                    "do B\n\n## Architecture\n\nsystems: -\nconcepts: -\nside: harness:read-side"
+                        .to_string(),
+                    vec![labels::MILESTONE.to_string(), labels::READ_SIDE.to_string()]
                 ),
                 Wrote::SubIssueLink(4, 2),
                 Wrote::BlockedByLink(2, 1),

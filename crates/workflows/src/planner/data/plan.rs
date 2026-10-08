@@ -7,7 +7,9 @@
 
 use serde::Deserialize;
 
+use crate::common::architecture::Side;
 pub use crate::common::json_reply::ParseError;
+use crate::common::sections;
 
 /// One milestone the plan wants opened, in delivery order.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -16,6 +18,51 @@ pub struct MilestoneItem {
     pub title: String,
     /// A few sentences on what this milestone achieves — becomes its body.
     pub goal: String,
+    /// The systems (bounded contexts) it works in — one, where possible.
+    #[serde(default)]
+    pub systems: Vec<String>,
+    /// The versioned Concepts it defines or implements (`Risk@3`).
+    #[serde(default)]
+    pub concepts: Vec<String>,
+    /// Whether any of its work is on the write side — a `DataCapability`
+    /// that mutates, an invariant, a migration. Such a milestone comes
+    /// before the readers that depend on it, and its tasks wait for a human
+    /// merge.
+    #[serde(default)]
+    pub writes: bool,
+}
+
+impl MilestoneItem {
+    /// Which side of the architecture the milestone's work is on.
+    #[must_use]
+    pub const fn side(&self) -> Side {
+        if self.writes { Side::Write } else { Side::Read }
+    }
+
+    /// The body: the goal, then the `## Architecture` section.
+    #[must_use]
+    pub fn body(&self) -> String {
+        let list = |items: &[String]| {
+            let kept: Vec<&str> = items
+                .iter()
+                .map(|item| item.trim())
+                .filter(|item| !item.is_empty())
+                .collect();
+            if kept.is_empty() {
+                "-".to_string()
+            } else {
+                kept.join(", ")
+            }
+        };
+        format!(
+            "{}\n\n## {}\n\nsystems: {}\nconcepts: {}\nside: {}",
+            self.goal.trim(),
+            sections::heading_of(sections::ARCHITECTURE),
+            list(&self.systems),
+            list(&self.concepts),
+            self.side().label()
+        )
+    }
 }
 
 /// Extracts the JSON array of milestones from a reply's text.
@@ -37,6 +84,35 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "A");
         assert_eq!(items[0].goal, "do A");
+        assert!(items[0].systems.is_empty());
+        assert!(!items[0].writes, "read-side unless said otherwise");
+    }
+
+    #[test]
+    fn the_body_carries_the_goal_and_the_architecture_section() {
+        let item = MilestoneItem {
+            title: "Risk".to_string(),
+            goal: "Score every customer.".to_string(),
+            systems: vec!["credit".to_string(), " ".to_string()],
+            concepts: vec!["Risk@3".to_string()],
+            writes: true,
+        };
+        assert_eq!(
+            item.body(),
+            "Score every customer.\n\n## Architecture\n\nsystems: credit\nconcepts: Risk@3\n\
+             side: harness:write-side"
+        );
+        let bare = MilestoneItem {
+            writes: false,
+            systems: Vec::new(),
+            concepts: Vec::new(),
+            ..item
+        };
+        assert!(
+            bare.body()
+                .ends_with("systems: -\nconcepts: -\nside: harness:read-side")
+        );
+        assert_eq!(bare.side(), Side::Read);
     }
 
     #[test]

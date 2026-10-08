@@ -36,7 +36,7 @@ const GIST_MAX: usize = 300;
 /// wrote the roadmap and [`sections::keeping`] matches the text as it stands. A
 /// roadmap under none of them keeps its whole body rather than losing
 /// everything.
-const ROADMAP_KEPT: [&str; 10] = [
+const ROADMAP_KEPT: [&str; 13] = [
     "frontière",
     "frontiere",
     "boundar",
@@ -47,6 +47,11 @@ const ROADMAP_KEPT: [&str; 10] = [
     "success",
     "hors scope",
     "out of scope",
+    // The roadmap's systems and Concepts: the bounded contexts a milestone
+    // is drawn inside of, and the vocabulary its tasks implement.
+    "system",
+    "système",
+    "concept",
 ];
 
 /// Markers of the one line in a gist that must never be the part cut off.

@@ -380,6 +380,13 @@
       return [e.name, html, after];
     },
 
+    crew(p) {
+      const here = S.snap.employees.filter((e) => e.workflow === p.line && (e.station || null) === (p.station || null));
+      if (!here.length) return ['Crew', '<div class="callout">Nobody is at this station any more.</div>'];
+      const items = here.map((e) => `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: e.id }))}'>${esc(e.name)}</button></span><span class="muted">${esc(e.stage || '')} ${e.model ? tag(e.model, e.model) : ''} · ${fmtAge(e.age_secs)} ago</span></li>`).join('');
+      return [`${here.length} at work · ${esc(here[0].stage || p.station)}`, `<p class="muted">Several agents stand at this station. Pick the one to follow:</p><ul class="issues">${items}</ul>`];
+    },
+
     station(p) {
       const line = S.snap.lines.find((l) => l.id === p.line);
       const st = line && line.stations.find((s) => s.id === p.id);

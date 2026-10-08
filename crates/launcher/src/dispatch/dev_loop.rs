@@ -536,9 +536,12 @@ async fn turns(
         &ports,
         &config,
         run::Request {
-            rounds_budget: args.rounds,
+            // A lane is for one task: once it is delivered, the next round
+            // would ask for the same task and be refused by name.
+            rounds_budget: if args.task.is_some() { 1 } else { args.rounds },
             stages_filter: args.stages.clone(),
             resuming,
+            wanted: args.task,
         },
         pre,
         Some(store),

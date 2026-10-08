@@ -1,6 +1,6 @@
 //! One read of everything the plant shows, through the `Traces` port.
 //!
-//! Reads the latest run of every line and nothing older: what the view
+//! Reads the latest run of every line, and the recent ones beside it: what the view
 //! answers is "where is the plant now", and the ledgers already carry the
 //! history. The parsing is `traces`'; this module only decides what to read.
 
@@ -51,7 +51,17 @@ pub struct ObservedLine {
     pub runs: u32,
     /// The latest one.
     pub latest: Option<ObservedRun>,
+    /// The runs still fresh enough to be at work, oldest first — several,
+    /// when a parallel watch runs this line on more than one lane. The
+    /// latest is among them when it is fresh.
+    pub recent: Vec<ObservedRun>,
 }
+
+/// How many of a line's last runs are looked at for freshness.
+pub const RECENT_RUNS: usize = 8;
+/// A run that wrote longer ago than this is not at work, whatever the watch
+/// dispatched: the heavier files are not even read for it.
+pub const RECENT_SECS: u64 = 1800;
 
 /// Everything one tick reads.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -115,10 +125,30 @@ pub fn observe(traces: &dyn Traces, lines: &[Line]) -> Observed {
         .iter()
         .map(|line| {
             let runs = traces.runs(&line.id);
+            let mut recent: Vec<ObservedRun> = runs
+                .iter()
+                .rev()
+                .take(RECENT_RUNS)
+                .filter(|run| {
+                    traces
+                        .age_secs(&line.id, run)
+                        .is_some_and(|age| age <= RECENT_SECS)
+                })
+                .map(|run| observe_run(traces, line, run))
+                .collect();
+            recent.reverse();
+            let latest = runs.last().map(|run| {
+                recent
+                    .iter()
+                    .find(|seen| &seen.run_id == run)
+                    .cloned()
+                    .unwrap_or_else(|| observe_run(traces, line, run))
+            });
             ObservedLine {
                 workflow: line.id.clone(),
                 runs: u32::try_from(runs.len()).unwrap_or(u32::MAX),
-                latest: runs.last().map(|run| observe_run(traces, line, run)),
+                latest,
+                recent,
             }
         })
         .collect();
@@ -293,5 +323,43 @@ mod tests {
             .expect("split");
         assert_eq!(split.runs, 0);
         assert!(split.latest.is_none());
+    }
+
+    #[test]
+    fn every_fresh_run_of_a_line_is_recent_and_a_stale_one_is_not() {
+        let mut shelf = Shelf::default();
+        shelf
+            .put("agent-loop", "20261006-150000", "run.log", "old\n")
+            .age("agent-loop", "20261006-150000", 7200)
+            .put(
+                "agent-loop",
+                "20261006-202608",
+                "run.log",
+                "task #62: A [auto]\n",
+            )
+            .age("agent-loop", "20261006-202608", 40)
+            .put(
+                "agent-loop",
+                "20261006-202700",
+                "run.log",
+                "task #63: B [auto]\n",
+            )
+            .age("agent-loop", "20261006-202700", 12);
+        let observed = observe(&shelf, &blueprint::lines());
+        let dev = observed
+            .lines
+            .iter()
+            .find(|l| l.workflow == "agent-loop")
+            .expect("agent-loop");
+        let ids: Vec<&str> = dev.recent.iter().map(|r| r.run_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["20261006-202608", "20261006-202700"],
+            "oldest first, the stale one left out"
+        );
+        assert_eq!(
+            dev.latest.as_ref().map(|r| r.run_id.as_str()),
+            Some("20261006-202700")
+        );
     }
 }

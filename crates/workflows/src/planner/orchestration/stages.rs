@@ -38,6 +38,17 @@ it; if a dependency this item builds on is not actually there, say so in
 your own words and answer with an empty JSON array `[]` — do not plan on top
 of a missing dependency.
 
+The repository follows the agent-native architecture (`docs/ARCHITECTURE.md`
+in the repository map): a read side of independent units — Capabilities,
+Micro-UIs, Concepts, persisted queries, compositions — and a write side
+behind one DataGuard — DataCapabilities that mutate, invariants, migrations.
+Draw each milestone inside one system (bounded context) where possible, and
+name the `systems` it works in and the `concepts` (versioned, `Risk@3`) it
+defines or implements. Set `writes: true` on a milestone whose work touches
+the write side, and order those before the read-side milestones that depend
+on them: a human merges every write-side task, while read-side tasks run in
+parallel without review.
+
 {existing}
 
 {grounding}
@@ -45,7 +56,7 @@ of a missing dependency.
 Answer with a JSON array and nothing else, one object per milestone, in
 delivery order:
 ```json
-[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves"}]
+[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "writes": false}]
 ```
 An empty array `[]` means this roadmap item needs no further milestone right
 now."#;

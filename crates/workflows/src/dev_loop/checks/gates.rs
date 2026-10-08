@@ -119,8 +119,11 @@ impl Verification<Loop> for CodeAlreadyDelivered {
             ))
         })?;
         let here = self.gh.issue(number).await?;
+        // `review-pending` counts: the write side's PR is open and a human
+        // merges it; paying `/code` again would open a second one.
         let shipped = here.is_closed()
             || tasks::waiting_merge(&here)
+            || tasks::review_pending(&here)
             || tasks::first_closing(&self.gh.merged_prs(&self.integration_branch).await?, number)
                 .is_some();
         if !shipped {
@@ -197,6 +200,11 @@ impl Verification<Loop> for AMergedPrClosesTheTask {
         // Already closed or marked: proof is there, nothing to reassert.
         let here = self.gh.issue(number).await?;
         if here.is_closed() || tasks::waiting_merge(&here) {
+            return Ok(Verdict::Continue);
+        }
+        // The write side delivers an open PR, not a merged one: the round
+        // marked it `review-pending`, and that is what it had to achieve.
+        if ctx.state.write_side && tasks::review_pending(&here) {
             return Ok(Verdict::Continue);
         }
         let merged = self.gh.merged_prs(&self.integration_branch).await?;

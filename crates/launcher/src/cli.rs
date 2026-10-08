@@ -98,6 +98,17 @@ pub struct WatchArgs {
     #[arg(long)]
     pub no_doctor: bool,
 
+    /// How many tasks run at once when the loop has several to offer.
+    ///
+    /// `1` runs the loop in this process, as always. Above that, each
+    /// runnable task of the current milestone is given to its own
+    /// `harness --task <n>` child, in its own workspace (`lane-<k>`), up to
+    /// this many at a time; the read side of the architecture is what makes
+    /// them independent, and `split` chains the write side so only one of
+    /// those is ever runnable.
+    #[arg(long, env = "PARALLEL", default_value_t = 1)]
+    pub parallel: usize,
+
     /// Let a dispatched `dev_loop` overwrite local work left in the workspace.
     ///
     /// Without it, a session cut mid-work — a quota that runs out is the
@@ -111,6 +122,9 @@ pub struct WatchArgs {
 }
 
 /// `harness init-repo <url>`'s own arguments.
+// Four flags, because that is what a command line is: a flag present or
+// absent, each independent of the others.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 pub struct InitRepoArgs {
     /// The target repository: `https://github.com/o/r[.git]`,
@@ -134,9 +148,16 @@ pub struct InitRepoArgs {
     #[arg(long)]
     pub no_env: bool,
 
-    /// Overwrite an existing `TARGET_REPO_URL` that names another repo.
+    /// Overwrite an existing `TARGET_REPO_URL` that names another repo, and
+    /// rewrite the architecture's files the repository already carries.
     #[arg(long)]
     pub force: bool,
+
+    /// Do every other step, but install none of the architecture's files
+    /// (`docs/ARCHITECTURE.md`, `contracts/`, the gates, the `CLAUDE.md`
+    /// rules) in the repository.
+    #[arg(long)]
+    pub no_install: bool,
 }
 
 /// The dev loop's flags.
@@ -216,6 +237,15 @@ pub struct RunArgs {
     /// Resume the task that the checkpoint designates. Default: yes.
     #[arg(long)]
     pub no_resume: bool,
+
+    /// Run this task and no other, as a lane of a parallel `watch` does.
+    ///
+    /// The board must offer it as runnable — open, `harness:ready`, nothing
+    /// blocking it; a task that cannot run is refused by name rather than
+    /// traded for the board's own first choice, which another lane may be
+    /// on. One round: a lane delivers its task and exits.
+    #[arg(long)]
+    pub task: Option<u64>,
 
     /// Everything, including what a session says in detail.
     #[arg(long, short, conflicts_with = "quiet")]

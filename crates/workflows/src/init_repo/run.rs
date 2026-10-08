@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use harness_core::domain::{Outcome, Slug};
 use harness_core::ports::shell::disk::Disk;
+use harness_core::ports::shell::git::Repos;
 use harness_core::ports::shell::github::GitHub;
 
 use crate::init_repo::action::apply;
@@ -37,30 +38,38 @@ pub fn build(ports: &Ports, config: &Config, _request: Request) -> InitRepoRun {
     InitRepoRun {
         gh: Rc::clone(&ports.gh),
         disk: Rc::clone(&ports.disk),
+        repos: Rc::clone(&ports.repos),
         slug: config.slug.clone(),
         branch: config.branch.clone(),
         env_file: config.env_file.clone(),
         write_env: config.write_env,
         force: config.force,
         dry_run: config.dry_run,
+        workdir: config.workdir.clone(),
+        install: config.install,
     }
 }
 
 /// One `init-repo` invocation, wired and ready to run.
+// Carries `Config`'s own flags, by value — see its note.
+#[allow(clippy::struct_excessive_bools)]
 pub struct InitRepoRun {
     gh: Rc<dyn GitHub>,
     disk: Rc<dyn Disk>,
+    repos: Rc<dyn Repos>,
     slug: Slug,
     branch: String,
     env_file: PathBuf,
     write_env: bool,
     force: bool,
     dry_run: bool,
+    workdir: PathBuf,
+    install: bool,
 }
 
 impl InitRepoRun {
     /// Runs it: preconditions, labels, the branch, the read-only audit, the
-    /// link, the report.
+    /// install, the link, the report.
     ///
     /// # Errors
     /// A [`harness_core::domain::Halt`] from an unreadable precondition, or
@@ -71,6 +80,7 @@ impl InitRepoRun {
         let ports = Ports {
             gh: Rc::clone(&self.gh),
             disk: Rc::clone(&self.disk),
+            repos: Rc::clone(&self.repos),
         };
         let config = Config {
             slug: self.slug.clone(),
@@ -79,6 +89,8 @@ impl InitRepoRun {
             write_env: self.write_env,
             force: self.force,
             dry_run: self.dry_run,
+            workdir: self.workdir.clone(),
+            install: self.install,
         };
         apply::run(&ports, &config).await
     }

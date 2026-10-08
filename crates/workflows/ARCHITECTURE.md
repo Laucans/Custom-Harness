@@ -212,7 +212,9 @@ Current contents:
 
 | module | what it is |
 | --- | --- |
-| `labels` | the `harness:*` labels. Created by hand on the repo; each preflight checks they exist, because a misspelled label makes a list empty and an empty list reads as "nothing left to do". |
+| `labels` | the `harness:*` labels, created by `init-repo`; each preflight checks they exist, because a misspelled label makes a list empty and an empty list reads as "nothing left to do". Three of them say which side of the agent-native architecture a task is on: `read-side` (runs in parallel, merges alone), `write-side` (a human merges its PR), `review-pending` (that PR is open and waits). |
+| `architecture` | the vocabulary of the agent-native architecture every target repo follows (`docs/ARCHITECTURE.md`, installed by `init-repo`): the `Unit` a task builds, the `Declaration` `split` writes under `## Architecture`, and the one rule derived from it — the task's `Side`, read back by the loop. |
+| `sections` | the canonical sections of an issue body. `split` writes `Scope` and `Architecture`, which no refinement phase ever rewrites; the refinement writes the five after them. |
 | `explore` | the repo map: `Ground` (free — glues `CLAUDE.md`, `docs/ARCHITECTURE.md`, `docs/PROJECT.md` and the tracked-file list verbatim) then one paid session that condenses it. A workflow wires both by implementing `Explored` on its state. |
 | `fake_github` | `#[cfg(test)]` — an in-memory `GitHub` shared by the workflows' tests. A fake adapter, not a mock. |
 | `fake_disk` | `#[cfg(test)]` — an in-memory `Disk`: what it holds reads back, what was written to it can be re-read. |
@@ -248,7 +250,7 @@ its precheck, its lock and its trigger.
 
 | | `dev_loop` | `refinement` | `planner` | `split` |
 | --- | --- | --- | --- | --- |
-| what it does | picks a task, runs it through its stages, observes delivery | rewrites an issue body into five canonical sections | opens the milestones of a roadmap item | opens the tasks of a milestone |
+| what it does | picks a task (or the one `--task` names, as a lane of a parallel watch), runs it through its stages, observes delivery — a merged PR on the read side, an open reviewed PR marked `review-pending` on the write side | rewrites an issue body into its five refined sections, never `Scope` or `Architecture` | opens the milestones of a roadmap item, each placed in the architecture (`systems`, `concepts`, side) | opens the tasks of a milestone, each one unit of the architecture, chained only where one builds on another |
 | trigger | the `harness` binary, or the router | the `harness:refinement` label | `harness:ready` on a roadmap item with no milestone yet | `harness:ready` on a milestone |
 | state | `Loop` (`Resumable` + `Scoped`) | `RefinementState` (`Explored`) | `PlannerState` (`Explored`) | `SplitState` |
 | `remaining` | the `--rounds` budget | 1 | 1 | 1 |
@@ -304,8 +306,11 @@ and `milestone_merge`, both the deterministic-command departure described
 in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
 router route, no `state`, no `remaining`, no round, no lock, no resume, no
 tolerance — every column above would read "n/a". `init_repo` creates the
-`harness:*` labels and the integration branch, runs a read-only audit, and
-writes the link into `.env.local`. `milestone_merge` opens or merges a
+`harness:*` labels and the integration branch, installs the architecture's
+files in the repository through a throwaway clone (`docs/ARCHITECTURE.md`,
+the rules block of `CLAUDE.md`, `contracts/`, the CI gates — one commit,
+nothing already there overwritten without `--force`), runs a read-only
+audit, and writes the link into `.env.local`. `milestone_merge` opens or merges a
 milestone's PR once its tasks are closed and its CI is green.
 
 ## 14. Adding a workflow

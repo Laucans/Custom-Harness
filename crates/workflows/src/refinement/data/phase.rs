@@ -92,14 +92,16 @@ mod tests {
         for key in &all {
             assert_eq!(all.iter().filter(|k| k == &key).count(), 1);
         }
-        // `scope` is the slice's own boundary: written once by `split`, owned
-        // by no phase, so no round can rewrite or erase it.
+        // `scope` is the slice's own boundary and `architecture` its place in
+        // the agent-native architecture: both written once by `split`, owned
+        // by no phase, so no round can rewrite or erase them.
         assert!(!all.contains(&sections::SCOPE));
-        assert_eq!(all.len(), sections::KEYS.len() - 1);
+        assert!(!all.contains(&sections::ARCHITECTURE));
+        assert_eq!(all.len(), sections::KEYS.len() - 2);
         for key in sections::KEYS {
             assert!(
-                key == sections::SCOPE || all.contains(&key),
-                "{key} belongs to no phase and is not scope"
+                key == sections::SCOPE || key == sections::ARCHITECTURE || all.contains(&key),
+                "{key} belongs to no phase and is neither scope nor architecture"
             );
         }
     }

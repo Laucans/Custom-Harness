@@ -32,6 +32,8 @@ pub struct Report {
     /// What was done about the default branch and the release branch's
     /// protection, one line each.
     pub guard_lines: Vec<String>,
+    /// What the install of the architecture's files did, one line per fact.
+    pub install_lines: Vec<String>,
     /// The link line, already rendered — it depends on `--no-env`/`--force`
     /// in ways only [`crate::init_repo::action::apply`] knows.
     pub env_line: String,
@@ -97,6 +99,9 @@ impl Report {
         for line in &self.guard_lines {
             let _ = writeln!(out, "{:<12}{line}", "guard");
         }
+        for line in &self.install_lines {
+            let _ = writeln!(out, "{:<12}{line}", "install");
+        }
         let _ = writeln!(out, "{:<12}{}", "link", self.env_line);
 
         if !self.blocking.is_empty() {
@@ -135,6 +140,7 @@ mod tests {
                 default: "main".to_string(),
             },
             guard_lines: Vec::new(),
+            install_lines: Vec::new(),
             env_line: ".env.local — TARGET_REPO_URL set, INTEGRATION_BRANCH set".to_string(),
             blocking: vec![
                 (
@@ -181,6 +187,7 @@ mod tests {
             labels_kept: 8,
             branch_line: BranchReportLine::AlreadyExists,
             guard_lines: Vec::new(),
+            install_lines: Vec::new(),
             env_line: ".env.local — TARGET_REPO_URL set, INTEGRATION_BRANCH set".to_string(),
             blocking: vec![],
             advisory: vec![],

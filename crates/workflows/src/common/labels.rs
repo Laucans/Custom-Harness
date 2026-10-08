@@ -99,11 +99,46 @@ pub const TO_REVIEW: &str = "harness:to-review";
 /// in `LOOP`.
 pub const PR_FIX: &str = "harness:pr-fix";
 
-/// The eight the loop requires.
+/// The task touches only the **read side** of the agent-native architecture.
+///
+/// That architecture is `docs/ARCHITECTURE.md` of the target repo; its read
+/// side is a Capability, a Micro-UI, a Concept, a persisted query, a screen
+/// composition, or an insert-only `DataCapability`. Such a task runs and
+/// merges on its own, and several of these may run in parallel — nothing
+/// they touch is shared.
+///
+/// Posed by `split` from the task's `## Architecture` section
+/// ([`crate::common::architecture`]), and by `planner` on a milestone whose
+/// work is all read-side.
+pub const READ_SIDE: &str = "harness:read-side";
+
+/// The task touches the **write side** of the architecture.
+///
+/// A `DataCapability` that updates, deletes or upserts, an invariant, a
+/// relation policy, a schema migration, anything behind the `DataGuard`.
+/// The architecture asks a human to review every mutation of existing data,
+/// so its PR is never merged by the session: it waits for a human merge
+/// under [`REVIEW_PENDING`].
+///
+/// Posed by `split` (task) and `planner` (milestone), like [`READ_SIDE`].
+pub const WRITE_SIDE: &str = "harness:write-side";
+
+/// A write-side task's PR is open and waits for a human merge.
+///
+/// Posed by the dev loop once the session has opened the PR (with
+/// `harness:to-review`, so the agent review runs on it) and stopped short of
+/// merging. While it is there the loop neither replays the task nor starts
+/// one that depends on it; the human merging the PR is the review, and the
+/// next poll trades this label for [`WAITING_MERGE`].
+pub const REVIEW_PENDING: &str = "harness:review-pending";
+
+/// The eleven the loop requires.
 ///
 /// `REFINEMENT` is not among them: the loop does not read it, and its
-/// preflight would refuse to run without it.
-pub const LOOP: [&str; 8] = [
+/// preflight would refuse to run without it. The three architecture labels
+/// are: the loop reads the side of every task it picks, and `review-pending`
+/// is what keeps a write-side task from being replayed.
+pub const LOOP: [&str; 11] = [
     ROADMAP,
     MILESTONE,
     AGENT,
@@ -112,6 +147,9 @@ pub const LOOP: [&str; 8] = [
     SPEC_WRITTEN,
     TECH_WRITTEN,
     WAITING_MERGE,
+    READ_SIDE,
+    WRITE_SIDE,
+    REVIEW_PENDING,
 ];
 
 /// One `harness:*` label, as `init-repo` creates it.
@@ -124,12 +162,12 @@ pub struct Label {
     pub description: &'static str,
 }
 
-/// The fourteen labels `init-repo` creates when they are missing.
+/// The seventeen labels `init-repo` creates when they are missing.
 ///
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 14] = [
+pub const ALL: [Label; 17] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -200,6 +238,21 @@ pub const ALL: [Label; 14] = [
         color: "b60205",
         description: "This PR's red CI is worth one repair attempt",
     },
+    Label {
+        name: READ_SIDE,
+        color: "0052cc",
+        description: "Read side only: Capability, Micro-UI, Concept, query — runs in parallel, merges alone",
+    },
+    Label {
+        name: WRITE_SIDE,
+        color: "e11d21",
+        description: "Write side: DataCapability, invariant, schema — a human merges its PR",
+    },
+    Label {
+        name: REVIEW_PENDING,
+        color: "f9d0c4",
+        description: "A write-side PR is open and waits for a human merge",
+    },
 ];
 
 #[cfg(test)]
@@ -219,6 +272,9 @@ mod tests {
             SPEC_WRITTEN,
             TECH_WRITTEN,
             WAITING_MERGE,
+            READ_SIDE,
+            WRITE_SIDE,
+            REVIEW_PENDING,
         ] {
             assert!(LOOP.contains(&label), "{label} missing from LOOP");
         }
@@ -241,6 +297,9 @@ mod tests {
             TRIGGERED,
             TO_REVIEW,
             PR_FIX,
+            READ_SIDE,
+            WRITE_SIDE,
+            REVIEW_PENDING,
         ];
         for label in all {
             assert!(label.starts_with("harness:"), "{label} outside namespace");

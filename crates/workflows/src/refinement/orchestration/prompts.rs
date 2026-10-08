@@ -61,20 +61,17 @@ still holds and fixing what does not, rather than rewriting from scratch.
 
 {additional_context}
 
-Output the content of the section and nothing else: no `## Business Goal`
-heading, no preamble, no closing remark, no code fence wrapped around the
-whole answer. One rule on the markdown inside it: never write a level-2
-heading — no line starting with `## `, anywhere in your answer — because next
-round this body is split back into sections on exactly those lines, and
-everything under a `## ` of yours would be dropped from the section for good.
-Deeper headings (`### `) are fine, and so is the rest of markdown.
+Output the section's content only: no `## ` heading of your own anywhere
+(the body is split on those lines next round, and text under one of yours
+would be lost), no preamble, no closing remark, no code fence around the
+whole answer; `### ` and the rest of markdown are fine. Write dense: no
+restating of the request or of other sections, no filler — a sentence that
+changes nothing for the engineer who builds this is cut.
 
-Change no file, post no comment, touch no issue and no label. The workflow
-writes what you output back into the body of #{num} itself.
-
-The issues of this repository are public. Never write the value of a secret,
-a token, a key, a password, or a URL that carries one — name the variable and
-say where it lives.";
+Change no file, post no comment, touch no issue and no label: the workflow
+writes your output into the body of #{num}. The issues are public — never
+write a secret, a token, a key, a password or a URL carrying one; name the
+variable and where it lives.";
 
 /// The Technical section prompt.
 pub const TECHNICAL_PROMPT: &str =
@@ -92,6 +89,16 @@ Plan's job, not yours, and repeating them here makes two plans that drift
 apart. Call out anything that conflicts with the constraints in CLAUDE.md
 rather than quietly designing around it.
 
+The body's `## Architecture` section says what this task is in the
+agent-native architecture (`docs/ARCHITECTURE.md`): design exactly that unit
+and nothing beside it. A Capability reads through persisted queries only and
+never imports, invokes or references another Capability or anything of the
+write side; a DataCapability declares its effect and the fields it touches
+and lives behind the DataGuard; a Concept is a definition with conformance
+fixtures; a Micro-UI declares what it needs and the actions it may trigger.
+Name the manifest or contract file the unit produces under `contracts/`, and
+the gate in `.github/workflows/gates.yml` that will check it.
+
 Here is the body of the issue as it stands right now:
 <issue-body>
 {body}
@@ -106,20 +113,17 @@ holds and fixing what does not, rather than rewriting from scratch.
 
 {additional_context}
 
-Output the content of the section and nothing else: no `## Technical`
-heading, no preamble, no closing remark, no code fence wrapped around the
-whole answer. One rule on the markdown inside it: never write a level-2
-heading — no line starting with `## `, anywhere in your answer — because next
-round this body is split back into sections on exactly those lines, and
-everything under a `## ` of yours would be dropped from the section for good.
-Deeper headings (`### `) are fine, and so is the rest of markdown.
+Output the section's content only: no `## ` heading of your own anywhere
+(the body is split on those lines next round, and text under one of yours
+would be lost), no preamble, no closing remark, no code fence around the
+whole answer; `### ` and the rest of markdown are fine. Write dense: no
+restating of the request or of other sections, no filler — a sentence that
+changes nothing for the engineer who builds this is cut.
 
-Change no file, post no comment, touch no issue and no label. The workflow
-writes what you output back into the body of #{num} itself.
-
-The issues of this repository are public. Never write the value of a secret,
-a token, a key, a password, or a URL that carries one — name the variable and
-say where it lives.";
+Change no file, post no comment, touch no issue and no label: the workflow
+writes your output into the body of #{num}. The issues are public — never
+write a secret, a token, a key, a password or a URL carrying one; name the
+variable and where it lives.";
 
 /// The Acceptance Criteria section prompt.
 pub const ACCEPTANCE_CRITERIA_PROMPT: &str =
@@ -152,20 +156,17 @@ behaviour a person can observe, not how it is built.
 
 {additional_context}
 
-Output the content of the section and nothing else: no `## Acceptance
-Criteria` heading, no preamble, no closing remark, no code fence wrapped
-around the whole answer. One rule on the markdown inside it: never write a
-level-2 heading — no line starting with `## `, anywhere in your answer — because
-next round this body is split back into sections on exactly those lines, and
-everything under a `## ` of yours would be dropped from the section for good.
-Deeper headings (`### `) are fine, and so is the rest of markdown.
+Output the section's content only: no `## ` heading of your own anywhere
+(the body is split on those lines next round, and text under one of yours
+would be lost), no preamble, no closing remark, no code fence around the
+whole answer; `### ` and the rest of markdown are fine. Write dense: no
+restating of the request or of other sections, no filler — a sentence that
+changes nothing for the engineer who builds this is cut.
 
-Change no file, post no comment, touch no issue and no label. The workflow
-writes what you output back into the body of #{num} itself.
-
-The issues of this repository are public. Never write the value of a secret,
-a token, a key, a password, or a URL that carries one — name the variable and
-say where it lives.";
+Change no file, post no comment, touch no issue and no label: the workflow
+writes your output into the body of #{num}. The issues are public — never
+write a secret, a token, a key, a password or a URL carrying one; name the
+variable and where it lives.";
 
 /// The Business Rules section prompt.
 pub const BUSINESS_RULES_PROMPT: &str =
@@ -197,20 +198,17 @@ scratch.
 
 {additional_context}
 
-Output the content of the section and nothing else: no `## Business Rules`
-heading, no preamble, no closing remark, no code fence wrapped around the
-whole answer. One rule on the markdown inside it: never write a level-2
-heading — no line starting with `## `, anywhere in your answer — because next
-round this body is split back into sections on exactly those lines, and
-everything under a `## ` of yours would be dropped from the section for good.
-Deeper headings (`### `) are fine, and so is the rest of markdown.
+Output the section's content only: no `## ` heading of your own anywhere
+(the body is split on those lines next round, and text under one of yours
+would be lost), no preamble, no closing remark, no code fence around the
+whole answer; `### ` and the rest of markdown are fine. Write dense: no
+restating of the request or of other sections, no filler — a sentence that
+changes nothing for the engineer who builds this is cut.
 
-Change no file, post no comment, touch no issue and no label. The workflow
-writes what you output back into the body of #{num} itself.
-
-The issues of this repository are public. Never write the value of a secret,
-a token, a key, a password, or a URL that carries one — name the variable and
-say where it lives.";
+Change no file, post no comment, touch no issue and no label: the workflow
+writes your output into the body of #{num}. The issues are public — never
+write a secret, a token, a key, a password or a URL carrying one; name the
+variable and where it lives.";
 
 /// The Technical Implementation Plan section prompt.
 pub const TECHNICAL_PLAN_PROMPT: &str =
@@ -226,7 +224,11 @@ this repository runs, not \"add tests\". Put the steps in an order where each
 one leaves the tree working. Close with the risks: what this plan assumes,
 what could already be different from what you read, and where an
 implementer's judgement will be needed. Do not write the code itself, and do
-not restate the Technical section's design — plan the work it implies.
+not restate the Technical section's design — plan the work it implies. Every
+unit of the agent-native architecture (`## Architecture` in the body) lands
+with its manifest or contract and the gate that validates it: one step of the
+plan writes that file, and the command that proves the step is the gate's own
+check.
 
 Here is the body of the issue as it stands right now:
 <issue-body>
@@ -242,20 +244,17 @@ scratch.
 
 {additional_context}
 
-Output the content of the section and nothing else: no `## Technical
-Implementation Plan` heading, no preamble, no closing remark, no code fence
-wrapped around the whole answer. One rule on the markdown inside it: never
-write a level-2 heading — no line starting with `## `, anywhere in your answer —
-because next round this body is split back into sections on exactly those
-lines, and everything under a `## ` of yours would be dropped from the section
-for good. Deeper headings (`### `) are fine, and so is the rest of markdown.
+Output the section's content only: no `## ` heading of your own anywhere
+(the body is split on those lines next round, and text under one of yours
+would be lost), no preamble, no closing remark, no code fence around the
+whole answer; `### ` and the rest of markdown are fine. Write dense: no
+restating of the request or of other sections, no filler — a sentence that
+changes nothing for the engineer who builds this is cut.
 
-Change no file, post no comment, touch no issue and no label. The workflow
-writes what you output back into the body of #{num} itself.
-
-The issues of this repository are public. Never write the value of a secret,
-a token, a key, a password, or a URL that carries one — name the variable and
-say where it lives.";
+Change no file, post no comment, touch no issue and no label: the workflow
+writes your output into the body of #{num}. The issues are public — never
+write a secret, a token, a key, a password or a URL carrying one; name the
+variable and where it lives.";
 
 /// The coherence prompt: the final pass, on the whole body.
 pub const COHERENCE_PROMPT: &str =
@@ -293,9 +292,8 @@ preamble, no closing remark, no code fence around the whole answer.
 Change no file, post no comment, touch no issue and no label. The workflow
 writes what you output back into the body of #{num} itself.
 
-The issues of this repository are public. Never write the value of a secret,
-a token, a key, a password, or a URL that carries one — name the variable and
-say where it lives.";
+The issues are public — never write a secret, a token, a key, a password or
+a URL carrying one; name the variable and where it lives.";
 
 /// The advice prompt: should a human take part in the technical refinement?
 pub const ADVICE_PROMPT: &str =
@@ -341,6 +339,5 @@ reading for nothing.
 Change no file, post no comment, touch no issue and no label. The workflow
 posts your answer as a comment on #{num} itself.
 
-The issues of this repository are public. Never write the value of a secret,
-a token, a key, a password, or a URL that carries one — name the variable and
-say where it lives.";
+The issues are public — never write a secret, a token, a key, a password or
+a URL carrying one; name the variable and where it lives.";

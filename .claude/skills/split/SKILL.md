@@ -88,24 +88,63 @@ gh api repos/{owner}/{repo}/issues/<n> --jq .id
 # 3. parent it under the milestone
 gh api -X POST repos/{owner}/{repo}/issues/<m>/sub_issues \
   -F sub_issue_id=<id of the task>
-# 4. chain it after the previous task, if there is one
+# 4. block it on each task it builds on — not on "the previous one"
 gh api -X POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by \
-  -F issue_id=<id of the previous task>
+  -F issue_id=<id of a task it depends on>
+# 5. its side of the architecture
+gh issue edit <n> --add-label harness:read-side   # or harness:write-side
 ```
 
 Long bodies go through `--body-file`, never inline: a body typed on the
 command line gets mangled by the shell.
 
-**The task body** opens with a `branch: <type>/<slug>` line (`feat`, `fix`,
-`docs`, `refactor`, `test`, `chore`, `AIchore` — per
+**The task body** has two sections, both written once and never rewritten
+by a refinement. `## Scope` opens with a `branch: <type>/<slug>` line
+(`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `AIchore` — per
 `.claude/skills/commit/SKILL.md`), a blank line, then a brief: what this
 slice covers and what it explicitly does not — the next slice's territory,
-not an oversight. This is **not** the SPEC: `/business-analyst` writes that,
-in its own pass, once the task exists and is picked up.
+not an oversight. `## Architecture` places the slice in the agent-native
+architecture (`docs/ARCHITECTURE.md`), as `key: value` lines:
+
+```markdown
+## Architecture
+
+unit: capability          # capability | micro-ui | concept | data-capability
+                          # | persisted-query | composition | invariant
+                          # | migration | infrastructure
+system: credit            # the bounded context
+concept: Risk@3           # the versioned Concept it implements, if any
+effect: insert            # data-capability only: insert | update | delete | upsert
+touches: -                # data-capability only: existing fields it changes
+side: harness:read-side   # or harness:write-side — see below
+```
+
+This is **not** the SPEC: `/business-analyst` writes that, in its own pass,
+once the task exists and is picked up.
+
+**One slice, one unit.** A slice that would build two units (a Capability
+and the Micro-UI that reads it) is two slices. The second depends on the
+first.
 
 **Order so something testable exists early**, and make the last slice the
 one that proves the whole milestone actually runs end to end — not a
 cleanup task tacked on after everything else.
+
+### Label the side, and chain only what really depends
+
+Every task carries `harness:read-side` or `harness:write-side`, next to
+`harness:agent`/`harness:human`:
+
+- **read side** — capability, micro-ui, concept, persisted-query,
+  composition, and a data-capability whose effect is `insert` with nothing
+  in `touches`. These share nothing by design: chain one `blocked_by`
+  another **only** when it reads what the other produces. Unchained
+  read-side tasks run **in parallel**, each in its own session and clone.
+- **write side** — a data-capability that updates, deletes or upserts (or
+  touches existing fields), an invariant, a migration, infrastructure.
+  Chain each write-side task onto the previous write-side one (mutations are
+  serialized, as behind the DataGuard), and put them before the readers that
+  build on them. A human merges every write-side PR; the loop waits.
 
 ### Mark `harness:human` honestly
 
@@ -132,10 +171,11 @@ milestone that genuinely needs no further task has still been looked at.
 
 End by telling the user:
 
-> Tasks #a → #z opened under milestone #M, chained by `blocked_by`, each
-> carrying a `branch:` line. `harness:ready` removed, `harness:triggered`
-> added — the loop (or `/business-analyst`, by hand) picks the first one up
-> from here.
+> Tasks #a → #z opened under milestone #M, each carrying a `branch:` line,
+> its `## Architecture` section and its side; `blocked_by` links only where
+> one really builds on another. `harness:ready` removed, `harness:triggered`
+> added — the loop (or `/business-analyst`, by hand) picks the runnable ones
+> up from here, several at a time on the read side.
 
 Do not roll straight into writing a SPEC for the first task — that is
 `/business-analyst`'s job, in a clean context.

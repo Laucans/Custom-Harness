@@ -11,6 +11,9 @@ use harness_core::domain::{Named, Resumable, Scope, Scoped, Sibling};
 ///
 /// Serializable because it's **this** that a run resumes: the two-line
 /// pointer says which task, this state says where it was.
+// Four facts of the round, each true or false on its own: resumed, the two
+// sections written, the side. A state machine would multiply their product.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Loop {
@@ -24,8 +27,11 @@ pub struct Loop {
     pub task: Named,
     /// The task resume key — its number.
     pub task_key: String,
-    /// `auto` ou `human`, pour le journal.
+    /// `auto` or `human`, for the journal.
     pub kind: String,
+    /// The task is on the write side of the architecture: its PR is opened
+    /// for a human to merge, never merged by the session.
+    pub write_side: bool,
     /// True when the resume point designated the task, rather than the board.
     ///
     /// What guards read that only apply on a resumed round: on a fresh

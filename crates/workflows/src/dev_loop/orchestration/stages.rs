@@ -109,6 +109,33 @@ findings instead of re-deriving them. Nothing outside this session can read
 your plan, so a gate finding or a risk you do not act on now is lost — put it
 in your reply.";
 
+/// `code`, on the write side: the same work, and a PR left open for a human.
+///
+/// The architecture asks a human to review every mutation of existing data,
+/// so the session never merges: it opens the PR with `harness:to-review` —
+/// the agent review runs on it — and stops. The loop then marks the task
+/// `review-pending` and waits for the merge.
+const CODE_WRITE_SIDE: &str =
+    "The task is issue #{num} (\"{title}\"); its body, below under SCOPE, is the
+SPEC. It is on the **write side** of the architecture ({write_side}): it
+mutates existing data or the rules that guard it, and a human merges it.
+Plan it as /tech-analyst: the pre-flight gate, the ordered checklist against
+the real code, the stop line, the risks. Then, in this same session, without
+waiting for a go-ahead and without /clear, carry out
+.claude/skills/code/SKILL.md against your own plan — build, run every
+Verification bullet with real output, /code-review, then branch -> PR, and
+STOP THERE: open the pull request against the milestone branch with
+`gh pr create --label {to_review}` (the agent review runs on it), wait for
+its CI with `gh pr checks`, and do NOT run `gh pr merge` — a human merges
+every write-side PR. The PR body MUST carry the line `Closes #{num}` on its
+own: the loop reads that line off the PR to know the task is delivered once
+the human merges it. The issue will carry `{review_pending}` until then —
+that is expected, not a failure. Do not close the issue yourself.
+/code's steps 1-3 are what you just did as the tech analyst; adopt your own
+findings instead of re-deriving them. Nothing outside this session can read
+your plan, so a gate finding or a risk you do not act on now is lost — put it
+in your reply.";
+
 /// Instructions for a stage, with labels spliced from [`labels`].
 ///
 /// A single pass, before scope: inserted values are code constants, so
@@ -124,6 +151,9 @@ fn with_labels(text: &str) -> String {
             ("roadmap", labels::ROADMAP),
             ("milestone_label", labels::MILESTONE),
             ("waiting_merge", labels::WAITING_MERGE),
+            ("to_review", labels::TO_REVIEW),
+            ("review_pending", labels::REVIEW_PENDING),
+            ("write_side", labels::WRITE_SIDE),
         ],
     )
 }
@@ -150,6 +180,8 @@ struct Paid<'a> {
     model: &'a str,
     lead: &'a str,
     instructions: &'a str,
+    /// Other instructions for a write-side task, if the stage has any.
+    write_side_instructions: Option<&'a str>,
     cut: Cut,
     then: Vec<Box<dyn SessionAction<Loop>>>,
 }
@@ -160,6 +192,7 @@ impl Paid<'_> {
             stage: self.stage.to_string(),
             lead: self.lead.to_string(),
             instructions: with_labels(self.instructions),
+            write_side_instructions: self.write_side_instructions.map(with_labels),
             cut: self.cut,
             round: turn,
             branch: config.integration_branch.clone(),
@@ -191,6 +224,7 @@ pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<
         model: "opus",
         lead: "/tech-analyst",
         instructions: TECHNICAL_REFINEMENT,
+        write_side_instructions: None,
         cut: Cut::Situated(REFINEMENT_WRITES),
         // Recording is local work, and it goes *in* the stage — not in a
         // gate, which would have no right to write.
@@ -252,6 +286,7 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             model: "sonnet",
             lead: "/tech-analyst",
             instructions: CODE,
+            write_side_instructions: Some(CODE_WRITE_SIDE),
             cut: Cut::Situated(CODE_SKIPS),
             then: Vec::new(),
         }
@@ -278,6 +313,7 @@ pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             model: "sonnet",
             lead: "/create-test",
             instructions: "",
+            write_side_instructions: None,
             cut: Cut::TaskOnly(TEST_SKIPS),
             then: Vec::new(),
         }
@@ -388,6 +424,27 @@ mod tests {
         assert!(said.contains("#{num}"), "the number remains to fill");
         assert!(said.contains("{title}"));
         assert!(said.contains("milestone #{milestone}"));
+    }
+
+    #[test]
+    fn the_write_side_code_prompt_opens_a_pr_and_never_merges() {
+        let text = with_labels(CODE_WRITE_SIDE);
+        assert!(text.contains("gh pr create --label harness:to-review"));
+        assert!(text.contains("do NOT run `gh pr merge`"));
+        assert!(text.contains("harness:review-pending"));
+        assert!(text.contains("harness:write-side"));
+        assert!(!text.contains("{to_review}") && !text.contains("{review_pending}"));
+        for placeholder in ["{num}", "{title}"] {
+            assert!(
+                text.contains(placeholder),
+                "{placeholder} is filled per task"
+            );
+        }
+        let read = with_labels(CODE);
+        assert!(
+            read.contains("gh pr merge --rebase"),
+            "the read side still merges"
+        );
     }
 
     #[test]

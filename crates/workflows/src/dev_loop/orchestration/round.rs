@@ -111,6 +111,7 @@ mod tests {
             pick: PickTask {
                 gh: Rc::clone(&port),
                 resuming: None,
+                wanted: None,
             },
             stages: stages::table(&ports, &config, 1),
             delivered: MarkWaitingMerge {

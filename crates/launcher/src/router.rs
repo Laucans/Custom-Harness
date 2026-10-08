@@ -41,6 +41,7 @@ use harness_workflows::refinement::data::phase::Phase;
 use crate::adapters::sink::Both;
 use crate::adapters::spending;
 use crate::cli::WatchArgs;
+use crate::dispatch::lanes::Lanes;
 
 /// Runs the watch loop: one tick now, then every `--interval` seconds,
 /// forever — or exactly once under `--once`.
@@ -72,10 +73,13 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
         },
         Workspace::new(here).rel(&journal)
     ));
+    let mut lanes = Lanes::new(args.parallel);
     loop {
-        let went = tick(args, here, &log).await;
+        let went = tick(args, here, &log, &mut lanes).await;
         if args.once {
-            // One pass was asked for, and its exit code is the answer.
+            // One pass was asked for, and its exit code is the answer — once
+            // the lanes it may have opened are done, so the pass is whole.
+            lanes.wait_all(&log).await;
             return went;
         }
         if let Err(halt) = went {
@@ -91,8 +95,9 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
 }
 
 /// One pass: read the snapshot, decide, dispatch.
-async fn tick(args: &WatchArgs, here: &Path, log: &Logbook) -> Outcome<()> {
+async fn tick(args: &WatchArgs, here: &Path, log: &Logbook, lanes: &mut Lanes) -> Outcome<()> {
     let gh = resolve_gh(args, here)?;
+    lanes.reap(log);
     let found = snapshot(gh.as_ref()).await?;
     // What the decision was made from, for a tick whose choice later looks
     // wrong: the counts are the whole input to `routing::decide`.
@@ -109,7 +114,7 @@ async fn tick(args: &WatchArgs, here: &Path, log: &Logbook) -> Outcome<()> {
         found.dev_loop_milestone,
     ));
     let route = routing::decide(&found);
-    dispatch(args, here, gh.as_ref(), route, log).await;
+    dispatch(args, here, gh.as_ref(), route, log, lanes).await;
     Ok(())
 }
 
@@ -235,11 +240,18 @@ async fn lowest_ready_to_merge(
 
 /// Runs whichever workflow the route names. Reports, never propagates: see
 /// the module doc on why a dispatch failure does not stop the loop.
-async fn dispatch(args: &WatchArgs, here: &Path, gh: &dyn GitHub, route: Route, log: &Logbook) {
+async fn dispatch(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    route: Route,
+    log: &Logbook,
+    lanes: &mut Lanes,
+) {
     // The route with its parameters, before anything runs: it is the one line
     // that says what this tick decided and on what.
     log.say(&format!("tick: {route:?}"));
-    let failed = dispatched(args, here, gh, route, log).await;
+    let failed = dispatched(args, here, gh, route, log, lanes).await;
     // Recorded before anything is repaired: the record is what the repair
     // reads, and what says — next tick — that it has already been treated.
     if let Some((workflow, halt)) = failed {
@@ -262,9 +274,15 @@ async fn dispatched(
     gh: &dyn GitHub,
     route: Route,
     log: &Logbook,
+    lanes: &mut Lanes,
 ) -> Option<(&'static str, Halt)> {
     match route {
         Route::Nothing => None,
+        Route::DevLoop { milestone } if args.parallel > 1 => {
+            run_lanes(args, here, gh, milestone, lanes, log)
+                .await
+                .map(|halt| ("dev_loop", halt))
+        }
         Route::DevLoop { milestone } => run_dev_loop(here, gh, milestone, args.force_reset, log)
             .await
             .map(|halt| ("dev_loop", halt)),
@@ -384,6 +402,90 @@ async fn run_milestone_merge(
 /// Runs the dev loop pointed at this milestone's own branch, derived from
 /// its number and title (`common::branching`) — never the fixed
 /// `--branch`/`INTEGRATION_BRANCH` a direct `harness` invocation would use.
+/// Gives every runnable task of the milestone that no lane is on to a free
+/// lane — a `harness --task <n>` child in its own workspace — up to
+/// `--parallel` at once. Nothing runs in this process.
+async fn run_lanes(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    milestone: u64,
+    lanes: &mut Lanes,
+    log: &Logbook,
+) -> Option<Halt> {
+    let board = match board::read(gh).await {
+        Ok(board) => board,
+        Err(halt) => {
+            log.warn(&format!(
+                "watch: lanes -> cannot read the board: {}",
+                halt.reason()
+            ));
+            return Some(halt);
+        }
+    };
+    if board.milestone.number != milestone {
+        log.warn(&format!(
+            "watch: lanes -> the board moved to milestone #{} since the route was decided",
+            board.milestone.number
+        ));
+        return None;
+    }
+    let branch = branching::milestone_branch(milestone, &board.milestone.title);
+    let running = lanes.running();
+    let candidates: Vec<u64> =
+        harness_workflows::dev_loop::data::tasks::runnable_tasks(&board.tasks)
+            .into_iter()
+            .map(|task| task.number)
+            .filter(|number| !running.contains(number))
+            .collect();
+    if candidates.is_empty() {
+        log.say(&format!(
+            "watch: lanes -> every runnable task is already on a lane ({})",
+            running
+                .iter()
+                .map(|n| format!("#{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        return None;
+    }
+    for number in candidates {
+        let Some(slot) = lanes.free_slot() else {
+            log.say("watch: lanes -> every lane is busy");
+            break;
+        };
+        let mut command = tokio::process::Command::new(match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                log.warn(&format!("watch: lanes -> cannot find this executable: {e}"));
+                return None;
+            }
+        });
+        command
+            .current_dir(here)
+            .arg("--task")
+            .arg(number.to_string())
+            .arg("--branch")
+            .arg(&branch)
+            .arg("--use-workspace")
+            .arg(format!("lane-{slot}"))
+            .arg("--quiet");
+        if args.force_reset {
+            command.arg("--force-reset");
+        }
+        if args.dry_run {
+            command.arg("--dry-run");
+        }
+        match lanes.spawn(slot, number, command, here) {
+            Ok(pid) => log.say(&format!(
+                "watch: lanes -> lane {slot} takes #{number} on {branch} (pid {pid})"
+            )),
+            Err(e) => log.warn(&format!("watch: lanes -> cannot start #{number}: {e}")),
+        }
+    }
+    None
+}
+
 async fn run_dev_loop(
     here: &Path,
     gh: &dyn GitHub,
