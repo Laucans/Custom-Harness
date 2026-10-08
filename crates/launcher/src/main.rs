@@ -49,7 +49,9 @@ async fn main() -> ExitCode {
                     as std::rc::Rc<dyn harness_core::traces::Sink>,
                 harness_core::traces::Verbosity::Normal,
             );
-            match dispatch::doctor::treat_by_hand(&here, sub.dry_run, &log).await {
+            match dispatch::doctor::treat_by_hand(&here, &sub.workspaces_dir, sub.dry_run, &log)
+                .await
+            {
                 Ok(repair) => {
                     println!("doctor: {}", repair.outcome());
                     ExitCode::SUCCESS

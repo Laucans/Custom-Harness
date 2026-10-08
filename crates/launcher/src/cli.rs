@@ -114,6 +114,11 @@ pub struct DoctorArgs {
     /// Say what would be repaired, change nothing.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// The directory that contains workspaces — where a repair looks for
+    /// what a run mounted. The same setting as the run's.
+    #[arg(long, env = "AGENTIC_WORKSPACES_DIR", default_value = "")]
+    pub workspaces_dir: String,
 }
 
 /// `harness watch`'s own arguments.
@@ -126,6 +131,11 @@ pub struct WatchArgs {
     /// Seconds between two polls.
     #[arg(long, default_value_t = 30)]
     pub interval: u64,
+
+    /// The directory that contains workspaces — where the doctor looks for
+    /// what the lanes mounted. The lanes themselves read the same variable.
+    #[arg(long, env = "AGENTIC_WORKSPACES_DIR", default_value = "")]
+    pub workspaces_dir: String,
 
     /// One pass, then exit — for a manual check or a test.
     #[arg(long)]

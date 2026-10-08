@@ -113,15 +113,7 @@ impl Provisioner {
         let source = run.source;
         let wanted = run.wanted;
         let url = self.url_for(run).await?;
-        let base = if wanted.base.is_empty() {
-            source.workspaces()
-        } else {
-            // A relative path is read from the repo, never from the current
-            // directory: the loop runs from anywhere — a cron, a hook, another
-            // checkout — and a relative base would otherwise place a clone of
-            // hundreds of megabytes where the shell happens to be.
-            source.root().join(&wanted.base)
-        };
+        let base = source.workspaces_in(&wanted.base);
         let named = !wanted.id.is_empty();
         let name = if named {
             wanted.id.clone()
