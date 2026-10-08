@@ -316,7 +316,10 @@ pub fn parse_run_log(text: &str, known: &[String]) -> RunLog {
         } else if rest.contains(" delivered by PR ") {
             log.delivered = Some(rest.to_string());
         } else if let Some(tag) = stage_tag(rest) {
-            push_unique(&mut log.done, tag);
+            // A session that only opened has not reported: it is still at work.
+            if harness_core::traces::stage_opening(rest).is_none() {
+                push_unique(&mut log.done, tag);
+            }
         } else if rest.contains("skipp") {
             let planned: Vec<String> = log.planned.iter().map(|p| p.stage.clone()).collect();
             for stage in planned.iter().chain(known.iter()) {
@@ -785,6 +788,14 @@ mod tests {
         assert_eq!(log.first_at.as_deref(), Some("2026-10-06T20:26:10Z"));
         assert_eq!(log.last_at.as_deref(), Some("2026-10-06T20:31:35Z"));
         assert!(log.last_line.starts_with("[code] AGENT_LOOP_OK"));
+    }
+
+    #[test]
+    fn an_opened_session_has_not_reported_yet() {
+        let text = "[2026-10-08T21:23:20Z] pipeline: technical-refinement(opus/high) -> code(sonnet/high) -> create-test(sonnet/high)\n\
+                    [2026-10-08T21:31:21Z] [technical-refinement] AGENT_LOOP_OK: written\n\
+                    [2026-10-08T21:31:23Z] [code] session opens\n";
+        assert_eq!(parse_run_log(text, &[]).done, ["technical-refinement"]);
     }
 
     #[test]

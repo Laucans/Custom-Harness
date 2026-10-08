@@ -695,6 +695,7 @@ mod tests {
 [2026-10-06T20:26:16Z] --- round 1/3 ---
 [2026-10-06T20:26:21Z] task #62: Asset folder rule [auto]
 [2026-10-06T20:28:32Z] [technical-refinement] AGENT_LOOP_OK: sections written
+[2026-10-06T20:28:34Z] [code] session opens
 ";
 
     fn assemble(observed: &Observed, demo: bool) -> Snapshot {
