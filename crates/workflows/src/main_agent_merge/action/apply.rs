@@ -3,10 +3,10 @@
 use harness_core::domain::Outcome;
 
 use crate::common::{branching, delivery, labels};
-use crate::milestone_merge::config::Config;
-use crate::milestone_merge::data::audit;
-use crate::milestone_merge::data::report::Outcome as MergeOutcome;
-use crate::milestone_merge::ports::Ports;
+use crate::main_agent_merge::config::Config;
+use crate::main_agent_merge::data::audit;
+use crate::main_agent_merge::data::report::Outcome as MergeOutcome;
+use crate::main_agent_merge::ports::Ports;
 
 /// Attempts to merge one milestone.
 ///
@@ -62,8 +62,8 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
 mod tests {
     use super::*;
     use crate::common::fake_github::FakeGitHub;
-    use crate::milestone_merge::config::fake as config_fake;
-    use crate::milestone_merge::ports::fake as ports_fake;
+    use crate::main_agent_merge::config::fake as config_fake;
+    use crate::main_agent_merge::ports::fake as ports_fake;
     use harness_core::domain::{Issue, Pr};
     use std::collections::HashMap;
     use std::rc::Rc;

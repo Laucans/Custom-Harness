@@ -12,7 +12,8 @@
 //! pending on it; then the two things
 //! that can be wrong with a pull request already in flight — a red one to
 //! repair before a green one to review, since reviewing a change whose CI
-//! is broken reviews something about to change; then finishing a milestone
+//! is broken reviews something about to change; then merging a reviewed,
+//! green task PR into its milestone; then finishing a milestone
 //! that's done, a pending refinement (business, then technical), and finally grinding on a task.
 //! Structural decomposition before unblocking what's in flight before
 //! closing out before polish before grind.
@@ -54,9 +55,19 @@ pub enum Route {
         /// against a fixed integration branch a task PR never targets.
         base: String,
     },
-    /// Open or merge this milestone's PR into the base branch —
+    /// Merge this task's reviewed, green PR into its milestone branch —
     /// `milestone_merge`.
-    MergeMilestone {
+    MergeIntoMilestone {
+        /// The task's number.
+        task: u64,
+        /// The PR, as the ports name one.
+        pr: String,
+        /// The branch it targets — the milestone's.
+        base: String,
+    },
+    /// Open or merge this milestone's PR into the base branch —
+    /// `main_agent_merge`.
+    MergeMainAgent {
         /// The milestone issue's number.
         milestone: u64,
     },
@@ -101,6 +112,9 @@ pub struct Snapshot {
     /// (`pr_review::data::skip_rules`) so a PR that would skip never costs a
     /// mounted checkout per poll.
     pub pr_to_review: Option<Pr>,
+    /// The task whose PR is open on its milestone, reviewed and green, with
+    /// that PR — what `milestone_merge` merges.
+    pub task_to_merge: Option<(u64, Pr)>,
     /// The lowest-numbered open milestone whose tasks are all closed and
     /// that isn't `harness:waiting-merge` yet, if any — computed by the
     /// router against each milestone's own sub-issues, which a flat list
@@ -146,8 +160,15 @@ pub fn decide(snapshot: &Snapshot) -> Route {
             base: pr.base.clone(),
         };
     }
+    if let Some((task, pr)) = &snapshot.task_to_merge {
+        return Route::MergeIntoMilestone {
+            task: *task,
+            pr: pr.num.clone(),
+            base: pr.base.clone(),
+        };
+    }
     if let Some(milestone) = snapshot.ready_to_merge {
-        return Route::MergeMilestone { milestone };
+        return Route::MergeMainAgent { milestone };
     }
     if let Some(issue) = lowest_open(&snapshot.refining) {
         return Route::Refinement {
@@ -222,6 +243,7 @@ mod tests {
             milestones: Vec::new(),
             pr_to_fix: None,
             pr_to_review: None,
+            task_to_merge: None,
             ready_to_merge: None,
             refining: Vec::new(),
             tech_refining: Vec::new(),
@@ -238,6 +260,24 @@ mod tests {
     }
 
     #[test]
+    fn a_green_task_pr_is_merged_into_its_milestone_before_the_milestone_moves_up() {
+        let snapshot = Snapshot {
+            task_to_merge: Some((64, pr("68", "milestone/52-socle"))),
+            ready_to_merge: Some(52),
+            refining: vec![issue(70, &[labels::REFINEMENT])],
+            ..empty()
+        };
+        assert_eq!(
+            decide(&snapshot),
+            Route::MergeIntoMilestone {
+                task: 64,
+                pr: "68".to_string(),
+                base: "milestone/52-socle".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn a_ready_roadmap_item_with_no_milestone_outranks_everything() {
         let snapshot = Snapshot {
             roadmap: vec![
@@ -248,6 +288,7 @@ mod tests {
             milestones: vec![issue(5, &[labels::MILESTONE, labels::READY])],
             pr_to_fix: Some(pr("32", "main_agent")),
             pr_to_review: Some(pr("33", "main_agent")),
+            task_to_merge: Some((40, pr("41", "milestone/3-x"))),
             ready_to_merge: Some(7),
             refining: vec![issue(6, &[labels::REFINEMENT])],
             tech_refining: vec![],
@@ -325,7 +366,7 @@ mod tests {
             dev_loop_milestone: Some(3),
             ..empty()
         };
-        assert_eq!(decide(&snapshot), Route::MergeMilestone { milestone: 7 });
+        assert_eq!(decide(&snapshot), Route::MergeMainAgent { milestone: 7 });
     }
 
     #[test]

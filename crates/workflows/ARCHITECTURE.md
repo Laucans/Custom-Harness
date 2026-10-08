@@ -46,13 +46,13 @@ third is the entry point that, with that contract filled, assembles the whole
 workflow.
 
 **A deterministic command departs from this skeleton**: no `orchestration/`,
-no `checks/`. `init_repo` and `milestone_merge` are both this, not a
+no `checks/`. `init_repo` and `main_agent_merge` are both this, not a
 workflow — no `Context`, no stage table, no session, no cost — so a stage
 table would name one entry for a sequence that does not exist, and a
 `Verification` would judge against a `Context<S>` nobody carries. What
 `checks/` would hold (a read-only audit's criteria, a merge's readiness
 predicate) lives in that module's own `data::audit` as pure functions over
-values already read. See `init_repo/mod.rs` and `milestone_merge/mod.rs`
+values already read. See `init_repo/mod.rs` and `main_agent_merge/mod.rs`
 for the same reasoning in place — the router (`common::routing` +
 `harness watch`) is this too, though its own "audit" is a pure decision
 function rather than a module of its own.
@@ -301,8 +301,8 @@ its precheck, its lock and its trigger.
   the last to get a launcher entry point: its documented trigger used to be a
   hook on `gh pr create`, which needs a public URL this harness does not have.
 
-Two more directories sit beside these, not in the table above: `init_repo`
-and `milestone_merge`, both the deterministic-command departure described
+Three more modules sit beside these, not in the table above: `init_repo`,
+`milestone_merge` and `main_agent_merge`, all the deterministic-command departure described
 in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
 router route, no `state`, no `remaining`, no round, no lock, no resume, no
 tolerance — every column above would read "n/a". `init_repo` creates the
@@ -310,8 +310,12 @@ tolerance — every column above would read "n/a". `init_repo` creates the
 files in the repository through a throwaway clone (`docs/ARCHITECTURE.md`,
 the rules block of `CLAUDE.md`, `contracts/`, the CI gates — one commit,
 nothing already there overwritten without `--force`), runs a read-only
-audit, and writes the link into `.env.local`. `milestone_merge` opens or merges a
-milestone's PR once its tasks are closed and its CI is green.
+audit, and writes the link into `.env.local`. The two merges are the two
+levels of one fold: `milestone_merge` merges a task's PR into its milestone
+branch once the agent review has run and every check is green — the write
+side's PR, which the session leaves open — and marks the task delivered;
+`main_agent_merge` opens, then merges, the milestone branch's PR into the
+integration branch once every task is merged into it and its CI is green.
 
 ## 14. Adding a workflow
 

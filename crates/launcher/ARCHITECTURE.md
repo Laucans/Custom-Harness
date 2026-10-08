@@ -28,7 +28,9 @@ src/dispatch/     one module per thing that can be run, plus what they share
   refinement.rs     an issue body into its five canonical sections
   pr_review.rs      an advisory review on a PR
   pr_fix.rs         one repair attempt on a red PR — the only writable checkout here
-  milestone_merge.rs  a finished milestone's PR, opened then merged
+  main_agent_merge.rs  a finished milestone's PR into main_agent, opened then merged
+                       (a task's PR into its milestone — `milestone_merge` —
+                       needs no wiring of its own: the router calls it with its `gh`)
   init_repo.rs      `harness init-repo`: the only place that builds `GhCli::for_slug`
   shared.rs         the checkouts and adapters the dispatch modules share
   tooling.rs        the gates that belong to no workflow
@@ -205,7 +207,7 @@ Three checkouts, and the difference is whether the tenant commits:
 | shared, read-only | `router-readonly` | `planner`, `split`, `refinement`, `pr_review` | none of them commits, so none can conflict |
 | its own, writable | `router-prfix` | `pr_fix` | it commits; `force_reset`, on the PR's branch |
 
-`init_repo` and `milestone_merge` mount nothing: both only talk to GitHub.
+`init_repo` and `main_agent_merge` mount nothing: both only talk to GitHub.
 
 **Adding a workflow** means a new module in `dispatch/` that builds the
 concrete adapters for that workflow's `Ports` — reusing `shared.rs` if it

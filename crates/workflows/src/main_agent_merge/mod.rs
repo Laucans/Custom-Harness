@@ -1,4 +1,4 @@
-//! `harness watch` merging a finished milestone: `harness milestone-merge`,
+//! `harness watch` merging a finished milestone: `harness main-agent-merge`,
 //! in effect, though nothing exposes it as its own subcommand — the router
 //! is its only caller.
 //!

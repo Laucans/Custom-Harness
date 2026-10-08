@@ -265,7 +265,7 @@ pub trait GitHub {
     /// Whether every check on this PR's latest commit succeeded.
     ///
     /// A PR with no checks configured at all reads as **not** green — the
-    /// milestone-merge gate that consumes this wants proof CI ran, not the
+    /// main-agent-merge gate that consumes this wants proof CI ran, not the
     /// absence of a reason to refuse.
     ///
     /// # Errors

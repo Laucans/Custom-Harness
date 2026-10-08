@@ -16,7 +16,7 @@
 //!   **read-only** checkout ([`shared`]): none of them commits.
 //! - [`pr_fix`] gets a **writable** one of its own, on the PR's branch,
 //!   because it does commit.
-//! - [`init_repo`] and [`milestone_merge`] mount nothing: both are
+//! - [`init_repo`] and [`main_agent_merge`] mount nothing: both are
 //!   deterministic commands that only talk to GitHub.
 //!
 //! [`tooling`] holds the gates [`dev_loop`] mounts around its run — the
@@ -33,7 +33,7 @@ pub mod dev_loop;
 pub mod doctor;
 pub mod init_repo;
 pub mod lanes;
-pub mod milestone_merge;
+pub mod main_agent_merge;
 pub mod planner;
 pub mod pr_fix;
 pub mod pr_review;

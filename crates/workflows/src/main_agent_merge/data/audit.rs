@@ -1,7 +1,7 @@
 //! Whether a milestone is ready to merge.
 //!
 //! Pure: takes issues already read, decides nothing about the filesystem
-//! or the network. Re-read by [`crate::milestone_merge::action::apply::run`]
+//! or the network. Re-read by [`crate::main_agent_merge::action::apply::run`]
 //! immediately before acting on it — the acknowledged price of "judging is
 //! not doing", same split the rest of the harness already pays.
 

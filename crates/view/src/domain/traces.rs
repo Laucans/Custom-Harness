@@ -95,7 +95,8 @@ pub fn workflow_of_route(route: &str) -> Option<&'static str> {
         "Planner" => Some("planner"),
         "PrReview" => Some("pr-review"),
         "PrFix" => Some("pr-fix"),
-        "MergeMilestone" => Some("milestone-merge"),
+        "MergeMainAgent" => Some("main-agent-merge"),
+        "MergeIntoMilestone" => Some("milestone-merge"),
         _ => None,
     }
 }

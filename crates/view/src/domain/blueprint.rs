@@ -211,7 +211,47 @@ pub fn lines() -> Vec<Line> {
         pr_review_line(),
         pr_fix_line(),
         milestone_merge_line(),
+        main_agent_merge_line(),
     ]
+}
+
+fn milestone_merge_line() -> Line {
+    line(
+        "milestone-merge",
+        "Milestone merge",
+        "a task's PR reviewed, CI green",
+        "Folds one task into its milestone: once its pull request has its review and every \
+         check is green, merges its branch into the milestone branch and marks it delivered.",
+        vec![
+            vec![free(
+                "reviewed",
+                "reviewed",
+                Kind::Scanner,
+                "The agent review has run on the pull request: the review route always goes \
+                 first.",
+            )],
+            vec![free(
+                "ci-green",
+                "CI is green",
+                Kind::Scanner,
+                "At least one check succeeded and none failed — a gate not implemented yet \
+                 reports skipped and does not hold the merge back.",
+            )],
+            vec![free(
+                "merge",
+                "merge it",
+                Kind::Arm,
+                "Merges the task's branch into the milestone branch.",
+            )],
+            vec![free(
+                "deliver",
+                "mark delivered",
+                Kind::Arm,
+                "Takes review-pending off the task and marks it waiting for the milestone's \
+                 own merge.",
+            )],
+        ],
+    )
 }
 
 fn agent_loop_line() -> Line {
@@ -455,10 +495,10 @@ fn pr_fix_line() -> Line {
     )
 }
 
-fn milestone_merge_line() -> Line {
+fn main_agent_merge_line() -> Line {
     line(
-        "milestone-merge",
-        "Milestone merge",
+        "main-agent-merge",
+        "main_agent merge",
         "every task delivered, CI green",
         "Closes a milestone: once every task is merged into its branch and CI is green, \
          merges that branch into the integration branch.",
@@ -565,7 +605,7 @@ mod tests {
             "Planner { roadmap: 12 }",
             "PrReview { pr: \"71\", base: \"main_agent\" }",
             "PrFix { pr: \"71\" }",
-            "MergeMilestone { milestone: 16 }",
+            "MergeMainAgent { milestone: 16 }",
         ] {
             let workflow = workflow_of_route(route).expect(route);
             assert!(ids.iter().any(|id| id == workflow), "{route} -> {workflow}");

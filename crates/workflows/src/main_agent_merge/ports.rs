@@ -1,4 +1,4 @@
-//! The one port `milestone_merge` needs: GitHub. No checkout, no session —
+//! The one port `main_agent_merge` needs: GitHub. No checkout, no session —
 //! every read and write here is an API call.
 
 use std::rc::Rc;

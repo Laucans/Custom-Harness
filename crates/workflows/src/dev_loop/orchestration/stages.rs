@@ -131,10 +131,11 @@ gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
 checks the same rules after you), then branch -> PR, and
 STOP THERE: open the pull request against the milestone branch with
 `gh pr create --label {to_review}` (the agent review runs on it), wait for
-its CI with `gh pr checks`, and do NOT run `gh pr merge` — a human merges
-every write-side PR. The PR body MUST carry the line `Closes #{num}` on its
-own: the loop reads that line off the PR to know the task is delivered once
-the human merges it. The issue will carry `{review_pending}` until then —
+its CI with `gh pr checks`, and do NOT run `gh pr merge` — a write-side PR
+is merged by `milestone_merge` once the review has run and every check is
+green. The PR body MUST carry the line `Closes #{num}` on its own: the loop
+reads that line off the PR to know the task is delivered once it is merged.
+The issue will carry `{review_pending}` until then —
 that is expected, not a failure. Do not close the issue yourself.
 /code's steps 1-3 are what you just did as the tech analyst; adopt your own
 findings instead of re-deriving them. Nothing outside this session can read

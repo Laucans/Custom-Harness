@@ -4,7 +4,7 @@
 ///
 /// Distinct from [`harness_core::domain::Verdict`] (no `Skip`/`NothingLeft`
 /// — those don't apply to this idempotent, two-tick command). Never
-/// re-exported past `milestone_merge::data`.
+/// re-exported past `main_agent_merge::data`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// Tasks remain open — nothing attempted.

@@ -20,6 +20,7 @@
 pub mod common;
 pub mod dev_loop;
 pub mod init_repo;
+pub mod main_agent_merge;
 pub mod milestone_merge;
 pub mod planner;
 pub mod pr_fix;

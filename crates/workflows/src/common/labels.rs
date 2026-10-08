@@ -117,13 +117,15 @@ pub const READ_SIDE: &str = "harness:read-side";
 /// A `DataCapability` that updates, deletes or upserts, an invariant, a
 /// relation policy, a schema migration, anything behind the `DataGuard`.
 /// The architecture asks a human to review every mutation of existing data,
-/// so its PR is never merged by the session: it waits for a human merge
-/// under [`REVIEW_PENDING`].
+/// so its PR is never merged by the session: it waits under
+/// [`REVIEW_PENDING`] for its review and a green CI, then `milestone_merge`
+/// merges it into the milestone.
 ///
 /// Posed by `split` on a task, like [`READ_SIDE`] — never on a milestone.
 pub const WRITE_SIDE: &str = "harness:write-side";
 
-/// A write-side task's PR is open and waits for a human merge.
+/// A write-side task's PR is open and waits for its review and a green CI,
+/// after which `milestone_merge` merges it.
 ///
 /// Posed by the dev loop once the session has opened the PR (with
 /// `harness:to-review`, so the agent review runs on it) and stopped short of

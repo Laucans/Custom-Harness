@@ -290,8 +290,8 @@ impl MarkWaitingMerge {
             .post_issue_comment(
                 number,
                 &format!(
-                    "PR {} is open on the write side of the architecture and waits for \
-                     a human merge — the loop will not touch this task until then.",
+                    "PR {} is open on the write side of the architecture: `milestone_merge` \
+                     merges it once its review has run and every check is green.",
                     pr.url
                 ),
             )

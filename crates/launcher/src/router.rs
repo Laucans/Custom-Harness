@@ -34,7 +34,7 @@ use harness_core::traces::{Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Route, Snapshot};
 use harness_workflows::common::{branching, labels};
 use harness_workflows::dev_loop::data::{board, tasks};
-use harness_workflows::milestone_merge::data::audit;
+use harness_workflows::main_agent_merge::data::audit;
 use harness_workflows::pr_review::data::skip_rules;
 use harness_workflows::refinement::data::phase::Phase;
 
@@ -172,7 +172,12 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
         .as_ref()
         .filter(|b| b.next().is_none())
         .map(|b| tasks::idle_reason(b.milestone.number, &b.tasks));
+    let task_to_merge = match &board {
+        Some(board) => green_task_pr(gh, &board.tasks).await?,
+        None => None,
+    };
     let snapshot = Snapshot {
+        task_to_merge,
         roadmap,
         lowest_roadmap_has_milestone,
         milestones,
@@ -356,38 +361,46 @@ async fn dispatched(
             .await,
             log,
         ),
-        Route::MergeMilestone { milestone } => {
-            run_milestone_merge(args, here, milestone, log).await
+        Route::MergeIntoMilestone { task, pr, base } => {
+            run_milestone_merge(gh, task, pr, base, log).await
         }
-        Route::Refinement { issue } => report_failure(
-            "refinement",
-            crate::dispatch::refinement::run(
-                Phase::Business,
-                issue,
-                here,
-                &shared_checkout(args),
-                &args.permission_mode,
-                args.dry_run,
-            )
-            .await,
-            log,
-        ),
+        Route::MergeMainAgent { milestone } => {
+            run_main_agent_merge(args, here, milestone, log).await
+        }
+        Route::Refinement { issue } => refine_here(args, here, Phase::Business, issue, log).await,
         // Sequential on purpose, even under `--parallel`: the technical half
         // reads code a task may be changing, so it is not spread over lanes.
-        Route::TechRefinement { issue } => report_failure(
-            "tech_refinement",
-            crate::dispatch::refinement::run(
-                Phase::Technical,
-                issue,
-                here,
-                &shared_checkout(args),
-                &args.permission_mode,
-                args.dry_run,
-            )
-            .await,
-            log,
-        ),
+        Route::TechRefinement { issue } => {
+            refine_here(args, here, Phase::Technical, issue, log).await
+        }
     }
+}
+
+/// One refinement round in this process, on the shared checkout.
+async fn refine_here(
+    args: &WatchArgs,
+    here: &Path,
+    phase: Phase,
+    issue: u64,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    let workflow = match phase {
+        Phase::Business => "refinement",
+        Phase::Technical => "tech_refinement",
+    };
+    report_failure(
+        workflow,
+        crate::dispatch::refinement::run(
+            phase,
+            issue,
+            here,
+            &shared_checkout(args),
+            &args.permission_mode,
+            args.dry_run,
+        )
+        .await,
+        log,
+    )
 }
 
 /// The shared read-only checkout a refinement run in this process reads.
@@ -397,6 +410,26 @@ fn shared_checkout(args: &WatchArgs) -> crate::dispatch::shared::Checkout<'_> {
         branch: &args.branch,
         workspace: None,
     }
+}
+
+/// The task whose PR is open on its milestone, reviewed and green, with that
+/// PR — what `milestone_merge` merges. A PR still owed its review is left to
+/// the review route, which outranks this one.
+async fn green_task_pr(gh: &dyn GitHub, tasks: &[Issue]) -> Outcome<Option<(u64, Pr)>> {
+    if !tasks
+        .iter()
+        .any(harness_workflows::dev_loop::data::tasks::review_pending)
+    {
+        return Ok(None);
+    }
+    let open = gh.open_prs_labelled(labels::TO_REVIEW).await?;
+    let Some((task, pr)) = harness_workflows::milestone_merge::candidate(tasks, &open) else {
+        return Ok(None);
+    };
+    if !gh.pr_checks_green(&pr.num).await? {
+        return Ok(None);
+    }
+    Ok(Some((task.number, pr.clone())))
 }
 
 /// The milestones, with the blockers of every split candidate read — what
@@ -514,15 +547,46 @@ fn router_lane_command(
     Some(command)
 }
 
+/// Merges one task's PR into its milestone, and says so.
+async fn run_milestone_merge(
+    gh: &dyn GitHub,
+    task: u64,
+    pr: String,
+    base: String,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    let merged = async {
+        let issue = gh.issue(task).await?;
+        let pr = Pr {
+            num: pr,
+            base,
+            ..Pr::default()
+        };
+        harness_workflows::milestone_merge::run(gh, &issue, &pr).await
+    };
+    match merged.await {
+        Ok(()) => {
+            log.say(&format!(
+                "watch: milestone_merge -> #{task} merged into its milestone"
+            ));
+            None
+        }
+        Err(halt) => {
+            log.warn(&format!("watch: milestone_merge -> {}", halt.reason()));
+            Some(("milestone_merge", halt))
+        }
+    }
+}
+
 /// Merges one milestone, and says so. Its own function only because the
 /// dispatch table is long enough already.
-async fn run_milestone_merge(
+async fn run_main_agent_merge(
     args: &WatchArgs,
     here: &Path,
     milestone: u64,
     log: &Logbook,
 ) -> Option<(&'static str, Halt)> {
-    match crate::dispatch::milestone_merge::run(
+    match crate::dispatch::main_agent_merge::run(
         milestone,
         here,
         &args.target_repo_url,
@@ -531,12 +595,12 @@ async fn run_milestone_merge(
     .await
     {
         Ok(outcome) => {
-            log.say(&format!("watch: milestone_merge -> {outcome:?}"));
+            log.say(&format!("watch: main_agent_merge -> {outcome:?}"));
             None
         }
         Err(halt) => {
-            log.warn(&format!("watch: milestone_merge -> {}", halt.reason()));
-            Some(("milestone_merge", halt))
+            log.warn(&format!("watch: main_agent_merge -> {}", halt.reason()));
+            Some(("main_agent_merge", halt))
         }
     }
 }

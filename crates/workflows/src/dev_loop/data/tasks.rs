@@ -68,8 +68,8 @@ pub fn waiting_merge(issue: &Issue) -> bool {
     issue.has(labels::WAITING_MERGE)
 }
 
-/// True if the task's PR is open and waits for a human merge — the write
-/// side's own waiting state, before `waiting-merge`.
+/// True if the task's PR is open and waits for its review and a green CI —
+/// the write side's own waiting state, before `waiting-merge`.
 #[must_use]
 pub fn review_pending(issue: &Issue) -> bool {
     issue.has(labels::REVIEW_PENDING)
@@ -173,7 +173,7 @@ pub fn why_not(issue: &Issue) -> String {
     }
     if review_pending(issue) {
         return format!(
-            "{} {}: on the write side — its PR is open and waits for your merge",
+            "{} {}: on the write side — its PR is open and waits for its review and a green CI",
             issue.reference(),
             issue.title
         );
@@ -282,7 +282,7 @@ pub fn idle_reason(milestone: u64, issues: &[Issue]) -> String {
     }
     if pending_review > 0 {
         parts.push(format!(
-            "{pending_review} write-side PR(s) waiting for your merge"
+            "{pending_review} write-side PR(s) waiting for their review and a green CI"
         ));
     }
     if blocked > 0 {
@@ -523,7 +523,7 @@ mod tests {
     fn a_task_whose_pr_waits_for_a_human_is_not_runnable_and_still_blocks_the_next() {
         let waiting = issue(11, &[labels::AGENT, labels::READY, labels::REVIEW_PENDING]);
         assert!(!runnable(&waiting));
-        assert!(why_not(&waiting).contains("waits for your merge"));
+        assert!(why_not(&waiting).contains("waits for its review and a green CI"));
         let mut next = task(12);
         next.blocked_by = vec![waiting];
         assert!(!runnable(&next), "its code is not on the branch yet");

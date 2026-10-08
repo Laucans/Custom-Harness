@@ -2,7 +2,7 @@
 //!
 //! Shared because `split` writes it into each task's body (as a `branch:`
 //! line naming the *task's own* branch, computed by the session, not this
-//! module) while `init-repo`'s audit and `milestone_merge` both need the
+//! module) while `init-repo`'s audit and `main_agent_merge` both need the
 //! *milestone's own* branch name — derived, never asked of a session, so
 //! the two sides can never disagree on what it is.
 

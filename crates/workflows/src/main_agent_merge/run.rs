@@ -9,10 +9,10 @@ use std::rc::Rc;
 use harness_core::domain::Outcome;
 use harness_core::ports::shell::github::GitHub;
 
-use crate::milestone_merge::action::apply;
-use crate::milestone_merge::config::Config;
-use crate::milestone_merge::data::report;
-use crate::milestone_merge::ports::Ports;
+use crate::main_agent_merge::action::apply;
+use crate::main_agent_merge::config::Config;
+use crate::main_agent_merge::data::report;
+use crate::main_agent_merge::ports::Ports;
 
 /// What an invocation requests.
 pub struct Request {
@@ -59,8 +59,8 @@ impl MilestoneMergeRun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::milestone_merge::config::fake as config_fake;
-    use crate::milestone_merge::ports::fake as ports_fake;
+    use crate::main_agent_merge::config::fake as config_fake;
+    use crate::main_agent_merge::ports::fake as ports_fake;
 
     #[test]
     fn build_wires_the_request_straight_through() {
