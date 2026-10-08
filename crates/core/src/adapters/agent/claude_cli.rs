@@ -488,7 +488,7 @@ impl ClaudeCli {
                         // Verbatim first: the rendering is a reading, and a
                         // reading can be wrong in a way the bytes are not.
                         append(raw_to.as_deref(), &[line.to_string()]);
-                        stream_log::render(line)
+                        stream_log::render_under(line, &self.cwd)
                     }
                     // Not an event of the stream: whatever the binary itself
                     // had to say, and the reason a turn produced none.
