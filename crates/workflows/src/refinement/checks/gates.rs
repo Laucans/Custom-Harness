@@ -146,24 +146,52 @@ pub fn layout_violation(key: &str, architecture: &str, text: &str) -> Option<Str
             declaration.unit.key()
         ));
     }
-    let slot = match declaration.unit {
-        Unit::Capability => Some(("capabilities/", "crates/<system>/capabilities/<name>/")),
-        Unit::DataCapability => Some((
-            "data-capabilities/",
+    let (slot, placed) = match declaration.unit {
+        Unit::Capability => (
+            "crates/<system>/capabilities/<name>/",
+            crate_paths(text).any(|segments| {
+                segments.len() >= 3 && segments[1] == "capabilities" && is_name(segments[2])
+            }),
+        ),
+        Unit::DataCapability => (
             "crates/dataguard/data-capabilities/<name>/",
-        )),
-        _ => None,
+            crate_paths(text).any(|segments| {
+                segments.len() >= 3
+                    && segments[0] == "dataguard"
+                    && segments[1] == "data-capabilities"
+                    && is_name(segments[2])
+            }),
+        ),
+        _ => return None,
     };
-    let (marker, slot) = slot?;
-    if text.contains(marker) {
+    if placed {
         return None;
     }
     Some(format!(
-        "{key}: a {} lives at {slot}, with its manifest beside it, and the section \
-         names no path under {marker} — the code gate reads that folder and nothing \
-         else. Place the crate where the layout says.",
+        "{key}: the task declares a {} and the section places none at {slot}, the \
+         one folder the code gate reads for it. Another slot of the layout, or \
+         another word for the unit, is a reclassification the task does not allow: \
+         place the crate there, with its manifest beside it.",
         declaration.unit.key()
     ))
+}
+
+/// Every path written after `crates/` in `text`, split into its segments —
+/// `crates/bestiary/capabilities/entry/` gives `["bestiary", "capabilities", "entry"]`.
+fn crate_paths(text: &str) -> impl Iterator<Item = Vec<&str>> {
+    text.split("crates/").skip(1).map(|rest| {
+        let end = rest
+            .find(|c: char| {
+                !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '*' | '.'))
+            })
+            .unwrap_or(rest.len());
+        rest[..end].split('/').filter(|s| !s.is_empty()).collect()
+    })
+}
+
+/// A folder name, not a glob and not a placeholder.
+fn is_name(segment: &str) -> bool {
+    !segment.is_empty() && !segment.contains('*') && !segment.starts_with('<')
 }
 
 /// `crates/` followed by the first character of a folder name — not the
@@ -233,12 +261,15 @@ mod tests {
 
     #[test]
     fn a_capability_crate_outside_capabilities_is_misplaced() {
-        let beside = "Crate: `crates/bestiary/actors24-entry/`, compiled to wasm.";
+        let beside = "Crate: `crates/bestiary/actors24-entry/`, at the infrastructure slot; the \
+                      `capability-isolation` glob (`crates/*/capabilities/*/Cargo.toml`) never \
+                      treats it as a Capability.";
         let why = layout_violation("technical", CAPABILITY, beside).expect("misplaced");
         assert!(
             why.contains("crates/<system>/capabilities/<name>/"),
             "{why}"
         );
+        assert!(why.contains("reclassification"), "{why}");
         let plumbing = "unit: infrastructure\nsystem: bestiary\nside: harness:write-side";
         assert_eq!(layout_violation("technical", plumbing, beside), None);
     }
