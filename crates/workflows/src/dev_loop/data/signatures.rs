@@ -678,7 +678,10 @@ mod tests {
         // wrong file's signatures, which is worse than carrying none because the
         // session trusts what it is handed.
         let tracked = paths(&["src/my-core/a.ts"]);
-        assert!(paths_named_in("see core/a.ts", &tracked, ".ts").is_empty());
+        assert_eq!(
+            paths_named_in("see core/a.ts", &tracked, ".ts"),
+            [] as [std::string::String; 0]
+        );
         let right = paths(&["src/core/a.ts"]);
         assert_eq!(
             paths_named_in("see core/a.ts", &right, ".ts"),
@@ -729,7 +732,10 @@ mod tests {
     fn prose_that_merely_mentions_a_folder_names_no_file() {
         let tracked = paths(&["src/core/place.ts"]);
         let body = "Everything under src/core/ is yours, see the plugin folder too.";
-        assert!(paths_named_in(body, &tracked, ".ts").is_empty());
+        assert_eq!(
+            paths_named_in(body, &tracked, ".ts"),
+            [] as [std::string::String; 0]
+        );
     }
 
     fn indexed(of: &[(&str, &str)]) -> Index {
@@ -760,13 +766,13 @@ mod tests {
         // The normal case for a task that creates files rather than extending
         // them. Nothing is said: an absent block asks for no gesture.
         let index = indexed(&[("src/a.rs", "pub fn alpha()")]);
-        assert!(carried(&index, "write a brand new module", BUDGET).is_empty());
+        assert_eq!(carried(&index, "write a brand new module", BUDGET), "");
     }
 
     #[test]
     fn an_empty_index_carries_nothing_even_when_files_are_named() {
         let index = Index::default();
-        assert!(carried(&index, "edit src/a.rs", BUDGET).is_empty());
+        assert_eq!(carried(&index, "edit src/a.rs", BUDGET), "");
     }
 
     #[test]
@@ -784,13 +790,16 @@ mod tests {
         // A file with nothing public gives an empty shape, and an empty
         // `<signatures>` block reads as a broken injection.
         let index = indexed(&[("src/a.rs", "   ")]);
-        assert!(carried(&index, "edit src/a.rs", BUDGET).is_empty());
+        assert_eq!(carried(&index, "edit src/a.rs", BUDGET), "");
     }
 
     #[test]
     fn an_unknown_ecosystem_names_no_file_to_index() {
         let tracked = paths(&["main.zig"]);
-        assert!(paths_named_in("see main.zig", &tracked, "").is_empty());
+        assert_eq!(
+            paths_named_in("see main.zig", &tracked, ""),
+            [] as [std::string::String; 0]
+        );
     }
 }
 
@@ -877,13 +886,13 @@ mod turned_off {
         let off = Index::default();
         assert!(off.is_empty());
         assert_eq!(off.ecosystem, Ecosystem::Unknown);
-        assert!(
+        assert_eq!(
             carried(
                 &off,
                 "edit src/core/place.ts and src/plugin/main.ts",
                 BUDGET
-            )
-            .is_empty()
+            ),
+            ""
         );
     }
 }

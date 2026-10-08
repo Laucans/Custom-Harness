@@ -249,7 +249,7 @@ mod tests {
             dir.traces().runs("agent-loop"),
             ["20261006-150000", "20261006-202608"]
         );
-        assert!(dir.traces().runs("planner").is_empty());
+        assert_eq!(dir.traces().runs("planner"), [] as [String; 0]);
     }
 
     #[test]
@@ -338,8 +338,8 @@ mod tests {
     fn a_missing_checkout_reads_as_nothing_rather_than_failing() {
         let dir = Dir::new("empty");
         let traces = dir.traces();
-        assert!(traces.ledger().is_empty());
-        assert!(traces.errors().is_empty());
+        assert_eq!(traces.ledger(), [] as [crate::ports::LedgerRow; 0]);
+        assert_eq!(traces.errors(), [] as [crate::ports::ErrorRow; 0]);
         assert!(traces.quota().is_none());
         assert!(traces.watch_log(1024).is_none());
         assert!(

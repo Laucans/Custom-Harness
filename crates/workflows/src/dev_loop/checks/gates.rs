@@ -425,7 +425,7 @@ mod tests {
         );
         // The "judge" half applies no label: the action will, and the borrow
         // checker enforces it.
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]

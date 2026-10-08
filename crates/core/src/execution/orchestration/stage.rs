@@ -239,6 +239,6 @@ mod tests {
         let mut context = ctx();
         let err = stage.execute(&mut context).await.unwrap_err();
         assert!(matches!(err, Halt::Halted(_)));
-        assert!(context.state.is_empty());
+        assert_eq!(context.state, [] as [std::string::String; 0]);
     }
 }

@@ -207,8 +207,8 @@ mod tests {
         });
         let mut context = ctx();
         ReadBreakage { gh }.run(&mut context).await.expect("read");
-        assert!(context.state.failing.is_empty());
-        assert!(context.state.comments.is_empty());
+        assert_eq!(context.state.failing, [] as [std::string::String; 0]);
+        assert_eq!(context.state.comments, "");
     }
 
     #[tokio::test]

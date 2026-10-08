@@ -119,7 +119,7 @@ mod tests {
     fn a_fresh_state_has_no_task() {
         let fresh = Loop::default();
         assert!(!fresh.has_task());
-        assert!(fresh.done().is_empty());
+        assert_eq!(fresh.done(), [] as [String; 0]);
     }
 
     #[test]

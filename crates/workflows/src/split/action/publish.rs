@@ -394,7 +394,7 @@ mod tests {
         .run(&mut context)
         .await
         .expect("nothing to do");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]

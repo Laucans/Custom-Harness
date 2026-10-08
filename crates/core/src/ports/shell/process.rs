@@ -82,8 +82,8 @@ mod tests {
 
     #[test]
     fn no_output_at_all_yields_no_lines_rather_than_one_empty_one() {
-        assert!(ran("", "", 0).lines().is_empty());
-        assert!(ran("\n\n", "", 0).lines().is_empty());
+        assert_eq!(ran("", "", 0).lines(), [] as [std::string::String; 0]);
+        assert_eq!(ran("\n\n", "", 0).lines(), [] as [std::string::String; 0]);
     }
 
     #[test]

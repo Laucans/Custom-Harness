@@ -237,7 +237,7 @@ mod tests {
     fn an_empty_repository_gets_every_file_and_a_claude_md_made_of_the_rules() {
         let plan = InstallPlan::new(&|_| None, false);
         assert_eq!(plan.writes.len(), FILES.len() + 1);
-        assert!(plan.kept.is_empty());
+        assert_eq!(plan.kept, [] as [std::string::String; 0]);
         let (_, claude) = plan
             .writes
             .iter()
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(plan.kept, ["contracts/a-concept.schema.json"]);
         assert_eq!(plan.writes.len(), FILES.len());
         let forced = InstallPlan::new(&existing, true);
-        assert!(forced.kept.is_empty());
+        assert_eq!(forced.kept, [] as [std::string::String; 0]);
         assert_eq!(forced.writes.len(), FILES.len() + 1);
     }
 

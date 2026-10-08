@@ -747,7 +747,10 @@ mod tests {
     fn a_stale_run_with_no_dispatch_is_nobody_unless_demo_says_so() {
         let observed = observed_with("agent-loop", dev_run(MID_RUN, 5_000), Watch::default());
         let quiet = assemble(&observed, false);
-        assert!(quiet.employees.is_empty());
+        assert_eq!(
+            quiet.employees,
+            [] as [crate::domain::snapshot::Employee; 0]
+        );
         assert!(quiet.factory.idle);
         assert!(!quiet.factory.watching);
         assert!(quiet.factory.chimneys.iter().all(|c| !c.smoking));
@@ -770,7 +773,10 @@ mod tests {
             dev_run(MID_RUN, 4 * 3600),
             in_flight("agent-loop", "2026-10-06T10:00:00Z"),
         );
-        assert!(assemble(&observed, false).employees.is_empty());
+        assert_eq!(
+            assemble(&observed, false).employees,
+            [] as [crate::domain::snapshot::Employee; 0]
+        );
     }
 
     #[test]

@@ -85,10 +85,9 @@ mod tests {
 
     #[test]
     fn listing_something_that_is_not_a_directory_gives_no_names() {
-        assert!(
-            RealDisk
-                .dir_names(Path::new("/tmp/pas-un-dossier-du-tout"))
-                .is_empty()
+        assert_eq!(
+            RealDisk.dir_names(Path::new("/tmp/not-a-directory-at-all")),
+            [] as [String; 0]
         );
     }
 }

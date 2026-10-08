@@ -73,7 +73,7 @@ mod tests {
     fn an_unscoped_stage_names_no_section_to_drop() {
         // There is no body to drop one from: the list has to be empty rather
         // than whatever the previous variant carried.
-        assert!(Cut::Unscoped.without().is_empty());
+        assert_eq!(Cut::Unscoped.without(), [] as [&str; 0]);
     }
 
     #[test]

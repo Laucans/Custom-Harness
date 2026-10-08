@@ -673,7 +673,10 @@ mod tests {
             effect: None,
             touches: Vec::new(),
         };
-        assert!(violations(&tree, Some(&capability)).is_empty());
+        assert_eq!(
+            violations(&tree, Some(&capability)),
+            [] as [std::string::String; 0]
+        );
         let other = Declaration {
             concept: Some("Churn@1".to_string()),
             ..capability.clone()
@@ -703,7 +706,10 @@ mod tests {
         assert!(found[0].contains("crates/bestiary/"), "{found:?}");
         let mut with_crate = sound();
         with_crate.systems.push("bestiary".to_string());
-        assert!(violations(&with_crate, Some(&plumbing)).is_empty());
+        assert_eq!(
+            violations(&with_crate, Some(&plumbing)),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]
@@ -748,7 +754,7 @@ mod tests {
         assert_eq!(tree.systems, ["credit"]);
         assert_eq!(tree.concepts, [("Risk".to_string(), 3)]);
         assert!(tree.has_query_registry);
-        assert!(violations(&tree, None).is_empty());
+        assert_eq!(violations(&tree, None), [] as [std::string::String; 0]);
         assert!(!Tree::read(&FakeDisk::default(), &root).under_architecture);
     }
 }

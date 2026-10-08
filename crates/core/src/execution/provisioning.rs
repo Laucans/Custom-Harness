@@ -921,11 +921,11 @@ mod tests {
         // Still mounts nothing: `path` is None, so unmount cannot reset or
         // delete a workspace a dry run only read.
         assert!(!mount.mounted());
-        assert!(mount.branch.is_empty());
+        assert_eq!(mount.branch, "");
         assert!(!mount.disposable);
         assert!(git.calls().is_empty(), "no git verbs: nothing checked out");
         assert!(disk.created.borrow().is_empty());
-        assert!(disk.removed().is_empty());
+        assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
         // And the accounting stays home: a dry run must not write a ledger into
         // the target's checkout.
         assert_eq!(mount.workspace.state_root(), Path::new("/depot"));
@@ -946,7 +946,7 @@ mod tests {
             .expect_err("must stop");
         assert!(err.reason().contains("is not a workspace name"));
         assert!(git.calls().is_empty(), "nothing was done to the repo");
-        assert!(disk.removed().is_empty());
+        assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
     }
 
     #[tokio::test]
@@ -1095,8 +1095,8 @@ mod tests {
             .await
             .expect_err("must stop");
         assert!(err.reason().contains("no .git"));
-        assert!(git.calls().is_empty());
-        assert!(disk.removed().is_empty());
+        assert_eq!(git.calls(), [] as [std::string::String; 0]);
+        assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
     }
 
     #[tokio::test]
@@ -1262,7 +1262,7 @@ mod tests {
             ..disposable("main_agent")
         };
         unmount_with(&git, &disk, &kept).await;
-        assert!(disk.removed().is_empty());
+        assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
         assert!(git.calls().is_empty(), "nothing is even asked of it");
     }
 
@@ -1272,7 +1272,7 @@ mod tests {
         let git = repo(clean_repo());
         let disk = Rc::new(FakeDisk::default()); // no `.git`
         unmount_with(&git, &disk, &disposable("main_agent")).await;
-        assert!(disk.removed().is_empty());
+        assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
     }
 
     #[tokio::test]
@@ -1302,7 +1302,7 @@ mod tests {
         });
         let disk = Rc::new(disk_with_workspace());
         unmount_with(&git, &disk, &disposable("")).await;
-        assert!(disk.removed().is_empty());
+        assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
     }
 
     // --- pure functions ---------------------------------------------------

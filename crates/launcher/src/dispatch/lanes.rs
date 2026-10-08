@@ -145,7 +145,7 @@ mod tests {
     fn lanes_start_free_and_never_fewer_than_one() {
         let lanes = Lanes::new(3);
         assert_eq!(lanes.free_slot(), Some(0));
-        assert!(lanes.running().is_empty());
+        assert_eq!(lanes.running(), [] as [u64; 0]);
         assert_eq!(Lanes::new(0).slots.len(), 1);
     }
 
@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(lanes.running(), [42]);
         assert_eq!(lanes.free_slot(), Some(1));
         lanes.wait_all(&Logbook::null()).await;
-        assert!(lanes.running().is_empty());
+        assert_eq!(lanes.running(), [] as [u64; 0]);
         assert!(dir.join(".llocal/lanes/lane-0.log").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

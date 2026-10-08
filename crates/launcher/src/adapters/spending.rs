@@ -257,6 +257,6 @@ mod tests {
     #[tokio::test]
     async fn a_hostname_that_cannot_be_read_does_not_stop_a_run() {
         // A comfort column, not data that a decision depends on.
-        assert!(!hostname().await.is_empty());
+        assert_ne!(hostname().await, "");
     }
 }

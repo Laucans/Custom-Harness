@@ -459,6 +459,9 @@ mod tests {
     #[test]
     fn a_ledger_that_does_not_exist_yet_reads_as_no_rows() {
         let path = std::env::temp_dir().join("harness-ledger-absent/nowhere.tsv");
-        assert!(Ledger::new(&path).rows().expect("absent").is_empty());
+        assert_eq!(
+            Ledger::new(&path).rows().expect("absent"),
+            [] as [std::vec::Vec<std::string::String>; 0]
+        );
     }
 }

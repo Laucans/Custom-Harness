@@ -300,7 +300,7 @@ mod tests {
         let lines = run(&ports(Rc::clone(&disk), repos.clone()), &config)
             .await
             .expect("dry");
-        assert!(repos.calls().is_empty());
+        assert_eq!(repos.calls(), [] as [std::string::String; 0]);
         assert!(disk.written.borrow().is_empty());
         assert_eq!(
             lines,
@@ -317,7 +317,7 @@ mod tests {
             .await
             .expect("skipped");
         assert_eq!(lines, ["skipped (--no-install)"]);
-        assert!(repos.calls().is_empty());
+        assert_eq!(repos.calls(), [] as [std::string::String; 0]);
     }
 
     #[tokio::test]

@@ -464,14 +464,17 @@ mod tests {
     #[test]
     fn a_checkout_without_llocal_has_no_strays() {
         let dir = Dir::new("no-llocal");
-        assert!(stray_folders(&Workspace::new(&dir.0)).is_empty());
+        assert_eq!(
+            stray_folders(&Workspace::new(&dir.0)),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]
     fn a_folder_without_git_is_not_a_workspace_to_touch() {
         let dir = Dir::new("not-git");
         std::fs::create_dir_all(dir.0.join("by-hand")).expect("a folder");
-        assert!(workspaces_under(&dir.0).is_empty());
+        assert_eq!(workspaces_under(&dir.0), [] as [std::path::PathBuf; 0]);
     }
 
     #[test]
@@ -479,7 +482,10 @@ mod tests {
         let dir = Dir::new("found");
         std::fs::create_dir_all(dir.0.join("clone/.git")).expect("a clone");
         assert_eq!(workspaces_under(&dir.0), vec![dir.0.join("clone")]);
-        assert!(workspaces_under(&dir.0.join("nowhere")).is_empty());
+        assert_eq!(
+            workspaces_under(&dir.0.join("nowhere")),
+            [] as [std::path::PathBuf; 0]
+        );
     }
 
     #[tokio::test]

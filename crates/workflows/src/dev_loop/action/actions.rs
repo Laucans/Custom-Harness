@@ -622,7 +622,7 @@ mod tests {
             .await
             .expect("nothing to record");
         assert!(!context.state.tech_written);
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]
@@ -637,7 +637,7 @@ mod tests {
             .run(&mut context)
             .await
             .expect("nothing");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     // --- MarkWaitingMerge --------------------------------------------------
@@ -690,7 +690,7 @@ mod tests {
         .run(&mut context)
         .await
         .expect("nothing to mark");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]
@@ -755,7 +755,7 @@ mod tests {
         .run(&mut context)
         .await
         .expect("nothing to mark");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]
@@ -804,7 +804,7 @@ mod tests {
         .run(&mut context)
         .await
         .expect("already marked");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]
@@ -818,7 +818,7 @@ mod tests {
         .run(&mut context)
         .await
         .expect("nothing to mark");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     // --- Ask ---------------------------------------------------------------
@@ -1190,7 +1190,10 @@ mod tests {
     #[tokio::test]
     async fn a_dry_run_records_no_spend_because_none_was_made() {
         let run = ask_with(Cut::Situated(NOTHING), Ok(answered("")), true).await;
-        assert!(run.rows.is_empty());
+        assert_eq!(
+            run.rows,
+            [] as [(std::string::String, std::string::String, f64); 0]
+        );
         // And it doesn't ask for a marker from a session nobody opened.
         assert!(!run.said.contains("no AGENT_LOOP_OK marker"));
     }

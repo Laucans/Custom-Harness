@@ -1046,7 +1046,7 @@ mod tests {
     #[test]
     fn a_null_body_reads_as_empty_not_as_the_word_null() {
         let issue = issue_from(&json!({ "number": 1, "body": null })).expect("parse");
-        assert!(issue.body.is_empty());
+        assert_eq!(issue.body, "");
     }
 
     #[test]
@@ -1061,10 +1061,9 @@ mod tests {
     fn a_null_list_is_genuinely_empty() {
         // `gh` returns `null` when there is nothing: harmless and distinct
         // from a failure.
-        assert!(
-            issues_from(&Value::Null, "issues")
-                .expect("null")
-                .is_empty()
+        assert_eq!(
+            issues_from(&Value::Null, "issues").expect("null"),
+            [] as [Issue; 0]
         );
     }
 
@@ -1246,6 +1245,6 @@ mod tests {
     fn no_checks_at_all_means_nothing_to_repair() {
         // Unlike `checks_are_green`, where an empty list refuses: there is
         // no broken run to send a session at.
-        assert!(failing_checks(&[]).is_empty());
+        assert_eq!(failing_checks(&[]), [] as [std::string::String; 0]);
     }
 }

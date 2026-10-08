@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(parsed.unit, Unit::MicroUi);
         assert_eq!(parsed.system, "Credit");
         assert_eq!(parsed.concept, None);
-        assert!(parsed.touches.is_empty());
+        assert_eq!(parsed.touches, [] as [std::string::String; 0]);
         assert_eq!(Declaration::parse("system: credit\nsome prose"), None);
     }
 
@@ -410,7 +410,7 @@ mod tests {
     fn a_dash_system_is_no_system_and_renders_back_as_a_dash() {
         let read = Declaration::parse("unit: infrastructure\nsystem: -\nside: harness:write-side")
             .expect("a unit");
-        assert!(read.system.is_empty());
+        assert_eq!(read.system, "");
         assert!(read.render().contains("system: -"));
         assert_eq!(Declaration::parse(""), None);
     }

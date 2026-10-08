@@ -138,7 +138,7 @@ mod tests {
     fn a_fingerprint_is_never_empty_so_it_cannot_match_a_row_written_before_it() {
         // Rows from before the column existed read back as "", and an empty
         // cell must never look like a match.
-        assert!(!fingerprint("").is_empty());
+        assert_ne!(fingerprint(""), "");
     }
 
     #[test]

@@ -333,7 +333,7 @@ mod tests {
     fn an_unknown_stack_digests_to_nothing_at_all() {
         // Said by saying nothing: the caller renders the absence, and a
         // sentence here would put prose where the prompt expects files.
-        assert!(digested(&[("main.zig", "pub fn main() void {}")]).is_empty());
+        assert_eq!(digested(&[("main.zig", "pub fn main() void {}")]), "");
     }
 
     #[test]
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn an_unknown_stack_detects_nothing_rather_than_guessing() {
         let found = detect(&paths(&["main.zig", "build.zig.zon", "src/thing.zig"]));
-        assert!(found.is_empty());
+        assert_eq!(found, [] as [std::string::String; 0]);
     }
 
     #[test]

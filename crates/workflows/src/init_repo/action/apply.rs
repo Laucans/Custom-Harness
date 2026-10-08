@@ -352,7 +352,7 @@ mod tests {
         let ports = ports_fake::with(Rc::new(ready_gh()));
         let config = config_fake::config();
         let (report, verdict) = run(&ports, &config).await.expect("run");
-        assert!(report.labels_created.is_empty());
+        assert_eq!(report.labels_created, [] as [std::string::String; 0]);
         assert_eq!(report.labels_kept, labels::ALL.len());
         assert!(matches!(verdict, Verdict::Ready));
     }

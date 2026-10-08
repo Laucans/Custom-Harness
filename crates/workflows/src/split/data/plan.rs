@@ -110,7 +110,7 @@ mod tests {
         let items = parse(r#"[{"title":"A","brief":"do A","branch":"feat/a","unit":"micro-ui"}]"#)
             .expect("parse");
         assert!(!items[0].needs_human);
-        assert!(items[0].depends_on.is_empty());
+        assert_eq!(items[0].depends_on, [] as [usize; 0]);
         let declaration = items[0].declaration();
         assert_eq!(declaration.unit, Unit::MicroUi);
         assert_eq!(declaration.concept, None);

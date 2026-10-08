@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "A");
         assert_eq!(items[0].goal, "do A");
-        assert!(items[0].systems.is_empty());
+        assert_eq!(items[0].systems, [] as [std::string::String; 0]);
         assert!(!items[0].writes, "read-side unless said otherwise");
     }
 
