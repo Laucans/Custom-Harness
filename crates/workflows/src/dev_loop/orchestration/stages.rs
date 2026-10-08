@@ -45,6 +45,7 @@ use harness_core::execution::{
 
 use crate::common::labels;
 use crate::dev_loop::action::actions::{Ask, RecordTechWritten};
+use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
 use crate::dev_loop::checks::gates;
 use crate::dev_loop::config::Config;
 use crate::dev_loop::data::brief::Cut;
@@ -97,7 +98,9 @@ SPEC. Plan it as /tech-analyst: the pre-flight gate, the ordered checklist
 against the real code, the stop line, the risks. Then, in this same session,
 without waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
-Verification bullet with real output, /code-review, then branch -> PR ->
+Verification bullet with real output, /code-review, run the architecture
+gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
+checks the same rules after you), then branch -> PR ->
 gh pr merge --rebase. The PR body MUST carry the line `Closes #{num}` on its
 own: the loop reads that line off the merged PR to confirm the task shipped,
 and without it the round stops rather than replay a task nothing marks as
@@ -123,7 +126,9 @@ Plan it as /tech-analyst: the pre-flight gate, the ordered checklist against
 the real code, the stop line, the risks. Then, in this same session, without
 waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
-Verification bullet with real output, /code-review, then branch -> PR, and
+Verification bullet with real output, /code-review, run the architecture
+gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
+checks the same rules after you), then branch -> PR, and
 STOP THERE: open the pull request against the milestone branch with
 `gh pr create --label {to_review}` (the agent review runs on it), wait for
 its CI with `gh pr checks`, and do NOT run `gh pr merge` — a human merges
@@ -272,10 +277,22 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             name: "code requires",
             checks: pre,
         }),
-        // Nothing to verify after: what `code` must achieve is the round's
-        // postcondition — a merged PR carrying `Closes #N` — and checking
-        // it twice says nothing more.
-        post: None,
+        // Delivery is the round's postcondition, not this gate's; what the
+        // stage must leave behind is a checkout that still follows the
+        // architecture, and Concepts every Capability can be checked against.
+        post: Some(Gate {
+            name: "code must keep the architecture",
+            checks: vec![
+                Box::new(ArchitectureHolds {
+                    disk: Rc::clone(&ports.disk),
+                    root: config.root.clone(),
+                }),
+                Box::new(ConceptsDocumented {
+                    disk: Rc::clone(&ports.disk),
+                    root: config.root.clone(),
+                }),
+            ],
+        }),
         body: Paid {
             stage: "code",
             // Sonnet, not opus: the tasks reaching this stage are sliced by

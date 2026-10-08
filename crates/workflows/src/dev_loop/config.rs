@@ -37,6 +37,8 @@ pub struct Config {
     /// [`crate::dev_loop::data::signatures`]. Built once per run; which files a
     /// prompt carries is decided per task.
     pub signatures: std::rc::Rc<crate::dev_loop::data::signatures::Index>,
+    /// The checkout's root — what the architecture gates read after `code`.
+    pub root: std::path::PathBuf,
 }
 
 impl Config {
@@ -84,6 +86,7 @@ pub(crate) mod fake {
             restart: false,
             stack: String::new(),
             signatures: std::rc::Rc::default(),
+            root: std::path::PathBuf::from("/ws"),
         }
     }
 }

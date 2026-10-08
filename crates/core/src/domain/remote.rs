@@ -92,13 +92,32 @@ fn key(url: &str) -> String {
         text = text.strip_prefix(prefix).unwrap_or(text);
     }
     let text = text.replace(':', "/");
-    text.strip_prefix("git@").unwrap_or(&text).to_lowercase()
+    let text = text.strip_prefix("git@").unwrap_or(&text);
+    // The `owner/name` shorthand names the same repository as its
+    // github.com URL: `init-repo` writes the shorthand into `.env.local`,
+    // and a clone's `origin` is always the URL.
+    text.strip_prefix("github.com/")
+        .unwrap_or(text)
+        .to_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn the_shorthand_and_the_github_url_are_the_same_repository() {
+        assert!(same_repo(
+            "Laucans/dnd_helper",
+            "https://github.com/Laucans/dnd_helper"
+        ));
+        assert!(same_repo(
+            "git@github.com:Laucans/dnd_helper.git",
+            "laucans/dnd_helper"
+        ));
+        assert!(!same_repo("Laucans/dnd_helper", "Laucans/other"));
+    }
 
     #[test]
     fn an_https_url_a_git_ssh_url_and_the_shorthand_all_yield_the_same_slug() {

@@ -76,6 +76,30 @@ jobs:
           done
           exit $failed
 
+  # Contracts A, B — every Concept a Capability implements is documented:
+  # `implements: Risk@3` ⇒ concepts/Risk/v3/concept.json names Risk, version 3.
+  concepts-documented:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every implemented Concept has its concept.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          for manifest in crates/**/capability.json; do
+            ref=$(jq -r '.implements // empty' "$manifest")
+            [ -n "$ref" ] || continue
+            name=${ref%@*}; version=${ref##*@}
+            file="concepts/$name/v$version/concept.json"
+            if [ ! -f "$file" ] || [ "$(jq -r '.concept' "$file")" != "$name" ] || [ "$(jq -r '.version' "$file")" != "$version" ]; then
+              echo "::error file=$manifest::implements $ref but $file does not document it"
+              failed=1
+            fi
+          done
+          exit $failed
+
   # Contracts A, B — `implements: Risk@3` ⇒ the Concept's fixtures pass
   # against this Capability. Implement: a conformance runner that feeds
   # concepts/<Concept>/v<n>/fixtures.json to the Capability and compares.

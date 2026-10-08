@@ -516,6 +516,7 @@ async fn turns(
         restart: args.restart,
         stack: configuration_digest(workspace, disk.as_ref(), log).await,
         signatures,
+        root: workspace.root().to_path_buf(),
     };
     announce(args, &ports, &config, run_id, log);
 

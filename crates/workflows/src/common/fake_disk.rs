@@ -35,7 +35,10 @@ impl FakeDisk {
 
 impl Disk for FakeDisk {
     fn exists(&self, path: &Path) -> bool {
-        self.existing.contains_key(path)
+        // A path it holds, or a folder on the way to one.
+        self.existing
+            .keys()
+            .any(|known| known == path || known.starts_with(path))
     }
     fn create_dir_all(&self, _path: &Path) -> Outcome<()> {
         Ok(())
@@ -43,8 +46,20 @@ impl Disk for FakeDisk {
     fn remove_dir_all(&self, _path: &Path) -> Outcome<()> {
         Ok(())
     }
-    fn dir_names(&self, _path: &Path) -> Vec<String> {
-        Vec::new()
+    fn dir_names(&self, path: &Path) -> Vec<String> {
+        // The folders directly under `path`: the next component of every
+        // held path that goes deeper than one more level.
+        let mut names: Vec<String> = self
+            .existing
+            .keys()
+            .filter_map(|known| known.strip_prefix(path).ok())
+            .filter(|rest| rest.components().count() > 1)
+            .filter_map(|rest| rest.components().next())
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
     fn read_to_string(&self, path: &Path) -> Option<String> {
         self.existing.get(path).cloned()
