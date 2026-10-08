@@ -55,6 +55,19 @@ DataGuard** sends its messages (confirmations, parked, applied) to the authors
 and to the infrastructure components concerned; a Capability does not depend on
 the DataGuard.
 
+### Existing code and hosts without a server
+
+The architecture is adopted by repositories that already exist, and some of
+them run nowhere but inside a host written in TypeScript — an Obsidian or
+VS Code plugin, a static web app. Neither changes the rules. The existing
+program is the Micro-UI shell; what it already does stays where it is until
+a task moves it. Every unit added from now on is built where the layout says
+and in the language the stack says: Rust for Capabilities, DataCapabilities,
+the Data layer and infrastructure, TypeScript for Micro-UIs. When no server
+can run a Rust unit, it is compiled to WebAssembly and the host loads it; the
+build and the loading step are part of the unit's task, and its manifest sits
+at the same place as on a server.
+
 ## UI / Micro-UI
 
 A Micro-UI is the **specification of a need**: what it displays says what must

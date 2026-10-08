@@ -18,6 +18,14 @@ that can be checked mechanically.
   imports their code.
 - **PostgreSQL** alone as the store: the DataQueue is a table, invalidations
   travel over `LISTEN/NOTIFY`, read models are views. No message broker.
+- **These rules bind every new unit, even where the existing code predates
+  them.** A repository that began as one TypeScript program (a plugin, a
+  static app) is the Micro-UI shell; every Capability, DataCapability or
+  infrastructure unit it gains is a Rust crate at its place in the layout.
+  When no server runs it, the crate is compiled to WebAssembly
+  (`wasm-bindgen`, `wasm-pack`) and the TypeScript side loads it. Writing the
+  unit in TypeScript because that is where the code is today is a violation,
+  not a pragmatic choice.
 
 ### Layout
 

@@ -97,7 +97,14 @@ write side; a DataCapability declares its effect and the fields it touches
 and lives behind the DataGuard; a Concept is a definition with conformance
 fixtures; a Micro-UI declares what it needs and the actions it may trigger.
 Name the manifest or contract file the unit produces under `contracts/`, and
-the gate in `.github/workflows/gates.yml` that will check it.
+the gate in `.github/workflows/gates.yml` that will check it. The
+repository's rules (the architecture block of CLAUDE.md, `docs/ARCHITECTURE.md`)
+bind the design even where the existing code predates them: the unit goes
+where the layout says, in the language the stack says — Rust for anything but
+a Micro-UI, compiled to WebAssembly when a TypeScript host must load it.
+Designing it in the host's language because that is what exists today is a
+violation to name, not a pragmatic choice to make; state what the bridge
+costs instead.
 
 Here is the body of the issue as it stands right now:
 <issue-body>
@@ -228,7 +235,9 @@ not restate the Technical section's design — plan the work it implies. Every
 unit of the agent-native architecture (`## Architecture` in the body) lands
 with its manifest or contract and the gate that validates it: one step of the
 plan writes that file, and the command that proves the step is the gate's own
-check.
+check. The plan follows the stack and the layout of the rules, not the
+language of the surrounding code: a TypeScript host that must load a Rust
+unit gets a step for the WebAssembly build and one for its loading.
 
 Here is the body of the issue as it stands right now:
 <issue-body>
