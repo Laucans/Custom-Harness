@@ -33,7 +33,7 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Route, Snapshot};
 use harness_workflows::common::{branching, labels};
-use harness_workflows::dev_loop::data::board;
+use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::milestone_merge::data::audit;
 use harness_workflows::pr_review::data::skip_rules;
 use harness_workflows::refinement::data::phase::Phase;
@@ -98,7 +98,7 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
 async fn tick(args: &WatchArgs, here: &Path, log: &Logbook, lanes: &mut Lanes) -> Outcome<()> {
     let gh = resolve_gh(args, here)?;
     lanes.reap(log);
-    let found = snapshot(gh.as_ref()).await?;
+    let (found, idle) = snapshot(gh.as_ref()).await?;
     // What the decision was made from, for a tick whose choice later looks
     // wrong: the counts are the whole input to `routing::decide`.
     log.debug(&format!(
@@ -114,6 +114,13 @@ async fn tick(args: &WatchArgs, here: &Path, log: &Logbook, lanes: &mut Lanes) -
         found.dev_loop_milestone,
     ));
     let route = routing::decide(&found);
+    if matches!(route, Route::Nothing)
+        && let Some(reason) = idle
+    {
+        // An idle tick names the gesture it waits for, since "nothing" alone
+        // reads as "done" to whoever watches the journal.
+        log.say(&format!("idle: {reason}"));
+    }
     dispatch(args, here, gh.as_ref(), route, log, lanes).await;
     Ok(())
 }
@@ -134,8 +141,9 @@ fn resolve_gh(args: &WatchArgs, here: &Path) -> Outcome<Rc<dyn GitHub>> {
     Ok(Rc::new(GhCli::for_slug(&slug)))
 }
 
-/// Reads everything [`routing::decide`] needs.
-async fn snapshot(gh: &dyn GitHub) -> Outcome<Snapshot> {
+/// Reads everything [`routing::decide`] needs, and the one line that says
+/// why the current milestone offers no task when it does not.
+async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
     let roadmap = gh.issues_labelled(labels::ROADMAP, "open").await?;
     let lowest_roadmap_has_milestone = match roadmap
         .iter()
@@ -154,12 +162,16 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<Snapshot> {
     // Tolerant on purpose: "no open milestone at all" is this probe's most
     // common answer, not a failure — `dev_loop::run` itself is where that
     // distinction matters and is already made.
-    let dev_loop_milestone = board::read(gh)
-        .await
-        .ok()
+    let board = board::read(gh).await.ok();
+    let dev_loop_milestone = board
+        .as_ref()
         .filter(|b| b.next().is_some())
         .map(|b| b.milestone.number);
-    Ok(Snapshot {
+    let idle = board
+        .as_ref()
+        .filter(|b| b.next().is_none())
+        .map(|b| tasks::idle_reason(b.milestone.number, &b.tasks));
+    let snapshot = Snapshot {
         roadmap,
         lowest_roadmap_has_milestone,
         milestones,
@@ -169,7 +181,8 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<Snapshot> {
         refining,
         tech_refining,
         dev_loop_milestone,
-    })
+    };
+    Ok((snapshot, idle))
 }
 
 /// The lowest-numbered open PR that carries `harness:pr-fix` **and** has a

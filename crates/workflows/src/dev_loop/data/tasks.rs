@@ -252,6 +252,54 @@ pub fn stuck_report(issues: &[Issue]) -> String {
         .join("\n")
 }
 
+/// One line on why a milestone with open tasks offers nothing to run.
+///
+/// What an idle tick says instead of a bare "nothing", so the human sees
+/// the gesture it waits for: "#17 offers nothing to run: 6 delivered,
+/// waiting for the merge · human action open: #67".
+#[must_use]
+pub fn idle_reason(milestone: u64, issues: &[Issue]) -> String {
+    let open = open_agent_tasks(issues);
+    let delivered = open.iter().filter(|task| waiting_merge(task)).count();
+    let pending_review = open.iter().filter(|task| review_pending(task)).count();
+    let not_ready = open
+        .iter()
+        .filter(|task| !is_ready(task) && !waiting_merge(task) && !review_pending(task))
+        .count();
+    let blocked = open
+        .iter()
+        .filter(|task| is_ready(task) && !blockers_pending(task).is_empty())
+        .count();
+    let mut humans: Vec<String> = issues
+        .iter()
+        .filter(|issue| issue.is_open() && is_human(issue))
+        .map(Issue::reference)
+        .collect();
+    humans.sort();
+    let mut parts = Vec::new();
+    if delivered > 0 {
+        parts.push(format!("{delivered} delivered, waiting for the merge"));
+    }
+    if pending_review > 0 {
+        parts.push(format!(
+            "{pending_review} write-side PR(s) waiting for your merge"
+        ));
+    }
+    if blocked > 0 {
+        parts.push(format!("{blocked} blocked by an open task"));
+    }
+    if not_ready > 0 {
+        parts.push(format!("{not_ready} without {}", labels::READY));
+    }
+    if !humans.is_empty() {
+        parts.push(format!("human action open: {}", humans.join(", ")));
+    }
+    if parts.is_empty() {
+        parts.push("no open task".to_string());
+    }
+    format!("#{milestone} offers nothing to run: {}", parts.join(" · "))
+}
+
 /// What counts as proof a task shipped — moved to
 /// [`crate::common::delivery`] once the milestone merge needed the same
 /// reading, re-exported here so the loop keeps naming it where it reads it.
@@ -409,6 +457,23 @@ mod tests {
         assert!(report.contains("#20"));
         assert!(report.contains(labels::READY), "say what to check");
         assert_eq!(report.lines().count(), 2);
+    }
+
+    #[test]
+    fn the_idle_reason_names_the_merge_and_the_human_action_a_milestone_waits_for() {
+        let delivered = issue(61, &[labels::AGENT, labels::READY, labels::WAITING_MERGE]);
+        let human = issue(67, &[labels::HUMAN]);
+        let unready = issue(70, &[labels::AGENT]);
+        let reason = idle_reason(17, &[delivered, human, unready]);
+        assert_eq!(
+            reason,
+            "#17 offers nothing to run: 1 delivered, waiting for the merge · 1 without \
+             harness:ready · human action open: #67"
+        );
+        assert_eq!(
+            idle_reason(18, &[]),
+            "#18 offers nothing to run: no open task"
+        );
     }
 
     // --- proof of delivery -----------------------------------
