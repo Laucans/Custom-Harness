@@ -4,6 +4,7 @@
 pub mod assemble;
 pub mod blueprint;
 pub mod observe;
+pub mod plant;
 pub mod snapshot;
 pub mod steward;
 pub mod traces;

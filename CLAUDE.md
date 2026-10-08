@@ -29,8 +29,11 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
   a warning. `view` is read-only: it shows the traces the harness leaves in
   `.llocal/logs` and the GitHub board, and never writes anything a run reads.
-  Its one hand on the plant is the steward — an interactive Claude Code in a
-  pseudo-terminal the human drives from the page (`crates/view/ARCHITECTURE.md`).
+  Its hands on the plant are two, both the human's: the steward — an
+  interactive Claude Code in a pseudo-terminal the human drives from the
+  page — and the status button's switch, which starts the watch or stops it
+  softly (`SIGTERM`, the watch drains) or hard (`SIGKILL`)
+  (`crates/view/ARCHITECTURE.md`).
   The drawing is `harness-view-render`, a Bevy scene compiled to WebAssembly
   by `scripts/build-render.sh`; it depends on none of the other crates
   (`crates/view-render/ARCHITECTURE.md`).

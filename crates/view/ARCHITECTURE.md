@@ -66,8 +66,8 @@ a reason: this terminal is a shell in the checkout.
 ## The modules
 
 ```
-src/main.rs            the wiring: two pollers, one server, one desk, one thread
-src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher
+src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread
+src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
 src/desk.rs            the steward's desk: one terminal kept alive between visits, scrollback, broadcast
 src/domain/            the inside — no disk, no subprocess, no clock
   blueprint.rs         the rooms, the models, one line per workflow, station by station
@@ -76,12 +76,14 @@ src/domain/            the inside — no disk, no subprocess, no clock
   assemble.rs          Observed + board → Snapshot (who is live, where the product is, what smokes)
   snapshot.rs          the serializable picture the page receives
   steward.rs           the steward's standing orders, and the status the page asks for
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (the steward's program)
+  plant.rs             the switch: which watch is this checkout's, what start / soft / hard send to whom
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (the steward's program), Plant (the watch process)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
-  pty.rs               a pseudo-terminal running `claude` — the one module that spawns a process
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/steward, /api/steward/term (WebSocket)
+  pty.rs               a pseudo-terminal running `claude`
+  watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket)
 static/                index.html, style.css, app.js (data, navigation, panes, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
 ```
 
@@ -100,12 +102,18 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
 
 ## Three decisions
 
-- **Read-only, from the files.** The view reads what `harness watch` and the
-  runs already write, and never asks the harness to emit anything for it. A
-  structured event port in `harness-core` would be more precise; it can be
-  added later without touching this crate's inside, because `observe` already
-  reads through a port. The one hand that changes the plant is the human's,
-  at the steward's terminal — a Claude Code they drive, not code of the view.
+- **Read-only, from the files — with one switch.** The view reads what
+  `harness watch` and the runs already write, and never asks the harness to
+  emit anything for it. A structured event port in `harness-core` would be
+  more precise; it can be added later without touching this crate's inside,
+  because `observe` already reads through a port. It writes nothing a run
+  reads. Its hands on the plant are two, both the human's: the steward's
+  terminal, and the status button's switch (`Plant` port). The switch does
+  three things only — start the watch (`HARNESS_WATCH_COMMAND`, detached in
+  a process group of its own, output to `watch.out`), soft stop (`SIGTERM`
+  to the watch, which drains), hard stop (`SIGKILL` to the watch's tree, and
+  to its group when that group holds nothing but the plant). It only ever
+  acts on a watch whose working directory is this checkout.
 - **One picture, pushed.** The pollers assemble a `Snapshot`; the server
   streams it on `/api/events` whenever it changed (compared before it is
   stamped, so a clock alone wakes nobody). The page asks for nothing else

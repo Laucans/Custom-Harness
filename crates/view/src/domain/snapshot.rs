@@ -46,6 +46,8 @@ pub struct Factory {
     pub chimneys: Vec<Chimney>,
     /// The watch is believed to be polling.
     pub watching: bool,
+    /// A soft stop is under way: the running tasks finish, none starts.
+    pub draining: bool,
     /// The last tick, dispatched or not.
     pub last_tick_at: Option<String>,
     /// A dispatch the watch has not reported back on.

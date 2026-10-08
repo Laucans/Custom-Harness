@@ -24,17 +24,18 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
 use crate::desk::Desk;
+use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::snapshot::Snapshot;
 use crate::domain::steward::Status;
 use crate::domain::traces::{is_run_id, stage_logs};
-use crate::ports::{BoardReading, Traces};
+use crate::ports::{BoardReading, Plant, Traces};
 
 /// What every handler can reach.
 #[derive(Clone)]
@@ -51,6 +52,8 @@ pub struct AppState {
     pub render_dir: PathBuf,
     /// The steward's desk — `None` under `--no-steward`.
     pub desk: Option<Desk>,
+    /// The watch process the page starts and stops — `None` under `--demo`.
+    pub plant: Option<Arc<dyn Plant>>,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -87,6 +90,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/runs/{workflow}/{run}/stages", get(run_stages))
         .route("/api/runs/{workflow}/{run}/{file}", get(run_file))
         .route("/api/issues/{number}", get(issue))
+        .route("/api/plant", get(plant_status))
+        .route("/api/plant/{gesture}", post(plant_gesture))
         .route("/api/steward", get(steward))
         .route("/api/steward/term", get(term))
         .with_state(state)
@@ -349,6 +354,63 @@ async fn steward(State(state): State<AppState>) -> Response {
     ))
 }
 
+/// Whether the page has a hand on the plant, and the watch that runs.
+async fn plant_status(State(state): State<AppState>) -> Response {
+    json(&plant::Status {
+        available: state.plant.is_some(),
+        running: state
+            .plant
+            .as_ref()
+            .and_then(|plant| plant::running(plant.as_ref())),
+    })
+}
+
+/// What a gesture did, for the page to say.
+#[derive(Debug, Serialize)]
+struct Done {
+    message: String,
+}
+
+/// `start`, `soft` or `hard`: decided by `domain::plant`, carried out by
+/// the port. A gesture that makes no sense now is a `409` with the reason.
+///
+/// Only the first action can fail the gesture: a hard stop's later kills
+/// reach processes that may already be gone with the watch.
+async fn plant_gesture(State(state): State<AppState>, Path(gesture): Path<String>) -> Response {
+    let Some(plant) = state.plant.as_ref() else {
+        return (StatusCode::NOT_FOUND, "this view has no hand on the plant").into_response();
+    };
+    let Some(gesture) = Gesture::parse(&gesture) else {
+        return (StatusCode::NOT_FOUND, "unknown gesture").into_response();
+    };
+    let processes = plant.processes();
+    let running = plant::running(plant.as_ref());
+    let actions = match plant::decide(gesture, running, &processes) {
+        Ok(actions) => actions,
+        Err(why) => return (StatusCode::CONFLICT, why).into_response(),
+    };
+    let mut message = String::new();
+    for (at, action) in actions.into_iter().enumerate() {
+        let done = match action {
+            Action::Start => plant
+                .start()
+                .map(|pid| format!("watch started (pid {pid})")),
+            Action::Send(signal, target) => plant.send(signal, target).map(|()| match gesture {
+                Gesture::Soft => "soft stop asked — running tasks finish, none starts".to_string(),
+                _ => "hard stop — the watch and its lanes are killed".to_string(),
+            }),
+        };
+        if at > 0 {
+            continue;
+        }
+        match done {
+            Ok(said) => message = said,
+            Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+        }
+    }
+    json(&Done { message })
+}
+
 /// `?cols=N&rows=N`: the size of the pane's terminal.
 #[derive(Debug, Deserialize)]
 struct TermQuery {
@@ -453,7 +515,9 @@ mod tests {
     use crate::domain::blueprint;
     use crate::domain::observe::Observed;
     use crate::domain::observe::fake::Shelf;
+    use crate::domain::plant::fake::Switch;
     use crate::domain::snapshot::Project;
+    use crate::ports::Process;
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use tower::ServiceExt as _;
@@ -484,7 +548,94 @@ mod tests {
             static_dir: None,
             render_dir: PathBuf::from("/nonexistent/render"),
             desk,
+            plant: None,
         }
+    }
+
+    async fn post_to(state: AppState, uri: &str) -> (StatusCode, String) {
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn watch(pid: u32) -> Vec<Process> {
+        vec![Process {
+            pid,
+            parent: 1,
+            group: pid,
+            command: "./target/debug/harness watch".to_string(),
+        }]
+    }
+
+    fn with_plant(processes: Vec<Process>) -> (AppState, Arc<Switch>) {
+        let switch = Arc::new(Switch {
+            processes,
+            ..Switch::default()
+        });
+        let mut state = state(Shelf::default(), None);
+        state.plant = Some(Arc::clone(&switch) as Arc<dyn Plant>);
+        (state, switch)
+    }
+
+    fn sent(switch: &Switch) -> Vec<String> {
+        switch.sent.lock().expect("sent").clone()
+    }
+
+    #[tokio::test]
+    async fn the_switch_starts_an_empty_plant_and_stops_a_running_one() {
+        let (state, switch) = with_plant(Vec::new());
+        let (status, body) = post_to(state.clone(), "/api/plant/start").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, _) = post_to(state, "/api/plant/soft").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(sent(&switch), ["start"]);
+
+        let (state, switch) = with_plant(watch(7));
+        let (status, _) = post_to(state.clone(), "/api/plant/start").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            post_to(state.clone(), "/api/plant/soft").await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_to(state.clone(), "/api/plant/hard").await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_to(state, "/api/plant/explode").await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            sent(&switch),
+            ["Term Process(7)", "Kill Process(7)", "Kill Group(7)"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_page_reads_whether_a_watch_runs() {
+        let (state, _) = with_plant(watch(7));
+        let (status, body) = get(state, "/api/plant").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"available\":true"), "{body}");
+        assert!(body.contains("\"pid\":7"), "{body}");
+        let (_, none) = get(state_without_plant(), "/api/plant").await;
+        assert!(none.contains("\"available\":false"), "{none}");
+    }
+
+    fn state_without_plant() -> AppState {
+        state(Shelf::default(), None)
     }
 
     async fn get(state: AppState, uri: &str) -> (StatusCode, String) {

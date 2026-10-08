@@ -15,8 +15,9 @@
 //! in a pseudo-terminal, bridged to a terminal pane on the page.
 //!
 //! The view itself **writes nothing** the harness reads: it is a second outer
-//! ring beside `harness-launcher`. What changes the plant is the human, at
-//! the steward's terminal.
+//! ring beside `harness-launcher`. What changes the plant is the human — at
+//! the steward's terminal, or with the page's switch, which starts the watch
+//! and signals it, and does nothing else.
 
 mod adapters;
 mod cli;
@@ -42,14 +43,16 @@ use crate::adapters::claude_bin;
 use crate::adapters::fs_traces::FsTraces;
 use crate::adapters::gh_board::GhBoard;
 use crate::adapters::pty::Pty;
+use crate::adapters::watch_proc::WatchProcess;
 use crate::cli::Cli;
 use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
 use crate::domain::blueprint;
 use crate::domain::observe::{Observed, observe};
+use crate::domain::plant;
 use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
-use crate::ports::{Board, BoardReading, TerminalFactory, Traces};
+use crate::ports::{Board, BoardReading, Plant, TerminalFactory, Traces};
 use crate::server::{AppState, router};
 
 /// `current_thread`, like the harness: the board port is `?Send`, and one
@@ -72,6 +75,10 @@ async fn main() -> anyhow::Result<()> {
         Rc::new(GhBoard::new(gh))
     });
     let desk = desk_for(&cli, &root, &project);
+    // A demo replays a finished run: there is no plant to switch.
+    let plant: Option<Arc<dyn Plant>> = (!cli.demo).then(|| {
+        Arc::new(WatchProcess::new(workspace.clone(), &cli.watch_command)) as Arc<dyn Plant>
+    });
 
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
     let (board_tx, board_rx) = watch::channel(None);
@@ -82,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
         static_dir: cli.static_dir.clone(),
         render_dir: root.join("crates/view/static/render"),
         desk: desk.clone(),
+        plant: plant.clone(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -109,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         .run_until(async move {
             let traces_task = tokio::task::spawn_local(poll_traces(
                 traces,
+                plant,
                 board_rx,
                 project,
                 snapshot_tx,
@@ -189,6 +198,7 @@ fn first_picture(project: &Project, demo: bool) -> Snapshot {
 /// Reads the traces on a cadence and publishes the picture when it changed.
 async fn poll_traces(
     traces: Arc<dyn Traces>,
+    plant: Option<Arc<dyn Plant>>,
     board: watch::Receiver<Option<Arc<BoardReading>>>,
     project: Project,
     tx: watch::Sender<Arc<Snapshot>>,
@@ -198,7 +208,10 @@ async fn poll_traces(
     let lines = blueprint::lines();
     let mut last_body = String::new();
     loop {
-        let observed = observe(&*traces, &lines);
+        let mut observed = observe(&*traces, &lines);
+        observed.watch_process = plant
+            .as_ref()
+            .map(|plant| plant::running(plant.as_ref()).is_some());
         let reading = board.borrow().clone();
         let now = jiff::Timestamp::now();
         let mut snap = assemble::snapshot(&Inputs {

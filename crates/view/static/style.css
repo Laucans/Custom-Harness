@@ -72,7 +72,36 @@ body {
 }
 .hud-btn:hover { background: rgba(199, 210, 254, 0.12); }
 
-#status { display: flex; align-items: center; gap: 8px; color: var(--dim); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#status-wrap { position: relative; margin-left: auto; min-width: 0; }
+#status {
+  display: flex; align-items: center; gap: 8px; max-width: 100%;
+  color: var(--dim); background: transparent; font: inherit;
+  border: 1px solid transparent; border-radius: 6px; padding: 3px 8px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#status:hover, #status[aria-expanded="true"] { border-color: var(--line); background: var(--panel-2); color: var(--text); }
+#status:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#status .caret { font-size: 10px; opacity: .7; }
+#plant-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 280px;
+  display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+#plant-menu[hidden] { display: none; }
+#plant-menu button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  background: transparent; color: var(--text); font: inherit;
+  border: 1px solid transparent; border-radius: 6px; padding: 6px 10px; cursor: pointer;
+}
+#plant-menu button:hover, #plant-menu button:focus-visible { background: var(--panel-2); border-color: var(--line); outline: none; }
+#plant-menu button small { color: var(--dim); font-size: 11px; }
+#plant-menu button.hard { color: var(--bad); }
+#plant-menu button.hard.armed { background: var(--bad); color: var(--panel); border-color: var(--bad); }
+#plant-menu button.hard.armed small { color: var(--panel); }
+#plant-menu button:disabled { opacity: .5; cursor: default; }
+#plant-menu .note { color: var(--dim); font-size: 12px; padding: 4px 10px; white-space: normal; }
+#plant-menu .note.bad { color: var(--bad); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: #475569; flex: none; }
 .dot.on { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
 .dot.off { background: #64748b; }

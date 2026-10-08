@@ -139,6 +139,10 @@ pub struct Watch {
     pub saw: Option<String>,
     /// The last lines, raw, newest last.
     pub recent: Vec<String>,
+    /// A soft stop was asked: the watch waits for its lanes, starts nothing.
+    pub draining: bool,
+    /// The watch said it stopped, after its last start.
+    pub stopped: bool,
 }
 
 /// Reads `watch.log`, keeping the last `keep` non-empty lines.
@@ -162,6 +166,14 @@ pub fn parse_watch(text: &str, keep: usize) -> Watch {
         } else if let Some(every) = rest.strip_prefix("watch: every ") {
             watch.started_at = Some(at.to_string());
             watch.interval = every.split('s').next().and_then(|n| n.parse().ok());
+            watch.in_flight = None;
+            watch.draining = false;
+            watch.stopped = false;
+        } else if rest.starts_with("watch: draining") {
+            watch.draining = true;
+        } else if rest.starts_with("watch: stopped") {
+            watch.draining = false;
+            watch.stopped = true;
             watch.in_flight = None;
         } else if rest.contains("watch: ") && rest.contains(" -> ") {
             // The dispatched workflow reported back — or the doctor did,
@@ -714,6 +726,32 @@ mod tests {
 
         let reported: String = WATCH.lines().take(4).collect::<Vec<_>>().join("\n");
         assert!(parse_watch(&reported, 10).in_flight.is_none());
+    }
+
+    #[test]
+    fn a_soft_stop_drains_then_stops_until_the_next_start() {
+        let text = "\
+[2026-10-08T22:00:00Z] watch: every 30s on Laucans/dnd_helper2 — journal x
+[2026-10-08T22:00:01Z] tick: DevLoop { milestone: 3 }
+[2026-10-08T22:01:00Z] watch: draining — soft stop asked, no new task; waiting for 1 lane(s) (#15)
+";
+        let draining = parse_watch(text, 5);
+        assert!(draining.draining);
+        assert!(!draining.stopped);
+
+        let stopped =
+            format!("{text}[2026-10-08T22:09:00Z] watch: stopped — soft stop, every lane done\n");
+        let stopped = parse_watch(&stopped, 5);
+        assert!(!stopped.draining);
+        assert!(stopped.stopped);
+        assert!(stopped.in_flight.is_none());
+
+        let again = format!(
+            "{text}[2026-10-08T22:09:00Z] watch: stopped — soft stop, every lane done\n\
+             [2026-10-08T22:10:00Z] watch: every 30s on Laucans/dnd_helper2 — journal x\n"
+        );
+        let again = parse_watch(&again, 5);
+        assert!(!again.draining && !again.stopped);
     }
 
     #[test]

@@ -68,6 +68,17 @@ pub struct Cli {
     #[arg(long)]
     pub static_dir: Option<PathBuf>,
 
+    /// What the page's start button runs, in the checkout: the program
+    /// (a relative path is resolved against the checkout), then its
+    /// arguments, split on whitespace. `TARGET_REPO_URL`, `INTEGRATION_BRANCH`
+    /// and the rest reach it through the view's own environment.
+    #[arg(
+        long,
+        env = "HARNESS_WATCH_COMMAND",
+        default_value = "target/release/harness watch --force-reset"
+    )]
+    pub watch_command: String,
+
     /// Show the most recent run as live even though it is over — to see the
     /// plant move when nothing runs.
     #[arg(long)]
@@ -91,6 +102,10 @@ mod tests {
         assert!(!cli.no_board);
         assert!(!cli.no_steward);
         assert!(!cli.demo);
+        assert_eq!(
+            cli.watch_command,
+            "target/release/harness watch --force-reset"
+        );
     }
 
     #[test]
@@ -102,6 +117,7 @@ mod tests {
             "INTEGRATION_BRANCH",
             "PERMISSION_MODE",
             "STEWARD_MODEL",
+            "HARNESS_WATCH_COMMAND",
         ] {
             assert!(help.contains(variable), "{variable} missing from --help");
         }

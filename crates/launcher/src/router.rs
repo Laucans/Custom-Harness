@@ -19,9 +19,15 @@
 //! **A failed dispatch does not** — one workflow's own failure (a quota
 //! exhausted, a session hiccup) is that workflow's business, logged here,
 //! and likely to succeed on a later tick.
+//!
+//! **`SIGTERM` is a soft stop.** The tick under way finishes, no new task
+//! starts, the running lanes are waited for, then the watch exits. A hard
+//! stop is the caller's `SIGKILL` to the watch's process group.
 
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::Parser as _;
@@ -74,13 +80,22 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
         },
         Workspace::new(here).rel(&journal)
     ));
-    let mut lanes = Lanes::new(args.parallel);
+    let draining = Arc::new(AtomicBool::new(false));
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| Halt::Failed(format!("SIGTERM cannot be listened to: {e}")))?;
+    let flag = Arc::clone(&draining);
+    let mut listener = tokio::spawn(async move {
+        term.recv().await;
+        flag.store(true, Ordering::SeqCst);
+    });
+    let mut lanes = Lanes::new(args.parallel).closed_by(draining);
     loop {
         let went = tick(args, here, &log, &mut lanes).await;
         if args.once {
             // One pass was asked for, and its exit code is the answer — once
             // the lanes it may have opened are done, so the pass is whole.
             lanes.wait_all(&log).await;
+            listener.abort();
             return went;
         }
         if let Err(halt) = went {
@@ -91,8 +106,42 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
             log.warn(&format!("watch: tick -> {}", halt.reason()));
             crate::dispatch::doctor::record(here, &spending::run_id(), "watch", &halt);
         }
-        tokio::time::sleep(Duration::from_secs(args.interval)).await;
+        // A finished listener is never polled again: the check below returns.
+        if !lanes.is_closed() {
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(args.interval)) => {}
+                _ = &mut listener => {}
+            }
+        }
+        if lanes.is_closed() {
+            listener.abort();
+            return drain(&mut lanes, &log).await;
+        }
     }
+}
+
+/// The soft stop: says what it waits for, waits for every lane, says so.
+async fn drain(lanes: &mut Lanes, log: &Logbook) -> Outcome<()> {
+    let running = lanes.running();
+    log.say(&format!(
+        "watch: draining — soft stop asked, no new task; waiting for {} lane(s){}",
+        running.len(),
+        if running.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({})",
+                running
+                    .iter()
+                    .map(|task| format!("#{task}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    ));
+    lanes.wait_all(log).await;
+    log.say("watch: stopped — soft stop, every lane done");
+    Ok(())
 }
 
 /// One pass: read the snapshot, decide, dispatch.
@@ -121,6 +170,10 @@ async fn tick(args: &WatchArgs, here: &Path, log: &Logbook, lanes: &mut Lanes) -
         // An idle tick names the gesture it waits for, since "nothing" alone
         // reads as "done" to whoever watches the journal.
         log.say(&format!("idle: {reason}"));
+    }
+    if lanes.is_closed() {
+        // A soft stop arrived during the read: nothing new is dispatched.
+        return Ok(());
     }
     dispatch(args, here, gh.as_ref(), route, log, lanes).await;
     Ok(())

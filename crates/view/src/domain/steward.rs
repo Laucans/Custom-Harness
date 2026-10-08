@@ -63,8 +63,10 @@ What the human may ask of you, and how you do it — use these commands rather t
     setsid nohup ./target/release/harness watch --force-reset{target} --branch {branch} \
 >> .llocal/logs/agent-loop/watch.out 2>&1 < /dev/null &
   then confirm with `pgrep -fl \"harness watch\"` and read the first lines of `watch.log`.
-- Stop it: `pkill -f \"harness watch\"`. A session mid-flight is lost and its stage is paid \
-again later, so say so before stopping unless the human plainly asked to stop.
+- Stop it: `pkill -f \"harness watch\"` sends SIGTERM, a soft stop: no new task starts, the \
+running ones finish, then the watch exits (`watch: draining` then `watch: stopped` in \
+`watch.log`). To stop now, the human has the hard stop under the status button of the page; \
+a session killed mid-flight is paid again later, so say so before suggesting it.
 - What it spent: `.llocal/logs/agent-loop/costs.tsv` (tab-separated, header on line 1). \
 What stopped it: `.llocal/logs/agent-loop/errors.tsv`. A run's own logs: \
 `.llocal/logs/<workflow>/<run-id>/run.log` and `session.log`.

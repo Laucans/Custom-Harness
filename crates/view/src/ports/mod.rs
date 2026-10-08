@@ -1,6 +1,7 @@
 //! What the view needs from the outside, as traits — and the values those
-//! traits exchange. Two components: the traces the harness leaves on disk,
-//! and the board it keeps on GitHub.
+//! traits exchange: the traces the harness leaves on disk, the board it keeps
+//! on GitHub, the steward's terminal, and the watch process the page starts
+//! and stops.
 //!
 //! A port decides nothing. `FsTraces` knows where `.llocal/logs` is and what
 //! a TSV looks like; what a row *means* is `domain`'s business.
@@ -174,4 +175,71 @@ pub trait TerminalFactory: Send + Sync {
 
     /// The command line, for the page to name.
     fn command(&self) -> String;
+}
+
+/// A `harness watch` process of this checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Running {
+    /// Its pid.
+    pub pid: u32,
+    /// Its process group — what a hard stop kills, lanes included.
+    pub group: u32,
+}
+
+/// The signal a stop sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// `SIGTERM`: the watch drains its lanes, then exits.
+    Term,
+    /// `SIGKILL`: nothing finishes.
+    Kill,
+}
+
+/// Who a signal goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// One process.
+    Process(u32),
+    /// A whole process group.
+    Group(u32),
+}
+
+/// One line of the OS's process table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Process {
+    /// Its pid.
+    pub pid: u32,
+    /// Its parent's pid; `1` once its parent is gone.
+    pub parent: u32,
+    /// Its process group.
+    pub group: u32,
+    /// Its command line.
+    pub command: String,
+}
+
+/// The watch process, as the OS has it: found, started, signalled.
+///
+/// Synchronous: each call is one short `ps`, `lsof` or `kill`. `Send + Sync`
+/// because the HTTP handlers call it.
+pub trait Plant: Send + Sync {
+    /// Every process of the machine.
+    fn processes(&self) -> Vec<Process>;
+
+    /// Whether `pid` works in this checkout — another plant's watch on the
+    /// same machine is none of this page's business.
+    fn works_here(&self, pid: u32) -> bool;
+
+    /// Starts the watch, detached in a process group of its own.
+    ///
+    /// # Errors
+    ///
+    /// Why it could not start, as a sentence the page can show.
+    fn start(&self) -> Result<u32, String>;
+
+    /// Sends `signal` to `target`.
+    ///
+    /// # Errors
+    ///
+    /// Why the signal could not be sent.
+    fn send(&self, signal: Signal, target: Target) -> Result<(), String>;
 }

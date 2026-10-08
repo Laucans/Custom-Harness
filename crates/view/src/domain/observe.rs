@@ -85,6 +85,9 @@ pub struct Observed {
     pub errors: Vec<ErrorRow>,
     /// The last rate-limit reading.
     pub quota: Option<Reading>,
+    /// A watch process of this checkout runs — `None` when nobody looked,
+    /// and the journal alone says whether it polls.
+    pub watch_process: Option<bool>,
 }
 
 fn observe_run(traces: &dyn Traces, line: &Line, run: &str) -> ObservedRun {
@@ -177,6 +180,7 @@ pub fn observe(traces: &dyn Traces, lines: &[Line]) -> Observed {
         ledger: traces.ledger(),
         errors: traces.errors(),
         quota: traces.quota(),
+        watch_process: None,
     }
 }
 

@@ -20,6 +20,8 @@
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use harness_core::traces::Logbook;
 use tokio::process::{Child, Command};
@@ -33,6 +35,8 @@ struct Lane {
 /// The lanes, by slot.
 pub struct Lanes {
     slots: Vec<Option<Lane>>,
+    /// Set once a soft stop is asked: no slot is free from then on.
+    closed: Arc<AtomicBool>,
 }
 
 impl Lanes {
@@ -41,7 +45,22 @@ impl Lanes {
     pub fn new(parallel: usize) -> Self {
         Self {
             slots: (0..parallel.max(1)).map(|_| None).collect(),
+            closed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Ties the lanes to `flag`: once it is set, no slot is free, so no
+    /// new task starts while the running ones finish.
+    #[must_use]
+    pub fn closed_by(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.closed = flag;
+        self
+    }
+
+    /// Whether a soft stop closed the lanes.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
     }
 
     /// Frees the lanes whose child has exited, saying how it went.
@@ -82,9 +101,12 @@ impl Lanes {
             .collect()
     }
 
-    /// A free slot, if any.
+    /// A free slot, if any — never once the lanes are closed.
     #[must_use]
     pub fn free_slot(&self) -> Option<usize> {
+        if self.is_closed() {
+            return None;
+        }
         self.slots.iter().position(Option::is_none)
     }
 
@@ -147,6 +169,16 @@ mod tests {
         assert_eq!(lanes.free_slot(), Some(0));
         assert_eq!(lanes.running(), [] as [u64; 0]);
         assert_eq!(Lanes::new(0).slots.len(), 1);
+    }
+
+    #[test]
+    fn closed_lanes_offer_no_slot() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let lanes = Lanes::new(2).closed_by(Arc::clone(&flag));
+        assert_eq!(lanes.free_slot(), Some(0));
+        flag.store(true, Ordering::SeqCst);
+        assert!(lanes.is_closed());
+        assert_eq!(lanes.free_slot(), None);
     }
 
     #[tokio::test]

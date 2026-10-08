@@ -85,6 +85,13 @@ human tunes instead.
 decide` (pure, tested without a fake adapter), dispatch, sleep `--interval`
 seconds, repeat. `--once` does a single pass.
 
+**`SIGTERM` is a soft stop.** The tick under way finishes, the lanes close
+(`Lanes::closed_by` — no slot is free from then on, so no task starts), the
+running lanes are waited for, and the watch exits 0, writing
+`watch: draining …` then `watch: stopped …` to `watch.log`. A plain `pkill`
+sends `SIGTERM`, so it drains too. A hard stop is `SIGKILL` to the watch's
+tree and process group, sent from outside (the view's switch).
+
 Two rules, and they are not symmetric:
 
 - **A failed routing read stops the loop.** Bad credentials or an unreadable

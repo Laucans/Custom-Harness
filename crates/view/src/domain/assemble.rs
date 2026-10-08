@@ -420,9 +420,16 @@ fn chimneys(inputs: &Inputs<'_>, employees: &[Employee]) -> Vec<Chimney> {
         .collect()
 }
 
-/// The watch is believed to be polling: it ticked within three intervals, or
-/// it dispatched something that is still plausibly running.
-fn watching(watch: &Watch, now: i64) -> bool {
+/// The watch is polling: its process runs, when that was looked at. Else,
+/// from the journal alone: it has not said it stopped, and it ticked within
+/// three intervals or dispatched something that is still plausibly running.
+fn watching(watch: &Watch, process: Option<bool>, now: i64) -> bool {
+    if let Some(alive) = process {
+        return alive;
+    }
+    if watch.stopped {
+        return false;
+    }
     let interval = i64::try_from(watch.interval.unwrap_or(30)).unwrap_or(30);
     let recent_tick = watch
         .last_tick_at
@@ -606,7 +613,8 @@ pub fn snapshot(inputs: &Inputs<'_>) -> Snapshot {
         project: inputs.project.clone(),
         factory: Factory {
             chimneys: chimneys(inputs, &employees),
-            watching: watching(watch, inputs.now),
+            watching: watching(watch, inputs.observed.watch_process, inputs.now),
+            draining: watch.draining,
             last_tick_at: watch.last_tick_at.clone(),
             in_flight: watch.in_flight.clone(),
             saw: watch.saw.clone(),
@@ -673,6 +681,7 @@ mod tests {
             ledger: vec![],
             errors: vec![],
             quota: None,
+            watch_process: None,
         }
     }
 
@@ -760,6 +769,28 @@ mod tests {
         };
         assert!(smoke("sonnet"));
         assert!(!smoke("opus"));
+    }
+
+    #[test]
+    fn the_watch_process_outranks_what_the_journal_suggests() {
+        let mut observed = observed_with(
+            "agent-loop",
+            dev_run(MID_RUN, 40),
+            in_flight("agent-loop", "2026-10-06T20:26:00Z"),
+        );
+        assert!(assemble(&observed, false).factory.watching);
+        observed.watch_process = Some(false);
+        assert!(!assemble(&observed, false).factory.watching);
+
+        let mut journal = Watch {
+            stopped: true,
+            ..in_flight("agent-loop", "2026-10-06T20:26:00Z")
+        };
+        journal.in_flight = None;
+        let mut stopped = observed_with("agent-loop", dev_run(MID_RUN, 40), journal);
+        assert!(!assemble(&stopped, false).factory.watching);
+        stopped.watch_process = Some(true);
+        assert!(assemble(&stopped, false).factory.watching);
     }
 
     #[test]

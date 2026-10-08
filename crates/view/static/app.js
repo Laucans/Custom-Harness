@@ -174,15 +174,97 @@
 
   function status() {
     const f = S.snap.factory;
-    $('watch-dot').className = 'dot ' + (f.watching ? 'on' : 'off');
-    let s = f.watching ? 'watch polling' : 'watch off';
+    $('watch-dot').className = 'dot ' + (f.draining ? 'warn' : f.watching ? 'on' : 'off');
+    let s = f.draining ? 'watch stopping (soft)' : f.watching ? 'watch polling' : 'watch off';
     if (f.last_tick_at) s += ` · last tick ${hhmm(f.last_tick_at)}`;
     if (f.in_flight) s += ` · running ${f.in_flight.workflow}${f.in_flight.subject ? ' (' + f.in_flight.subject + ')' : ''}`;
     else if (f.idle) s += ' · nobody at work';
     else s += ` · ${S.snap.employees.length} at work`;
     if (S.snap.demo) s += ' · DEMO';
     $('watch-text').textContent = s;
+    if (!$('plant-menu').hidden) plantMenu();
   }
+
+  // ---- the plant's switch --------------------------------------------------
+  // The status is a button: it opens the gestures that make sense now — start
+  // an empty plant, or stop a running one softly (running tasks finish, none
+  // starts) or hard (the watch and its lanes are killed, after a second click).
+  const P = { status: null, armed: null, busy: false, note: '', bad: false };
+  async function plantRead() {
+    try { P.status = await (await fetch('/api/plant')).json(); }
+    catch (e) { P.status = null; P.note = 'cannot reach the server'; P.bad = true; }
+  }
+  function plantOption(label, hint, gesture, cls = '') {
+    return `<button type="button" role="option" data-gesture="${gesture}" class="${cls}"${P.busy ? ' disabled' : ''}>${esc(label)}<small>${esc(hint)}</small></button>`;
+  }
+  function plantMenu() {
+    const st = P.status;
+    const f = S.snap ? S.snap.factory : {};
+    let html = '';
+    if (!st) html = '<div class="note">reading the plant…</div>';
+    else if (!st.available) html = '<div class="note">this view has no hand on the plant (demo)</div>';
+    else if (!st.running) html = plantOption('▶ Start the plant', 'starts harness watch in this checkout', 'start');
+    else {
+      if (f.draining) html += '<div class="note">soft stop under way — running tasks finish, then the watch exits</div>';
+      else html += plantOption('⏸ Soft stop', 'no new task; stops once the running ones finish', 'soft');
+      html += P.armed
+        ? plantOption('⏹ Click again to kill everything', 'running sessions are lost and paid again later', 'hard', 'hard armed')
+        : plantOption('⏹ Hard stop', `kills the watch (pid ${st.running.pid}) and its lanes now`, 'hard', 'hard');
+    }
+    if (P.note) html += `<div class="note${P.bad ? ' bad' : ''}">${esc(P.note)}</div>`;
+    $('plant-menu').innerHTML = html;
+  }
+  async function plantOpen() {
+    P.note = ''; P.bad = false; P.armed = null;
+    $('plant-menu').hidden = false;
+    $('status').setAttribute('aria-expanded', 'true');
+    plantMenu();
+    await plantRead();
+    plantMenu();
+    const first = $('plant-menu').querySelector('button:not(:disabled)');
+    if (first) first.focus();
+  }
+  function plantClose() {
+    $('plant-menu').hidden = true;
+    $('status').setAttribute('aria-expanded', 'false');
+    if (P.armed) { clearTimeout(P.armed); P.armed = null; }
+  }
+  async function plantDo(gesture) {
+    if (gesture === 'hard' && !P.armed) {
+      P.armed = setTimeout(() => { P.armed = null; plantMenu(); }, 4000);
+      plantMenu();
+      const armed = $('plant-menu').querySelector('.armed');
+      if (armed) armed.focus();
+      return;
+    }
+    if (P.armed) { clearTimeout(P.armed); P.armed = null; }
+    P.busy = true; plantMenu();
+    try {
+      const r = await fetch('/api/plant/' + gesture, { method: 'POST' });
+      const text = await r.text();
+      if (r.ok) { P.note = JSON.parse(text).message; P.bad = false; }
+      else { P.note = text || r.statusText; P.bad = true; }
+    } catch (e) { P.note = 'cannot reach the server'; P.bad = true; }
+    P.busy = false;
+    await plantRead();
+    plantMenu();
+  }
+  $('status').addEventListener('click', () => { if ($('plant-menu').hidden) plantOpen(); else plantClose(); });
+  $('plant-menu').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-gesture]');
+    if (b && !b.disabled) plantDo(b.dataset.gesture);
+  });
+  $('plant-menu').addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+    ev.preventDefault();
+    const items = [...$('plant-menu').querySelectorAll('button:not(:disabled)')];
+    const at = items.indexOf(document.activeElement);
+    const next = items[(at + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length];
+    if (next) next.focus();
+  });
+  document.addEventListener('click', (ev) => {
+    if (!$('plant-menu').hidden && !ev.target.closest('#status-wrap')) plantClose();
+  });
 
   // ---- navigation ----------------------------------------------------------
   // Where you are is in the URL hash — `#B`, `#C/lines` — so a place can be
@@ -228,6 +310,8 @@
   window.addEventListener('keydown', (e) => {
     // Inside the steward's terminal every key belongs to the terminal.
     if (e.target.closest && e.target.closest('#term')) return;
+    // An open switch menu takes Escape for itself, and the page stays put.
+    if (e.key === 'Escape' && !$('plant-menu').hidden) { plantClose(); $('status').focus(); return; }
     if (e.key === 'Escape' || e.key === 'Backspace') { if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'CANVAS') back(); else if (e.key === 'Escape') back(); }
   });
   $('hud-steward').addEventListener('click', () => {
