@@ -39,11 +39,14 @@ pub enum Unit {
     Migration,
     /// The plumbing itself: `DataQueue`, `DataGuard`, Resolver, the Data layer.
     Infrastructure,
+    /// Rust that touches no store: contract types, shared helpers, CI and
+    /// build tooling. Read side — nothing it ships mutates data.
+    Tooling,
 }
 
 impl Unit {
     /// Every unit, in the order the architecture presents them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Capability,
         Self::MicroUi,
         Self::Concept,
@@ -53,6 +56,7 @@ impl Unit {
         Self::Invariant,
         Self::Migration,
         Self::Infrastructure,
+        Self::Tooling,
     ];
 
     /// The spelling a session is asked for, and the one written in the body.
@@ -68,6 +72,7 @@ impl Unit {
             Self::Invariant => "invariant",
             Self::Migration => "migration",
             Self::Infrastructure => "infrastructure",
+            Self::Tooling => "tooling",
         }
     }
 
@@ -175,7 +180,8 @@ impl Declaration {
     /// Everything on the read side runs without review; a `DataCapability` is
     /// read-side only as an insert that touches nothing existing — the
     /// architecture's "pure addition" — and every other effect, every
-    /// invariant, migration and piece of plumbing is the write side.
+    /// invariant, migration and piece of store plumbing is the write side.
+    /// `Tooling` is Rust with no store in it, and reads.
     #[must_use]
     pub fn side(&self) -> Side {
         match self.unit {
@@ -183,7 +189,8 @@ impl Declaration {
             | Unit::MicroUi
             | Unit::Concept
             | Unit::PersistedQuery
-            | Unit::Composition => Side::Read,
+            | Unit::Composition
+            | Unit::Tooling => Side::Read,
             Unit::Invariant | Unit::Migration | Unit::Infrastructure => Side::Write,
             Unit::DataCapability => {
                 if self.effect == Some(Effect::Insert) && self.touches.is_empty() {
@@ -317,6 +324,7 @@ mod tests {
             Unit::Concept,
             Unit::PersistedQuery,
             Unit::Composition,
+            Unit::Tooling,
         ] {
             let declaration = Declaration {
                 unit,

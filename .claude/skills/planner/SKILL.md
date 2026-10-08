@@ -106,17 +106,18 @@ side: harness:read-side    # harness:write-side if any of its work mutates
 task's `/business-analyst` pass will read; writing more here is work
 `/refinement` redoes.
 
-### Draw milestones along the architecture's frontier
+### A milestone delivers one piece of the product whole
 
-The write side — DataCapabilities that mutate, invariants, relations,
-migrations, the DataGuard's own plumbing — is reviewed by a human and runs
-one task at a time. The read side — Capabilities, Micro-UIs, Concepts,
-persisted queries, compositions — runs in parallel, unreviewed, behind CI
-gates. So: a milestone that defines a system's write side comes **before**
-the milestones whose readers depend on it, and a milestone stays inside one
-system where possible. Say in its body's `side:` line whether any of its
-work is on the write side — never as a label: `harness:read-side` and
-`harness:write-side` belong to tasks, which `/split` places one by one.
+A milestone carries its data layer — aggregates, invariants, migrations,
+DataCapabilities, the DataGuard's own plumbing — **and** what reads it —
+Capabilities, Micro-UIs, Concepts, persisted queries, compositions. Never a
+"write" milestone followed by a "read" one: `/split` opens the data layer
+as the milestone's first task (serialized, on the strongest model) and the
+readers in parallel after it. Order a milestone after the ones whose data it
+reads, and keep it inside one system where possible. Say in its body's
+`side:` line whether it has a data layer — never as a label:
+`harness:read-side`, `harness:write-side` and `harness:data-layer` belong
+to tasks, which `/split` places one by one.
 
 ### Never add `harness:ready`
 

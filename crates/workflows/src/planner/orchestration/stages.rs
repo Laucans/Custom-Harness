@@ -44,10 +44,13 @@ Micro-UIs, Concepts, persisted queries, compositions — and a write side
 behind one DataGuard — DataCapabilities that mutate, invariants, migrations.
 Draw each milestone inside one system (bounded context) where possible, and
 name the `systems` it works in and the `concepts` (versioned, `Risk@3`) it
-defines or implements. Set `writes: true` on a milestone whose work touches
-the write side, and order those before the read-side milestones that depend
-on them: a human merges every write-side task, while read-side tasks run in
-parallel without review.
+defines or implements. A milestone delivers one piece of the product
+**whole**: its data layer — aggregates, invariants, migrations,
+DataCapabilities — **and** what reads it — Capabilities, Micro-UIs — never a
+"write" milestone followed by a "read" one. `split` opens the data layer as
+the milestone's first task and the readers in parallel after it. Set
+`writes: true` on a milestone that has a data layer, and order a milestone
+after the ones whose data it reads.
 
 {existing}
 

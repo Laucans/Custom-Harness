@@ -10,12 +10,14 @@
 //!
 //! # What is chained, and what is not
 //!
-//! A read-side slice is blocked only by the slices it named in
-//! `depends_on`: two Capabilities of one milestone share nothing, so the
-//! loop may run them in parallel. A write-side slice is also chained onto
-//! the previous write-side slice (or the last task that already existed):
-//! the architecture serializes mutations behind one `DataGuard`, and so does
-//! the board.
+//! A milestone's write-side slices are its **data layer** — the first
+//! task(s), labelled `harness:data-layer`. They are chained on one another
+//! (and the first on the last task that already existed): the architecture
+//! serializes mutations behind one `DataGuard`, and so does the board. Every
+//! read-side slice placed after the data layer waits on its last slice, plus
+//! whatever it named in `depends_on`; two Capabilities share nothing else,
+//! so the loop runs them in parallel. A slice placed before any data layer —
+//! a Concept — waits on its `depends_on` alone.
 
 use std::rc::Rc;
 
@@ -28,6 +30,34 @@ use crate::common::architecture::Side;
 use crate::common::{branching, labels, sections};
 use crate::split::data::plan;
 use crate::split::data::state::SplitState;
+
+/// A task's body and labels, from its slice.
+///
+/// Under their own headings, and `SCOPE` and `ARCHITECTURE` are the two
+/// sections no refinement phase rewrites: the boundary this slice states and
+/// its place in the architecture survive every later round instead of being
+/// replaced by the five sections a refinement knows. A write-side slice is
+/// the data layer, and labelled as such.
+fn body_and_labels(
+    item: &plan::TaskItem,
+    kind: &'static str,
+    side: Side,
+) -> (String, Vec<&'static str>) {
+    let body = format!(
+        "## {}\n\nbranch: {}\n\n{}\n\n## {}\n\n{}",
+        sections::heading_of(sections::SCOPE),
+        item.branch,
+        item.brief,
+        sections::heading_of(sections::ARCHITECTURE),
+        item.declaration().render()
+    );
+    let labels = if side == Side::Write {
+        vec![kind, side.label(), labels::DATA_LAYER]
+    } else {
+        vec![kind, side.label()]
+    };
+    (body, labels)
+}
 
 /// Opens one task per item of the parsed plan, in order, then marks the
 /// milestone split.
@@ -66,9 +96,12 @@ impl Action<SplitState> for Write {
         if !items.is_empty() {
             self.ensure_milestone_branch(ctx.state.milestone()).await?;
         }
-        // The write chain starts after whatever already exists: a mutation
-        // never runs beside a task that was open before this split.
+        // The data layer's chain starts after whatever already exists: a
+        // mutation never runs beside a task that was open before this split.
         let mut last_write = ctx.state.existing.last().map(|issue| issue.number);
+        // The data layer this split opened, once one is: what every reader
+        // after it waits on.
+        let mut data_layer: Option<u64> = None;
         let mut created: Vec<u64> = Vec::new();
         for (index, item) in items.iter().enumerate() {
             let kind = if item.needs_human {
@@ -76,25 +109,9 @@ impl Action<SplitState> for Write {
             } else {
                 labels::AGENT
             };
-            let declaration = item.declaration();
-            let side = declaration.side();
-            // Under their own headings, and `SCOPE` and `ARCHITECTURE` are the
-            // two sections no refinement phase rewrites: the boundary this
-            // slice states and its place in the architecture survive every
-            // later round instead of being replaced by the five sections a
-            // refinement knows.
-            let body = format!(
-                "## {}\n\nbranch: {}\n\n{}\n\n## {}\n\n{}",
-                sections::heading_of(sections::SCOPE),
-                item.branch,
-                item.brief,
-                sections::heading_of(sections::ARCHITECTURE),
-                declaration.render()
-            );
-            let number = self
-                .gh
-                .create_issue(&item.title, &body, &[kind, side.label()])
-                .await?;
+            let side = item.declaration().side();
+            let (body, labels) = body_and_labels(item, kind, side);
+            let number = self.gh.create_issue(&item.title, &body, &labels).await?;
             self.gh
                 .create_sub_issue_link(milestone_number, number)
                 .await?;
@@ -108,8 +125,12 @@ impl Action<SplitState> for Write {
                     )),
                 }
             }
-            if side == Side::Write
-                && let Some(blocker) = last_write
+            let implied = if side == Side::Write {
+                last_write
+            } else {
+                data_layer
+            };
+            if let Some(blocker) = implied
                 && !blockers.contains(&blocker)
             {
                 blockers.push(blocker);
@@ -119,11 +140,17 @@ impl Action<SplitState> for Write {
             }
             if side == Side::Write {
                 last_write = Some(number);
+                data_layer = Some(number);
             }
             ctx.traces.say(&format!(
-                "opened task #{number}: {} ({kind}, {}, {})",
+                "opened task #{number}: {} ({kind}, {}{}, {})",
                 item.title,
                 side.label(),
+                if side == Side::Write {
+                    ", data layer"
+                } else {
+                    ""
+                },
                 if blockers.is_empty() {
                     "unblocked".to_string()
                 } else {
@@ -325,6 +352,11 @@ mod tests {
             sides[0].contains(&labels::WRITE_SIDE.to_string()),
             "a migration"
         );
+        assert!(
+            sides[0].contains(&labels::DATA_LAYER.to_string()),
+            "the data layer is labelled as such"
+        );
+        assert!(!sides[1].contains(&labels::DATA_LAYER.to_string()));
         assert!(sides[1].contains(&labels::READ_SIDE.to_string()));
         assert!(
             sides[3].contains(&labels::WRITE_SIDE.to_string()),
@@ -415,6 +447,41 @@ mod tests {
                 Wrote::Unlabelled(4, labels::READY.to_string()),
                 Wrote::Label(4, labels::TRIGGERED.to_string()),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn readers_wait_on_the_data_layer_and_a_concept_before_it_does_not() {
+        let gh = Rc::new(gh_with_base());
+        // A Concept, the data layer, then two readers that named nothing:
+        // the readers still wait on the data layer, the Concept on nothing.
+        let mut context = ctx(
+            false,
+            r#"[{"title":"C","brief":"c","branch":"feat/c","unit":"concept","system":"credit"},
+               {"title":"D","brief":"d","branch":"feat/d","unit":"migration","system":"credit"},
+               {"title":"A","brief":"a","branch":"feat/a","unit":"capability","system":"credit"},
+               {"title":"T","brief":"t","branch":"chore/t","unit":"tooling","system":"credit"}]"#,
+        );
+        Write {
+            gh: gh.clone(),
+            slice_stage: "slice".to_string(),
+            base_branch: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("published");
+        let links: Vec<(u64, u64)> = gh
+            .writes()
+            .into_iter()
+            .filter_map(|w| match w {
+                Wrote::BlockedByLink(task, dependency) => Some((task, dependency)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            links,
+            vec![(3, 2), (4, 2)],
+            "A and T wait on D; C and D wait on nothing"
         );
     }
 

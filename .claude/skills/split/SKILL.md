@@ -130,21 +130,29 @@ first.
 one that proves the whole milestone actually runs end to end — not a
 cleanup task tacked on after everything else.
 
-### Label the side, and chain only what really depends
+### Three layers, in this order: Concepts, the data layer, the readers
 
 Every task carries `harness:read-side` or `harness:write-side`, next to
-`harness:agent`/`harness:human`:
+`harness:agent`/`harness:human`; the data layer also carries
+`harness:data-layer`.
 
-- **read side** — capability, micro-ui, concept, persisted-query,
-  composition, and a data-capability whose effect is `insert` with nothing
-  in `touches`. These share nothing by design: chain one `blocked_by`
-  another **only** when it reads what the other produces. Unchained
-  read-side tasks run **in parallel**, each in its own session and clone.
-- **write side** — a data-capability that updates, deletes or upserts (or
-  touches existing fields), an invariant, a migration, infrastructure.
-  Chain each write-side task onto the previous write-side one (mutations are
-  serialized, as behind the DataGuard), and put them before the readers that
-  build on them. A human merges every write-side PR; the loop waits.
+1. **Concepts** the milestone defines (`concept`), if any — read side,
+   first: everything else reads them.
+2. **The data layer** — ONE write-side task when one session can build it:
+   the milestone's aggregates, invariants, migrations, DataCapabilities that
+   mutate (or touch existing fields), and any `infrastructure` (the store's
+   own plumbing). Cut it into two or three tasks only when it is too big for
+   one session, each `blocked_by` the previous: mutations are serialized
+   behind the DataGuard, and so is this. Label it `harness:data-layer`: the
+   loop builds it on its strongest model, and its review blocks on a weak
+   invariant or a migration that cannot be replayed. Its PR is merged by
+   `milestone_merge` once reviewed clean and green.
+3. **The readers** — capability, persisted-query, micro-ui, composition,
+   `tooling` (Rust with no store in it: contract types, helpers, CI), and a
+   data-capability whose effect is `insert` with nothing in `touches`. Each
+   is `blocked_by` the last data-layer task, and by another reader **only**
+   when it reads what that one produces. Otherwise they share nothing and
+   run **in parallel**, each in its own session and clone.
 
 ### Mark `harness:human` honestly
 

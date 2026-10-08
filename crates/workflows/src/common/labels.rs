@@ -124,6 +124,17 @@ pub const READ_SIDE: &str = "harness:read-side";
 /// Posed by `split` on a task, like [`READ_SIDE`] — never on a milestone.
 pub const WRITE_SIDE: &str = "harness:write-side";
 
+/// The task builds a milestone's **data layer**.
+///
+/// Its aggregates, invariants, migrations and `DataCapabilities` — the first
+/// task of the milestone, where the data design is decided, and the one the
+/// loop runs on its strongest model (`--data-layer-model`, Opus by default).
+///
+/// Posed by `split` on the write-side slices it opens first; a human poses
+/// it on a task made by hand to get the same treatment. Not in [`LOOP`]: a
+/// task without it simply runs on the stages' own models.
+pub const DATA_LAYER: &str = "harness:data-layer";
+
 /// A write-side task's PR is open and waits for its review and a green CI,
 /// after which `milestone_merge` merges it.
 ///
@@ -164,12 +175,12 @@ pub struct Label {
     pub description: &'static str,
 }
 
-/// The seventeen labels `init-repo` creates when they are missing.
+/// The eighteen labels `init-repo` creates when they are missing.
 ///
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 17] = [
+pub const ALL: [Label; 18] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -248,18 +259,37 @@ pub const ALL: [Label; 17] = [
     Label {
         name: WRITE_SIDE,
         color: "e11d21",
-        description: "Write side: DataCapability, invariant, schema — a human merges its PR",
+        description: "Write side: DataCapability, invariant, schema — reviewed, then merged by milestone_merge",
     },
     Label {
         name: REVIEW_PENDING,
         color: "f9d0c4",
-        description: "A write-side PR is open and waits for a human merge",
+        description: "A write-side PR is open and waits for its review and a green CI",
+    },
+    Label {
+        name: DATA_LAYER,
+        color: "b60205",
+        description: "A milestone's data layer — aggregates, invariants, migrations — on the strongest model",
     },
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_description_fits_what_github_accepts() {
+        // GitHub refuses a label description over 100 characters, and
+        // `init-repo` would stop on it after creating the ones before.
+        for label in &ALL {
+            assert!(
+                label.description.chars().count() <= 100,
+                "{} — description of {} characters",
+                label.name,
+                label.description.chars().count()
+            );
+        }
+    }
 
     #[test]
     fn every_label_the_loop_requires_is_in_the_list() {

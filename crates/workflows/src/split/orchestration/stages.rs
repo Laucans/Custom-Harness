@@ -32,26 +32,37 @@ next slice — and a branch name of the form `<type>/<slug>` (`feat`, `fix`,
 `docs`, `refactor`, `test`, `chore`, `AIchore`). Mark a slice
 `needs_human: true` only for account creation, an interactive login, a
 payment decision, or anything else only a human in a browser can do —
-everything else is `needs_human: false`. Order so something testable exists
-early, and make the last slice the one that proves the whole milestone runs
-end to end.
+everything else is `needs_human: false`.
 
 The repository follows the agent-native architecture (`docs/ARCHITECTURE.md`
 in the repository map): every slice is exactly one unit of it. Name the
-`unit` — `capability`, `micro-ui`, `concept`, `data-capability`,
-`persisted-query`, `composition`, `invariant`, `migration` or
-`infrastructure` — the `system` it belongs to (the bounded context, e.g.
+`unit` — `concept`, `data-capability`, `invariant`, `migration`,
+`infrastructure`, `capability`, `persisted-query`, `micro-ui`, `composition`
+or `tooling` — the `system` it belongs to (the bounded context, e.g.
 `credit`), the `concept` it implements when there is one (`Risk@3`), and for
 a `data-capability` its `effect` (`insert`, `update`, `delete`, `upsert`) and
-the existing fields it `touches` (empty for a pure insert). The read side —
-capability, micro-ui, concept, persisted-query, composition, an insert-only
-data-capability — is independent by design: give such a slice no
-`depends_on` unless it really reads what another slice produces, so the
-slices run in parallel. The write side — a data-capability that mutates, an
-invariant, a migration, infrastructure — runs one slice at a time and a
-human merges each one: put those first, so the readers build on them.
-`depends_on` lists the 0-based indexes, in this same array, of the slices
-one builds on.
+the existing fields it `touches` (empty for a pure insert). `infrastructure`
+is the store's own plumbing (DataQueue, DataGuard, Resolver, schema); Rust
+that touches no store — contract types, helpers, CI — is `tooling`.
+
+Order the slices in three layers, in this order and no other:
+1. The Concepts the milestone defines, if any (`concept`): everything else
+   reads them.
+2. The milestone's **data layer**, as ONE slice when one session can build
+   it: its aggregates, invariants, migrations and DataCapabilities, and any
+   `infrastructure`. Cut it into two or three slices only when it is too
+   big for one session, each chained on the previous — they are serialized
+   anyway, behind the DataGuard. This is where the data design is decided;
+   the loop builds it on its strongest model.
+3. Everything that reads: `capability`, `persisted-query`, `micro-ui`,
+   `composition`, `tooling`, an insert-only `data-capability`. Independent
+   by design, these run in parallel, each waiting on the data layer (added
+   for you): give such a slice no other `depends_on` unless it really reads
+   what another slice produces.
+
+Make the last slice the one that proves the whole milestone runs end to
+end. `depends_on` lists the 0-based indexes, in this same array, of the
+slices one builds on.
 
 {existing}
 

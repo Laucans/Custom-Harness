@@ -419,7 +419,8 @@ fn unit_present(tree: &Tree, task: &Declaration) -> Vec<String> {
         | Unit::PersistedQuery
         | Unit::Composition
         | Unit::Migration
-        | Unit::Infrastructure => Vec::new(),
+        | Unit::Infrastructure
+        | Unit::Tooling => Vec::new(),
     }
 }
 
