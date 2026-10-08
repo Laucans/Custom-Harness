@@ -647,6 +647,12 @@ mod tests {
         ) -> Outcome<Vec<harness_core::domain::Issue>> {
             Err(refused())
         }
+        async fn activity(
+            &self,
+            _etag: Option<&str>,
+        ) -> Outcome<harness_core::ports::shell::github::Activity> {
+            Err(refused())
+        }
         async fn sub_issues(&self, _number: u64) -> Outcome<Vec<harness_core::domain::Issue>> {
             Err(refused())
         }

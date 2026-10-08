@@ -45,8 +45,11 @@ impl Lanes {
         }
     }
 
-    /// Frees the lanes whose child has exited, saying how it went.
-    pub fn reap(&mut self, log: &Logbook) {
+    /// Frees the lanes whose child has exited, saying how it went, and
+    /// returns how many it freed — a freed lane is a reason to read the
+    /// board again even when nothing on it moved.
+    pub fn reap(&mut self, log: &Logbook) -> usize {
+        let mut freed = 0;
         for (slot, lane) in self.slots.iter_mut().enumerate() {
             let done = match lane {
                 Some(running) => match running.child.try_wait() {
@@ -70,8 +73,10 @@ impl Lanes {
             };
             if done {
                 *lane = None;
+                freed += 1;
             }
         }
+        freed
     }
 
     /// The tasks lanes are on right now.

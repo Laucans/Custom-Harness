@@ -29,6 +29,7 @@
 //! nobody has opened the tap on.
 
 use harness_core::domain::{Issue, Pr};
+use harness_core::ports::shell::github::Activity;
 
 use crate::common::labels;
 
@@ -215,6 +216,51 @@ pub fn lane_work(snapshot: &Snapshot) -> LaneWork {
         preparation: snapshot.refining.iter().any(Issue::is_open)
             || snapshot.milestones.iter().any(splittable),
     }
+}
+
+/// How many quiet ticks a poll lets pass before it reads the board in full
+/// anyway — the valve for a change the activity read cannot see.
+pub const FULL_READ_EVERY: u32 = 10;
+
+/// What a poll keeps between two ticks to know whether to read the board.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Pulse {
+    /// The tag of the last activity read, handed back as `If-None-Match`.
+    pub etag: Option<String>,
+    /// Whether the last full read saw a pull request the board waits on —
+    /// a check run or a review changes nothing on an issue, so those are
+    /// read in full every tick while one is open.
+    pub watching_ci: bool,
+    /// Ticks since the last full read.
+    pub quiet_ticks: u32,
+}
+
+impl Pulse {
+    /// What the pulse remembers after a full read.
+    pub fn read_in_full(&mut self, etag: Option<String>, watching_ci: bool) {
+        self.etag = etag;
+        self.watching_ci = watching_ci;
+        self.quiet_ticks = 0;
+    }
+
+    /// What the pulse remembers after a tick that read nothing.
+    pub const fn stayed_quiet(&mut self) {
+        self.quiet_ticks = self.quiet_ticks.saturating_add(1);
+    }
+}
+
+/// Whether this tick may skip the full read of the board.
+///
+/// Only when the one conditional read said nothing moved, no pull request's
+/// checks or review are being waited on, no lane was just freed — a lane
+/// freed with the board unchanged is a crashed lane whose work is still
+/// due — and the valve has not run out.
+#[must_use]
+pub const fn may_skip(pulse: &Pulse, activity: &Activity, freed_lanes: usize) -> bool {
+    matches!(activity, Activity::Unchanged)
+        && !pulse.watching_ci
+        && freed_lanes == 0
+        && pulse.quiet_ticks < FULL_READ_EVERY
 }
 
 /// Whether this milestone is a candidate for a split, its blockers aside:
@@ -535,6 +581,55 @@ mod tests {
     #[test]
     fn an_entirely_quiet_repo_routes_to_nothing() {
         assert_eq!(decide(&empty()), Route::Nothing);
+    }
+
+    fn quiet() -> Pulse {
+        Pulse {
+            etag: Some("W/\"abc\"".to_string()),
+            watching_ci: false,
+            quiet_ticks: 0,
+        }
+    }
+
+    #[test]
+    fn an_unchanged_board_skips_the_full_read() {
+        assert!(may_skip(&quiet(), &Activity::Unchanged, 0));
+    }
+
+    #[test]
+    fn a_changed_board_is_read_in_full() {
+        let changed = Activity::Changed {
+            etag: None,
+            moved_at: None,
+        };
+        assert!(!may_skip(&quiet(), &changed, 0));
+    }
+
+    #[test]
+    fn a_waited_on_pull_request_keeps_the_full_read_going() {
+        let pulse = Pulse {
+            watching_ci: true,
+            ..quiet()
+        };
+        assert!(!may_skip(&pulse, &Activity::Unchanged, 0));
+    }
+
+    #[test]
+    fn a_freed_lane_reads_the_board_again() {
+        assert!(!may_skip(&quiet(), &Activity::Unchanged, 1));
+    }
+
+    #[test]
+    fn the_valve_forces_a_full_read_after_enough_quiet_ticks() {
+        let mut pulse = quiet();
+        for _ in 0..FULL_READ_EVERY {
+            assert!(may_skip(&pulse, &Activity::Unchanged, 0));
+            pulse.stayed_quiet();
+        }
+        assert!(!may_skip(&pulse, &Activity::Unchanged, 0));
+        pulse.read_in_full(Some("W/\"def\"".to_string()), false);
+        assert_eq!(pulse.quiet_ticks, 0);
+        assert!(may_skip(&pulse, &Activity::Unchanged, 0));
     }
 
     #[test]

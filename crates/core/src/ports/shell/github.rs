@@ -22,6 +22,22 @@ use async_trait::async_trait;
 
 use crate::domain::{Issue, Outcome, Pr};
 
+/// What a conditional read of the board's activity said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Activity {
+    /// Nothing moved since the tag handed in — a read that cost no quota.
+    Unchanged,
+    /// Something moved. `etag` is what to hand in next time, when the server
+    /// gave one; `moved_at` is when the newest issue or pull request last
+    /// changed, when there is one.
+    Changed {
+        /// The server's tag for this state of the board.
+        etag: Option<String>,
+        /// The `updated_at` of the newest issue or pull request.
+        moved_at: Option<String>,
+    },
+}
+
 /// What the harness asks `gh` for, and nothing more.
 #[async_trait(?Send)]
 pub trait GitHub {
@@ -76,6 +92,20 @@ pub trait GitHub {
     /// # Errors
     /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) if a read does not succeed.
     async fn with_blockers(&self, tasks: Vec<Issue>) -> Outcome<Vec<Issue>>;
+
+    /// Whether any issue or pull request moved since `etag` — the one read
+    /// a poll pays while the board is quiet.
+    ///
+    /// Conditional on purpose: a `304 Not Modified` is free of quota, so a
+    /// watch that polls every thirty seconds costs nothing until something
+    /// changes. A CI run finishing moves no issue, which is why the caller
+    /// keeps reading in full while a pull request waits on its checks.
+    ///
+    /// # Errors
+    /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) if the read does
+    /// not succeed — never `Unchanged`: an expired token must stop the loop,
+    /// not quiet it.
+    async fn activity(&self, etag: Option<&str>) -> Outcome<Activity>;
 
     /// Merged PRs on `base`, most recently touched first.
     ///
