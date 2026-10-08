@@ -4,10 +4,11 @@
 //! The harness keeps driving **one session per process** (decision #3,
 //! `?Send` throughout): parallelism is processes, not threads. The watch
 //! spawns `harness --task <n> --use-workspace lane-<k>` for every runnable
-//! task the board offers that no lane is on — or `harness split <n>` /
-//! `harness refine <n>` with `--use-workspace router-lane-<k>` for every
-//! milestone ready to split, then every issue waiting on its business
-//! refinement — reaps the children on each tick, and frees their lane. What
+//! task the board offers that no lane is on, then, in the lanes left,
+//! `harness split <n>` / `harness refine <n>` with `--use-workspace
+//! router-lane-<k>` for every milestone ready to split and every issue
+//! waiting on its business refinement — whatever the tick's route — reaps
+//! the children on each tick, and frees their lane. What
 //! makes two tasks safe to run at once is the architecture's read side —
 //! `split` chains the write side, so at most one of those is ever runnable;
 //! two splits cut two different milestones, two refinements write two

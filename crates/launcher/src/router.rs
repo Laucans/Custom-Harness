@@ -122,7 +122,7 @@ async fn tick(args: &WatchArgs, here: &Path, log: &Logbook, lanes: &mut Lanes) -
         // reads as "done" to whoever watches the journal.
         log.say(&format!("idle: {reason}"));
     }
-    dispatch(args, here, gh.as_ref(), route, log, lanes).await;
+    dispatch(args, here, gh.as_ref(), &found, route, log, lanes).await;
     Ok(())
 }
 
@@ -280,6 +280,7 @@ async fn dispatch(
     args: &WatchArgs,
     here: &Path,
     gh: &dyn GitHub,
+    found: &Snapshot,
     route: Route,
     log: &Logbook,
     lanes: &mut Lanes,
@@ -287,7 +288,12 @@ async fn dispatch(
     // The route with its parameters, before anything runs: it is the one line
     // that says what this tick decided and on what.
     log.say(&format!("tick: {route:?}"));
-    let failed = dispatched(args, here, gh, route, log, lanes).await;
+    let filled = if args.parallel > 1 {
+        fill_lanes(args, here, gh, found, log, lanes).await
+    } else {
+        None
+    };
+    let failed = filled.or(dispatched(args, here, gh, route, log).await);
     // Recorded before anything is repaired: the record is what the repair
     // reads, and what says — next tick — that it has already been treated.
     if let Some((workflow, halt)) = failed {
@@ -303,6 +309,34 @@ async fn dispatch(
     }
 }
 
+/// Gives every free lane work, whatever the route: the runnable tasks of the
+/// current milestone first, then milestones to split and issues waiting on
+/// their business refinement in the lanes left
+/// ([`routing::lane_work`]).
+async fn fill_lanes(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    found: &Snapshot,
+    log: &Logbook,
+    lanes: &mut Lanes,
+) -> Option<(&'static str, Halt)> {
+    let work = routing::lane_work(found);
+    if let Some(milestone) = work.tasks_of
+        && lanes.free_slot().is_some()
+        && let Some(halt) = run_lanes(args, here, gh, milestone, lanes, log).await
+    {
+        return Some(("dev_loop", halt));
+    }
+    if work.preparation
+        && lanes.free_slot().is_some()
+        && let Some(halt) = run_router_lanes(args, here, gh, lanes, log).await
+    {
+        return Some(("router_lanes", halt));
+    }
+    None
+}
+
 /// Runs the route, and says which workflow failed, if one did.
 async fn dispatched(
     args: &WatchArgs,
@@ -310,14 +344,15 @@ async fn dispatched(
     gh: &dyn GitHub,
     route: Route,
     log: &Logbook,
-    lanes: &mut Lanes,
 ) -> Option<(&'static str, Halt)> {
     match route {
         Route::Nothing => None,
-        Route::DevLoop { milestone } if args.parallel > 1 => {
-            run_lanes(args, here, gh, milestone, lanes, log)
-                .await
-                .map(|halt| ("dev_loop", halt))
+        // Under `--parallel`, the lanes were filled before the route was
+        // dispatched — see [`fill_lanes`].
+        Route::DevLoop { .. } | Route::Split { .. } | Route::Refinement { .. }
+            if args.parallel > 1 =>
+        {
+            None
         }
         Route::DevLoop { milestone } => run_dev_loop(here, gh, milestone, args.force_reset, log)
             .await
@@ -335,11 +370,6 @@ async fn dispatched(
             .await,
             log,
         ),
-        Route::Split { .. } | Route::Refinement { .. } if args.parallel > 1 => {
-            run_router_lanes(args, here, gh, lanes, log)
-                .await
-                .map(|halt| ("router_lanes", halt))
-        }
         Route::Split { milestone } => report_failure(
             "split",
             crate::dispatch::split::run(
