@@ -103,8 +103,12 @@ bind the design even where the existing code predates them: the unit goes
 where the layout says, in the language the stack says — Rust for anything but
 a Micro-UI, compiled to WebAssembly when a TypeScript host must load it.
 Designing it in the host's language because that is what exists today is a
-violation to name, not a pragmatic choice to make; state what the bridge
-costs instead.
+violation, not a choice: write no waiver, no fallback, no question for the
+human — the human decided when installing the rules, and the toolchain's
+cost belongs to the first Rust unit's plan. The declared unit is what it is:
+a `capability` is a Capability crate with its manifest, never a \"local
+implementation\" of the Concept in the host. State what the bridge costs,
+then design it.
 
 Here is the body of the issue as it stands right now:
 <issue-body>
@@ -237,7 +241,9 @@ with its manifest or contract and the gate that validates it: one step of the
 plan writes that file, and the command that proves the step is the gate's own
 check. The plan follows the stack and the layout of the rules, not the
 language of the surrounding code: a TypeScript host that must load a Rust
-unit gets a step for the WebAssembly build and one for its loading.
+unit gets a step for the Cargo workspace if none exists, one for the
+WebAssembly build and one for its loading. Plan the rule-conforming design
+only — never a fallback the human did not ask for.
 
 Here is the body of the issue as it stands right now:
 <issue-body>

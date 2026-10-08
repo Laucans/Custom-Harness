@@ -71,6 +71,13 @@ impl Unit {
         }
     }
 
+    /// True for the units the stack builds in Rust, under `crates/` — all
+    /// but a Micro-UI, a screen composition and a Concept's document.
+    #[must_use]
+    pub const fn is_rust(self) -> bool {
+        !matches!(self, Self::MicroUi | Self::Composition | Self::Concept)
+    }
+
     /// From a spelling, forgiving case, underscores and a missing dash:
     /// `MicroUI`, `micro_ui` and `micro-ui` are one unit.
     #[must_use]

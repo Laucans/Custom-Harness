@@ -11,6 +11,8 @@ use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 
+use crate::common::architecture::Declaration;
+use crate::common::sections;
 use crate::refinement::data::rounds;
 use crate::refinement::data::state::RefinementState;
 
@@ -89,6 +91,71 @@ impl Verification<RefinementState> for RouterNamedSections {
     }
 }
 
+/// A technical section of a Rust unit names its place under `crates/`.
+///
+/// The stack rule is the one a session negotiates away most readily in a
+/// TypeScript host — "the code is TypeScript today", a waiver, a question
+/// left to the human. The `## Architecture` section already settled it: a
+/// Capability, a `DataCapability`, a persisted query, an invariant, a
+/// migration or infrastructure is a crate, so the design and the plan that
+/// never write `crates/<something>` did not build that unit.
+pub struct SectionSitsInTheLayout {
+    /// The section key this stage carries.
+    pub key: String,
+}
+
+#[async_trait(?Send)]
+impl Verification<RefinementState> for SectionSitsInTheLayout {
+    async fn verify(&self, ctx: &Context<RefinementState>) -> Outcome<Verdict> {
+        if ctx.settings.dry_run {
+            return Ok(Verdict::Continue);
+        }
+        let Some(reply) = ctx.results.get(&self.key) else {
+            return Ok(Verdict::Continue);
+        };
+        let architecture = ctx
+            .state
+            .found
+            .get(sections::ARCHITECTURE)
+            .map_or("", String::as_str);
+        layout_violation(&self.key, architecture, &reply.text)
+            .map_or(Ok(Verdict::Continue), |why| Err(Halt::Failed(why)))
+    }
+}
+
+/// Why `text`, written for the section `key`, does not build the declared unit.
+///
+/// `None` when it does, when the section is not a technical one, or when the
+/// unit the `## Architecture` section declares is not a Rust one.
+#[must_use]
+pub fn layout_violation(key: &str, architecture: &str, text: &str) -> Option<String> {
+    if key != "technical" && key != "technical-plan" {
+        return None;
+    }
+    let declaration = Declaration::parse(architecture)?;
+    if !declaration.unit.is_rust() || names_a_crate(text) {
+        return None;
+    }
+    Some(format!(
+        "{key}: the task declares a {} — a Rust unit, under crates/ — and the \
+         section names no path under crates/<system>/. The stack rule binds in \
+         a TypeScript host too: the unit is a crate, compiled to WebAssembly \
+         if the host must load it. Write that design, not a waiver, a fallback \
+         or a question for the human.",
+        declaration.unit.key()
+    ))
+}
+
+/// `crates/` followed by the first character of a folder name — not the
+/// bare `crates/` of "no file under `crates/` is modified".
+fn names_a_crate(text: &str) -> bool {
+    text.split("crates/").skip(1).any(|rest| {
+        rest.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
 /// A dry-run writes nothing: it wrote the prompts and stops there.
 pub struct NothingIsWritten;
 
@@ -126,6 +193,36 @@ mod tests {
             router: ROUTER.to_string(),
             has_context,
         }
+    }
+
+    const CAPABILITY: &str =
+        "unit: capability\nsystem: bestiary\nconcept: Actors24Entry@1\nside: harness:read-side";
+
+    #[test]
+    fn a_technical_section_of_a_rust_unit_must_name_its_crate() {
+        let waiver = "The decoder stays in `src/core` as the shell's local implementation; \
+                      no file under `crates/` is modified.";
+        let why = layout_violation("technical", CAPABILITY, waiver).expect("a violation");
+        assert!(why.contains("capability"), "{why}");
+        assert!(why.contains("WebAssembly"), "{why}");
+        assert!(layout_violation("technical-plan", CAPABILITY, waiver).is_some());
+        let crate_plan = "Step 1 creates `crates/bestiary/capabilities/actors24-entry/` with its \
+                          capability.json, built to wasm by wasm-pack.";
+        assert_eq!(layout_violation("technical", CAPABILITY, crate_plan), None);
+    }
+
+    #[test]
+    fn the_layout_rule_spares_business_sections_and_non_rust_units() {
+        assert_eq!(
+            layout_violation("business-rules", CAPABILITY, "nothing"),
+            None
+        );
+        let micro_ui = "unit: micro-ui\nsystem: bestiary\nside: harness:read-side";
+        assert_eq!(
+            layout_violation("technical", micro_ui, "apps/bestiary/palette"),
+            None
+        );
+        assert_eq!(layout_violation("technical", "", "nothing"), None);
     }
 
     #[tokio::test]

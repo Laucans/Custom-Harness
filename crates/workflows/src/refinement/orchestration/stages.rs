@@ -24,7 +24,7 @@ use harness_core::ports::agent::SessionSpec;
 use crate::refinement::action::actions::{AskRefine, RecordWantedSections};
 use crate::refinement::action::publish::Write;
 use crate::refinement::checks::gates::{
-    NothingIsWritten, RouterIsOff, RouterNamedSections, SectionIsWanted,
+    NothingIsWritten, RouterIsOff, RouterNamedSections, SectionIsWanted, SectionSitsInTheLayout,
 };
 use crate::refinement::config::Config;
 use crate::refinement::data::phase::Phase;
@@ -132,6 +132,12 @@ pub fn section(
     stage.pre = Some(Gate {
         name: "section requires",
         checks: vec![Box::new(SectionIsWanted {
+            key: key.to_string(),
+        })],
+    });
+    stage.post = Some(Gate {
+        name: "section must sit in the layout",
+        checks: vec![Box::new(SectionSitsInTheLayout {
             key: key.to_string(),
         })],
     });

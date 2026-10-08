@@ -75,6 +75,8 @@ pub struct Tree {
     pub concepts: Vec<(String, u64)>,
     /// `queries/registry.json` exists.
     pub has_query_registry: bool,
+    /// The folders under `crates/`: the systems that have Rust code.
+    pub systems: Vec<String>,
 }
 
 impl Tree {
@@ -95,6 +97,7 @@ impl Tree {
             ..Self::default()
         };
         for system in disk.dir_names(&root.join("crates")) {
+            tree.systems.push(system.clone());
             for name in disk.dir_names(&root.join("crates").join(&system).join("capabilities")) {
                 let dir = format!("crates/{system}/capabilities/{name}");
                 tree.capabilities.push(CapabilityCrate {
@@ -406,6 +409,12 @@ fn unit_present(tree: &Tree, task: &Declaration) -> Vec<String> {
         Unit::PersistedQuery if !tree.has_query_registry => {
             missing("persisted query, and queries/registry.json does not exist")
         }
+        Unit::Infrastructure if !system.is_empty() && !tree.systems.iter().any(|s| s == system) => {
+            missing(&format!(
+                "infrastructure unit of the system `{system}`, and crates/{system}/ does not \
+                 exist — the stack builds it in Rust, there"
+            ))
+        }
         Unit::Invariant
         | Unit::PersistedQuery
         | Unit::Composition
@@ -552,6 +561,7 @@ mod tests {
     fn sound() -> Tree {
         Tree {
             under_architecture: true,
+            systems: vec!["credit".to_string(), "dataguard".to_string()],
             capabilities: vec![capability("credit", "calculate-risk", RISK, CLEAN_TOML)],
             micro_uis: vec![(
                 "credit".to_string(),
@@ -680,9 +690,20 @@ mod tests {
         let concept = Declaration {
             unit: Unit::Concept,
             concept: Some("Risk@4".to_string()),
-            ..capability
+            ..capability.clone()
         };
         assert!(violations(&tree, Some(&concept))[0].contains("Risk@4"));
+        let plumbing = Declaration {
+            unit: Unit::Infrastructure,
+            concept: None,
+            system: "bestiary".to_string(),
+            ..capability
+        };
+        let found = violations(&tree, Some(&plumbing));
+        assert!(found[0].contains("crates/bestiary/"), "{found:?}");
+        let mut with_crate = sound();
+        with_crate.systems.push("bestiary".to_string());
+        assert!(violations(&with_crate, Some(&plumbing)).is_empty());
     }
 
     #[test]
@@ -724,6 +745,7 @@ mod tests {
         assert!(tree.under_architecture);
         assert_eq!(tree.capabilities.len(), 1);
         assert_eq!(tree.capabilities[0].system, "credit");
+        assert_eq!(tree.systems, ["credit"]);
         assert_eq!(tree.concepts, [("Risk".to_string(), 3)]);
         assert!(tree.has_query_registry);
         assert!(violations(&tree, None).is_empty());
