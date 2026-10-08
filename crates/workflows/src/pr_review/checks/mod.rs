@@ -1,7 +1,7 @@
-//! Ce qui juge, sans jamais écrire : ce qu'une étape de la revue exige, et ce
-//! qui la fait sauter.
+//! What judges, and never writes: what a review stage requires, and what
+//! makes it skip.
 //!
-//! À ne pas confondre avec les portes du **workflow** (outillage, vérifiées
-//! une fois avant tout, montées par le lanceur).
+//! Not to be confused with the **workflow**'s gates (tooling, checked once
+//! before anything, mounted by the launcher).
 
 pub mod gates;

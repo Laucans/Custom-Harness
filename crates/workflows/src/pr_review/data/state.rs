@@ -1,26 +1,26 @@
-//! Ce que les étapes d'une revue se transmettent.
+//! What the stages of a review hand each other.
 
 use harness_core::domain::Pr;
 
-/// L'état d'une revue : la PR, posée par le précontrôle.
+/// The state of a review: the PR, set by the precheck.
 #[derive(Debug, Clone, Default)]
 pub struct ReviewState {
-    /// La PR revue. `None` jusqu'à ce que `precheck` l'ait lue.
+    /// The PR under review. `None` until `precheck` has read it.
     pub pr: Option<Pr>,
 }
 
 impl ReviewState {
-    /// La PR, ou l'échec de programmation si on l'atteint avant `precheck`.
+    /// The PR, or the programming error of reaching it before `precheck`.
     ///
     /// # Panics
-    /// Si appelée avant que `precheck` ait tourné — ce qu'aucun chemin de
-    /// [`Workflow::execute`](harness_core::execution::Workflow::execute) ne
-    /// permet : les stages ne tournent qu'après.
+    /// If called before `precheck` ran — which no path through
+    /// [`Workflow::execute`](harness_core::execution::Workflow::execute)
+    /// allows: the stages only run after it.
     #[must_use]
     pub const fn pr(&self) -> &Pr {
         self.pr
             .as_ref()
-            .expect("precheck doit poser la PR avant que les stages tournent")
+            .expect("precheck must set the PR before the stages run")
     }
 }
 

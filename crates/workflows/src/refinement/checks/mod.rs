@@ -1,7 +1,7 @@
-//! Ce qui juge, sans jamais écrire : ce qu'une étape du raffinage exige, et
-//! ce qui la fait sauter.
+//! What judges, and never writes: what a refinement stage requires, and
+//! what makes it skip.
 //!
-//! À ne pas confondre avec la porte du **workflow** (outillage + étiquette,
-//! vérifiée une fois avant tout, montée par le lanceur).
+//! Not to be confused with the **workflow**'s gate (tooling + label, checked
+//! once before anything, mounted by the launcher).
 
 pub mod gates;

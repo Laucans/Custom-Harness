@@ -1,8 +1,8 @@
-//! Ce que la revue lit et décide : son état, les règles de saut, le texte
-//! qu'elle publie.
+//! What the review reads and decides: its state, the skip rules, the text it
+//! publishes.
 //!
-//! Métier pur — rien ici n'appelle `gh` ni n'écrit nulle part. Ce qui écrit
-//! vit dans `action`, ce qui juge dans `checks`.
+//! Pure domain — nothing here calls `gh` or writes anywhere. What writes
+//! lives in `action`, what judges in `checks`.
 
 pub mod findings;
 pub mod notes;

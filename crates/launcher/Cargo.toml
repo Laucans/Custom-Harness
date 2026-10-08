@@ -1,6 +1,6 @@
 [package]
 name = "harness-launcher"
-description = "Les points d'entrée : CLI et hooks qui trigent un workflow."
+description = "The entry points: the CLI and the router that trigger a workflow."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

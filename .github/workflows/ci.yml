@@ -26,6 +26,31 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo test --workspace --doc
 
+  # The pinned `rust-version` means nothing unless something builds with it.
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+
+  # The renderer is only ever shipped as wasm; a native build passing says
+  # nothing about the target it is built for.
+  wasm:
+    name: wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p harness-view-render --target wasm32-unknown-unknown --profile wasm-dev
+
   audit:
     name: audit
     runs-on: ubuntu-latest
