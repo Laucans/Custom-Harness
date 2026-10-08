@@ -79,6 +79,14 @@ pub fn status(comments: &str) -> Status {
     }
 }
 
+/// How many repairs were attempted on a PR, whatever asked for them — a red
+/// check, a blocking review, a conflict with the base. The cap
+/// [`MAX_FIXES`] is on this count.
+#[must_use]
+pub fn repairs(comments: &str) -> usize {
+    comments.matches(FIX_MARKER).count()
+}
+
 /// Whether a review summary asks for changes: its `VERDICT:` says `blocking`.
 ///
 /// A summary with no such line does not block — it is a review that forgot
@@ -105,6 +113,12 @@ pub fn verdict_marker(summary: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repairs_are_counted_whatever_asked_for_them() {
+        assert_eq!(repairs("nothing"), 0);
+        assert_eq!(repairs(&format!("{FIX_MARKER}\n...\n{FIX_MARKER}")), 2);
+    }
 
     fn review(verdict: &str) -> String {
         format!("{MARKER}\n## notes\n\n...\n{verdict}\n")

@@ -24,13 +24,15 @@ pub const CONTEXT: &str = "context";
 pub const FIX: &str = "fix";
 
 const FIX_PROMPT: &str = r#"Pull request #{num} — "{title}" ({head} -> {base}) needs a repair: its
-CI went red, or its agent review (the last `🤖 Review notes` comment below,
-its `VERDICT: blocking` line) asked for changes before it is merged.
+CI went red, its agent review (the last `🤖 Review notes` comment below,
+its `VERDICT: blocking` line) asked for changes before it is merged, or its
+branch no longer merges into `{base}`.
 This checkout is already on `{head}`, the PR's own branch.
 
 The checks that have failed:
 {failing}
 
+{conflict}
 What has been said on the PR so far — a reviewer may already have named the
 cause, and a human may have asked for something specific:
 <pr-comments>
@@ -56,8 +58,9 @@ Hard rules, and they are the point of this run:
   answering what its review called blocking, not improving the code around
   it — the review's non-blocking remarks are not yours to address. An adjacent problem is something you
   name in your answer, not something you commit here.
-- **Never merge, never force-push, never rebase onto another branch, never
-  close the PR, and never touch a `harness:*` label.** Something else
+- **Never merge the PR itself, never force-push, never rebase, never close
+  the PR, and never touch a `harness:*` label.** Merging the base *into*
+  the branch to resolve a conflict is the one merge you may make. Something else
   decides what happens to this PR once it is green.
 - **No secret in your output.** Name a credential, never its value, and do
   not echo an environment file.

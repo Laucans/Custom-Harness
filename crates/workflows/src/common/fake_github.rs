@@ -90,6 +90,9 @@ pub struct FakeGitHub {
     /// `pr_checks_green` answers, by PR ref. An absent key refuses — the
     /// test must set up exactly what it reads.
     pub pr_checks: HashMap<String, bool>,
+    /// `pr_mergeable` answers, by PR ref. An absent key is `Some(true)`:
+    /// a PR merges unless the test says it conflicts.
+    pub pr_mergeable: HashMap<String, Option<bool>>,
     /// What `open_prs_labelled` returns, by label. An absent key is an empty
     /// list: "no PR carries this label" is itself a scenario worth writing.
     pub prs_labelled: HashMap<String, Vec<Pr>>,
@@ -390,6 +393,11 @@ impl GitHub for FakeGitHub {
     async fn open_prs_labelled(&self, label: &str) -> Outcome<Vec<Pr>> {
         self.ok()?;
         Ok(self.prs_labelled.get(label).cloned().unwrap_or_default())
+    }
+
+    async fn pr_mergeable(&self, pr_ref: &str) -> Outcome<Option<bool>> {
+        self.ok()?;
+        Ok(self.pr_mergeable.get(pr_ref).copied().unwrap_or(Some(true)))
     }
 
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {

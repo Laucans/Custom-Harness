@@ -297,4 +297,12 @@ pub trait GitHub {
     /// non-zero exit for "a check is pending or failing" is a normal answer,
     /// read from the JSON.
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>>;
+
+    /// Whether this PR can be merged into its base as it stands:
+    /// `Some(false)` when its branch conflicts with the base — another PR
+    /// landed there since — and `None` while GitHub is still computing it.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`](crate::domain::Halt::Failed) if the PR cannot be read.
+    async fn pr_mergeable(&self, pr_ref: &str) -> Outcome<Option<bool>>;
 }

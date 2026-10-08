@@ -204,6 +204,16 @@ fn failing_checks(rows: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// `gh pr view --json mergeable`: `MERGEABLE`, `CONFLICTING`, or `UNKNOWN`
+/// while GitHub still computes it.
+fn mergeable_from(payload: &Value) -> Option<bool> {
+    match payload.get("mergeable").and_then(Value::as_str) {
+        Some("MERGEABLE") => Some(true),
+        Some("CONFLICTING") => Some(false),
+        _ => None,
+    }
+}
+
 /// Whether a `gh pr checks --json state` response is green: at least one
 /// check `SUCCESS`, and every other one `SUCCESS`, `SKIPPED` or `NEUTRAL`.
 ///
@@ -990,6 +1000,27 @@ impl GitHub for GhCli {
             .collect())
     }
 
+    async fn pr_mergeable(&self, pr_ref: &str) -> Outcome<Option<bool>> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "view".to_string(),
+                pr_ref.to_string(),
+                "--json".to_string(),
+                "mergeable".to_string(),
+            ])
+            .await?;
+        if !ran.ok() {
+            return Err(Halt::Failed(format!(
+                "cannot read whether PR {pr_ref} merges — {}",
+                ran.why()
+            )));
+        }
+        let payload: Value = serde_json::from_str(ran.out())
+            .map_err(|e| Halt::Failed(format!("unreadable mergeability of PR {pr_ref}: {e}")))?;
+        Ok(mergeable_from(&payload))
+    }
+
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
         let ran = self
             .gh(&[
@@ -1165,6 +1196,22 @@ mod tests {
         // already correct.
         assert!(!is_404(&ran(1, "gh: Bad credentials (HTTP 401)")));
         assert!(!is_404(&ran(1, "(nothing on stderr)")));
+    }
+
+    // --- mergeable_from --------------------------------------------------------
+
+    #[test]
+    fn mergeability_is_read_as_github_spells_it() {
+        assert_eq!(
+            mergeable_from(&json!({"mergeable": "MERGEABLE"})),
+            Some(true)
+        );
+        assert_eq!(
+            mergeable_from(&json!({"mergeable": "CONFLICTING"})),
+            Some(false)
+        );
+        assert_eq!(mergeable_from(&json!({"mergeable": "UNKNOWN"})), None);
+        assert_eq!(mergeable_from(&json!({})), None);
     }
 
     // --- checks_are_green ----------------------------------------------------

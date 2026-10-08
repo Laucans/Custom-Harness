@@ -33,11 +33,18 @@ impl Action<FixState> for ReadBreakage {
         let failing = self.gh.pr_failing_checks(&num).await?;
         let comments = self.gh.pr_comments(&num).await?;
         let blocking = review::status(&comments).wants_a_fix();
-        if failing.is_empty() && !blocking {
+        let conflicting = self.gh.pr_mergeable(&num).await? == Some(false)
+            && review::repairs(&comments) < review::MAX_FIXES;
+        if failing.is_empty() && !blocking && !conflicting {
             ctx.traces.say(&format!(
-                "nothing has failed on #{num} and its review asks for nothing — nothing to repair"
+                "nothing has failed on #{num}, its review asks for nothing and it merges — \
+                 nothing to repair"
             ));
             return Ok(Verdict::Continue);
+        }
+        if conflicting {
+            ctx.traces
+                .say(&format!("#{num}: its branch conflicts with its base"));
         }
         if !failing.is_empty() {
             ctx.traces.say(&format!(
@@ -53,6 +60,7 @@ impl Action<FixState> for ReadBreakage {
         ctx.state.comments = comments;
         ctx.state.failing = failing;
         ctx.state.review_blocking = blocking;
+        ctx.state.conflicting = conflicting;
         Ok(Verdict::Continue)
     }
 }
@@ -67,6 +75,20 @@ fn failing_block(failing: &[String]) -> String {
         .map(|line| format!("  - {line}"))
         .collect::<Vec<String>>()
         .join("\n")
+}
+
+/// The conflict with the base, rendered for the prompt — or nothing.
+fn conflict_block(conflicting: bool, base: &str) -> String {
+    if !conflicting {
+        return String::new();
+    }
+    format!(
+        "This PR no longer merges: its branch conflicts with `{base}` — another PR \
+         landed there since. Bring the base in and resolve it:\n  git fetch origin && \
+         git merge origin/{base}\nResolve every conflict keeping both sides' intent \
+         (the other PR's change is not yours to undo), run the gates, commit the \
+         merge and push. A merge, never a rebase, never a force-push.\n"
+    )
 }
 
 /// What was already said on the PR, rendered for the prompt.
@@ -100,6 +122,7 @@ impl SessionAction<FixState> for AskForFix {
         let pr = open.state.pr().clone();
         let failing = failing_block(&open.state.failing);
         let comments = comments_block(&open.state.comments);
+        let conflict = conflict_block(open.state.conflicting, &pr.base);
         let prompt = splice(
             self.template,
             &[
@@ -109,6 +132,7 @@ impl SessionAction<FixState> for AskForFix {
                 ("base", &pr.base),
                 ("failing", &failing),
                 ("comments", &comments),
+                ("conflict", &conflict),
             ],
         );
         let task = format!("#{}", pr.num);
@@ -130,8 +154,7 @@ pub struct RecordAttempt {
 #[async_trait(?Send)]
 impl Action<FixState> for RecordAttempt {
     async fn run(&self, ctx: &mut Context<FixState>) -> Outcome<Verdict> {
-        let nothing_to_repair = ctx.state.failing.is_empty() && !ctx.state.review_blocking;
-        if ctx.settings.dry_run || nothing_to_repair {
+        if ctx.settings.dry_run || !ctx.state.asks_for_a_repair() {
             return Ok(Verdict::Continue);
         }
         let pr = ctx.state.pr().clone();
@@ -140,8 +163,10 @@ impl Action<FixState> for RecordAttempt {
         };
         let why = if ctx.state.review_blocking {
             "the agent review asked for changes"
-        } else {
+        } else if !ctx.state.failing.is_empty() {
             "a check went red"
+        } else {
+            "the branch conflicted with its base"
         };
         self.gh
             .post_issue_comment(
@@ -164,6 +189,14 @@ mod tests {
     use harness_core::execution::Settings;
     use harness_core::traces::Logbook;
     use std::collections::HashMap;
+
+    #[test]
+    fn a_conflict_asks_for_a_merge_of_the_base_never_a_rebase() {
+        let said = conflict_block(true, "milestone/53-data");
+        assert!(said.contains("git merge origin/milestone/53-data"));
+        assert!(said.contains("never a rebase"));
+        assert!(conflict_block(false, "x").is_empty());
+    }
 
     fn ctx() -> Context<FixState> {
         Context::new(

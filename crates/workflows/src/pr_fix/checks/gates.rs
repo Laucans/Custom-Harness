@@ -18,9 +18,10 @@ pub struct SomethingIsRed;
 #[async_trait(?Send)]
 impl Verification<FixState> for SomethingIsRed {
     async fn verify(&self, ctx: &Context<FixState>) -> Outcome<Verdict> {
-        if ctx.state.failing.is_empty() && !ctx.state.review_blocking {
+        if !ctx.state.asks_for_a_repair() {
             return Ok(Verdict::Skip(
-                "no check has failed and the review asks for nothing — nothing to repair"
+                "no check has failed, the review asks for nothing and it merges — nothing \
+                 to repair"
                     .to_string(),
             ));
         }
@@ -46,6 +47,7 @@ mod tests {
                 failing: failing.iter().map(|f| (*f).to_string()).collect(),
                 comments: String::new(),
                 review_blocking: false,
+                conflicting: false,
             },
             Logbook::null(),
         )

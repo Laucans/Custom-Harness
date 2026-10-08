@@ -17,6 +17,18 @@ pub struct FixState {
     /// Its last agent review asks for changes, and the repairs it gets are
     /// not used up — a reason to repair even with every check green.
     pub review_blocking: bool,
+    /// Its branch conflicts with its base — another PR landed there since —
+    /// and the repairs are not used up: a reason to repair, by bringing the
+    /// base in.
+    pub conflicting: bool,
+}
+
+impl FixState {
+    /// Whether anything asks for a repair at all.
+    #[must_use]
+    pub const fn asks_for_a_repair(&self) -> bool {
+        !self.failing.is_empty() || self.review_blocking || self.conflicting
+    }
 }
 
 impl FixState {

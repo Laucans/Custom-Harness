@@ -478,8 +478,9 @@ fn pr_fix_line() -> Line {
         "pr-fix",
         "PR fix",
         "harness:pr-fix on a red pull request",
-        "Makes one repair attempt on a pull request whose CI went red or whose agent review \
-         blocks it — two per blocking review at most, then a human decides.",
+        "Makes one repair attempt on a pull request whose CI went red, whose agent review \
+         blocks it, or whose branch no longer merges into its milestone — two per PR at \
+         most, then a human decides.",
         vec![
             vec![free(
                 "context",

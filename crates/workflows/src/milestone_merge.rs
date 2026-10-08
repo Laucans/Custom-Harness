@@ -70,8 +70,9 @@ pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
     gh.post_issue_comment(
         task.number,
         &format!(
-            "PR {} is still blocked by its agent review after {} repair attempts — \
-             a human decides: fix it by hand, or merge it as it is.",
+            "PR {} still does not merge after {} repair attempts — its review blocks \
+             it, or its branch conflicts with the milestone's — a human decides: fix \
+             it by hand, or merge it as it is.",
             pr.reference(),
             crate::common::review::MAX_FIXES
         ),

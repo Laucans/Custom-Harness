@@ -717,6 +717,10 @@ mod tests {
         async fn pr_failing_checks(&self, _pr_ref: &str) -> Outcome<Vec<String>> {
             Err(refused())
         }
+
+        async fn pr_mergeable(&self, _pr_ref: &str) -> Outcome<Option<bool>> {
+            Err(refused())
+        }
     }
 
     fn refused() -> Halt {

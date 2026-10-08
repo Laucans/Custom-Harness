@@ -206,11 +206,16 @@ async fn lowest_red_pr(gh: &dyn GitHub) -> Outcome<Option<Pr>> {
             break;
         }
     }
-    // A blocking agent review asks for a repair as a red check does — the
-    // label is posed for it at dispatch, the same request a human makes.
+    // A blocking agent review, or a branch that no longer merges into its
+    // base, asks for a repair as a red check does — the label is posed for
+    // it at dispatch, the same request a human makes. Bounded like the
+    // rest: past `MAX_FIXES` repairs, the PR is a human's.
     for candidate in by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?) {
         let comments = gh.pr_comments(&candidate.num).await?;
-        if review::status(&comments).wants_a_fix() {
+        let blocked = review::status(&comments).wants_a_fix();
+        let conflicting = review::repairs(&comments) < review::MAX_FIXES
+            && gh.pr_mergeable(&candidate.num).await? == Some(false);
+        if blocked || conflicting {
             found.push(candidate);
             break;
         }
@@ -479,13 +484,22 @@ async fn green_task_pr(gh: &dyn GitHub, tasks: &[Issue]) -> Outcome<Option<(u64,
     };
     // Its last review must let it through: a blocking one is the repair
     // route's, and one its repairs did not clear is a human's.
-    match review::status(&gh.pr_comments(&pr.num).await?) {
+    let comments = gh.pr_comments(&pr.num).await?;
+    match review::status(&comments) {
         review::Status::Clean => {}
         status if status.exhausted() => {
             harness_workflows::milestone_merge::escalate(gh, task, pr).await?;
             return Ok(None);
         }
         _ => return Ok(None),
+    }
+    // And it must merge: a conflict with the base is the repair route's too,
+    // until the repairs are used up.
+    if gh.pr_mergeable(&pr.num).await? == Some(false) {
+        if review::repairs(&comments) >= review::MAX_FIXES {
+            harness_workflows::milestone_merge::escalate(gh, task, pr).await?;
+        }
+        return Ok(None);
     }
     if !gh.pr_checks_green(&pr.num).await? {
         return Ok(None);
