@@ -202,6 +202,16 @@ mod tests {
     }
 
     #[test]
+    fn only_the_three_gates_that_need_the_engine_stay_off() {
+        let gates = include_str!("../assets/gates.yml");
+        assert_eq!(
+            gates.lines().filter(|l| l.trim() == "if: false").count(),
+            3,
+            "semantic-conformance, queries-valid and schema-impact wait for the DataGuard engine"
+        );
+    }
+
+    #[test]
     fn the_installed_ci_runs_on_the_integration_and_milestone_branches() {
         let ci = include_str!("../assets/ci.yml");
         assert!(crate::init_repo::data::audit::ci_triggers_on(

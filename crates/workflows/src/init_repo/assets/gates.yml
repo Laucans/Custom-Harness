@@ -103,24 +103,45 @@ jobs:
           exit $failed
 
   # Contracts A, B — `implements: Risk@3` ⇒ the Concept's fixtures pass
-  # against this Capability. Implement: a conformance runner that feeds
-  # concepts/<Concept>/v<n>/fixtures.json to the Capability and compares.
+  # against this Capability. Needs a conformance runner that feeds
+  # concepts/<Concept>/v<n>/fixtures.json to the Capability: it comes with
+  # the DataGuard engine the harness installs, and this gate is switched on
+  # with it.
   semantic-conformance:
     if: false
     runs-on: ubuntu-latest
     steps:
       - run: echo "not implemented — every Capability that implements a Concept passes its fixtures"
 
-  # Contract B — no Capability has write access: read-only database role in
-  # its configuration, and a lint for any write statement in its queries.
+  # Contract B — no Capability has write access. Checked where it can be,
+  # statically: no write statement in a Capability crate, and no use of the
+  # application role's connection — a Capability reads through
+  # `DATABASE_URL_READONLY` only.
   read-only:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — Capabilities run under a read-only role"
+      - uses: actions/checkout@v4
+      - name: No Capability crate writes, nor opens the application role's connection
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          for src in crates/*/capabilities/*/src/**/*.rs; do
+            if grep -nEi '\b(INSERT[[:space:]]+INTO|UPDATE[[:space:]]+[a-z_".]+[[:space:]]+SET|DELETE[[:space:]]+FROM|TRUNCATE|ALTER[[:space:]]+TABLE|DROP[[:space:]]+TABLE|CREATE[[:space:]]+TABLE)\b' "$src"; then
+              echo "::error file=$src::a Capability writes nothing"
+              failed=1
+            fi
+            if grep -nE 'DATABASE_URL\b' "$src" | grep -vE 'DATABASE_URL_READONLY'; then
+              echo "::error file=$src::a Capability reads through DATABASE_URL_READONLY only"
+              failed=1
+            fi
+          done
+          exit $failed
 
   # Contract C — every persisted query is valid against the current schema
-  # and the next one (expand/contract).
+  # and the next one (expand/contract). Needs the schema the DataGuard engine
+  # owns: switched on with it.
   queries-valid:
     if: false
     runs-on: ubuntu-latest
@@ -128,7 +149,8 @@ jobs:
       - run: echo "not implemented — persisted queries validate against the current and the next schema"
 
   # Contracts C, I — a schema change lists the Capabilities it touches (from
-  # queries/registry.json) and blocks until each one is migrated.
+  # queries/registry.json) and blocks until each one is migrated. Needs the
+  # engine's migration runner: switched on with it.
   schema-impact:
     if: false
     runs-on: ubuntu-latest
@@ -136,49 +158,205 @@ jobs:
       - run: echo "not implemented — a schema change names the readers it touches"
 
   # Contract B — a Micro-UI's `needs` reference only Capabilities of its own
-  # system (same namespace prefix), or ones its system declares shared.
+  # system: each one is the `capability` of a capability.json whose `system`
+  # is the Micro-UI's.
   system-frontier:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — needs stays inside the system"
+      - uses: actions/checkout@v4
+      - name: Every `needs` of a Micro-UI is a Capability of its own system
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          system_of() {
+            for m in crates/**/capability.json; do
+              if [ "$(jq -r '.capability' "$m")" = "$1" ]; then jq -r '.system' "$m"; return; fi
+            done
+          }
+          for ui in apps/**/micro-ui.json; do
+            system=$(jq -r '.system' "$ui")
+            for need in $(jq -r '.needs[]? | if type=="string" then . else (.capability // empty) end' "$ui"); do
+              found=$(system_of "$need")
+              if [ -z "$found" ]; then
+                echo "::error file=$ui::needs $need, which no capability.json declares"
+                failed=1
+              elif [ "$found" != "$system" ]; then
+                echo "::error file=$ui::needs $need of system $found — outside its own system $system"
+                failed=1
+              fi
+            done
+          done
+          exit $failed
 
   # Contracts D, F — a Micro-UI's `actions` reference existing
-  # DataCapabilities whose `callableBy` and `permissions` admit it.
+  # DataCapabilities whose `callableBy` admits it: the Micro-UI's id, its
+  # system, or `*`.
   write-actions:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — actions reference existing, callable DataCapabilities"
+      - uses: actions/checkout@v4
+      - name: Every action of a Micro-UI is an existing DataCapability that admits it
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          manifest_of() {
+            for m in crates/**/data-capability.json; do
+              if [ "$(jq -r '.dataCapability' "$m")" = "$1" ]; then echo "$m"; return; fi
+            done
+          }
+          for ui in apps/**/micro-ui.json; do
+            me=$(jq -r '.microUi' "$ui"); system=$(jq -r '.system' "$ui")
+            for action in $(jq -r '.actions[]? | if type=="string" then . else (.dataCapability // .id // empty) end' "$ui"); do
+              manifest=$(manifest_of "$action")
+              if [ -z "$manifest" ]; then
+                echo "::error file=$ui::action $action names no DataCapability"
+                failed=1
+                continue
+              fi
+              if ! jq -e --arg me "$me" --arg system "$system" '.callableBy | (index($me) != null) or (index($system) != null) or (index("*") != null)' "$manifest" >/dev/null; then
+                echo "::error file=$ui::$action is not callable by $me — see callableBy in $manifest"
+                failed=1
+              fi
+            done
+          done
+          exit $failed
 
   # Contract F — an `insert` DataCapability with empty `touches` contains no
-  # update, upsert or trigger in its implementation.
+  # update, upsert, delete or trigger in its implementation: a pure addition
+  # takes the fast path, and must stay one.
   effect-classification:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — a pure insert stays a pure insert"
+      - uses: actions/checkout@v4
+      - name: A pure insert stays a pure insert
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          for manifest in crates/**/data-capability.json; do
+            effect=$(jq -r '.effect // empty' "$manifest")
+            touches=$(jq -r '.touches | length' "$manifest")
+            { [ "$effect" = "insert" ] && [ "$touches" = "0" ]; } || continue
+            dir=$(dirname "$manifest")
+            for src in "$dir"/**/*.rs "$dir"/**/*.sql; do
+              if grep -nEi '\b(UPDATE[[:space:]]+[a-z_".]+[[:space:]]+SET|ON[[:space:]]+CONFLICT|UPSERT|DELETE[[:space:]]+FROM|CREATE[[:space:]]+TRIGGER)\b' "$src"; then
+                echo "::error file=$src::$(jq -r '.dataCapability' "$manifest") is declared a pure insert and must stay one"
+                failed=1
+              fi
+            done
+          done
+          exit $failed
 
-  # Contracts F, I — an `update`, `delete`, `upsert` DataCapability, or one
-  # with `touches`, was reviewed by the DataGuard owner and a human.
+  # Contracts F, I — a DataCapability that mutates (`update`, `delete`,
+  # `upsert`, or any `touches`) is owned by an aggregate: its target names an
+  # aggregate.json, and every field it touches is one that aggregate
+  # declares. The human review of such a change is the harness's, on the PR.
   ownership:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — mutating DataCapabilities carry a human review"
+      - uses: actions/checkout@v4
+      - name: Every mutating DataCapability targets an aggregate that declares what it touches
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          aggregate_of() {
+            for a in crates/**/aggregate.json; do
+              if [ "$(jq -r '.aggregate' "$a")" = "$1" ]; then echo "$a"; return; fi
+            done
+          }
+          for manifest in crates/**/data-capability.json; do
+            effect=$(jq -r '.effect // empty' "$manifest")
+            touches=$(jq -r '.touches | length' "$manifest")
+            { [ "$effect" != "insert" ] || [ "$touches" != "0" ]; } || continue
+            target=$(jq -r '.target.aggregate // empty' "$manifest")
+            aggregate=$(aggregate_of "$target")
+            if [ -z "$aggregate" ]; then
+              echo "::error file=$manifest::mutates $target, which no aggregate.json declares"
+              failed=1
+              continue
+            fi
+            for field in $(jq -r '.touches[]?' "$manifest"); do
+              key=${field#*.}
+              if ! jq -e --arg f "$key" '.fields | has($f)' "$aggregate" >/dev/null; then
+                echo "::error file=$manifest::touches $field, which $aggregate does not declare"
+                failed=1
+              fi
+            done
+          done
+          exit $failed
 
-  # Contracts F, I — every declared invariant has a test; every
-  # DataCapability lists the invariants it may affect.
+  # Contracts F, I — every invariant an aggregate declares is named in a
+  # test, and every invariant a DataCapability lists is one its target
+  # aggregate declares.
   invariants-tested:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — every invariant has a test"
+      - uses: actions/checkout@v4
+      - name: Every invariant has a test, and every listed invariant exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          declared() {
+            for a in crates/**/aggregate.json; do
+              if [ "$(jq -r '.aggregate' "$a")" = "$1" ]; then jq -r '.invariants[].id' "$a"; return; fi
+            done
+          }
+          for aggregate in crates/**/aggregate.json; do
+            for id in $(jq -r '.invariants[].id' "$aggregate"); do
+              tested=0
+              for src in crates/**/*.rs; do
+                case "$src" in */tests/*) ;; *) grep -qE '#\[(tokio::)?test\]' "$src" || continue ;; esac
+                if grep -qF "$id" "$src"; then tested=1; break; fi
+              done
+              if [ "$tested" = "0" ]; then
+                echo "::error file=$aggregate::invariant $id is named in no test"
+                failed=1
+              fi
+            done
+          done
+          for manifest in crates/**/data-capability.json; do
+            target=$(jq -r '.target.aggregate // empty' "$manifest")
+            known=$(declared "$target")
+            for id in $(jq -r '.invariants[]?' "$manifest"); do
+              if ! printf '%s\n' "$known" | grep -qxF "$id"; then
+                echo "::error file=$manifest::lists invariant $id, which aggregate $target does not declare"
+                failed=1
+              fi
+            done
+          done
+          exit $failed
 
-  # Contracts D, E — every Micro-UI of a frozen screen exists in the version
-  # the screen references.
+  # Contracts D, E — every Micro-UI a frozen screen lays out exists: its id
+  # is the `microUi` of a micro-ui.json.
   compositions-resolve:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — a frozen screen references Micro-UIs that exist"
+      - uses: actions/checkout@v4
+      - name: Every Micro-UI of a frozen screen exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          for screen in apps/screens/*.json; do
+            for id in $(jq -r '(.layout[]? | strings), (.layout | .. | objects | .microUi? // empty)' "$screen" | sort -u); do
+              found=0
+              for ui in apps/**/micro-ui.json; do
+                if [ "$(jq -r '.microUi' "$ui")" = "$id" ]; then found=1; break; fi
+              done
+              if [ "$found" = "0" ]; then
+                echo "::error file=$screen::lays out $id, which no micro-ui.json declares"
+                failed=1
+              fi
+            done
+          done
+          exit $failed
