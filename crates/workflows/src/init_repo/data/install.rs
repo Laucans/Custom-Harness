@@ -3,7 +3,8 @@
 //!
 //! Pure: decides from texts already read, writes nothing. The files are the
 //! harness's own assets, compiled in — the architecture document, the
-//! rules section of `CLAUDE.md`, the twelve contracts, the CI gates — so a
+//! rules section of `CLAUDE.md`, the twelve contracts, the CI gates and the
+//! project's CI for its stack — so a
 //! repository brought under the plant carries the same architecture as every
 //! other one, from the same source.
 //!
@@ -35,7 +36,7 @@ pub const MARKER_CLOSE: &str = "<!-- /harness:architecture -->";
 pub const CLAUDE_RULES: &str = include_str!("../assets/CLAUDE-rules.md");
 
 /// The files installed as they are: the document, the gates, the contracts.
-pub const FILES: [Asset; 15] = [
+pub const FILES: [Asset; 16] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -43,6 +44,10 @@ pub const FILES: [Asset; 15] = [
     Asset {
         path: ".github/workflows/gates.yml",
         content: include_str!("../assets/gates.yml"),
+    },
+    Asset {
+        path: ".github/workflows/ci.yml",
+        content: include_str!("../assets/ci.yml"),
     },
     Asset {
         path: "contracts/README.md",
@@ -177,19 +182,35 @@ mod tests {
     /// a plain `run:` scalar holding `: ` is the mistake that made the
     /// installed gates never run.
     #[test]
-    fn no_unquoted_run_line_of_the_gates_holds_a_colon_space() {
-        let gates = include_str!("../assets/gates.yml");
-        for (n, line) in gates.lines().enumerate() {
-            let Some(value) = line.trim_start().strip_prefix("- run: ") else {
-                continue;
-            };
-            let quoted = value.starts_with('\'') || value.starts_with('"');
-            assert!(
-                quoted || !value.contains(": "),
-                "gates.yml line {}: an unquoted `run:` value holds `: `",
-                n + 1
-            );
+    fn no_unquoted_run_line_of_the_workflows_holds_a_colon_space() {
+        for workflow in [
+            include_str!("../assets/gates.yml"),
+            include_str!("../assets/ci.yml"),
+        ] {
+            for (n, line) in workflow.lines().enumerate() {
+                let Some(value) = line.trim_start().strip_prefix("- run: ") else {
+                    continue;
+                };
+                let quoted = value.starts_with('\'') || value.starts_with('"');
+                assert!(
+                    quoted || !value.contains(": "),
+                    "line {}: an unquoted `run:` value holds `: `",
+                    n + 1
+                );
+            }
         }
+    }
+
+    #[test]
+    fn the_installed_ci_runs_on_the_integration_and_milestone_branches() {
+        let ci = include_str!("../assets/ci.yml");
+        assert!(crate::init_repo::data::audit::ci_triggers_on(
+            Some(ci),
+            "main_agent"
+        ));
+        assert!(crate::init_repo::data::audit::ci_triggers_on_milestones(
+            Some(ci)
+        ));
     }
 
     #[test]

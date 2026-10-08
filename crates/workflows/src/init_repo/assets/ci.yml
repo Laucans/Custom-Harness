@@ -1,0 +1,88 @@
+# The project's own checks — installed by `harness init-repo`, beside
+# `gates.yml`; the repository owns it from here.
+#
+# The stack is the architecture's (docs/ARCHITECTURE.md, "Technology
+# choices"): Rust for everything but the Micro-UIs, TypeScript for those,
+# PostgreSQL as the one store. Each job checks its ecosystem as soon as it
+# exists and passes trivially before — a fresh repository is green from its
+# first pull request, and a task that adds `Cargo.toml` or `package.json` is
+# checked by the same run that brings it.
+#
+# A component that needs a CI of its own (a WebAssembly build, an
+# integration environment) adds its job here, in a task of its own.
+#
+# The two branch patterns are the harness's: `main_agent` is where finished
+# milestones land, `milestone/**` is what a task's pull request targets.
+name: ci
+
+on:
+  push:
+    branches: [main_agent, 'milestone/**']
+  pull_request:
+    branches: [main_agent, 'milestone/**']
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CARGO_TERM_COLOR: always
+      # One role in CI; a project that tests its read-only role creates it
+      # in a step of its own.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app
+      DATABASE_URL_READONLY: postgres://postgres:postgres@localhost:5432/app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (rust-toolchain.toml)
+        if: hashFiles('Cargo.toml') != ''
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        if: hashFiles('Cargo.toml') != ''
+      - name: Format
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo fmt --all -- --check
+      - name: Lint
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo test --workspace --all-features
+      - name: No Rust workspace yet
+        if: hashFiles('Cargo.toml') == ''
+        run: echo "no Cargo.toml — nothing to check yet"
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: hashFiles('package.json') != ''
+        with:
+          node-version: 22
+      - name: Install
+        if: hashFiles('package.json') != ''
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Typecheck
+        if: hashFiles('package.json') != ''
+        run: npm run --if-present typecheck
+      - name: Lint
+        if: hashFiles('package.json') != ''
+        run: npm run --if-present lint
+      - name: Test
+        if: hashFiles('package.json') != ''
+        run: npm run --if-present test
+      - name: No TypeScript package yet
+        if: hashFiles('package.json') == ''
+        run: echo "no package.json — nothing to check yet"

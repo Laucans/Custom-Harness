@@ -308,7 +308,8 @@ router route, no `state`, no `remaining`, no round, no lock, no resume, no
 tolerance — every column above would read "n/a". `init_repo` creates the
 `harness:*` labels and the integration branch, installs the architecture's
 files in the repository through a throwaway clone (`docs/ARCHITECTURE.md`,
-the rules block of `CLAUDE.md`, `contracts/`, the CI gates — one commit,
+the rules block of `CLAUDE.md`, `contracts/`, the CI gates and the project's
+`ci.yml` for its stack — one commit,
 nothing already there overwritten without `--force`), runs a read-only
 audit, and writes the link into `.env.local`. The two merges are the two
 levels of one fold: `milestone_merge` merges a task's PR into its milestone

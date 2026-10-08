@@ -231,30 +231,38 @@ item:
   which is how this version of the format came to exist. Scaffolding is what
   surrounds the product; it is not a description of it.
 
-### If the repo has no CI, that is step 1 of The path
+### CI is installed with the repository, not planned
 
-Check before writing the body:
+`harness init-repo` installs `.github/workflows/ci.yml` beside the gates: one
+job per ecosystem of the architecture's stack (Rust, TypeScript, with a
+PostgreSQL service), each checking its ecosystem as soon as it exists, on
+`main_agent` and `milestone/**`. So the path does **not** open on a CI step:
+the first task's pull request is already checked.
+
+Check it is there before writing the body:
 
 ```sh
 gh api repos/{owner}/{repo}/contents/.github/workflows --jq '.[].name'
 ```
 
-A 404, or no workflow that runs the project's tests, means **step 1 of The
-path is CI** — not a section of its own, and not a paragraph quoted into the
-body. One line, in the form every other step takes:
+- `ci.yml` is listed: say nothing of CI in the path. If a component the
+  grilling settled needs a CI of its own (a WebAssembly build, an
+  integration environment), name it in the step that brings the component —
+  its milestone adds the job.
+- It is missing (a repository initialized before `init-repo` installed it):
+  run `harness init-repo <url>` again, which adds it without touching what is
+  already there. Only if that is not possible does CI become step 1:
 
-> 1. CI is green on `main_agent` and `milestone/**`: a workflow at
->    `.github/workflows/ci.yml` runs the project's own gates on `push` and
->    `pull_request`. Nothing downstream is verifiable before it.
+  > 1. CI is green on `main_agent` and `milestone/**`: a workflow at
+  >    `.github/workflows/ci.yml` runs the project's own gates on `push` and
+  >    `pull_request`. Nothing downstream is verifiable before it.
 
-Why it comes first rather than later: nothing downstream of it can be trusted
-without it. A PR's checks are what decides whether a task's work merges, and
-a repository with no checks at all reads as **not green** by construction —
-so a milestone would wait forever on a signal that never arrives.
-
-The two branch patterns are not decoration. `main_agent` is where finished
-milestones land, and `milestone/**` is where each task's PR targets — a
-workflow naming only the default branch leaves every task PR unchecked.
+Why it matters: a PR's checks are what decides whether a task's work merges,
+and a repository with no checks at all reads as **not green** by
+construction — a milestone would wait forever on a signal that never
+arrives. The two branch patterns are not decoration either: `main_agent` is
+where finished milestones land, `milestone/**` is where each task's PR
+targets.
 
 Long bodies go through `--body-file`, never inline: a body typed on the
 command line gets mangled by the shell.
