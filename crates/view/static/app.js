@@ -244,6 +244,8 @@
     if (tab && S.pane && S.pane.kind === 'employee') { S.pane.file = tab.dataset.file; renderPane(S.pane, false); return undefined; }
     const machine = e.target.closest('[data-stage-idx]');
     if (machine && S.pane && S.pane.kind === 'employee') { S.pane.file = null; S.pane.stageIdx = Number(machine.dataset.stageIdx); renderPane(S.pane, false); return undefined; }
+    const liveRun = e.target.closest('[data-live-run]');
+    if (liveRun && S.pane) { S.pane.liveRun = liveRun.dataset.liveRun; S.pane.jump = true; renderPane(S.pane, false); return undefined; }
     const help = e.target.closest('[data-help]');
     if (help && S.pane) { S.pane.help = !S.pane.help; renderPane(S.pane, false); return undefined; }
     const paneTab = e.target.closest('[data-tab]');
@@ -330,9 +332,11 @@
 
   function renderPane(p, refresh) {
     const fn = PANES[p.kind] || PANES.placeholder;
-    const [title, html, after] = fn(p, refresh);
+    const [title, html, after, keep] = fn(p, refresh);
     $('pane-title').textContent = title;
-    if (!(refresh && p.kind === 'employee')) $('pane-body').innerHTML = html;
+    // A pane with a live log keeps its body on a refresh: its `after` updates
+    // the parts that changed, and the log keeps its scroll.
+    if (!(refresh && (p.kind === 'employee' || keep))) $('pane-body').innerHTML = html;
     if (after) after(refresh);
   }
 
@@ -487,7 +491,15 @@
     line(p) {
       const line = S.snap.lines.find((l) => l.id === p.id);
       if (!line) return ['Line', ''];
-      if (p.tab === 'recent') return [line.title, paneTabs(p, line.purpose) + recentWork(line, line.recent_work || [], null)];
+      if (p.tab === 'recent') {
+        clearInterval(S.logTimer); S.logTimer = null; p.liveCount = 0;
+        return [line.title, paneTabs(p, line.purpose) + recentWork(line, line.recent_work || [], null)];
+      }
+      // Who is at work on this line right now, each one's current machine
+      // tailed live — the line's own window on what is happening.
+      const live = S.snap.employees.filter((e) => e.workflow === line.id && e.active);
+      if (!live.some((e) => e.id === p.liveRun)) p.liveRun = live.length ? live[0].id : null;
+      const liveBar = live.map((e) => `<button data-live-run="${esc(e.id)}" class="${e.id === p.liveRun ? 'on' : ''}">${esc(e.name)}${e.stage ? ' · ' + esc(e.stage) : ''}</button>`).join('');
       const lr = line.last_run;
       let h = kv([['trigger', esc(line.trigger)], ['log folder', `<code>.llocal/logs/${esc(line.id)}/</code>`], ['runs', line.runs], ['status', line.active ? tag('at work', 'ok') : tag('idle')]]);
       if (lr) {
@@ -496,7 +508,51 @@
         h += `<button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: `${line.id}/${lr.run_id}`, last: emp || null }))}'>open its logs →</button>`;
       }
       h += '<h3>Stations</h3><ul class="issues">' + line.stations.map((s) => `<li><span class="n">${esc(s.kind)}</span><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'station', line: line.id, id: s.id }))}'>${esc(s.label)}</button></span>${s.model ? tag(s.model, s.model) : ''}<span class="st ${s.state === 'done' ? 'done' : s.state === 'active' ? 'ready' : 'todo'}">${s.state}</span></li>`).join('') + '</ul>';
-      return [line.title, paneTabs(p, line.purpose) + h];
+      const head = paneTabs(p, line.purpose);
+      if (!live.length) { clearInterval(S.logTimer); S.logTimer = null; p.liveCount = 0; return [line.title, head + h]; }
+      const html = `${head}<h3>Live log</h3><div class="tabs" id="line-live-bar">${liveBar}</div><div class="muted" id="line-live-where"></div><pre class="log" id="line-live-log">loading…</pre><div id="line-main">${h}</div>`;
+      // Same agents on refresh: update around the log. A different count is a
+      // different layout, redrawn whole.
+      const keep = refresh && p.liveCount === live.length && !!$('line-live-log');
+      p.liveCount = live.length;
+      const after = (isRefresh) => {
+        if (isRefresh && keep) {
+          const main = $('line-main'); if (main) main.innerHTML = h;
+          const bar = $('line-live-bar'); if (bar) bar.innerHTML = liveBar;
+          return;
+        }
+        const pull = async () => {
+          const e = S.snap.employees.find((x) => x.id === p.liveRun);
+          const pre = $('line-live-log');
+          const where = $('line-live-where');
+          if (!e || !pre) return;
+          try {
+            const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/stages`);
+            const stages = r.ok ? await r.json() : [];
+            const current = stages[stages.length - 1];
+            let text;
+            if (current) {
+              text = current.text || '(empty)';
+              if (where) where.textContent = `${e.name} — machine: ${current.stage}`;
+            } else {
+              const f = await fetch(`/api/runs/${e.workflow}/${e.run_id}/run.log?bytes=14000`);
+              text = f.ok ? (await f.text()) || '(empty)' : '(no log yet)';
+              if (where) where.textContent = `${e.name} — no machine reached yet, its run.log`;
+            }
+            const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+            if (pre.textContent !== text) {
+              pre.textContent = text;
+              if (atBottom || p.jump) pre.scrollTop = pre.scrollHeight;
+            }
+            p.jump = false;
+          } catch (err) { /* the next pull will say */ }
+        };
+        p.jump = true;
+        pull();
+        clearInterval(S.logTimer);
+        S.logTimer = setInterval(pull, 2000);
+      };
+      return [line.title, html, after, keep];
     },
 
     chimney(p) {
