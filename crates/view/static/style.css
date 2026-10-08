@@ -270,3 +270,10 @@ button.mini:hover { color: var(--bad); border-color: var(--bad); }
   font-weight: 700;
 }
 .callout.purpose { margin: 4px 0 12px; }
+
+/* How many agents a merged bubble stands for. */
+.crew-bubble .face { position: relative; }
+.crew-bubble .face .count {
+  position: absolute; right: -4px; bottom: -4px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px; background: var(--accent); color: #1b1b1b; font: 700 10px/16px var(--sans);
+}
