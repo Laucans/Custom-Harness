@@ -47,7 +47,7 @@ the product sits, what the control room's panel says. `app.rs` only turns
 that list into entities, so a change of look is a change in one file and a
 test in the same file.
 
-## The look: a paper cult
+## The look: a paper cult in the atomic age
 
 The art direction is borrowed from *Cult of the Lamb*: flat, bright colours
 under thick ink outlines, nothing with a sharp corner, big round heads on
@@ -55,7 +55,13 @@ short bodies. The palette is the game's — grass and mauve earth under foot,
 red roofs on cream walls, warm wood, gold for what shines, teal as the
 accent — and the ink is a dark plum, never black; the only dark surface is
 the dusk-teal sky behind the plant, so everything in front of it reads as
-lit. In 3D that becomes:
+lit. The props wear that palette in *Fallout*'s retro-futurism: chrome
+rings, rivets and skirts, portholes, radar dishes and red beacons, a vault's
+gear door for the entrance, CRT terminals for printers and screens, a
+Protectron for a robot, a Vault Boy for the steward. The plant itself is
+*Futurama*'s Planet Express — a hangar under barrel vaults beside a tall
+round tower with a red cone and a gold ball, the project's name on a gantry
+over the hangar's front. In 3D that becomes:
 
 - **Shapes** — `scene.rs` draws with rounded boxes, capsules, cones, cut
   cones, spheres and rings (a gate is an arch of torus over the belt, a roof
@@ -72,11 +78,12 @@ lit. In 3D that becomes:
   see-through, and wear no outline.
 - **Figures** — followers, robots and the steward are not built from shapes
   but painted, the way the game and *Don't Starve* stand paper characters in
-  a world. `sprites.rs` draws each one with vector paths (a robe in the
-  model's colour with the cult's eye on the chest, a big head with bead eyes
-  and pink cheeks under a gold hard hat; a one-eyed robot whose eye and
-  button glow while it works, a wrench or a clipboard in hand; the hooded
-  steward with a shadowed face, red eyes, a long beard and a staff) and
+  a world. `sprites.rs` draws each one with vector paths (a vault jumpsuit
+  in the model's colour with gold belt and trim, a big head with bead eyes
+  and pink cheeks under a domed gold hard hat; a Protectron robot — domed
+  head, a visor whose slits glow green while it works, a riveted chest
+  plate, a wrench or a clipboard in its chrome hand; the steward as the
+  Vault Boy — blue jumpsuit, blond quiff, a wink and a thumbs-up) and
   `tiny-skia` rasterises it into a 256×384 RGBA texture at run time, once per
   figure, the first time it is needed — no image file is shipped. The scene
   places a `Shape::Card` for it: a quad that `app.rs` turns with the camera's
@@ -85,8 +92,8 @@ lit. In 3D that becomes:
   translucent disc of shadow. The card's material is unlit and alpha-masked,
   so it sorts against the props like any solid thing and needs no outline:
   the ink is in the painting. Since the painting is pure Rust, the figures
-  are tested natively — a transparent margin, thick ink, a robe per model,
-  a green eye on a working robot.
+  are tested natively — a transparent margin, thick ink, a suit per model,
+  green visor slits on a working robot.
 
 ## Rendering choices
 

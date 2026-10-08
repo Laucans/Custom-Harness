@@ -1,8 +1,10 @@
 //! The figures, painted as flat 2D cut-outs.
 //!
 //! Followers, robots and the steward stand in the world the way *Cult of the
-//! Lamb* and *Don't Starve* stand paper characters: big heads, bead eyes, a
-//! robe with a cult mark, thick ink around everything.
+//! Lamb* and *Don't Starve* stand paper characters — big heads, bead eyes,
+//! thick ink around everything — dressed for the atomic age of *Fallout*:
+//! vault jumpsuits with gold trim, Protectron robots with a glowing visor,
+//! and the Vault Boy himself as the steward, grin, quiff and thumbs-up.
 //!
 //! Each figure is drawn with vector paths and rasterised at run time by
 //! `tiny-skia` into an RGBA texture, which [`crate::app`] puts on a quad that
@@ -25,7 +27,7 @@ pub const HEIGHT: u32 = 384;
 /// The texture's vertical axis, where every figure stands.
 const CX: f32 = 128.0;
 
-/// The model a figure works on — what colours its robe.
+/// The model a figure works on — what colours its suit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Model {
     /// Opus: violet.
@@ -65,14 +67,14 @@ impl Model {
 /// Which figure to paint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Figure {
-    /// A follower at work: robe in the model's colour, hard hat.
+    /// A follower at work: jumpsuit in the model's colour, domed hard hat.
     Follower {
         /// The model they work on.
         model: Model,
     },
-    /// The steward: hooded, bearded, red-eyed, with a staff.
+    /// The steward: the Vault Boy, grinning, thumb up.
     Steward,
-    /// A one-eyed robot; `wrench` builds, otherwise it holds a clipboard.
+    /// A Protectron; `wrench` builds, otherwise it holds a clipboard.
     Robot {
         /// The model it opens.
         model: Model,
@@ -101,7 +103,6 @@ pub type Rgb = (u8, u8, u8);
 // ink that is a dark plum rather than black, as a pen draws it.
 const INK: Rgb = (42, 27, 46);
 const CREAM: Rgb = (243, 231, 201);
-const BONE: Rgb = (233, 220, 189);
 const SKIN: Rgb = (241, 220, 192);
 const GOLD: Rgb = (226, 178, 64);
 const GOLD_DARK: Rgb = (184, 138, 40);
@@ -111,8 +112,6 @@ const PINK: Rgb = (230, 138, 176);
 const WHITE: Rgb = (252, 250, 244);
 const GREEN: Rgb = (126, 224, 129);
 const GREY: Rgb = (154, 154, 166);
-const LAVENDER: Rgb = (199, 210, 254);
-const SHADOW: Rgb = (58, 42, 62);
 
 /// The ink line, in pixels of the texture.
 const LINE: f32 = 7.0;
@@ -199,27 +198,6 @@ fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
     pb.finish()
 }
 
-/// A closed shape through `points`, every corner softened by a curve — the
-/// blob every body here is made of.
-fn blob(points: &[(f32, f32)]) -> Option<Path> {
-    let (Some(&last), Some(&first)) = (points.last(), points.first()) else {
-        return None;
-    };
-    if points.len() < 3 {
-        return None;
-    }
-    let mid = |a: (f32, f32), b: (f32, f32)| (f32::midpoint(a.0, b.0), f32::midpoint(a.1, b.1));
-    let mut pb = PathBuilder::new();
-    let start = mid(last, first);
-    pb.move_to(start.0, start.1);
-    for (&point, &next) in points.iter().zip(points.iter().cycle().skip(1)) {
-        let m = mid(point, next);
-        pb.quad_to(point.0, point.1, m.0, m.1);
-    }
-    pb.close();
-    pb.finish()
-}
-
 /// A closed shape with straight sides.
 fn polygon(points: &[(f32, f32)]) -> Option<Path> {
     let (first, rest) = points.split_first()?;
@@ -230,30 +208,6 @@ fn polygon(points: &[(f32, f32)]) -> Option<Path> {
     }
     pb.close();
     pb.finish()
-}
-
-/// A robe from the shoulders to the hem, flaring out, in one soft curve.
-fn robe(
-    c: &mut Canvas,
-    shoulder_y: f32,
-    hem_y: f32,
-    shoulder_half: f32,
-    hem_half: f32,
-    color: Rgb,
-) {
-    let waist_y = f32::midpoint(shoulder_y, hem_y);
-    let mut pb = PathBuilder::new();
-    pb.move_to(CX - shoulder_half, shoulder_y);
-    pb.quad_to(CX - hem_half - 10.0, waist_y, CX - hem_half, hem_y);
-    pb.quad_to(CX, hem_y + 10.0, CX + hem_half, hem_y);
-    pb.quad_to(
-        CX + hem_half + 10.0,
-        waist_y,
-        CX + shoulder_half,
-        shoulder_y,
-    );
-    pb.close();
-    c.shape(pb.finish(), color);
 }
 
 fn feet(c: &mut Canvas, y: f32, spread: f32, size: f32) {
@@ -274,176 +228,211 @@ fn bead_eyes(c: &mut Canvas, y: f32, apart: f32, rx: f32, ry: f32) {
     }
 }
 
-/// The follower: a short robe in the model's colour with the cult's eye on
-/// the chest, a big round head, bead eyes, pink cheeks, ears poking out
-/// from under a gold hard hat.
+/// The follower: a vault jumpsuit in the model's colour with gold belt and
+/// trim, a big round head, bead eyes, pink cheeks, ears poking out from
+/// under a domed gold hard hat with its lamp.
 fn follower(c: &mut Canvas, model: Model) {
     let hue = model.hue();
     feet(c, 366.0, 30.0, 20.0);
-    robe(c, 182.0, 352.0, 42.0, 66.0, hue);
-    c.fill(
-        rounded(CX - 58.0, 322.0, 116.0, 20.0, 8.0).as_ref(),
-        CREAM,
-        190,
-    );
-    c.fill(
-        rounded(CX - 60.0, 300.0, 120.0, 9.0, 4.0).as_ref(),
-        shade(hue, 0.72),
-        255,
-    );
-    // The cult's mark: an eye on the chest.
-    c.shape(ellipse(CX, 248.0, 22.0, 14.0), CREAM);
-    c.fill(circle(CX, 248.0, 7.0).as_ref(), INK, 255);
-    c.stroke(circle(CX, 248.0, 11.0).as_ref(), RED, 2.5);
-    // The collar.
+    // Trousers, then the jumpsuit's torso: one piece, the model's colour.
     c.shape(
-        polygon(&[
-            (CX - 44.0, 180.0),
-            (CX + 44.0, 180.0),
-            (CX + 22.0, 208.0),
-            (CX - 22.0, 208.0),
-        ]),
-        CREAM,
+        rounded(CX - 44.0, 268.0, 36.0, 96.0, 14.0),
+        shade(hue, 0.85),
     );
+    c.shape(rounded(CX + 8.0, 268.0, 36.0, 96.0, 14.0), shade(hue, 0.85));
+    c.shape(rounded(CX - 50.0, 176.0, 100.0, 104.0, 22.0), hue);
+    // The belt and the gold trim every vault suit wears.
+    c.shape(rounded(CX - 52.0, 258.0, 104.0, 16.0, 6.0), GOLD);
+    c.fill(rounded(CX - 8.0, 260.0, 16.0, 12.0, 3.0).as_ref(), INK, 255);
+    c.line((CX - 36.0, 180.0), (CX - 36.0, 256.0), GOLD, 5.0);
+    c.line((CX + 36.0, 180.0), (CX + 36.0, 256.0), GOLD, 5.0);
+    // The collar, in a V.
+    c.shape(
+        polygon(&[(CX - 40.0, 176.0), (CX + 40.0, 176.0), (CX, 212.0)]),
+        GOLD,
+    );
+    // Arms by the sides, gloved hands.
+    c.shape(rounded(CX - 72.0, 190.0, 22.0, 78.0, 11.0), hue);
+    c.shape(rounded(CX + 50.0, 190.0, 22.0, 78.0, 11.0), hue);
+    c.shape(circle(CX - 61.0, 272.0, 12.0), SKIN);
+    c.shape(circle(CX + 61.0, 272.0, 12.0), SKIN);
     // The head, the ears, the face.
-    c.shape(circle(CX, 120.0, 80.0), SKIN);
+    c.shape(circle(CX, 120.0, 78.0), SKIN);
     for side in [-1.0, 1.0] {
-        let ex = CX + side * 68.0;
-        c.shape(ellipse(ex, 100.0, 20.0, 30.0), SKIN);
-        c.fill(ellipse(ex, 102.0, 9.0, 17.0).as_ref(), PINK, 255);
+        let ex = CX + side * 66.0;
+        c.shape(ellipse(ex, 104.0, 18.0, 26.0), SKIN);
+        c.fill(ellipse(ex, 106.0, 8.0, 14.0).as_ref(), PINK, 255);
     }
     bead_eyes(c, 124.0, 24.0, 12.0, 16.0);
     c.fill(circle(CX - 46.0, 148.0, 10.0).as_ref(), PINK, 150);
     c.fill(circle(CX + 46.0, 148.0, 10.0).as_ref(), PINK, 150);
     let mut smile = PathBuilder::new();
-    smile.move_to(CX - 10.0, 156.0);
-    smile.quad_to(CX, 167.0, CX + 10.0, 156.0);
+    smile.move_to(CX - 12.0, 156.0);
+    smile.quad_to(CX, 170.0, CX + 12.0, 156.0);
     c.stroke(smile.finish().as_ref(), INK, 5.0);
-    // The hard hat, over the forehead.
-    c.shape(ellipse(CX, 58.0, 74.0, 32.0), GOLD);
-    c.shape(rounded(CX - 82.0, 78.0, 164.0, 18.0, 9.0), GOLD_DARK);
-    c.fill(
-        rounded(CX - 12.0, 32.0, 24.0, 40.0, 10.0).as_ref(),
-        GOLD_DARK,
-        255,
-    );
+    // A domed hard hat with its lamp — the atomic age's helmet.
+    c.shape(ellipse(CX, 60.0, 76.0, 36.0), GOLD);
+    c.shape(rounded(CX - 86.0, 80.0, 172.0, 16.0, 8.0), GOLD_DARK);
+    c.shape(rounded(CX - 14.0, 34.0, 28.0, 22.0, 8.0), GOLD_DARK);
+    c.fill(circle(CX, 45.0, 6.0).as_ref(), WHITE, 255);
 }
 
-/// The steward: a tall cream robe with a red stripe, a pointed hood over a
-/// shadowed face with two red eyes, a long bone beard, a staff with a pale
-/// orb.
+/// The steward: the Vault Boy — a grinning mascot of the atomic age in a
+/// blue jumpsuit with gold trim, a swept blond quiff with its curl, a wink
+/// and a thumbs-up.
 fn steward(c: &mut Canvas) {
-    feet(c, 368.0, 24.0, 18.0);
-    robe(c, 122.0, 356.0, 40.0, 70.0, CREAM);
-    c.fill(
-        rounded(CX - 10.0, 140.0, 20.0, 200.0, 8.0).as_ref(),
-        RED,
-        255,
-    );
-    c.fill(
-        rounded(CX - 66.0, 330.0, 132.0, 14.0, 6.0).as_ref(),
-        RED,
-        255,
+    let suit = (79, 143, 214);
+    feet(c, 366.0, 26.0, 18.0);
+    // Trousers and torso: the jumpsuit, gold belt, gold collar.
+    c.shape(
+        rounded(CX - 40.0, 266.0, 34.0, 98.0, 14.0),
+        shade(suit, 0.85),
     );
     c.shape(
-        blob(&[
-            (CX - 40.0, 118.0),
-            (CX + 40.0, 118.0),
-            (CX + 46.0, 150.0),
-            (CX + 42.0, 172.0),
-            (CX - 42.0, 172.0),
-            (CX - 46.0, 150.0),
-        ]),
-        shade(CREAM, 0.92),
+        rounded(CX + 6.0, 266.0, 34.0, 98.0, 14.0),
+        shade(suit, 0.85),
     );
-    // The hood, and the face in its shadow.
-    let mut hood = PathBuilder::new();
-    hood.move_to(CX, 8.0);
-    hood.quad_to(CX - 48.0, 40.0, CX - 54.0, 122.0);
-    hood.line_to(CX + 54.0, 122.0);
-    hood.quad_to(CX + 48.0, 40.0, CX, 8.0);
-    hood.close();
-    c.shape(hood.finish(), CREAM);
-    c.fill(ellipse(CX, 98.0, 38.0, 42.0).as_ref(), SHADOW, 255);
+    c.shape(rounded(CX - 48.0, 178.0, 96.0, 102.0, 22.0), suit);
+    c.shape(rounded(CX - 50.0, 256.0, 100.0, 16.0, 6.0), GOLD);
+    c.fill(rounded(CX - 8.0, 258.0, 16.0, 12.0, 3.0).as_ref(), INK, 255);
+    c.line((CX - 34.0, 182.0), (CX - 34.0, 254.0), GOLD, 5.0);
+    c.line((CX + 34.0, 182.0), (CX + 34.0, 254.0), GOLD, 5.0);
+    c.shape(
+        polygon(&[(CX - 38.0, 178.0), (CX + 38.0, 178.0), (CX, 212.0)]),
+        GOLD,
+    );
+    // Left arm by the side; right arm up, fist closed, thumb up.
+    c.shape(rounded(CX - 70.0, 190.0, 22.0, 76.0, 11.0), suit);
+    c.shape(circle(CX - 59.0, 270.0, 12.0), SKIN);
+    let mut arm = PathBuilder::new();
+    arm.move_to(CX + 44.0, 200.0);
+    arm.quad_to(CX + 84.0, 196.0, CX + 86.0, 150.0);
+    arm.line_to(CX + 108.0, 154.0);
+    arm.quad_to(CX + 104.0, 212.0, CX + 48.0, 222.0);
+    arm.close();
+    c.shape(arm.finish(), suit);
+    c.shape(rounded(CX + 80.0, 118.0, 34.0, 36.0, 12.0), SKIN);
+    c.shape(rounded(CX + 90.0, 92.0, 14.0, 32.0, 7.0), SKIN);
+    // The head: round, big, with ears and a wink.
+    c.shape(circle(CX, 112.0, 70.0), SKIN);
     for side in [-1.0, 1.0] {
-        let ex = CX + side * 14.0;
-        c.fill(circle(ex, 96.0, 11.0).as_ref(), RED, 90);
-        c.fill(ellipse(ex, 96.0, 5.0, 8.0).as_ref(), RED, 255);
+        c.shape(ellipse(CX + side * 62.0, 112.0, 14.0, 20.0), SKIN);
     }
-    // The beard.
-    let mut beard = PathBuilder::new();
-    beard.move_to(CX - 26.0, 120.0);
-    beard.quad_to(CX - 26.0, 200.0, CX, 240.0);
-    beard.quad_to(CX + 26.0, 200.0, CX + 26.0, 120.0);
-    beard.close();
-    c.shape(beard.finish(), (246, 241, 230));
-    c.line((CX - 8.0, 150.0), (CX - 4.0, 205.0), shade(BONE, 0.9), 3.0);
-    c.line((CX + 8.0, 150.0), (CX + 4.0, 205.0), shade(BONE, 0.9), 3.0);
-    // The staff and the orb.
-    c.line((CX + 86.0, 44.0), (CX + 80.0, 360.0), INK, 11.0);
-    c.fill(circle(CX + 88.0, 36.0, 28.0).as_ref(), LAVENDER, 70);
-    c.shape(circle(CX + 88.0, 36.0, 16.0), LAVENDER);
-    c.fill(circle(CX + 83.0, 30.0, 5.0).as_ref(), WHITE, 255);
-    c.shape(circle(CX + 78.0, 232.0, 14.0), SKIN);
+    // Open eye on the left, winking eye on the right, both browed.
+    c.shape(ellipse(CX - 22.0, 108.0, 14.0, 17.0), WHITE);
+    c.fill(circle(CX - 19.0, 110.0, 7.0).as_ref(), INK, 255);
+    c.line((CX + 10.0, 110.0), (CX + 36.0, 110.0), INK, 5.0);
+    c.line((CX - 36.0, 86.0), (CX - 8.0, 84.0), INK, 5.0);
+    c.line((CX + 10.0, 84.0), (CX + 38.0, 90.0), INK, 5.0);
+    // The grin: a wide white mouth with a line of teeth.
+    let mut grin = PathBuilder::new();
+    grin.move_to(CX - 36.0, 134.0);
+    grin.quad_to(CX, 178.0, CX + 36.0, 134.0);
+    grin.close();
+    c.shape(grin.finish(), WHITE);
+    c.line((CX - 30.0, 148.0), (CX + 30.0, 148.0), INK, 2.5);
+    c.fill(circle(CX - 50.0, 138.0, 9.0).as_ref(), PINK, 150);
+    c.fill(circle(CX + 50.0, 138.0, 9.0).as_ref(), PINK, 150);
+    // The quiff: a cap of gold hair swept to the right, and its curl.
+    let mut hair = PathBuilder::new();
+    hair.move_to(CX - 70.0, 92.0);
+    hair.quad_to(CX - 70.0, 36.0, CX - 10.0, 34.0);
+    hair.quad_to(CX + 40.0, 30.0, CX + 66.0, 70.0);
+    hair.quad_to(CX + 30.0, 56.0, CX, 66.0);
+    hair.quad_to(CX - 30.0, 72.0, CX - 70.0, 92.0);
+    hair.close();
+    c.shape(hair.finish(), GOLD);
+    let mut curl = PathBuilder::new();
+    curl.move_to(CX + 30.0, 40.0);
+    curl.quad_to(CX + 70.0, 10.0, CX + 86.0, 44.0);
+    curl.quad_to(CX + 70.0, 36.0, CX + 56.0, 50.0);
+    curl.close();
+    c.shape(curl.finish(), GOLD);
 }
 
-/// A robot: a rounded head with one big eye and an antenna, a body with a
-/// cream panel and a button, a tool in its hand.
+/// A robot: a Protectron of the atomic age — a domed head over a glowing
+/// visor, a riveted chest plate, stubby chrome arms, a tool in the right
+/// one.
 fn robot(c: &mut Canvas, model: Model, wrench: bool, active: bool) {
     let hue = model.hue();
-    c.shape(rounded(CX - 38.0, 342.0, 28.0, 26.0, 10.0), INK);
-    c.shape(rounded(CX + 10.0, 342.0, 28.0, 26.0, 10.0), INK);
-    c.shape(rounded(CX - 58.0, 196.0, 116.0, 152.0, 26.0), hue);
-    c.shape(rounded(CX - 36.0, 224.0, 72.0, 54.0, 12.0), CREAM);
-    c.fill(circle(CX - 24.0, 236.0, 4.0).as_ref(), INK, 255);
-    c.fill(circle(CX + 24.0, 236.0, 4.0).as_ref(), INK, 255);
-    let button = if active { GREEN } else { RED_DARK };
-    c.shape(circle(CX, 260.0, 9.0), button);
-    // The arm and the tool.
+    let glow = if active { GREEN } else { INK };
+    // Feet and chrome legs.
+    c.shape(rounded(CX - 44.0, 340.0, 34.0, 28.0, 10.0), INK);
+    c.shape(rounded(CX + 10.0, 340.0, 34.0, 28.0, 10.0), INK);
+    c.shape(rounded(CX - 38.0, 290.0, 24.0, 56.0, 10.0), GREY);
+    c.shape(rounded(CX + 14.0, 290.0, 24.0, 56.0, 10.0), GREY);
+    // The body: a rounded hull in the model's colour, a cream chest plate
+    // with four rivets and a status lamp.
+    c.shape(rounded(CX - 60.0, 180.0, 120.0, 120.0, 30.0), hue);
+    c.shape(rounded(CX - 40.0, 200.0, 80.0, 64.0, 10.0), CREAM);
+    for (dx, dy) in [(-30.0, 208.0), (30.0, 208.0), (-30.0, 254.0), (30.0, 254.0)] {
+        c.fill(circle(CX + dx, dy, 4.0).as_ref(), INK, 255);
+    }
     c.shape(
-        rounded(CX + 48.0, 214.0, 54.0, 22.0, 11.0),
-        shade(hue, 0.78),
+        circle(CX, 232.0, 10.0),
+        if active { GREEN } else { RED_DARK },
     );
+    c.line((CX - 24.0, 280.0), (CX + 24.0, 280.0), shade(hue, 0.7), 6.0);
+    // Chrome arms: the left down, the right out with the tool.
+    c.shape(rounded(CX - 86.0, 196.0, 24.0, 86.0, 12.0), GREY);
+    c.shape(circle(CX - 74.0, 290.0, 13.0), shade(GREY, 0.8));
+    c.shape(rounded(CX + 56.0, 196.0, 56.0, 24.0, 12.0), GREY);
     if wrench {
-        c.shape(rounded(CX + 88.0, 160.0, 16.0, 70.0, 8.0), GREY);
-        c.shape(circle(CX + 96.0, 152.0, 20.0), GREY);
+        c.shape(
+            rounded(CX + 96.0, 150.0, 16.0, 70.0, 8.0),
+            shade(GREY, 1.15),
+        );
+        c.shape(circle(CX + 104.0, 142.0, 20.0), shade(GREY, 1.15));
         c.fill(
-            rounded(CX + 88.0, 130.0, 16.0, 18.0, 3.0).as_ref(),
+            rounded(CX + 96.0, 120.0, 16.0, 18.0, 3.0).as_ref(),
             INK,
             255,
         );
     } else {
-        c.shape(rounded(CX + 72.0, 150.0, 46.0, 66.0, 6.0), CREAM);
+        c.shape(rounded(CX + 80.0, 140.0, 46.0, 66.0, 6.0), CREAM);
         c.fill(
-            rounded(CX + 86.0, 142.0, 18.0, 12.0, 4.0).as_ref(),
+            rounded(CX + 94.0, 132.0, 18.0, 12.0, 4.0).as_ref(),
             GREY,
             255,
         );
         for (dy, len) in [(0.0, 30.0), (12.0, 24.0), (24.0, 28.0)] {
             c.fill(
-                rounded(CX + 80.0, 168.0 + dy, len, 4.0, 2.0).as_ref(),
+                rounded(CX + 88.0, 158.0 + dy, len, 4.0, 2.0).as_ref(),
                 INK,
                 255,
             );
         }
     }
-    // The head, the eye, the antenna.
-    c.shape(
-        rounded(CX - 66.0, 62.0, 132.0, 120.0, 40.0),
-        shade(hue, 1.1),
-    );
-    c.shape(circle(CX, 122.0, 38.0), WHITE);
+    // The neck, the domed head, the visor with its two glowing slits.
+    c.shape(rounded(CX - 22.0, 160.0, 44.0, 24.0, 8.0), GREY);
+    c.shape(ellipse(CX, 110.0, 64.0, 56.0), shade(hue, 1.1));
+    c.shape(rounded(CX - 48.0, 104.0, 96.0, 28.0, 10.0), INK);
     c.fill(
-        circle(CX, 122.0, 17.0).as_ref(),
-        if active { GREEN } else { INK },
+        rounded(CX - 36.0, 112.0, 28.0, 12.0, 5.0).as_ref(),
+        glow,
         255,
     );
-    c.fill(circle(CX - 10.0, 110.0, 6.0).as_ref(), WHITE, 255);
-    c.line((CX, 62.0), (CX, 30.0), INK, 6.0);
+    c.fill(
+        rounded(CX + 8.0, 112.0, 28.0, 12.0, 5.0).as_ref(),
+        glow,
+        255,
+    );
     if active {
-        c.fill(circle(CX, 24.0, 18.0).as_ref(), GREEN, 80);
+        c.fill(
+            rounded(CX - 40.0, 106.0, 80.0, 24.0, 8.0).as_ref(),
+            GREEN,
+            60,
+        );
     }
-    c.shape(circle(CX, 24.0, 9.0), if active { GREEN } else { RED });
+    // The antenna and its bulb.
+    c.line((CX + 30.0, 62.0), (CX + 40.0, 26.0), INK, 6.0);
+    if active {
+        c.fill(circle(CX + 42.0, 20.0, 18.0).as_ref(), GREEN, 80);
+    }
+    c.shape(
+        circle(CX + 42.0, 20.0, 9.0),
+        if active { GREEN } else { RED },
+    );
 }
 
 /// Paints a figure into a fresh texture.
@@ -554,16 +543,16 @@ mod tests {
         let sonnet = paint(Figure::Follower {
             model: Model::Sonnet,
         });
-        // The robe, below the collar and above the hem band.
-        let p = pixel(&opus, WIDTH / 2 - 30, 270);
-        let q = pixel(&sonnet, WIDTH / 2 - 30, 270);
-        assert_eq!(&p[..3], &[155, 111, 214], "opus robe {p:?}");
-        assert_eq!(&q[..3], &[79, 143, 214], "sonnet robe {q:?}");
+        // The jumpsuit's torso, between the collar and the belt.
+        let p = pixel(&opus, WIDTH / 2 - 20, 240);
+        let q = pixel(&sonnet, WIDTH / 2 - 20, 240);
+        assert_eq!(&p[..3], &[155, 111, 214], "opus suit {p:?}");
+        assert_eq!(&q[..3], &[79, 143, 214], "sonnet suit {q:?}");
         assert_ne!(opus, sonnet);
     }
 
     #[test]
-    fn a_working_robot_s_eye_glows_green_and_an_idle_one_s_is_ink() {
+    fn a_working_robot_s_visor_glows_green_and_an_idle_one_s_is_ink() {
         let busy = paint(Figure::Robot {
             model: Model::Opus,
             wrench: true,
@@ -574,9 +563,9 @@ mod tests {
             wrench: true,
             active: false,
         });
-        let eye = pixel(&busy, WIDTH / 2 + 4, 126);
-        assert_eq!(&eye[..3], &[126, 224, 129], "{eye:?}");
-        let dark = pixel(&idle, WIDTH / 2 + 4, 126);
+        let slit = pixel(&busy, WIDTH / 2 - 22, 118);
+        assert_eq!(&slit[..3], &[126, 224, 129], "{slit:?}");
+        let dark = pixel(&idle, WIDTH / 2 - 22, 118);
         assert_eq!(&dark[..3], &[42, 27, 46], "{dark:?}");
         assert_ne!(busy, idle);
         let clipboard = paint(Figure::Robot {
@@ -588,12 +577,14 @@ mod tests {
     }
 
     #[test]
-    fn the_steward_has_red_eyes_in_a_shadowed_hood() {
+    fn the_steward_is_the_vault_boy_gold_quiff_over_a_blue_suit() {
         let s = paint(Figure::Steward);
-        let eye = pixel(&s, WIDTH / 2 - 14, 96);
-        assert_eq!(&eye[..3], &[198, 57, 47], "{eye:?}");
-        let shadow = pixel(&s, WIDTH / 2, 110);
-        assert_eq!(&shadow[..3], &[58, 42, 62], "{shadow:?}");
+        let hair = pixel(&s, WIDTH / 2 - 20, 50);
+        assert_eq!(&hair[..3], &[226, 178, 64], "{hair:?}");
+        let suit = pixel(&s, WIDTH / 2 - 10, 232);
+        assert_eq!(&suit[..3], &[79, 143, 214], "{suit:?}");
+        let grin = pixel(&s, WIDTH / 2, 140);
+        assert_eq!(&grin[..3], &[252, 250, 244], "a white grin {grin:?}");
     }
 
     #[test]

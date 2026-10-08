@@ -6,10 +6,13 @@
 //! is what a click or a hover reports to the page; they carry an [`Anim`]
 //! when they move.
 //!
-//! The look is *Cult of the Lamb*'s: nothing has a sharp corner, every shape
-//! wears a thick ink outline (drawn by [`crate::app`]), the light falls in
-//! three flat bands, and the palette is grass, mauve earth, red, cream and
-//! gold under a dark plum ink. The figures — followers, robots, the steward —
+//! The look is *Cult of the Lamb*'s palette and ink on *Fallout*'s atomic
+//! age: nothing has a sharp corner, every shape wears a thick ink outline
+//! (drawn by [`crate::app`]), the light falls in three flat bands, the
+//! palette is grass, mauve earth, red, cream and gold under a dark plum ink
+//! — and the props are chrome and portholes, a vault's gear door, CRT
+//! terminals, radar dishes and red beacons. The plant itself is *Futurama*'s
+//! Planet Express: a hangar with a tall round tower under a red cone. The figures — followers, robots, the steward —
 //! are not built from shapes but painted: flat cut-outs ([`crate::sprites`])
 //! standing on the ground and always facing the camera, as a paper doll
 //! would.
@@ -607,7 +610,8 @@ fn pane(json: serde_json::Value, tip_text: &str) -> Hot {
     }
 }
 
-/// A chimney: a tapered stack in the model's colour, a dark lip, and the
+/// A chimney: an atomic-age stack in the model's colour — a tapered tower
+/// ringed in chrome, three fins at its foot, a red beacon on top — and the
 /// smoke when a session on that model is open.
 #[allow(clippy::too_many_arguments)] // Each one is a coordinate, a size or a colour; a struct would be a point object built for one call.
 fn chimney(
@@ -623,9 +627,26 @@ fn chimney(
 ) {
     let m = b.mark();
     let color = model_color(Some(model));
-    b.frustum(x, y, z, 0.48, 0.36, h, color);
-    b.ring(x, y + h, z, 0.36, 0.1, Rgba::hex(STONE_DARK));
-    b.cylinder(x, y + h - 0.02, z, 0.27, 0.06, Rgba::hex(INK));
+    let chrome = Rgba::hex(STONE);
+    b.frustum(x, y, z, 0.46, 0.3, h, color);
+    b.ring(x, y + h * 0.55, z, 0.38, 0.05, chrome);
+    b.ring(x, y + h, z, 0.31, 0.09, chrome);
+    for k in 0..3 {
+        let angle = (k as f32).mul_add(120.0, 30.0).to_radians();
+        b.rounded(
+            x + angle.cos() * 0.5 - 0.07,
+            y,
+            z + angle.sin() * 0.5 - 0.07,
+            0.14,
+            h * 0.4,
+            0.14,
+            0.05,
+            Rgba::hex(STONE_DARK),
+        );
+    }
+    let beacon = b.sphere(x, y + h + 0.14, z, 0.1, Rgba::hex(RED));
+    beacon.emissive = Some(Rgba::hex(RED));
+    beacon.anim = Some(Anim::Glow { speed: 3.0 });
     b.hot_since(m, hot);
     if smoking {
         for i in 0..7 {
@@ -639,17 +660,39 @@ fn chimney(
     }
 }
 
-/// A belt: a rounded slab of dark wood with two gold rails and moving cream
-/// stripes.
+/// A belt: a chrome frame on riveted feet, a dark rubber track between two
+/// gold rails, and moving cream stripes.
 fn conveyor(b: &mut Builder, x: f32, z: f32, len: f32, active: bool, key: &str) {
-    let belt = Rgba::hex(if active { WOOD } else { WOOD_DARK });
-    b.rounded(x, 0.0, z, len, 0.32, 1.0, 0.14, belt);
+    let track = Rgba::hex(if active { WOOD } else { WOOD_DARK });
+    b.rounded(x, 0.0, z, len, 0.3, 1.0, 0.1, Rgba::hex(STONE_DARK));
+    b.rounded(
+        x + 0.02,
+        0.14,
+        z + 0.06,
+        len - 0.04,
+        0.18,
+        0.88,
+        0.06,
+        track,
+    );
     b.rounded(x, 0.3, z - 0.02, len, 0.06, 0.1, 0.03, Rgba::hex(GOLD_DARK));
     b.rounded(x, 0.3, z + 0.92, len, 0.06, 0.1, 0.03, Rgba::hex(GOLD_DARK));
     // A belt is a few tiles long and never negative: the cast is exact.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let stripes = (len * 2.0).floor().max(1.0) as usize;
     for s in 0..stripes {
+        if s % 2 == 0 {
+            // A rivet on each rail, every tile.
+            for dz in [0.03, 0.97] {
+                b.sphere(
+                    x + s as f32 * 0.5 + 0.25,
+                    0.36,
+                    z + dz,
+                    0.035,
+                    Rgba::hex(STONE),
+                );
+            }
+        }
         let stripe = b.rounded(
             x + s as f32 * 0.5,
             0.31,
@@ -673,17 +716,22 @@ fn conveyor(b: &mut Builder, x: f32, z: f32, len: f32, active: bool, key: &str) 
     }
 }
 
-/// A gate: a gold arch over the belt on two wooden posts; a glowing teal
-/// disc fills it while it scans.
+/// A gate: a gold arch over the belt on two chrome posts, a radar dish and
+/// a red bulb on top; a glowing teal disc fills it while it scans.
 fn scanner(b: &mut Builder, x: f32, z: f32, active: bool, hot: &Hot) {
     let m = b.mark();
-    let wood = Rgba::hex(WOOD_DARK);
-    b.capsule(x + 0.5, 0.0, z - 0.1, 0.09, 1.0, wood);
-    b.capsule(x + 0.5, 0.0, z + 1.1, 0.09, 1.0, wood);
+    let chrome = Rgba::hex(STONE);
+    b.capsule(x + 0.5, 0.0, z - 0.1, 0.09, 1.0, chrome);
+    b.capsule(x + 0.5, 0.0, z + 1.1, 0.09, 1.0, chrome);
     b.arch(x + 0.5, 0.95, z + 0.5, 0.6, 0.085, Rgba::hex(GOLD));
+    b.cylinder(x + 0.5, 1.6, z + 0.5, 0.025, 0.4, Rgba::hex(INK));
+    let dish = b.cone(x + 0.5, 1.72, z + 0.5, 0.22, 0.12, chrome);
+    dish.tilt = [180.0, 0.0, 0.0];
+    let bulb = b.sphere(x + 0.5, 2.06, z + 0.5, 0.06, Rgba::hex(RED));
+    bulb.emissive = Some(Rgba::hex(RED));
     b.hot_since(m, hot);
     if active {
-        let disc = b.cylinder(
+        let beam = b.cylinder(
             x + 0.5,
             0.94,
             z + 0.5,
@@ -691,10 +739,10 @@ fn scanner(b: &mut Builder, x: f32, z: f32, active: bool, hot: &Hot) {
             0.02,
             Rgba::hex(TEAL).alpha(0.3),
         );
-        disc.tilt = [0.0, 0.0, 90.0];
-        disc.translucent = true;
-        disc.emissive = Some(Rgba::hex(TEAL));
-        disc.anim = Some(Anim::Glow { speed: 7.0 });
+        beam.tilt = [0.0, 0.0, 90.0];
+        beam.translucent = true;
+        beam.emissive = Some(Rgba::hex(TEAL));
+        beam.anim = Some(Anim::Glow { speed: 7.0 });
         let lamp = b.sphere(x + 0.5, 1.64, z + 0.5, 0.09, Rgba::hex(TEAL));
         lamp.emissive = Some(Rgba::hex(TEAL));
     }
@@ -728,12 +776,44 @@ fn robot(
     b.hot_since(m, hot);
 }
 
-/// A printer: a stone box with a domed cream lid, feeding cream sheets
-/// forward.
+/// A printer: a terminal of the atomic age — a chrome console, a cream CRT
+/// with a glowing teal screen, a keyboard — feeding punch cards forward.
 fn printer(b: &mut Builder, x: f32, z: f32, active: bool, hot: &Hot) {
     let m = b.mark();
-    b.rounded(x + 0.1, 0.0, z + 0.1, 0.8, 0.5, 0.7, 0.12, Rgba::hex(STONE));
-    b.sphere(x + 0.5, 0.5, z + 0.45, 0.32, Rgba::hex(CREAM));
+    b.rounded(x + 0.1, 0.0, z + 0.1, 0.8, 0.5, 0.7, 0.1, Rgba::hex(STONE));
+    b.rounded(
+        x + 0.18,
+        0.5,
+        z + 0.12,
+        0.64,
+        0.5,
+        0.45,
+        0.12,
+        Rgba::hex(CREAM),
+    );
+    // The screen sits proud of the shell, toward the camera.
+    let screen = b.rounded(
+        x + 0.26,
+        0.6,
+        z + 0.5,
+        0.48,
+        0.3,
+        0.1,
+        0.06,
+        Rgba::hex(TEAL),
+    );
+    screen.emissive = Some(Rgba::hex(TEAL).shade(0.6));
+    b.rounded(
+        x + 0.22,
+        0.5,
+        z + 0.6,
+        0.56,
+        0.06,
+        0.26,
+        0.03,
+        Rgba::hex(STONE_DARK),
+    );
+    b.cylinder(x + 0.82, 0.98, z + 0.2, 0.02, 0.35, Rgba::hex(INK));
     b.rounded(
         x + 0.25,
         0.3,
@@ -746,7 +826,7 @@ fn printer(b: &mut Builder, x: f32, z: f32, active: bool, hot: &Hot) {
     );
     b.hot_since(m, hot);
     if active {
-        let led = b.sphere(x + 0.85, 0.62, z + 0.3, 0.05, Rgba::hex(OK));
+        let led = b.sphere(x + 0.82, 1.36, z + 0.2, 0.05, Rgba::hex(OK));
         led.emissive = Some(Rgba::hex(OK));
         for i in 0..3 {
             let sheet = b.rounded(
@@ -767,14 +847,19 @@ fn printer(b: &mut Builder, x: f32, z: f32, active: bool, hot: &Hot) {
     }
 }
 
-/// A robotic arm: a stone foot, a gold mast and boom, two bone claws.
+/// A robotic arm: a chrome mast on a dark foot, two gold piston rings, a
+/// gold boom, two bone claws and a red lamp at the joint.
 fn arm(b: &mut Builder, x: f32, z: f32, active: bool, hot: &Hot) {
     let m = b.mark();
     let gold = Rgba::hex(GOLD);
     b.frustum(x + 0.5, 0.0, z + 0.5, 0.42, 0.3, 0.3, Rgba::hex(STONE_DARK));
-    b.capsule(x + 0.5, 0.25, z + 0.5, 0.12, 1.0, gold);
+    b.capsule(x + 0.5, 0.25, z + 0.5, 0.12, 1.0, Rgba::hex(STONE));
+    b.ring(x + 0.5, 0.55, z + 0.5, 0.14, 0.04, gold);
+    b.ring(x + 0.5, 0.85, z + 0.5, 0.14, 0.04, gold);
     let boom = b.mark();
     b.barrel(x + 0.5, 1.08, z + 0.95, 0.1, 0.95, gold.shade(1.1));
+    let lamp = b.sphere(x + 0.5, 1.26, z + 0.5, 0.07, Rgba::hex(RED));
+    lamp.emissive = Some(Rgba::hex(RED));
     let claw_l = b.cone(x + 0.38, 0.72, z + 1.42, 0.08, 0.3, Rgba::hex(BONE));
     claw_l.tilt = [180.0, 0.0, 0.0];
     let claw_r = b.cone(x + 0.62, 0.72, z + 1.42, 0.08, 0.3, Rgba::hex(BONE));
@@ -840,14 +925,19 @@ fn wizard(b: &mut Builder, x: f32, z: f32, hot: &Hot) {
     b.label(lx, ly, lz, "the steward", 11.0, TEXT).backing = Backing::Ink;
 }
 
-/// A sign: a paper board on two wooden posts.
+/// A sign: a retro billboard — a chrome frame on one chrome pole, the board
+/// in it, two gold bulbs over it.
 #[allow(clippy::too_many_arguments)] // Each one is a coordinate, a size or a colour; a struct would be a point object built for one call.
 fn sign(b: &mut Builder, x: f32, z: f32, w: f32, title: &str, sub: &str, face: &str, hot: &Hot) {
     let m = b.mark();
-    let wood = Rgba::hex(WOOD);
-    b.cylinder(x + 0.2, 0.0, z + 0.5, 0.06, 1.15, wood);
-    b.cylinder(x + w - 0.2, 0.0, z + 0.5, 0.06, 1.15, wood);
-    b.rounded(x, 1.05, z + 0.42, w, 1.0, 0.14, 0.14, Rgba::hex(face));
+    let chrome = Rgba::hex(STONE);
+    b.cylinder(x + w / 2.0, 0.0, z + 0.5, 0.07, 1.1, chrome);
+    b.rounded(x - 0.08, 0.97, z + 0.38, w + 0.16, 1.16, 0.12, 0.05, chrome);
+    b.rounded(x, 1.05, z + 0.42, w, 1.0, 0.14, 0.06, Rgba::hex(face));
+    for bx in [x + 0.3, x + w - 0.3] {
+        let bulb = b.sphere(bx, 2.22, z + 0.5, 0.08, Rgba::hex(GOLD));
+        bulb.emissive = Some(Rgba::hex(GOLD).shade(0.7));
+    }
     b.hot_since(m, hot);
     // On the face of the board — `z + 0.56`, the side the camera sees —
     // which spans 1.05..2.05 in height. A label anchored behind the face
@@ -859,32 +949,56 @@ fn sign(b: &mut Builder, x: f32, z: f32, w: f32, title: &str, sub: &str, face: &
     b.label(x + w / 2.0, 1.36, face, sub, 11.0, SCRIPT).backing = Backing::Slate;
 }
 
-/// The door: an arched frame of dark wood, two red leaves that glow gold
-/// when the plant is at work.
+/// The door: a vault's gear door — a gold cog ring standing in the wall, a
+/// round steel leaf that glows gold when the plant is at work, a chrome hub.
 fn door(b: &mut Builder, x: f32, z: f32, lit: bool, hot: &Hot) {
     let m = b.mark();
-    b.rounded(x, 0.0, z - 0.12, 1.3, 1.8, 0.16, 0.42, Rgba::hex(WOOD_DARK));
-    let leaf = Rgba::hex(if lit { "#f3cf6b" } else { RED });
-    for dx in [0.12, 0.68] {
-        // The camera looks from +z: the leaves sit proud of the frame's
-        // face (z + 0.04), or the frame hides them.
-        let door_leaf = b.rounded(x + dx, 0.0, z - 0.02, 0.5, 1.58, 0.14, 0.2, leaf);
-        if lit {
-            door_leaf.emissive = Some(Rgba::hex("#9c7a28"));
-            door_leaf.anim = Some(Anim::Glow { speed: 2.0 });
-        }
+    let (cx, cy) = (x + 0.65, 0.95);
+    // The camera looks from +z: ring, leaf and hub stand proud of the wall
+    // in that order, each a step toward the viewer.
+    let ring = b.ring(cx, cy - 0.12, z, 0.78, 0.12, Rgba::hex(GOLD));
+    ring.tilt = [90.0, 0.0, 0.0];
+    for k in 0..8 {
+        let angle = (k as f32 * 45.0).to_radians();
+        b.rounded(
+            cx + angle.cos() * 0.86 - 0.09,
+            cy + angle.sin() * 0.86 - 0.09,
+            z - 0.04,
+            0.18,
+            0.18,
+            0.14,
+            0.04,
+            Rgba::hex(GOLD_DARK),
+        );
     }
+    let leaf = b.cylinder(
+        cx,
+        cy - 0.06,
+        z + 0.06,
+        0.72,
+        0.12,
+        Rgba::hex(if lit { "#f3cf6b" } else { PLUM }),
+    );
+    leaf.tilt = [90.0, 0.0, 0.0];
+    if lit {
+        leaf.emissive = Some(Rgba::hex("#9c7a28"));
+        leaf.anim = Some(Anim::Glow { speed: 2.0 });
+    }
+    let hub = b.cylinder(cx, cy - 0.06, z + 0.16, 0.26, 0.12, Rgba::hex(STONE_DARK));
+    hub.tilt = [90.0, 0.0, 0.0];
     b.hot_since(m, hot);
-    let enter = b.label(x + 0.65, 2.05, z - 0.1, "ENTER", 11.0, ACCENT);
+    let enter = b.label(cx, 2.05, z + 0.2, "ENTER", 11.0, ACCENT);
     enter.bold = true;
     enter.backing = Backing::Ink;
 }
 
-/// A red-and-cream striped barrier on two stone posts.
+/// A red-and-cream striped barrier on two chrome posts capped in gold.
 fn barrier(b: &mut Builder, x: f32, z: f32, len: f32) {
-    let stone = Rgba::hex(STONE_DARK);
-    b.cylinder(x + 0.05, 0.0, z + 0.45, 0.06, 0.72, stone);
-    b.cylinder(x + len - 0.05, 0.0, z + 0.45, 0.06, 0.72, stone);
+    let chrome = Rgba::hex(STONE);
+    b.cylinder(x + 0.05, 0.0, z + 0.45, 0.06, 0.72, chrome);
+    b.cylinder(x + len - 0.05, 0.0, z + 0.45, 0.06, 0.72, chrome);
+    b.sphere(x + 0.05, 0.78, z + 0.45, 0.08, Rgba::hex(GOLD));
+    b.sphere(x + len - 0.05, 0.78, z + 0.45, 0.08, Rgba::hex(GOLD));
     b.rounded(x, 0.45, z + 0.38, len, 0.26, 0.14, 0.07, Rgba::hex(RED));
     // A barrier is a few tiles long and never negative: the cast is exact.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -911,47 +1025,45 @@ fn cone(b: &mut Builder, x: f32, z: f32) {
     b.frustum(x + 0.5, 0.32, z + 0.5, 0.17, 0.14, 0.1, Rgba::hex(CREAM));
 }
 
-/// A screen in a wooden frame on a stone stand, glowing in a colour. `y` is
-/// the surface it stands on: a desk's top, or `0.0` for the floor — a stand
-/// placed at the floor inside a desk shows as a screen half-buried in it.
+/// A screen: a cream CRT terminal on a chrome stand, its glass glowing in a
+/// colour, a dial and an antenna. `y` is the surface it stands on: a desk's
+/// top, or `0.0` for the floor — a stand placed at the floor inside a desk
+/// shows as a screen half-buried in it.
 fn screen(b: &mut Builder, x: f32, z: f32, y: f32, color: &str, hot: &Hot) {
     let m = b.mark();
+    let chrome = Rgba::hex(STONE);
     b.cylinder(x + 0.55, y, z + 0.55, 0.26, 0.05, Rgba::hex(STONE_DARK));
-    b.cylinder(
-        x + 0.55,
-        y + 0.05,
-        z + 0.55,
-        0.07,
-        0.45,
-        Rgba::hex(STONE_DARK),
-    );
+    b.cylinder(x + 0.55, y + 0.05, z + 0.55, 0.07, 0.35, chrome);
     b.rounded(
         x + 0.05,
-        y + 0.5,
-        z + 0.45,
+        y + 0.4,
+        z + 0.3,
         1.0,
-        0.7,
-        0.1,
-        0.09,
-        Rgba::hex(WOOD_DARK),
+        0.8,
+        0.5,
+        0.16,
+        Rgba::hex(CREAM),
     );
-    // The glass sits proud of the frame, or the frame's face hides it.
+    // The glass sits proud of the shell, or the shell's face hides it.
     let glass = b.rounded(
-        x + 0.12,
-        y + 0.57,
-        z + 0.5,
-        0.86,
-        0.56,
-        0.08,
-        0.06,
+        x + 0.14,
+        y + 0.5,
+        z + 0.74,
+        0.82,
+        0.58,
+        0.1,
+        0.1,
         Rgba::hex(color),
     );
     glass.emissive = Some(Rgba::hex(color));
     glass.anim = Some(Anim::Glow { speed: 3.0 });
+    let dial = b.cylinder(x + 0.88, y + 0.46, z + 0.72, 0.05, 0.06, chrome);
+    dial.tilt = [90.0, 0.0, 0.0];
+    b.cylinder(x + 0.9, y + 1.2, z + 0.5, 0.015, 0.3, Rgba::hex(INK));
     b.hot_since(m, hot);
 }
 
-/// A shelf: two wooden boards and a back, with crates on them.
+/// A shelf: a chrome rack — a dark back, two steel boards — with crates on it.
 fn shelf(
     b: &mut Builder,
     x: f32,
@@ -960,10 +1072,12 @@ fn shelf(
     crates: &[(String, String, Option<Hot>)],
     fallback: &Hot,
 ) {
-    let wood = Rgba::hex(WOOD);
-    b.rounded(x, 0.0, z - 0.12, 3.6, 2.1, 0.14, 0.1, Rgba::hex(WOOD_DARK));
-    b.rounded(x, 0.0, z, 3.6, 0.18, 1.2, 0.08, wood);
-    b.rounded(x, 1.3, z, 3.6, 0.14, 1.2, 0.07, wood);
+    let chrome = Rgba::hex(STONE);
+    b.rounded(x, 0.0, z - 0.12, 3.6, 2.1, 0.14, 0.1, Rgba::hex(STONE_DARK));
+    b.rounded(x, 0.0, z, 3.6, 0.18, 1.2, 0.08, chrome);
+    b.rounded(x, 1.3, z, 3.6, 0.14, 1.2, 0.07, chrome);
+    b.cylinder(x + 0.08, 0.0, z + 1.1, 0.04, 2.1, chrome);
+    b.cylinder(x + 3.52, 0.0, z + 1.1, 0.04, 2.1, chrome);
     b.label(x + 1.8, 2.45, z - 0.05, title, 11.0, TEXT).backing = Backing::Ink;
     if crates.is_empty() {
         b.label(x + 1.8, 0.7, z + 0.6, "empty shelf", 11.0, SCRIPT);
@@ -1025,8 +1139,12 @@ fn factory(snap: &Snapshot) -> Scene {
     // face flicker against each other.
     b.slab(0.0, 0.0, 11.2, gw, 0.012, 1.6, Rgba::hex(EARTH));
     b.slab(0.0, 0.0, 11.98, gw, 0.02, 0.05, Rgba::hex(GOLD_DARK));
-    let (bx, bz, bw, bd, bh) = (3.0, 2.5, 11.5, 6.5, 3.0);
+    // Planet Express: a cream hangar under red barrel vaults, with the tall
+    // round tower at its side — a red cone for a hat, a gold ball on the
+    // tip — and the project's name on a gantry over the hangar's front.
+    let (bx, bz, bw, bd, bh) = (3.0, 2.5, 9.2, 6.5, 3.0);
     b.rounded(bx, 0.0, bz, bw, bh, bd, 0.35, Rgba::hex(CREAM));
+    // A chrome cornice, and a chrome skirt at the foot.
     b.rounded(
         bx - 0.08,
         bh - 0.3,
@@ -1035,37 +1153,113 @@ fn factory(snap: &Snapshot) -> Scene {
         0.28,
         bd + 0.16,
         0.12,
-        Rgba::hex(WOOD),
+        Rgba::hex(STONE),
+    );
+    b.rounded(
+        bx - 0.06,
+        0.0,
+        bz - 0.06,
+        bw + 0.12,
+        0.35,
+        bd + 0.12,
+        0.1,
+        Rgba::hex(STONE_DARK),
     );
     for i in 0..4 {
         let red = Rgba::hex(if i % 2 == 0 { RED } else { RED_DARK });
         b.barrel(
-            bx + 1.55 + i as f32 * 2.75,
+            bx + 1.3 + i as f32 * 2.2,
             bh + 0.1,
             bz + bd / 2.0,
-            0.95,
+            0.85,
             bd - 1.6,
             red,
         );
     }
     let glow = !snap.factory.idle;
-    for i in 0..7 {
-        let window = b.rounded(
-            bx + 0.9 + i as f32 * 1.5,
-            1.2,
-            bz + bd - 0.04,
-            0.6,
-            0.95,
-            0.1,
-            0.22,
-            Rgba::hex(if glow { "#f3cf6b" } else { PLUM }),
-        );
+    let pane_color = Rgba::hex(if glow { "#f3cf6b" } else { PLUM });
+    // The tower: a cream drum in a chrome skirt with two red bands, three
+    // portholes up its front, the red cone and the gold ball.
+    let (tx, tz, tr, th) = (bx + bw + 1.5, bz + bd / 2.0 - 0.3, 1.5, 6.4);
+    b.cylinder(tx, 0.0, tz, tr + 0.08, 0.35, Rgba::hex(STONE_DARK));
+    b.cylinder(tx, 0.0, tz, tr, th, Rgba::hex(CREAM));
+    b.cylinder(tx, 2.3, tz, tr + 0.05, 0.3, Rgba::hex(RED));
+    b.cylinder(tx, 4.6, tz, tr + 0.05, 0.3, Rgba::hex(RED));
+    b.cylinder(tx, th - 0.25, tz, tr + 0.12, 0.25, Rgba::hex(STONE));
+    b.cone(tx, th, tz, tr + 0.25, 1.7, Rgba::hex(RED));
+    b.cylinder(tx, th + 1.6, tz, 0.05, 0.4, Rgba::hex(INK));
+    let ball = b.sphere(tx, th + 2.25, tz, 0.3, Rgba::hex(GOLD));
+    ball.emissive = Some(Rgba::hex(GOLD).shade(0.5));
+    ball.anim = Some(Anim::Glow { speed: 2.6 });
+    for k in 0..3 {
+        let wy = 1.3 + k as f32 * 1.75;
+        let rim = b.ring(tx, wy, tz + tr + 0.02, 0.3, 0.06, Rgba::hex(STONE));
+        rim.tilt = [90.0, 0.0, 0.0];
+        let pane = b.cylinder(tx, wy + 0.02, tz + tr + 0.03, 0.27, 0.08, pane_color);
+        pane.tilt = [90.0, 0.0, 0.0];
         if glow {
-            window.emissive = Some(Rgba::hex("#9c7a28"));
+            pane.emissive = Some(Rgba::hex("#9c7a28"));
         }
     }
+    // The bridge from the hangar to the tower.
+    b.rounded(
+        bx + bw - 0.2,
+        1.4,
+        tz - 0.9,
+        1.9,
+        1.3,
+        1.8,
+        0.2,
+        Rgba::hex(CREAM),
+    );
+    // A radar dish on the hangar's front corner.
+    let (dx, dz) = (bx + bw - 1.0, bz + bd - 1.0);
+    b.cylinder(dx, bh, dz, 0.04, 0.9, Rgba::hex(STONE));
+    let dish = b.cone(dx, bh + 0.9, dz, 0.45, 0.22, Rgba::hex(STONE));
+    dish.tilt = [180.0, 0.0, 0.0];
+    for i in 0..5 {
+        // Portholes along the hangar's front, past the door: a chrome rim, a
+        // round pane that glows when the plant is at work. Proud of the
+        // wall's face at `bz + bd`.
+        let (wx, wy) = (bx + 3.0 + i as f32 * 1.3, 1.7);
+        let rim = b.ring(wx, wy - 0.06, bz + bd + 0.02, 0.3, 0.06, Rgba::hex(STONE));
+        rim.tilt = [90.0, 0.0, 0.0];
+        let pane = b.cylinder(wx, wy - 0.04, bz + bd + 0.03, 0.27, 0.08, pane_color);
+        pane.tilt = [90.0, 0.0, 0.0];
+        if glow {
+            pane.emissive = Some(Rgba::hex("#9c7a28"));
+        }
+    }
+    // The gantry: two chrome posts on the roof's front edge and the board
+    // between them, the name on its face.
+    let gz = bz + bd - 0.5;
+    for px in [bx + 1.2, bx + bw - 1.2] {
+        b.cylinder(px, bh, gz, 0.07, 2.6, Rgba::hex(STONE));
+    }
+    b.rounded(
+        bx + 1.0,
+        bh + 1.4,
+        gz - 0.1,
+        bw - 2.0,
+        1.3,
+        0.16,
+        0.08,
+        Rgba::hex(STONE),
+    );
+    b.rounded(
+        bx + 1.1,
+        bh + 1.5,
+        gz - 0.06,
+        bw - 2.2,
+        1.1,
+        0.16,
+        0.06,
+        Rgba::hex(RED_DARK),
+    );
     for (i, ch) in snap.factory.chimneys.iter().enumerate() {
-        let x = bx + bw - 1.3 - i as f32 * 1.9;
+        // On the roof's back edge, clear of the tower that stands in front
+        // of the hangar's right end as the camera sees it.
+        let x = bx + bw - 3.3 - i as f32 * 1.9;
         let z = bz + 0.7;
         let h = 2.1 + (i % 2) as f32 * 0.35;
         let hot = pane(
@@ -1087,8 +1281,8 @@ fn factory(snap: &Snapshot) -> Scene {
     }
     let name = b.label(
         bx + bw / 2.0,
-        bh + 2.6,
-        bz + bd / 2.0,
+        bh + 2.3,
+        gz + 0.12,
         &snap.project.name.to_uppercase(),
         22.0,
         TEXT,
@@ -1097,8 +1291,8 @@ fn factory(snap: &Snapshot) -> Scene {
     name.backing = Backing::Ink;
     b.label(
         bx + bw / 2.0,
-        bh + 2.1,
-        bz + bd / 2.0,
+        bh + 1.75,
+        gz + 0.12,
         if snap.project.slug.is_empty() {
             "local checkout"
         } else {
@@ -2052,10 +2246,10 @@ mod tests {
             .filter(|p| p.hot.as_ref().and_then(|h| h.go.as_deref()) == Some("B"))
             .filter_map(|p| p.group)
             .collect();
-        assert_eq!(door.len(), 3);
+        assert_eq!(door.len(), 11, "ring, eight teeth, leaf and hub");
         assert!(
             door.iter().all(|g| *g == door[0]),
-            "frame and leaves grow as one: {door:?}"
+            "the cog grows as one: {door:?}"
         );
         let steward: Vec<u32> = scene
             .props
@@ -2425,7 +2619,7 @@ mod tests {
             .into_iter()
             .filter(|h| h.go.as_deref() == Some("B"))
             .count();
-        assert_eq!(door, 3, "frame and two leaves");
+        assert_eq!(door, 11, "ring, eight teeth, leaf and hub");
         let smoke = scene
             .props
             .iter()
@@ -2507,8 +2701,8 @@ mod tests {
         );
         let stations = panes(&scene, "station");
         assert_eq!(
-            stations, 20,
-            "three per gate, two per robot (card and shadow), three for the printer, five for the arm"
+            stations, 32,
+            "six per gate, two per robot (card and shadow), six for the printer, eight for the arm"
         );
         let belt_stripes = scene
             .props

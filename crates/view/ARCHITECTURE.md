@@ -31,7 +31,7 @@ it lives in one function (`assemble::is_live`) with its two thresholds.
 
 ## The steward
 
-The tall white-robed figure with a staff, on the forecourt and in the hall.
+The grinning mascot in a blue jumpsuit giving a thumbs-up, on the forecourt and in the hall.
 Click them — or the `steward` button in the header — and the pane becomes a
 terminal: an **interactive Claude Code**, started in the harness checkout
 with the plant's standing orders appended to its system prompt
