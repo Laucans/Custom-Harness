@@ -167,8 +167,31 @@ pub async fn mount_named(
 /// Unmounts a checkout mounted here — a no-op for a named `Permanent`
 /// workspace, called anyway for symmetry with `dev_loop`'s own "unmount
 /// happens no matter what".
+///
+/// **And drops what the run left on it.** These checkouts are read-only:
+/// nothing on them is ever pushed, so a branch a session made there — a pull
+/// request fetched to be reviewed — is scratch. Left behind, it read as work
+/// origin does not have, and the next mount refused the whole checkout.
 pub async fn unmount_shared(mount: &Mount, log: &Logbook) {
     let repos: Rc<dyn Repos> = Rc::new(GitRepos);
+    if let Some(path) = &mount.path
+        && !mount.branch.is_empty()
+    {
+        let git = repos.at(path);
+        if git
+            .checkout(&mount.branch, true)
+            .await
+            .is_ok_and(|ran| ran.ok())
+        {
+            for branch in git.local_branches().await.unwrap_or_default() {
+                if branch != mount.branch
+                    && git.delete_branch(&branch).await.is_ok_and(|ran| ran.ok())
+                {
+                    log.say(&format!("workspace: dropped the scratch branch {branch}"));
+                }
+            }
+        }
+    }
     let disk: Rc<dyn Disk> = Rc::new(RealDisk);
     Provisioner { repos, disk }.unmount(mount, log).await;
 }
