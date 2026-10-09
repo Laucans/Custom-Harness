@@ -1,0 +1,15 @@
+[package]
+name = "harness-notify"
+description = "What the plant should tell a human, and how loud: notifications from the harness's events and a few observed facts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+harness-core.workspace = true
+harness-workflows.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

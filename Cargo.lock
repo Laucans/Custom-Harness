@@ -2797,6 +2797,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-notify"
+version = "0.1.0"
+dependencies = [
+ "harness-core",
+ "harness-workflows",
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "harness-view"
 version = "0.1.0"
 dependencies = [

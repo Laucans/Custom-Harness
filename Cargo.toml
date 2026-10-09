@@ -8,6 +8,7 @@ members = [
   "crates/core",
   "crates/workflows",
   "crates/launcher",
+  "crates/notify",
   "crates/view",
   "crates/view-render",
 ]
@@ -76,6 +77,7 @@ getrandom = { version = "0.4", default-features = false }
 tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
 harness-core = { path = "crates/core" }
 harness-workflows = { path = "crates/workflows" }
+harness-notify = { path = "crates/notify" }
 
 # The browser bundle: smallest code, longest build. `cargo build --profile
 # wasm-release --target wasm32-unknown-unknown -p harness-view-render`, or
