@@ -506,6 +506,7 @@ async fn plant_status(State(state): State<AppState>) -> Response {
             .plant
             .as_ref()
             .and_then(|plant| plant::running(plant.as_ref())),
+        max_lanes: plant::MAX_LANES,
     })
 }
 
@@ -515,20 +516,35 @@ struct Done {
     message: String,
 }
 
+/// `?lanes=N`: how many agents a start runs at once at most.
+#[derive(Debug, Deserialize)]
+struct StartQuery {
+    lanes: Option<usize>,
+}
+
 /// `start`, `soft` or `hard`: decided by `domain::plant`, carried out by
-/// the port. A gesture that makes no sense now is a `409` with the reason.
+/// the port. A gesture that makes no sense now is a `409` with the reason;
+/// a start asking for lanes out of bounds is a `400`.
 ///
 /// Only the first action can fail the gesture: a hard stop's later kills
 /// reach processes that may already be gone with the watch. A start counts
 /// once the watch is still there after [`AppState::start_grace`] — one that
 /// died on its first line (no remote, a bad flag) is a failed start, with
 /// what it printed.
-async fn plant_gesture(State(state): State<AppState>, Path(gesture): Path<String>) -> Response {
+async fn plant_gesture(
+    State(state): State<AppState>,
+    Path(gesture): Path<String>,
+    Query(query): Query<StartQuery>,
+) -> Response {
     let Some(plant) = state.plant.as_ref() else {
         return (StatusCode::NOT_FOUND, "this view has no hand on the plant").into_response();
     };
     let Some(gesture) = Gesture::parse(&gesture) else {
         return (StatusCode::NOT_FOUND, "unknown gesture").into_response();
+    };
+    let lanes = match plant::lanes(query.lanes) {
+        Ok(lanes) => lanes,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
     let processes = plant.processes();
     let running = plant::running(plant.as_ref());
@@ -539,9 +555,10 @@ async fn plant_gesture(State(state): State<AppState>, Path(gesture): Path<String
     let mut message = String::new();
     for (at, action) in actions.into_iter().enumerate() {
         let done = match action {
-            Action::Start => plant
-                .start()
-                .map(|pid| format!("watch started (pid {pid})")),
+            Action::Start => plant.start(lanes).map(|pid| {
+                let most = lanes.map_or_else(String::new, |n| format!(", at most {n} agents"));
+                format!("watch started (pid {pid}{most})")
+            }),
             Action::Send(signal, target) => plant.send(signal, target).map(|()| match gesture {
                 Gesture::Soft => "soft stop asked — running tasks finish, none starts".to_string(),
                 _ => "hard stop — the watch and its lanes are killed".to_string(),
@@ -794,6 +811,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_start_carries_the_agents_asked_within_bounds() {
+        let (state, switch) = with_plant(Vec::new());
+        let (status, _) = post_to(state.clone(), "/api/plant/start?lanes=0").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, body) = post_to(state, "/api/plant/start?lanes=4").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("at most 4 agents"), "{body}");
+        assert_eq!(sent(&switch), ["start 4"]);
+    }
+
+    #[tokio::test]
     async fn a_watch_that_dies_at_start_is_a_failed_start_with_its_words() {
         let switch = Arc::new(Switch {
             dies_at_start: true,
@@ -873,6 +901,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("\"available\":true"), "{body}");
         assert!(body.contains("\"pid\":7"), "{body}");
+        assert!(body.contains("\"max_lanes\":16"), "{body}");
         let (_, none) = get(state_without_plant(), "/api/plant").await;
         assert!(none.contains("\"available\":false"), "{none}");
     }
