@@ -6,7 +6,7 @@
 mod event;
 mod logbook;
 
-pub use event::Event;
+pub use event::{Event, Level};
 pub use logbook::{Logbook, Sink, Verbosity};
 
 /// The file a run's process keeps an OS lock on while it lives.

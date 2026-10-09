@@ -319,8 +319,11 @@ pub fn read_within(text: &str, range: Option<&Range>) -> Journal {
         let Some(Stamped { at, rest }) = stamped(line) else {
             continue;
         };
+        // A failure is told as an error since the journal has one; a
+        // journal written before then told it as a warning.
         let (warned, rest) = rest
-            .strip_prefix("warning: ")
+            .strip_prefix("error: ")
+            .or_else(|| rest.strip_prefix("warning: "))
             .map_or((false, rest), |r| (true, r));
         if rest.starts_with("watch: every ") {
             journal.close_tick(&mut tick, range);
@@ -466,6 +469,24 @@ mod tests {
             journal.triggers[3].ended_at.as_deref(),
             Some("2026-10-08T20:06:00Z")
         );
+    }
+
+    #[test]
+    fn a_failure_told_as_an_error_reads_as_the_warning_it_used_to_be() {
+        // The journal now heads a failure with `error: `; one written before
+        // headed it with `warning: `. Both read the same.
+        let now = LOG
+            .replace(
+                "] watch: lanes -> lane 1 done",
+                "] error: watch: lanes -> lane 1 done",
+            )
+            .replace(
+                "] warning: watch: lanes -> cannot",
+                "] error: watch: lanes -> cannot",
+            )
+            .replace("] warning: watch: pr_review", "] error: watch: pr_review");
+        assert_ne!(now, LOG);
+        assert_eq!(read(&now), read(LOG));
     }
 
     #[test]

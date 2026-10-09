@@ -363,7 +363,10 @@ pub fn parse_run_log(text: &str, known: &[String]) -> RunLog {
             log.task = parse_named(task.trim_end_matches(" [auto]"));
         } else if let Some(milestone) = rest.strip_prefix("milestone #") {
             log.milestone = parse_named(milestone.split(" — ").next().unwrap_or(milestone));
-        } else if let Some(warning) = rest.strip_prefix("warning: ") {
+        } else if let Some(warning) = rest
+            .strip_prefix("error: ")
+            .or_else(|| rest.strip_prefix("warning: "))
+        {
             log.warning = Some(warning.to_string());
         } else if let Some(run) = rest.strip_prefix("run ") {
             if let Some(branch) = run.split("branch ").nth(1) {
