@@ -2,9 +2,9 @@
 //!
 //! Compiled in, so every repository the plant works on carries the same
 //! architecture from the same source: the architecture document, the rules
-//! section of `CLAUDE.md`, the thirteen contracts, the CI gates, the project's
+//! section of `CLAUDE.md`, the fourteen contracts, the CI gates, the project's
 //! CI for its stack, the script that scopes its tests, the one that dumps its
-//! schema and an empty data model to grow. What to write of them in a given
+//! schema, an empty data model to grow and an empty list of mock pages. What to write of them in a given
 //! checkout, and what to keep, is `init-repo`'s decision, not this module's.
 
 /// One file of the architecture: where it goes in the repository, what it says.
@@ -29,8 +29,8 @@ pub const CLAUDE_RULES: &str = include_str!("../assets/CLAUDE-rules.md");
 pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 
 /// The files installed as they are: the document, the gates, the CI, the
-/// test scope, the schema dump, the data model, the contracts.
-pub const FILES: [Asset; 20] = [
+/// test scope, the schema dump, the data model, the mock pages, the contracts.
+pub const FILES: [Asset; 22] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -54,6 +54,10 @@ pub const FILES: [Asset; 20] = [
     Asset {
         path: "data/model.json",
         content: include_str!("../assets/model.json"),
+    },
+    Asset {
+        path: "mock/pages.json",
+        content: include_str!("../assets/mock-pages.json"),
     },
     Asset {
         path: "contracts/README.md",
@@ -110,6 +114,10 @@ pub const FILES: [Asset; 20] = [
     Asset {
         path: "contracts/m-data-model.schema.json",
         content: include_str!("../assets/contracts/m-data-model.schema.json"),
+    },
+    Asset {
+        path: "contracts/n-mock-pages.schema.json",
+        content: include_str!("../assets/contracts/n-mock-pages.schema.json"),
     },
 ];
 

@@ -1,12 +1,17 @@
 //! The human's pins: a note dropped on a part of a board — a table, a field,
 //! a spot of the canvas — kept for the next visit.
 //!
-//! A pin is one of three kinds. A **note** is the human's words. A
+//! A pin is one of five kinds. A **note** is the human's words. A
 //! **brainstorm** has an AI session behind it, opened from the pin and
 //! remembered between visits (`note_session`). An **asking** is a change the
 //! human wants considered when the next roadmap is built — its conversation
 //! kept too; how it reaches the planner is still to be designed
-//! (`docs/PARKED.md`).
+//! (`docs/PARKED.md`). On the mock-up, a **link** leads to another page of
+//! the product — or creates one, from an objective — and a **simulate** is a
+//! request whose result an AI session shows by editing the page.
+//!
+//! A pin may be a **zone** instead of a point: a rectangle, a circle or a
+//! hand-drawn outline around several parts, annotated as one.
 //!
 //! A deleted pin is only marked: the last [`UNDO_DEPTH`] of a board come back
 //! with ctrl+z, the older ones are destroyed with their conversation.
@@ -24,6 +29,12 @@ pub const UNDO_DEPTH: usize = 10;
 /// The longest name of what a pin sits on.
 const MAX_TARGET: usize = 200;
 
+/// The longest page a link leads to.
+const MAX_PAGE: usize = 200;
+
+/// The most points a zone's outline may have.
+pub const MAX_POINTS: usize = 4_000;
+
 /// What a pin is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +46,59 @@ pub enum Kind {
     Brainstorm,
     /// A change to consider when the next roadmap is built. Orange.
     Asking,
+    /// On the mock-up: leads to another page, or creates one. Blue.
+    Link,
+    /// On the mock-up: a request whose result an AI session shows by
+    /// editing the page. Purple.
+    Simulate,
+}
+
+impl Kind {
+    /// The kind's name, as the page and the sessions say it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Brainstorm => "brainstorm",
+            Self::Asking => "asking",
+            Self::Link => "link",
+            Self::Simulate => "simulate",
+        }
+    }
+
+    /// A kind whose session needs the note written first: it is the first
+    /// prompt (a brainstorm, an asking), or the request (a simulate).
+    #[must_use]
+    pub const fn speaks_first(self) -> bool {
+        matches!(self, Self::Brainstorm | Self::Asking | Self::Simulate)
+    }
+
+    /// A kind whose session edits the mock-up rather than talks about it.
+    #[must_use]
+    pub const fn edits(self) -> bool {
+        matches!(self, Self::Link | Self::Simulate)
+    }
+}
+
+/// The outline of a zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeKind {
+    /// Two corners.
+    Rect,
+    /// A centre and a point on the edge.
+    Circle,
+    /// A hand-drawn outline, closed.
+    Path,
+}
+
+/// A zone: several parts annotated as one, by an outline in board units.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Shape {
+    /// What outline.
+    pub kind: ShapeKind,
+    /// Its points, `[x, y]`, in board units.
+    pub points: Vec<[f64; 2]>,
 }
 
 /// One pin.
@@ -64,9 +128,15 @@ pub struct Note {
     /// When last written, as the page's clock says.
     #[serde(default)]
     pub at: String,
-    /// A note, a brainstorm, an asking.
+    /// A note, a brainstorm, an asking, a link, a simulate.
     #[serde(default)]
     pub kind: Kind,
+    /// For a link: the page it leads to, as `mock/pages.json` lists it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub page: String,
+    /// A zone's outline — `None` for a point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Shape>,
     /// How many turns its conversation holds — filled by the server, never
     /// read from the page.
     #[serde(default)]
@@ -76,10 +146,11 @@ pub struct Note {
 /// Every board's pins, as the old `.llocal/annotations.json` kept them.
 pub type Shelf = BTreeMap<String, Vec<Note>>;
 
-/// A board's name: lower case, digits, dashes, at most 40.
+/// A board's name: lower case, digits, dashes, at most 120 — a mock-up's
+/// board names its branch and its page.
 #[must_use]
 pub fn is_board(name: &str) -> bool {
-    (1..=40).contains(&name.len())
+    (1..=120).contains(&name.len())
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -126,9 +197,24 @@ pub fn checked(note: Note) -> Result<Note, String> {
             note.id
         ));
     }
-    // A brainstorm or an asking opens its session on what the note says:
-    // there must be something to say first.
-    if note.kind != Kind::Note && note.text.trim().is_empty() {
+    if note.page.chars().count() > MAX_PAGE || note.page.contains("..") {
+        return Err(format!("pin {}: its page is not a page", note.id));
+    }
+    if let Some(shape) = &note.shape {
+        let enough = match shape.kind {
+            ShapeKind::Rect | ShapeKind::Circle => shape.points.len() == 2,
+            ShapeKind::Path => shape.points.len() >= 3,
+        };
+        if !enough || shape.points.len() > MAX_POINTS {
+            return Err(format!("pin {}: its zone has no outline", note.id));
+        }
+        if !shape.points.iter().flatten().all(|v| v.is_finite()) {
+            return Err(format!("pin {}: its zone is not a shape", note.id));
+        }
+    }
+    // A brainstorm, an asking or a simulate opens its session on what the
+    // note says: there must be something to say first.
+    if note.kind.speaks_first() && note.text.trim().is_empty() {
         return Err(format!(
             "pin {}: a brainstorm or an asking starts from the note's text — write it first",
             note.id
@@ -175,6 +261,8 @@ mod tests {
             text: "ask about soft delete".to_string(),
             at: "2026-10-09T12:00:00Z".to_string(),
             kind: Kind::Note,
+            page: String::new(),
+            shape: None,
             turns: 0,
         }
     }
@@ -182,10 +270,50 @@ mod tests {
     #[test]
     fn a_board_is_named_plainly() {
         assert!(is_board("data-model"));
+        assert!(is_board("mockup--milestone-3-foo--credit-review"));
         assert!(!is_board(""));
         assert!(!is_board("../etc"));
         assert!(!is_board("Data"));
-        assert!(!is_board(&"a".repeat(41)));
+        assert!(!is_board(&"a".repeat(121)));
+    }
+
+    #[test]
+    fn a_zone_needs_an_outline_and_a_link_needs_no_words() {
+        let mut zone = note("z");
+        zone.shape = Some(Shape {
+            kind: ShapeKind::Rect,
+            points: vec![[0.0, 0.0], [10.0, 10.0]],
+        });
+        assert!(checked(zone.clone()).is_ok());
+        zone.shape = Some(Shape {
+            kind: ShapeKind::Path,
+            points: vec![[0.0, 0.0], [10.0, 10.0]],
+        });
+        assert!(
+            checked(zone.clone()).is_err(),
+            "a path is three points at least"
+        );
+        zone.shape = Some(Shape {
+            kind: ShapeKind::Circle,
+            points: vec![[0.0, 0.0], [f64::INFINITY, 1.0]],
+        });
+        assert!(checked(zone).is_err());
+        let mut link = note("l");
+        link.kind = Kind::Link;
+        link.text = String::new();
+        link.page = "pages/home.html".to_string();
+        assert!(
+            checked(link.clone()).is_ok(),
+            "a link is its page, not its words"
+        );
+        link.page = "../x".to_string();
+        assert!(checked(link).is_err());
+        let mut simulate = note("s");
+        simulate.kind = Kind::Simulate;
+        simulate.text = " ".to_string();
+        assert!(checked(simulate).is_err(), "a simulate is a request");
+        let json = serde_json::to_string(&note("p")).expect("json");
+        assert!(!json.contains("shape") && !json.contains("page"), "{json}");
     }
 
     #[test]

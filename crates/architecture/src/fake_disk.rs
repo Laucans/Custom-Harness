@@ -45,6 +45,18 @@ impl Disk for FakeDisk {
         names.dedup();
         names
     }
+    fn file_names(&self, path: &Path) -> Vec<String> {
+        // The files directly under `path`: a held path exactly one level down.
+        let mut names: Vec<String> = self
+            .existing
+            .keys()
+            .filter_map(|known| known.strip_prefix(path).ok())
+            .filter(|rest| rest.components().count() == 1)
+            .map(|rest| rest.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
     fn read_to_string(&self, path: &Path) -> Option<String> {
         self.existing.get(path).cloned()
     }

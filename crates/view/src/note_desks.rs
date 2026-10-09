@@ -35,6 +35,9 @@ pub struct Setup {
     pub model: String,
     /// Where a session runs: the product's clone when there is one.
     pub cwd: PathBuf,
+    /// The permission mode a session that edits the mock-up opens with —
+    /// the launcher's; a conversation opens in plan mode whatever this says.
+    pub permission_mode: String,
 }
 
 struct Open {
@@ -153,19 +156,16 @@ impl NoteDesks {
         }
         let note = self.note(board, id)?;
         let about = About {
-            board: board.to_string(),
-            target: described(&note.target),
             context: brief.context,
-            note: note.text.clone(),
-            kind: if note.kind == Kind::Asking {
-                "asking"
+            page: if note.kind == Kind::Link && !note.page.is_empty() {
+                note.page.clone()
             } else {
-                "brainstorm"
-            }
-            .to_string(),
+                brief.page
+            },
             branch: brief.branch,
             schema: brief.schema,
             milestone: brief.milestone,
+            ..Self::about(board, &note)
         };
         let mut conversation = self.conversation(board, id)?;
         if let Handback::Summarize { older, covers } = conversation.handback() {
@@ -177,22 +177,31 @@ impl NoteDesks {
         }
         let briefing = note_session::briefing(&about, &conversation.handback());
         let session = uuid();
+        // A conversation, not a change: Claude reads, it does not edit. A
+        // simulate or a page to create edits the mock-up's workspace.
+        let permission_mode = if note.kind.edits() {
+            self.setup.permission_mode.clone()
+        } else {
+            "plan".to_string()
+        };
         let mut args = vec![
             "--model".to_string(),
             self.setup.model.clone(),
-            // A conversation, not a change: Claude reads, it does not edit.
             "--permission-mode".to_string(),
-            "plan".to_string(),
+            permission_mode,
             "--session-id".to_string(),
             session.clone(),
             "--append-system-prompt".to_string(),
             briefing,
         ];
         // A first session opens on what the note says: its first prompt.
-        if conversation.turns.is_empty() && !note.text.trim().is_empty() {
-            args.push(note.text.trim().to_string());
+        if conversation.turns.is_empty()
+            && let Some(first) = note_session::first_prompt(&about)
+        {
+            args.push(first);
         }
-        let desk = Desk::new(self.setup.maker.make(&self.setup.cwd, args));
+        let cwd = brief.cwd.as_deref().unwrap_or(&self.setup.cwd);
+        let desk = Desk::new(self.setup.maker.make(cwd, args));
         let command = desk.command();
         {
             let mut open = lock(&self.open);
@@ -230,7 +239,8 @@ impl NoteDesks {
         let grew = !said.is_empty();
         conversation.turns.extend(said);
         self.save(board, id, &conversation)?;
-        if compact && grew {
+        // A link's text is its page's objective: a compact would overwrite it.
+        if compact && grew && self.note(board, id)?.kind != Kind::Link {
             let mut note = self.note(board, id)?;
             let about = Self::about(board, &note);
             let text = self
@@ -253,12 +263,12 @@ impl NoteDesks {
             schema: String::new(),
             milestone: String::new(),
             note: note.text.clone(),
-            kind: if note.kind == Kind::Asking {
-                "asking"
-            } else {
-                "brainstorm"
+            kind: match note.kind {
+                Kind::Note | Kind::Brainstorm => "brainstorm",
+                other => other.name(),
             }
             .to_string(),
+            page: note.page.clone(),
         }
     }
 
@@ -280,7 +290,9 @@ impl NoteDesks {
         let said = conversation.digest();
         let prompt = match kind {
             Kind::Asking => note_session::request_prompt(&about, &said),
-            Kind::Note | Kind::Brainstorm => note_session::conclusion_prompt(&about, &said),
+            Kind::Note | Kind::Brainstorm | Kind::Link | Kind::Simulate => {
+                note_session::conclusion_prompt(&about, &said)
+            }
         };
         let answer = self.ask(prompt).await?;
         note.text = answer.chars().take(MAX_TEXT).collect();
@@ -406,11 +418,13 @@ mod tests {
     #[derive(Default)]
     struct Maker {
         args: Mutex<Vec<Vec<String>>>,
+        cwds: Mutex<Vec<PathBuf>>,
     }
 
     impl TerminalMaker for Maker {
-        fn make(&self, _cwd: &Path, args: Vec<String>) -> Arc<dyn TerminalFactory> {
+        fn make(&self, cwd: &Path, args: Vec<String>) -> Arc<dyn TerminalFactory> {
             lock(&self.args).push(args);
+            lock(&self.cwds).push(cwd.to_path_buf());
             Arc::new(Echoing::default())
         }
     }
@@ -426,6 +440,8 @@ mod tests {
             text: "unique?".into(),
             at: String::new(),
             kind,
+            page: String::new(),
+            shape: None,
             turns: 0,
         }
     }
@@ -445,6 +461,7 @@ mod tests {
             transcripts: Arc::new(Kept),
             model: "claude-sonnet-5-5".into(),
             cwd: PathBuf::from("/tmp"),
+            permission_mode: "bypassPermissions".into(),
         });
         desks
             .open(
@@ -534,6 +551,57 @@ mod tests {
             lock(&oneshot.asked).len(),
             2,
             "turning it compacts nothing more"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_simulate_opens_in_the_mockup_workspace_with_leave_to_edit() {
+        let store = Arc::new(Shelf::default());
+        let mut simulate = pin(Kind::Simulate);
+        simulate.text = "show a late customer".into();
+        store.put("mockup--main--home", &simulate).expect("kept");
+        let maker = Arc::new(Maker::default());
+        let desks = NoteDesks::new(Setup {
+            store: Arc::clone(&store) as Arc<dyn NoteStore>,
+            maker: Arc::clone(&maker) as Arc<dyn TerminalMaker>,
+            oneshot: Arc::new(Echo::default()),
+            transcripts: Arc::new(Kept),
+            model: "claude-sonnet-5-5".into(),
+            cwd: PathBuf::from("/tmp"),
+            permission_mode: "bypassPermissions".into(),
+        });
+        desks
+            .open(
+                "mockup--main--home",
+                "n1",
+                Brief {
+                    cwd: Some(PathBuf::from("/ws/mock-main")),
+                    page: "pages/home.html".into(),
+                    branch: "main".into(),
+                    ..Brief::default()
+                },
+            )
+            .await
+            .expect("opened");
+        let args = lock(&maker.args)[0].clone();
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--permission-mode" && w[1] == "bypassPermissions")
+        );
+        let briefing = args
+            .windows(2)
+            .find(|w| w[0] == "--append-system-prompt")
+            .map(|w| w[1].clone())
+            .expect("a briefing");
+        assert!(briefing.contains("edit only under `mock/`"));
+        assert!(briefing.contains("`pages/home.html`"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("show a late customer")
+        );
+        assert_eq!(
+            lock(&maker.cwds).last().map(PathBuf::as_path),
+            Some(Path::new("/ws/mock-main"))
         );
     }
 

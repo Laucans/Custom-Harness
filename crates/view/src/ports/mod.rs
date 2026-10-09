@@ -11,7 +11,7 @@ use std::io::{self, Read};
 use async_trait::async_trait;
 use harness_core::domain::quota::Reading;
 use harness_core::domain::{Issue, Outcome};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One row of the cost ledger, typed. `None` reads as "not observed", as the
 /// ledger itself writes it.
@@ -649,4 +649,90 @@ pub trait Builds: Send + Sync {
 
     /// A build's whole output so far, by its id; `None` when there is none.
     fn log(&self, id: &str) -> Option<String>;
+}
+
+/// One page of the product's mock-up, as `mock/pages.json` lists it
+/// (contract N).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MockPage {
+    /// The page's file, relative to `mock/`: `pages/credit-review.html`.
+    pub path: String,
+    /// What a human calls it.
+    pub title: String,
+    /// The user goal it was created from.
+    #[serde(default)]
+    pub objective: String,
+    /// The frozen screen it mocks, once there is one.
+    #[serde(default)]
+    pub screen: String,
+    /// The Micro-UIs it shows.
+    #[serde(default)]
+    pub components: Vec<String>,
+}
+
+/// The mock-up of one branch, as it is right now: what the committed branch
+/// carries, or what its workspace holds once a session edited it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct MockState {
+    /// The branch asked for.
+    pub branch: String,
+    /// `mock/pages.json` is there: the product has a mock-up.
+    pub present: bool,
+    /// Its pages, in the manifest's order.
+    pub pages: Vec<MockPage>,
+    /// A workspace holds changes under `mock/` no commit carries yet.
+    pub edited: bool,
+    /// The `mockup/*` branch the workspace was saved to, if it was.
+    #[serde(default)]
+    pub saved: String,
+    /// Changes whenever a file of the mock-up changes: what the page reloads on.
+    pub stamp: String,
+}
+
+/// The product's mock-up: its pages and files on every branch, a workspace
+/// a session edits, and the branch the human saves that workspace to.
+///
+/// Synchronous and blocking (`git`): a handler runs it on a blocking thread.
+/// `Send + Sync` because the handlers share it.
+pub trait Mockups: Send + Sync {
+    /// The mock-up of `branch`: from its workspace when one exists, else
+    /// from the branch as committed.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be reached or read.
+    fn state(&self, branch: &str) -> Result<MockState, String>;
+
+    /// The bytes of `mock/<path>` on `branch` — from its workspace when one
+    /// exists — or `None` when there is no such file.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be read.
+    fn file(&self, branch: &str, path: &str) -> Result<Option<Vec<u8>>, String>;
+
+    /// The folder a session edits `branch`'s mock-up in, made on first use:
+    /// a checkout of the branch, detached, kept until it is saved or
+    /// discarded.
+    ///
+    /// # Errors
+    ///
+    /// The checkout could not be made.
+    fn workspace(&self, branch: &str) -> Result<std::path::PathBuf, String>;
+
+    /// Commits what the workspace changed under `mock/` on a new branch
+    /// `mockup/<name>`, pushes it, and answers the branch's name.
+    ///
+    /// # Errors
+    ///
+    /// No workspace, nothing changed, or `git` refused.
+    fn save(&self, branch: &str, name: &str) -> Result<String, String>;
+
+    /// Drops the workspace and what it changed: the branch's mock-up is
+    /// shown as committed again.
+    ///
+    /// # Errors
+    ///
+    /// The workspace could not be removed.
+    fn discard(&self, branch: &str) -> Result<(), String>;
 }

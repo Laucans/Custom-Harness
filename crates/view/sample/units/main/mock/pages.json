@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "pages": [
+    {
+      "path": "pages/campagnes.html",
+      "title": "Campagnes",
+      "objective": "Voir ses campagnes et en ouvrir une",
+      "screen": "campagnes",
+      "components": ["Campagnes"]
+    }
+  ]
+}

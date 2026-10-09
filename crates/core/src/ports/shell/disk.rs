@@ -37,6 +37,13 @@ pub trait Disk {
     /// this is used to list workspaces kept in a message.
     fn dir_names(&self, path: &Path) -> Vec<String>;
 
+    /// Names of the files directly under `path`, sorted. Empty if the path
+    /// isn't a directory. The architecture's rules read the frozen screens
+    /// and the mocked pages with it; a disk with no files to list says so.
+    fn file_names(&self, _path: &Path) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The content of a text file, or `None` for any reason.
     ///
     /// `None`, never an error: refinement reads `CLAUDE.md` and repository

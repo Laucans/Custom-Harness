@@ -90,6 +90,26 @@ Example: the goal "assess whether we can raise this customer's limit"
 produces a screen composed of `RiskBadge`, `LatePaymentsList` and
 `LimitReviewForm`.
 
+### The mock-up
+
+Every screen exists twice: once built, under `apps/`, and once **mocked**,
+under `mock/` — a static frontend with no backend, that any file server
+runs. One HTML page per screen under `mock/pages/`, plain HTML and
+JavaScript, its data read from JSON fixtures under `mock/fixtures/`; no
+build step, no framework the page must compile. `mock/pages.json`
+(contract N) lists every page: its file, its title, the objective it was
+created from, the screen it mocks once that screen is frozen, the Micro-UIs
+it shows. In a page, a Micro-UI's root element carries
+`data-component="<MicroUi>"`, so a human can point at it.
+
+The mock-up is where the screen is **designed before it is built**: the
+human creates a page from an objective, annotates its components, asks for
+a simulation — a request whose result is shown by editing the page — and
+may save the pages as they want them on a `mockup/*` branch. A task that
+builds a Micro-UI or a composition reads the mock-up first and keeps it
+true to what it builds. A screen under `apps/screens/` with no page in
+`mock/pages.json` fails the gates.
+
 ## Capabilities
 
 A Capability is an autonomous unit that produces a value or a view: it
@@ -375,7 +395,7 @@ subscription per author; infrastructure components subscribe the same way.
 
 ## Interface contracts
 
-Twelve contracts define every frontier. They live as **JSON Schema (draft
+Fourteen contracts define every frontier. They live as **JSON Schema (draft
 2020-12) in `contracts/`**, one file per contract; the examples below are YAML
 for readability. Contracts A, B, F and I fix the frontier between reading and
 writing: they are the first to stabilise.
@@ -394,6 +414,8 @@ writing: they are the first to stabilise.
 | J. Impact plan | Resolver ↔ DataGuard | Resolver |
 | K. Reconciliation proposal | AI ↔ approver | Integrity DataGuard |
 | L. Message | Integrity DataGuard ↔ users and infrastructure components | Integrity DataGuard |
+| M. Data model | Data ↔ the agents' understanding of it | Read agents, migrations |
+| N. Mock pages | Mock-up ↔ screens | Human, UI agents |
 
 ### A. Concept
 
@@ -573,6 +595,18 @@ declaredAhead: { value: 8000, by: alice, command: c_120 }
 actions: [confirm_overwrite, cancel, edit]
 ```
 
+### N. Mock pages
+
+```yaml
+version: 1
+pages:
+  - path: pages/credit-review.html
+    title: Credit review
+    objective: "Assess whether we can raise this customer's limit"
+    screen: credit-review          # once the composition is frozen
+    components: [RiskBadge, LatePaymentsList, LimitReviewForm]
+```
+
 ## CI gates
 
 Contracts protect only if they are verified automatically. These gates block
@@ -595,6 +629,7 @@ off until an agent implements them.
 | Invariants | Every declared invariant has tests; every DataCapability lists the ones it may affect | F, I |
 | Relations | Every foreign key has a declared `onDelete` and `onUpdate` policy | I |
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
+| Pages mocked | `mock/pages.json` validates; every page it lists exists; every frozen screen has a page | E, N |
 
 ## Organisation of the agents
 

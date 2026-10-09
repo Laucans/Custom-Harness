@@ -181,6 +181,8 @@ mod tests {
             text: text.to_string(),
             at: String::new(),
             kind: Kind::Brainstorm,
+            page: String::new(),
+            shape: None,
             turns: 0,
         }
     }

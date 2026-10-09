@@ -115,7 +115,11 @@ without waiting for a go-ahead and without /clear, carry out
 Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
 checks the same rules after you), then branch -> PR ->
-gh pr merge --squash. The PR body MUST carry the line `Closes #{num}` on its
+gh pr merge --squash. A Micro-UI or a screen composition ships with its
+mock-up: open the page under mock/pages/ first (it is the screen as the
+human wants it; a `mockup/*` branch may carry a newer one), keep it true to
+what you build, list it in mock/pages.json (contract N) — the gates refuse a
+screen no page mocks. The PR body MUST carry the line `Closes #{num}` on its
 own: the loop reads that line off the merged PR to confirm the task shipped,
 and without it the round stops rather than replay a task nothing marks as
 delivered. The issue will stay open under `{waiting_merge}` until a
@@ -142,7 +146,9 @@ waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
 Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
-checks the same rules after you), then branch -> PR, and
+checks the same rules after you); a Micro-UI or a screen ships with its
+mock-up page under mock/, listed in mock/pages.json (contract N); then
+branch -> PR, and
 STOP THERE: open the pull request against the milestone branch with
 `gh pr create --label {to_review}` (the agent review runs on it), wait for
 its CI with `gh pr checks`, and do NOT run `gh pr merge` — a write-side PR

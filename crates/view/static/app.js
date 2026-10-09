@@ -600,6 +600,15 @@
       dir: p.dir,
       onSession: (s) => openPane({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, dir: s.dir }),
     }) : null),
+    mockup: (el, p) => (window.MockupPane ? window.MockupPane.mount(el, {
+      branch: p.branch,
+      page: p.page,
+      onSession: (s) => {
+        // Back from the session, the pane reopens on the page the pin was on.
+        S.pane = Object.assign({}, S.pane, { branch: s.branch, page: s.page });
+        openPane({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page });
+      },
+    }) : null),
   };
 
   // ---- D · the pane ------------------------------------------------------------
@@ -1005,14 +1014,14 @@
     // A pin's AI session: opened by the server with the pin's conversation
     // handed back, closed when the pane is left — its turns are then kept.
     note_session: {
-      title: (p) => `${p.pin === 'asking' ? 'Asking' : 'Brainstorm'} · ${p.on}`,
+      title: (p) => `${{ asking: 'Asking', simulate: 'Simulate', link: 'New page' }[p.pin] || 'Brainstorm'} · ${p.on}`,
       flag: '--no-steward',
       chips: [
         ['Where are we?', 'Summarize where we are: what is decided, what is open.'],
         ['What are the options?', 'List the options we have here, with their trade-offs.'],
         ['What would you recommend?', 'What would you recommend, and why?'],
       ],
-      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', dir: p.dir || '' }) })
+      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', dir: p.dir || '', page: p.page || '' }) })
         .then(async (r) => (r.ok ? r.json() : { available: false, why: await r.text() })),
       socket: (p) => `/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/term`,
       close: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/close`, { method: 'POST', keepalive: true }),
@@ -2540,6 +2549,18 @@
         teardownCanvas();
         S.canvas = CANVASES.data_model($('dm-host'), p);
         // Back from a pin's session: its turns are counted once it is closed.
+        if (S.closing) { const canvas = S.canvas; S.closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); S.closing = null; }
+      }, true];
+    },
+
+    // The mock-up on its easel: the product's pages in an iframe on a board.
+    mockup(p, refresh) {
+      const html = '<div id="mk-host" class="mk-host"></div>';
+      return ['Mock-up · ' + (S.snap && S.snap.project ? S.snap.project.name : 'the product'), html, (again) => {
+        if (again && S.canvas) return;
+        teardownCanvas();
+        S.canvas = CANVASES.mockup($('mk-host'), p);
+        // Back from a pin's session: the page may have changed, its turns are counted.
         if (S.closing) { const canvas = S.canvas; S.closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); S.closing = null; }
       }, true];
     },

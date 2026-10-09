@@ -7,11 +7,20 @@
 // opened from the pin, remembered between visits) or an asking (orange: a
 // change to consider when the next roadmap is built). Turning a brainstorm
 // into a note has the AI write its conclusion; into an asking, the request.
+// On the mock-up two more kinds: a link (blue) leads to another page or
+// creates one, a simulate (purple) is a request an AI session answers by
+// editing the page. A pin may be a zone — a rectangle, a circle or a
+// hand-drawn outline around several parts — drawn with the toolbar's tools.
 // Pins are kept by the server one by one (`/api/notes/<board>/<id>`); a
 // deleted one comes back with ctrl+z, the last ten of a board.
 //
-//   const board = HarnessBoard.create(host, { id, describe, resolve, context, onSession });
+//   const board = HarnessBoard.create(host, { id, describe, resolve, context, onSession,
+//     kinds, zones, under, pages, goto, newPage });
 //   board.setSize(w, h); board.refresh(); board.fit(); board.destroy();
+//
+// `resolve(target)` and `under(clientX, clientY)` may answer a stand-in for
+// a part the board cannot reach itself — one inside an iframe — as long as
+// it has getBoundingClientRect(), getAttribute('data-pin') and a classList.
 //   board.setBoard(id)   // another set of pins: the same canvas, another branch
 (() => {
   'use strict';
@@ -25,7 +34,15 @@
     note: ['note', 'Your words'],
     brainstorm: ['brainstorm', 'A conversation with an AI session about this part'],
     asking: ['asking', 'A change to consider when the next roadmap is built'],
+    link: ['link', 'Leads to another page of the mock-up — or creates one'],
+    simulate: ['simulate', 'A request: an AI session edits the page to show its result'],
   };
+  const DEFAULT_KINDS = ['note', 'brainstorm', 'asking'];
+  // A zone smaller than this, in screen pixels, is a click that drew nothing.
+  const MIN_ZONE = 8;
+  // A hand-drawn outline keeps a point every so many board units.
+  const PATH_STEP = 3;
+  const MAX_POINTS = 4000;
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -36,13 +53,20 @@
     // No id yet: no pin is read until `setBoard` names the board.
     let id = opts.id || null;
     const describe = opts.describe || ((target) => (target ? target : 'the canvas'));
+    const kinds = (opts.kinds || DEFAULT_KINDS).filter((k) => KINDS[k]);
     const baseOf = (board) => (board ? `/api/notes/${encodeURIComponent(board)}` : null);
     let base = baseOf(id);
     host.classList.add('hb');
-    host.innerHTML = '<div class="hb-world"><svg class="hb-edges" xmlns="http://www.w3.org/2000/svg"></svg><div class="hb-content"></div></div>'
+    host.innerHTML = '<div class="hb-world"><svg class="hb-edges" xmlns="http://www.w3.org/2000/svg"></svg><div class="hb-content"></div>'
+      + '<svg class="hb-zones" xmlns="http://www.w3.org/2000/svg"></svg></div>'
       + '<div class="hb-pins"></div>'
       + '<div class="hb-tools" role="toolbar" aria-label="board tools">'
-      + '<button type="button" class="hb-pin-tool" title="Drag this pin onto a table, a field or the canvas to write a note">📍<span>pin</span></button>'
+      + '<button type="button" class="hb-pin-tool" title="Drag this pin onto a part or the canvas to write a note">📍<span>pin</span></button>'
+      + (opts.zones
+        ? '<button type="button" data-zone="rect" title="Draw a rectangle around several parts">▭</button>'
+          + '<button type="button" data-zone="circle" title="Draw a circle around several parts">◯</button>'
+          + '<button type="button" data-zone="path" title="Draw an outline by hand">✎</button>'
+        : '')
       + '<span class="hb-sep"></span>'
       + '<button type="button" data-hb="out" title="Zoom out" aria-label="zoom out">−</button>'
       + '<span class="hb-zoom" aria-live="polite">100 %</span>'
@@ -56,9 +80,14 @@
       + '<div class="hb-note" hidden role="dialog" aria-label="note">'
       + '<div class="hb-note-head"><span class="hb-note-on"></span><button type="button" data-note="close" title="Close (Esc)" aria-label="close">×</button></div>'
       + '<div class="hb-kinds" role="radiogroup" aria-label="kind of pin">'
-      + Object.entries(KINDS).map(([k, [label, tip]]) => `<button type="button" role="radio" class="hb-kind ${k}" data-kind="${k}" title="${esc(tip)}">${label}</button>`).join('')
+      + kinds.map((k) => `<button type="button" role="radio" class="hb-kind ${k}" data-kind="${k}" title="${esc(KINDS[k][1])}">${KINDS[k][0]}</button>`).join('')
+      + '</div>'
+      + '<div class="hb-link" hidden>'
+      + '<label>leads to <select class="hb-link-pages" aria-label="page"></select></label>'
+      + '<div class="hb-link-new" hidden><input class="hb-link-title" maxlength="80" placeholder="Title of the new page"></div>'
       + '</div>'
       + '<textarea maxlength="4000" placeholder="Write a note…"></textarea>'
+      + '<div class="hb-link-go" hidden><button type="button" data-note="go">Open the page →</button><button type="button" data-note="create">Create it with an AI session</button></div>'
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
       + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="delete">delete</button></div>'
       + '</div>';
@@ -66,10 +95,14 @@
     const world = q('.hb-world');
     const content = q('.hb-content');
     const edges = q('.hb-edges');
+    const zoneLayer = q('.hb-zones');
     const pinLayer = q('.hb-pins');
     const editor = q('.hb-note');
     const textarea = editor.querySelector('textarea');
     const list = q('.hb-list');
+    const linkBox = editor.querySelector('.hb-link');
+    const linkPages = editor.querySelector('.hb-link-pages');
+    const linkTitle = editor.querySelector('.hb-link-title');
 
     const view = { x: 40, y: 40, k: 1 };
     const size = { w: 800, h: 600 };
@@ -80,6 +113,8 @@
     let busy = false; // an AI is writing the open pin
     let press = null; // a press on the canvas, until it is a pan or a click
     let carry = null; // a pin being dragged: new, or one already placed
+    let tool = null; // the zone tool armed: rect, circle, path
+    let drawing = null; // a zone being drawn
     let swallowClick = false;
 
     const resolve = opts.resolve || ((target) => (target ? content.querySelector(`[data-pin="${CSS.escape(target)}"]`) : null));
@@ -137,6 +172,81 @@
       content.style.width = w + 'px'; content.style.height = h + 'px';
       edges.setAttribute('width', w); edges.setAttribute('height', h);
       edges.setAttribute('viewBox', `0 0 ${w} ${h}`);
+      // A zero-sized SVG paints nothing, overflow or not: the zones' layer is the board's size.
+      zoneLayer.setAttribute('width', w); zoneLayer.setAttribute('height', h);
+      zoneLayer.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    }
+
+    // ---- the zones -----------------------------------------------------------------
+    // A zone's outline, as SVG in board units; the layer transforms with the world.
+    function zoneMarkup(shape, cls, extra) {
+      const p = shape.points;
+      if (!p || p.length < 2) return '';
+      if (shape.kind === 'rect') {
+        const x = Math.min(p[0][0], p[1][0]); const y = Math.min(p[0][1], p[1][1]);
+        const w = Math.abs(p[1][0] - p[0][0]); const h = Math.abs(p[1][1] - p[0][1]);
+        return `<rect class="${cls}" ${extra} x="${x}" y="${y}" width="${w}" height="${h}" rx="6"></rect>`;
+      }
+      if (shape.kind === 'circle') {
+        const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]);
+        return `<circle class="${cls}" ${extra} cx="${p[0][0]}" cy="${p[0][1]}" r="${r}"></circle>`;
+      }
+      return `<polygon class="${cls}" ${extra} points="${p.map((q2) => `${q2[0]},${q2[1]}`).join(' ')}"></polygon>`;
+    }
+    // Where a zone's pin stands: the top of the outline.
+    function anchorOf(shape) {
+      const p = shape.points;
+      if (shape.kind === 'rect') return { x: Math.min(p[0][0], p[1][0]), y: Math.min(p[0][1], p[1][1]) };
+      if (shape.kind === 'circle') return { x: p[0][0], y: p[0][1] - Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]) };
+      let top = p[0];
+      for (const q2 of p) if (q2[1] < top[1]) top = q2;
+      return { x: top[0], y: top[1] };
+    }
+    function drawZones() {
+      let h = '';
+      notes.forEach((n) => {
+        if (!n.shape) return;
+        const cls = ['hb-zone', n.kind || 'note', openId === n.id ? 'open' : ''].join(' ');
+        h += zoneMarkup(n.shape, cls, `data-zone-id="${esc(n.id)}"`);
+      });
+      if (drawing && drawing.shape.points.length > 1) h += zoneMarkup(drawing.shape, 'hb-zone drawing', '');
+      zoneLayer.innerHTML = h;
+    }
+    function armTool(name) {
+      tool = tool === name ? null : name;
+      host.querySelectorAll('[data-zone]').forEach((b) => b.classList.toggle('on', b.dataset.zone === tool));
+      host.classList.toggle('drawing', !!tool);
+    }
+    function startDraw(e) {
+      const at = toBoard(e.clientX, e.clientY);
+      drawing = { shape: { kind: tool, points: [[at.x, at.y], [at.x, at.y]] }, pointer: e.pointerId, startX: e.clientX, startY: e.clientY };
+      host.setPointerCapture(e.pointerId);
+      if (openId) closeNote();
+      list.hidden = true;
+    }
+    function moveDraw(e) {
+      const at = toBoard(e.clientX, e.clientY);
+      const p = drawing.shape.points;
+      if (drawing.shape.kind === 'path') {
+        const last = p[p.length - 1];
+        if (Math.hypot(at.x - last[0], at.y - last[1]) >= PATH_STEP && p.length < MAX_POINTS) p.push([at.x, at.y]);
+      } else {
+        p[1] = [at.x, at.y];
+      }
+      drawZones();
+    }
+    function endDraw(e) {
+      const d = drawing;
+      drawing = null;
+      armTool(null);
+      const moved = Math.hypot(e.clientX - d.startX, e.clientY - d.startY);
+      const enough = d.shape.kind === 'path' ? d.shape.points.length >= 3 : moved >= MIN_ZONE;
+      if (!enough) { drawZones(); return; }
+      const a = anchorOf(d.shape);
+      const n = { id: newId(), text: '', at: '', kind: 'note', turns: 0, fresh: true, target: '', dx: 0, dy: 0, x: a.x, y: a.y, shape: d.shape };
+      notes.push(n);
+      drawZones();
+      openNote(n);
     }
 
     // ---- the pins ----------------------------------------------------------------
@@ -157,16 +267,18 @@
       let h = '';
       notes.forEach((n, i) => {
         if (carry && carry.note === n) return;
-        const p = placeOf(n);
+        const p = n.shape ? Object.assign(anchorOf(n.shape), { orphan: false }) : placeOf(n);
+        if (n.shape) { n.x = p.x; n.y = p.y; }
         const s = toScreen(p.x, p.y);
         if (s.x < -30 || s.y < -30 || s.x > r.width + 30 || s.y > r.height + 60) return;
         const kind = n.kind || 'note';
-        const cls = ['hb-pin', kind, p.orphan ? 'orphan' : '', n.text || kind !== 'note' ? '' : 'empty', openId === n.id ? 'open' : ''].join(' ');
-        const tip = `${kind}: ${n.text || 'empty'}${p.orphan ? ' — what it was on is gone' : ''}`;
+        const cls = ['hb-pin', kind, p.orphan ? 'orphan' : '', n.shape ? 'zone' : '', n.text || kind !== 'note' ? '' : 'empty', openId === n.id ? 'open' : ''].join(' ');
+        const tip = `${kind}${n.shape ? ' (zone)' : ''}: ${n.text || (kind === 'link' && n.page ? '→ ' + n.page : 'empty')}${p.orphan ? ' — what it was on is gone' : ''}`;
         h += `<button type="button" class="${cls}" data-note-id="${esc(n.id)}" style="left:${s.x}px;top:${s.y}px" title="${esc(tip)}"><span>${i + 1}</span></button>`;
       });
       pinLayer.innerHTML = h;
       q('.hb-count').textContent = notes.length;
+      drawZones();
       placeEditor();
     }
     function placeEditor() {
@@ -194,11 +306,39 @@
         if (busy) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
       });
       const session = editor.querySelector('.hb-session');
-      session.hidden = kind === 'note' || !opts.onSession;
+      session.hidden = kind === 'note' || kind === 'link' || !opts.onSession;
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
       textarea.disabled = busy;
-      textarea.placeholder = kind === 'note' ? 'Write a note — or the first prompt of a brainstorm or an asking…' : 'Where the discussion stands — rewritten when you leave the session';
+      textarea.placeholder = {
+        note: 'Write a note — or the first prompt of a brainstorm, an asking or a simulate…',
+        link: 'The objective of the page this leads to — what a new page is drawn from',
+        simulate: 'The request: what happens, and the page shows the result',
+      }[kind] || 'Where the discussion stands — rewritten when you leave the session';
+      drawLink(n, kind);
     }
+    // A link's editor: the page it leads to, among the pages the pane knows,
+    // or a new one to create — named here, drawn by an AI session.
+    function drawLink(n, kind) {
+      linkBox.hidden = kind !== 'link' || !opts.pages;
+      editor.querySelector('.hb-link-go').hidden = linkBox.hidden;
+      if (linkBox.hidden) return;
+      const pages = opts.pages() || [];
+      const known = pages.some((p) => p.path === n.page);
+      const fresh = n.page && !known;
+      linkPages.innerHTML = '<option value="">choose a page…</option>'
+        + pages.map((p) => `<option value="${esc(p.path)}"${p.path === n.page ? ' selected' : ''}>${esc(p.title)}</option>`).join('')
+        + `<option value="__new"${fresh ? ' selected' : ''}>+ a new page…</option>`;
+      editor.querySelector('.hb-link-new').hidden = !fresh && linkPages.value !== '__new';
+      if (fresh && !linkTitle.value) linkTitle.value = n.page.replace(/^pages\//, '').replace(/\.html$/, '').replace(/-/g, ' ');
+      editor.querySelector('[data-note="go"]').hidden = !known;
+      editor.querySelector('[data-note="create"]').hidden = !fresh || !opts.onSession;
+      editor.querySelector('[data-note="create"]').textContent = n.turns ? 'Continue the page\'s session' : 'Create it with an AI session';
+    }
+    // `pages/<slug>.html`, from a title — the same plain name the server makes.
+    const pagePath = (title) => {
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+      return `pages/${slug || 'page'}.html`;
+    };
     function openNote(n) {
       flush();
       openId = n.id;
@@ -216,9 +356,11 @@
       openId = null;
       editor.hidden = true;
       // An empty note that never was saved is a pin dropped by mistake.
-      if (n && n.fresh && !n.text.trim() && (n.kind || 'note') === 'note') {
+      if (n && n.fresh && !n.text.trim() && (n.kind || 'note') === 'note' && !n.shape) {
         notes = notes.filter((x) => x !== n);
       }
+      // A zone drawn and left without a word is still a zone: kept.
+      if (n && n.fresh && n.shape) save(n, true);
       drawPins();
     }
     function setState(text) { editor.querySelector('.hb-note-state').textContent = text; }
@@ -341,9 +483,9 @@
         }
         return;
       }
-      // A brainstorm or an asking opens its session on what the note says.
-      if (kind !== 'note' && !(n.text || '').trim()) {
-        setState('write the first prompt first: the note is what the AI is asked');
+      // A brainstorm, an asking or a simulate opens its session on what the note says.
+      if (kind !== 'note' && kind !== 'link' && !(n.text || '').trim()) {
+        setState(kind === 'simulate' ? 'write the request first: it is what the AI simulates' : 'write the first prompt first: the note is what the AI is asked');
         textarea.focus();
         return;
       }
@@ -377,7 +519,9 @@
       carry.ghost.hidden = true;
       const under = document.elementFromPoint(e.clientX, e.clientY);
       carry.ghost.hidden = false;
-      const part = under && content.contains(under) ? under.closest('[data-pin]') : null;
+      let part = under && content.contains(under) ? under.closest('[data-pin]') : null;
+      // A part the board cannot see itself — inside an iframe — is asked of the pane.
+      if (!part && opts.under && under && content.contains(under)) part = opts.under(e.clientX, e.clientY);
       if (carry.over !== part) {
         if (carry.over) carry.over.classList.remove('hb-target');
         if (part) part.classList.add('hb-target');
@@ -402,7 +546,14 @@
       const target = c.over ? c.over.getAttribute('data-pin') : '';
       const b = c.over ? boxOf(c.over) : { x: 0, y: 0 };
       const n = c.note || { id: newId(), text: '', at: '', kind: 'note', turns: 0, fresh: true };
-      Object.assign(n, { target, dx: at.x - b.x, dy: at.y - b.y, x: at.x, y: at.y });
+      // A zone moved is a zone translated: its outline follows.
+      if (n.shape) {
+        const ddx = at.x - n.x; const ddy = at.y - n.y;
+        n.shape.points = n.shape.points.map(([px, py]) => [px + ddx, py + ddy]);
+        Object.assign(n, { target: '', dx: 0, dy: 0, x: at.x, y: at.y });
+      } else {
+        Object.assign(n, { target, dx: at.x - b.x, dy: at.y - b.y, x: at.x, y: at.y });
+      }
       if (!c.note) notes.push(n);
       else if (!n.fresh) save(n, true);
       openNote(n);
@@ -411,11 +562,17 @@
     // ---- events ------------------------------------------------------------------
     const onPointerDown = (e) => {
       if (e.button !== 0) return;
-      const tool = e.target.closest('.hb-pin-tool');
-      if (tool) return startCarry(e, null);
+      const pinTool = e.target.closest('.hb-pin-tool');
+      if (pinTool) return startCarry(e, null);
       const pin = e.target.closest('.hb-pin[data-note-id]');
       if (pin) return startCarry(e, notes.find((n) => n.id === pin.dataset.noteId));
       if (e.target.closest('.hb-tools, .hb-note, .hb-list')) return undefined;
+      const zone = e.target.closest('[data-zone-id]');
+      if (zone && !tool) {
+        const n = notes.find((x) => x.id === zone.dataset.zoneId);
+        if (n) { openNote(n); return undefined; }
+      }
+      if (tool) { startDraw(e); return undefined; }
       if (openId) closeNote();
       list.hidden = true;
       press = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, panning: false, pointer: e.pointerId };
@@ -423,6 +580,7 @@
     };
     const onPointerMove = (e) => {
       if (carry) return moveCarry(e);
+      if (drawing) { moveDraw(e); return undefined; }
       if (!press) return undefined;
       const dx = e.clientX - press.x;
       const dy = e.clientY - press.y;
@@ -440,6 +598,7 @@
     };
     const onPointerUp = (e) => {
       if (carry) return dropCarry(e);
+      if (drawing) { endDraw(e); swallowClick = true; return undefined; }
       if (press && press.panning) swallowClick = true;
       press = null;
       host.classList.remove('panning');
@@ -467,6 +626,8 @@
       opts.onSession(n, opts.context ? opts.context(n.target) : '');
     }
     const onToolClick = (e) => {
+      const zoneTool = e.target.closest('[data-zone]');
+      if (zoneTool) { armTool(zoneTool.dataset.zone); return; }
       const b = e.target.closest('[data-hb]');
       if (b) {
         const r = host.getBoundingClientRect();
@@ -498,6 +659,31 @@
       if (act.dataset.note === 'close') closeNote();
       if (act.dataset.note === 'delete' && n) remove(n);
       if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
+      if (act.dataset.note === 'go' && n && n.page && opts.goto) { flush(); opts.goto(n.page); }
+      if (act.dataset.note === 'create' && n && n.page && opts.onSession) openSession(n);
+    };
+    // The page a link leads to: chosen among the pane's, or a new one named here.
+    const onLinkChange = () => {
+      const n = notes.find((x) => x.id === openId);
+      if (!n) return;
+      if (linkPages.value === '__new') {
+        editor.querySelector('.hb-link-new').hidden = false;
+        linkTitle.focus();
+        return;
+      }
+      n.page = linkPages.value;
+      n.at = new Date().toISOString();
+      save(n, true);
+      drawLink(n, 'link');
+      drawPins();
+    };
+    const onLinkTitle = () => {
+      const n = notes.find((x) => x.id === openId);
+      if (!n || !linkTitle.value.trim()) return;
+      n.page = pagePath(linkTitle.value);
+      n.at = new Date().toISOString();
+      save(n, false);
+      editor.querySelector('[data-note="create"]').hidden = !opts.onSession;
     };
     const onInput = () => {
       const n = notes.find((x) => x.id === openId);
@@ -530,6 +716,8 @@
     host.addEventListener('click', onToolClick);
     host.addEventListener('wheel', onWheel, { passive: false });
     textarea.addEventListener('input', onInput);
+    linkPages.addEventListener('change', onLinkChange);
+    linkTitle.addEventListener('input', onLinkTitle);
     editor.addEventListener('keydown', onKey);
     document.addEventListener('keydown', onUndoKey);
     const resized = new ResizeObserver(() => drawPins());
@@ -539,6 +727,7 @@
     apply();
 
     return {
+      id,
       content,
       edges,
       setSize,
@@ -548,6 +737,21 @@
       reload: load,
       setBoard,
       board: () => id,
+      zoom: () => view.k,
+      // A link to a page that does not exist yet, dropped near the top left
+      // of what is shown and opened on its "new page" form.
+      newLink() {
+        if (!kinds.includes('link')) return;
+        const r = host.getBoundingClientRect();
+        const at = toBoard(r.left + 70, r.top + 90);
+        const n = { id: newId(), text: '', at: '', kind: 'link', page: '', turns: 0, fresh: true, target: '', dx: 0, dy: 0, x: at.x, y: at.y };
+        notes.push(n);
+        openNote(n);
+        linkPages.value = '__new';
+        editor.querySelector('.hb-link-new').hidden = false;
+        linkTitle.value = '';
+        setTimeout(() => linkTitle.focus(), 0);
+      },
       notesOn: (target) => notes.filter((n) => n.target === target),
       open: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n) openNote(n); },
       destroy() {

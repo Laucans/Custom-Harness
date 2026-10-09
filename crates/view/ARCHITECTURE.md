@@ -176,7 +176,7 @@ time (`domain::cleanup`), the walk and the removal are the `Yard` port's
 | a run's folder under `logs/`, its `flow-*.jsonl` with it | 30 days old |
 | `init/`, the throwaway clones of `init-repo` | idle a day |
 | a stray, a folder the harness never writes | only when the human allows it, idle a day |
-| a clone's code, `.git`, the ledgers, the event store, the locks, the view's mirror | never |
+| a clone's code, `.git`, the ledgers, the event store, the locks, the view's mirror and mock-up workspaces | never |
 
 A name that a project might commit (`dist`, `build`) is not on the list: a
 sweep never takes what a reset would not give back. A folder under the
@@ -313,13 +313,20 @@ table; a part gone leaves its pin grey where it was. A pin belongs to **one
 branch**: the data pane keeps a board per branch (`data-model--main-agent`,
 `data-model--milestone-3`), switched with the branch shown (`board.setBoard`).
 
-A pin is one of three kinds (`domain::annotations::Kind`):
+A pin is one of five kinds (`domain::annotations::Kind`):
 
 | kind | colour | what it is |
 | --- | --- | --- |
 | note | yellow | the human's words |
 | brainstorm | green | an **AI session** about the part, opened from the pin |
 | asking | orange | a change to consider when the next roadmap is built — its session kept too; how it reaches the planner is parked (`docs/PARKED.md`) |
+| link | blue | on the mock-up: leads to another page of the product, or creates one from an objective |
+| simulate | purple | on the mock-up: a request whose result an AI session shows by editing the page |
+
+A pin may be a **zone** instead of a point: the toolbar's rectangle, circle
+and freehand tools draw an outline around several parts (`Note::shape`, in
+board units, drawn in the `hb-zones` SVG layer that pans and zooms with the
+world), annotated as one pin, moved as one.
 
 A brainstorm or an asking starts from the note's text — it cannot be one
 while the note is empty — and that text is the **first prompt** of its first
@@ -357,6 +364,56 @@ must not make are starting a second watch and stopping one mid-session
 without saying so. `--permission-mode` comes from the same `PERMISSION_MODE`
 the launcher passes to every session. The page is bound to `127.0.0.1` for
 a reason: this terminal is a shell in the checkout.
+
+## The mock-up, on its easel
+
+The easel in the architecture office opens the **mock-up**: the product's
+frontend without a backend — the static pages under `mock/` of the branch
+shown, one per screen, on JSON fixtures (contract N, `mock/pages.json`) —
+run in an iframe on a board. The bar offers the same branches as the data
+pane (`main`, the integration branch, `feature ▾`), then the branch's
+pages; the board is **one per branch and page** (`mockup--<branch>--<page>`),
+so pins stay where they were left when the page changes. A transparent
+shield over the iframe gives the board its pans and drops; `interact`
+lifts it to click through to the page, and a page that navigates itself is
+followed.
+
+The board cannot reach inside an iframe, so the pane answers for it
+(`mockup.js`): `under(x, y)` finds the part under the pointer in the page's
+document — a `data-component`, an `id`, else a short tag path — and
+`resolve(target)` finds it again, each as a stand-in that carries the
+part's box through the iframe's place and the board's zoom. A pin's
+session is told the page, its objective and the part's markup.
+
+Two kinds are the mock-up's own. A **link** leads to another page — chosen
+in its editor — or to a page that does not exist yet: named there, drawn by
+an AI session from the objective the human writes (`+ page` in the bar does
+the same from the bar). A **simulate** is a request — "the customer pays
+late" — and its session edits the page and its fixtures to show the
+result. These sessions **edit**: they open in the launcher's permission
+mode (a brainstorm stays in plan mode), in a **workspace** of the branch
+the view makes on the first one — a detached `git worktree` of the mirror
+under `.llocal/view-mockups/<branch slug>/` — and from then on the easel
+serves the workspace, polling `/api/mockup?branch=` for a stamp that
+changes with its files and reloading the page when it does. Nothing is
+committed by a session. The bar then shows **edited, not saved**: `save the
+mock-up` commits what changed under `mock/` on a new `mockup/<name>` branch
+and pushes it (the code stage reads a `mockup/*` branch before building the
+screen it names); `discard` removes the workspace, and the branch's
+mock-up is shown as committed again. A product with no `mock/` yet shows an
+empty canvas and the one thing that can be done on it: the first page.
+
+Everything goes through the `Mockups` port (`adapters::mockups`): on
+GitHub, `GitMockups` over the same `git_units::Mirror` the capabilities
+list reads (`show`, `head_of`, a worktree per edited branch); under
+`--demo`, `DirMockups` serves the sample's folders and a session edits them
+in place. Routes `GET /mock/{branch slug}/{*path}` (a page's relative links
+resolve beside it), `GET /api/mockup?branch=`, `POST /api/mockup/{save,discard}`;
+`POST /api/notes/{board}/{id}/session` carries the branch and the page for
+a board named `mockup--…`, and the server makes the workspace before the
+session opens. The product's rules on the mock-up — one page per screen,
+`data-component` on every Micro-UI, the gates that refuse a screen no page
+mocks — are `harness-architecture`'s (contract N, `tree::violations`).
 
 ## The capabilities list
 
@@ -417,7 +474,7 @@ matter, and the merged unit. Route `GET /api/capabilities?fresh=`.
 ```
 src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
-src/note_desks.rs      the pins' sessions at work: one Claude Code per open pin, its turns read back when it closes
+src/note_desks.rs      the pins' sessions at work: one Claude Code per open pin, its turns read back when it closes; a simulate or a page to create edits the mock-up's workspace
 src/units_desk.rs      the capabilities list's reading, kept a minute; the fusion's one question to the model
 src/data_desk.rs       the data desk: one task owning the Product port, versions cached, the handlers answered by channel
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
@@ -438,28 +495,30 @@ src/domain/            the inside — no disk, no subprocess, no clock
   cleanup.rs           the janitor's rules: what in the yard is no longer useful, the pie, the limit and the threshold
   data_versions.rs     the archive's versions in the page's order: main, the integration branch, the features
   divergence.rs        a diagnosed divergence found in the events, and the issue a human opens from it
-  annotations.rs       the human's pins: their kinds, the checks before one is kept, what ctrl+z can still bring back
-  note_session.rs      a pin's AI session: what it is told, what is kept of it, what is handed back (40k whole, else summary + 10k)
+  annotations.rs       the human's pins: their kinds, a zone's outline, the checks before one is kept, what ctrl+z can still bring back
+  mockup.rs            the mock-up as the easel shows it: a branch as a URL slug, the pages of mock/pages.json, which paths may be served, the branch a save goes to
+  note_session.rs      a pin's AI session: what it is told (a talk, a simulate, a page to draw), what is kept of it, what is handed back (40k whole, else summary + 10k)
   capabilities.rs      the capabilities list: every unit on every branch, its status, contracts, callers, rules, dates
   fusion.rs            could two units be one: the deterministic comparison, and the small question the model words it from
   prompts.rs           a station's prompts for the pane: the catalog, the book and the drafts together; an edit, a revert, a withdrawal; what waits
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), NoteStore (the pins), Oneshot / Transcripts / TerminalMaker (a pin's session), Prompts (the book read only, the drafts), Trials (the dry-runs), Units (the product's manifests on every branch)
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), NoteStore (the pins), Oneshot / Transcripts / TerminalMaker (a pin's session), Prompts (the book read only, the drafts), Trials (the dry-runs), Units (the product's manifests on every branch), Mockups (the mock-up's pages and files on every branch, a workspace a session edits, the branch it is saved to)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   fs_yard.rs           .llocal walked and swept with std::fs, symlinks never followed, every path kept inside
-  git_units.rs         the product's manifests: a bare mirror under .llocal/view-mirror, a --data-dir checkout, or the demo's folders
+  git_units.rs         the product's manifests, and the Mirror they are read through: a bare mirror under .llocal/view-mirror, a --data-dir checkout, or the demo's folders
+  mockups.rs           the mock-up through the same mirror, a detached worktree per edited branch under .llocal/view-mockups, saved on a mockup/* branch; the demo's folders in place
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   sqlite_notes.rs      the pins and their conversations, in .llocal/harness.db
   claude_cli.rs        claude -p asked once (summary, conclusion, request), and Claude Code's transcripts read back
   prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
-static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
-sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests, one folder per branch, dates.tsv)
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
+static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it), vendor/ (xterm.js), render/ (built, not committed)
+sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```
 
 **Every table sorts on a click of its header** — ascending, then
@@ -542,7 +601,7 @@ same `.env.local` the launcher reads. The page listens on `127.0.0.1:7878`
 ## What is deliberately not here yet
 
 Room 2's own conversation with Claude Code about an issue (the steward's
-terminal is the plant-wide one), its mock-up, room 6 —
+terminal is the plant-wide one), room 6 —
 each shows its place and says so. Level D is wired for the lines (station,
 employee, line), the sign, the chimneys, the issues, the store, the control
 room, the steward and the doctor; the other components open a placeholder that names

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.agent-native.dev/n-mock-pages.schema.json",
+  "title": "N. Mock pages",
+  "description": "The pages of the product's mock-up: a static frontend under `mock/`, one HTML page per screen, on JSON fixtures and no backend. What the factory view shows on its easel, and what the gates check every screen has.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^pages/[a-z0-9][a-z0-9/-]*\\.html$",
+            "description": "The page's file, relative to `mock/`: `pages/credit-review.html`."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What a human calls it in the list of pages."
+          },
+          "objective": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The user goal the page serves — the sentence the page was created from."
+          },
+          "screen": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "description": "The frozen screen composition this page mocks (`apps/screens/<screen>.json`), once it exists."
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Za-z0-9]*$"
+            },
+            "description": "The Micro-UIs the page shows; each is marked `data-component=\"<MicroUi>\"` on its root element in the page."
+          }
+        },
+        "required": [
+          "path",
+          "title",
+          "objective"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "version",
+    "pages"
+  ],
+  "additionalProperties": false
+}
