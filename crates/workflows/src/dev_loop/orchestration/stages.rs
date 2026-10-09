@@ -495,7 +495,7 @@ mod tests {
     fn the_test_scope_names_the_script_init_repo_installs() {
         // The prompt and the installer agree on one path, or the session
         // falls back to the whole workspace without anyone noticing.
-        let installed = crate::init_repo::data::install::FILES
+        let installed = harness_architecture::assets::FILES
             .iter()
             .any(|asset| asset.path.starts_with("scripts/") && TEST_SCOPE.contains(asset.path));
         assert!(installed, "TEST_SCOPE names a script init-repo installs");

@@ -16,7 +16,11 @@
 //! a human can write one by hand and a session can read it without a parser
 //! worth the name.
 
-use crate::common::labels;
+/// The label a read-side task carries, on its issue and in its declaration.
+pub const READ_SIDE: &str = "harness:read-side";
+
+/// The label a write-side task carries, on its issue and in its declaration.
+pub const WRITE_SIDE: &str = "harness:write-side";
 
 /// What a task builds, in the architecture's own words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,8 +156,8 @@ impl Side {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Read => labels::READ_SIDE,
-            Self::Write => labels::WRITE_SIDE,
+            Self::Read => READ_SIDE,
+            Self::Write => WRITE_SIDE,
         }
     }
 }
@@ -491,7 +495,7 @@ mod tests {
 
     #[test]
     fn the_side_names_its_label() {
-        assert_eq!(Side::Read.label(), labels::READ_SIDE);
-        assert_eq!(Side::Write.label(), labels::WRITE_SIDE);
+        assert_eq!(Side::Read.label(), READ_SIDE);
+        assert_eq!(Side::Write.label(), WRITE_SIDE);
     }
 }

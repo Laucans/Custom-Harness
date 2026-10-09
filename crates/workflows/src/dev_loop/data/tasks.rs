@@ -29,8 +29,8 @@
 
 use harness_core::domain::Issue;
 
-use crate::common::architecture::{Declaration, Side};
 use crate::common::{labels, sections};
+use harness_architecture::vocabulary::{Declaration, Side};
 
 /// True if the issue is a task the agent can run.
 #[must_use]

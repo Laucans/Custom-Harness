@@ -2781,6 +2781,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-architecture"
+version = "0.1.0"
+dependencies = [
+ "harness-core",
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "harness-core"
 version = "0.1.0"
 dependencies = [
@@ -2827,6 +2837,7 @@ dependencies = [
  "axum",
  "clap",
  "harness-adapters",
+ "harness-architecture",
  "harness-core",
  "harness-notify",
  "harness-workflows",
@@ -2864,6 +2875,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "harness-adapters",
+ "harness-architecture",
  "harness-core",
  "proptest",
  "serde",

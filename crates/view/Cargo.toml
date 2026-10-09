@@ -16,6 +16,7 @@ async-trait.workspace = true
 axum.workspace = true
 clap.workspace = true
 harness-adapters.workspace = true
+harness-architecture.workspace = true
 harness-core.workspace = true
 harness-workflows.workspace = true
 harness-notify.workspace = true

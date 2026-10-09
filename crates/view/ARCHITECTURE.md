@@ -231,8 +231,8 @@ once read (a version never changes), and reads the index and the live files
 again after a while. Routes `GET /api/data-model?branch=&dir=` and
 `GET /api/data-model/versions`.
 
-`harness_workflows::data_snapshot::data::schema_sql` reads the DDL (a tokenizer and five statement shapes,
-never a panic: what it does not understand it skips), `…::data::model`
+`harness_architecture::schema_sql` reads the DDL (a tokenizer and five statement shapes,
+never a panic: what it does not understand it skips), `harness_architecture::model`
 merges the two field by field and lists every **divergence** — a table, a
 field or a key only one side has, a type or a nullability they disagree on.
 Either file alone draws the diagram. `model.json`:

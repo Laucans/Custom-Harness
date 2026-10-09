@@ -11,10 +11,10 @@ use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 
-use crate::common::architecture::{Declaration, Unit};
 use crate::common::{labels, sections};
 use crate::refinement::data::rounds;
 use crate::refinement::data::state::RefinementState;
+use harness_architecture::vocabulary::{Declaration, Unit};
 
 /// The factory for a section stage's `skip`: does this round write it?
 pub struct SectionIsWanted {

@@ -108,9 +108,10 @@ pub const PR_FIX: &str = "harness:pr-fix";
 /// they touch is shared.
 ///
 /// Posed by `split` from the task's `## Architecture` section
-/// ([`crate::common::architecture`]). Never on a milestone: its side is a
-/// line of its body, and its tasks each carry their own.
-pub const READ_SIDE: &str = "harness:read-side";
+/// ([`harness_architecture::vocabulary`], which spells it). Never on a
+/// milestone: its side is a line of its body, and its tasks each carry their
+/// own.
+pub const READ_SIDE: &str = harness_architecture::vocabulary::READ_SIDE;
 
 /// The task touches the **write side** of the architecture.
 ///
@@ -122,7 +123,7 @@ pub const READ_SIDE: &str = "harness:read-side";
 /// merges it into the milestone.
 ///
 /// Posed by `split` on a task, like [`READ_SIDE`] — never on a milestone.
-pub const WRITE_SIDE: &str = "harness:write-side";
+pub const WRITE_SIDE: &str = harness_architecture::vocabulary::WRITE_SIDE;
 
 /// The task builds a milestone's **data layer**.
 ///

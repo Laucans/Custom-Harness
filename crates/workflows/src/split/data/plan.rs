@@ -7,8 +7,8 @@
 
 use serde::Deserialize;
 
-use crate::common::architecture::{Declaration, Effect, Unit};
 pub use crate::common::json_reply::ParseError;
+use harness_architecture::vocabulary::{Declaration, Effect, Unit};
 
 /// One task slice the plan wants opened, in the order tasks must be taken.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -90,7 +90,7 @@ pub fn parse(text: &str) -> Result<Vec<TaskItem>, ParseError> {
 mod tests {
     use super::*;
 
-    use crate::common::architecture::Side;
+    use harness_architecture::vocabulary::Side;
 
     #[test]
     fn a_bare_json_array_parses() {

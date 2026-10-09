@@ -11,7 +11,7 @@ use crate::data_snapshot::data::index::Head;
 use crate::data_snapshot::ports::Ports;
 
 /// The script the harness falls back on when the target keeps none.
-pub const DEFAULT_SCRIPT: &str = include_str!("../assets/dump-schema.sh");
+pub const DEFAULT_SCRIPT: &str = harness_architecture::assets::DUMP_SCHEMA;
 
 /// The agents' model, relative to the target's root.
 pub const MODEL: &str = "data/model.json";

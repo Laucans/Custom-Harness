@@ -9,12 +9,10 @@
 //! its session, not derived); `delivery` reads the `Closes #n` convention
 //! for the loop (a task is done) and the milestone merge (every task's code
 //! is really on the branch); `routing` is the one pure decision the
-//! launcher's polling loop (`harness watch`) acts on; `architecture` is the
-//! vocabulary of the agent-native architecture every target repo follows —
-//! written into a task by `split`, read back by the loop to tell a read-side
-//! task from a write-side one.
+//! launcher's polling loop (`harness watch`) acts on. The vocabulary of the
+//! agent-native architecture every target repo follows is not here: it is
+//! the `harness-architecture` crate.
 
-pub mod architecture;
 pub mod branching;
 pub mod delivery;
 pub mod explore;

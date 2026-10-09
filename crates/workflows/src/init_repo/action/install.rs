@@ -182,7 +182,8 @@ mod tests {
     use crate::common::fake_git::FakeRepos;
     use crate::common::fake_github::FakeGitHub;
     use crate::init_repo::config::fake as config_fake;
-    use crate::init_repo::data::install::{CLAUDE_MD, FILES, MARKER_OPEN};
+    use crate::init_repo::data::install::CLAUDE_MD;
+    use harness_architecture::assets::{FILES, MARKER_OPEN};
     use std::rc::Rc;
 
     fn ports(disk: Rc<FakeDisk>, repos: FakeRepos) -> Ports {
@@ -273,7 +274,7 @@ mod tests {
         }
         existing.insert(
             clone.join(CLAUDE_MD),
-            crate::init_repo::data::install::CLAUDE_RULES.to_string(),
+            harness_architecture::assets::CLAUDE_RULES.to_string(),
         );
         let disk = Rc::new(FakeDisk {
             existing,

@@ -60,9 +60,9 @@ use crate::ports::{
     BoardReading, Builds, Limits, NoteStore, Plant, Prompts, Traces, TrialAsk, Trials,
 };
 use crate::units_desk::UnitsDesk;
+use harness_architecture::model::DataModel;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
-use harness_workflows::data_snapshot::data::model::DataModel;
 
 /// The diagnoses asked of the doctor, by `workflow/run`, shared with the
 /// listeners that hear them end.

@@ -22,11 +22,15 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   and how the dependencies form. Current detail per crate in
   `crates/<crate>/ARCHITECTURE.md`; read the one for the crate you are touching
   before moving a file or adding a module.
-- Cargo workspace, seven crates, one direction only:
+- Cargo workspace, eight crates, one direction only:
   `harness-launcher` (bin) → `harness-workflows` (lib) → `harness-core`
   (lib), and `harness-view` (bin) beside the launcher on the same arrow.
   `harness-adapters` (lib) is the outside: it depends on `core`, and only
   `launcher` and `view` depend on it (`crates/adapters/ARCHITECTURE.md`).
+  `harness-architecture` (lib) is the architecture of the products the
+  harness builds — vocabulary, manifest rules, data model, the files
+  `init-repo` installs; `workflows` and `view` read it, it depends on `core`
+  only, and `core` never names it (`crates/architecture/ARCHITECTURE.md`).
   `harness-notify` (lib) decides what to tell a human from the harness's
   events and a few observed facts; `view` uses it, it depends on
   `workflows` and `core` only, and does no I/O (`crates/notify/ARCHITECTURE.md`).

@@ -9,9 +9,9 @@ use super::capture::Captured;
 use super::said;
 use crate::data_snapshot::config::Config;
 use crate::data_snapshot::data::index::{self, Head, Index, Snapshot};
-use crate::data_snapshot::data::model;
 use crate::data_snapshot::data::report::Snapped;
 use crate::data_snapshot::ports::Ports;
+use harness_architecture::model;
 
 /// The index, at the archive's root.
 pub const INDEX: &str = "index.json";

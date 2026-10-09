@@ -1,6 +1,6 @@
 # Architecture overview
 
-Seven crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
+Eight crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
 detail; this file is only the split and why the dependencies form the way they
 do.
 
@@ -9,6 +9,7 @@ harness-launcher (bin)  →  harness-workflows (lib)  →  harness-core (lib)
 harness-view     (bin)  →  harness-workflows (lib)  →  harness-core (lib)
 harness-launcher, harness-view  →  harness-adapters (lib)  →  harness-core (lib)
 harness-view     (bin)  →  harness-notify    (lib)  →  harness-workflows, harness-core
+harness-workflows, harness-view  →  harness-architecture (lib)  →  harness-core (lib)
 harness-view-render (cdylib → wasm)   depends on none of them: it draws what harness-view serves
 ```
 
@@ -18,6 +19,7 @@ harness-view-render (cdylib → wasm)   depends on none of them: it draws what h
 | --- | --- | --- |
 | `harness-core` | **the framework**: vocabulary, traces, execution shapes, ports. Names no workflow, no adapter. | [crates/core/ARCHITECTURE.md](crates/core/ARCHITECTURE.md) |
 | `harness-adapters` | **the outside**: one implementation per port — `git`, `gh`, the `claude` CLI, the disk, the ledgers, SQLite. Only the two outer rings depend on it. | [crates/adapters/ARCHITECTURE.md](crates/adapters/ARCHITECTURE.md) |
+| `harness-architecture` | **the target's architecture**: the agent-native architecture every product the harness builds follows — its vocabulary (`Unit`, `Side`, `Layer`, the `## Architecture` declaration), a checkout read as manifests and the rules it must keep, the product's data model (`model.json` merged with the DDL), and the files `init-repo` installs. Names no workflow; reads through core's `Disk` port only. | [crates/architecture/ARCHITECTURE.md](crates/architecture/ARCHITECTURE.md) |
 | `harness-workflows` | **the instances**: the workflows declared against that framework — `dev_loop`, `refinement`, `planner`, `split`, `pr_review`, `pr_fix`, `data_diagnosis`, plus three deterministic commands (`init_repo`, `main_agent_merge`, `data_snapshot`). | [crates/workflows/ARCHITECTURE.md](crates/workflows/ARCHITECTURE.md) |
 | `harness-launcher` | **the entry points**: the `harness` binary, the CLI, the router, and the place that builds the adapters a run needs. | [crates/launcher/ARCHITECTURE.md](crates/launcher/ARCHITECTURE.md) |
 | `harness-view` | **the plant**: a local web page that shows the harness as an isometric factory, read from the traces a run leaves behind. A second outer ring; it writes nothing the harness reads — a prompt edited there is a draft the watch applies itself when it starts. | [crates/view/ARCHITECTURE.md](crates/view/ARCHITECTURE.md) |

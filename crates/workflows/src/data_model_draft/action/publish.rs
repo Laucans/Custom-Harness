@@ -12,7 +12,7 @@ use harness_core::ports::shell::github::GitHub;
 
 use super::said;
 use crate::data_model_draft::data::state::DraftState;
-use crate::data_snapshot::data::model::{self, Declared, MODEL_PATH};
+use harness_architecture::model::{self, Declared, MODEL_PATH};
 
 /// Publishes the draft.
 pub struct Publish {

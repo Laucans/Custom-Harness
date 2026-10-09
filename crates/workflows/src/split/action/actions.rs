@@ -15,9 +15,9 @@ use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
-use crate::dev_loop::checks::architecture::Tree;
 use crate::split::data::plan;
 use crate::split::data::state::SplitState;
+use harness_architecture::tree::Tree;
 
 /// Reads, for free, what the paid step must not repeat: the task slices
 /// already open under this milestone.
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn the_inventory_names_what_exists_exactly() {
-        use crate::dev_loop::checks::architecture::{CapabilityCrate, Manifest};
+        use harness_architecture::tree::{CapabilityCrate, Manifest};
         let manifest = |path: &str, json: &str| Manifest {
             path: path.to_string(),
             json: serde_json::from_str(json).ok(),

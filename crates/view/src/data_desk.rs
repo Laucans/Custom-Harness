@@ -20,9 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::domain::data_versions::{self, Versions};
 use crate::ports::Product;
-use harness_workflows::data_snapshot::data::model::{
-    self as data_model, DataModel, MODEL_PATH, SCHEMA_PATH,
-};
+use harness_architecture::model::{self as data_model, DataModel, MODEL_PATH, SCHEMA_PATH};
 
 /// How long the archive's index is trusted before it is read again.
 const INDEX_FRESH: Duration = Duration::from_secs(20);

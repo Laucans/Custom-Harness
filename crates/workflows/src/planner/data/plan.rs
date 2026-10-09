@@ -7,9 +7,9 @@
 
 use serde::Deserialize;
 
-use crate::common::architecture::Side;
 pub use crate::common::json_reply::ParseError;
 use crate::common::sections;
+use harness_architecture::vocabulary::Side;
 
 /// One milestone the plan wants opened, in delivery order.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

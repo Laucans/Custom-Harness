@@ -1,0 +1,16 @@
+[package]
+name = "harness-architecture"
+description = "The agent-native architecture every target repository follows: its vocabulary, its rules, its data model and the files that install it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# `Disk` only: the port the tree of a checkout is read through.
+harness-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -16,8 +16,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use harness_architecture::vocabulary::{Declaration, Unit};
 use harness_core::domain::Issue;
-use harness_workflows::common::architecture::{Declaration, Unit};
 use harness_workflows::common::sections;
 use serde::Serialize;
 use serde_json::Value;

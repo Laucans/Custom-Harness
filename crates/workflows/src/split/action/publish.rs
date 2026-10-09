@@ -29,10 +29,10 @@ use harness_core::ports::shell::github::GitHub;
 
 use std::collections::BTreeMap;
 
-use crate::common::architecture::{Layer, Side, Unit};
 use crate::common::{branching, labels, sections};
 use crate::split::data::plan;
 use crate::split::data::state::SplitState;
+use harness_architecture::vocabulary::{Layer, Side, Unit};
 
 /// A task's body and labels, from its slice.
 ///

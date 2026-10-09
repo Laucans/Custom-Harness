@@ -16,7 +16,7 @@
 //! [`SCOPE`] and [`ARCHITECTURE`] are written once, by `split`, and belong to
 //! no refinement phase — so every round carries them through untouched. The
 //! second says what the task *is* in the agent-native architecture (see
-//! [`crate::common::architecture`]). The first exists because the boundary
+//! [`harness_architecture::vocabulary`]). The first exists because the boundary
 //! a slice states ("covers this, does not cover that") was the most useful
 //! sentence in a task's body and the refinement used to overwrite it: the body
 //! was replaced by the five sections it knows, and the only record of what the
@@ -42,7 +42,7 @@ pub const SCOPE: &str = "scope";
 ///
 /// What the task is in the agent-native architecture — its unit, its
 /// system, the Concept it implements, the effect of a `DataCapability`.
-/// Read back by [`crate::common::architecture`]; the loop derives the
+/// Read back by [`harness_architecture::vocabulary`]; the loop derives the
 /// task's side from it, so a refinement that rewrote it could move a task
 /// across the read/write frontier behind the labels' back.
 pub const ARCHITECTURE: &str = "architecture";

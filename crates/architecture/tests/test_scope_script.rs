@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use harness_workflows::init_repo::data::install::FILES;
+use harness_architecture::assets::FILES;
 
 /// A target repository on `task`, branched from `main_agent`, removed on drop.
 struct Repo {
