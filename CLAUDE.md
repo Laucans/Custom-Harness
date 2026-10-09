@@ -77,9 +77,10 @@ the rules a diff is checked against:
 - **The inside never names a type from `adapters`.** `domain/`, `execution/`,
   `ports/` and every workflow take `Rc<dyn Trait>`; only the two outer rings
   build a concrete adapter — `harness-launcher` builds `GhCli`, `GitCli`,
-  `ClaudeCliFactory`, `Checkpoint`, `ReviewLedger`, `DirLocks`; `harness-view`
-  builds `GhCli` and its own read-only `FsTraces`, in its `main.rs` and
-  nowhere else. Two exceptions, both test-only: a fixture may wire `Rehearsal`
+  `ClaudeCliFactory`, `Checkpoint`, `ReviewLedger`, `DirLocks`, in its
+  composition root (`dispatch/*.rs` and `router.rs`, never in the inside rings);
+  `harness-view` builds `GhCli` and its own read-only `FsTraces`, in its
+  `main.rs` and nowhere else. Two exceptions, both test-only: a fixture may wire `Rehearsal`
   as its session factory (core's own stand-in carrier, the one `--dry-run`
   wires), and a test may name a concrete adapter when that adapter's real
   behaviour is what is under test — `DirLocks` in core's workflow test, which
