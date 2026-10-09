@@ -821,7 +821,8 @@ mod tests {
 
         #[test]
         fn a_book_and_its_drafts_survive_their_own_json(
-            texts in proptest::collection::vec("\\PC{1,40}", 1..8),
+            // Never blank: `Drafts::propose` refuses a blank text.
+            texts in proptest::collection::vec("[^\\s]\\PC{0,39}", 1..8),
         ) {
             let mut book = PromptBook::default();
             let mut drafts = Drafts::default();
