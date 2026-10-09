@@ -3,9 +3,11 @@
 //! Followers, robots and the steward stand in the world the way *Cult of the
 //! Lamb* and *Don't Starve* stand paper characters — big heads, bead eyes,
 //! thick ink around everything — dressed for the atomic age of *Fallout*:
-//! vault jumpsuits with gold trim, Protectron robots with a glowing visor,
-//! and the Vault Boy himself as the steward, grin, quiff and thumbs-up; the
-//! doctor is a red, lobster-faced physician in a white coat, head mirror on.
+//! vault jumpsuits with gold trim, *Futurama*'s robots on the line —
+//! Bender in steel grey builds, Hedonismbot in gold inspects from his
+//! chaise — the Vault Boy himself as the steward, grin, quiff and
+//! thumbs-up; and the doctor, a red, lobster-faced physician in a white
+//! coat, head mirror on.
 //!
 //! Each figure is drawn with vector paths and rasterised at run time by
 //! `tiny-skia` into an RGBA texture, which [`crate::app`] puts on a quad that
@@ -81,13 +83,15 @@ pub enum Figure {
     /// The elder: an old scientist in a lab coat, who stands for a crew of
     /// several agents at one station.
     Elder,
-    /// A Protectron; `wrench` builds, otherwise it holds a clipboard.
+    /// A robot: with `wrench` it is Bender, the steel-grey builder;
+    /// otherwise Hedonismbot, the gold inspector on his chaise, clipboard
+    /// in hand.
     Robot {
-        /// The model it opens.
+        /// The model it runs, worn as a badge.
         model: Model,
         /// Builder or inspector.
         wrench: bool,
-        /// Its eye and button glow while it works.
+        /// Its eyes light up (or open) while it works.
         active: bool,
     },
 }
@@ -114,7 +118,6 @@ const SKIN: Rgb = (241, 220, 192);
 const GOLD: Rgb = (226, 178, 64);
 const GOLD_DARK: Rgb = (184, 138, 40);
 const RED: Rgb = (198, 57, 47);
-const RED_DARK: Rgb = (150, 42, 42);
 const PINK: Rgb = (230, 138, 176);
 const WHITE: Rgb = (252, 250, 244);
 const GREEN: Rgb = (126, 224, 129);
@@ -124,6 +127,14 @@ const CORAL: Rgb = (222, 84, 66);
 const SCRUB: Rgb = (134, 190, 160);
 const BOOK: Rgb = (46, 92, 170);
 const SANDAL: Rgb = (120, 170, 220);
+// Bender's steel, Hedonismbot's eyes, grille and laurels, a cigar.
+const STEEL: Rgb = (168, 182, 198);
+const STEEL_DARK: Rgb = (132, 146, 164);
+const YELLOW: Rgb = (250, 222, 72);
+const BLUE_EYE: Rgb = (118, 160, 224);
+const GRILL: Rgb = (96, 104, 196);
+const LEAF: Rgb = (104, 160, 72);
+const CIGAR: Rgb = (118, 72, 40);
 
 /// The ink line, in pixels of the texture.
 const LINE: f32 = 7.0;
@@ -521,89 +532,166 @@ fn doctor(c: &mut Canvas) {
     c.fill(circle(CX - 48.0, 46.0, 4.0).as_ref(), INK, 255);
 }
 
-/// A robot: a Protectron of the atomic age — a domed head over a glowing
-/// visor, a riveted chest plate, stubby chrome arms, a tool in the right
-/// one.
-fn robot(c: &mut Canvas, model: Model, wrench: bool, active: bool) {
-    let hue = model.hue();
-    let glow = if active { GREEN } else { INK };
-    // Feet and chrome legs.
-    c.shape(rounded(CX - 44.0, 340.0, 34.0, 28.0, 10.0), INK);
-    c.shape(rounded(CX + 10.0, 340.0, 34.0, 28.0, 10.0), INK);
-    c.shape(rounded(CX - 38.0, 290.0, 24.0, 56.0, 10.0), GREY);
-    c.shape(rounded(CX + 14.0, 290.0, 24.0, 56.0, 10.0), GREY);
-    // The body: a rounded hull in the model's colour, a cream chest plate
-    // with four rivets and a status lamp.
-    c.shape(rounded(CX - 60.0, 180.0, 120.0, 120.0, 30.0), hue);
-    c.shape(rounded(CX - 40.0, 200.0, 80.0, 64.0, 10.0), CREAM);
-    for (dx, dy) in [(-30.0, 208.0), (30.0, 208.0), (-30.0, 254.0), (30.0, 254.0)] {
-        c.fill(circle(CX + dx, dy, 4.0).as_ref(), INK, 255);
+/// A box with a domed top and rounded bottom corners: a robot's head, a
+/// bell foot.
+#[allow(clippy::many_single_char_names)]
+fn domed(x: f32, y: f32, w: f32, h: f32, dome: f32, r: f32) -> Option<Path> {
+    let mut pb = PathBuilder::new();
+    pb.move_to(x, y + dome);
+    pb.quad_to(x, y, x + w / 2.0, y);
+    pb.quad_to(x + w, y, x + w, y + dome);
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    pb.close();
+    pb.finish()
+}
+
+/// The seams of a jointed limb: thin ink rings across it.
+fn seams(c: &mut Canvas, x: f32, w: f32, ys: &[f32]) {
+    for &y in ys {
+        c.line((x, y), (x + w, y), INK, 3.0);
     }
+}
+
+/// Bender, the builder: a steel-grey bending unit — a domed head with a
+/// black visor and two yellow eyes that light up while he works, a toothy
+/// grin, an antenna with its bulb, a door on his chest, a cigar in one hand
+/// and a wrench raised in the other. The model shows as the badge on his
+/// door.
+fn bender(c: &mut Canvas, model: Model, active: bool) {
+    let eyes = if active { YELLOW } else { INK };
+    // The antenna and its bulb, before the head covers its base.
+    c.line((CX, 56.0), (CX, 22.0), INK, 6.0);
+    if active {
+        c.fill(circle(CX, 16.0, 16.0).as_ref(), GREEN, 80);
+    }
+    c.shape(circle(CX, 16.0, 8.0), if active { GREEN } else { RED });
+    // Jointed legs and feet; the body goes over their tops.
+    for side in [-1.0, 1.0] {
+        let x = CX + side * 26.0 - 11.0;
+        c.shape(rounded(x, 290.0, 22.0, 56.0, 10.0), STEEL_DARK);
+        seams(c, x, 22.0, &[306.0, 320.0, 334.0]);
+        c.shape(rounded(x - 10.0, 340.0, 42.0, 26.0, 12.0), STEEL_DARK);
+    }
+    // The body: a steel hull with a door, its handle and the badge.
+    c.shape(rounded(CX - 56.0, 166.0, 112.0, 132.0, 24.0), STEEL);
     c.shape(
-        circle(CX, 232.0, 10.0),
-        if active { GREEN } else { RED_DARK },
+        domed(CX - 32.0, 190.0, 64.0, 78.0, 20.0, 8.0),
+        shade(STEEL, 0.92),
     );
-    c.line((CX - 24.0, 280.0), (CX + 24.0, 280.0), shade(hue, 0.7), 6.0);
-    // Chrome arms: the left down, the right out with the tool.
-    c.shape(rounded(CX - 86.0, 196.0, 24.0, 86.0, 12.0), GREY);
-    c.shape(circle(CX - 74.0, 290.0, 13.0), shade(GREY, 0.8));
-    c.shape(rounded(CX + 56.0, 196.0, 56.0, 24.0, 12.0), GREY);
-    if wrench {
-        c.shape(
-            rounded(CX + 96.0, 150.0, 16.0, 70.0, 8.0),
-            shade(GREY, 1.15),
-        );
-        c.shape(circle(CX + 104.0, 142.0, 20.0), shade(GREY, 1.15));
-        c.fill(
-            rounded(CX + 96.0, 120.0, 16.0, 18.0, 3.0).as_ref(),
-            INK,
-            255,
-        );
-    } else {
-        c.shape(rounded(CX + 80.0, 140.0, 46.0, 66.0, 6.0), CREAM);
-        c.fill(
-            rounded(CX + 94.0, 132.0, 18.0, 12.0, 4.0).as_ref(),
-            GREY,
-            255,
-        );
-        for (dy, len) in [(0.0, 30.0), (12.0, 24.0), (24.0, 28.0)] {
-            c.fill(
-                rounded(CX + 88.0, 158.0 + dy, len, 4.0, 2.0).as_ref(),
-                INK,
-                255,
-            );
+    c.fill(circle(CX + 20.0, 236.0, 4.0).as_ref(), INK, 255);
+    c.shape(circle(CX - 14.0, 212.0, 8.0), model.hue());
+    // The left arm hangs, cigar lit and smoking.
+    c.shape(rounded(CX - 86.0, 176.0, 22.0, 92.0, 11.0), STEEL_DARK);
+    seams(c, CX - 86.0, 22.0, &[200.0, 222.0, 244.0]);
+    c.shape(circle(CX - 75.0, 274.0, 13.0), STEEL_DARK);
+    c.line((CX - 80.0, 268.0), (CX - 108.0, 246.0), INK, 15.0);
+    c.line((CX - 80.0, 268.0), (CX - 108.0, 246.0), CIGAR, 9.0);
+    c.fill(circle(CX - 109.0, 245.0, 5.0).as_ref(), RED, 255);
+    for (dx, dy, r) in [
+        (-114.0, 228.0, 7.0),
+        (-118.0, 212.0, 9.0),
+        (-110.0, 194.0, 11.0),
+    ] {
+        c.fill(circle(CX + dx, dy, r).as_ref(), WHITE, 110);
+    }
+    // The right arm raises the wrench.
+    c.shape(rounded(CX + 64.0, 150.0, 22.0, 90.0, 11.0), STEEL_DARK);
+    seams(c, CX + 64.0, 22.0, &[176.0, 198.0, 220.0]);
+    c.shape(rounded(CX + 68.0, 72.0, 14.0, 76.0, 6.0), shade(GREY, 1.15));
+    c.shape(circle(CX + 75.0, 66.0, 18.0), shade(GREY, 1.15));
+    c.fill(rounded(CX + 68.0, 46.0, 14.0, 18.0, 3.0).as_ref(), INK, 255);
+    c.shape(circle(CX + 75.0, 146.0, 13.0), STEEL_DARK);
+    // The neck, the domed head, the visor, the eyes, the grin.
+    c.shape(rounded(CX - 16.0, 150.0, 32.0, 20.0, 6.0), STEEL_DARK);
+    c.shape(domed(CX - 40.0, 44.0, 80.0, 112.0, 26.0, 10.0), STEEL);
+    c.shape(rounded(CX - 46.0, 84.0, 92.0, 44.0, 16.0), INK);
+    for side in [-1.0, 1.0] {
+        let ex = CX + side * 19.0;
+        c.fill(circle(ex, 106.0, 14.0).as_ref(), eyes, 255);
+        if active {
+            c.fill(circle(ex, 106.0, 5.0).as_ref(), INK, 255);
         }
     }
-    // The neck, the domed head, the visor with its two glowing slits.
-    c.shape(rounded(CX - 22.0, 160.0, 44.0, 24.0, 8.0), GREY);
-    c.shape(ellipse(CX, 110.0, 64.0, 56.0), shade(hue, 1.1));
-    c.shape(rounded(CX - 48.0, 104.0, 96.0, 28.0, 10.0), INK);
-    c.fill(
-        rounded(CX - 36.0, 112.0, 28.0, 12.0, 5.0).as_ref(),
-        glow,
-        255,
-    );
-    c.fill(
-        rounded(CX + 8.0, 112.0, 28.0, 12.0, 5.0).as_ref(),
-        glow,
-        255,
-    );
-    if active {
+    c.shape(rounded(CX - 30.0, 128.0, 60.0, 18.0, 5.0), CREAM);
+    for dx in [-20.0, -10.0, 0.0, 10.0, 20.0] {
+        c.line((CX + dx, 130.0), (CX + dx, 144.0), INK, 2.5);
+    }
+}
+
+/// Hedonismbot, the inspector: a gold robot sprawled on a gold chaise
+/// longue — laurels on his head, blue eyes under lids that lift while he
+/// works, a blue grille for a mouth, a great riveted belly, one arm behind
+/// his head and the clipboard held up in the other. The model shows as
+/// the clip on his board.
+fn hedonismbot(c: &mut Canvas, model: Model, active: bool) {
+    // The chaise: a scrolled back on the left, two feet, the seat, the scroll.
+    c.shape(rounded(14.0, 196.0, 52.0, 150.0, 22.0), GOLD_DARK);
+    for x in [24.0, 60.0] {
+        c.shape(rounded(x, 350.0, 16.0, 22.0, 6.0), GOLD_DARK);
+    }
+    // The arm behind the head, before the head covers it.
+    c.shape(rounded(26.0, 120.0, 20.0, 90.0, 10.0), GOLD_DARK);
+    seams(c, 26.0, 20.0, &[146.0, 170.0, 194.0]);
+    c.shape(circle(44.0, 116.0, 12.0), GOLD_DARK);
+    c.shape(rounded(14.0, 296.0, 228.0, 60.0, 20.0), GOLD_DARK);
+    c.shape(circle(226.0, 318.0, 16.0), GOLD);
+    c.fill(circle(226.0, 318.0, 6.0).as_ref(), INK, 255);
+    // The belly, seamed and riveted, on the seat.
+    c.shape(ellipse(150.0, 262.0, 80.0, 58.0), GOLD);
+    c.line((80.0, 258.0), (222.0, 258.0), GOLD_DARK, 5.0);
+    for x in [110.0, 150.0, 190.0] {
+        c.fill(circle(x, 272.0, 4.0).as_ref(), INK, 255);
+    }
+    // The legs hang off the seat, bell feet on the ground.
+    for x in [150.0, 196.0] {
+        c.shape(rounded(x, 300.0, 20.0, 52.0, 9.0), GOLD_DARK);
+        seams(c, x, 20.0, &[318.0, 334.0]);
+        c.shape(domed(x - 10.0, 346.0, 40.0, 28.0, 14.0, 8.0), GOLD);
+    }
+    // The head leans on the chaise's back, laurelled.
+    c.shape(domed(56.0, 140.0, 72.0, 112.0, 30.0, 14.0), GOLD);
+    for (x, y) in [
+        (62.0, 152.0),
+        (74.0, 141.0),
+        (90.0, 136.0),
+        (106.0, 141.0),
+        (118.0, 152.0),
+    ] {
+        c.shape(ellipse(x, y, 9.0, 6.0), LEAF);
+    }
+    // Blue eyes under lids that droop at rest and lift at work.
+    let lid = if active { 180.0 } else { 190.0 };
+    for ex in [78.0, 106.0] {
+        c.fill(ellipse(ex, 186.0, 12.0, 9.0).as_ref(), BLUE_EYE, 255);
+        c.fill(circle(ex, 188.0, 4.0).as_ref(), INK, 255);
         c.fill(
-            rounded(CX - 40.0, 106.0, 80.0, 24.0, 8.0).as_ref(),
-            GREEN,
-            60,
+            rounded(ex - 13.0, 174.0, 26.0, lid - 174.0, 4.0).as_ref(),
+            GOLD,
+            255,
         );
+        c.line((ex - 12.0, lid), (ex + 12.0, lid), INK, 3.0);
     }
-    // The antenna and its bulb.
-    c.line((CX + 30.0, 62.0), (CX + 40.0, 26.0), INK, 6.0);
-    if active {
-        c.fill(circle(CX + 42.0, 20.0, 18.0).as_ref(), GREEN, 80);
+    // The grille.
+    c.shape(rounded(66.0, 208.0, 52.0, 24.0, 6.0), GRILL);
+    for dx in [10.0, 20.0, 30.0, 40.0] {
+        c.line((66.0 + dx, 211.0), (66.0 + dx, 229.0), INK, 2.5);
     }
-    c.shape(
-        circle(CX + 42.0, 20.0, 9.0),
-        if active { GREEN } else { RED },
+    // The other arm holds the clipboard up; its clip is the model's colour.
+    c.shape(rounded(176.0, 140.0, 20.0, 96.0, 10.0), GOLD_DARK);
+    seams(c, 176.0, 20.0, &[166.0, 190.0, 214.0]);
+    c.shape(circle(186.0, 136.0, 12.0), GOLD_DARK);
+    c.shape(rounded(166.0, 60.0, 46.0, 70.0, 6.0), CREAM);
+    c.fill(
+        rounded(180.0, 52.0, 18.0, 12.0, 4.0).as_ref(),
+        model.hue(),
+        255,
     );
+    for (dy, len) in [(0.0, 30.0), (12.0, 24.0), (24.0, 28.0)] {
+        c.fill(rounded(174.0, 78.0 + dy, len, 4.0, 2.0).as_ref(), INK, 255);
+    }
 }
 
 /// Paints a figure into a fresh texture.
@@ -628,7 +716,8 @@ pub fn paint(figure: Figure) -> Sprite {
             model,
             wrench,
             active,
-        } => robot(&mut canvas, model, wrench, active),
+        } if wrench => bender(&mut canvas, model, active),
+        Figure::Robot { model, active, .. } => hedonismbot(&mut canvas, model, active),
     }
     // tiny-skia keeps premultiplied pixels; the GPU wants straight alpha.
     let rgba = canvas
@@ -727,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn a_working_robot_s_visor_glows_green_and_an_idle_one_s_is_ink() {
+    fn bender_s_eyes_light_yellow_at_work_and_go_dark_idle() {
         let busy = paint(Figure::Robot {
             model: Model::Opus,
             wrench: true,
@@ -738,17 +827,39 @@ mod tests {
             wrench: true,
             active: false,
         });
-        let slit = pixel(&busy, WIDTH / 2 - 22, 118);
-        assert_eq!(&slit[..3], &[126, 224, 129], "{slit:?}");
-        let dark = pixel(&idle, WIDTH / 2 - 22, 118);
+        let eye = pixel(&busy, WIDTH / 2 - 10, 106);
+        assert_eq!(&eye[..3], &[250, 222, 72], "{eye:?}");
+        let dark = pixel(&idle, WIDTH / 2 - 10, 106);
         assert_eq!(&dark[..3], &[42, 27, 46], "{dark:?}");
         assert_ne!(busy, idle);
-        let clipboard = paint(Figure::Robot {
+        let hull = pixel(&busy, WIDTH / 2 + 46, 240);
+        assert_eq!(&hull[..3], &[168, 182, 198], "steel grey: {hull:?}");
+    }
+
+    #[test]
+    fn hedonismbot_is_gold_and_opens_his_eyes_at_work() {
+        let busy = paint(Figure::Robot {
             model: Model::Opus,
             wrench: false,
             active: true,
         });
-        assert_ne!(busy, clipboard, "the tool differs");
+        let idle = paint(Figure::Robot {
+            model: Model::Opus,
+            wrench: false,
+            active: false,
+        });
+        let eye = pixel(&busy, 85, 186);
+        assert_eq!(&eye[..3], &[118, 160, 224], "{eye:?}");
+        let lid = pixel(&idle, 85, 186);
+        assert_eq!(&lid[..3], &[226, 178, 64], "{lid:?}");
+        let belly = pixel(&busy, 150, 290);
+        assert_eq!(&belly[..3], &[226, 178, 64], "gold: {belly:?}");
+        let bender = paint(Figure::Robot {
+            model: Model::Opus,
+            wrench: true,
+            active: true,
+        });
+        assert_ne!(busy, bender, "the builder and the inspector differ");
     }
 
     #[test]
