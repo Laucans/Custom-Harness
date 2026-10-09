@@ -3,8 +3,9 @@
 //!
 //! Pure: decides from texts already read, writes nothing. The files are the
 //! harness's own assets, compiled in — the architecture document, the
-//! rules section of `CLAUDE.md`, the twelve contracts, the CI gates, the
-//! project's CI for its stack and the script that scopes its tests — so a
+//! rules section of `CLAUDE.md`, the thirteen contracts, the CI gates, the
+//! project's CI for its stack, the script that scopes its tests, the one
+//! that dumps its schema and an empty data model to grow — so a
 //! repository brought under the plant carries the same architecture as every
 //! other one, from the same source.
 //!
@@ -36,8 +37,8 @@ pub const MARKER_CLOSE: &str = "<!-- /harness:architecture -->";
 pub const CLAUDE_RULES: &str = include_str!("../assets/CLAUDE-rules.md");
 
 /// The files installed as they are: the document, the gates, the CI, the
-/// test scope, the contracts.
-pub const FILES: [Asset; 17] = [
+/// test scope, the schema dump, the data model, the contracts.
+pub const FILES: [Asset; 20] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -53,6 +54,14 @@ pub const FILES: [Asset; 17] = [
     Asset {
         path: "scripts/test-scope.sh",
         content: include_str!("../assets/test-scope.sh"),
+    },
+    Asset {
+        path: "scripts/dump-schema.sh",
+        content: include_str!("../../data_snapshot/assets/dump-schema.sh"),
+    },
+    Asset {
+        path: "data/model.json",
+        content: include_str!("../assets/model.json"),
     },
     Asset {
         path: "contracts/README.md",
@@ -105,6 +114,10 @@ pub const FILES: [Asset; 17] = [
     Asset {
         path: "contracts/l-message.schema.json",
         content: include_str!("../assets/contracts/l-message.schema.json"),
+    },
+    Asset {
+        path: "contracts/m-data-model.schema.json",
+        content: include_str!("../assets/contracts/m-data-model.schema.json"),
     },
 ];
 

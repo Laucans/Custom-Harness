@@ -44,6 +44,7 @@ jobs:
           validate f-data-capability.schema.json crates/**/data-capability.json
           validate i-aggregate.schema.json crates/**/aggregate.json
           validate c-persisted-query.schema.json queries/registry.json
+          validate m-data-model.schema.json data/model.json
 
   # Contract B — no Capability depends on another Capability or on the write
   # side. Read in the one place Rust declares dependencies: Cargo.toml.

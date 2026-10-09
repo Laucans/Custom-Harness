@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.agent-native.dev/m-data-model.schema.json",
+  "title": "M. Data model: what every table and field is for",
+  "description": "The agents' side of the data model, `data/model.json`: the purpose and the business rules of every table and field, the type and nullability its migration gives it, the field it references, and the links no foreign key carries. The database's side is not written by hand: the harness dumps it (`scripts/dump-schema.sh`, `pg_dump --schema-only`) after every merge, archives both on the branch `harness/data-model`, and compares them.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "As the database names it, without `public.`: `character`, `audit.event`.",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string",
+            "description": "What the table is for, in a sentence."
+          },
+          "business": {
+            "type": "array",
+            "description": "Business rules on the whole table, a sentence each.",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "As the database names it.",
+                  "minLength": 1
+                },
+                "type": {
+                  "type": "string",
+                  "description": "The Postgres type the migration gives it: `uuid`, `varchar(40)`, `timestamptz`, an enum's name.",
+                  "minLength": 1
+                },
+                "nullable": {
+                  "type": "boolean",
+                  "description": "Whether the migration lets it be empty."
+                },
+                "purpose": {
+                  "type": "string",
+                  "description": "What the field is for, in a sentence."
+                },
+                "technical": {
+                  "type": "array",
+                  "description": "Technical rules the DDL cannot say: who maintains it, a trigger, a unit.",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "business": {
+                  "type": "array",
+                  "description": "Business rules on the field, a sentence each.",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "references": {
+                  "type": "string",
+                  "description": "`<table>.<field>` this one is a foreign key to.",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_.]*\\.[A-Za-z_][A-Za-z0-9_]*$"
+                }
+              },
+              "required": ["name", "type", "purpose"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["name", "purpose", "fields"],
+        "additionalProperties": false
+      }
+    },
+    "links": {
+      "type": "array",
+      "description": "Links that exist outside any foreign key.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.]*\\.[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_.]*\\.[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "purpose": { "type": "string" }
+        },
+        "required": ["from", "to", "purpose"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version", "tables"],
+  "additionalProperties": false
+}

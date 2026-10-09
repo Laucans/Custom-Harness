@@ -2,7 +2,7 @@
 //! written where they are missing, one commit, one push.
 //!
 //! The only write `init-repo` makes into the repository's own tree. It goes
-//! through `git` rather than the contents API so the sixteen files land as
+//! through `git` rather than the contents API so its twenty-one files land as
 //! **one** commit a human can read and revert, and so the clone is reused
 //! by the next run (`fetch`, `checkout --force`, `reset --hard`) instead of
 //! downloaded again.
@@ -217,8 +217,8 @@ mod tests {
         assert!(written.iter().any(
             |(path, text)| path.ends_with("docs/ARCHITECTURE.md") && text.contains(MARKER_OPEN)
         ));
-        assert!(lines[0].starts_with("installed 18 file(s) on main_agent"));
-        assert!(lines[0].contains("contracts/ (13 files)"));
+        assert!(lines[0].starts_with("installed 21 file(s) on main_agent"));
+        assert!(lines[0].contains("contracts/ (14 files)"));
     }
 
     #[tokio::test]
@@ -304,7 +304,7 @@ mod tests {
         assert!(disk.written.borrow().is_empty());
         assert_eq!(
             lines,
-            ["would install 18 file(s) on main_agent (read against an empty tree)"]
+            ["would install 21 file(s) on main_agent (read against an empty tree)"]
         );
     }
 

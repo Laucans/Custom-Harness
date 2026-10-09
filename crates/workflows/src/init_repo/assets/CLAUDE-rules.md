@@ -39,7 +39,9 @@ crates/dataguard/                  the write side: DataQueue, DataGuard, Resolve
 crates/dataguard/data-capabilities/<name>/  one DataCapability + data-capability.json (contract F)
 crates/dataguard/aggregates/<Aggregate>/aggregate.json   criticality, invariants, relations (contract I)
 concepts/<Concept>/v<n>/concept.json + fixtures.json      a versioned Concept (contract A)
-contracts/*.schema.json            the twelve contracts, JSON Schema 2020-12
+data/model.json                    the data model: what every table and field is for (contract M)
+scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)
+contracts/*.schema.json            the thirteen contracts, JSON Schema 2020-12
 ```
 
 ### Rules
@@ -83,6 +85,16 @@ contracts/*.schema.json            the twelve contracts, JSON Schema 2020-12
     harness, `harness:read-side` tasks run in parallel and merge on their own;
     `harness:write-side` tasks run one at a time and their pull request is
     merged by a human.
+13. **The data model is described in the task that changes it.** A migration
+    that adds, renames or changes a table or a field updates `data/model.json`
+    (contract M) in the same pull request: the field's `type` and `nullable`
+    as the migration makes them, its `purpose` in a sentence, its business
+    rules, the field it `references`. The structure is not copied there by
+    hand for its own sake: after every merge the harness dumps the real schema
+    (`scripts/dump-schema.sh`), archives it with the model on the branch
+    `harness/data-model`, and compares the two — a divergence sends an agent
+    to find out which side is wrong. Keep `scripts/dump-schema.sh` printing
+    the schema the migrations build when the stack changes.
 
 ### What a session does before writing code
 

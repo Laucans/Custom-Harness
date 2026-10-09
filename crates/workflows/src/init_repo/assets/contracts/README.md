@@ -1,6 +1,6 @@
 # Contracts
 
-The twelve interface contracts of the agent-native architecture
+The thirteen interface contracts of the agent-native architecture
 (`docs/ARCHITECTURE.md`, "Interface contracts"), as JSON Schema draft 2020-12.
 Installed by `harness init-repo`; the repository owns them from here. A change
 to one of them is its own task, and lists the units it touches.
@@ -19,6 +19,7 @@ to one of them is its own task, and lists the units it touches.
 | `j-impact-plan.schema.json` | J. Impact plan | what the Resolver hands the DataGuard |
 | `k-reconciliation.schema.json` | K. Reconciliation proposal | what the reconciliation AI hands an approver |
 | `l-message.schema.json` | L. Message | what the Integrity DataGuard sends |
+| `m-data-model.schema.json` | M. Data model | `data/model.json`: what every table and field is for |
 
 Validate a manifest by hand the way the `gates` workflow does:
 
