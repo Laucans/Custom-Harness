@@ -214,16 +214,43 @@
   // locked unread for that visit. A read notification is unread again when it
   // happens again (its `at` moves).
   const LEVELS = [['error', 'Errors'], ['warning', 'Warnings'], ['info', 'Info']];
-  const R = { read: {} };
+  // `read`: what was acknowledged, by key, at which occurrence. `known`: every
+  // notification seen lately, so one whose cause ended (a label removed, an
+  // issue closed) stays listed — resolved — instead of vanishing unread.
+  const KNOWN_FOR_MS = 24 * 3600e3;
+  const R = { read: {}, known: {} };
   try { R.read = JSON.parse(localStorage.getItem('harness.read') || '{}'); } catch (e) { R.read = {}; }
+  try { R.known = JSON.parse(localStorage.getItem('harness.known') || '{}'); } catch (e) { R.known = {}; }
+  const store = (name, value) => { try { localStorage.setItem(name, JSON.stringify(value)); } catch (e) { /* kept for this visit only */ } };
   const isUnread = (n) => R.read[n.key] !== n.at;
-  const ofLevel = (level) => ((S.snap && S.snap.notifications) || []).filter((n) => n.level === level);
+  // Folds the latest notifications into what is known: present ones are
+  // current, absent ones resolved; anything resolved for a day is forgotten.
+  function remember() {
+    const now = Date.now();
+    const present = new Set();
+    for (const n of (S.snap && S.snap.notifications) || []) {
+      present.add(n.key);
+      R.known[n.key] = { ...n, seen: now, resolved: false };
+    }
+    for (const [key, n] of Object.entries(R.known)) {
+      if (present.has(key)) continue;
+      if (!n.resolved) R.known[key] = { ...n, resolved: true, seen: now };
+      else if (now - n.seen > KNOWN_FOR_MS) delete R.known[key];
+    }
+    store('harness.known', R.known);
+  }
+  const RANK = { error: 0, warning: 1, info: 2 };
+  // A level's notifications: current ones first, then the resolved, newest first.
+  const ofLevel = (level) => Object.values(R.known)
+    .filter((n) => n.level === level)
+    .sort((a, b) => (a.resolved - b.resolved) || (RANK[a.level] - RANK[b.level]) || ((b.at || '') > (a.at || '') ? 1 : -1));
   const SIGN = {
     info: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" class="shape"/><rect x="10.8" y="5.5" width="2.4" height="8.5" rx="1.1" class="mark"/><circle cx="12" cy="17.6" r="1.4" class="mark"/></svg>',
     warning: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2 23 21.3H1z" class="shape" stroke-linejoin="round"/><rect x="10.9" y="8.4" width="2.2" height="7.2" rx="1" class="mark"/><circle cx="12" cy="18.2" r="1.3" class="mark"/></svg>',
     error: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.9 1.8h8.2l5.8 5.8v8.2l-5.8 5.8H7.9L2.1 15.8V7.6z" class="shape"/><rect x="10.8" y="5.8" width="2.4" height="8.4" rx="1.1" class="mark"/><circle cx="12" cy="17.7" r="1.4" class="mark"/></svg>',
   };
   function dock() {
+    remember();
     const html = LEVELS.slice().reverse().map(([level, label]) => {
       const unread = ofLevel(level).filter(isUnread).length;
       return `<button class="sign ${level} ${unread ? 'lit' : ''}" data-notes="${level}" title="${label}${unread ? ` — ${unread} unread` : ''}" aria-label="${label}, ${unread} unread">${SIGN[level]}${unread ? `<span class="badge">${unread > 99 ? '99+' : unread}</span>` : ''}</button>`;
@@ -240,9 +267,14 @@
     if (!p || p.kind !== 'notifications' || p.keepAll) return;
     const locked = new Set(p.locked || []);
     for (const level of p.visited || []) {
-      for (const n of ofLevel(level)) if (!locked.has(n.key)) R.read[n.key] = n.at;
+      for (const n of ofLevel(level)) {
+        // Kept unread means unread when the pane is left — even one that had
+        // been read before.
+        if (locked.has(n.key)) delete R.read[n.key];
+        else R.read[n.key] = n.at;
+      }
     }
-    try { localStorage.setItem('harness.read', JSON.stringify(R.read)); } catch (e) { /* kept for this visit only */ }
+    store('harness.read', R.read);
     dock();
   }
   function followNote(n) {
@@ -1141,7 +1173,7 @@
           const keep = locked.has(n.key);
           return `<tr class="note ${level} ${unread ? 'unread' : 'read'} ${keep ? 'locked' : ''}" data-note-lock="${esc(n.key)}" title="${keep ? 'kept unread when you leave — click to release' : 'click to keep it unread when you leave'}">`
             + `<td class="sign-cell">${SIGN[level]}</td>`
-            + `<td><b>${esc(n.title)}</b>${keep ? ' <span class="tag acc">kept unread</span>' : unread ? ' <span class="tag">new</span>' : ''}<div class="muted">${esc(n.detail)}</div></td>`
+            + `<td><b>${esc(n.title)}</b>${keep ? ' <span class="tag acc">kept unread</span>' : unread ? ' <span class="tag">new</span>' : ''}${n.resolved ? ' <span class="tag ok">resolved</span>' : ''}<div class="muted">${esc(n.detail)}</div></td>`
             + `<td class="num">${n.count}</td><td>${n.at ? esc(when(n.at)) : '—'}</td>`
             + `<td>${n.link ? `<button class="mini" data-note-open="${esc(n.key)}">open →</button>` : ''}</td></tr>`;
         })
