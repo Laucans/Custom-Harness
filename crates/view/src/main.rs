@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
         render_dir: root.join("crates/view/static/render"),
         desk: desk.clone(),
         plant: plant.clone(),
+        start_grace: Duration::from_millis(1500),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))

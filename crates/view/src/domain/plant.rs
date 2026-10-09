@@ -176,11 +176,19 @@ pub mod fake {
         pub processes: Vec<Process>,
         /// Every start and signal, in order.
         pub sent: Mutex<Vec<String>>,
+        /// A started watch exits at once, as a missing remote makes it.
+        pub dies_at_start: bool,
+        /// The watch a start left running.
+        pub started: Mutex<Option<Process>>,
     }
 
     impl Plant for Switch {
         fn processes(&self) -> Vec<Process> {
-            self.processes.clone()
+            let mut table = self.processes.clone();
+            if let Ok(started) = self.started.lock() {
+                table.extend(started.clone());
+            }
+            table
         }
 
         fn works_here(&self, _pid: u32) -> bool {
@@ -191,7 +199,21 @@ pub mod fake {
             if let Ok(mut sent) = self.sent.lock() {
                 sent.push("start".to_string());
             }
+            if !self.dies_at_start
+                && let Ok(mut started) = self.started.lock()
+            {
+                *started = Some(Process {
+                    pid: 4242,
+                    parent: 1,
+                    group: 4242,
+                    command: "target/debug/harness watch".to_string(),
+                });
+            }
             Ok(4242)
+        }
+
+        fn output_tail(&self) -> String {
+            "no git repository above /x — run the harness from a checkout".to_string()
         }
 
         fn send(&self, signal: Signal, target: Target) -> Result<(), String> {

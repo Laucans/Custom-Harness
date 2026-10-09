@@ -236,6 +236,9 @@ pub trait Plant: Send + Sync {
     /// Why it could not start, as a sentence the page can show.
     fn start(&self) -> Result<u32, String>;
 
+    /// The last lines the watch printed — what says why it died at start.
+    fn output_tail(&self) -> String;
+
     /// Sends `signal` to `target`.
     ///
     /// # Errors

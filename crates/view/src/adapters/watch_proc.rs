@@ -13,6 +13,9 @@ use harness_core::domain::workspace::Workspace;
 use crate::domain::plant;
 use crate::ports::{Plant, Process, Signal, Target};
 
+/// How many of the watch's last printed lines explain a failed start.
+const OUTPUT_LINES: usize = 6;
+
 /// The watch of one checkout, started with one command line.
 pub struct WatchProcess {
     workspace: Workspace,
@@ -99,6 +102,13 @@ impl Plant for WatchProcess {
         child
             .id()
             .ok_or_else(|| "the watch exited as soon as it started".to_string())
+    }
+
+    fn output_tail(&self) -> String {
+        let path = self.workspace.loop_dir().join("watch.out");
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        lines[lines.len().saturating_sub(OUTPUT_LINES)..].join("\n")
     }
 
     fn send(&self, signal: Signal, target: Target) -> Result<(), String> {

@@ -16,6 +16,7 @@
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
@@ -54,6 +55,8 @@ pub struct AppState {
     pub desk: Option<Desk>,
     /// The watch process the page starts and stops — `None` under `--demo`.
     pub plant: Option<Arc<dyn Plant>>,
+    /// How long a started watch must live before the start counts.
+    pub start_grace: Duration,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -375,7 +378,10 @@ struct Done {
 /// the port. A gesture that makes no sense now is a `409` with the reason.
 ///
 /// Only the first action can fail the gesture: a hard stop's later kills
-/// reach processes that may already be gone with the watch.
+/// reach processes that may already be gone with the watch. A start counts
+/// once the watch is still there after [`AppState::start_grace`] — one that
+/// died on its first line (no remote, a bad flag) is a failed start, with
+/// what it printed.
 async fn plant_gesture(State(state): State<AppState>, Path(gesture): Path<String>) -> Response {
     let Some(plant) = state.plant.as_ref() else {
         return (StatusCode::NOT_FOUND, "this view has no hand on the plant").into_response();
@@ -406,6 +412,24 @@ async fn plant_gesture(State(state): State<AppState>, Path(gesture): Path<String
         match done {
             Ok(said) => message = said,
             Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+        }
+    }
+    if gesture == Gesture::Start {
+        tokio::time::sleep(state.start_grace).await;
+        if plant::running(plant.as_ref()).is_none() {
+            let printed = plant.output_tail();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "the watch exited as soon as it started{}",
+                    if printed.is_empty() {
+                        String::new()
+                    } else {
+                        format!(":\n{printed}")
+                    }
+                ),
+            )
+                .into_response();
         }
     }
     json(&Done { message })
@@ -549,6 +573,7 @@ mod tests {
             render_dir: PathBuf::from("/nonexistent/render"),
             desk,
             plant: None,
+            start_grace: Duration::ZERO,
         }
     }
 
@@ -596,11 +621,13 @@ mod tests {
     #[tokio::test]
     async fn the_switch_starts_an_empty_plant_and_stops_a_running_one() {
         let (state, switch) = with_plant(Vec::new());
+        let (status, _) = post_to(state.clone(), "/api/plant/soft").await;
+        assert_eq!(status, StatusCode::CONFLICT);
         let (status, body) = post_to(state.clone(), "/api/plant/start").await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let (status, _) = post_to(state, "/api/plant/soft").await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(sent(&switch), ["start"]);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(sent(&switch), ["start", "Term Process(4242)"]);
 
         let (state, switch) = with_plant(watch(7));
         let (status, _) = post_to(state.clone(), "/api/plant/start").await;
@@ -621,6 +648,20 @@ mod tests {
             sent(&switch),
             ["Term Process(7)", "Kill Process(7)", "Kill Group(7)"]
         );
+    }
+
+    #[tokio::test]
+    async fn a_watch_that_dies_at_start_is_a_failed_start_with_its_words() {
+        let switch = Arc::new(Switch {
+            dies_at_start: true,
+            ..Switch::default()
+        });
+        let mut state = state(Shelf::default(), None);
+        state.plant = Some(Arc::clone(&switch) as Arc<dyn Plant>);
+        let (status, body) = post_to(state, "/api/plant/start").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body.contains("exited as soon as it started"), "{body}");
+        assert!(body.contains("no git repository"), "{body}");
     }
 
     #[tokio::test]

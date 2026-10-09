@@ -174,8 +174,19 @@
 
   function status() {
     const f = S.snap.factory;
+    // A gesture's own word wins until the plant shows its outcome.
+    const flash = P.flash;
+    if (flash && ((flash.until && Date.now() > flash.until) || (flash.doneWhen && flash.doneWhen(f)))) P.flash = null;
+    if (P.flash) {
+      $('watch-dot').className = 'dot ' + P.flash.tone;
+      $('watch-text').textContent = P.flash.text;
+      $('status').title = P.flash.detail || P.flash.text;
+      if (!$('plant-menu').hidden) plantMenu();
+      return;
+    }
+    $('status').title = 'Start or stop the plant';
     $('watch-dot').className = 'dot ' + (f.draining ? 'warn' : f.watching ? 'on' : 'off');
-    let s = f.draining ? 'watch stopping (soft)' : f.watching ? 'watch polling' : 'watch off';
+    let s = f.draining ? 'watch stopping (soft) — running tasks finish' : f.watching ? 'watch polling' : 'watch off';
     if (f.last_tick_at) s += ` · last tick ${hhmm(f.last_tick_at)}`;
     if (f.in_flight) s += ` · running ${f.in_flight.workflow}${f.in_flight.subject ? ' (' + f.in_flight.subject + ')' : ''}`;
     else if (f.idle) s += ' · nobody at work';
@@ -189,7 +200,18 @@
   // The status is a button: it opens the gestures that make sense now — start
   // an empty plant, or stop a running one softly (running tasks finish, none
   // starts) or hard (the watch and its lanes are killed, after a second click).
-  const P = { status: null, armed: null, busy: false, note: '', bad: false };
+  const P = { status: null, armed: null, busy: false, note: '', bad: false, flash: null };
+  // What the status line says while a gesture is under way, and when it lets go.
+  const PENDING = {
+    start: { text: 'starting the watch…', tone: 'warn pending' },
+    soft: { text: 'asking a soft stop…', tone: 'warn pending' },
+    hard: { text: 'killing the watch and its lanes…', tone: 'bad pending' },
+  };
+  function settled(gesture, message) {
+    if (gesture === 'start') return { text: message + ' — waiting for its first tick', tone: 'on pending', doneWhen: (f) => f.watching && f.last_tick_at && Date.parse(f.last_tick_at) >= P.since - 2000, until: Date.now() + 90000 };
+    if (gesture === 'soft') return { text: 'soft stop asked — waiting for the watch to drain', tone: 'warn pending', doneWhen: (f) => f.draining || !f.watching, until: Date.now() + 120000 };
+    return { text: 'hard stop sent', tone: 'off', doneWhen: (f) => !f.watching, until: Date.now() + 15000 };
+  }
   async function plantRead() {
     try { P.status = await (await fetch('/api/plant')).json(); }
     catch (e) { P.status = null; P.note = 'cannot reach the server'; P.bad = true; }
@@ -216,6 +238,7 @@
   }
   async function plantOpen() {
     P.note = ''; P.bad = false; P.armed = null;
+    if (P.flash && P.flash.sticky) { P.flash = null; status(); }
     $('plant-menu').hidden = false;
     $('status').setAttribute('aria-expanded', 'true');
     plantMenu();
@@ -238,14 +261,27 @@
       return;
     }
     if (P.armed) { clearTimeout(P.armed); P.armed = null; }
-    P.busy = true; plantMenu();
+    P.busy = true; P.since = Date.now();
+    P.flash = PENDING[gesture];
+    status(); plantMenu();
     try {
       const r = await fetch('/api/plant/' + gesture, { method: 'POST' });
       const text = await r.text();
-      if (r.ok) { P.note = JSON.parse(text).message; P.bad = false; }
-      else { P.note = text || r.statusText; P.bad = true; }
-    } catch (e) { P.note = 'cannot reach the server'; P.bad = true; }
+      if (r.ok) {
+        P.note = JSON.parse(text).message; P.bad = false;
+        P.flash = settled(gesture, P.note);
+      } else {
+        P.note = text || r.statusText; P.bad = true;
+        // A failure stays on the status line until the menu is opened again.
+        P.flash = { text: `${gesture} failed — ${P.note.split('\n')[0]}`, detail: P.note, tone: 'bad', sticky: true };
+      }
+    } catch (e) {
+      P.note = 'cannot reach the server'; P.bad = true;
+      P.flash = { text: `${gesture} failed — cannot reach the server`, tone: 'bad', sticky: true };
+    }
     P.busy = false;
+    status();
+    if (P.flash && P.flash.until) setTimeout(status, P.flash.until - Date.now() + 50);
     await plantRead();
     plantMenu();
   }
