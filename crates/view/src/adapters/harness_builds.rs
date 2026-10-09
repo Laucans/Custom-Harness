@@ -29,17 +29,21 @@ struct Run {
 
 /// The harness binary, started from the checkout.
 pub struct HarnessBuilds {
-    program: PathBuf,
+    /// Where the binary may be, in order of preference: the first that
+    /// exists when a build starts is started — one put in place after the
+    /// view started is found.
+    candidates: Vec<PathBuf>,
     root: PathBuf,
     runs: Mutex<Vec<Run>>,
 }
 
 impl HarnessBuilds {
-    /// Starts `program` (the harness binary) from `root`, the checkout.
+    /// Starts the first of `candidates` that exists (the harness binary)
+    /// from `root`, the checkout.
     #[must_use]
-    pub const fn new(program: PathBuf, root: PathBuf) -> Self {
+    pub const fn new(candidates: Vec<PathBuf>, root: PathBuf) -> Self {
         Self {
-            program,
+            candidates,
             root,
             runs: Mutex::new(Vec::new()),
         }
@@ -50,19 +54,25 @@ impl HarnessBuilds {
     /// Whether the harness binary knows the command `what` starts — a binary
     /// built before the command existed answers `unrecognized subcommand`,
     /// and starting it would only fail the same way, later.
-    fn knows(&self, what: What) -> Result<(), String> {
+    /// The binary a build starts now: the first candidate that exists, else
+    /// the last — whose absence the probe then reports.
+    fn program(&self) -> PathBuf {
+        self.candidates
+            .iter()
+            .find(|path| path.is_file())
+            .or_else(|| self.candidates.last())
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("harness"))
+    }
+
+    fn knows(&self, program: &PathBuf, what: What) -> Result<(), String> {
         let command = what.args("")[0].clone();
-        let probe = Command::new(&self.program)
+        let probe = Command::new(program)
             .args([command.as_str(), "--help"])
             .current_dir(&self.root)
             .stdin(Stdio::null())
             .output()
-            .map_err(|e| {
-                format!(
-                    "the harness binary {} cannot start: {e}",
-                    self.program.display()
-                )
-            })?;
+            .map_err(|e| format!("the harness binary {} cannot start: {e}", program.display()))?;
         if probe.status.success() {
             return Ok(());
         }
@@ -70,7 +80,7 @@ impl HarnessBuilds {
             "the harness binary {} does not know `{command}`: it was built before it. Rebuild it \
              from the harness checkout (`cargo build --release -p harness-launcher`), or point the \
              view at a fresh one with --harness-bin",
-            self.program.display()
+            program.display()
         ))
     }
 }
@@ -99,7 +109,8 @@ impl Builds for HarnessBuilds {
         if twin {
             return Err(format!("already building for {branch}"));
         }
-        self.knows(what)?;
+        let program = self.program();
+        self.knows(&program, what)?;
         let dir = self.root.join(".llocal/logs/view-builds");
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let started = now();
@@ -115,14 +126,14 @@ impl Builds for HarnessBuilds {
         let out = dir.join(format!("{id}.out"));
         let file = File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
         let err = file.try_clone().map_err(|e| e.to_string())?;
-        let child = Command::new(&self.program)
+        let child = Command::new(&program)
             .args(what.args(branch))
             .current_dir(&self.root)
             .stdin(Stdio::null())
             .stdout(file)
             .stderr(err)
             .spawn()
-            .map_err(|e| format!("{} cannot start: {e}", self.program.display()))?;
+            .map_err(|e| format!("{} cannot start: {e}", program.display()))?;
         lock(&self.runs).insert(
             0,
             Run {
@@ -195,7 +206,8 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("chmod");
         }
-        let builds = HarnessBuilds::new(program, root.clone());
+        // The first candidate is missing: the second is started.
+        let builds = HarnessBuilds::new(vec![root.join("absent"), program], root.clone());
         let id = builds.start(What::Schema, "main").expect("started");
         assert!(
             builds.start(What::Schema, "main").is_err(),
@@ -231,7 +243,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(&old, fs::Permissions::from_mode(0o755)).expect("chmod");
         }
-        let stale = HarnessBuilds::new(old, root.clone());
+        let stale = HarnessBuilds::new(vec![old], root.clone());
         let refused = stale.start(What::Schema, "main").expect_err("refused");
         assert!(
             refused.contains("built before it") && refused.contains("cargo build --release"),

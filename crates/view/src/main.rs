@@ -249,17 +249,20 @@ fn builds_for(cli: &Cli, root: &Path) -> Option<Arc<dyn Builds>> {
     }
     let beside = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("harness")))
-        .filter(|path| path.is_file());
-    let program = cli.harness_bin.clone().or(beside).or_else(|| {
-        let first = Path::new(cli.watch_command.split_whitespace().next()?);
-        Some(if first.is_relative() && first.components().count() > 1 {
+        .and_then(|exe| exe.parent().map(|dir| dir.join("harness")));
+    let watched = cli.watch_command.split_whitespace().next().map(|first| {
+        let first = Path::new(first);
+        if first.is_relative() && first.components().count() > 1 {
             root.join(first)
         } else {
             first.to_path_buf()
-        })
-    })?;
-    Some(Arc::new(HarnessBuilds::new(program, root.to_path_buf())) as Arc<dyn Builds>)
+        }
+    });
+    let candidates: Vec<PathBuf> = cli.harness_bin.clone().map_or_else(
+        || beside.into_iter().chain(watched).collect(),
+        |chosen| vec![chosen],
+    );
+    Some(Arc::new(HarnessBuilds::new(candidates, root.to_path_buf())) as Arc<dyn Builds>)
 }
 
 /// The rate limits, read through the newest Claude Code and `gh`.
