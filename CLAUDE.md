@@ -183,10 +183,14 @@ the rules a diff is checked against:
 
 ## Workflow Rules
 
-- Several Claude sessions build this repository at the same time. A session
-  that edits code works in its own `git worktree` on its own branch, never in
-  the shared checkout: a `cargo test` run in a tree another session is
-  mid-edit on proves nothing, and has already produced phantom failures.
+- Work happens on `main`, in the shared checkout, committed there.
+- Several Claude sessions build this repository at the same time. When
+  another session is already working on `main` (uncommitted changes in the
+  shared checkout), branch off instead: a `git worktree` on its own branch,
+  since a `cargo test` run in a tree another session is mid-edit on proves
+  nothing and has already produced phantom failures. That branch is **never
+  pushed** and gets no PR: wait until the other session is done on `main`,
+  then merge the branch into `main` locally.
 - Hooks live in `.githooks/` (tracked) — `git config core.hooksPath
   .githooks` once per clone to enable them. `pre-commit` runs
   `rustfmt --check` on the staged `.rs` files only.
