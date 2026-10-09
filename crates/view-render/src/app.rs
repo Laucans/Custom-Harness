@@ -171,6 +171,10 @@ pub struct ToonMaterial {
     /// What it emits on top, linear; black for most things.
     #[uniform(1)]
     pub emissive: LinearRgba,
+    /// The pattern painted over it: `x` is [`scene::Pattern::id`], `y` its tile
+    /// size in world units.
+    #[uniform(2)]
+    pub pattern: Vec4,
 }
 
 impl Material for ToonMaterial {
@@ -183,11 +187,12 @@ impl Material for ToonMaterial {
 #[derive(Resource, Default)]
 struct MeshCache(HashMap<u64, Handle<Mesh>>);
 
-/// Toon materials by colour, the engine's materials for the see-through, and
+/// Toon materials by colour and pattern, the engine's materials for the see-through, and
 /// the painted figures by who is on them.
 #[derive(Resource, Default)]
 struct Palette {
-    toon: HashMap<u64, Handle<ToonMaterial>>,
+    /// By colour, glow and pattern.
+    toon: HashMap<(u64, u8), Handle<ToonMaterial>>,
     glass: HashMap<u64, Handle<StandardMaterial>>,
     /// Each figure's cut-out, painted once and kept.
     cards: HashMap<Figure, Handle<StandardMaterial>>,
@@ -398,7 +403,10 @@ fn toon_material(
     materials: &mut Assets<ToonMaterial>,
     prop: &Prop,
 ) -> Handle<ToonMaterial> {
-    let key = quantize(prop.color) ^ prop.emissive.map_or(0, |e| quantize(e).rotate_left(32));
+    let key = (
+        quantize(prop.color) ^ prop.emissive.map_or(0, |e| quantize(e).rotate_left(32)),
+        prop.pattern.id(),
+    );
     palette
         .toon
         .entry(key)
@@ -408,6 +416,7 @@ fn toon_material(
                 emissive: prop
                     .emissive
                     .map_or(LinearRgba::BLACK, |e| LinearRgba::from(color(e)) * 0.9),
+                pattern: Vec4::new(f32::from(prop.pattern.id()), prop.pattern.tile(), 0.0, 0.0),
             })
         })
         .clone()

@@ -111,6 +111,6 @@ mod tests {
     #[test]
     fn the_data_layer_is_held_to_a_higher_bar_and_the_rest_to_the_common_one() {
         assert!(data_layer_bar(true).contains("invariant with no test"));
-        assert!(data_layer_bar(false).is_empty());
+        assert_eq!(data_layer_bar(false), "");
     }
 }
