@@ -1,4 +1,4 @@
-// The plant's page: data, navigation, panes, the steward's terminal — and a
+// The plant's page: data, navigation, panes, the steward's and the doctor's terminals — and a
 // bridge to the renderer, a Bevy scene compiled to WebAssembly that owns the
 // canvas (crates/view-render).
 //
@@ -121,9 +121,9 @@
     crewBar();
     crumbs();
     pushPicture();
-    // An issue is fetched once; the steward's terminal is a live connection.
+    // An issue is fetched once; a terminal is a live connection.
     // Everything else is redrawn from the new picture.
-    if (S.pane && S.pane.kind !== 'issue' && S.pane.kind !== 'steward') renderPane(S.pane, true);
+    if (S.pane && S.pane.kind !== 'issue' && !TERMINALS[S.pane.kind]) renderPane(S.pane, true);
     // `?open={"kind":"board"}` opens a pane straight from the URL — a deep
     // link to a station, an employee, the dashboards.
     const wanted = new URLSearchParams(location.search).get('open');
@@ -461,9 +461,11 @@
     if (e.key === 'Escape' && !$('plant-menu').hidden) { plantClose(); $('status').focus(); return; }
     if (e.key === 'Escape' || e.key === 'Backspace') { if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'CANVAS') back(); else if (e.key === 'Escape') back(); }
   });
-  $('hud-steward').addEventListener('click', () => {
-    if (S.pane && S.pane.kind === 'steward') closePane(); else openPane({ kind: 'steward' });
-  });
+  for (const who of ['steward', 'doctor']) {
+    $('hud-' + who).addEventListener('click', () => {
+      if (S.pane && S.pane.kind === who) closePane(); else openPane({ kind: who });
+    });
+  }
   function act(h) {
     if (h.go) return go(h.go, h.room || null);
     if (h.url) return window.open(h.url, '_blank', 'noopener');
@@ -488,7 +490,7 @@
     S.pane = Object.assign({}, p);
     document.body.classList.add('split');
     $('pane').hidden = false;
-    $('pane-body').classList.toggle('terminal', p.kind === 'steward');
+    $('pane-body').classList.toggle('terminal', !!TERMINALS[p.kind]);
     hideTip();
     renderPane(S.pane, false);
   }
@@ -577,17 +579,35 @@
     return undefined;
   });
 
-  // ---- the steward's terminal --------------------------------------------------
-  // xterm.js in the pane, a WebSocket to the desk. Closing the pane closes the
+  // ---- the terminals: the steward's, the doctor's -------------------------------
+  // xterm.js in the pane, a WebSocket to a desk. Closing the pane closes the
   // socket and nothing else: the program behind it keeps running, and the next
-  // visit replays its screen.
-  const CHIPS = [
-    ['Is the plant running?', 'Is the plant running? Give me the status.'],
-    ['Start the plant', 'Start the plant.'],
-    ['Stop the plant', 'Stop the plant.'],
-    ['What is blocking?', 'What is blocking the board right now, and what should I do?'],
-    ['What did it cost today?', 'What did the plant spend today, and on what?'],
-  ];
+  // visit replays its screen. Two desks, one per person; the doctor's opens
+  // with the check-up already asked.
+  const TERMINALS = {
+    steward: {
+      title: 'The steward · Claude Code in the harness checkout',
+      flag: '--no-steward',
+      chips: [
+        ['Is the plant running?', 'Is the plant running? Give me the status.'],
+        ['Start the plant', 'Start the plant.'],
+        ['Stop the plant', 'Stop the plant.'],
+        ['What is blocking?', 'What is blocking the board right now, and what should I do?'],
+        ['What did it cost today?', 'What did the plant spend today, and on what?'],
+      ],
+    },
+    doctor: {
+      title: 'The doctor · a check-up of the plant',
+      flag: '--no-doctor',
+      chips: [
+        ['Check-up again', 'Give the plant a full check-up again — read, do not treat — and finish with the HEALTH line.'],
+        ['Why did it stop?', 'Why did the harness last stop? Read errors.tsv and the run\'s logs, and say what would fix it.'],
+        ['What would you repair?', 'Run `./target/release/harness doctor --dry-run` and explain what it would repair.'],
+        ['Treat it', 'You have my go: run `./target/release/harness doctor` now, then confirm what it discarded.'],
+        ['Disk under .llocal', 'Where does the disk go under .llocal? Name the stray folders and what is safe to delete by hand.'],
+      ],
+    },
+  };
   function teardownTerminal() {
     if (!S.term) return;
     try { S.term.ro.disconnect(); } catch (e) { /* already gone */ }
@@ -595,15 +615,16 @@
     try { S.term.term.dispose(); } catch (e) { /* already gone */ }
     S.term = null;
   }
-  function stewardStatus(text) { const el = $('steward-status'); if (el) el.textContent = text; }
-  async function mountTerminal() {
+  function stewardStatus(text) { const el = $('term-status'); if (el) el.textContent = text; }
+  async function mountTerminal(who) {
     const el = $('term');
     if (!el) return;
+    const desk = TERMINALS[who];
     let status = null;
-    try { status = await (await fetch('/api/steward')).json(); } catch (e) { /* shown below */ }
+    try { status = await (await fetch('/api/' + who)).json(); } catch (e) { /* shown below */ }
     if (!status || !status.available) {
       $('pane-body').classList.remove('terminal');
-      $('pane-body').innerHTML = '<div class="callout">No steward: the view runs with <code>--no-steward</code>, or the server is unreachable.</div>';
+      $('pane-body').innerHTML = `<div class="callout">No ${who}: the view runs with <code>${desk.flag}</code>, or the server is unreachable.</div>`;
       return;
     }
     if (typeof Terminal === 'undefined' || typeof FitAddon === 'undefined') {
@@ -620,7 +641,7 @@
     term.open(el);
     try { fit.fit(); } catch (e) { /* not laid out yet */ }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/api/steward/term?cols=${term.cols}&rows=${term.rows}`);
+    const ws = new WebSocket(`${proto}://${location.host}/api/${who}/term?cols=${term.cols}&rows=${term.rows}`);
     ws.binaryType = 'arraybuffer';
     const enc = new TextEncoder();
     const send = (bytes) => { if (ws.readyState === 1) ws.send(bytes); };
@@ -637,7 +658,7 @@
     S.term = { term, ws, ro };
     const restart = $('term-restart');
     if (restart) restart.onclick = () => {
-      if (ws.readyState === 1 && window.confirm('Kill the steward\'s Claude Code and start a fresh one?')) {
+      if (ws.readyState === 1 && window.confirm(`Kill the ${who}'s Claude Code and start a fresh one?`)) {
         term.reset();
         send(JSON.stringify({ t: 'restart' }));
       }
@@ -667,6 +688,14 @@
     if (after) after(refresh);
   }
 
+  // A desk's pane: the status bar, the chips, the terminal.
+  function terminalPane(who) {
+    const desk = TERMINALS[who];
+    const html = `<div class="steward-bar"><span id="term-status">connecting…</span><span class="spacer"></span><button class="mini" id="term-restart" title="kill this Claude Code and start a fresh one">restart</button></div>`
+      + '<div class="chips">' + desk.chips.map(([label, say]) => `<button data-type="${esc(say)}">${esc(label)}</button>`).join('') + '</div>'
+      + '<div id="term"></div>';
+    return [desk.title, html, () => { mountTerminal(who); }];
+  }
   const kv = (pairs) => '<dl class="kv">' + pairs.filter(([, v]) => v != null && v !== '').map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('') + '</dl>';
   const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
   // A table shown a page at a time. The page is kept on the pane, so a
@@ -1205,12 +1234,8 @@
       return ['Distribution', h];
     },
 
-    steward() {
-      const html = `<div class="steward-bar"><span id="steward-status">connecting…</span><span class="spacer"></span><button class="mini" id="term-restart" title="kill this Claude Code and start a fresh one">restart</button></div>`
-        + '<div class="chips">' + CHIPS.map(([label, say]) => `<button data-type="${esc(say)}">${esc(label)}</button>`).join('') + '</div>'
-        + '<div id="term"></div>';
-      return ['The steward · Claude Code in the harness checkout', html, () => { mountTerminal(); }];
-    },
+    steward(p) { return terminalPane(p.kind); },
+    doctor(p) { return terminalPane(p.kind); },
 
     notifications(p) {
       const level = LEVELS.some(([l]) => l === p.level) ? p.level : 'error';

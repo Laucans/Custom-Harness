@@ -4,7 +4,8 @@
 //! Lamb* and *Don't Starve* stand paper characters — big heads, bead eyes,
 //! thick ink around everything — dressed for the atomic age of *Fallout*:
 //! vault jumpsuits with gold trim, Protectron robots with a glowing visor,
-//! and the Vault Boy himself as the steward, grin, quiff and thumbs-up.
+//! and the Vault Boy himself as the steward, grin, quiff and thumbs-up; the
+//! doctor is a red, lobster-faced physician in a white coat, head mirror on.
 //!
 //! Each figure is drawn with vector paths and rasterised at run time by
 //! `tiny-skia` into an RGBA texture, which [`crate::app`] puts on a quad that
@@ -74,6 +75,9 @@ pub enum Figure {
     },
     /// The steward: the Vault Boy, grinning, thumb up.
     Steward,
+    /// The doctor: a red lobster-faced physician, white coat, head mirror,
+    /// a blue book under the claw.
+    Doctor,
     /// A Protectron; `wrench` builds, otherwise it holds a clipboard.
     Robot {
         /// The model it opens.
@@ -112,6 +116,11 @@ const PINK: Rgb = (230, 138, 176);
 const WHITE: Rgb = (252, 250, 244);
 const GREEN: Rgb = (126, 224, 129);
 const GREY: Rgb = (154, 154, 166);
+// The doctor's own: coral shell, pale scrubs, a blue book, blue sandals.
+const CORAL: Rgb = (222, 84, 66);
+const SCRUB: Rgb = (134, 190, 160);
+const BOOK: Rgb = (46, 92, 170);
+const SANDAL: Rgb = (120, 170, 220);
 
 /// The ink line, in pixels of the texture.
 const LINE: f32 = 7.0;
@@ -350,6 +359,72 @@ fn steward(c: &mut Canvas) {
     c.shape(curl.finish(), GOLD);
 }
 
+/// The doctor: a lobster-faced physician of the far future — coral shell,
+/// four mouth tentacles, big eyes under a head mirror, an open white coat
+/// over pale scrubs, claws for hands, a blue book held against the chest,
+/// sandals on the feet.
+fn doctor(c: &mut Canvas) {
+    // Sandals: coral feet in blue thongs.
+    for side in [-1.0, 1.0] {
+        let fx = CX + side * 28.0;
+        c.shape(ellipse(fx, 366.0, 22.0, 10.0), CORAL);
+        c.shape(ellipse(fx, 362.0, 20.0, 5.0), SANDAL);
+    }
+    // Trousers in scrubs, then the coat over them.
+    c.shape(rounded(CX - 42.0, 290.0, 34.0, 72.0, 14.0), SCRUB);
+    c.shape(rounded(CX + 8.0, 290.0, 34.0, 72.0, 14.0), SCRUB);
+    c.shape(rounded(CX - 60.0, 174.0, 120.0, 148.0, 24.0), WHITE);
+    // The coat opens on the scrubs; lapels in ink, one button.
+    c.shape(rounded(CX - 16.0, 178.0, 32.0, 132.0, 6.0), SCRUB);
+    c.line((CX - 16.0, 180.0), (CX - 36.0, 216.0), INK, 4.0);
+    c.line((CX + 16.0, 180.0), (CX + 36.0, 216.0), INK, 4.0);
+    c.fill(circle(CX - 24.0, 262.0, 4.0).as_ref(), INK, 255);
+    // Sleeves by the sides; a claw at the end of each.
+    c.shape(rounded(CX - 84.0, 190.0, 26.0, 74.0, 13.0), WHITE);
+    c.shape(rounded(CX + 58.0, 190.0, 26.0, 74.0, 13.0), WHITE);
+    // The book, held against the chest by the right claw: blue, a pale
+    // spine and three lines of title.
+    c.shape(rounded(CX + 30.0, 226.0, 50.0, 62.0, 5.0), BOOK);
+    c.shape(rounded(CX + 30.0, 226.0, 9.0, 62.0, 3.0), shade(BOOK, 0.7));
+    for (y, w) in [(240.0, 26.0), (252.0, 20.0), (264.0, 14.0)] {
+        c.line((CX + 44.0, y), (CX + 44.0 + w, y), WHITE, 3.0);
+    }
+    for side in [-1.0, 1.0] {
+        let hx = CX + side * 71.0;
+        c.shape(
+            polygon(&[
+                (hx - 17.0, 262.0),
+                (hx + 17.0, 262.0),
+                (hx + 13.0, 294.0),
+                (hx + 3.0, 278.0),
+                (hx - 3.0, 278.0),
+                (hx - 13.0, 294.0),
+            ]),
+            CORAL,
+        );
+    }
+    // The head: wide, a little flat on top; the eyes side by side, the
+    // tentacles hanging where a mouth would be.
+    c.shape(ellipse(CX, 108.0, 70.0, 60.0), CORAL);
+    for (x, top, len) in [
+        (CX - 42.0, 124.0, 56.0),
+        (CX - 16.0, 128.0, 62.0),
+        (CX + 8.0, 128.0, 62.0),
+        (CX + 34.0, 124.0, 56.0),
+    ] {
+        c.shape(rounded(x - 9.0, top, 18.0, len, 9.0), CORAL);
+    }
+    c.shape(ellipse(CX - 20.0, 100.0, 22.0, 20.0), WHITE);
+    c.shape(ellipse(CX + 20.0, 100.0, 22.0, 20.0), WHITE);
+    c.fill(circle(CX - 14.0, 102.0, 5.0).as_ref(), INK, 255);
+    c.fill(circle(CX + 26.0, 102.0, 5.0).as_ref(), INK, 255);
+    // The head mirror: a white band round the brow, the disc on the left.
+    c.shape(rounded(CX - 70.0, 62.0, 140.0, 14.0, 7.0), WHITE);
+    c.shape(circle(CX - 44.0, 50.0, 18.0), GREY);
+    c.fill(circle(CX - 44.0, 50.0, 10.0).as_ref(), WHITE, 255);
+    c.fill(circle(CX - 48.0, 46.0, 4.0).as_ref(), INK, 255);
+}
+
 /// A robot: a Protectron of the atomic age — a domed head over a glowing
 /// visor, a riveted chest plate, stubby chrome arms, a tool in the right
 /// one.
@@ -451,6 +526,7 @@ pub fn paint(figure: Figure) -> Sprite {
     match figure {
         Figure::Follower { model } => follower(&mut canvas, model),
         Figure::Steward => steward(&mut canvas),
+        Figure::Doctor => doctor(&mut canvas),
         Figure::Robot {
             model,
             wrench,
@@ -499,6 +575,7 @@ mod tests {
         for figure in [
             Figure::Follower { model: Model::Opus },
             Figure::Steward,
+            Figure::Doctor,
             Figure::Robot {
                 model: Model::Sonnet,
                 wrench: true,
@@ -585,6 +662,26 @@ mod tests {
         assert_eq!(&suit[..3], &[79, 143, 214], "{suit:?}");
         let grin = pixel(&s, WIDTH / 2, 140);
         assert_eq!(&grin[..3], &[252, 250, 244], "a white grin {grin:?}");
+    }
+
+    #[test]
+    fn the_doctor_is_a_coral_lobster_in_a_white_coat_with_a_blue_book() {
+        let s = paint(Figure::Doctor);
+        let head = pixel(&s, WIDTH / 2 - 55, 115);
+        assert_eq!(&head[..3], &[222, 84, 66], "coral head {head:?}");
+        let eye = pixel(&s, WIDTH / 2 - 26, 96);
+        assert_eq!(&eye[..3], &[252, 250, 244], "white eye {eye:?}");
+        let coat = pixel(&s, WIDTH / 2 - 36, 240);
+        assert_eq!(&coat[..3], &[252, 250, 244], "white coat {coat:?}");
+        let book = pixel(&s, WIDTH / 2 + 60, 234);
+        assert_eq!(&book[..3], &[46, 92, 170], "blue book {book:?}");
+        let mirror = pixel(&s, WIDTH / 2 - 44, 50);
+        assert_eq!(
+            &mirror[..3],
+            &[252, 250, 244],
+            "the mirror's glass {mirror:?}"
+        );
+        assert_ne!(s, paint(Figure::Steward));
     }
 
     #[test]

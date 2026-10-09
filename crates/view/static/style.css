@@ -71,6 +71,8 @@ body {
   cursor: pointer;
 }
 .hud-btn:hover { background: rgba(199, 210, 254, 0.12); }
+.hud-btn.doctor { border-color: rgba(255, 140, 120, 0.5); color: #ffb4a2; }
+.hud-btn.doctor:hover { background: rgba(255, 140, 120, 0.12); }
 
 #status-wrap { position: relative; margin-left: auto; min-width: 0; }
 #status {
@@ -315,7 +317,7 @@ table.triggers td:last-child, table.triggers td:nth-child(3) { white-space: norm
 .callout.soon { border-color: var(--warn); }
 a.ext { color: var(--accent); }
 
-/* The steward's terminal fills the pane below its bar and chips. */
+/* A terminal — the steward's or the doctor's — fills the pane below its bar and chips. */
 #pane-body.terminal { display: flex; flex-direction: column; padding: 10px 12px 12px; overflow: hidden; }
 .steward-bar { display: flex; align-items: center; gap: 10px; font: 12px var(--mono); color: var(--dim); margin-bottom: 8px; }
 .steward-bar .spacer { flex: 1; }

@@ -12,6 +12,10 @@ use clap::Parser;
 /// `harness-view`: a local web page that draws the harness as a plant.
 #[derive(Debug, Parser)]
 #[command(name = "harness-view", version, about)]
+// A command line's switches are bools by nature: `--no-board`, `--no-steward`,
+// `--no-doctor`, `--demo` are each present or absent, and an enum for each
+// would only rename `true`.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     /// Port the page listens on.
     #[arg(long, env = "HARNESS_VIEW_PORT", default_value_t = 7878)]
@@ -58,7 +62,20 @@ pub struct Cli {
     #[arg(long, env = "STEWARD_MODEL", default_value = "claude-sonnet-5-5")]
     pub steward_model: String,
 
-    /// Passed to the steward's `claude` as `--permission-mode`, like the
+    /// No doctor: the infirmary has nobody to examine the plant.
+    #[arg(long)]
+    pub no_doctor: bool,
+
+    /// The model the doctor's `claude` opens with (`--model`). The program is
+    /// the steward's.
+    #[arg(long, env = "DOCTOR_MODEL", default_value = "claude-sonnet-5-5")]
+    pub doctor_model: String,
+
+    /// The effort the doctor's `claude` opens with (`--effort`).
+    #[arg(long, env = "DOCTOR_EFFORT", default_value = "high")]
+    pub doctor_effort: String,
+
+    /// Passed to the steward's and the doctor's `claude` as `--permission-mode`, like the
     /// launcher passes it to every session.
     #[arg(long, env = "PERMISSION_MODE", default_value = "bypassPermissions")]
     pub permission_mode: String,
@@ -101,6 +118,9 @@ mod tests {
         assert_eq!(cli.permission_mode, "bypassPermissions");
         assert!(!cli.no_board);
         assert!(!cli.no_steward);
+        assert!(!cli.no_doctor);
+        assert_eq!(cli.doctor_model, "claude-sonnet-5-5");
+        assert_eq!(cli.doctor_effort, "high");
         assert!(!cli.demo);
         assert_eq!(
             cli.watch_command,
@@ -117,6 +137,8 @@ mod tests {
             "INTEGRATION_BRANCH",
             "PERMISSION_MODE",
             "STEWARD_MODEL",
+            "DOCTOR_MODEL",
+            "DOCTOR_EFFORT",
             "HARNESS_WATCH_COMMAND",
         ] {
             assert!(help.contains(variable), "{variable} missing from --help");

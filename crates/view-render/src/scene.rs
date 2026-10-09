@@ -13,7 +13,7 @@
 //! — and the props are chrome and portholes, a vault's gear door, CRT
 //! terminals, radar dishes and red beacons. The plant itself is *Futurama*'s
 //! Planet Express: a brick hangar beside a tall tower under a red dome, in a
-//! town by the water. The figures — followers, robots, the steward —
+//! town by the water. The figures — followers, robots, the steward, the doctor —
 //! are not built from shapes but painted: flat cut-outs ([`crate::sprites`])
 //! standing on the ground and always facing the camera, as a paper doll
 //! would.
@@ -144,6 +144,9 @@ const WARN: &str = "#ffb547";
 const BAD: &str = "#ff6b6b";
 const DIM: &str = "#cfc3cc";
 const TEXT: &str = "#fff6e5";
+// The infirmary's: a white sheet, a pale scrub green.
+const WHITE_SHEET: &str = "#fcfaf4";
+const SCRUB: &str = "#86bea0";
 const SCRIPT: &str = "#3a2a3e";
 
 /// The lines room's layout. Each line is a band across the room: robots
@@ -1034,6 +1037,92 @@ fn wizard(b: &mut Builder, x: f32, z: f32, hot: &Hot) {
     b.hot_since(m, hot);
     let [lx, ly, lz] = over(fx, fz, 2.85);
     b.label(lx, ly, lz, "the steward", 11.0, TEXT).backing = Backing::Ink;
+}
+
+/// The doctor: a painted cut-out — the coral, lobster-faced physician in a
+/// white coat, head mirror on, a blue book under the claw.
+fn physician(b: &mut Builder, x: f32, z: f32, hot: &Hot) {
+    let m = b.mark();
+    let (fx, fz) = (x + 0.5, z + 0.5);
+    b.card(fx, fz, 1.6, 2.6, Figure::Doctor);
+    b.hot_since(m, hot);
+    let [lx, ly, lz] = over(fx, fz, 2.85);
+    b.label(lx, ly, lz, "the doctor", 11.0, TEXT).backing = Backing::Ink;
+}
+
+/// What a click on the doctor, the bed or the cabinet opens.
+fn doctor_hot(tip_text: &str) -> Hot {
+    pane(serde_json::json!({"kind": "doctor"}), tip_text)
+}
+
+/// A medicine cabinet: cream, a red cross proud of its door.
+fn cabinet(b: &mut Builder, x: f32, z: f32, w: f32, h: f32, hot: &Hot) {
+    let m = b.mark();
+    let d = 0.5;
+    b.rounded(x, 0.0, z, w, h, d, 0.08, Rgba::hex(CREAM));
+    let (cx, cy) = (x + w / 2.0, h * 0.6);
+    let arm = w * 0.5;
+    let bar = w * 0.16;
+    // The cross sits proud of the door, toward the camera.
+    b.rounded(
+        cx - bar / 2.0,
+        cy - arm / 2.0,
+        z + d,
+        bar,
+        arm,
+        0.04,
+        0.02,
+        Rgba::hex(RED),
+    );
+    b.rounded(
+        cx - arm / 2.0,
+        cy - bar / 2.0,
+        z + d,
+        arm,
+        bar,
+        0.04,
+        0.02,
+        Rgba::hex(RED),
+    );
+    b.hot_since(m, hot);
+}
+
+/// An examination bed: a white mattress on four chrome legs, a teal pillow,
+/// a pale blanket folded over the foot.
+fn bed(b: &mut Builder, x: f32, z: f32, len: f32, hot: &Hot) {
+    let m = b.mark();
+    let (wide, top) = (1.2, 0.35);
+    let chrome = Rgba::hex(STONE);
+    for (lx, lz) in [
+        (0.12, 0.12),
+        (len - 0.12, 0.12),
+        (0.12, wide - 0.12),
+        (len - 0.12, wide - 0.12),
+    ] {
+        b.cylinder(x + lx, 0.0, z + lz, 0.05, top, chrome);
+    }
+    b.rounded(x, top, z, len, 0.28, wide, 0.1, Rgba::hex(WHITE_SHEET));
+    b.rounded(
+        x + 0.15,
+        top + 0.28,
+        z + 0.25,
+        0.55,
+        0.14,
+        0.7,
+        0.06,
+        Rgba::hex(TEAL),
+    );
+    b.rounded(
+        x + len * 0.5,
+        top + 0.28,
+        z + 0.08,
+        len * 0.45,
+        0.07,
+        wide - 0.16,
+        0.03,
+        Rgba::hex(SCRUB),
+    );
+    b.hot_since(m, hot);
 }
 
 /// A sign: a retro billboard — a chrome frame on one chrome pole, the board
@@ -2002,6 +2091,21 @@ fn room_props(b: &mut Builder, snap: &Snapshot, room: &Room, x0: f32, z0: f32, r
             );
             screen(b, x0 + 2.3, z0 + 2.65, 0.8, TEAL, &Hot::default());
             b.capsule(x0 + 2.75, 0.0, z0 + 4.35, 0.3, 0.55, Rgba::hex(STONE_DARK));
+            // The product's corner, moved in from the old value room: the
+            // mock-up on its easel, the data floppy.
+            b.cylinder(x0 + 5.0, 0.0, z0 + 2.5, 0.05, 0.9, Rgba::hex(WOOD));
+            b.cylinder(x0 + 6.3, 0.0, z0 + 2.5, 0.05, 0.9, Rgba::hex(WOOD));
+            b.rounded(
+                x0 + 4.8,
+                0.7,
+                z0 + 2.4,
+                1.7,
+                1.1,
+                0.1,
+                0.1,
+                Rgba::hex(CREAM),
+            );
+            b.cylinder(x0 + 5.65, 0.0, z0 + 4.4, 0.45, 0.14, Rgba::hex(TEAL));
         }
         "store" => {
             let v = &snap.versions;
@@ -2017,19 +2121,13 @@ fn room_props(b: &mut Builder, snap: &Snapshot, room: &Room, x0: f32, z0: f32, r
                 crate_box(b, x + 0.5, 0.15, z + 0.25, color, None, None);
             }
         }
-        "value" => {
-            b.rounded(
-                x0 + 1.4,
-                0.4,
-                z0 + 1.0,
-                1.8,
-                1.3,
-                0.1,
-                0.1,
-                Rgba::hex(CREAM),
+        "infirmary" => {
+            let hot = doctor_hot(
+                "The doctor\nA Claude Code that examines the plant — the check-up is asked the moment they sit down.",
             );
-            screen(b, x0 + 3.4, z0 + 2.2, 0.0, "#a78bfa", &Hot::default());
-            b.cylinder(x0 + 5.65, 0.0, z0 + 4.05, 0.5, 0.14, Rgba::hex(TEAL));
+            bed(b, x0 + 0.7, z0 + 1.0, 2.2, &hot);
+            cabinet(b, x0 + 4.9, z0 + 0.1, 1.1, 1.6, &hot);
+            physician(b, x0 + 4.4, z0 + 3.3, &hot);
         }
         "control" => {
             b.rounded(
@@ -2330,7 +2428,7 @@ fn age(secs: u64) -> String {
 
 fn office_room(snap: &Snapshot) -> Scene {
     let mut b = Builder::new(CONCRETE);
-    b.floor(14.0, 9.0);
+    b.floor(16.0, 9.0);
     b.rounded(0.6, 0.7, -0.22, 12.4, 2.6, 0.14, 0.14, Rgba::hex(PAPER));
     b.label(
         6.8,
@@ -2409,7 +2507,42 @@ fn office_room(snap: &Snapshot) -> Scene {
     b.rounded(8.5, 0.0, 4.0, 3.2, 0.8, 1.2, 0.14, Rgba::hex(WOOD));
     b.hot_since(m, &board_hot);
     b.label(10.1, 1.1, 4.6, "BOARD", 11.0, TEXT).backing = Backing::Ink;
+    product_corner(&mut b);
     b.scene
+}
+
+/// The product's corner of the office — what the old value room held: the
+/// mock-up on its easel, the feature list on a screen, the data floppy.
+fn product_corner(b: &mut Builder) {
+    let mock = pane(
+        serde_json::json!({"kind": "placeholder", "title": "The mock-up", "text": "The interface, drawn as micro-frontends: click a part, read the feature behind it. Nothing to show yet — the product's mock-up has no source the view can read."}),
+        "The mock-up of the interface",
+    );
+    let m = b.mark();
+    b.cylinder(1.15, 0.0, 6.35, 0.06, 1.15, Rgba::hex(WOOD));
+    b.cylinder(3.25, 0.0, 6.35, 0.06, 1.15, Rgba::hex(WOOD));
+    b.rounded(0.8, 1.0, 6.2, 2.8, 2.0, 0.14, 0.14, Rgba::hex(CREAM));
+    b.hot_since(m, &mock);
+    let head = b.label(2.2, 2.0, 6.35, "MOCK-UP", 12.0, INK);
+    head.bold = true;
+    head.backing = Backing::Slate;
+    b.label(2.2, 1.6, 6.35, "micro-frontends · coming", 10.0, SCRIPT)
+        .backing = Backing::Slate;
+    let features = pane(serde_json::json!({"kind": "features"}), "The feature list");
+    // On the row of the other two desks, to their right.
+    let m = b.mark();
+    b.rounded(12.5, 0.0, 4.0, 2.6, 0.8, 1.2, 0.14, Rgba::hex(WOOD));
+    b.hot_since(m, &features);
+    screen(b, 13.3, 4.05, 0.8, "#a78bfa", &features);
+    let data = pane(
+        serde_json::json!({"kind": "placeholder", "title": "Data sources", "text": "Where the product reads from and writes to. Not declared anywhere the view can read yet."}),
+        "The data sources",
+    );
+    let m = b.mark();
+    b.cylinder(11.0, 0.0, 7.0, 0.65, 0.16, Rgba::hex(TEAL));
+    b.cylinder(11.0, 0.16, 7.0, 0.22, 0.05, Rgba::hex(BONE));
+    b.hot_since(m, &data);
+    b.label(11.0, 0.7, 7.0, "DATA", 10.0, TEXT).backing = Backing::Ink;
 }
 
 const fn issue_status_name(status: IssueStatus) -> &'static str {
@@ -2492,37 +2625,71 @@ fn store_room(snap: &Snapshot) -> Scene {
     b.scene
 }
 
-fn value_room(_snap: &Snapshot) -> Scene {
+fn infirmary_room(_snap: &Snapshot) -> Scene {
     let mut b = Builder::new(CONCRETE);
     b.floor(14.0, 9.0);
-    let mock = pane(
-        serde_json::json!({"kind": "placeholder", "title": "The mock-up", "text": "The interface, drawn as micro-frontends: click a part, read the feature behind it. Nothing to show yet — the product's mock-up has no source the view can read."}),
-        "The mock-up of the interface",
+    // The chart on the back wall: what last stopped the plant, as the
+    // control room's stops screen.
+    let chart = pane(
+        serde_json::json!({"kind": "dashboards", "focus": "errors"}),
+        "The patient's chart\nWhy the harness last stopped — the stops dashboard.",
     );
     let m = b.mark();
-    b.cylinder(1.75, 0.0, 2.65, 0.06, 1.15, Rgba::hex(WOOD));
-    b.cylinder(3.85, 0.0, 2.65, 0.06, 1.15, Rgba::hex(WOOD));
-    b.rounded(1.4, 1.0, 2.5, 2.8, 2.0, 0.14, 0.14, Rgba::hex(CREAM));
-    b.hot_since(m, &mock);
-    let head = b.label(2.8, 2.0, 2.65, "MOCK-UP", 12.0, INK);
+    b.rounded(0.8, 0.7, -0.22, 5.4, 2.4, 0.14, 0.14, Rgba::hex(PAPER));
+    b.hot_since(m, &chart);
+    let head = b.label(3.5, 2.6, -0.07, "PATIENT CHART", 12.0, INK);
     head.bold = true;
     head.backing = Backing::Slate;
-    b.label(2.8, 1.6, 2.65, "micro-frontends · coming", 10.0, SCRIPT)
+    b.label(
+        3.5,
+        2.15,
+        -0.07,
+        "the last stops · errors.tsv",
+        10.0,
+        SCRIPT,
+    )
+    .backing = Backing::Slate;
+    b.label(3.5, 1.5, -0.07, "click to read", 10.0, SCRIPT)
         .backing = Backing::Slate;
-    let features = pane(serde_json::json!({"kind": "features"}), "The feature list");
-    let m = b.mark();
-    b.rounded(6.0, 0.0, 3.5, 2.6, 0.8, 1.2, 0.14, Rgba::hex(WOOD));
-    b.hot_since(m, &features);
-    screen(&mut b, 6.8, 3.55, 0.8, "#a78bfa", &features);
-    let data = pane(
-        serde_json::json!({"kind": "placeholder", "title": "Data sources", "text": "Where the product reads from and writes to. Not declared anywhere the view can read yet."}),
-        "The data sources",
+    let doctor = doctor_hot(
+        "The doctor\nA Claude Code in the harness checkout that examines the plant: pulse, chart, `harness doctor --dry-run`, the workspaces — asked the moment they sit down.",
+    );
+    bed(
+        &mut b,
+        1.0,
+        4.0,
+        3.0,
+        &doctor_hot(
+            "The examination bed\nLie the plant down: the doctor reads its chart and says what is wrong.",
+        ),
     );
     let m = b.mark();
-    b.cylinder(10.95, 0.0, 5.25, 0.65, 0.16, Rgba::hex(TEAL));
-    b.cylinder(10.95, 0.16, 5.25, 0.22, 0.05, Rgba::hex(BONE));
-    b.hot_since(m, &data);
-    b.label(10.95, 0.7, 5.25, "DATA", 10.0, TEXT).backing = Backing::Ink;
+    b.rounded(5.6, 0.0, 4.4, 3.2, 0.8, 1.2, 0.14, Rgba::hex(WOOD));
+    b.rounded(7.9, 0.8, 4.8, 0.55, 0.03, 0.75, 0.02, Rgba::hex(CREAM));
+    b.hot_since(m, &doctor);
+    screen(&mut b, 6.3, 4.45, 0.8, OK, &doctor);
+    b.capsule(7.2, 0.0, 6.4, 0.32, 0.55, Rgba::hex(STONE_DARK));
+    cabinet(
+        &mut b,
+        7.6,
+        0.3,
+        1.6,
+        2.2,
+        &doctor_hot(
+            "The remedies\n`harness doctor`: the repair of what a failed run left behind. The doctor opens it only on your go.",
+        ),
+    );
+    physician(&mut b, 10.4, 5.2, &doctor);
+    sign(
+        &mut b,
+        10.4,
+        0.8,
+        3.0,
+        "INFIRMARY",
+        "harness doctor · check-up",
+        GOLD,
+        &chart,
+    );
     b.scene
 }
 
@@ -2649,7 +2816,7 @@ pub fn build(snap: &Snapshot, view: &View) -> Scene {
             "lines" => lines_room(snap),
             "office" => office_room(snap),
             "store" => store_room(snap),
-            "value" => value_room(snap),
+            "infirmary" => infirmary_room(snap),
             "control" => control_room(snap),
             _ => construction_room(snap),
         },
@@ -2681,7 +2848,7 @@ mod tests {
       "rooms": [{"id": 1, "key": "lines", "name": "Assembly lines", "blurb": "b", "status": "live"},
                 {"id": 2, "key": "office", "name": "Architecture office", "blurb": "b", "status": "draft"},
                 {"id": 3, "key": "store", "name": "Distribution", "blurb": "b", "status": "live"},
-                {"id": 4, "key": "value", "name": "Product value", "blurb": "b", "status": "draft"},
+                {"id": 4, "key": "infirmary", "name": "Infirmary", "blurb": "b", "status": "live"},
                 {"id": 5, "key": "control", "name": "Control room", "blurb": "b", "status": "live"},
                 {"id": 6, "key": "construction", "name": "Under construction", "blurb": "b", "status": "construction"}],
       "board": {"milestones": [{"issue": {"number": 17, "title": "Dernier", "state": "open"},
@@ -2818,7 +2985,7 @@ mod tests {
     fn the_screens_stand_on_their_desks_not_in_them() {
         // A screen's stand is the one wide, flat cylinder in these rooms,
         // and its base sits on the desk's top.
-        for (room, desk_top) in [("office", 0.8), ("value", 0.8), ("control", 0.7)] {
+        for (room, desk_top) in [("office", 0.8), ("infirmary", 0.8), ("control", 0.7)] {
             let scene = build(
                 &picture(),
                 &View::C {
@@ -3269,7 +3436,7 @@ mod tests {
             "lines",
             "office",
             "store",
-            "value",
+            "infirmary",
             "control",
             "construction",
         ] {
@@ -3343,6 +3510,53 @@ mod tests {
             })
             .count();
         assert_eq!(scanning, 0, "no gate is scanning in this round");
+    }
+
+    #[test]
+    fn the_infirmary_has_the_doctor_and_the_office_took_the_product_corner() {
+        let snap = picture();
+        let infirmary = build(
+            &snap,
+            &View::C {
+                room: "infirmary".to_string(),
+            },
+        );
+        assert!(
+            cards(&infirmary).contains(&Figure::Doctor),
+            "the doctor stands in"
+        );
+        assert!(
+            panes(&infirmary, "doctor") > 2,
+            "the doctor, the bed, the desk and the cabinet all call them"
+        );
+        assert_eq!(
+            panes(&infirmary, "features"),
+            0,
+            "the feature list moved out"
+        );
+        let office = build(
+            &snap,
+            &View::C {
+                room: "office".to_string(),
+            },
+        );
+        assert!(
+            panes(&office, "features") > 0,
+            "the feature list is in the office"
+        );
+        let titles: Vec<&str> = hots(&office)
+            .iter()
+            .filter_map(|h| h.pane.as_ref()?.get("title")?.as_str())
+            .collect();
+        assert!(titles.contains(&"The mock-up"), "{titles:?}");
+        assert!(titles.contains(&"Data sources"), "{titles:?}");
+        assert!(titles.contains(&"Talk to Claude Code"), "{titles:?}");
+        let inside = build(&snap, &View::B);
+        assert!(
+            cards(&inside).contains(&Figure::Doctor),
+            "and in the hall's room 4"
+        );
+        assert!(panes(&inside, "doctor") >= 2);
     }
 
     #[test]
