@@ -202,6 +202,19 @@ pub trait GitHub {
     /// free plan, where branch protection is not offered.
     async fn protect_branch(&self, branch: &str) -> Outcome<()>;
 
+    /// Allow only squash merges on the repository: the squash commit is
+    /// titled from the pull request's title with `(#n)` appended, its body
+    /// from the pull request's body.
+    ///
+    /// Why: one commit per pull request on the integration branch, and the
+    /// `(#n)` in its title keeps the link to the pull request, where the
+    /// branch's own commits stay readable — nothing of the history is lost.
+    ///
+    /// # Errors
+    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses — the
+    /// token pushes to the repository but does not administer it.
+    async fn require_squash_merges(&self) -> Outcome<()>;
+
     /// Whether the authenticated token can push to this repo.
     ///
     /// # Errors
@@ -255,8 +268,8 @@ pub trait GitHub {
     /// prints nothing to read the URL back from.
     async fn create_pr(&self, head: &str, base: &str, title: &str, body: &str) -> Outcome<String>;
 
-    /// Merge a pull request by rebase — the same mechanism `/code` uses by
-    /// hand today.
+    /// Merge a pull request by squash — the one method `init-repo` leaves
+    /// enabled, and the same `/code` uses by hand.
     ///
     /// # Errors
     /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses.

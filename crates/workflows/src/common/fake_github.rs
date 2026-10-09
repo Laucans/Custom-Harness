@@ -36,6 +36,8 @@ pub enum Wrote {
     DefaultBranch(String),
     /// A branch protected.
     ProtectedBranch(String),
+    /// The repository set to squash merges only.
+    SquashMergesRequired,
     /// An issue created: title, body, labels.
     CreatedIssue(String, String, Vec<String>),
     /// A sub-issue link: parent, child.
@@ -78,6 +80,8 @@ pub struct FakeGitHub {
     pub files: HashMap<(String, String), String>,
     /// Makes `protect_branch` refuse, as a free private repo does.
     pub protection_refused: bool,
+    /// Makes `require_squash_merges` refuse, as a token without admin does.
+    pub squash_merges_refused: bool,
     /// `default_branch`'s answer. `None` refuses — the test must set it up.
     pub default_branch_name: Option<String>,
     /// `can_push`'s answer. `None` refuses — the test must set it up.
@@ -318,6 +322,14 @@ impl GitHub for FakeGitHub {
         self.wrote
             .borrow_mut()
             .push(Wrote::ProtectedBranch(branch.to_string()));
+        Ok(())
+    }
+
+    async fn require_squash_merges(&self) -> Outcome<()> {
+        if self.squash_merges_refused {
+            return Err(Halt::Halted("not an admin of the repository".to_string()));
+        }
+        self.wrote.borrow_mut().push(Wrote::SquashMergesRequired);
         Ok(())
     }
 

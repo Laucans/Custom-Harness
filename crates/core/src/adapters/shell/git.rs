@@ -58,6 +58,30 @@ impl GitCli {
     async fn git(&self, args: &[&str]) -> Outcome<Ran> {
         process::run(BINARY, &self.argv(args), &self.root).await
     }
+
+    /// Whether `branch` holds a patch `upstream` has neither commit by
+    /// commit (a rebase merge) nor as their sum (a squash merge).
+    async fn carries_unmerged_work(&self, upstream: &str, branch: &str) -> Outcome<bool> {
+        // `cherry` compares by patch-id: a `+` line is a commit that
+        // `upstream` doesn't have, even if rewritten by a rebase.
+        let cherry = self.git(&["cherry", upstream, branch]).await?;
+        if !cherry.lines().iter().any(|line| line.starts_with('+')) {
+            return Ok(false);
+        }
+        // A squash merge keeps none of the branch's commits, only their sum:
+        // merging the branch into `upstream` then changes nothing, and the
+        // merged tree is `upstream`'s own. A conflict is work to keep.
+        let merged = self
+            .git(&["merge-tree", "--write-tree", upstream, branch])
+            .await?;
+        if !merged.ok() {
+            return Ok(true);
+        }
+        let upstream_tree = self
+            .git(&["rev-parse", &format!("{upstream}^{{tree}}")])
+            .await?;
+        Ok(!upstream_tree.ok() || merged.out() != upstream_tree.out())
+    }
 }
 
 #[async_trait(?Send)]
@@ -144,10 +168,7 @@ impl Repo for GitCli {
     async fn branches_at_risk(&self, upstream: &str) -> Outcome<Vec<String>> {
         let mut at_risk = Vec::new();
         for branch in self.local_branches().await? {
-            // `cherry` compares by patch-id: a `+` line is a commit
-            // that `upstream` doesn't have, even if rewritten by a rebase.
-            let said = self.git(&["cherry", upstream, &branch]).await?;
-            if said.lines().iter().any(|line| line.starts_with('+')) {
+            if self.carries_unmerged_work(upstream, &branch).await? {
                 at_risk.push(branch);
             }
         }

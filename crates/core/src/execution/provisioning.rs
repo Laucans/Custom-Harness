@@ -442,7 +442,7 @@ impl Provisioner {
     /// Local branches the previous round left behind, deleted.
     ///
     /// Without this, a permanent workspace blocks forever: the target repo
-    /// merges by rebase, so a merged PR leaves a local branch whose commits
+    /// merges by squash, so a merged PR leaves a local branch whose commits
     /// are on no remote by SHA. `fetch --prune` then deletes its
     /// `origin/<branch>`, and the "unpushed work" guard starts reporting
     /// work already delivered — every run, with no exit.
@@ -1072,7 +1072,7 @@ mod tests {
         assert!(calls.contains(&"reset_hard origin/main_agent".to_string()));
         assert!(calls.contains(&"clean".to_string()));
         // The round's branch survives, the others are deleted — else a
-        // permanent workspace blocks forever on a rebased PR.
+        // permanent workspace blocks forever on a squashed PR.
         assert!(calls.contains(&"delete_branch fix/lost".to_string()));
         assert!(!calls.contains(&"delete_branch main_agent".to_string()));
     }
