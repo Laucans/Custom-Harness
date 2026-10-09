@@ -277,6 +277,22 @@ pub struct About {
     pub note: String,
     /// `brainstorm` or `asking`.
     pub kind: String,
+    /// The branch the pin belongs to: `main_agent`, `milestone/3-…`.
+    pub branch: String,
+    /// That branch's `data/schema.sql`, as the version shown has it.
+    pub schema: String,
+}
+
+/// What the page tells a session it opens: what it shows of the pin's
+/// target, the branch the pin belongs to, that branch's schema.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Brief {
+    /// What the page shows of what the pin sits on.
+    pub context: String,
+    /// The pin's branch.
+    pub branch: String,
+    /// The branch's `data/schema.sql`; empty when it was not read.
+    pub schema: String,
 }
 
 /// The system prompt a pin's session opens with.
@@ -303,6 +319,13 @@ pub fn briefing(about: &About, handback: &Handback) -> String {
             "a *brainstorm*: explore options, trade-offs and consequences with the human"
         },
     );
+    if !about.branch.is_empty() {
+        let _ = writeln!(
+            text,
+            "The pin belongs to the branch `{}`: talk about the product as that branch has it.",
+            about.branch
+        );
+    }
     if !about.note.trim().is_empty() {
         let _ = writeln!(text, "The pin's note says:\n{}", about.note.trim());
     }
@@ -311,6 +334,13 @@ pub fn briefing(about: &About, handback: &Handback) -> String {
             text,
             "\nWhat the view shows of it:\n{}",
             about.context.trim()
+        );
+    }
+    if !about.schema.trim().is_empty() {
+        let _ = writeln!(
+            text,
+            "\nThe branch's database schema, `data/schema.sql` (pg_dump --schema-only):\n<schema.sql>\n{}\n</schema.sql>",
+            about.schema.trim()
         );
     }
     match handback {
@@ -508,10 +538,14 @@ not json
             context: "type: varchar(40)".into(),
             note: "unique?".into(),
             kind: "brainstorm".into(),
+            branch: "milestone/3-campaigns".into(),
+            schema: "CREATE TABLE character (name varchar(40));".into(),
         };
         let first = briefing(&about, &Handback::Nothing);
         assert!(first.contains("field character.name"));
         assert!(first.contains("type: varchar(40)"));
+        assert!(first.contains("branch `milestone/3-campaigns`"));
+        assert!(first.contains("<schema.sql>\nCREATE TABLE character"));
         assert!(!first.contains("<conversation>"));
         let again = briefing(&about, &Handback::Whole("Human: a".into()));
         assert!(again.contains("<conversation>\nHuman: a\n</conversation>"));

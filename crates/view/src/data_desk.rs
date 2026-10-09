@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use harness_workflows::data_snapshot::action::archive::{INDEX, MODEL_FILE, SCHEMA_FILE};
 use harness_workflows::data_snapshot::config::ARCHIVE_BRANCH;
-use harness_workflows::data_snapshot::data::index::Index;
+use harness_workflows::data_snapshot::data::index::{Index, Snapshot};
 use jiff::tz::TimeZone;
 use tokio::sync::{mpsc, oneshot};
 
@@ -52,6 +52,7 @@ enum Ask {
     Versions(oneshot::Sender<Arc<Versions>>),
     Model(Wanted, oneshot::Sender<Result<Shown, String>>),
     Issue(Issue, oneshot::Sender<Result<String, String>>),
+    Schema(Wanted, oneshot::Sender<Option<String>>),
 }
 
 /// An issue to open on the product's board.
@@ -102,6 +103,14 @@ impl DataDesk {
         answer
             .await
             .map_err(|_| "the data desk is closed".to_string())?
+    }
+
+    /// The `data/schema.sql` of one version, as written; `None` when it is
+    /// not there or could not be read.
+    pub async fn schema(&self, wanted: Wanted) -> Option<String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx.send(Ask::Schema(wanted, reply)).await.ok()?;
+        answer.await.ok().flatten()
     }
 
     /// One version, merged.
@@ -168,6 +177,9 @@ async fn serve(
                 let shown = model(&*product, &mut kept, &wanted, live_every, &zone).await;
                 let _ = reply.send(shown);
             }
+            Ask::Schema(wanted, reply) => {
+                let _ = reply.send(schema(&*product, &mut kept, &wanted).await);
+            }
             Ask::Issue(issue, reply) => {
                 let labels: Vec<&str> = issue.labels.iter().map(String::as_str).collect();
                 let opened = product
@@ -215,20 +227,7 @@ async fn model(
         kept.index = None;
         kept.live.clear();
     }
-    let index = index(product, kept).await;
-    let snapshot = match (&index, &wanted.dir) {
-        (Some(index), Some(dir)) => Some(
-            index
-                .snapshots
-                .iter()
-                .find(|s| &s.dir == dir)
-                .cloned()
-                .ok_or_else(|| "no such version in the archive".to_string())?,
-        ),
-        (None, Some(_)) => return Err("there is no archive yet".to_string()),
-        (Some(index), None) => index.latest(&branch).cloned(),
-        (None, None) => None,
-    };
+    let snapshot = snapshot(product, kept, wanted, &branch).await?;
     // A branch with no version archived: its live files, if it has any.
     let Some(snapshot) = snapshot else {
         return Ok(live(product, kept, &branch, live_every).await);
@@ -269,6 +268,44 @@ async fn model(
         branch: snapshot.branch,
         dir: snapshot.dir,
     })
+}
+
+/// The archived version the page asks for: the folder named, else the
+/// branch's newest; `None` when the branch has none archived.
+async fn snapshot(
+    product: &dyn Product,
+    kept: &mut Kept,
+    wanted: &Wanted,
+    branch: &str,
+) -> Result<Option<Snapshot>, String> {
+    let index = index(product, kept).await;
+    Ok(match (&index, &wanted.dir) {
+        (Some(index), Some(dir)) => Some(
+            index
+                .snapshots
+                .iter()
+                .find(|s| &s.dir == dir)
+                .cloned()
+                .ok_or_else(|| "no such version in the archive".to_string())?,
+        ),
+        (None, Some(_)) => return Err("there is no archive yet".to_string()),
+        (Some(index), None) => index.latest(branch).cloned(),
+        (None, None) => None,
+    })
+}
+
+/// The schema of the version the page asks for, as written: the archived
+/// dump, else the branch's live file.
+async fn schema(product: &dyn Product, kept: &mut Kept, wanted: &Wanted) -> Option<String> {
+    let branch = wanted.branch.clone().unwrap_or_else(|| product.live_ref());
+    let (path, git_ref) = match snapshot(product, kept, wanted, &branch).await.ok()? {
+        Some(snapshot) => (
+            format!("{}/{SCHEMA_FILE}", snapshot.dir),
+            ARCHIVE_BRANCH.to_string(),
+        ),
+        None => (SCHEMA_PATH.to_string(), branch),
+    };
+    product.file(&path, &git_ref).await.ok().flatten()
 }
 
 /// A trace clock (`2026-10-02T14:00:00Z`) as the wall clock of `zone`

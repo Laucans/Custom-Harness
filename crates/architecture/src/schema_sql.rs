@@ -2,9 +2,10 @@
 //! writes, or a hand-written `CREATE TABLE` file.
 //!
 //! Not a SQL parser: a tokenizer that knows strings, quoted names, dollar
-//! quotes and comments, then five statement shapes — `CREATE TABLE`,
+//! quotes and comments, then six statement shapes — `CREATE TABLE`,
 //! `ALTER TABLE … ADD CONSTRAINT / ALTER COLUMN`, `CREATE [UNIQUE] INDEX`,
-//! `CREATE TYPE … AS ENUM`, `COMMENT ON TABLE / COLUMN`. Every other
+//! `CREATE TYPE … AS ENUM`, `COMMENT ON TABLE / COLUMN`, and `CREATE VIEW`
+//! for the tables it reads and where its plain columns come from. Every other
 //! statement (functions, sequences, grants, owners) is skipped whole, and
 //! nothing here panics on a file it does not understand: it reads less.
 
@@ -17,6 +18,20 @@ pub struct Schema {
     pub tables: Vec<SqlTable>,
     /// `CREATE TYPE … AS ENUM`, by type name, values in order.
     pub enums: BTreeMap<String, Vec<String>>,
+    /// `CREATE VIEW`, in the order the file creates them.
+    pub views: Vec<SqlView>,
+}
+
+/// One view: the tables it reads, and the table column behind each of its
+/// plain columns (`p.niveau`, `p.niveau AS level`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SqlView {
+    /// `public.` dropped, like a table's.
+    pub name: String,
+    /// The tables and views after `FROM` and `JOIN`, in order.
+    pub sources: Vec<String>,
+    /// Its column → `(table, column)`; a computed column is not here.
+    pub columns: BTreeMap<String, (String, String)>,
 }
 
 /// One table as the database has it.
@@ -483,6 +498,8 @@ fn create(c: &mut Cursor<'_>, schema: &mut Schema) {
         create_index(c, schema, unique);
     } else if c.eat("type") {
         create_enum(c, schema);
+    } else if c.eat("view") || c.eat_seq(&["materialized", "view"]) {
+        create_view(c, schema);
     }
 }
 
@@ -765,6 +782,136 @@ fn create_index(c: &mut Cursor<'_>, schema: &mut Schema, unique: bool) {
     }
 }
 
+/// The words a `FROM` clause names no table with: what follows a table
+/// when it has no alias.
+const FROM_WORDS: [&str; 12] = [
+    "on", "join", "inner", "left", "right", "full", "outer", "cross", "natural", "using",
+    "lateral", "only",
+];
+
+/// `CREATE VIEW name [(cols)] [WITH (…)] AS SELECT list FROM tables …`.
+fn create_view(c: &mut Cursor<'_>, schema: &mut Schema) {
+    let Some(parts) = c.qualified() else {
+        return;
+    };
+    let name = table_name(&parts);
+    let _ = c.until(&["select"]);
+    if !c.eat("select") {
+        return;
+    }
+    let list = c.until(&["from"]);
+    if !c.eat("from") {
+        return;
+    }
+    let from = c.until(&[
+        "where", "group", "having", "order", "limit", "union", "window",
+    ]);
+    let aliases = from_tables(from);
+    let mut sources: Vec<String> = Vec::new();
+    for (_, table) in &aliases {
+        if !sources.contains(table) {
+            sources.push(table.clone());
+        }
+    }
+    let columns = split_commas(list)
+        .into_iter()
+        .filter_map(|item| view_column(item, &aliases))
+        .collect();
+    schema.views.push(SqlView {
+        name,
+        sources,
+        columns,
+    });
+}
+
+/// The tables of a `FROM` clause, each with the name it is called by: its
+/// alias, else its own last part.
+fn from_tables(toks: &[Token]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    // A table name is expected: at the start, after a JOIN or a comma.
+    let mut expecting = true;
+    // Inside an ON condition: its commas are not the FROM clause's.
+    let mut on = false;
+    while let Some(t) = toks.get(i) {
+        if expecting {
+            if t.is_punct('(') || t.is_word("lateral") || t.is_word("only") {
+                i += 1;
+                continue;
+            }
+            let Some(first) = t.ident() else {
+                expecting = false;
+                i += 1;
+                continue;
+            };
+            let mut parts = vec![first];
+            i += 1;
+            while toks.get(i).is_some_and(|t| t.is_punct('.')) {
+                match toks.get(i + 1).and_then(Token::ident) {
+                    Some(part) => parts.push(part),
+                    None => break,
+                }
+                i += 2;
+            }
+            let table = table_name(&parts);
+            if toks.get(i).is_some_and(|t| t.is_word("as")) {
+                i += 1;
+            }
+            let alias = match toks.get(i) {
+                Some(t)
+                    if t.kind == Kind::Quoted
+                        || (t.kind == Kind::Word && !FROM_WORDS.contains(&t.text.as_str())) =>
+                {
+                    i += 1;
+                    t.text.clone()
+                }
+                _ => parts.last().cloned().unwrap_or_default(),
+            };
+            out.push((alias, table));
+            expecting = false;
+            on = false;
+            continue;
+        }
+        if t.is_word("join") {
+            expecting = true;
+        } else if t.is_word("on") {
+            on = true;
+        } else if t.is_punct(',') && !on {
+            expecting = true;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// One item of a view's select list: `[alias.]column [[AS] name]`; `None`
+/// for an expression, a `*`, or an alias no table answers to.
+fn view_column(item: &[Token], aliases: &[(String, String)]) -> Option<(String, (String, String))> {
+    let is_name = |t: &Token| t.ident().is_some();
+    let (expr, named) = match item {
+        [expr @ .., as_word, name] if as_word.is_word("as") && is_name(name) => {
+            (expr, name.ident())
+        }
+        [a, dot, b, name] if dot.is_punct('.') && is_name(a) && is_name(b) && is_name(name) => {
+            (item.get(..3).unwrap_or_default(), name.ident())
+        }
+        _ => (item, None),
+    };
+    let (table, column) = match expr {
+        [alias, dot, column] if dot.is_punct('.') => {
+            let alias = alias.ident()?;
+            let table = aliases.iter().find(|(a, _)| *a == alias)?.1.clone();
+            (table, column.ident()?)
+        }
+        [column] => match aliases {
+            [(_, table)] => (table.clone(), column.ident()?),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some((named.unwrap_or_else(|| column.clone()), (table, column)))
+}
+
 fn create_enum(c: &mut Cursor<'_>, schema: &mut Schema) {
     let Some(parts) = c.qualified() else { return };
     if !c.eat_seq(&["as", "enum"]) {
@@ -886,6 +1033,46 @@ COMMENT ON COLUMN public."character".name IS 'What the table calls them; it''s u
             .iter()
             .find(|t| t.name == name)
             .expect("the table was parsed")
+    }
+
+    #[test]
+    fn a_view_names_its_tables_and_where_its_columns_come_from() {
+        let schema = parse(
+            r#"
+CREATE TABLE public.pj (id uuid, "campagneId" uuid, niveau integer);
+CREATE TABLE public.campagne (id uuid, "archiveeLe" timestamptz);
+CREATE VIEW public.pj_actif WITH (security_barrier='true') AS
+ SELECT p.id,
+    p."campagneId",
+    p.niveau AS level,
+    upper(p.id::text) AS shout
+   FROM (public.pj p
+     JOIN public.campagne c ON ((c.id = p."campagneId")))
+  WHERE (c."archiveeLe" IS NULL);
+CREATE VIEW public.data_version AS
+ SELECT version AS "dataVersion" FROM public.dataguard_version;
+"#,
+        );
+        assert_eq!(schema.views.len(), 2);
+        let pj = &schema.views[0];
+        assert_eq!(pj.name, "pj_actif");
+        assert_eq!(pj.sources, ["pj", "campagne"]);
+        let col = |v: &SqlView, c: &str| v.columns.get(c).map(|(t, c)| format!("{t}.{c}"));
+        assert_eq!(col(pj, "id").as_deref(), Some("pj.id"));
+        assert_eq!(col(pj, "campagneId").as_deref(), Some("pj.campagneId"));
+        assert_eq!(col(pj, "level").as_deref(), Some("pj.niveau"));
+        assert_eq!(
+            col(pj, "shout"),
+            None,
+            "an expression has no column behind it"
+        );
+        let version = &schema.views[1];
+        assert_eq!(version.sources, ["dataguard_version"]);
+        assert_eq!(
+            col(version, "dataVersion").as_deref(),
+            Some("dataguard_version.version")
+        );
+        assert_eq!(schema.tables.len(), 2, "a view is not a table");
     }
 
     #[test]

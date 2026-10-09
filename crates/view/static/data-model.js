@@ -50,7 +50,9 @@
       // Which version is shown: a branch and a folder of the archive; empty, the server's default.
       versions: null, branch: (opts && opts.branch) || '', dir: (opts && opts.dir) || '', newest: !(opts && opts.dir),
       // A build the page started: polled until it ends; a model's asks a second click.
-      fresh: false, building: null, armed: null, buildTimer: null, said: '' };
+      fresh: false, building: null, armed: null, buildTimer: null, said: '',
+      // Who uses each table and field: the version it was read for, and when.
+      usage: { key: '', at: 0, by: {}, error: null } };
 
     const describe = (target) => {
       if (!target) return 'the canvas';
@@ -71,7 +73,8 @@
       const m = st.model;
       if (!m || !target) return '';
       const name = target.slice(target.indexOf(':') + 1);
-      const version = `Shown: ${m.origin}.`;
+      const users = usersOf(target).map((u) => `  - ${u.id} (${u.how}, ${u.via})`).join('\n');
+      const version = `Shown: ${m.origin}.\nUsed by:\n${users || '  no capability'}`;
       if (target.startsWith('table:')) {
         const t = m.tables.find((x) => x.name === name);
         if (!t) return version;
@@ -89,10 +92,17 @@
       return `${version}\nField ${t.name}.${f.name}, type ${f.data_type}${f.declared_type ? ` (the model says ${f.declared_type})` : ''}, ${f.nullable === false ? 'required' : 'may be empty'}.\n`
         + `Purpose: ${f.purpose || '(none written)'}\nTechnical rules: ${f.technical.join(' · ') || 'none'}\nBusiness rules: ${f.business.join(' · ') || 'none'}\nLinks:\n${links || '  none'}\nIts table, ${t.name}: ${t.purpose || '(no purpose written)'}`;
     };
+    // A pin belongs to one branch: each branch has its own board.
+    // `milestone/3-…` → `data-model--milestone-3`, `main_agent` → `data-model--main-agent`.
+    const boardOf = (branch) => {
+      const m = /^milestone\/(\d+)/.exec(branch);
+      const slug = m ? `milestone-${m[1]}` : branch.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      return `data-model--${slug || 'live'}`.slice(0, 40);
+    };
     const onSession = opts && opts.onSession
-      ? (note, ctx) => opts.onSession({ board: 'data-model', id: note.id, on: describe(note.target), kind: note.kind, context: ctx })
+      ? (note, ctx) => opts.onSession({ board: board.board(), id: note.id, on: describe(note.target), kind: note.kind, context: ctx, branch: st.branch, dir: st.newest ? '' : st.dir })
       : null;
-    const board = window.HarnessBoard.create(q('.dm-board'), { id: 'data-model', describe, resolve, context, onSession, bounds: () => st.bounds });
+    const board = window.HarnessBoard.create(q('.dm-board'), { id: null, describe, resolve, context, onSession, bounds: () => st.bounds });
 
     // ---- reading -------------------------------------------------------------------
     async function load() {
@@ -114,6 +124,8 @@
       if (!reply.model) { say(esc(reply.error || 'Reading the data model…')); drawSwitch(); st.timer = setTimeout(load, 2000); return; }
       st.branch = reply.branch;
       st.dir = reply.dir;
+      board.setBoard(boardOf(st.branch || ''));
+      readUsage();
       drawSwitch();
       const body = JSON.stringify(reply.model);
       if (body !== st.body) {
@@ -386,6 +398,35 @@
       }
     }
 
+    // ---- who uses what --------------------------------------------------------------
+    const USAGE_MS = 60000;
+    // Read again for another version, or once a minute: manifests move.
+    async function readUsage() {
+      const key = `${st.branch}|${st.newest ? '' : st.dir}`;
+      if (key === st.usage.key && Date.now() - st.usage.at < USAGE_MS) return;
+      st.usage.key = key;
+      st.usage.at = Date.now();
+      try {
+        const res = await fetch('/api/data-model/used-by?' + new URLSearchParams({ branch: st.branch, dir: st.newest ? '' : st.dir }));
+        const reply = res.ok ? await res.json() : { used_by: {}, error: await res.text() };
+        if (st.gone || st.usage.key !== key) return;
+        st.usage.by = reply.used_by || {};
+        st.usage.error = reply.error || null;
+      } catch (e) {
+        st.usage.error = String(e.message || e);
+      }
+      if (st.sel) inspect();
+    }
+    const usersOf = (target) => st.usage.by[target] || [];
+    function usedBy(target) {
+      const users = usersOf(target);
+      const body = users.length
+        ? `<ul class="dm-used">${users.map((u) => `<li><span class="tag ${esc(u.how)}">${u.how === 'writes' ? 'writes' : 'reads'}</span><b>${esc(u.id)}</b>`
+          + `<small class="muted">${esc(u.kind === 'data_capability' ? 'data capability' : 'capability')} · ${esc(u.via)}</small></li>`).join('')}</ul>`
+        : `<p class="muted">${st.usage.error ? esc(st.usage.error) : st.usage.at ? 'No capability uses it on this branch.' : 'Reading the manifests…'}</p>`;
+      return `<h4>Used by <span class="muted">· ${users.length}</span></h4>${body}`;
+    }
+
     // ---- the inspector -------------------------------------------------------------
     const list = (items, cls = '') => (items && items.length ? `<ul class="dm-rules ${cls}">${items.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : '<p class="muted">None.</p>');
     const goto = (table, field) => `<button type="button" class="dm-go" data-goto="${esc(table)}" data-goto-field="${esc(field || '')}">${esc(table)}${field ? '.' + esc(field) : ''}</button>`;
@@ -423,6 +464,7 @@
         + t.fields.map((f) => `<li>${keyOf(f)}<button type="button" class="dm-go" data-goto="${esc(t.name)}" data-goto-field="${esc(f.name)}">${esc(f.name)}</button><span class="dm-type">${esc(f.data_type)}</span>${seenTag(f.seen)}</li>`).join('') + '</ul>'
         + (out.length ? `<h4>Points at</h4><ul class="dm-links">${out.map((l) => `<li>${esc(l.from_field)} → ${goto(l.to_table, l.to_field)}${linkWords(l)}</li>`).join('')}</ul>` : '')
         + (into.length ? `<h4>Pointed at by</h4><ul class="dm-links">${into.map((l) => `<li>${goto(l.from_table, l.from_field)} → ${esc(l.to_field)}${linkWords(l)}</li>`).join('')}</ul>` : '')
+        + usedBy('table:' + t.name)
         + notesOn('table:' + t.name);
     }
     function linkWords(l) {
@@ -449,6 +491,7 @@
           + into.map((l) => `<li>← ${goto(l.from_table, l.from_field)}${linkWords(l)}</li>`).join('') + '</ul>' : '<p class="muted">None.</p>'}`
         + `<h4>Technical rules</h4>${list(f.technical)}`
         + `<h4>Business rules</h4>${list(f.business)}`
+        + usedBy(`field:${t.name}.${f.name}`)
         + notesOn(`field:${t.name}.${f.name}`);
     }
     function inspect() {

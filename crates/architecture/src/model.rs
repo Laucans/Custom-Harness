@@ -127,6 +127,31 @@ pub struct DataModel {
     pub links: Vec<Link>,
     /// Where the two sides disagree, a sentence each.
     pub divergences: Vec<String>,
+    /// The database's views: what a persisted query reads through.
+    pub views: Vec<View>,
+}
+
+/// One view of the database, and the table column behind each of its plain
+/// columns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct View {
+    /// As the database names it: `pj_actif`.
+    pub name: String,
+    /// The tables it reads.
+    pub sources: Vec<String>,
+    /// Its columns that are a table's column under another roof.
+    pub columns: Vec<ViewColumn>,
+}
+
+/// A view's column, and where it comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ViewColumn {
+    /// The view's name for it.
+    pub name: String,
+    /// The table it is read from.
+    pub table: String,
+    /// The table's column.
+    pub field: String,
 }
 
 /// One table.
@@ -261,6 +286,23 @@ fn merge(sql: Option<&Schema>, declared: Option<&Declared>) -> DataModel {
         tables: Vec::new(),
         links: Vec::new(),
         divergences: Vec::new(),
+        views: schema
+            .views
+            .iter()
+            .map(|v| View {
+                name: v.name.clone(),
+                sources: v.sources.clone(),
+                columns: v
+                    .columns
+                    .iter()
+                    .map(|(name, (table, field))| ViewColumn {
+                        name: name.clone(),
+                        table: table.clone(),
+                        field: field.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
     };
 
     let mut names: Vec<String> = schema.tables.iter().map(|t| t.name.clone()).collect();

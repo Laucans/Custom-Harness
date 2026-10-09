@@ -31,10 +31,17 @@ const SKIPPED: [&str; 4] = ["node_modules", "target", ".git", "dist"];
 /// The branch the data archive lives on: no unit there.
 const ARCHIVE: &str = "harness/data-model";
 
+/// A persisted query registry: which Capability reads which fields.
+const REGISTRY: &str = "queries/registry.json";
+
 fn wanted(path: &str) -> bool {
-    let mut parts = path.split('/');
-    let name = parts.next_back().unwrap_or_default();
-    NAMES.contains(&name) && !parts.any(|p| SKIPPED.contains(&p))
+    let named = path
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| NAMES.contains(&name))
+        || path == REGISTRY
+        || path.ends_with(&format!("/{REGISTRY}"));
+    named && !path.split('/').any(|p| SKIPPED.contains(&p))
 }
 
 /// Where the repository is, and whether it is fetched.
@@ -387,6 +394,9 @@ mod tests {
         assert!(wanted("apps/a/b/micro-ui.json"));
         assert!(!wanted("apps/node_modules/x/capability.json"));
         assert!(!wanted("crates/a/capability.json.bak"));
+        assert!(wanted("crates/campagne/queries/registry.json"));
+        assert!(!wanted("crates/campagne/registry.json"));
+        assert!(!wanted("node_modules/x/queries/registry.json"));
     }
 
     #[test]

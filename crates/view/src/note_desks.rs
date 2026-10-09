@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::desk::Desk;
 use crate::domain::annotations::{Kind, MAX_TEXT, Note};
-use crate::domain::note_session::{self, About, Conversation, Handback};
+use crate::domain::note_session::{self, About, Brief, Conversation, Handback};
 use crate::ports::{NoteStore, Oneshot, TerminalMaker, Transcripts};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -141,12 +141,13 @@ impl NoteDesks {
 
     /// Opens a pin's session — or finds it open. The conversation so far is
     /// handed back in its system prompt; a heavy one is summarized first.
-    /// `context` is what the page shows of what the pin sits on.
+    /// `brief` is what the page shows of what the pin sits on, its branch
+    /// and that branch's schema.
     ///
     /// # Errors
     ///
     /// No such pin, the store unreadable, or the summary failed.
-    pub async fn open(&self, board: &str, id: &str, context: String) -> Result<String, String> {
+    pub async fn open(&self, board: &str, id: &str, brief: Brief) -> Result<String, String> {
         if let Some(open) = lock(&self.open).get(&key(board, id)) {
             return Ok(open.desk.command());
         }
@@ -154,7 +155,7 @@ impl NoteDesks {
         let about = About {
             board: board.to_string(),
             target: described(&note.target),
-            context,
+            context: brief.context,
             note: note.text.clone(),
             kind: if note.kind == Kind::Asking {
                 "asking"
@@ -162,6 +163,8 @@ impl NoteDesks {
                 "brainstorm"
             }
             .to_string(),
+            branch: brief.branch,
+            schema: brief.schema,
         };
         let mut conversation = self.conversation(board, id)?;
         if let Handback::Summarize { older, covers } = conversation.handback() {
@@ -245,6 +248,8 @@ impl NoteDesks {
             board: board.to_string(),
             target: described(&note.target),
             context: String::new(),
+            branch: String::new(),
+            schema: String::new(),
             note: note.text.clone(),
             kind: if note.kind == Kind::Asking {
                 "asking"
@@ -440,12 +445,19 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
         });
         desks
-            .open("data-model", "n1", "type: varchar(40)".into())
+            .open(
+                "data-model",
+                "n1",
+                Brief {
+                    context: "type: varchar(40)".into(),
+                    ..Brief::default()
+                },
+            )
             .await
             .expect("opened");
         assert!(desks.desk("data-model", "n1").is_some());
         desks
-            .open("data-model", "n1", String::new())
+            .open("data-model", "n1", Brief::default())
             .await
             .expect("found open");
         assert_eq!(lock(&maker.args).len(), 1, "opened once");
@@ -493,7 +505,7 @@ mod tests {
         assert_eq!(compacted.kind, Kind::Brainstorm, "a compact keeps the kind");
 
         desks
-            .open("data-model", "n1", String::new())
+            .open("data-model", "n1", Brief::default())
             .await
             .expect("opened again");
         let again = lock(&maker.args)[1].clone();

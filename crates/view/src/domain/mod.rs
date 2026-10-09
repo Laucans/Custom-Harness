@@ -7,6 +7,7 @@ pub mod blueprint;
 pub mod builds;
 pub mod capabilities;
 pub mod cleanup;
+pub mod data_usage;
 pub mod data_versions;
 pub mod divergence;
 pub mod doctor;

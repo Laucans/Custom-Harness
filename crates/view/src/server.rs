@@ -40,6 +40,7 @@ use crate::domain::blueprint;
 use crate::domain::builds;
 use crate::domain::capabilities::{self, Catalogue};
 use crate::domain::cleanup::Settings;
+use crate::domain::data_usage::{self, UsedBy};
 use crate::domain::data_versions::Versions;
 use crate::domain::divergence;
 use crate::domain::doctor::{self, Diagnosis};
@@ -47,6 +48,7 @@ use crate::domain::fusion;
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
+use crate::domain::note_session::Brief;
 use crate::domain::observe::observe_run;
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::prompts::{self, Deactivate, Edit, OnShelf, Refused, Restore};
@@ -197,6 +199,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/janitor/settings", post(janitor_settings))
         .route("/api/data-model", get(data_model))
         .route("/api/data-model/versions", get(data_versions))
+        .route("/api/data-model/used-by", get(data_used_by))
         .route("/api/data-model/divergence", get(data_divergence))
         .route("/api/data-model/build", post(data_build))
         .route("/api/data-model/builds", get(data_builds))
@@ -911,6 +914,63 @@ async fn data_model(
     }
 }
 
+/// Who uses each table and field of the version shown.
+#[derive(Serialize)]
+struct UsedByReply {
+    /// The branch the manifests were read on.
+    branch: String,
+    /// By `table:<name>` and `field:<table>.<name>`.
+    used_by: UsedBy,
+    /// Why there is nothing: no manifests read here.
+    error: Option<String>,
+}
+
+/// The units that use the tables and fields of the version asked, read
+/// from the manifests of its branch.
+async fn data_used_by(
+    State(state): State<AppState>,
+    Query(query): Query<DataModelQuery>,
+) -> Response {
+    let mut reply = UsedByReply {
+        branch: String::new(),
+        used_by: UsedBy::new(),
+        error: None,
+    };
+    let (Some(desk), Some(units)) = (state.data.clone(), state.units.clone()) else {
+        reply.error = Some("nothing reads the product's manifests here".to_string());
+        return json(&reply);
+    };
+    let wanted = Wanted {
+        branch: query.branch.filter(|b| !b.is_empty()),
+        dir: query.dir.filter(|d| !d.is_empty()),
+        fresh: false,
+    };
+    let shown = match desk.model(wanted).await {
+        Ok(shown) => shown,
+        Err(why) => {
+            reply.error = Some(why);
+            return json(&reply);
+        }
+    };
+    reply.branch = if shown.branch.is_empty() {
+        units.integration.clone()
+    } else {
+        shown.branch
+    };
+    match units.reading(false).await {
+        Ok(reading) => {
+            let files = reading
+                .refs
+                .iter()
+                .find(|r| r.git_ref == reply.branch)
+                .map_or(&[][..], |r| r.files.as_slice());
+            reply.used_by = data_usage::used_by(&shown.model, files);
+        }
+        Err(why) => reply.error = Some(why),
+    }
+    json(&reply)
+}
+
 /// Every version the archive keeps, by branch.
 #[derive(Serialize)]
 struct VersionsReply<'a> {
@@ -1271,12 +1331,19 @@ async fn undo_note(State(state): State<AppState>, Path(board): Path<String>) -> 
 }
 
 /// What the page sends to open a pin's session: what it shows of the pin's
-/// target.
+/// target, the branch the pin belongs to and the version shown.
 #[derive(Debug, Default, Deserialize)]
 struct SessionAsk {
     #[serde(default)]
     context: String,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    dir: String,
 }
+
+/// The most of a schema a session is handed: a few hundred tables.
+const SCHEMA_CHARS: usize = 60_000;
 
 /// Why a pin has no session here.
 const NO_SESSIONS: &str = "no AI session here: the view runs with --no-steward";
@@ -1293,7 +1360,24 @@ async fn open_session(
     let ask: SessionAsk = serde_json::from_slice(&body).unwrap_or_default();
     // The page's context is a description, never a megabyte.
     let context: String = ask.context.chars().take(20_000).collect();
-    match desks.open(&board, &id, context).await {
+    let schema = match &state.data {
+        Some(data) if !ask.branch.is_empty() => data
+            .schema(Wanted {
+                branch: Some(ask.branch.clone()),
+                dir: (!ask.dir.is_empty()).then(|| ask.dir.clone()),
+                fresh: false,
+            })
+            .await
+            .map(|text| text.chars().take(SCHEMA_CHARS).collect())
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    let brief = Brief {
+        context,
+        branch: ask.branch,
+        schema,
+    };
+    match desks.open(&board, &id, brief).await {
         Ok(command) => json(&serde_json::json!({ "available": true, "command": command })),
         Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }

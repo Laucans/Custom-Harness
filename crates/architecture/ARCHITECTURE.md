@@ -33,7 +33,7 @@ harness-view      ─┘
 src/vocabulary.rs   Unit, Effect, Side, Layer, Declaration: the `## Architecture` section of a task
 src/tree.rs         Tree::read (the checkout's manifests, through Disk), violations, undocumented_concepts
 src/model.rs        the agents' data/model.json merged with the DDL, field by field, with every divergence
-src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and five statement shapes, never a panic
+src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
 src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–M, gates, CI, scripts
 assets/             those files, compiled in with include_str!
 tests/              test_scope_script.rs: the installed test-scope.sh, run on a real folder
