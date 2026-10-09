@@ -1025,6 +1025,22 @@ fn person(b: &mut Builder, x: f32, z: f32, model: Option<&str>, name: &str, hot:
     b.label(lx, ly, lz, name, 11.0, TEXT).backing = Backing::Ink;
 }
 
+/// A crew: several agents at one station, as one figure — the elder —
+/// named by their issues; a click opens the pane that lists them all.
+fn elder(b: &mut Builder, x: f32, z: f32, name: &str, hot: &Hot) {
+    let m = b.mark();
+    let (fx, fz) = (x + 0.5, z + 0.5);
+    let card = b.card(fx, fz, 1.2, 1.8, Figure::Elder);
+    card.anim = Some(Anim::Bob {
+        amp: 0.03,
+        speed: 1.6,
+        seed: x + z,
+    });
+    b.hot_since(m, hot);
+    let [lx, ly, lz] = over(fx, fz, 2.05);
+    b.label(lx, ly, lz, name, 11.0, TEXT).backing = Backing::Ink;
+}
+
 /// The steward: a painted cut-out — hooded, bearded, red-eyed, a staff with
 /// a pale orb — taller than anyone, by the door.
 fn wizard(b: &mut Builder, x: f32, z: f32, hot: &Hot) {
@@ -2314,36 +2330,23 @@ fn lines_room(snap: &Snapshot) -> Scene {
                         .join("\n")
                 ),
             );
-            // The figure wears the crew's model only when they all share it.
-            let model = first
-                .model
-                .as_deref()
-                .filter(|m| here.iter().all(|e| e.model.as_deref() == Some(*m)));
-            person(
-                &mut b,
-                x,
-                z + 1.3,
-                model,
-                &crew_label(&line.title, &here),
-                &hot,
-            );
+            elder(&mut b, x, z + 1.3, &crew_label(&line.title, &here), &hot);
         }
     }
     b.scene
 }
 
-/// One label for a crew of several: how many, on which line, then each
-/// member's issue (`#20 #21`) when their names carry one.
+/// One label for a crew of several: its members' issues (`#20 #21`) — or,
+/// when no name carries one, how many on which line.
 fn crew_label(line_title: &str, crew: &[&Employee]) -> String {
     let issues: Vec<&str> = crew
         .iter()
         .filter_map(|e| e.name.split_whitespace().find(|w| w.starts_with('#')))
         .collect();
-    let head = format!("{} × {line_title}", crew.len());
     if issues.is_empty() {
-        head
+        format!("{} × {line_title}", crew.len())
     } else {
-        format!("{head}\n{}", issues.join(" "))
+        issues.join(" ")
     }
 }
 
@@ -2968,26 +2971,27 @@ mod tests {
                 room: "lines".to_string(),
             },
         );
-        let workers = scene
-            .props
-            .iter()
-            .filter(|p| {
-                matches!(
-                    p.shape,
-                    Shape::Card {
-                        figure: Figure::Follower { .. },
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(workers, 1, "one figure, not a stack of labels");
-        assert!(
+        let cards = |figure: Figure| {
             scene
-                .labels
+                .props
                 .iter()
-                .any(|l| l.text.starts_with("2 × ") && l.text.contains("#66 #67")),
-            "one label: how many, and each one's issue"
+                .filter(|p| matches!(p.shape, Shape::Card { figure: f, .. } if f == figure))
+                .count()
+        };
+        assert_eq!(cards(Figure::Elder), 1, "one figure, the elder");
+        assert!(
+            scene.props.iter().all(|p| !matches!(
+                p.shape,
+                Shape::Card {
+                    figure: Figure::Follower { .. },
+                    ..
+                }
+            )),
+            "no follower stands for a crew member"
+        );
+        assert!(
+            scene.labels.iter().any(|l| l.text == "#66 #67"),
+            "one label: each member's issue"
         );
         assert_eq!(
             panes(&scene, "crew"),
