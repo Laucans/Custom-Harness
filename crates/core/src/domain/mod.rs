@@ -7,6 +7,7 @@
 pub mod breaker;
 pub mod doctor;
 pub mod markers;
+pub mod prompt_book;
 pub mod prompts;
 pub mod quota;
 pub mod workspace;

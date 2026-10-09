@@ -17,6 +17,9 @@ pub struct Config {
     pub fix_dir: PathBuf,
     /// Model and effort for the repair step.
     pub fix: SessionSpec,
+    /// The human's prompt edits, read once per run — a stage sends
+    /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
+    pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
 }
 
 #[cfg(test)]
@@ -32,6 +35,7 @@ pub(crate) mod fake {
     /// A test config, under this folder.
     pub fn in_dir(fix_dir: PathBuf) -> Config {
         Config {
+            prompts: std::rc::Rc::default(),
             fix_dir,
             fix: SessionSpec {
                 model: "sonnet".to_string(),

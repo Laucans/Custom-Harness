@@ -602,3 +602,20 @@ svg.process .name { fill: var(--dim); pointer-events: none; }
 .dm-link.foreign_key.seen-model { stroke: var(--warn); stroke-dasharray: 3 4; }
 .dm-link.hl { stroke: var(--accent); stroke-width: 2.6; }
 @media (max-width: 900px) { .dm-inspector { width: 240px; } }
+
+/* A robot's prompts: read on the details tab, edited on the prompt tab. */
+.prompt-peek-title { font: 12px var(--mono); color: var(--dim); margin: 8px 0 4px; }
+pre.md.prompt-peek { max-height: 260px; overflow: auto; font: 12px/1.45 var(--mono); }
+.prompt-card { border-top: 1px solid var(--line); padding-top: 6px; margin-bottom: 18px; }
+.prompt-card code { font-family: var(--mono); color: var(--accent); }
+.prompt-text { display: block; width: 100%; box-sizing: border-box; min-height: 340px; resize: vertical; margin: 8px 0 6px; padding: 10px 12px; font: 12px/1.45 var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+.prompt-text:focus { outline: none; border-color: var(--accent); }
+.prompt-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.prompt-bar button.mini:hover, .prompt-history button.mini:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.prompt-history button.mini:disabled { opacity: .5; cursor: default; }
+.prompt-card h4 { font: 12px var(--mono); color: var(--dim); margin: 10px 0 4px; }
+ul.prompt-history { list-style: none; padding: 0; margin: 0; }
+ul.prompt-history li { display: flex; gap: 10px; align-items: flex-start; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+ul.prompt-history details { flex: 1; min-width: 0; }
+ul.prompt-history summary { cursor: pointer; font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.prompt-history pre.md { font: 12px/1.45 var(--mono); max-height: 300px; overflow: auto; }

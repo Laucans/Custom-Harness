@@ -115,7 +115,10 @@ it ran, and was paid for.
 
 Prompt templates live in `orchestration/` — in `stages.rs` when there are few,
 in `prompts.rs` when there are seven. The action receives them as a field
-(`template: &'static str`).
+(`template: String`): the table resolves it as `config.prompts.text(KEY,
+DEFAULT)` — the human's edit from the view, or the constant. Every editable
+prompt is named once in the crate-level `prompts` catalog (key, stations,
+default), which is what `harness-view` lists and edits.
 
 An action that went up to read them would invert the direction of composition
 (rule 3), and the workflow would have two design surfaces instead of one.

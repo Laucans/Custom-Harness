@@ -22,6 +22,9 @@ pub struct Config {
     pub slice: SessionSpec,
     /// The checkout's root — where the architecture's manifests are read.
     pub root: PathBuf,
+    /// The human's prompt edits, read once per run — a stage sends
+    /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
+    pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
 }
 
 #[cfg(test)]
@@ -37,6 +40,7 @@ pub(crate) mod fake {
     /// A test config, under this folder.
     pub fn in_dir(split_dir: PathBuf) -> Config {
         Config {
+            prompts: std::rc::Rc::default(),
             split_dir,
             base_branch: "main_agent".to_string(),
             slice: SessionSpec {

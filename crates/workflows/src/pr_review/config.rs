@@ -23,6 +23,9 @@ pub struct Config {
     pub inline: SessionSpec,
     /// Model and effort for the "brief" pass.
     pub brief: SessionSpec,
+    /// The human's prompt edits, read once per run — a stage sends
+    /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
+    pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
 }
 
 #[cfg(test)]
@@ -42,6 +45,7 @@ pub(crate) mod fake {
             effort: "medium".to_string(),
         };
         Config {
+            prompts: std::rc::Rc::default(),
             review_dir: PathBuf::from("/tmp/review"),
             level: "medium".to_string(),
             no_inline: false,

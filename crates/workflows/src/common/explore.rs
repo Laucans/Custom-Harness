@@ -82,7 +82,7 @@ product, and the code the task touches carries the rest. Read whatever you
 need. Naming a module that does not exist is worse than naming none.
 --- END REPO MAP ---";
 
-const EXPLORE_PROMPT: &str =
+pub(crate) const EXPLORE_PROMPT: &str =
     "You are establishing the map of this repository that every later session of
 this run will work from. You write it once; several paid sessions read it
 instead of exploring on their own. Nothing else in this run will read the
@@ -266,6 +266,8 @@ impl<S> Verification<S> for TurnedOff {
 
 /// The paid entry: sends the brief, keeps the map in `ctx.results`.
 struct AskExplore {
+    /// The brief's template: the human's edit, or [`EXPLORE_PROMPT`].
+    template: String,
     spending: Rc<dyn Spending>,
 }
 
@@ -277,7 +279,7 @@ impl<S: Explored> SessionAction<S> for AskExplore {
         let round = open.state.round_no();
         let task = open.state.task();
         let prompt = splice(
-            EXPLORE_PROMPT,
+            &self.template,
             &[
                 ("subject", &subject),
                 ("brief", &brief),
@@ -514,6 +516,9 @@ pub struct Config {
     /// The artifacts folder for this target — the map and the commit it was
     /// drawn at land there.
     pub artifacts_dir: PathBuf,
+    /// The human's prompt edits, read once per run — a stage sends
+    /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
+    pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
 }
 
 /// The two entries, in order, ready to be put at the head of a table.
@@ -565,6 +570,7 @@ pub fn entries<S: Explored + 'static>(ports: &Ports, config: &Config) -> [Stage<
             spec: config.spec.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskExplore {
+                template: config.prompts.text(crate::prompts::EXPLORE, EXPLORE_PROMPT),
                 spending: Rc::clone(&ports.spending),
             })],
         },
@@ -724,6 +730,7 @@ pub(crate) mod fake {
     /// Test config for the repo map, artifacts in this folder.
     pub fn config(artifacts_dir: PathBuf) -> Config {
         Config {
+            prompts: std::rc::Rc::default(),
             root: PathBuf::new(),
             explore: false,
             spec: SessionSpec {

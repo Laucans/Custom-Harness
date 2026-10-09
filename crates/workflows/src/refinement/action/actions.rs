@@ -42,7 +42,7 @@ pub struct AskRefine {
     /// The stage name, for the journal and the `stage` column of the registry.
     pub stage: String,
     /// The prompt template, received from the table.
-    pub template: &'static str,
+    pub template: String,
     /// Does this step read the body this round is about to publish, rather
     /// than the one before this round?
     ///
@@ -83,7 +83,7 @@ impl SessionAction<RefinementState> for AskRefine {
             }
         };
         let filled = splice(
-            self.template,
+            &self.template,
             &[
                 ("num", &issue.number.to_string()),
                 ("title", &issue.title),

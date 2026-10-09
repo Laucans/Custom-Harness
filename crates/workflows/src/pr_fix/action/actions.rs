@@ -111,7 +111,7 @@ pub struct AskForFix {
     /// The stage name, for the journal and the `stage` column of the registry.
     pub stage: String,
     /// The prompt template, received from the table.
-    pub template: &'static str,
+    pub template: String,
     /// Where spending is recorded.
     pub spending: Rc<dyn Spending>,
 }
@@ -124,7 +124,7 @@ impl SessionAction<FixState> for AskForFix {
         let comments = comments_block(&open.state.comments);
         let conflict = conflict_block(open.state.conflicting, &pr.base);
         let prompt = splice(
-            self.template,
+            &self.template,
             &[
                 ("num", &pr.num),
                 ("title", &pr.title),

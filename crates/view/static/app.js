@@ -1055,7 +1055,7 @@
   }
   // A pane's two tabs — what the element is, and who recently worked on it —
   // and its `?`, which says in a sentence what the element is for.
-  const paneTabs = (p, purpose) => '<div class="tabs">' + [['details', 'Details'], ['recent', 'Recent work']].map(([k, label]) => `<button data-tab="${k}" class="${(p.tab || 'details') === k ? 'on' : ''}">${label}</button>`).join('')
+  const paneTabs = (p, purpose, extra = []) => '<div class="tabs">' + [['details', 'Details'], ['recent', 'Recent work'], ...extra].map(([k, label]) => `<button data-tab="${k}" class="${(p.tab || 'details') === k ? 'on' : ''}">${label}</button>`).join('')
     + (purpose ? `<button class="help-btn ${p.help ? 'on' : ''}" data-help title="What is this for?">?</button>` : '') + '</div>'
     + (purpose && p.help ? `<div class="callout purpose">${esc(purpose)}</div>` : '');
   // The runs of a line, newest first, each a link to its agent — opened on
@@ -1410,6 +1410,118 @@
     arm: 'acts on the code or on GitHub',
   };
 
+  // ---- a robot's prompts -----------------------------------------------------
+  // What a paid station sends, shown on its pane and edited there. The edit is
+  // kept in the prompt book (`.llocal/prompts.json`) with its last five
+  // versions, and reaches the stage from the next run on.
+  const PR = { byStation: {}, loading: {} };
+  const isRobot = (st) => st.kind === 'builder' || st.kind === 'inspector';
+  const PLACEHOLDER = /\{([a-z_][a-z0-9_]*)\}/g;
+  const placeholdersOf = (text) => new Set([...String(text).matchAll(PLACEHOLDER)].map((m) => m[1]));
+  function loadPrompts(lineId, stId, then) {
+    const at = lineId + '/' + stId;
+    if (PR.loading[at]) return;
+    PR.loading[at] = true;
+    fetch(`/api/prompts/${encodeURIComponent(lineId)}/${encodeURIComponent(stId)}`)
+      .then(async (r) => { PR.byStation[at] = r.ok ? await r.json() : { error: await r.text() }; })
+      .catch(() => { PR.byStation[at] = { error: 'cannot reach the server' }; })
+      .finally(() => { PR.loading[at] = false; if (then) then(); });
+  }
+  // The details tab: the prompt, read-only, and the way to the editor.
+  function promptPeek(line, st) {
+    const list = PR.byStation[line.id + '/' + st.id];
+    if (!list) {
+      loadPrompts(line.id, st.id, () => { if (S.pane && S.pane.kind === 'station' && S.pane.id === st.id && (S.pane.tab || 'details') === 'details') renderPane(S.pane, false); });
+      return '<h3>Prompt</h3><div class="muted">loading…</div>';
+    }
+    if (list.error) return `<h3>Prompt</h3><div class="callout">${esc(list.error)}</div>`;
+    return '<h3>Prompt <button class="mini" data-tab="prompt">edit</button></h3>' + list.map((v) => `<div class="prompt-peek-title">${esc(v.title)} ${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}</div><pre class="md prompt-peek">${esc(v.text)}</pre>`).join('');
+  }
+  const savedWhen = (secs) => new Date(secs * 1000).toLocaleString();
+  const firstLine = (text) => { const l = String(text).split('\n').find((x) => x.trim()) || ''; return l.length > 70 ? l.slice(0, 70) + '…' : l; };
+  function promptDrift(v, text) {
+    const wanted = placeholdersOf(v.default);
+    const named = placeholdersOf(text);
+    const missing = [...wanted].filter((x) => !named.has(x));
+    const unknown = [...named].filter((x) => !wanted.has(x));
+    const code = (xs) => xs.map((x) => `<code>{${esc(x)}}</code>`).join(' ');
+    return (missing.length ? `<div class="callout soon">dropped ${code(missing)} — the stage will no longer pass ${missing.length > 1 ? 'these values' : 'this value'} to the session</div>` : '')
+      + (unknown.length ? `<div class="callout soon">${code(unknown)} — nothing fills ${unknown.length > 1 ? 'these' : 'this'}: the session reads ${unknown.length > 1 ? 'them' : 'it'} as written</div>` : '');
+  }
+  function promptCard(v) {
+    const restore = (i, current) => `<button class="mini" data-prompt-restore="${i}"${current ? ' disabled' : ''}>${current ? 'current' : 'restore'}</button>`;
+    return `<section class="prompt-card" data-prompt-key="${esc(v.key)}">`
+      + `<h3>${esc(v.title)} ${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}</h3>`
+      + (v.stations.length > 1 ? `<div class="muted">shared by ${v.stations.map(esc).join(', ')} — an edit changes every one of them</div>` : '')
+      + (v.placeholders.length ? `<div class="muted">filled in by the stage: ${v.placeholders.map((x) => `<code>{${esc(x)}}</code>`).join(' ')}</div>` : '')
+      + `<textarea class="prompt-text" spellcheck="false">${esc(v.text)}</textarea>`
+      + `<div class="prompt-warn">${promptDrift(v, v.text)}</div>`
+      + '<div class="prompt-bar"><button class="mini" data-prompt-save>save</button><button class="mini" data-prompt-discard>discard changes</button><span class="muted prompt-status"></span></div>'
+      + `<h4>History — the default and the last ${v.history.length} edit${v.history.length === 1 ? '' : 's'} (5 kept)</h4><ul class="prompt-history">`
+      + `<li><details><summary>default <span class="muted">— the workflow's own text</span></summary><pre class="md">${esc(v.default)}</pre></details>${restore('default', !v.edited)}</li>`
+      + v.history.map((h, i) => `<li><details><summary>${esc(savedWhen(h.saved_at))} <span class="muted">${esc(firstLine(h.text))}</span></summary><pre class="md">${esc(h.text)}</pre></details>${restore(i, h.current)}</li>`).join('')
+      + '</ul></section>';
+  }
+  // The prompt tab: one editor per prompt the station sends. The body is kept
+  // on a refresh, so a snapshot never wipes what is being typed.
+  function promptPane(p, line, st, head) {
+    const html = head + '<div class="callout">The harness wraps this text in its own blocks — EXECUTION CONTEXT, SCOPE, the repository configuration — which are not edited here. A save applies from the next run of this stage.</div><div id="prompt-editor"><div class="muted">loading…</div></div>';
+    const after = (refresh) => {
+      if (refresh) return;
+      const fill = () => {
+        const el = $('prompt-editor');
+        const list = PR.byStation[line.id + '/' + st.id];
+        if (!el || !list) return;
+        el.innerHTML = list.error ? `<div class="callout">${esc(list.error)}</div>` : list.map(promptCard).join('');
+      };
+      loadPrompts(line.id, st.id, fill);
+    };
+    return [st.label, html, after, true];
+  }
+  function shownPrompt(key) {
+    for (const list of Object.values(PR.byStation)) {
+      if (Array.isArray(list)) { const v = list.find((x) => x.key === key); if (v) return v; }
+    }
+    return null;
+  }
+  async function sendPrompt(path, body, card) {
+    const status = card.querySelector('.prompt-status');
+    status.textContent = 'saving…';
+    try {
+      const r = await fetch('/api/prompts/' + path, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
+      if (!r.ok) { status.textContent = await r.text(); return; }
+      const v = await r.json();
+      // Every station that shows this prompt sees the change.
+      for (const list of Object.values(PR.byStation)) {
+        if (Array.isArray(list)) { const i = list.findIndex((x) => x.key === v.key); if (i >= 0) list[i] = v; }
+      }
+      card.outerHTML = promptCard(v);
+      const fresh = document.querySelector(`[data-prompt-key="${CSS.escape(v.key)}"] .prompt-status`);
+      if (fresh) fresh.textContent = path === 'edit' ? 'saved — the next run sends it' : 'restored — the next run sends it';
+    } catch (err) { status.textContent = 'cannot reach the server'; }
+  }
+  $('pane-body').addEventListener('click', (e) => {
+    const card = e.target.closest('[data-prompt-key]');
+    if (!card) return;
+    const key = card.dataset.promptKey;
+    if (e.target.closest('[data-prompt-save]')) { sendPrompt('edit', { key, text: card.querySelector('.prompt-text').value }, card); return; }
+    if (e.target.closest('[data-prompt-discard]')) {
+      const v = shownPrompt(key);
+      if (v) { card.querySelector('.prompt-text').value = v.text; card.querySelector('.prompt-warn').innerHTML = promptDrift(v, v.text); card.querySelector('.prompt-status').textContent = ''; }
+      return;
+    }
+    const back = e.target.closest('[data-prompt-restore]');
+    if (back) { const at = back.dataset.promptRestore; sendPrompt('restore', { key, version: at === 'default' ? null : Number(at) }, card); }
+  });
+  $('pane-body').addEventListener('input', (e) => {
+    if (!e.target.matches('.prompt-text')) return;
+    const card = e.target.closest('[data-prompt-key]');
+    const v = card && shownPrompt(card.dataset.promptKey);
+    if (!v) return;
+    card.querySelector('.prompt-warn').innerHTML = promptDrift(v, e.target.value);
+    card.querySelector('.prompt-status').textContent = e.target.value === v.text ? '' : 'unsaved changes';
+  });
+
   const PANES = {
     board() {
       const b = S.snap.board;
@@ -1564,10 +1676,13 @@
       const st = line && line.stations.find((s) => s.id === p.id);
       if (!st) return ['Station', '<div class="callout">Unknown station.</div>'];
       if (st.gates && st.gates.length) return gatesPane(p, line, st);
+      const robot = isRobot(st);
+      const extra = robot ? [['prompt', 'Prompt']] : [];
+      if (p.tab === 'prompt' && robot) return promptPane(p, line, st, paneTabs(p, st.purpose, extra));
       if (p.tab === 'recent') {
         // A machine's work: the runs that finished its stage, or stand at it.
         const here = (line.recent_work || []).filter((r) => (st.stage && r.stages.includes(st.stage)) || S.snap.employees.some((e) => e.workflow === line.id && e.run_id === r.run_id && e.station === st.id) || !st.stage);
-        return [st.label, paneTabs(p, st.purpose) + recentWork(line, here, st.stage)];
+        return [st.label, paneTabs(p, st.purpose, extra) + recentWork(line, here, st.stage)];
       }
       const bucket = st.stage ? S.snap.costs.by_stage.find((b) => b.key === st.stage) : null;
       // The sessions at work on it now, first, then the finished ones.
@@ -1593,7 +1708,8 @@
           : `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
-      return [st.label, paneTabs(p, st.purpose) + h];
+      if (robot) h += promptPeek(line, st);
+      return [st.label, paneTabs(p, st.purpose, extra) + h];
     },
 
     gate(p) {

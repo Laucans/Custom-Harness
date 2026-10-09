@@ -42,6 +42,9 @@ pub struct Config {
     /// This issue's artifacts folder — same files the repository map drops
     /// there, resolved to the current round's name.
     pub artifacts_dir: PathBuf,
+    /// The human's prompt edits, read once per run — a stage sends
+    /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
+    pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
 }
 
 #[cfg(test)]
@@ -64,6 +67,7 @@ pub(crate) mod fake {
     /// A test config, artifacts under this folder.
     pub fn in_dir(refinement_dir: PathBuf, context: &str) -> Config {
         Config {
+            prompts: std::rc::Rc::default(),
             artifacts_dir: refinement_dir.join("25"),
             refinement_dir,
             context: context.to_string(),

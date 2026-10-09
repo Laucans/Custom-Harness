@@ -21,6 +21,7 @@ use std::rc::Rc;
 use harness_core::execution::{Gate, Stage, StageBody, Unpaid};
 use harness_core::ports::agent::SessionSpec;
 
+use crate::prompts;
 use crate::refinement::action::actions::{AskRefine, RecordWantedSections};
 use crate::refinement::action::publish::Write;
 use crate::refinement::checks::gates::{
@@ -42,19 +43,24 @@ pub const ADVICE: &str = "human-advice";
 /// The publish local stage name.
 pub const PUBLISH: &str = "publish";
 
-/// The template for each stage, by stage key.
-fn template_of(key: &str) -> &'static str {
-    match key {
-        ROUTER => text::ROUTER_PROMPT,
-        "business-goal" => text::BUSINESS_GOAL_PROMPT,
-        "technical" => text::TECHNICAL_PROMPT,
-        "acceptance-criteria" => text::ACCEPTANCE_CRITERIA_PROMPT,
-        "business-rules" => text::BUSINESS_RULES_PROMPT,
-        "technical-plan" => text::TECHNICAL_PLAN_PROMPT,
-        COHERENCE => text::COHERENCE_PROMPT,
-        ADVICE => text::ADVICE_PROMPT,
+/// The template for each stage, by stage key: the human's edit, or the
+/// default.
+fn template_of(config: &Config, key: &str) -> String {
+    let (edited, default) = match key {
+        ROUTER => (prompts::ROUTER, text::ROUTER_PROMPT),
+        "business-goal" => (prompts::BUSINESS_GOAL, text::BUSINESS_GOAL_PROMPT),
+        "technical" => (prompts::TECHNICAL, text::TECHNICAL_PROMPT),
+        "acceptance-criteria" => (
+            prompts::ACCEPTANCE_CRITERIA,
+            text::ACCEPTANCE_CRITERIA_PROMPT,
+        ),
+        "business-rules" => (prompts::BUSINESS_RULES, text::BUSINESS_RULES_PROMPT),
+        "technical-plan" => (prompts::TECHNICAL_PLAN, text::TECHNICAL_PLAN_PROMPT),
+        COHERENCE => (prompts::COHERENCE, text::COHERENCE_PROMPT),
+        ADVICE => (prompts::ADVICE, text::ADVICE_PROMPT),
         other => unreachable!("unknown stage: {other}"),
-    }
+    };
+    config.prompts.text(edited, default)
 }
 
 fn spec_of(config: &Config, key: &str) -> SessionSpec {
@@ -84,7 +90,7 @@ fn paid(
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskRefine {
                 stage: stage.to_string(),
-                template: template_of(stage),
+                template: template_of(config, stage),
                 merged_body: stage == COHERENCE || stage == ADVICE,
                 phase,
                 context: config.context.clone(),
@@ -255,11 +261,22 @@ mod tests {
         let config = config_fake::config();
         for phase in [Phase::Business, Phase::Technical] {
             for key in phase.keys() {
-                assert_ne!(template_of(key), "");
+                assert_ne!(template_of(&config, key), "");
                 assert_ne!(spec_of(&config, key).model, "");
             }
         }
-        assert_ne!(template_of(ADVICE), "");
+        assert_ne!(template_of(&config_fake::config(), ADVICE), "");
+    }
+
+    #[test]
+    fn a_human_s_edit_is_the_template_and_a_neighbour_keeps_its_default() {
+        let mut book = harness_core::domain::prompt_book::PromptBook::default();
+        book.edit(prompts::ROUTER, "Route #{num}", text::ROUTER_PROMPT, 1)
+            .expect("edited");
+        let mut config = config_fake::config();
+        config.prompts = std::rc::Rc::new(book);
+        assert_eq!(template_of(&config, ROUTER), "Route #{num}");
+        assert_eq!(template_of(&config, COHERENCE), text::COHERENCE_PROMPT);
     }
 
     #[test]
@@ -281,7 +298,7 @@ mod tests {
         keys.extend(Phase::Technical.keys());
         keys.extend([ROUTER, COHERENCE, ADVICE]);
         for key in keys {
-            let text = template_of(key);
+            let text = template_of(&config_fake::config(), key);
             for (at, _) in text.match_indices('{') {
                 let Some(end) = text[at..].find('}') else {
                     continue;

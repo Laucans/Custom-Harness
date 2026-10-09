@@ -3,7 +3,8 @@
 The factory view: a local web server that draws the harness as an isometric
 plant, read from the traces the harness leaves behind. A **second outer ring**
 beside `harness-launcher` — the only other crate allowed to build a concrete
-adapter — and it **writes nothing the harness reads**. The crate graph is in
+adapter — and it **writes nothing the harness reads but the prompt book**
+(see *The robots' prompts*). The crate graph is in
 [ARCHITECTURE_OVERVIEW.md](../../ARCHITECTURE_OVERVIEW.md); the Rust rules in
 [../../CLAUDE.md](../../CLAUDE.md).
 
@@ -86,6 +87,35 @@ clicks in a row are two questions the doctor answers in turn. A diagnosis
 that ended is a fact the poller hands `harness-notify` (`Facts::diagnoses`):
 an Info notification when answered, a Warning when not, each leading to the
 agent's pane — so the human hears of it with the pane closed.
+
+## The robots' prompts
+
+A paid station — a robot, builder or inspector — carries a **Prompt** tab,
+and its details tab shows the prompt read-only. What a station sends is
+`harness_workflows::prompts`' catalog: a key (`agent-loop/code`), the
+stations that send it (a shared text, like the repository map or how the
+tests are run, stands on several), and the default — the constant beside
+the stage. The tab edits the stage's own text only; the EXECUTION CONTEXT
+and SCOPE blocks stay the framework's.
+
+A save goes into the **prompt book**, `.llocal/prompts.json`
+(`harness_core::domain::prompt_book`, `PromptStore` port, `PromptFile` in
+`harness-adapters`, written aside then renamed): what the stage sends now,
+and its last five edits, newest first, no two alike. The default is never
+in that list — it is always there to restore. A restore puts a version
+back at the head; restoring the default sends it again and keeps the
+history. The launcher reads the book once per run (`dispatch::shared::prompts`)
+and names the edited prompts in `run.log`; an unreadable book halts the
+run rather than send the defaults behind the human's back.
+
+The pane warns, as the human types, of a `{placeholder}` the default
+carries and the edit dropped (the stage no longer passes that value) and of
+one nothing fills (it reaches the session as written). Routes
+`GET /api/prompts/{line}/{station}`, `POST /api/prompts/edit`
+(`{key, text}`), `POST /api/prompts/restore` (`{key, version}`, `null` for
+the default); `domain::prompts` puts the catalog and the book together, and
+a test holds that every robot of the blueprint shows a prompt and every
+prompt stands on a station the plant draws.
 
 ## The janitor
 
@@ -202,6 +232,7 @@ src/domain/            the inside — no disk, no subprocess, no clock
   schema_sql.rs        a Postgres schema out of its DDL: tables, columns, constraints, indexes, enums, comments
   data_model.rs        the product's data model: the database's DDL and the agents' model merged, and where they diverge
   annotations.rs       the human's pins: what a note is, and the checks before a board's list is kept
+  prompts.rs           a station's prompts for the pane: the catalog and the prompt book together, an edit, a restore
 src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), Notebook (the pins)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
@@ -212,7 +243,7 @@ src/adapters/
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   fs_notes.rs          .llocal/annotations.json, written aside then renamed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/notes/{board}
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore}
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
 sample/data/           a product's data model to show under --demo
 ```
@@ -237,8 +268,10 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
   `harness watch` and the runs already write, and never asks the harness to
   emit anything for it. A structured event port in `harness-core` would be
   more precise; it can be added later without touching this crate's inside,
-  because `observe` already reads through a port. It writes nothing a run
-  reads. Its hands on the plant are three, all the human's: the steward's
+  because `observe` already reads through a port. The one thing it writes
+  that a run reads is the prompt book — the human's edits, read by the
+  launcher at the start of the next run. Its other hands on the plant are
+  three, all the human's: the steward's
   terminal, the status button's switch (`Plant` port), and the janitor's
   broom (`Yard` port), which removes only caches and old traces no run
   needs, on a click or under the threshold the human set. The switch does

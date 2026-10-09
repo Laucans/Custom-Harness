@@ -17,13 +17,14 @@ use crate::pr_fix::checks::gates::SomethingIsRed;
 use crate::pr_fix::config::Config;
 use crate::pr_fix::data::state::FixState;
 use crate::pr_fix::ports::Ports;
+use crate::prompts;
 
 /// The free stage name: what broke, and the request taken.
 pub const CONTEXT: &str = "context";
 /// The paid repair stage name.
 pub const FIX: &str = "fix";
 
-const FIX_PROMPT: &str = r#"Pull request #{num} — "{title}" ({head} -> {base}) needs a repair: its
+pub(crate) const FIX_PROMPT: &str = r#"Pull request #{num} — "{title}" ({head} -> {base}) needs a repair: its
 CI went red, its agent review (the last `🤖 Review notes` comment below,
 its `VERDICT: blocking` line) asked for changes before it is merged, or its
 branch no longer merges into `{base}`.
@@ -119,7 +120,7 @@ pub fn fix(ports: &Ports, config: &Config) -> Stage<FixState> {
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskForFix {
                 stage: FIX.to_string(),
-                template: FIX_PROMPT,
+                template: config.prompts.text(prompts::FIX, FIX_PROMPT),
                 spending: Rc::clone(&ports.spending),
             })],
         },

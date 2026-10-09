@@ -26,6 +26,8 @@ pub struct AskInline {
     pub stage: String,
     /// The level passed to `/code-review`.
     pub level: String,
+    /// The command sent, `{level}` and `{num}` still to fill.
+    pub template: String,
     /// Where spending is recorded.
     pub spending: Rc<dyn Spending>,
 }
@@ -34,7 +36,7 @@ pub struct AskInline {
 impl SessionAction<ReviewState> for AskInline {
     async fn run(&self, open: &mut Open<'_, ReviewState>) -> Outcome<Verdict> {
         let num = open.state.pr().num.clone();
-        let prompt = format!("/code-review {} {num} --comment", self.level);
+        let prompt = splice(&self.template, &[("level", &self.level), ("num", &num)]);
         ask_and_record(open, &prompt, &self.stage, 1, &num, self.spending.as_ref()).await?;
         Ok(Verdict::Continue)
     }
@@ -68,7 +70,7 @@ pub struct AskBrief {
     /// stored in `ctx.results`. Received from the table, like any stage name.
     pub inline_stage: String,
     /// The prompt template, received from the table.
-    pub template: &'static str,
+    pub template: String,
     /// `--no-inline`, to tell the reviewer why they have no findings.
     pub no_inline: bool,
     /// Where spending is recorded.
@@ -81,7 +83,7 @@ impl SessionAction<ReviewState> for AskBrief {
         let pr = open.state.pr().clone();
         let found = findings::findings(open.ctx, &self.inline_stage, self.no_inline);
         let prompt = splice(
-            self.template,
+            &self.template,
             &[
                 ("num", &pr.num),
                 ("title", &pr.title),

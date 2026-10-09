@@ -1,4 +1,5 @@
-//! The ports onto what outlives a run: spending, locks, the resume point.
+//! The ports onto what outlives a run: spending, locks, the resume point,
+//! the human's prompt edits.
 //!
 //! All three survive the code they describe — a disposable workspace
 //! disappears, the accounting stays. That is what makes a clone disposable.
@@ -11,5 +12,6 @@
 pub mod checkpoint;
 pub mod events;
 pub mod lock;
+pub mod prompts;
 pub mod review;
 pub mod spending;

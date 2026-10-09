@@ -97,7 +97,7 @@ pub struct AskForPlan {
     /// The stage name, for the journal and the `stage` column of the registry.
     pub stage: String,
     /// The prompt template, received from the table.
-    pub template: &'static str,
+    pub template: String,
     /// This roadmap item's artifacts folder — where the repo map is kept.
     pub artifacts_dir: PathBuf,
     /// `--explore`.
@@ -123,7 +123,7 @@ impl SessionAction<PlannerState> for AskForPlan {
             }
         };
         let filled = splice(
-            self.template,
+            &self.template,
             &[
                 ("num", &roadmap.number.to_string()),
                 ("title", &roadmap.title),

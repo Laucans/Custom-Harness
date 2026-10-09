@@ -25,6 +25,9 @@ pub struct Config {
     pub explore: bool,
     /// Model and effort for the plan step.
     pub plan: SessionSpec,
+    /// The human's prompt edits, read once per run — a stage sends
+    /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
+    pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
 }
 
 #[cfg(test)]
@@ -40,6 +43,7 @@ pub(crate) mod fake {
     /// A test config, artifacts under this folder.
     pub fn in_dir(planner_dir: PathBuf) -> Config {
         Config {
+            prompts: std::rc::Rc::default(),
             artifacts_dir: planner_dir.join("7"),
             grill_dir: planner_dir.join("grill"),
             planner_dir,
