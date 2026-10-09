@@ -1837,11 +1837,12 @@ fn factory(snap: &Snapshot) -> Scene {
         "The steward\nA Claude Code terminal in the harness checkout — ask them to start the plant, stop it, read the board.",
     );
     wizard(&mut b, bx - 0.9, bz + bd + 1.4, &steward_hot);
-    // The workers stand on the pavement between the door and the sign, two to
-    // a column, the second a step nearer the wall.
+    // The workers stand out on the street, in front of the sign rather than
+    // hidden behind it: three to a column across the asphalt, the columns
+    // marching toward the quay.
     for (i, e) in snap.employees.iter().enumerate() {
-        let x = bx + 5.3 + (i / 2) as f32 * 1.5;
-        let z = bz + bd + 0.6 - (i % 2) as f32 * 0.8;
+        let x = bx + 5.3 + (i / 3) as f32 * 1.5;
+        let z = street_z + 0.6 + (i % 3) as f32 * 0.8;
         person(&mut b, x, z, e.model.as_deref(), &e.name, &employee_hot(e));
     }
     let watch = if snap.factory.watching {
@@ -3123,6 +3124,17 @@ mod tests {
         assert!(panes(&scene, "board") >= 3, "the sign's posts and board");
         assert_eq!(panes(&scene, "steward"), 2, "the card and its shadow");
         assert_eq!(panes(&scene, "employee"), 2, "one worker: card and shadow");
+        // The worker stands out on the street, in front of the board — not
+        // hidden between it and the wall.
+        let nearest = |kind: &str| {
+            scene
+                .props
+                .iter()
+                .filter(|p| p.hot.as_ref().is_some_and(|h| pane_kind(h) == Some(kind)))
+                .map(|p| p.at[2])
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(nearest("employee") > nearest("board") + 0.5);
         let door = hots(&scene)
             .into_iter()
             .filter(|h| h.go.as_deref() == Some("B"))
