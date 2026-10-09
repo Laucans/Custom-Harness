@@ -246,6 +246,18 @@ Either file alone draws the diagram. `model.json`:
   "links": [ { "from": "item.code", "to": "rule_reference.code", "purpose": "…" } ] }
 ```
 
+**Building what is missing.** `main` and the integration branch are always
+offered; a branch with no version archived shows its live files. A file not
+there is a button: `schema.sql` starts `harness data-snapshot --branch <b>`
+(the watch's snapshot pass, on demand), `model.json` — on a second click —
+`harness data-model-draft --branch <b>` (Opus drafts the file from the dump
+and the code, and opens a pull request on the branch). The view only starts
+the harness binary the switch starts the watch with (`ports::Builds`,
+`adapters::harness_builds`, output in `.llocal/logs/view-builds/`); the page
+follows `GET /api/data-model/builds` and reloads (`?fresh=1`) when it ends.
+Routes `POST /api/data-model/build`, `GET /api/data-model/builds`; none under
+`--demo`.
+
 `--demo` without `--data-dir` reads the sample under `crates/view/sample/`,
 its archive under `sample/archive/` laid out as the branch is.
 
@@ -403,7 +415,7 @@ src/adapters/
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
 src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
-static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
+static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests, one folder per branch, dates.tsv)
 ```
 

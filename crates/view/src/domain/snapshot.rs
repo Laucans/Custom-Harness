@@ -378,6 +378,10 @@ pub struct Snapshot {
     /// reconnection reloads, so a rebuilt view is never shown with a stale
     /// script.
     pub build: String,
+    /// The time zone of the machine the harness runs on (`America/Toronto`),
+    /// which the page reads every clock in — empty when the system names
+    /// none, and the page falls back to the browser's.
+    pub time_zone: String,
     /// The project.
     pub project: Project,
     /// Seen from outside.

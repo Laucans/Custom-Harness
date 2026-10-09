@@ -12,6 +12,8 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
+  // Every clock a human reads, in the harness machine's time zone (clock.js).
+  const C = window.HarnessClock;
 
   const S = {
     snap: null,
@@ -33,7 +35,7 @@
   const fmtTokens = (t) => (t
     ? `<b>${kfmt(t.total)}</b> · in ${kfmt(t.input)} · out ${kfmt(t.output)} · cache ${kfmt(t.cache_read)} read / ${kfmt(t.cache_write)} written · ${t.stages} stage${t.stages > 1 ? 's' : ''} done`
     : '— (first stage still running)');
-  const hhmm = (iso) => (iso ? iso.slice(11, 19) + 'Z' : '—');
+  const hhmm = (iso) => C.time(iso);
   function fmtAge(secs) {
     if (secs == null) return '—';
     if (secs < 60) return secs + 's';
@@ -116,6 +118,7 @@
   // The server was rebuilt and restarted (watchexec): reload, so the page
   // runs the scripts and styles that go with it. The URL hash keeps the place.
   function reloadIfRebuilt(snap) {
+    C.zone(snap.time_zone);
     if (!snap.build) return false;
     if (S.build && snap.build !== S.build) { location.reload(); return true; }
     S.build = snap.build;
@@ -277,7 +280,8 @@
   const LOG_WARN = /(^|\] )(warning: |STOP: |QUOTA: )|refusing to pay/;
   function logLine(line) {
     const level = LOG_ERROR.test(line) ? 'error' : LOG_WARN.test(line) ? 'warn' : '';
-    return level ? `<span class="log-${level}">${esc(line)}</span>` : esc(line);
+    const shown = esc(C.line(line));
+    return level ? `<span class="log-${level}">${shown}</span>` : shown;
   }
   const logHtml = (text) => text.split('\n').map(logLine).join('\n');
 
@@ -772,7 +776,7 @@
     if (!d) { host.innerHTML = '<div class="callout">No diagnosis recorded for this version: the events were swept, or the view reads no event store.</div>'; return; }
     const list = (items) => (items.length ? '<ul class="dm-rules">' + items.map((i) => `<li>${esc(i)}</li>`).join('') + '</ul>' : '<p class="muted">None.</p>');
     const proposed = d.actions.map((a) => '- ' + a).join('\n');
-    host.innerHTML = `<div class="dv-head"><span class="tag bad">diverges</span><b>${esc(d.branch)}</b><code>${esc(d.sha.slice(0, 7))}</code><span class="muted">diagnosed ${esc(d.at.replace('T', ' ').replace('Z', ''))}</span></div>`
+    host.innerHTML = `<div class="dv-head"><span class="tag bad">diverges</span><b>${esc(d.branch)}</b><code>${esc(d.sha.slice(0, 7))}</code><span class="muted">diagnosed ${esc(C.stamp(d.at))}</span></div>`
       + '<h4>State of affairs</h4>'
       + (d.diagnosis ? `<div class="dv-diagnosis">${md(d.diagnosis)}</div>` : `<div class="callout">Not diagnosed: ${esc(d.failure || 'the session gave no answer')}. The divergences below are the static comparison's.</div>`)
       + `<h4>The divergences <span class="muted">· ${d.divergences.length}</span></h4>${list(d.divergences)}`
@@ -1145,7 +1149,7 @@
     return '<ul class="issues">' + runs.map((r) => {
       const last = { id: `${line.id}/${r.run_id}`, name: r.name, workflow: line.id, run_id: r.run_id, tokens: r.tokens, active: r.active };
       const open = { kind: 'employee', id: last.id, last, stage: stage || null };
-      const when = r.run_id.slice(9, 11) + ':' + r.run_id.slice(11, 13) + ' · ' + r.run_id.slice(4, 6) + '/' + r.run_id.slice(6, 8);
+      const when = runWhen(r.run_id);
       return `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify(open))}'>${esc(r.name)}</button></span><span class="muted">${esc(when)} · ${esc(r.stages.join(' → ') || 'no stage finished')}${r.tokens ? ' · ' + kfmt(r.tokens.total) + ' tok' : ''}</span>${r.active ? liveTag(last.id) : ''}</li>`;
     }).join('') + '</ul>';
   }
@@ -1162,13 +1166,9 @@
   const tiles = (items) => '<div class="tiles">' + items.map(([v, l]) => `<div class="tile"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`).join('') + '</div>';
 
   // ---- the control room's screens -------------------------------------------
-  // `14:03:22`, with the day when it is not today — local time.
-  function when(iso) {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t;
-  }
+  // `14:03:22`, with the day when it is not today — the harness machine's time.
+  function when(iso) { return C.when(iso); }
+
   // A duration, to the second under the hour.
   function fmtDur(ms) {
     if (!(ms >= 0)) return '—';
@@ -1204,12 +1204,9 @@
   // ---- a chosen period --------------------------------------------------------
   // `S.range` holds two trace clocks (UTC, `2026-10-08T21:31:21Z`), either
   // null; `S.history` the figures the server recomputed for it.
-  const toClock = (local) => (local ? new Date(local).toISOString().slice(0, 19) + 'Z' : null);
-  const toLocal = (clock) => {
-    if (!clock) return '';
-    const d = new Date(clock), pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
+  const toClock = (local) => C.fromInput(local);
+  const toLocal = (clock) => C.toInput(clock);
+
   const rangeKey = () => JSON.stringify(S.range || null);
   // The figures of the chosen period, once read; null when live, or not read yet.
   const period = () => (S.range && S.history && S.history.key === rangeKey() && S.history.data) || null;
@@ -1250,9 +1247,9 @@
     if (S.range) readHistory(); else if (S.pane && S.pane.kind === 'dashboards') renderPane(S.pane, false);
   }
   function presetRange(key) {
-    const now = new Date();
-    const start = key === '1h' ? new Date(now - 3600e3) : key === '24h' ? new Date(now - 86400e3) : new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    setRange({ from: start.toISOString().slice(0, 19) + 'Z', to: null });
+    const ago = (ms) => new Date(Date.now() - ms).toISOString().slice(0, 19) + 'Z';
+    // "today" starts at midnight on the harness machine, not in the browser.
+    setRange({ from: key === '1h' ? ago(3600e3) : key === '24h' ? ago(86400e3) : C.midnight(), to: null });
   }
 
   // One read of the limits; the server caches the probe, so asking is cheap.
@@ -1286,7 +1283,7 @@
     'costs.totals': '<b>spent</b>: the sum of every session\'s estimate. <b>paid sessions</b>: rows in the ledger. The four token counts add up what every session reported: <b>output</b> written by the model, <b>cache read</b> and <b>cache write</b> of the prompt cache, and <b>uncached input</b>.',
     'costs.data': 'The tasks labelled <code>harness:data-layer</code> run every stage on the strongest model. Their spending, and its share of all spending, says what that choice costs.',
     'costs.side': 'Spending grouped by the side of the architecture the task carries as a label: <code>harness:read-side</code>, <code>harness:write-side</code>, <code>harness:data-layer</code>. A task with none is counted apart.',
-    'costs.day': 'Spending per day (UTC), the last fourteen days the ledger holds.',
+    'costs.day': 'Spending per day — a day on the harness machine, midnight to midnight — the last fourteen days the ledger holds.',
     'costs.stage': 'Spending per stage of the pipeline — technical refinement, code, create-test, review… — with how many sessions each took.',
     'costs.task': 'Spending per issue: what each task has cost so far, every round and stage together.',
     'costs.outcome': 'How the paid sessions ended: <b>ok</b>, <b>STOP</b> (the session stopped itself, or a question), <b>FAILED</b> (it rendered nothing usable, or was killed), <b>QUOTA</b> (the window was exhausted). Money spent on anything but ok bought nothing.',
@@ -1300,7 +1297,7 @@
     'journal.now': '<b>agents at work</b>: runs whose files moved in the last minutes — what the plant shows walking. <b>lanes open</b>: lanes the journal saw start and not yet finish. <b>ticks</b>: polls since the watch last started. <b>empty ticks</b>: polls that started nothing — the board had not moved, or every runnable task was already on a lane or parked. <b>failed board reads</b>: polls whose GitHub read failed (a rate limit, the network). When the start of the watch is older than the part of the journal read, the counts are a floor.',
     'journal.triggers': 'Everything the loop started, newest first: a <b>lane</b> (a dev loop on a task, a refinement, a split — a separate process, numbered by its lane) or a workflow it ran itself (planner, PR review, merges). <b>running</b>: not reported back yet. <b>ok</b>: exit 0. <b>failed</b>: a non-zero exit, or it could not start. <b>killed</b>: ended by a signal. <b>unknown</b>: the watch restarted before it reported. A task that stops (exit 1) is parked until its issue changes; the logs say so.',
     'journal.period': '<b>triggers</b>: everything that ran at some point of the period — started in it, or started before and still running. <b>failed or killed</b>: those of them that ended badly. <b>ticks</b>, <b>empty ticks</b>, <b>failed board reads</b>: the polls that began in the period. The whole journal is read, so a lane started before the period still shows how it ended.',
-    'journal.logs': 'The last forty lines of the journal as written, clock in UTC: polls (<code>saw</code>, <code>quiet</code>), routes (<code>tick</code>), lanes taken and freed, warnings, and a soft stop (<code>draining</code>, <code>stopped</code>).',
+    'journal.logs': 'The last forty lines of the journal as written, clock in the harness machine\'s time zone: polls (<code>saw</code>, <code>quiet</code>), routes (<code>tick</code>), lanes taken and freed, warnings, and a soft stop (<code>draining</code>, <code>stopped</code>).',
   };
   const STATE_TAG = { running: ['running', 'acc'], ok: ['ok', 'ok'], failed: ['failed', 'bad'], killed: ['killed', 'bad'], unknown: ['unknown', 'warn'] };
   const DASH = {
@@ -1316,16 +1313,16 @@
       h += section(p, 'costs.stage', 'By stage') + bars(c.by_stage);
       h += section(p, 'costs.task', 'By task') + bars(c.by_task);
       h += section(p, 'costs.outcome', 'By outcome') + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
-      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${sessionTag(r)}</td></tr>`);
+      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td>${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${sessionTag(r)}</td></tr>`);
       return h;
     },
     quota(p) {
       const L = p.limits;
       // Not asked yet is reading too: the screen asks the moment it opens.
       const busy = p.limitsBusy || !p.limitsAsked;
-      const at = (secs) => when(new Date(secs * 1000).toISOString());
+      const at = (secs) => when(secs * 1000);
       const gauge = (name, pct, sub) => `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(name)} · ${pct}% used</div><div class="bar"><span style="width:${Math.min(pct, 100)}%"></span></div><div class="muted">${sub}</div></div>`;
-      const resets = (secs) => (secs ? 'resets ' + esc(new Date(secs * 1000).toLocaleString()) : 'reset unknown');
+      const resets = (secs) => (secs ? 'resets ' + esc(C.when(secs * 1000)) : 'reset unknown');
       let h = `<div class="limits-bar"><span class="muted">${busy ? 'reading the limits now…' : L ? 'read at ' + esc(at(Math.max(L.claude.at, L.github.at))) : ''}</span><button class="mini" data-limits-read${busy ? ' disabled' : ''}>read again</button></div>`;
       // Claude: the probe's reading, or the one the runs kept when the probe failed.
       h += section(p, 'quota.claude', 'Claude');
@@ -1357,7 +1354,7 @@
           : runTag(e.kind, cls, { run: e.run, failed: true, name: `${e.workflow} · ${e.kind} · ${e.run}` });
       };
       const rows = period() ? period().errors : S.snap.errors;
-      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${stopTag(e)}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
+      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td>${esc(when(e.when))}</td><td>${esc(e.workflow)}</td><td>${stopTag(e)}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
     },
     journal(p) {
       if (S.range && !period()) return '';
@@ -1412,7 +1409,11 @@
   const verdictTag = (v) => { const [label, cls] = VERDICT_TAG[v] || [v || '—', '']; return tag(label, cls); };
   const STATE_CLASS = { done: 'done', skipped: 'skipped', failed: 'human', active: 'ready', idle: 'todo' };
   // `14:03 · 08/10` from a run id, for the lists.
-  const runWhen = (runId) => runId.slice(9, 11) + ':' + runId.slice(11, 13) + ' · ' + runId.slice(4, 6) + '/' + runId.slice(6, 8);
+  // A run id is its start in UTC (`20261009-192716`): `15:27 · 10/09` on the harness machine.
+  function runWhen(runId) {
+    const at = C.ofRunId(runId);
+    return at ? C.time(at).slice(0, 5) + ' · ' + C.day(at).slice(5).replace('-', '/') : runId;
+  }
   // A gate's own journal: one line per check of its last pass.
   const gateLog = (g) => (g.checks || []).map((c) => `[${c.at}] gate "${g.name}" · ${c.name}: ${c.verdict}${c.reason ? ' — ' + c.reason : ''}`).join('\n');
   // The run a gate last spoke in, as a link to its logs.
@@ -1438,7 +1439,7 @@
       ['state', stateTag(g.state)],
       ['last verdict', g.verdict ? verdictTag(g.verdict) : '<span class="muted">never reached</span>'],
       ['reason', g.reason ? esc(g.reason) : null],
-      ['when', g.at ? hhmm(g.at) + ' · ' + g.at.slice(0, 10) : null],
+      ['when', g.at ? hhmm(g.at) + ' · ' + C.day(g.at) : null],
       ['run', runLink(line.id, g.run_id)],
     ]);
     if (g.checks && g.checks.length) {
@@ -1499,7 +1500,7 @@
   const isRobot = (st) => st.kind === 'builder' || st.kind === 'inspector';
   const PLACEHOLDER = /\{([a-z_][a-z0-9_]*)\}/g;
   const placeholdersOf = (text) => new Set([...String(text).matchAll(PLACEHOLDER)].map((m) => m[1]));
-  const savedWhen = (secs) => (secs ? new Date(secs * 1000).toLocaleString() : '—');
+  const savedWhen = (secs) => (secs ? C.stamp(secs * 1000) : '—');
   const firstLine = (text) => { const l = String(text).split('\n').find((x) => x.trim()) || ''; return l.length > 70 ? l.slice(0, 70) + '…' : l; };
   // A declaration, not a constant: the dock draws it before this part of the
   // script has run.
@@ -2134,7 +2135,7 @@
               p.jumped = true; p.jump = false;
               return;
             }
-            if (pre.textContent !== text) {
+            if (pre.textContent !== C.line(text)) {
               pre.innerHTML = logHtml(text);
               if (atBottom || p.jump) pre.scrollTop = pre.scrollHeight;
             }
@@ -2192,7 +2193,7 @@
       if (rows.length) {
         h += `<h3>${now.length ? 'Sessions on it — now, then the last ones' : 'Last sessions on it'}</h3>` + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">time</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => (r.live
           ? `<tr><td>now${r.live.since ? ' · since ' + esc(hhmm(r.live.since)) : ''}</td><td>${worksOn(r.live) || ((String(r.live.task || '').match(/\d+/) || [])[0] ? '#' + String(r.live.task).match(/\d+/)[0] : '—')}</td><td>${esc(r.live.round || '—')}</td><td class="num">${sessionClock(r.live)}</td><td class="num">—</td><td class="num">—</td><td>${liveTag(r.live.id)}</td></tr>`
-          : `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
+          : `<tr><td>${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
       return [st.label, paneTabs(p, st.purpose, extra) + h];
@@ -2266,7 +2267,7 @@
               p.whereHtml = null;
             }
             const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
-            if (pre.textContent !== text) {
+            if (pre.textContent !== C.line(text)) {
               pre.innerHTML = logHtml(text);
               if (atBottom || p.jump) pre.scrollTop = pre.scrollHeight;
             }

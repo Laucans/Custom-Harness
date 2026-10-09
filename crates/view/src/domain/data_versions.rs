@@ -62,10 +62,13 @@ pub const RELEASE: &str = "main";
 /// Orders the archive's versions for the page.
 #[must_use]
 pub fn versions(index: Option<&Index>, integration: &str) -> Versions {
-    let Some(index) = index else {
-        return Versions::default();
-    };
-    let mut names: Vec<&str> = index.snapshots.iter().map(|s| s.branch.as_str()).collect();
+    let none = Index::default();
+    let archive = index.is_some();
+    let index = index.unwrap_or(&none);
+    // `main` and the integration branch are always offered: a branch with
+    // no version yet is one the page can build.
+    let mut names: Vec<&str> = vec![RELEASE, integration];
+    names.extend(index.snapshots.iter().map(|s| s.branch.as_str()));
     names.extend(index.heads.keys().map(String::as_str));
     names.sort_by_key(|name| rank(name, integration));
     names.dedup();
@@ -84,30 +87,7 @@ pub fn versions(index: Option<&Index>, integration: &str) -> Versions {
                 .collect(),
         })
         .collect();
-    Versions {
-        archive: true,
-        branches,
-    }
-}
-
-/// The version a page shows when it names none: the branch's newest, the
-/// integration branch's when it names no branch either.
-#[must_use]
-pub fn pick<'a>(
-    index: &'a Index,
-    branch: Option<&str>,
-    dir: Option<&str>,
-    integration: &str,
-) -> Option<&'a Snapshot> {
-    if let Some(dir) = dir {
-        return index.snapshots.iter().find(|s| s.dir == dir);
-    }
-    let branch = branch.unwrap_or(integration);
-    index.latest(branch).or_else(|| {
-        (branch == integration)
-            .then(|| index.snapshots.last())
-            .flatten()
-    })
+    Versions { archive, branches }
 }
 
 fn version(s: &Snapshot) -> Version {
@@ -223,30 +203,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a2", "a1"]
         );
-        assert_eq!(versions(None, "main_agent"), Versions::default());
-    }
-
-    #[test]
-    fn a_page_that_names_nothing_sees_the_integration_branch_newest() {
-        let index = index();
+        let empty = versions(None, "main_agent");
+        assert!(!empty.archive);
         assert_eq!(
-            pick(&index, None, None, "main_agent").map(|s| s.sha.as_str()),
-            Some("a2")
-        );
-        assert_eq!(
-            pick(&index, Some("main"), None, "main_agent").map(|s| s.sha.as_str()),
-            Some("r1")
-        );
-        assert_eq!(
-            pick(&index, None, Some("main_agent/a1"), "main_agent").map(|s| s.sha.as_str()),
-            Some("a1")
-        );
-        assert!(pick(&index, Some("nowhere"), None, "main_agent").is_none());
-        let mut only_features = Index::parse(None);
-        only_features.snapshots = vec![snap("milestone/1-x", "f", "1")];
-        assert_eq!(
-            pick(&only_features, None, None, "main_agent").map(|s| s.sha.as_str()),
-            Some("f")
+            empty
+                .branches
+                .iter()
+                .map(|b| b.branch.as_str())
+                .collect::<Vec<_>>(),
+            ["main", "main_agent"],
+            "both are offered, to be built"
         );
     }
 }

@@ -9,6 +9,7 @@
 
 use harness_core::domain::Issue;
 use harness_workflows::common::{branching, labels};
+use jiff::tz::TimeZone;
 
 use crate::domain::blueprint::{self, Line};
 use crate::domain::gates::{self, Told};
@@ -51,6 +52,9 @@ pub struct Inputs<'a> {
     pub demo: bool,
     /// What the runs told of their gates and their stops.
     pub told: &'a Told,
+    /// The harness machine's time zone: the page reads every clock in it, and
+    /// spending is counted by its days.
+    pub zone: &'a TimeZone,
 }
 
 /// `#62 Asset folder rule…` — how an issue is written on a badge.
@@ -685,13 +689,14 @@ pub fn snapshot(inputs: &Inputs<'_>) -> Snapshot {
             )
         })
         .collect();
-    let mut costs = summarize_costs(&inputs.observed.ledger, LEDGER_ROWS_SHOWN);
+    let mut costs = summarize_costs(&inputs.observed.ledger, LEDGER_ROWS_SHOWN, inputs.zone);
     traces::attribute_sides(&mut costs, &inputs.observed.ledger, |task| {
         sides.get(task).copied()
     });
     Snapshot {
         at: String::new(),
         build: String::new(),
+        time_zone: inputs.zone.iana_name().unwrap_or_default().to_string(),
         project: inputs.project.clone(),
         factory: Factory {
             chimneys: chimneys(inputs, &employees),
@@ -805,6 +810,7 @@ mod tests {
             now: traces::unix("2026-10-06T20:30:00Z").expect("clock"),
             demo,
             told,
+            zone: &jiff::tz::TimeZone::UTC,
         })
     }
 
@@ -1091,6 +1097,7 @@ mod tests {
             now: 0,
             demo: false,
             told: &Told::default(),
+            zone: &jiff::tz::TimeZone::UTC,
         });
         let board = snap.board.expect("board");
         assert_eq!(board.roadmap[0].kind, "roadmap");
@@ -1139,6 +1146,7 @@ mod tests {
             now: 0,
             demo: false,
             told: &Told::default(),
+            zone: &jiff::tz::TimeZone::UTC,
         });
         assert_eq!(snap.versions.main.url, "");
         assert!(snap.board.is_none());

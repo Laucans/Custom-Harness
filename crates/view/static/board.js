@@ -201,7 +201,7 @@
       editor.hidden = false;
       editor.querySelector('.hb-note-on').textContent = 'on ' + describe(n.target);
       textarea.value = n.text || '';
-      setState(n.at ? 'kept ' + n.at.slice(0, 16).replace('T', ' ') : '');
+      setState(n.at ? 'kept ' + window.HarnessClock.stamp(n.at).slice(0, 16) : '');
       drawEditor(n);
       drawPins();
       setTimeout(() => textarea.focus(), 0);

@@ -742,3 +742,10 @@ table.caps .muted { font-size: 11px; }
 .cap-rules { list-style: none; padding: 0; margin: 0; }
 .cap-rules li { padding: 6px 0; border-bottom: 1px solid var(--line); }
 #pane-body h4 { margin: 12px 0 6px; color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+/* A missing file of the data model, built on a click. */
+.dm-src.build { cursor: pointer; background: transparent; color: var(--accent); border: 1px dashed var(--accent); font: 11px var(--mono); }
+.dm-src.build:hover:not(:disabled) { background: var(--panel-2); }
+.dm-src.build.armed { border-style: solid; background: rgba(226, 178, 64, 0.15); }
+.dm-src.build:disabled { opacity: 0.7; cursor: progress; }
+.dm-built { font: 11px var(--mono); color: var(--dim); }
+.dm-version[hidden] { display: none; }

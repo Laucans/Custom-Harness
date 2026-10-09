@@ -4,6 +4,7 @@
 pub mod annotations;
 pub mod assemble;
 pub mod blueprint;
+pub mod builds;
 pub mod capabilities;
 pub mod cleanup;
 pub mod data_versions;

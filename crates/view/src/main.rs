@@ -41,6 +41,7 @@ use harness_adapters::shell::github::GhCli;
 use harness_core::domain::Slug;
 use harness_core::domain::workspace::Workspace;
 use harness_core::ports::shell::github::GitHub;
+use jiff::tz::TimeZone;
 use tokio::sync::watch;
 
 use crate::adapters::claude_bin;
@@ -49,6 +50,7 @@ use crate::adapters::fs_traces::FsTraces;
 use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
 use crate::adapters::git_units::{DirUnits, GitUnits};
+use crate::adapters::harness_builds::HarnessBuilds;
 use crate::adapters::limits_cli::CliLimits;
 use crate::adapters::product::{DirProduct, GhProduct};
 use crate::adapters::prompt_files::PromptFiles;
@@ -58,6 +60,7 @@ use crate::adapters::sqlite_notes::SqliteNotes;
 use crate::adapters::trial_proc::TrialProcess;
 use crate::adapters::watch_proc::WatchProcess;
 use crate::cli::Cli;
+use crate::data_desk::DataDesk;
 use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
 use crate::domain::blueprint;
@@ -72,8 +75,8 @@ use crate::domain::steward;
 use crate::janitor::Janitor;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    Board, BoardReading, Limits, NoteStore, Oneshot, Plant, Product, TerminalFactory, Traces,
-    Trials, Units, Yard,
+    Board, BoardReading, Builds, Limits, NoteStore, Oneshot, Plant, Product, TerminalFactory,
+    Traces, Trials, Units, Yard,
 };
 use crate::server::{AppState, router};
 use crate::units_desk::UnitsDesk;
@@ -116,14 +119,11 @@ async fn main() -> anyhow::Result<()> {
     let janitor = janitor_for(&cli, &workspace);
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
-    let (data, data_task) = product
-        .map(|(product, every)| data_desk::open(product, every))
-        .unzip();
+    let (data, data_task) = data_for(product);
 
     // One per process: what tells a page the server it talks to was rebuilt.
     let build = jiff::Timestamp::now().to_string();
-    let mut first = first_picture(&project, cli.demo);
-    first.build.clone_from(&build);
+    let first = first_picture(&project, cli.demo, &build);
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first));
     let (board_tx, board_rx) = watch::channel(None);
     let state = AppState {
@@ -145,12 +145,15 @@ async fn main() -> anyhow::Result<()> {
         data,
         pins: Arc::clone(&pins),
         note_desks: note_desks.clone(),
+        builds: builds_for(&cli, &root),
+        integration_branch: cli.integration_branch.clone(),
         prompts: Arc::new(PromptFiles::new(workspace.state_root())),
         prompts_lock: Arc::default(),
         trials: trials(&cli, &workspace),
         restart: Arc::default(),
         restart_poll: Duration::from_secs(3),
         units: units_for(&cli, &root, &project),
+        zone: TimeZone::system(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -234,6 +237,29 @@ fn banner(cli: &Cli, workspace: &Workspace) -> String {
             " — the janitor minds the yard"
         }
     )
+}
+
+/// The harness's commands the data pane starts — the binary the switch
+/// starts the watch with — unless `--demo`, which has no product to build.
+fn builds_for(cli: &Cli, root: &Path) -> Option<Arc<dyn Builds>> {
+    if cli.demo {
+        return None;
+    }
+    let first = cli.watch_command.split_whitespace().next()?;
+    let program = Path::new(first);
+    let program = if program.is_relative() && program.components().count() > 1 {
+        root.join(program)
+    } else {
+        program.to_path_buf()
+    };
+    Some(Arc::new(HarnessBuilds::new(program, root.to_path_buf())) as Arc<dyn Builds>)
+}
+
+/// The rate limits, read through the newest Claude Code and `gh`.
+fn limits() -> Arc<dyn Limits> {
+    Arc::new(CliLimits::new(
+        claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
+    ))
 }
 
 /// The janitor, unless `--no-janitor`.
@@ -358,10 +384,11 @@ fn doctor_for(cli: &Cli, root: &Path, project: &Project, program: &str) -> Optio
     })
 }
 
-/// The picture before the first read: an empty plant with the right name.
-fn first_picture(project: &Project, demo: bool) -> Snapshot {
+/// The picture before the first read: an empty plant with the right name and
+/// the process's `build`.
+fn first_picture(project: &Project, demo: bool, build: &str) -> Snapshot {
     let observed = Observed::default();
-    assemble::snapshot(&Inputs {
+    let mut first = assemble::snapshot(&Inputs {
         observed: &observed,
         board: None,
         project,
@@ -369,7 +396,10 @@ fn first_picture(project: &Project, demo: bool) -> Snapshot {
         now: jiff::Timestamp::now().as_second(),
         demo,
         told: &Told::default(),
-    })
+        zone: &TimeZone::system(),
+    });
+    first.build = build.to_string();
+    first
 }
 
 /// Reads the traces on a cadence and publishes the picture when it changed.
@@ -486,6 +516,7 @@ async fn poll_traces(
     demo: bool,
 ) {
     let lines = blueprint::lines();
+    let zone = TimeZone::system();
     // The first picture carries this process's build; every later one too.
     let build = tx.borrow().build.clone();
     let mut last_body = String::new();
@@ -513,6 +544,7 @@ async fn poll_traces(
             now: now.as_second(),
             demo,
             told: &told,
+            zone: &zone,
         });
         snap.build.clone_from(&build);
         snap.notifications = notifications(&hands, &observed, reading.as_deref(), now);
@@ -608,11 +640,11 @@ fn product_for(
     ))
 }
 
-/// The rate limits, read by the newest Claude Code on the machine.
-fn limits() -> Arc<dyn Limits> {
-    Arc::new(CliLimits::new(
-        claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
-    ))
+/// The data desk and the task that serves it, when the product can be read.
+fn data_for(product: Option<DataSource>) -> (Option<DataDesk>, Option<impl Future<Output = ()>>) {
+    product
+        .map(|(product, every)| data_desk::open(product, every, TimeZone::system()))
+        .unzip()
 }
 
 /// Where the sample units lie, for `--demo`: one folder per branch.

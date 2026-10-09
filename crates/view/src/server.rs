@@ -37,6 +37,7 @@ use crate::desk::Desk;
 use crate::domain::annotations;
 use crate::domain::assemble;
 use crate::domain::blueprint;
+use crate::domain::builds;
 use crate::domain::capabilities::{self, Catalogue};
 use crate::domain::cleanup::Settings;
 use crate::domain::data_versions::Versions;
@@ -55,7 +56,9 @@ use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::janitor::Janitor;
 use crate::note_desks::NoteDesks;
-use crate::ports::{BoardReading, Limits, NoteStore, Plant, Prompts, Traces, TrialAsk, Trials};
+use crate::ports::{
+    BoardReading, Builds, Limits, NoteStore, Plant, Prompts, Traces, TrialAsk, Trials,
+};
 use crate::units_desk::UnitsDesk;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
@@ -104,6 +107,11 @@ pub struct AppState {
     /// The product's data model, its versions — `None` when nothing can
     /// read it (`--no-board` without `--data-dir`).
     pub data: Option<DataDesk>,
+    /// The harness's commands the data pane starts — `None` under `--demo`.
+    pub builds: Option<Arc<dyn Builds>>,
+    /// The branch the agents integrate into: what a build names when the
+    /// page names none.
+    pub integration_branch: String,
     /// Where the human's pins and their conversations are kept.
     pub pins: Arc<dyn NoteStore>,
     /// The pins' AI sessions — `None` when the view runs no terminal.
@@ -122,6 +130,9 @@ pub struct AppState {
     /// The product's Capabilities and `DataCapabilities` — `None` when
     /// nothing can read the product.
     pub units: Option<UnitsDesk>,
+    /// The harness machine's time zone, asked of the system (`TZ`, else
+    /// `/etc/localtime`): the control room counts its days in it.
+    pub zone: jiff::tz::TimeZone,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -130,6 +141,7 @@ const APP: &str = include_str!("../static/app.js");
 const XTERM_JS: &str = include_str!("../static/vendor/xterm.js");
 const XTERM_CSS: &str = include_str!("../static/vendor/xterm.css");
 const XTERM_FIT: &str = include_str!("../static/vendor/addon-fit.js");
+const CLOCK_JS: &str = include_str!("../static/clock.js");
 const BOARD_JS: &str = include_str!("../static/board.js");
 const DATA_MODEL_JS: &str = include_str!("../static/data-model.js");
 
@@ -151,6 +163,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/style.css", get(style))
         .route("/app.js", get(app))
+        .route("/clock.js", get(clock_js))
         .route("/board.js", get(board_js))
         .route("/data-model.js", get(data_model_js))
         .route("/render/{file}", get(render_asset))
@@ -182,6 +195,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model", get(data_model))
         .route("/api/data-model/versions", get(data_versions))
         .route("/api/data-model/divergence", get(data_divergence))
+        .route("/api/data-model/build", post(data_build))
+        .route("/api/data-model/builds", get(data_builds))
         .route("/api/data-model/issue", post(data_issue))
         .route("/api/capabilities", get(capability_list))
         .route("/api/capabilities/fusion", post(capability_fusion))
@@ -251,6 +266,10 @@ async fn style(State(state): State<AppState>) -> Response {
 
 async fn app(State(state): State<AppState>) -> Response {
     asset(&state, "app.js", APP, JS)
+}
+
+async fn clock_js(State(state): State<AppState>) -> Response {
+    asset(&state, "clock.js", CLOCK_JS, JS)
 }
 
 async fn board_js(State(state): State<AppState>) -> Response {
@@ -621,6 +640,7 @@ async fn period(State(state): State<AppState>, Query(query): Query<PeriodQuery>)
         })
         .unwrap_or_default();
     let traces = Arc::clone(&state.traces);
+    let zone = state.zone.clone();
     let computed = tokio::task::spawn_blocking(move || {
         history::history(
             range,
@@ -628,6 +648,7 @@ async fn period(State(state): State<AppState>, Query(query): Query<PeriodQuery>)
             &traces.errors(),
             &traces.watch_log(HISTORY_BYTES).unwrap_or_default(),
             |task| sides.get(task).copied(),
+            &zone,
         )
     })
     .await;
@@ -845,6 +866,8 @@ struct DataModelReply<'a> {
 struct DataModelQuery {
     branch: Option<String>,
     dir: Option<String>,
+    /// `1` after a build: the archive and the live files read again.
+    fresh: Option<String>,
 }
 
 async fn data_model(
@@ -864,6 +887,7 @@ async fn data_model(
     let wanted = Wanted {
         branch: query.branch.filter(|b| !b.is_empty()),
         dir: query.dir.filter(|d| !d.is_empty()),
+        fresh: query.fresh.as_deref() == Some("1"),
     };
     match desk.model(wanted).await {
         Ok(shown) => {
@@ -932,6 +956,58 @@ async fn data_divergence(
     divergence_of(&state, &query.branch, query.dir.as_deref()).map_or_else(
         || not_found("no diagnosed divergence for this branch"),
         |d| json(&d),
+    )
+}
+
+/// What the page asks to build: `schema` or `model`, for a branch.
+#[derive(Debug, Deserialize)]
+struct BuildAsk {
+    what: String,
+    #[serde(default)]
+    branch: String,
+}
+
+/// Starts the harness command that builds a branch's missing file: a
+/// snapshot for its schema, a draft (a pull request) for its model.
+async fn data_build(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(builds) = state.builds.clone() else {
+        return (
+            StatusCode::NOT_FOUND,
+            "nothing is built here: the view runs with --demo",
+        )
+            .into_response();
+    };
+    let ask = match serde_json::from_slice::<BuildAsk>(&body) {
+        Ok(ask) => ask,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("not a build request: {e}")).into_response();
+        }
+    };
+    let Some(what) = builds::What::parse(&ask.what) else {
+        return (StatusCode::BAD_REQUEST, "build `schema` or `model`").into_response();
+    };
+    let branch = if ask.branch.is_empty() {
+        state.integration_branch.clone()
+    } else {
+        ask.branch
+    };
+    if !builds::is_branch(&branch) {
+        return (StatusCode::BAD_REQUEST, "not a branch name").into_response();
+    }
+    match builds.start(what, &branch) {
+        Ok(()) => json(&serde_json::json!({ "started": true, "branch": branch })),
+        Err(why) => (StatusCode::CONFLICT, why).into_response(),
+    }
+}
+
+/// Every build the pane started, newest first.
+async fn data_builds(State(state): State<AppState>) -> Response {
+    json(
+        &state
+            .builds
+            .as_ref()
+            .map(|b| b.builds())
+            .unwrap_or_default(),
     )
 }
 
@@ -1873,6 +1949,7 @@ mod tests {
             now: 0,
             demo: false,
             told: &told,
+            zone: &jiff::tz::TimeZone::UTC,
         });
         let (_, snapshot) = watch::channel(Arc::new(snap));
         let (_, board) = watch::channel(None);
@@ -1895,12 +1972,15 @@ mod tests {
             data: None,
             pins: Arc::new(Pins::default()),
             note_desks: None,
+            builds: None,
+            integration_branch: "main_agent".to_string(),
             prompts: Arc::new(Book::default()),
             prompts_lock: Arc::default(),
             trials: Some(Arc::new(Bench::default())),
             restart: Arc::default(),
             restart_poll: Duration::from_millis(5),
             units: None,
+            zone: jiff::tz::TimeZone::UTC,
         }
     }
 

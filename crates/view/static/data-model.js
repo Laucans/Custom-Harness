@@ -48,7 +48,9 @@
     const search = q('.dm-search');
     const st = { model: null, body: '', open: remembered(), sel: null, boxes: new Map(), bounds: null, timer: null, fitted: false, gone: false,
       // Which version is shown: a branch and a folder of the archive; empty, the server's default.
-      versions: null, branch: (opts && opts.branch) || '', dir: (opts && opts.dir) || '', newest: !(opts && opts.dir) };
+      versions: null, branch: (opts && opts.branch) || '', dir: (opts && opts.dir) || '', newest: !(opts && opts.dir),
+      // A build the page started: polled until it ends; a model's asks a second click.
+      fresh: false, building: null, armed: null, buildTimer: null, said: '' };
 
     const describe = (target) => {
       if (!target) return 'the canvas';
@@ -100,9 +102,10 @@
       try {
         const [versions, model] = await Promise.all([
           fetch('/api/data-model/versions').then((r) => (r.ok ? r.json() : null)),
-          fetch('/api/data-model?' + new URLSearchParams({ branch: st.branch, dir: st.newest ? '' : st.dir })).then((r) => (r.ok ? r.json() : null)),
+          fetch('/api/data-model?' + new URLSearchParams({ branch: st.branch, dir: st.newest ? '' : st.dir, fresh: st.fresh ? '1' : '' })).then((r) => (r.ok ? r.json() : null)),
         ]);
         st.versions = versions;
+        st.fresh = false;
         reply = model;
       } catch (e) { reply = null; }
       if (st.gone) return;
@@ -125,7 +128,7 @@
     function drawSwitch() {
       const v = st.versions;
       const sw = q('.dm-switch');
-      sw.hidden = !(v && v.archive && v.branches.length);
+      sw.hidden = !(v && v.branches.length);
       if (sw.hidden) return;
       const of = (kind) => v.branches.filter((b) => b.kind === kind);
       const current = v.branches.find((b) => b.branch === st.branch);
@@ -136,8 +139,46 @@
         + of('integration').map((b) => button(b, b.label, 'where the agents integrate')).join('')
         + `<button type="button" class="${featureOn ? 'on' : ''}" data-dm="features" ${features.length ? '' : 'disabled'} aria-haspopup="menu" title="a milestone's branch">${featureOn ? esc(current.label) : 'feature'} ▾</button>`;
       q('.dm-features').innerHTML = features.map((b) => `<button type="button" role="menuitem" data-branch="${esc(b.branch)}">${esc(b.label)}<small>${b.versions.length} version${b.versions.length > 1 ? 's' : ''}</small></button>`).join('');
-      const when = (at) => at.replace('T', ' ').replace(/:\d\dZ$/, '');
+      const when = (at) => window.HarnessClock.stamp(at).slice(0, 16);
+      q('.dm-version').hidden = !(current && current.versions.length);
       q('.dm-version select').innerHTML = (current ? current.versions : []).map((x, i) => `<option value="${esc(x.dir)}"${x.dir === st.dir ? ' selected' : ''}>${esc(when(x.at))} · ${esc(x.sha.slice(0, 7))}${i === 0 ? ' · newest' : ''}</option>`).join('');
+    }
+    // Starts the build of a missing file for the branch shown, then follows it.
+    async function build(what) {
+      if (what === 'model' && st.armed !== 'model') {
+        st.armed = 'model';
+        setTimeout(() => { if (st.armed === 'model') { st.armed = null; if (st.model) drawBar(st.model); } }, 5000);
+        if (st.model) drawBar(st.model);
+        return;
+      }
+      st.armed = null;
+      st.said = '';
+      try {
+        const res = await fetch('/api/data-model/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what, branch: st.branch }) });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text);
+        st.building = { what, branch: JSON.parse(text).branch };
+      } catch (e) {
+        st.said = 'not started: ' + (e.message || e);
+      }
+      if (st.model) drawBar(st.model);
+      follow();
+    }
+    async function follow() {
+      clearTimeout(st.buildTimer);
+      if (st.gone || !st.building) return;
+      let all = [];
+      try { all = await (await fetch('/api/data-model/builds')).json(); } catch (e) { /* asked again */ }
+      const b = all.find((x) => x.what === st.building.what && x.branch === st.building.branch);
+      if (b && b.state === 'running') { st.buildTimer = setTimeout(follow, 3000); return; }
+      const last = b ? b.tail.split('\n').pop() : '';
+      st.said = !b ? '' : b.state === 'done'
+        ? (st.building.what === 'schema' ? `schema of ${b.branch} built` : `model drafted: ${last}`)
+        : `build failed: ${last}`;
+      st.building = null;
+      st.fresh = true;
+      st.body = '';
+      load();
     }
     function show(branch, dir) {
       st.branch = branch;
@@ -234,12 +275,24 @@
       const src = m.sources.map((s) => {
         const cls = s.problem ? 'bad' : s.found ? 'ok' : 'off';
         const tip = s.problem || (s.found ? 'read' : 'not there');
+        const what = s.path.endsWith('schema.sql') ? 'schema' : 'model';
+        // A missing file is built on a click: a snapshot for the schema, a
+        // draft proposed as a pull request for the model.
+        if (!s.found && !s.problem && st.versions && st.versions.branches.length) {
+          const running = st.building && st.building.what === what;
+          const armed = st.armed === what;
+          const label = running ? `building ${s.path}…` : armed ? `${s.path}: click again — Opus drafts it, a PR to merge` : `${s.path} · build it`;
+          const hint = what === 'schema'
+            ? 'Dump this branch now (the Docker Postgres, its migrations) and archive it on harness/data-model'
+            : 'Opus reads the schema and the code, writes data/model.json and opens a pull request on this branch';
+          return `<button type="button" class="dm-src build${armed ? ' armed' : ''}" data-build="${what}" ${running ? 'disabled' : ''} title="${esc(hint)}">${esc(label)}</button>`;
+        }
         return `<span class="dm-src ${cls}" title="${esc(tip)}">${esc(s.path)}</span>`;
       }).join('');
       const div = m.compared
         ? (m.divergences.length ? `<button type="button" class="dm-div bad" data-dm="divergences">${m.divergences.length} divergence${m.divergences.length > 1 ? 's' : ''}</button>` : '<span class="dm-div ok">in agreement</span>')
         : '';
-      say(`<b>${esc(m.origin)}</b>${src}${div}`);
+      say(`<b>${esc(m.origin)}</b>${src}${div}${st.said ? `<span class="dm-built">${esc(st.said)}</span>` : ''}`);
       q('[data-dm="all"]').textContent = m.tables.every((t) => st.open.has(t.name)) ? 'fold all' : 'unfold all';
     }
     function keyOf(f) {
@@ -433,6 +486,11 @@
       if (act.dataset.dm === 'features') q('.dm-features').hidden = !q('.dm-features').hidden;
       return undefined;
     };
+    const onBuild = (e) => {
+      const b = e.target.closest('[data-build]');
+      if (b && !b.disabled) build(b.dataset.build);
+      return undefined;
+    };
     q('.dm-switch').addEventListener('click', (e) => {
       const b = e.target.closest('[data-branch]');
       if (b) show(b.dataset.branch, '');
@@ -442,6 +500,7 @@
       show(st.branch, first && e.target.value === first.value ? '' : e.target.value);
     });
     host.addEventListener('click', onClick);
+    host.addEventListener('click', onBuild);
     search.addEventListener('input', markSearch);
     search.addEventListener('keydown', (e) => {
       e.stopPropagation(); // the page's Escape would leave the pane
@@ -453,10 +512,16 @@
     });
 
     load();
+    // A build started before this pane opened is followed too.
+    fetch('/api/data-model/builds').then((r) => r.json()).then((all) => {
+      const running = all.find((x) => x.state === 'running');
+      if (running) { st.building = { what: running.what, branch: running.branch }; follow(); }
+    }).catch(() => {});
     return {
       reload: () => board.reload(),
       destroy() {
         st.gone = true;
+        clearTimeout(st.buildTimer);
         clearTimeout(st.timer);
         board.destroy();
         host.innerHTML = '';
