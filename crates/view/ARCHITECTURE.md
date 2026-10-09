@@ -462,6 +462,14 @@ static/                index.html, style.css, clock.js (every clock a human read
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests, one folder per branch, dates.tsv)
 ```
 
+**Every table sorts on a click of its header** — ascending, then
+descending, a ▲ or ▼ beside it. A paged table (`pagedTable`) orders all its
+rows before cutting the page; any other is ordered where it stands, and kept
+so when it is redrawn (a `MutationObserver` on the pane). A cell sorts by
+its `data-sort` when it carries one — a date's raw value — else by its
+text, numbers as numbers, empty cells last. The order lives on the pane, so
+the back arrow brings it back.
+
 The drawing itself is **another crate**, `harness-view-render`: a Bevy scene
 compiled to WebAssembly that owns the canvas and reports pointer events back
 to `app.js` — see [../view-render/ARCHITECTURE.md](../view-render/ARCHITECTURE.md).

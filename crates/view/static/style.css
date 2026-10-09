@@ -820,3 +820,8 @@ a.cap-branch:hover .tag { border-color: var(--accent); color: var(--accent); }
 .cap-features button { display: block; width: 100%; text-align: left; background: transparent; color: var(--text); border: 0; border-radius: 6px; padding: 7px 9px; font: 13px var(--sans); cursor: pointer; }
 .cap-features button:hover, .cap-features button.on { background: var(--panel-2); }
 .cap-switch .dm-branches button { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A table sorts on a click of its header: ▲ ascending, ▼ descending */
+table.rows th.sortable { cursor: pointer; user-select: none; }
+table.rows th.sortable:hover { color: var(--text); }
+table.rows th.asc::after { content: ' ▲'; color: var(--accent); }
+table.rows th.desc::after { content: ' ▼'; color: var(--accent); }
