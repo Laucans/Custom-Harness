@@ -20,6 +20,8 @@
     renderReady: false,
     logTimer: null,
     term: null,
+    limits: null,          // the last /api/limits answer, shared by the panel and the quota screen
+    limitsRead: null,      // the read under way, which a second asker waits on
   };
 
   // ---- helpers -------------------------------------------------------------
@@ -55,13 +57,22 @@
       return undefined;
     },
   };
+  // The picture the scene draws: the snapshot, with the freshest Claude
+  // reading — the kept one lags while a session runs.
+  function picture() {
+    const probed = S.limits && S.limits.claude.value;
+    const kept = S.snap.quota;
+    return probed && (!kept || probed.at > kept.at) ? { ...S.snap, quota: probed } : S.snap;
+  }
   function pushPicture() {
-    if (S.render && S.renderReady && S.snap) S.render.setSnapshot(JSON.stringify(S.snap));
+    if (S.render && S.renderReady && S.snap) S.render.setSnapshot(JSON.stringify(picture()));
   }
   function pushView() {
     if (!S.render || !S.renderReady) return;
     const view = S.level === 'C' ? { level: 'C', room: S.room || 'construction' } : { level: S.level };
     S.render.setView(JSON.stringify(view));
+    // Entering the control room reads the limits its panel shows.
+    if (S.level === 'C' && S.room === 'control') readLimitsNow(false);
   }
   async function loadRenderer() {
     const notice = $('render-notice');
@@ -979,13 +990,24 @@
     setRange({ from: start.toISOString().slice(0, 19) + 'Z', to: null });
   }
 
+  // One read of the limits; the server caches the probe, so asking is cheap.
+  function readLimitsNow(force) {
+    if (S.limitsRead) return S.limitsRead;
+    S.limitsRead = (async () => {
+      try {
+        const r = await fetch('/api/limits' + (force ? '?force=1' : ''));
+        if (r.ok) S.limits = await r.json();
+      } catch (e) { /* the panel and the screen keep what they had */ }
+      S.limitsRead = null;
+      pushPicture();
+    })();
+    return S.limitsRead;
+  }
   async function readLimits(p, force) {
     p.limitsAsked = true; p.limitsBusy = true;
     if (S.pane === p) renderPane(p, false);
-    try {
-      const r = await fetch('/api/limits' + (force ? '?force=1' : ''));
-      if (r.ok) p.limits = await r.json();
-    } catch (e) { /* the screen keeps what it had */ }
+    await readLimitsNow(force);
+    p.limits = S.limits;
     p.limitsBusy = false;
     if (S.pane === p) renderPane(p, false);
   }
