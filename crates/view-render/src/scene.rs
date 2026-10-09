@@ -859,8 +859,9 @@ fn scanner(b: &mut Builder, x: f32, z: f32, active: bool, hot: &Hot) {
     }
 }
 
-/// A one-eyed robot, painted, in the model's colour: `wrench` builds, the
-/// other holds a clipboard. Its eye glows and it bobs while it works.
+/// A robot, painted: `wrench` is Bender, the steel-grey builder; the other
+/// is Hedonismbot, the gold inspector with his clipboard. It bobs while it
+/// works; the model shows as a badge.
 fn robot(
     b: &mut Builder,
     x: f32,
