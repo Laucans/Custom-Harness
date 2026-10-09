@@ -140,6 +140,13 @@
     for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
     return FACES[h % FACES.length];
   }
+  // An issue's title, from the board the snapshot carries, or ''.
+  function issueTitle(n) {
+    const b = S.snap.board || {};
+    const all = [...(b.roadmap || []), ...(b.needs_human || []), ...(b.milestones || []).flatMap((m) => [m.issue, ...(m.tasks || [])])];
+    const hit = all.find((i) => i && i.number === n);
+    return hit ? hit.title : '';
+  }
   function crewBar() {
     const bar = $('crew-bar');
     if (!bar) return;
