@@ -389,6 +389,11 @@
     $('pane-body').classList.remove('terminal');
   }
   $('pane-close').addEventListener('click', closePane);
+  $('pane-body').addEventListener('change', (e) => {
+    const field = e.target.closest('[data-range]');
+    if (!field) return;
+    setRange({ ...(S.range || {}), [field.dataset.range]: toClock(field.value) });
+  });
   $('pane-body').addEventListener('click', (e) => {
     const issue = e.target.closest('[data-issue]');
     if (issue) return openPane({ kind: 'issue', number: Number(issue.dataset.issue) });
@@ -406,6 +411,9 @@
     const liveRun = e.target.closest('[data-live-run]');
     if (liveRun && S.pane) { S.pane.liveRun = liveRun.dataset.liveRun; S.pane.jump = true; renderPane(S.pane, false); return undefined; }
     if (e.target.closest('[data-limits-read]') && S.pane && S.pane.kind === 'dashboards') { readLimits(S.pane, true); return undefined; }
+    const preset = e.target.closest('[data-range-preset]');
+    if (preset) { presetRange(preset.dataset.rangePreset); return undefined; }
+    if (e.target.closest('[data-range-clear]')) { setRange(null); return undefined; }
     const help = e.target.closest('[data-help]');
     if (help && S.pane) {
       const key = help.dataset.help;
@@ -558,6 +566,58 @@
     const m = Math.floor(ms / 60000);
     return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : m >= 1 ? `${m} min` : `${Math.round(ms / 1000)} s`;
   }
+  // ---- a chosen period --------------------------------------------------------
+  // `S.range` holds two trace clocks (UTC, `2026-10-08T21:31:21Z`), either
+  // null; `S.history` the figures the server recomputed for it.
+  const toClock = (local) => (local ? new Date(local).toISOString().slice(0, 19) + 'Z' : null);
+  const toLocal = (clock) => {
+    if (!clock) return '';
+    const d = new Date(clock), pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const rangeKey = () => JSON.stringify(S.range || null);
+  // The figures of the chosen period, once read; null when live, or not read yet.
+  const period = () => (S.range && S.history && S.history.key === rangeKey() && S.history.data) || null;
+  function rangeBar() {
+    const r = S.range || {}, h = S.history;
+    const preset = (key, label) => `<button class="mini" data-range-preset="${key}">${label}</button>`;
+    let bar = `<div class="range-bar"><label>from <input type="datetime-local" data-range="from" value="${toLocal(r.from)}"></label>`
+      + `<label>to <input type="datetime-local" data-range="to" value="${toLocal(r.to)}"></label>`
+      + preset('1h', 'last hour') + preset('24h', 'last 24 h') + preset('today', 'today')
+      + `<button class="mini ${S.range ? '' : 'on'}" data-range-clear>live</button></div>`;
+    if (!S.range) return bar;
+    const span = `${r.from ? when(r.from) : 'the start'} → ${r.to ? when(r.to) : 'now'}`;
+    if (h && h.key === rangeKey() && h.error) bar += `<div class="callout soon">${esc(h.error)}</div>`;
+    else if (!period()) bar += `<div class="callout soon">reading ${esc(span)}…</div>`;
+    else bar += `<div class="callout soon">Showing ${esc(span)}, recomputed from the whole traces — these figures no longer follow the live plant. <b>live</b> goes back.</div>`;
+    return bar;
+  }
+  async function readHistory() {
+    const key = rangeKey();
+    S.history = { key, busy: true };
+    if (S.pane && S.pane.kind === 'dashboards') renderPane(S.pane, false);
+    const q = new URLSearchParams();
+    if (S.range.from) q.set('from', S.range.from);
+    if (S.range.to) q.set('to', S.range.to);
+    let done;
+    try {
+      const r = await fetch('/api/history?' + q);
+      done = r.ok ? { key, data: await r.json() } : { key, error: await r.text() };
+    } catch (e) { done = { key, error: 'cannot reach the server' }; }
+    if (S.history && S.history.key === key) S.history = done;
+    if (S.pane && S.pane.kind === 'dashboards') renderPane(S.pane, false);
+  }
+  function setRange(range) {
+    S.range = range && (range.from || range.to) ? range : null;
+    S.history = null;
+    if (S.range) readHistory(); else if (S.pane && S.pane.kind === 'dashboards') renderPane(S.pane, false);
+  }
+  function presetRange(key) {
+    const now = new Date();
+    const start = key === '1h' ? new Date(now - 3600e3) : key === '24h' ? new Date(now - 86400e3) : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    setRange({ from: start.toISOString().slice(0, 19) + 'Z', to: null });
+  }
+
   async function readLimits(p, force) {
     p.limitsAsked = true; p.limitsBusy = true;
     if (S.pane === p) renderPane(p, false);
@@ -574,7 +634,7 @@
   const helpBox = (p, key) => ((p.helps || []).includes(key) && HELP[key] ? `<div class="callout purpose">${HELP[key]}</div>` : '');
   const section = (p, key, title) => `<h3 class="with-help">${esc(title)}${helpBtn(p, key)}</h3>` + helpBox(p, key);
   const HELP = {
-    costs: 'What the plant has spent, from <code>.llocal/logs/agent-loop/costs.tsv</code>: one row per paid session a run opened (one stage of one task). The dollars are Claude\'s own estimate for each session, not an invoice.',
+    costs: 'What the plant has spent, from <code>.llocal/logs/agent-loop/costs.tsv</code>: one row per paid session a run opened (one stage of one task). The dollars are Claude\'s own estimate for each session, not an invoice. The bar above picks a period: <b>from</b> and <b>to</b> (either left empty), or a shortcut; the figures are then recomputed from the whole traces for that period, and <b>live</b> goes back.',
     'costs.totals': '<b>spent</b>: the sum of every session\'s estimate. <b>paid sessions</b>: rows in the ledger. The four token counts add up what every session reported: <b>output</b> written by the model, <b>cache read</b> and <b>cache write</b> of the prompt cache, and <b>uncached input</b>.',
     'costs.data': 'The tasks labelled <code>harness:data-layer</code> run every stage on the strongest model. Their spending, and its share of all spending, says what that choice costs.',
     'costs.side': 'Spending grouped by the side of the architecture the task carries as a label: <code>harness:read-side</code>, <code>harness:write-side</code>, <code>harness:data-layer</code>. A task with none is counted apart.',
@@ -586,17 +646,19 @@
     quota: 'How much of each rate limit is left, read when this screen opens — not remembered. <b>read again</b> reads them once more.',
     'quota.claude': 'Claude\'s subscription windows (<code>five_hour</code>, <code>seven_day</code>, …): the share already used and when each resets. Claude only says it inside a session, so opening this screen runs the smallest session there is — the cheapest model, no tool, about a tenth of a cent — and keeps its reading a minute, so clicks do not pay again. When that probe fails, the reading the runs kept at the end of their last session is shown instead, with its time. Above 70 % orange, above 90 % red.',
     'quota.github': 'The GitHub API buckets of the account <code>gh</code> is logged in with, from <code>gh api rate_limit</code> — a read GitHub does not count. <b>core</b> is the REST API (issues, labels, PRs), <b>graphql</b> the GraphQL API (sub-issues, blockers), <b>search</b> the search API; any other bucket shows once used. An exhausted bucket makes the watch\'s board reads fail until it resets (Stops, and failed board reads on Watch loop).',
-    errors: 'Every time a workflow stopped, from <code>.llocal/logs/agent-loop/errors.tsv</code>, newest first.',
+    errors: 'Every time a workflow stopped, from <code>.llocal/logs/agent-loop/errors.tsv</code>, newest first. The bar above picks a period: <b>from</b> and <b>to</b> (either left empty), or a shortcut; the figures are then recomputed from the whole traces for that period, and <b>live</b> goes back.',
     'errors.list': '<b>STOP</b>: the run halted for a human — a question in its SPEC, a gate, or the breaker refusing to pay again for a prompt that already failed twice. <b>FAILED</b>: something broke — a command, a timeout, an unreadable board. <b>QUOTA</b>: the subscription window was exhausted. The reason is the run\'s own words.',
-    journal: 'The polling loop, <code>harness watch</code>, read from <code>.llocal/logs/agent-loop/watch.log</code> (its last 256 kB). Every tick it reads the board, decides, and starts work on lanes or runs a workflow itself.',
+    journal: 'The polling loop, <code>harness watch</code>, read from <code>.llocal/logs/agent-loop/watch.log</code> (its last 256 kB). Every tick it reads the board, decides, and starts work on lanes or runs a workflow itself. The bar above picks a period: <b>from</b> and <b>to</b> (either left empty), or a shortcut; the figures are then recomputed from the whole traces for that period, and <b>live</b> goes back.',
     'journal.now': '<b>agents at work</b>: runs whose files moved in the last minutes — what the plant shows walking. <b>lanes open</b>: lanes the journal saw start and not yet finish. <b>ticks</b>: polls since the watch last started. <b>empty ticks</b>: polls that started nothing — the board had not moved, or every runnable task was already on a lane or parked. <b>failed board reads</b>: polls whose GitHub read failed (a rate limit, the network). When the start of the watch is older than the part of the journal read, the counts are a floor.',
     'journal.triggers': 'Everything the loop started, newest first: a <b>lane</b> (a dev loop on a task, a refinement, a split — a separate process, numbered by its lane) or a workflow it ran itself (planner, PR review, merges). <b>running</b>: not reported back yet. <b>ok</b>: exit 0. <b>failed</b>: a non-zero exit, or it could not start. <b>killed</b>: ended by a signal. <b>unknown</b>: the watch restarted before it reported. A task that stops (exit 1) is parked until its issue changes; the logs say so.',
+    'journal.period': '<b>triggers</b>: everything that ran at some point of the period — started in it, or started before and still running. <b>failed or killed</b>: those of them that ended badly. <b>ticks</b>, <b>empty ticks</b>, <b>failed board reads</b>: the polls that began in the period. The whole journal is read, so a lane started before the period still shows how it ended.',
     'journal.logs': 'The last forty lines of the journal as written, clock in UTC: polls (<code>saw</code>, <code>quiet</code>), routes (<code>tick</code>), lanes taken and freed, warnings, and a soft stop (<code>draining</code>, <code>stopped</code>).',
   };
   const STATE_TAG = { running: ['running', 'acc'], ok: ['ok', 'ok'], failed: ['failed', 'bad'], killed: ['killed', 'bad'], unknown: ['unknown', 'warn'] };
   const DASH = {
     costs(p) {
-      const c = S.snap.costs;
+      if (S.range && !period()) return '';
+      const c = period() ? period().costs : S.snap.costs;
       let h = section(p, 'costs.totals', 'Totals') + tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
       // The data layer runs on the strongest model: what it costs against the rest.
       const dl = (c.by_side || []).find((b) => b.key === 'data-layer');
@@ -633,23 +695,35 @@
       return h;
     },
     errors(p) {
-      return section(p, 'errors.list', 'Last stops') + (S.snap.errors.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + S.snap.errors.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>');
+      if (S.range && !period()) return '';
+      const rows = period() ? period().errors : S.snap.errors;
+      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + rows.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>');
     },
     journal(p) {
-      const j = S.snap.journal, f = S.snap.factory;
-      const atWork = S.snap.employees.filter((e) => e.active).length;
-      const lanes = j.triggers.filter((t) => t.state === 'running' && t.lane != null).length;
+      if (S.range && !period()) return '';
+      const P = period();
+      const j = P ? P.journal : S.snap.journal, f = S.snap.factory;
       const pct = j.ticks ? Math.round(100 * j.empty_ticks / j.ticks) : 0;
-      let h = section(p, 'journal.now', 'Now') + tiles([
-        [atWork, 'agents at work'],
-        [lanes, 'lanes open'],
-        [j.ticks, 'ticks' + (j.since ? '' : ' (at least)')],
+      const counts = [
+        [j.ticks, 'ticks' + (P || j.since ? '' : ' (at least)')],
         [`${j.empty_ticks} <small>${pct}%</small>`, 'empty ticks'],
         [j.failed_ticks, 'failed board reads'],
-      ]);
-      h += `<div class="muted loop-line">${f.draining ? tag('stopping', 'warn') : f.watching ? tag('polling', 'ok') : tag('off')} `
-        + (j.since ? `since ${esc(when(j.since))}` : 'its start is older than the journal read')
-        + (j.last_empty_at ? ` · last empty tick ${esc(when(j.last_empty_at))}` : '') + '</div>';
+      ];
+      let h;
+      if (P) {
+        h = section(p, 'journal.period', 'Over the period') + tiles([
+          [j.triggers.length, 'triggers'],
+          [j.triggers.filter((t) => t.state === 'failed' || t.state === 'killed').length, 'failed or killed'],
+          ...counts,
+        ]);
+      } else {
+        const atWork = S.snap.employees.filter((e) => e.active).length;
+        const lanes = j.triggers.filter((t) => t.state === 'running' && t.lane != null).length;
+        h = section(p, 'journal.now', 'Now') + tiles([[atWork, 'agents at work'], [lanes, 'lanes open'], ...counts]);
+        h += `<div class="muted loop-line">${f.draining ? tag('stopping', 'warn') : f.watching ? tag('polling', 'ok') : tag('off')} `
+          + (j.since ? `since ${esc(when(j.since))}` : 'its start is older than the journal read')
+          + (j.last_empty_at ? ` · last empty tick ${esc(when(j.last_empty_at))}` : '') + '</div>';
+      }
       h += section(p, 'journal.triggers', 'Triggers');
       h += j.triggers.length
         ? '<table class="rows triggers"><tr><th>when</th><th>what</th><th>on</th><th class="num">lane</th><th>state</th><th class="num">lasted</th><th>detail</th></tr>'
@@ -660,8 +734,9 @@
             const [label, cls] = STATE_TAG[t.state] || [t.state, ''];
             return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${tag(label, cls)}</td><td class="num">${esc(lasted(t.at, t.ended_at))}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
           }).join('') + '</table>'
-        : '<div class="muted">nothing triggered since the start of the journal read</div>';
-      h += section(p, 'journal.logs', 'Logs') + '<pre class="log">' + esc(S.snap.recent.join('\n') || '(empty)') + '</pre>';
+        : `<div class="muted">${P ? 'nothing triggered during the period' : 'nothing triggered since the start of the journal read'}</div>`;
+      const logs = P ? P.logs : S.snap.recent;
+      h += section(p, 'journal.logs', 'Logs') + (P && P.logs_cut ? '<div class="muted">the period holds more lines: its last ones are shown</div>' : '') + '<pre class="log">' + esc(logs.join('\n') || '(empty)') + '</pre>';
       return h;
     },
   };
@@ -914,14 +989,21 @@
     },
 
     // The control room's four computers: one screen each.
-    dashboards(p) {
+    dashboards(p, refresh) {
       const screens = { costs: 'Spending', quota: 'Rate limits', errors: 'Stops', journal: 'Watch loop' };
       const focus = screens[p.focus] ? p.focus : 'costs';
       const nav = '<nav class="screens">' + Object.entries(screens).map(([k, name]) => `<button class="${k === focus ? 'here' : ''}" data-pane='${esc(JSON.stringify({ kind: 'dashboards', focus: k }))}'>${esc(name)}</button>`).join('') + helpBtn(p, focus) + '</nav>' + helpBox(p, focus);
-      const h = nav + DASH[focus](p);
-      // The rate limits are read when their screen opens, not remembered.
-      const after = () => { if (focus === 'quota' && !p.limitsAsked) readLimits(p, false); };
-      return ['Control room · ' + screens[focus], h, after];
+      const timed = focus !== 'quota';
+      const h = nav + (timed ? rangeBar() : '') + DASH[focus](p);
+      // The rate limits are read when their screen opens, not remembered; a
+      // chosen period is read when a screen that shows one opens on it.
+      const after = () => {
+        if (focus === 'quota' && !p.limitsAsked) readLimits(p, false);
+        if (timed && S.range && (!S.history || S.history.key !== rangeKey()) ) readHistory();
+      };
+      // A date being typed is not wiped by a refresh of the figures.
+      const editing = refresh && document.activeElement && document.activeElement.matches && document.activeElement.matches('#pane-body input');
+      return ['Control room · ' + screens[focus], h, after, editing];
     },
 
     versions() {

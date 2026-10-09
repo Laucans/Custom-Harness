@@ -32,6 +32,7 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
 use crate::desk::Desk;
+use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::snapshot::Snapshot;
@@ -100,6 +101,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/runs/{workflow}/{run}/stages", get(run_stages))
         .route("/api/runs/{workflow}/{run}/{file}", get(run_file))
         .route("/api/issues/{number}", get(issue))
+        .route("/api/history", get(period))
         .route("/api/limits", get(rate_limits))
         .route("/api/plant", get(plant_status))
         .route("/api/plant/{gesture}", post(plant_gesture))
@@ -363,6 +365,62 @@ async fn steward(State(state): State<AppState>) -> Response {
             command: desk.command(),
         },
     ))
+}
+
+/// `?from=…&to=…`: two trace clocks, either left out.
+#[derive(Debug, Deserialize)]
+struct PeriodQuery {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// How much of `watch.log` a period reads: all of a long run's journal.
+const HISTORY_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The control room over a chosen period, recomputed from the whole traces:
+/// the ledger, the stops, and the watch journal.
+async fn period(State(state): State<AppState>, Query(query): Query<PeriodQuery>) -> Response {
+    let range = match Range::parse(query.from.as_deref(), query.to.as_deref()) {
+        Ok(range) => range,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    // The side of a task, from the board as last read — `None` for a task
+    // the board no longer lists, never guessed.
+    let sides: std::collections::HashMap<String, bool> = state
+        .board
+        .borrow()
+        .as_ref()
+        .map(|board| {
+            board
+                .milestones
+                .iter()
+                .flat_map(|m| m.tasks.iter())
+                .map(|task| {
+                    (
+                        task.number.to_string(),
+                        task.labels
+                            .iter()
+                            .any(|l| l == harness_workflows::common::labels::DATA_LAYER),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let traces = Arc::clone(&state.traces);
+    let computed = tokio::task::spawn_blocking(move || {
+        history::history(
+            range,
+            &traces.ledger(),
+            &traces.errors(),
+            &traces.watch_log(HISTORY_BYTES).unwrap_or_default(),
+            |task| sides.get(task).copied(),
+        )
+    })
+    .await;
+    match computed {
+        Ok(history) => json(&history),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 /// `?force=1`: the human asked to read again.
@@ -759,6 +817,26 @@ mod tests {
             1,
             "a fresh reading is reused, even when asked again at once"
         );
+    }
+
+    #[tokio::test]
+    async fn a_period_is_read_from_the_traces_and_a_bad_one_refused() {
+        let state = state(Shelf::default(), None);
+        let (status, body) = get(
+            state.clone(),
+            "/api/history?from=2026-10-08T20:00:00Z&to=2026-10-08T21:00:00Z",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("\"from\":\"2026-10-08T20:00:00Z\""), "{body}");
+        let (status, _) = get(state.clone(), "/api/history?from=yesterday").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = get(
+            state,
+            "/api/history?from=2026-10-08T21:00:00Z&to=2026-10-08T20:00:00Z",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

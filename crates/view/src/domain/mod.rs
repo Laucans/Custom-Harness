@@ -3,6 +3,7 @@
 
 pub mod assemble;
 pub mod blueprint;
+pub mod history;
 pub mod journal;
 pub mod limits;
 pub mod observe;

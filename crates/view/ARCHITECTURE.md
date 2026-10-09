@@ -73,6 +73,7 @@ src/domain/            the inside — no disk, no subprocess, no clock
   blueprint.rs         the rooms, the models, one line per workflow, station by station
   traces.rs            parsers: watch.log, run.log, prompts.md headers, the stream's first event, the ledger sums
   journal.rs           the watch loop out of watch.log: what it triggered and how each ended, empty and failed ticks
+  history.rs           the control room over a chosen period: ledger, stops and journal recomputed between two trace clocks
   limits.rs            the rate limits read on demand: GitHub's buckets, and when a Claude probe is worth paying again
   observe.rs           what one tick reads through the Traces port
   assemble.rs          Observed + board → Snapshot (who is live, where the product is, what smokes)
@@ -86,7 +87,7 @@ src/adapters/
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket)
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket)
 static/                index.html, style.css, app.js (data, navigation, panes, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
 ```
 

@@ -12,10 +12,14 @@
 
 use serde::Serialize;
 
+use crate::domain::history::Range;
 use crate::domain::traces::{Stamped, route_subject, stamped};
 
 /// How many triggers the journal keeps, newest first.
 pub const TRIGGERS_KEPT: usize = 60;
+
+/// How many it keeps for a chosen period, which may be a whole day.
+pub const TRIGGERS_IN_RANGE: usize = 500;
 
 /// How a trigger stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -73,10 +77,21 @@ pub struct Journal {
 }
 
 /// The tick under way.
-#[derive(Default)]
 struct Tick {
+    /// When the tick began: what a period counts it by.
+    at: String,
     route: Option<String>,
     triggered: bool,
+}
+
+impl Tick {
+    fn at(at: &str) -> Self {
+        Self {
+            at: at.to_string(),
+            route: None,
+            triggered: false,
+        }
+    }
 }
 
 /// The tag an inline workflow reports back under: `watch: pr_review -> …`.
@@ -136,16 +151,31 @@ fn ended(status: &str) -> State {
 }
 
 impl Journal {
-    fn close_tick(&mut self, tick: &mut Option<Tick>, at: &str) {
+    fn close_tick(&mut self, tick: &mut Option<Tick>, range: Option<&Range>) {
         if let Some(done) = tick.take() {
             let inline = done
                 .route
                 .as_deref()
                 .is_some_and(|route| route != "Nothing" && !lane_route(route));
-            if !done.triggered && !inline {
+            if !done.triggered && !inline && range.is_none_or(|r| r.holds(&done.at)) {
                 self.empty_ticks += 1;
-                self.last_empty_at = Some(at.to_string());
+                self.last_empty_at = Some(done.at);
             }
+        }
+    }
+
+    /// Counts a tick that began at `at`, when the period holds it.
+    fn count_tick(&mut self, at: &str, range: Option<&Range>, empty: bool, failed: bool) {
+        if range.is_some_and(|r| !r.holds(at)) {
+            return;
+        }
+        self.ticks += 1;
+        if empty {
+            self.empty_ticks += 1;
+            self.last_empty_at = Some(at.to_string());
+        }
+        if failed {
+            self.failed_ticks += 1;
         }
     }
 
@@ -260,9 +290,20 @@ impl Journal {
     }
 }
 
-/// Reads the loop out of `watch.log`.
+/// Reads the loop out of `watch.log`: its counts since the watch last
+/// started, and its last triggers.
 #[must_use]
 pub fn read(text: &str) -> Journal {
+    read_within(text, None)
+}
+
+/// Reads the loop over a chosen period: the ticks that began in it, and
+/// every trigger that ran at some point of it — one started before and still
+/// running counts. The whole journal is walked, so a lane is matched with
+/// the line that ended it whatever the period. Without a period, the counts
+/// start again at each start of the watch.
+#[must_use]
+pub fn read_within(text: &str, range: Option<&Range>) -> Journal {
     let mut journal = Journal::default();
     let mut tick: Option<Tick> = None;
     for line in text.lines() {
@@ -273,33 +314,34 @@ pub fn read(text: &str) -> Journal {
             .strip_prefix("warning: ")
             .map_or((false, rest), |r| (true, r));
         if rest.starts_with("watch: every ") {
-            tick = None;
+            journal.close_tick(&mut tick, range);
             for open in &mut journal.triggers {
                 if open.state == State::Running {
                     open.state = State::Unknown;
                     open.detail = Some("the watch restarted before it reported back".to_string());
+                    open.ended_at = Some(at.to_string());
                 }
             }
-            journal.since = Some(at.to_string());
-            journal.ticks = 0;
-            journal.empty_ticks = 0;
-            journal.failed_ticks = 0;
-            journal.last_empty_at = None;
+            if range.is_none() {
+                journal.since = Some(at.to_string());
+                journal.ticks = 0;
+                journal.empty_ticks = 0;
+                journal.failed_ticks = 0;
+                journal.last_empty_at = None;
+            }
         } else if rest.starts_with("quiet:") {
-            journal.close_tick(&mut tick, at);
-            journal.ticks += 1;
-            journal.empty_ticks += 1;
-            journal.last_empty_at = Some(at.to_string());
+            journal.close_tick(&mut tick, range);
+            journal.count_tick(at, range, true, false);
         } else if rest.starts_with("saw: ") {
-            journal.close_tick(&mut tick, at);
-            journal.ticks += 1;
-            tick = Some(Tick::default());
+            journal.close_tick(&mut tick, range);
+            journal.count_tick(at, range, false, false);
+            tick = Some(Tick::at(at));
         } else if let Some(route) = rest.strip_prefix("tick: ") {
             if tick.as_ref().is_none_or(|t| t.route.is_some()) {
                 // An older journal, without `saw:` lines.
-                journal.close_tick(&mut tick, at);
-                journal.ticks += 1;
-                tick = Some(Tick::default());
+                journal.close_tick(&mut tick, range);
+                journal.count_tick(at, range, false, false);
+                tick = Some(Tick::at(at));
             }
             if let Some(open) = tick.as_mut() {
                 open.route = Some(route.to_string());
@@ -317,9 +359,8 @@ pub fn read(text: &str) -> Journal {
                 });
             }
         } else if rest.starts_with("watch: tick -> ") {
-            journal.close_tick(&mut tick, at);
-            journal.ticks += 1;
-            journal.failed_ticks += 1;
+            journal.close_tick(&mut tick, range);
+            journal.count_tick(at, range, false, true);
         } else if let Some(body) = rest
             .strip_prefix("watch: lanes -> ")
             .or_else(|| rest.strip_prefix("watch: router lanes -> "))
@@ -333,8 +374,18 @@ pub fn read(text: &str) -> Journal {
             journal.reported(at, name, outcome, warned, tick.as_ref());
         }
     }
+    let kept = match range {
+        Some(range) => {
+            journal
+                .triggers
+                .retain(|t| range.overlaps(&t.at, t.ended_at.as_deref()));
+            journal.since.clone_from(&range.from);
+            TRIGGERS_IN_RANGE
+        }
+        None => TRIGGERS_KEPT,
+    };
     journal.triggers.reverse();
-    journal.triggers.truncate(TRIGGERS_KEPT);
+    journal.triggers.truncate(kept);
     journal
 }
 
@@ -459,6 +510,38 @@ mod tests {
         assert_eq!(row.subject.as_deref(), Some("milestone 3"));
         assert_eq!(row.state, State::Ok);
         assert_eq!(journal.empty_ticks, 0);
+    }
+
+    #[test]
+    fn a_period_keeps_what_ran_in_it_and_counts_its_own_ticks() {
+        // 19:59–20:01: both refinements started then; the planner ended
+        // before; the dev loop and the review came after.
+        let range = Range::parse(Some("2026-10-08T19:59:00Z"), Some("2026-10-08T20:01:00Z"))
+            .expect("range");
+        let journal = read_within(LOG, Some(&range));
+        let rows: Vec<(&str, Option<u64>)> = journal
+            .triggers
+            .iter()
+            .map(|t| (t.what.as_str(), t.issue))
+            .collect();
+        assert_eq!(rows, [("refinement", Some(4)), ("refinement", Some(3))]);
+        // The refinement tick of 20:00:07 started nothing new, the quiet one
+        // at 20:00:40 neither.
+        assert_eq!((journal.ticks, journal.empty_ticks), (2, 2));
+        assert_eq!(journal.since.as_deref(), Some("2026-10-08T19:59:00Z"));
+    }
+
+    #[test]
+    fn a_trigger_still_running_belongs_to_every_later_period() {
+        let range = Range::parse(Some("2026-10-08T20:08:00Z"), None).expect("range");
+        let journal = read_within(LOG, Some(&range));
+        assert!(
+            journal
+                .triggers
+                .iter()
+                .any(|t| t.issue == Some(15) && t.state == State::Running),
+            "#15 started at 20:07 and never ended: it ran during the period"
+        );
     }
 
     proptest! {

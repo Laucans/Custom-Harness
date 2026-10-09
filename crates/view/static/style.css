@@ -320,6 +320,11 @@ nav.screens .help-btn.on { color: var(--accent); border-color: var(--accent); }
 .callout.purpose code { font-size: 11px; }
 .limits-bar { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin-bottom: 4px; }
 .limits-bar button.mini:hover { color: var(--accent); border-color: var(--accent); }
+.range-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+.range-bar label { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+.range-bar input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: 12px var(--mono); color-scheme: dark; }
+.range-bar button.mini:hover { color: var(--accent); border-color: var(--accent); }
+.range-bar button.mini.on { color: var(--accent); border-color: var(--accent); }
 .limits-from { margin-top: 6px; font: 11px var(--mono); }
 .tabs .help-btn {
   margin-left: auto; width: 26px; height: 26px; padding: 0; border-radius: 50%;
