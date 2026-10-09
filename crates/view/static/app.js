@@ -117,7 +117,7 @@
   }
   function onSnapshot() {
     status();
-    toasts();
+    dock();
     crewBar();
     crumbs();
     pushPicture();
@@ -206,38 +206,44 @@
   }
 
   // ---- notifications ------------------------------------------------------------
-  // What `harness-notify` decided, as bubbles at the bottom right. Errors and
-  // warnings stay until closed; infos fade. A closed notification stays closed
-  // until it happens again (its `at` moves). Infos older than the page are
-  // not replayed: they were news when they happened.
-  const TOASTS_SHOWN = 4;
-  const INFO_FADES_MS = 8000;
-  const N = { dismissed: {}, openedAt: null, timers: {}, html: '' };
-  try { N.dismissed = JSON.parse(localStorage.getItem('harness.dismissed') || '{}'); } catch (e) { N.dismissed = {}; }
-  function dismiss(key, at) {
-    N.dismissed[key] = at;
-    try { localStorage.setItem('harness.dismissed', JSON.stringify(N.dismissed)); } catch (e) { /* kept for this visit only */ }
-    toasts();
+  // Three signs at the bottom right — info, warning, error — grey when nothing
+  // of their level is unread, in their colour when something is. A sign opens
+  // the notifications pane on its level. Reading is acknowledging: leaving the
+  // pane the standard way marks what it showed as read; "close, keep unread"
+  // leaves everything as it was, and a notification clicked in the pane is
+  // locked unread for that visit. A read notification is unread again when it
+  // happens again (its `at` moves).
+  const LEVELS = [['error', 'Errors'], ['warning', 'Warnings'], ['info', 'Info']];
+  const R = { read: {} };
+  try { R.read = JSON.parse(localStorage.getItem('harness.read') || '{}'); } catch (e) { R.read = {}; }
+  const isUnread = (n) => R.read[n.key] !== n.at;
+  const ofLevel = (level) => ((S.snap && S.snap.notifications) || []).filter((n) => n.level === level);
+  const SIGN = {
+    info: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" class="shape"/><rect x="10.8" y="5.5" width="2.4" height="8.5" rx="1.1" class="mark"/><circle cx="12" cy="17.6" r="1.4" class="mark"/></svg>',
+    warning: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2 23 21.3H1z" class="shape" stroke-linejoin="round"/><rect x="10.9" y="8.4" width="2.2" height="7.2" rx="1" class="mark"/><circle cx="12" cy="18.2" r="1.3" class="mark"/></svg>',
+    error: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.9 1.8h8.2l5.8 5.8v8.2l-5.8 5.8H7.9L2.1 15.8V7.6z" class="shape"/><rect x="10.8" y="5.8" width="2.4" height="8.4" rx="1.1" class="mark"/><circle cx="12" cy="17.7" r="1.4" class="mark"/></svg>',
+  };
+  function dock() {
+    const html = LEVELS.slice().reverse().map(([level, label]) => {
+      const unread = ofLevel(level).filter(isUnread).length;
+      return `<button class="sign ${level} ${unread ? 'lit' : ''}" data-notes="${level}" title="${label}${unread ? ` — ${unread} unread` : ''}" aria-label="${label}, ${unread} unread">${SIGN[level]}${unread ? `<span class="badge">${unread > 99 ? '99+' : unread}</span>` : ''}</button>`;
+    }).join('');
+    if (html !== S.dockHtml) { $('dock').innerHTML = html; S.dockHtml = html; }
   }
-  const ICON = { error: '⛔', warning: '⚠️', info: 'ℹ️' };
-  function liveNotes() {
-    if (N.openedAt === null) N.openedAt = (S.snap && S.snap.at) || new Date().toISOString().slice(0, 19) + 'Z';
-    return ((S.snap && S.snap.notifications) || []).filter((n) => N.dismissed[n.key] !== n.at && !(n.level === 'info' && n.at < N.openedAt));
-  }
-  function toasts() {
-    const live = liveNotes();
-    const shown = live.slice(0, TOASTS_SHOWN);
-    const bubble = (n) => `<div class="toast ${n.level}" data-note="${esc(n.key)}" role="status">`
-      + `<div class="toast-head"><b>${ICON[n.level] || ''} ${esc(n.title)}</b>${n.count > 1 ? `<span class="count">×${n.count}</span>` : ''}`
-      + `<button class="toast-close" data-close="${esc(n.key)}" title="Dismiss until it happens again" aria-label="dismiss">×</button></div>`
-      + `<div class="toast-body">${esc(n.detail)}</div>`
-      + `<div class="toast-foot">${n.at ? esc(when(n.at)) : ''}${n.link ? '<span class="open">open →</span>' : ''}</div></div>`;
-    const html = shown.map(bubble).join('') + (live.length > shown.length ? `<button class="toast more" data-notes>+${live.length - shown.length} more…</button>` : '');
-    if (html !== N.html) { $('toasts').innerHTML = html; N.html = html; }
-    for (const n of shown) {
-      const id = n.key + '@' + n.at;
-      if (n.level === 'info' && !N.timers[id]) N.timers[id] = setTimeout(() => dismiss(n.key, n.at), INFO_FADES_MS);
+  $('dock').addEventListener('click', (e) => {
+    const sign = e.target.closest('[data-notes]');
+    if (sign) openPane({ kind: 'notifications', level: sign.dataset.notes });
+  });
+  // Leaving the notifications pane: what it showed is read, but for what was
+  // locked unread — unless it was left with "close, keep unread".
+  function acknowledge(p) {
+    if (!p || p.kind !== 'notifications' || p.keepAll) return;
+    const locked = new Set(p.locked || []);
+    for (const level of p.visited || []) {
+      for (const n of ofLevel(level)) if (!locked.has(n.key)) R.read[n.key] = n.at;
     }
+    try { localStorage.setItem('harness.read', JSON.stringify(R.read)); } catch (e) { /* kept for this visit only */ }
+    dock();
   }
   function followNote(n) {
     if (!n.link) return;
@@ -249,14 +255,6 @@
     }
     openPane({ kind: 'dashboards', focus: n.link.screen });
   }
-  $('toasts').addEventListener('click', (e) => {
-    const close = e.target.closest('[data-close]');
-    const note = (key) => ((S.snap && S.snap.notifications) || []).find((n) => n.key === key);
-    if (close) { const n = note(close.dataset.close); if (n) dismiss(n.key, n.at); return; }
-    if (e.target.closest('[data-notes]')) { openPane({ kind: 'notifications' }); return; }
-    const bubble = e.target.closest('[data-note]');
-    if (bubble) { const n = note(bubble.dataset.note); if (n) followNote(n); }
-  });
 
   // ---- the plant's switch --------------------------------------------------
   // The status is a button: it opens the gestures that make sense now — start
@@ -424,6 +422,7 @@
 
   // ---- D · the pane ------------------------------------------------------------
   function openPane(p) {
+    acknowledge(S.pane);
     clearInterval(S.logTimer); S.logTimer = null;
     teardownTerminal();
     S.pane = Object.assign({}, p);
@@ -435,6 +434,7 @@
   }
   function closePane() {
     if (!S.pane) return;
+    acknowledge(S.pane);
     S.pane = null;
     clearInterval(S.logTimer); S.logTimer = null;
     teardownTerminal();
@@ -475,6 +475,22 @@
     const preset = e.target.closest('[data-range-preset]');
     if (preset) { presetRange(preset.dataset.rangePreset); return undefined; }
     if (e.target.closest('[data-range-clear]')) { setRange(null); return undefined; }
+    if (S.pane && S.pane.kind === 'notifications') {
+      const open = e.target.closest('[data-note-open]');
+      if (open) { const n = ofLevel(S.pane.level).find((x) => x.key === open.dataset.noteOpen); if (n) followNote(n); return undefined; }
+      const level = e.target.closest('[data-note-level]');
+      if (level) { S.pane.level = level.dataset.noteLevel; S.pane.pages = {}; renderPane(S.pane, false); return undefined; }
+      if (e.target.closest('[data-notes-unread]')) { S.pane.unreadOnly = !S.pane.unreadOnly; S.pane.pages = {}; renderPane(S.pane, false); return undefined; }
+      if (e.target.closest('[data-notes-keep]')) { S.pane.keepAll = true; closePane(); return undefined; }
+      const row = e.target.closest('[data-note-lock]');
+      if (row) {
+        const locked = new Set(S.pane.locked || []);
+        if (locked.has(row.dataset.noteLock)) locked.delete(row.dataset.noteLock); else locked.add(row.dataset.noteLock);
+        S.pane.locked = [...locked];
+        renderPane(S.pane, false);
+        return undefined;
+      }
+    }
     const help = e.target.closest('[data-help]');
     if (help && S.pane) {
       const key = help.dataset.help;
@@ -1106,13 +1122,32 @@
       return ['The steward · Claude Code in the harness checkout', html, () => { mountTerminal(); }];
     },
 
-    notifications() {
-      const all = (S.snap && S.snap.notifications) || [];
-      if (!all.length) return ['Notifications', '<div class="muted">nothing to tell</div>'];
-      const LEVEL_TAG = { error: 'bad', warning: 'warn', info: '' };
-      let h = '<div class="callout purpose">What the plant has to tell, the last 24 hours: errors, then what waits on you, then news. Closed ones stay closed until they happen again.</div>';
-      h += '<table class="rows"><tr><th>level</th><th>what</th><th class="num">times</th><th>last</th><th></th></tr>' + all.map((n) => `<tr><td>${tag(n.level, LEVEL_TAG[n.level])}</td><td><b>${esc(n.title)}</b><div class="muted">${esc(n.detail)}</div></td><td class="num">${n.count}</td><td>${n.at ? esc(when(n.at)) : '—'}</td><td>${N.dismissed[n.key] === n.at ? '<span class="muted">closed</span>' : ''}</td></tr>`).join('') + '</table>';
-      return ['Notifications', h];
+    notifications(p) {
+      const level = LEVELS.some(([l]) => l === p.level) ? p.level : 'error';
+      p.level = level;
+      p.visited = [...new Set([...(p.visited || []), level])];
+      const locked = new Set(p.locked || []);
+      const nav = '<nav class="screens">' + LEVELS.map(([l, label]) => {
+        const unread = ofLevel(l).filter(isUnread).length;
+        return `<button class="${l === level ? 'here' : ''}" data-note-level="${l}">${label}${unread ? ` · ${unread}` : ''}</button>`;
+      }).join('') + '</nav>';
+      const bar = `<div class="notes-bar"><button class="mini ${p.unreadOnly ? 'on' : ''}" data-notes-unread>unread only</button>`
+        + '<span class="muted">click a notification to keep it unread</span>'
+        + '<button class="mini" data-notes-keep title="Close without marking anything read">close, keep unread</button></div>';
+      const rows = ofLevel(level).filter((n) => !p.unreadOnly || isUnread(n));
+      const body = rows.length
+        ? pagedTable(p, 'notes-' + level, 'notes', '<th></th><th>what</th><th class="num">times</th><th>last</th><th></th>', rows, (n) => {
+          const unread = isUnread(n);
+          const keep = locked.has(n.key);
+          return `<tr class="note ${level} ${unread ? 'unread' : 'read'} ${keep ? 'locked' : ''}" data-note-lock="${esc(n.key)}" title="${keep ? 'kept unread when you leave — click to release' : 'click to keep it unread when you leave'}">`
+            + `<td class="sign-cell">${SIGN[level]}</td>`
+            + `<td><b>${esc(n.title)}</b>${keep ? ' <span class="tag acc">kept unread</span>' : unread ? ' <span class="tag">new</span>' : ''}<div class="muted">${esc(n.detail)}</div></td>`
+            + `<td class="num">${n.count}</td><td>${n.at ? esc(when(n.at)) : '—'}</td>`
+            + `<td>${n.link ? `<button class="mini" data-note-open="${esc(n.key)}">open →</button>` : ''}</td></tr>`;
+        })
+        : `<div class="muted">${p.unreadOnly ? 'nothing unread here' : 'nothing to tell'}</div>`;
+      const title = LEVELS.find(([l]) => l === level)[1];
+      return ['Notifications · ' + title, nav + bar + body];
     },
 
     placeholder(p) {
