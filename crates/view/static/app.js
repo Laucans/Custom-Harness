@@ -698,23 +698,27 @@
     },
     quota(p) {
       const L = p.limits;
+      // Not asked yet is reading too: the screen asks the moment it opens.
+      const busy = p.limitsBusy || !p.limitsAsked;
       const at = (secs) => when(new Date(secs * 1000).toISOString());
       const gauge = (name, pct, sub) => `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(name)} · ${pct}% used</div><div class="bar"><span style="width:${Math.min(pct, 100)}%"></span></div><div class="muted">${sub}</div></div>`;
       const resets = (secs) => (secs ? 'resets ' + esc(new Date(secs * 1000).toLocaleString()) : 'reset unknown');
-      let h = `<div class="limits-bar"><span class="muted">${p.limitsBusy ? 'reading the limits now…' : L ? 'read at ' + esc(at(Math.max(L.claude.at, L.github.at))) : ''}</span><button class="mini" data-limits-read${p.limitsBusy ? ' disabled' : ''}>read again</button></div>`;
+      let h = `<div class="limits-bar"><span class="muted">${busy ? 'reading the limits now…' : L ? 'read at ' + esc(at(Math.max(L.claude.at, L.github.at))) : ''}</span><button class="mini" data-limits-read${busy ? ' disabled' : ''}>read again</button></div>`;
       // Claude: the probe's reading, or the one the runs kept when the probe failed.
       h += section(p, 'quota.claude', 'Claude');
       const kept = S.snap.quota;
       const claude = L && L.claude.value ? L.claude.value : null;
-      const shown = claude || kept;
-      if (L && L.claude.error) h += `<div class="callout soon">the probe failed: ${esc(L.claude.error)}${kept ? ' — showing the reading the runs last kept' : ''}</div>`;
-      if (shown) {
+      // The kept reading is old by nature: it stands in only when the probe
+      // failed, never while it runs.
+      const shown = claude || (L && L.claude.error && !busy ? kept : null);
+      if (L && L.claude.error && !busy) h += `<div class="callout soon">the probe failed: ${esc(L.claude.error)}${kept ? ' — showing the reading the runs last kept' : ''}</div>`;
+      if (shown && !busy) {
         h += '<div class="gauges">' + shown.windows.map((w) => gauge(w.name, Math.round(w.utilization * 100), resets(w.resets_at))).join('') + '</div>';
         h += `<div class="muted limits-from">${claude ? 'read now by a minimal session' : 'kept by the last run that ended'}, ${esc(at(shown.at))}</div>`;
-      } else h += `<div class="muted">${p.limitsBusy ? 'reading…' : 'no reading yet'}</div>`;
+      } else h += `<div class="muted">${busy ? 'reading…' : 'no reading yet'}</div>`;
       // GitHub: free to read, read every time.
       h += section(p, 'quota.github', 'GitHub API');
-      if (!L) h += `<div class="muted">${p.limitsBusy ? 'reading…' : 'not read'}</div>`;
+      if (!L || busy) h += `<div class="muted">${busy ? 'reading…' : 'not read'}</div>`;
       else if (L.github.error) h += `<div class="callout soon">${esc(L.github.error)}</div>`;
       else h += '<div class="gauges">' + L.github.value.map((w) => gauge(w.name, w.limit ? Math.round(100 * w.used / w.limit) : 0, `${w.used} / ${w.limit} requests · ${resets(w.resets_at)}`)).join('') + '</div>';
       return h;
