@@ -13,6 +13,7 @@
 //! embedded: it is served from `crates/view/static/render/`, where
 //! `scripts/build-render.sh` puts it, and the page says so when it is absent.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +34,7 @@ use tokio_stream::{Stream, StreamExt as _};
 
 use crate::desk::Desk;
 use crate::domain::blueprint;
+use crate::domain::doctor::{self, Diagnosis};
 use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
 use crate::domain::plant::{self, Action, Gesture};
@@ -41,6 +43,10 @@ use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::ports::{BoardReading, Limits, Plant, Traces};
 use harness_core::domain::quota::Reading;
+
+/// The diagnoses asked of the doctor, by `workflow/run`, shared with the
+/// listeners that hear them end.
+pub type Diagnoses = Arc<std::sync::Mutex<HashMap<String, Diagnosis>>>;
 
 /// What every handler can reach.
 #[derive(Clone)]
@@ -59,6 +65,8 @@ pub struct AppState {
     pub desk: Option<Desk>,
     /// The doctor's desk — `None` under `--no-doctor`.
     pub doctor: Option<Desk>,
+    /// The diagnoses asked of the doctor, by `workflow/run`.
+    pub diagnoses: Diagnoses,
     /// The watch process the page starts and stops — `None` under `--demo`.
     pub plant: Option<Arc<dyn Plant>>,
     /// How long a started watch must live before the start counts.
@@ -114,6 +122,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/steward/term", get(steward_term))
         .route("/api/doctor", get(doctor))
         .route("/api/doctor/term", get(doctor_term))
+        .route("/api/doctor/diagnoses", get(diagnoses))
+        .route("/api/doctor/diagnose/{workflow}/{run}", post(diagnose))
         .with_state(state)
 }
 
@@ -647,6 +657,134 @@ async fn plant_gesture(
     json(&Done { message })
 }
 
+/// How long the doctor gets to answer before a diagnosis is given up on.
+const DIAGNOSIS_PATIENCE: Duration = Duration::from_mins(20);
+
+/// How long a freshly started doctor gets to show its prompt before the
+/// question is typed; typed sooner, the keystrokes land in a program that is
+/// not yet reading them as text.
+const DOCTOR_WARM_UP: Duration = Duration::from_secs(5);
+
+/// A pause between the pasted question and the Enter that sends it.
+const PASTE_SETTLE: Duration = Duration::from_millis(400);
+
+/// How much of the doctor's recent output is kept to hear a mark in: a mark
+/// is one line, repainted a few times at most.
+const EARSHOT: usize = 32 * 1024;
+
+/// The diagnoses asked so far, by `workflow/run`.
+async fn diagnoses(State(state): State<AppState>) -> Response {
+    let map = state
+        .diagnoses
+        .lock()
+        .map(|m| m.clone())
+        .unwrap_or_default();
+    json(&map)
+}
+
+/// Asks the doctor what happened to one run: its logs' tails are pasted into
+/// the doctor's terminal as a question, and a listener marks the diagnosis
+/// done when a reply ends with the run's mark.
+async fn diagnose(
+    State(state): State<AppState>,
+    Path((workflow, run)): Path<(String, String)>,
+) -> Response {
+    let Some(desk) = state.doctor.clone() else {
+        return not_found("no doctor: the view runs with --no-doctor");
+    };
+    if !is_workflow(&workflow) || !is_run_id(&run) {
+        return not_found("no such run");
+    }
+    let Some(run_log) = state
+        .traces
+        .tail(&workflow, &run, "run.log", doctor::RUN_LOG_BYTES)
+    else {
+        return not_found("no such trace");
+    };
+    let session_log = state
+        .traces
+        .tail(&workflow, &run, "session.log", doctor::SESSION_LOG_BYTES)
+        .unwrap_or_default();
+    let key = format!("{workflow}/{run}");
+    let since = jiff::Timestamp::now()
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    // Already asked and not answered: the same question is not typed twice.
+    let pending = state
+        .diagnoses
+        .lock()
+        .ok()
+        .and_then(|map| match map.get(&key) {
+            Some(running @ Diagnosis::Running { .. }) => Some(running.clone()),
+            _ => None,
+        });
+    if let Some(running) = pending {
+        return json(&running);
+    }
+    // Listening before the question is typed, so the answer's first bytes are
+    // not missed; and before the start, so a program that dies at once is heard.
+    let ears = desk.watch();
+    let was_live = desk.is_live();
+    if let Err(why) = desk.summon(TERM_DEFAULT.0, TERM_DEFAULT.1) {
+        return (StatusCode::SERVICE_UNAVAILABLE, why).into_response();
+    }
+    if !was_live {
+        tokio::time::sleep(DOCTOR_WARM_UP).await;
+    }
+    let question = doctor::diagnosis(&workflow, &run, &run_log, &session_log);
+    // A bracketed paste: the newlines inside stay text, Enter comes after.
+    let paste = format!("\x1b[200~{question}\x1b[201~");
+    if let Err(why) = desk.write(paste.as_bytes()) {
+        return (StatusCode::SERVICE_UNAVAILABLE, why).into_response();
+    }
+    tokio::time::sleep(PASTE_SETTLE).await;
+    if let Err(why) = desk.write(b"\r") {
+        return (StatusCode::SERVICE_UNAVAILABLE, why).into_response();
+    }
+    let asked = Diagnosis::Running {
+        since: since.clone(),
+    };
+    if let Ok(mut map) = state.diagnoses.lock() {
+        map.insert(key.clone(), asked.clone());
+    }
+    tokio::spawn(listen(ears, run, key, since, Arc::clone(&state.diagnoses)));
+    json(&asked)
+}
+
+/// Hears the doctor's output until a reply ends with the run's mark, the
+/// program ends, or patience runs out; then writes the diagnosis down.
+async fn listen(
+    mut ears: broadcast::Receiver<Vec<u8>>,
+    run: String,
+    key: String,
+    since: String,
+    diagnoses: Diagnoses,
+) {
+    let mut heard: Vec<u8> = Vec::new();
+    let deadline = tokio::time::Instant::now() + DIAGNOSIS_PATIENCE;
+    let outcome = loop {
+        match tokio::time::timeout_at(deadline, ears.recv()).await {
+            Ok(Ok(bytes)) => {
+                heard.extend(bytes);
+                let overflow = heard.len().saturating_sub(EARSHOT);
+                heard.drain(..overflow);
+                if doctor::diagnosed(&heard, &run) {
+                    break Diagnosis::Done { since };
+                }
+            }
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => {
+                break Diagnosis::Lost { since };
+            }
+        }
+    };
+    if let Ok(mut map) = diagnoses.lock()
+        && matches!(map.get(&key), Some(Diagnosis::Running { .. }))
+    {
+        map.insert(key, outcome);
+    }
+}
+
 /// `?cols=N&rows=N`: the size of the pane's terminal.
 #[derive(Debug, Deserialize)]
 struct TermQuery {
@@ -808,6 +946,7 @@ mod tests {
             render_dir: PathBuf::from("/nonexistent/render"),
             desk,
             doctor: None,
+            diagnoses: Arc::default(),
             plant: None,
             start_grace: Duration::ZERO,
             limits: None,
@@ -1147,6 +1286,71 @@ mod tests {
 
         let (status, _) = get(state(Shelf::default(), None), "/api/doctor/term").await;
         assert!(status.is_client_error(), "{status}");
+    }
+
+    #[tokio::test]
+    async fn a_diagnosis_is_typed_to_the_doctor_and_heard_when_the_mark_comes_back() {
+        let mut shelf = Shelf::default();
+        shelf.put(
+            "agent-loop",
+            "20261007-142103",
+            "run.log",
+            "[12:00:01] FAILED: cargo test broke\n",
+        );
+        let mut with = state(shelf, None);
+        let desk = Desk::new(Arc::new(Echoing::default()));
+        with.doctor = Some(desk.clone());
+        // No doctor, no diagnosis.
+        let (status, _) = post_to(
+            state(Shelf::default(), None),
+            "/api/doctor/diagnose/agent-loop/20261007-142103",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // An unknown run is refused before anything is typed.
+        let (status, _) = post_to(
+            with.clone(),
+            "/api/doctor/diagnose/agent-loop/20261007-000000",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(!desk.is_live(), "nothing summoned the doctor");
+
+        // The desk is sat at first, so the handler does not wait for a warm-up.
+        desk.summon(80, 24).expect("summoned");
+        let (status, body) = post_to(
+            with.clone(),
+            "/api/doctor/diagnose/agent-loop/20261007-142103",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let asked: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(asked["state"], "running");
+        let (_, body) = get(with.clone(), "/api/doctor/diagnoses").await;
+        assert!(
+            body.contains(r#""agent-loop/20261007-142103":{"state":"running""#),
+            "{body}"
+        );
+
+        // The echoing terminal repeats the question: that is not the answer.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_, body) = get(with.clone(), "/api/doctor/diagnoses").await;
+        assert!(body.contains(r#""state":"running""#), "{body}");
+
+        // A reply that ends with the mark is.
+        desk.write(b"...\r\nDIAGNOSIS: 20261007-142103 \xc2\xb7 amber\r\n")
+            .expect("written");
+        let mut done = false;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let (_, body) = get(with.clone(), "/api/doctor/diagnoses").await;
+            if body.contains(r#""state":"done""#) {
+                done = true;
+                break;
+            }
+        }
+        assert!(done, "the mark was heard");
+        desk.shutdown();
     }
 
     #[test]

@@ -333,6 +333,15 @@ a.ext { color: var(--accent); }
 .steward-bar .spacer { flex: 1; }
 button.mini { background: var(--panel-2); border: 1px solid var(--line); color: var(--dim); border-radius: 6px; padding: 3px 9px; font: 12px var(--mono); cursor: pointer; }
 button.mini:hover { color: var(--bad); border-color: var(--bad); }
+/* The doctor's button in an agent's pane: pulses yellow while the doctor
+   reads, green once the diagnosis is in. */
+button.doctor-btn { color: #ffb4a2; border-color: rgba(255, 140, 120, 0.5); transform-origin: left center; }
+button.doctor-btn:hover { color: #ffd0c4; border-color: #ffb4a2; }
+button.doctor-btn.running { color: #1a1206; background: var(--warn); border-color: var(--warn); animation: diagnosing 1.1s ease-in-out infinite; }
+button.doctor-btn.running:hover { color: #1a1206; border-color: var(--warn); }
+button.doctor-btn.done { color: #0d1a0e; background: var(--ok); border-color: var(--ok); }
+button.doctor-btn.done:hover { color: #0d1a0e; border-color: var(--ok); }
+@keyframes diagnosing { 50% { transform: scale(1.12); } }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .chips button { background: transparent; border: 1px solid rgba(199, 210, 254, 0.35); color: #c7d2fe; border-radius: 12px; padding: 3px 10px; font: 12px var(--sans); cursor: pointer; }
 .chips button:hover { background: rgba(199, 210, 254, 0.12); }

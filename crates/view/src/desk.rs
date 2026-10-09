@@ -92,6 +92,13 @@ impl Desk {
         Ok((stream, replay))
     }
 
+    /// The program's output from now on, for a listener that is not a visitor:
+    /// no replay, no start.
+    #[must_use]
+    pub fn watch(&self) -> broadcast::Receiver<Vec<u8>> {
+        self.out.subscribe()
+    }
+
     /// Starts the program if nobody is at the desk.
     ///
     /// # Errors

@@ -11,6 +11,8 @@
 //! performs discards uncommitted files: the one mistake a doctor must not
 //! make is to treat without being asked, or while a session is still writing.
 
+use serde::Serialize;
+
 use crate::domain::snapshot::Project;
 
 /// The doctor's standing orders: who they are, what their instruments are,
@@ -77,6 +79,125 @@ stray folders it names (build the binary first if it is missing). \
 Then the bill of health: VITALS, SYMPTOMS, DIAGNOSIS, TREATMENT — each treatment with its exact \
 command and whether it needs my go. Be brief; numbers over prose. Finish with the HEALTH line.";
 
+/// What one agent's logs are worth handing over: the tail of `run.log`.
+pub const RUN_LOG_BYTES: u64 = 8 * 1024;
+
+/// And of `session.log`, where a session's own words are.
+pub const SESSION_LOG_BYTES: u64 = 6 * 1024;
+
+/// The question asked about one agent that failed or warned: who it is, where
+/// its logs are, the tail of them inline, and the line to end on — worded so
+/// the marker [`mark`] listens for never appears in the question itself.
+#[must_use]
+pub fn diagnosis(workflow: &str, run: &str, run_log: &str, session_log: &str) -> String {
+    let session = if session_log.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nThe tail of its session.log:\n```\n{}\n```",
+            printable(session_log)
+        )
+    };
+    format!(
+        "An agent of the plant stopped badly or warned: the run `{run}` of the `{workflow}` line. \
+Its logs are `.llocal/logs/{workflow}/{run}/run.log` and `session.log` (read the full files if \
+the tails below are not enough). Say what happened, in order: SYMPTOM (the line that says it \
+stopped or warned, quoted), CAUSE (why, from the logs — a gate, a command, a quota, a timeout, \
+the model), TREATMENT (what to do now, each gesture with its exact command, and whether it needs \
+my go; `harness doctor --dry-run` first if a repair is in question). Read, do not treat. Be brief. \
+Then end your reply with one line made of the word DIAGNOSIS, a colon, a space, the run id \
+{run}, then ` · ` and one of green, amber, red.\n\nThe tail of its run.log:\n```\n{}\n```{session}",
+        printable(run_log),
+    )
+}
+
+/// What the doctor's reply ends with once this run is diagnosed, as it reads
+/// in the terminal's stream with every escape and blank taken out.
+#[must_use]
+pub fn mark(run: &str) -> String {
+    format!("DIAGNOSIS:{run}")
+}
+
+/// A diagnosis asked of the doctor, as the page polls it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum Diagnosis {
+    /// Asked, not yet answered.
+    Running {
+        /// When it was asked, a UTC clock.
+        since: String,
+    },
+    /// The doctor ended a reply with this run's mark.
+    Done {
+        /// When it was asked, a UTC clock.
+        since: String,
+    },
+    /// The doctor's program ended, or did not answer in time.
+    Lost {
+        /// When it was asked, a UTC clock.
+        since: String,
+    },
+}
+
+/// Whether the terminal's stream so far carries this run's mark: the stream
+/// is flattened — escapes gone, no whitespace — because the program wraps
+/// and repaints its lines as it likes.
+#[must_use]
+pub fn diagnosed(stream: &[u8], run: &str) -> bool {
+    compact(stream).contains(&mark(run))
+}
+
+/// The stream without its escape sequences and without any whitespace.
+#[must_use]
+pub fn compact(stream: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stream);
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.next() {
+                // CSI: parameters, then one final byte in `@`..=`~`.
+                Some('[') => {
+                    for d in chars.by_ref() {
+                        if ('@'..='~').contains(&d) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: up to BEL or ESC `\`.
+                Some(']') => {
+                    while let Some(d) = chars.next() {
+                        if d == '\u{7}' {
+                            break;
+                        }
+                        if d == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // A two-byte escape, or the end.
+                _ => {}
+            }
+            continue;
+        }
+        if !c.is_whitespace() && !c.is_control() {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A log excerpt safe to paste into a terminal: control characters other than
+/// newlines and tabs are dropped, so the paste cannot end itself early.
+fn printable(text: &str) -> String {
+    text.chars()
+        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +227,61 @@ mod tests {
         let mut p = project();
         p.slug = String::new();
         assert!(briefing(&p).contains("this checkout's `origin`"));
+    }
+
+    #[test]
+    fn a_diagnosis_names_the_run_its_logs_and_never_its_own_mark() {
+        let text = diagnosis(
+            "agent-loop",
+            "20261007-142103",
+            "[12:00:01] FAILED: cargo test\x1b[0m broke",
+            "── turn 1 ──\nhello",
+        );
+        assert!(text.contains(".llocal/logs/agent-loop/20261007-142103/run.log"));
+        assert!(text.contains("FAILED: cargo test"));
+        assert!(!text.contains('\u{1b}'), "no escape reaches the terminal");
+        assert!(text.contains("session.log:\n```\n── turn 1"));
+        assert!(
+            !diagnosed(text.as_bytes(), "20261007-142103"),
+            "the question echoed back is not the answer"
+        );
+        let short = diagnosis("split", "r1", "x", "   ");
+        assert!(!short.contains("session.log:"), "no empty session block");
+    }
+
+    #[test]
+    fn the_mark_is_heard_through_escapes_and_wrapped_lines() {
+        let run = "20261007-142103";
+        assert!(diagnosed(
+            b"...\r\nDIAGNOSIS: 20261007-142103 \xc2\xb7 green\r\n",
+            run
+        ));
+        assert!(diagnosed(
+            b"\x1b[2K\x1b[1mDIAGNOSIS:\x1b[0m 202610\r\n\x1b[31m07-142103\x1b[0m \xc2\xb7 red",
+            run
+        ));
+        assert!(diagnosed(
+            b"\x1b]0;title\x07DIAGNOSIS: 20261007-142103",
+            run
+        ));
+        assert!(!diagnosed(
+            b"DIAGNOSIS: 20261007-000000 \xc2\xb7 green",
+            run
+        ));
+        assert!(!diagnosed(b"HEALTH: green \xc2\xb7 fine", run));
+        assert_eq!(compact(b"a \x1b[31mb\x1b[0m\n c"), "abc");
+    }
+
+    #[test]
+    fn a_diagnosis_state_serializes_with_its_tag() {
+        let json = serde_json::to_string(&Diagnosis::Running {
+            since: "2026-10-09T10:00:00Z".to_string(),
+        })
+        .expect("json");
+        assert_eq!(
+            json,
+            r#"{"state":"running","since":"2026-10-09T10:00:00Z"}"#
+        );
     }
 
     #[test]

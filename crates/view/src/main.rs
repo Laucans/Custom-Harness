@@ -104,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         render_dir: root.join("crates/view/static/render"),
         desk: desk.clone(),
         doctor: doctor.clone(),
+        diagnoses: Arc::default(),
         plant: plant.clone(),
         start_grace: Duration::from_millis(1500),
         limits: Some(Arc::new(CliLimits::new(

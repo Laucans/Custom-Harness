@@ -601,6 +601,8 @@
     setRange({ ...(S.range || {}), [field.dataset.range]: toClock(field.value) });
   });
   $('pane-body').addEventListener('click', (e) => {
+    const ask = e.target.closest('[data-diagnose]');
+    if (ask) { askDoctor(ask, JSON.parse(ask.dataset.diagnose)); return undefined; }
     const issue = e.target.closest('[data-issue]');
     if (issue) return openPane({ kind: 'issue', number: Number(issue.dataset.issue) });
     const tab = e.target.closest('[data-file]');
@@ -664,6 +666,54 @@
     if (pane) return openPane(JSON.parse(pane.dataset.pane));
     return undefined;
   });
+
+  // ---- the doctor's diagnosis of one agent ------------------------------------------
+  // An agent whose run stopped badly or warned gets a button in its pane: a
+  // click pastes its logs into the doctor's terminal as a question. The button
+  // pulses yellow while the doctor reads, turns green when a reply ended with
+  // the run's mark, and then opens the doctor's pane — the back arrow returns.
+  S.diagnoses = {};
+  const DIAGNOSIS_LABEL = { running: '🦞 diagnosing…', done: '🦞 diagnostic done', lost: '🦞 ask the doctor again' };
+  function doctorButton(e) {
+    const d = S.diagnoses[e.id];
+    const state = d ? d.state : 'idle';
+    const title = { idle: 'ask the doctor what happened — its logs go with the question', running: 'the doctor is reading its logs — click to watch', done: 'open the diagnosis', lost: 'the doctor did not answer — ask again' }[state];
+    return `<button class="mini doctor-btn ${state}" data-diagnose='${esc(JSON.stringify({ workflow: e.workflow, run: e.run_id, id: e.id }))}' title="${title}">${DIAGNOSIS_LABEL[state] || '🦞 ask the doctor'}</button>`;
+  }
+  // Whether the run went badly: its run.log says so, or the pane was opened
+  // on an error. Decided once per pane, then the head is redrawn.
+  async function sickness(p, e) {
+    p.sick = false;
+    if (p.jumpTo === 'error') p.sick = true;
+    else {
+      try {
+        const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/run.log?bytes=20000`);
+        if (r.ok) p.sick = ERROR_LINE.test(await r.text());
+      } catch (err) { /* stays well */ }
+    }
+    if (p.sick) { await pullDiagnoses(); if (S.pane === p) renderPane(p, true); }
+  }
+  async function pullDiagnoses() {
+    try {
+      const r = await fetch('/api/doctor/diagnoses');
+      if (r.ok) S.diagnoses = await r.json();
+    } catch (err) { /* kept as known */ }
+    const running = Object.values(S.diagnoses).some((d) => d.state === 'running');
+    clearTimeout(S.diagnosisTimer);
+    if (running) S.diagnosisTimer = setTimeout(pullDiagnoses, 2000);
+    if (S.pane && S.pane.kind === 'employee') renderPane(S.pane, true);
+  }
+  async function askDoctor(button, r) {
+    const d = S.diagnoses[r.id];
+    if (d && (d.state === 'running' || d.state === 'done')) { openPane({ kind: 'doctor' }); return; }
+    button.classList.remove('idle', 'lost'); button.classList.add('running'); button.textContent = DIAGNOSIS_LABEL.running;
+    try {
+      const res = await fetch(`/api/doctor/diagnose/${r.workflow}/${r.run}`, { method: 'POST' });
+      if (!res.ok) { button.classList.remove('running'); button.classList.add('lost'); button.textContent = '🦞 ask the doctor'; button.title = await res.text(); return; }
+      S.diagnoses[r.id] = await res.json();
+    } catch (err) { button.classList.remove('running'); button.title = 'cannot reach the server'; return; }
+    pullDiagnoses();
+  }
 
   // ---- the terminals: the steward's, the doctor's -------------------------------
   // xterm.js in the pane, a WebSocket to a desk. Closing the pane closes the
@@ -1102,12 +1152,14 @@
         ['task', esc(e.task || '—')], ['milestone', esc(e.milestone || '—')], ['round', esc(e.round || '—')],
         ['since', e.since ? `${hhmm(e.since)} · last write ${fmtAge(e.age_secs)} ago` : null],
         ['status', e.active ? tag('at work', 'ok') : tag('clocked out', '')],
+        ['doctor', p.sick ? doctorButton(e) : null],
       ]);
       // The logs are read machine by machine: one button per stage the run
       // went through (its session in session.log), then the run's own files.
       const html = `<div id="emp-head">${head}</div><h3>Machines it went through</h3><div class="tabs" id="emp-machines"><span class="muted">loading…</span></div><pre class="log" id="live-log">loading…</pre>`;
       const after = (isRefresh) => {
         if (isRefresh) { const h = $('emp-head'); if (h) h.innerHTML = head; return; }
+        if (p.sick == null) sickness(p, e);
         const pull = async () => {
           try {
             const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/stages`);

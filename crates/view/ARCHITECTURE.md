@@ -69,6 +69,20 @@ only on the human's explicit go. Routes `/api/doctor` and `/api/doctor/term`;
 `--no-doctor` leaves the infirmary empty. The infirmary's other props open
 the same pane, and the chart on its wall opens the stops dashboard.
 
+An agent whose run stopped badly or warned carries a **doctor button** in
+its pane (`run.log` matches an error line, or the pane was opened on one).
+A click is `POST /api/doctor/diagnose/{workflow}/{run}`: the server pastes
+the tails of `run.log` and `session.log` into the doctor's terminal as a
+question (`domain::doctor::diagnosis`, a bracketed paste then Enter,
+summoning the doctor first if nobody sits there) and listens to the desk's
+output until a reply ends with the run's mark — `DIAGNOSIS: <run> · colour`,
+heard through escapes and wrapped lines by `doctor::diagnosed` — or the
+program ends, or twenty minutes pass. The page polls
+`GET /api/doctor/diagnoses`: the button pulses yellow while the doctor reads,
+turns green on `done`, and then opens the doctor's pane, whose back arrow
+returns to the agent. The question is worded so its own echo never carries
+the mark.
+
 The briefing names exact commands — `pgrep`, `setsid nohup ./target/release/harness watch …`,
 `pkill`, `gh issue edit … --add-label` — because the two mistakes a steward
 must not make are starting a second watch and stopping one mid-session
@@ -92,7 +106,7 @@ src/domain/            the inside — no disk, no subprocess, no clock
   assemble.rs          Observed + board → Snapshot (who is live, where the product is, what smokes)
   snapshot.rs          the serializable picture the page receives
   steward.rs           the steward's standing orders, and the status the page asks for
-  doctor.rs            the doctor's standing orders and the check-up asked when they sit down
+  doctor.rs            the doctor's standing orders, the check-up asked when they sit down, the question about one run and how its answer is heard
   plant.rs             the switch: which watch is this checkout's, what start / soft / hard send to whom
 src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now)
 src/adapters/
@@ -101,7 +115,7 @@ src/adapters/
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket)
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
 ```
 
