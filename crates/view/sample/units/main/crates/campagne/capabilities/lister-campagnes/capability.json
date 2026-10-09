@@ -1,0 +1,8 @@
+{
+  "capability": "campagne.listerCampagnes",
+  "system": "campagne",
+  "version": "1.0.0",
+  "description": "Liste les campagnes actives du MJ (id, nom), de la plus récente à la plus ancienne (à égalité, par id croissant).",
+  "output": { "type": "array", "items": { "id": "ID", "name": "String" } },
+  "reads": ["crates/campagne/queries/liste-campagnes.graphql"]
+}

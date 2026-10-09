@@ -1,0 +1,10 @@
+{
+  "capability": "campagne.niveauDuGroupe",
+  "system": "campagne",
+  "version": "0.1.0",
+  "description": "Niveau du groupe d'une campagne : la moyenne des niveaux de ses PJ actifs, arrondie à l'entier le plus proche (.5 vers le haut). Aucun PJ : level null.",
+  "implements": "NiveauDuGroupe@1",
+  "input": { "campagneId": "ID" },
+  "output": "NiveauDuGroupe@1 & { asOf: DataVersion }",
+  "reads": ["queries/niveaux-pjs-actifs.graphql"]
+}

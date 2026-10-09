@@ -37,10 +37,12 @@ use crate::desk::Desk;
 use crate::domain::annotations;
 use crate::domain::assemble;
 use crate::domain::blueprint;
+use crate::domain::capabilities::{self, Catalogue};
 use crate::domain::cleanup::Settings;
 use crate::domain::data_versions::Versions;
 use crate::domain::divergence;
 use crate::domain::doctor::{self, Diagnosis};
+use crate::domain::fusion;
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
@@ -54,6 +56,7 @@ use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_o
 use crate::janitor::Janitor;
 use crate::note_desks::NoteDesks;
 use crate::ports::{BoardReading, Limits, NoteStore, Plant, Prompts, Traces, TrialAsk, Trials};
+use crate::units_desk::UnitsDesk;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
 use harness_workflows::data_snapshot::data::model::DataModel;
@@ -116,6 +119,9 @@ pub struct AppState {
     pub restart: Arc<std::sync::Mutex<Option<Restart>>>,
     /// How often a restart looks whether the watch has drained.
     pub restart_poll: Duration,
+    /// The product's Capabilities and `DataCapabilities` — `None` when
+    /// nothing can read the product.
+    pub units: Option<UnitsDesk>,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -177,6 +183,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model/versions", get(data_versions))
         .route("/api/data-model/divergence", get(data_divergence))
         .route("/api/data-model/issue", post(data_issue))
+        .route("/api/capabilities", get(capability_list))
+        .route("/api/capabilities/fusion", post(capability_fusion))
         .route("/api/notes/{board}", get(notes))
         .route("/api/notes/{board}/undo", post(undo_note))
         .route("/api/notes/{board}/{id}", put(put_note).delete(delete_note))
@@ -970,6 +978,100 @@ async fn data_issue(State(state): State<AppState>, body: Bytes) -> Response {
         Ok(url) => json(&serde_json::json!({ "url": url })),
         Err(why) => (StatusCode::BAD_GATEWAY, why).into_response(),
     }
+}
+
+/// What `/api/capabilities` is asked.
+#[derive(Deserialize)]
+struct CatalogueAsk {
+    /// Read the product again, rather than the kept reading.
+    #[serde(default)]
+    fresh: bool,
+}
+
+/// The capabilities list, from the kept reading and the latest board.
+async fn catalogue_of(state: &AppState, fresh: bool) -> Result<Catalogue, (StatusCode, String)> {
+    let Some(desk) = state.units.clone() else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "nothing reads the product here".to_string(),
+        ));
+    };
+    let reading = desk
+        .reading(fresh)
+        .await
+        .map_err(|why| (StatusCode::BAD_GATEWAY, why))?;
+    let board = state.board.borrow().clone();
+    let issues: Vec<harness_core::domain::Issue> = board
+        .map(|b| {
+            b.milestones
+                .iter()
+                .filter(|m| m.issue.is_open())
+                .flat_map(|m| m.tasks.iter().cloned())
+                .chain(b.bugs.iter().cloned())
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(capabilities::catalogue(
+        &reading,
+        &desk.integration,
+        &issues,
+    ))
+}
+
+/// Every Capability and `DataCapability` of the product.
+async fn capability_list(
+    State(state): State<AppState>,
+    Query(ask): Query<CatalogueAsk>,
+) -> Response {
+    match catalogue_of(&state, ask.fresh).await {
+        Ok(catalogue) => json(&catalogue),
+        Err(refused) => refused.into_response(),
+    }
+}
+
+/// The two units a fusion test compares.
+#[derive(Deserialize)]
+struct FusionAsk {
+    a: String,
+    b: String,
+    /// Ask the model to word the answer; without it, the tooling's alone.
+    #[serde(default)]
+    ai: bool,
+}
+
+/// Could two units be one? The tooling compares; the model, if asked,
+/// words the answer from the comparison alone.
+async fn capability_fusion(State(state): State<AppState>, body: Bytes) -> Response {
+    let ask = match serde_json::from_slice::<FusionAsk>(&body) {
+        Ok(ask) => ask,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("not a fusion request: {e}"),
+            )
+                .into_response();
+        }
+    };
+    if ask.a == ask.b {
+        return (StatusCode::BAD_REQUEST, "pick two different units").into_response();
+    }
+    let catalogue = match catalogue_of(&state, false).await {
+        Ok(catalogue) => catalogue,
+        Err(refused) => return refused.into_response(),
+    };
+    let find = |id: &str| catalogue.entries.iter().find(|e| e.id == id);
+    let (Some(a), Some(b)) = (find(&ask.a), find(&ask.b)) else {
+        return not_found("no such unit in the list");
+    };
+    let comparison = fusion::compare(a, b);
+    let (answer, error) = match (ask.ai, state.units.as_ref()) {
+        (true, Some(desk)) => match desk.ask(fusion::question(&comparison, a, b)).await {
+            Ok(answer) => (Some(answer.trim().to_string()), None),
+            Err(why) => (None, Some(why)),
+        },
+        _ => (None, None),
+    };
+    json(&serde_json::json!({ "comparison": comparison, "answer": answer, "error": error }))
 }
 
 /// A board's pins, the deleted ones left out.
@@ -1798,6 +1900,7 @@ mod tests {
             trials: Some(Arc::new(Bench::default())),
             restart: Arc::default(),
             restart_poll: Duration::from_millis(5),
+            units: None,
         }
     }
 

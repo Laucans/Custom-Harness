@@ -1,0 +1,31 @@
+{
+  "concept": "NiveauDuGroupe",
+  "version": 1,
+  "kind": "derived",
+  "definition": "Party level of a group of player characters: the mean of the PC levels received, rounded to the nearest integer, with .5 rounding up. Each level is an integer from 1 to 20; any other value is outside this Concept. With n ≥ 1 levels of sum s, level = (2·s + n) / (2·n) in integer division, with no floating point anywhere; the result is always between 1 and 20. pcCount = n, each PC counted once. The result does not depend on the order of the levels. With n = 0, decided before any division, level is null and pcCount is 0: never 0 or 1, and not an error. The Concept receives the levels already selected; choosing which PCs count is not part of it, and it never filters. model is always \"v1\"; asOf is the dataVersion the levels were read at.",
+  "output": {
+    "level": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 20,
+      "description": "Round-half-up of the mean of the levels received; null if and only if pcCount is 0."
+    },
+    "pcCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of levels received."
+    },
+    "model": {
+      "type": "string",
+      "const": "v1",
+      "description": "Version of this Concept; always equals the concept version."
+    },
+    "asOf": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The dataVersion the levels were read at; present on every result, including an empty list."
+    }
+  },
+  "inputs": ["pc.level"],
+  "conformance": "./fixtures.json"
+}

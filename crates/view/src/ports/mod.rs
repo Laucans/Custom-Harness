@@ -119,6 +119,9 @@ pub struct BoardReading {
     pub roadmap: Vec<Issue>,
     /// Milestones, open ones first, each with its tasks.
     pub milestones: Vec<Milestone>,
+    /// Open issues labelled `bug`: what turns a unit of the capabilities
+    /// list red.
+    pub bugs: Vec<Issue>,
 }
 
 /// Where the board is read from.
@@ -567,4 +570,57 @@ pub trait Trials: Send + Sync {
     /// Every trial with a report, by id — one whose process died before
     /// reporting reads as failed.
     fn reports(&self) -> Vec<(String, harness_core::domain::prompt_book::TrialReport)>;
+}
+
+/// One manifest of the product, as one branch has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitFile {
+    /// Relative to the product's root.
+    pub path: String,
+    /// Its text.
+    pub text: String,
+}
+
+/// The manifests one branch carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefUnits {
+    /// The branch.
+    pub git_ref: String,
+    /// Its `capability.json`, `data-capability.json`, `micro-ui.json`,
+    /// `aggregate.json` and `concept.json` files.
+    pub files: Vec<UnitFile>,
+}
+
+/// When a manifest was first and last committed, on any branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDates {
+    /// Relative to the product's root.
+    pub path: String,
+    /// ISO-8601, the oldest commit that touched it.
+    pub created: String,
+    /// ISO-8601, the newest.
+    pub modified: String,
+}
+
+/// The product's units, every branch at once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitsReading {
+    /// One entry per branch.
+    pub refs: Vec<RefUnits>,
+    /// The Capabilities' and `DataCapabilities`' dates.
+    pub dates: Vec<FileDates>,
+}
+
+/// The product's architecture manifests, read on every branch — what the
+/// capabilities list is drawn from.
+///
+/// Synchronous and blocking (a fetch, a few `git` reads): a handler runs it
+/// on a blocking thread. `Send + Sync` because the handlers share it.
+pub trait Units: Send + Sync {
+    /// Reads every branch afresh, or as recently as the adapter allows.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be reached or read.
+    fn read(&self) -> Result<UnitsReading, String>;
 }

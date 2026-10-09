@@ -4,10 +4,12 @@
 pub mod annotations;
 pub mod assemble;
 pub mod blueprint;
+pub mod capabilities;
 pub mod cleanup;
 pub mod data_versions;
 pub mod divergence;
 pub mod doctor;
+pub mod fusion;
 pub mod gates;
 pub mod history;
 pub mod journal;

@@ -1,0 +1,14 @@
+{
+  "dataCapability": "campagne.creerCampagne",
+  "owner": "dataguard",
+  "version": 1,
+  "effect": "insert",
+  "target": { "aggregate": "Campagne" },
+  "touches": [],
+  "payload": { "name": "string" },
+  "mode": "relative",
+  "invariants": ["campaign-name-required", "campaign-name-length"],
+  "permissions": ["campagne.write"],
+  "callableBy": ["campagne"],
+  "idempotencyKey": "required"
+}

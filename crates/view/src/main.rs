@@ -28,6 +28,7 @@ mod janitor;
 mod note_desks;
 mod ports;
 mod server;
+mod units_desk;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -47,6 +48,7 @@ use crate::adapters::claude_cli::{ClaudeOneshot, ClaudeTranscripts};
 use crate::adapters::fs_traces::FsTraces;
 use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
+use crate::adapters::git_units::{DirUnits, GitUnits};
 use crate::adapters::limits_cli::CliLimits;
 use crate::adapters::product::{DirProduct, GhProduct};
 use crate::adapters::prompt_files::PromptFiles;
@@ -70,9 +72,11 @@ use crate::domain::steward;
 use crate::janitor::Janitor;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    Board, BoardReading, Limits, NoteStore, Plant, Product, TerminalFactory, Traces, Trials, Yard,
+    Board, BoardReading, Limits, NoteStore, Oneshot, Plant, Product, TerminalFactory, Traces,
+    Trials, Units, Yard,
 };
 use crate::server::{AppState, router};
+use crate::units_desk::UnitsDesk;
 use harness_adapters::store::events::SqliteEvents;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
@@ -134,9 +138,7 @@ async fn main() -> anyhow::Result<()> {
         asking: Arc::default(),
         plant: plant.clone(),
         start_grace: Duration::from_millis(1500),
-        limits: Some(Arc::new(CliLimits::new(
-            claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
-        )) as Arc<dyn Limits>),
+        limits: Some(limits()),
         claude_read: Arc::clone(&claude_read),
         events: events.clone(),
         janitor: janitor.clone(),
@@ -148,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
         trials: trials(&cli, &workspace),
         restart: Arc::default(),
         restart_poll: Duration::from_secs(3),
+        units: units_for(&cli, &root, &project),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -602,6 +605,48 @@ fn product_for(
     Some((
         Rc::new(GhProduct::new(gh, &project.slug, &cli.integration_branch)),
         Duration::from_secs(cli.board_interval.max(5)),
+    ))
+}
+
+/// The rate limits, read by the newest Claude Code on the machine.
+fn limits() -> Arc<dyn Limits> {
+    Arc::new(CliLimits::new(
+        claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
+    ))
+}
+
+/// Where the sample units lie, for `--demo`: one folder per branch.
+const SAMPLE_UNITS: &str = "crates/view/sample/units";
+
+/// Where the capabilities list is read: the folder the human named, the
+/// sample under `--demo`, else a mirror of the product on GitHub — nothing
+/// under `--no-board` without a folder.
+fn units_for(cli: &Cli, root: &Path, project: &Project) -> Option<UnitsDesk> {
+    let units: Arc<dyn Units> = if let Some(dir) = &cli.data_dir {
+        Arc::new(GitUnits::local(dir))
+    } else if cli.demo {
+        Arc::new(DirUnits::new(&root.join(SAMPLE_UNITS)))
+    } else if cli.no_board || project.slug.is_empty() {
+        return None;
+    } else {
+        let mirror = root
+            .join(".llocal")
+            .join(cleanup::VIEW_MIRROR)
+            .join(format!("{}.git", project.slug.replace('/', "-")));
+        Arc::new(GitUnits::mirror(
+            &format!("https://github.com/{}.git", project.slug),
+            &mirror,
+            Duration::from_secs(60),
+        ))
+    };
+    let claude = claude_bin::newest().map(|(path, _)| path);
+    let oneshot = claude.map(|path| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
+    Some(UnitsDesk::new(
+        units,
+        Duration::from_secs(60),
+        &cli.integration_branch,
+        oneshot,
+        &cli.fusion_model,
     ))
 }
 

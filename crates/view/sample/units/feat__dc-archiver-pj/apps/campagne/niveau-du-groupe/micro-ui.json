@@ -1,0 +1,7 @@
+{
+  "microUi": "NiveauDuGroupe",
+  "system": "campagne",
+  "description": "Niveau du groupe d'une campagne en un coup d'œil : le niveau et le nombre de PJ actifs, ou « pas de niveau de groupe » sans PJ. Se met à jour à chaque changement de données.",
+  "needs": ["campagne.niveauDuGroupe"],
+  "props": { "campagneId": "ID" }
+}

@@ -1,0 +1,8 @@
+{
+  "microUi": "Pjs",
+  "system": "campagne",
+  "description": "Liste les PJ actifs d'une campagne (du plus ancien au plus récent) ; ajoute, modifie et archive un PJ.",
+  "needs": ["campagne.listerPjs"],
+  "actions": ["campagne.ajouterPj", "campagne.modifierPJ", "campagne.archiverPJ"],
+  "props": { "campagneId": "ID" }
+}

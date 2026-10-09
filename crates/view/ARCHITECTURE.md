@@ -176,7 +176,7 @@ time (`domain::cleanup`), the walk and the removal are the `Yard` port's
 | a run's folder under `logs/`, its `flow-*.jsonl` with it | 30 days old |
 | `init/`, the throwaway clones of `init-repo` | idle a day |
 | a stray, a folder the harness never writes | only when the human allows it, idle a day |
-| a clone's code, `.git`, the ledgers, the event store, the locks | never |
+| a clone's code, `.git`, the ledgers, the event store, the locks, the view's mirror | never |
 
 A name that a project might commit (`dist`, `build`) is not on the list: a
 sweep never takes what a reset would not give back. A folder under the
@@ -311,12 +311,59 @@ without saying so. `--permission-mode` comes from the same `PERMISSION_MODE`
 the launcher passes to every session. The page is bound to `127.0.0.1` for
 a reason: this terminal is a shell in the checkout.
 
+## The capabilities list
+
+The screen in the architecture office opens the **capabilities list**: every
+Capability and `DataCapability` of the product, one row each, coloured by
+where it stands (`domain::capabilities`):
+
+| colour | status | when |
+| --- | --- | --- |
+| green | available | its manifest is on `main` |
+| yellow | building | its manifest is on another branch only |
+| blue | planned | an open task of an open milestone declares a `capability` or `data-capability` under `## Architecture`, and no task names an existing unit |
+| red | bug | an open issue labelled `bug` names it — its id, or its name as a word of the title |
+
+A row shows the name, the kind, the system, and the dates its manifest was
+first and last committed, on any branch. The page searches by name as the
+human types (only the list is redrawn, never the search box), sorts by
+name, availability or date, filters by kind and by status — the legend's
+chips — and pages fifteen rows at a time. A click opens the unit's detail:
+its role (`description`; for a `DataCapability`, its effect and target),
+its **interface contracts** — from the UI (`input` or `payload`, and each
+Micro-UI that reads or triggers it with the props it hands), to the
+dataview (the persisted queries a Capability `reads`) or to the
+`DataGuard` (effect, aggregate, touches, mode, permissions) — what it
+returns, and its **business rules**: the Concept a Capability implements,
+or the aggregate's invariants a `DataCapability` declares, by id.
+
+Everything comes from the manifests the architecture asks for, read with
+`git` on **every branch** by the `Units` port (`adapters::git_units`): a
+bare mirror of the product the view keeps under `.llocal/view-mirror/` —
+cloned once, fetched at most once a minute, read by no run, a store the
+janitor never sweeps — or the branches of `--data-dir`, or the sample's
+folders under `--demo`. One `ls-tree` per branch, one `cat-file --batch`
+for every manifest, one `git log` for every date. `units_desk.rs` keeps a
+reading a minute, two requests sharing one read; `↻` reads afresh.
+
+**A fusion test.** `⚭ fusion` turns the rows into picks; two picked, `test
+the fusion` asks `POST /api/capabilities/fusion`. The **tooling** decides
+first (`domain::fusion`): a read and a write never merge, nor two systems,
+nor two Concepts, nor two aggregates or effects; a field one side lacks, a
+field typed two ways, a mode, permissions, different invariants are an
+**adaptable contract**; identical contracts and rules merge as they are.
+Only then is the model asked (`claude -p`, `--fusion-model`, haiku by
+default, no tool), with the comparison and the two contracts and nothing
+else — a few hundred tokens — to word the verdict, the differences that
+matter, and the merged unit. Route `GET /api/capabilities?fresh=`.
+
 ## The modules
 
 ```
 src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
 src/note_desks.rs      the pins' sessions at work: one Claude Code per open pin, its turns read back when it closes
+src/units_desk.rs      the capabilities list's reading, kept a minute; the fusion's one question to the model
 src/data_desk.rs       the data desk: one task owning the Product port, versions cached, the handlers answered by channel
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
@@ -338,23 +385,26 @@ src/domain/            the inside — no disk, no subprocess, no clock
   divergence.rs        a diagnosed divergence found in the events, and the issue a human opens from it
   annotations.rs       the human's pins: their kinds, the checks before one is kept, what ctrl+z can still bring back
   note_session.rs      a pin's AI session: what it is told, what is kept of it, what is handed back (40k whole, else summary + 10k)
+  capabilities.rs      the capabilities list: every unit on every branch, its status, contracts, callers, rules, dates
+  fusion.rs            could two units be one: the deterministic comparison, and the small question the model words it from
   prompts.rs           a station's prompts for the pane: the catalog, the book and the drafts together; an edit, a revert, a withdrawal; what waits
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), NoteStore (the pins), Oneshot / Transcripts / TerminalMaker (a pin's session), Prompts (the book read only, the drafts), Trials (the dry-runs)
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), NoteStore (the pins), Oneshot / Transcripts / TerminalMaker (a pin's session), Prompts (the book read only, the drafts), Trials (the dry-runs), Units (the product's manifests on every branch)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   fs_yard.rs           .llocal walked and swept with std::fs, symlinks never followed, every path kept inside
+  git_units.rs         the product's manifests: a bare mirror under .llocal/view-mirror, a --data-dir checkout, or the demo's folders
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   sqlite_notes.rs      the pins and their conversations, in .llocal/harness.db
   claude_cli.rs        claude -p asked once (summary, conclusion, request), and Claude Code's transcripts read back
   prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
-sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions)
+sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests, one folder per branch, dates.tsv)
 ```
 
 The drawing itself is **another crate**, `harness-view-render`: a Bevy scene

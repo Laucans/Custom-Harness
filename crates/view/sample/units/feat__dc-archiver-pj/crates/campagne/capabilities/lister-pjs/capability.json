@@ -1,0 +1,9 @@
+{
+  "capability": "campagne.listerPjs",
+  "system": "campagne",
+  "version": "0.1.0",
+  "description": "Lists the active PCs (id, name, class, level) of one campaign, oldest first; not-found for an unknown, archived or foreign campaign.",
+  "input": { "campagneId": "ID" },
+  "output": "[{ id: ID, name: String, class: String, level: Int }]",
+  "reads": ["liste-pjs.graphql"]
+}
