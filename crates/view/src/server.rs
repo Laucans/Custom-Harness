@@ -1031,7 +1031,7 @@ async fn delete_note(
     }
     // An open session's turns are kept with the pin before it goes.
     if let Some(desks) = &state.note_desks {
-        let _ = desks.close(&board, &id).await;
+        let _ = desks.close(&board, &id, false).await;
     }
     let done = state
         .pins
@@ -1124,7 +1124,7 @@ async fn close_session(
     let Some(desks) = state.note_desks.clone() else {
         return not_found(NO_SESSIONS);
     };
-    match desks.close(&board, &id).await {
+    match desks.close(&board, &id, true).await {
         Ok(turns) => json(&serde_json::json!({ "turns": turns })),
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }

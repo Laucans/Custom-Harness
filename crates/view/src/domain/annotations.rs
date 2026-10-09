@@ -126,6 +126,14 @@ pub fn checked(note: Note) -> Result<Note, String> {
             note.id
         ));
     }
+    // A brainstorm or an asking opens its session on what the note says:
+    // there must be something to say first.
+    if note.kind != Kind::Note && note.text.trim().is_empty() {
+        return Err(format!(
+            "pin {}: a brainstorm or an asking starts from the note's text — write it first",
+            note.id
+        ));
+    }
     if note.at.len() > 40 {
         return Err(format!("pin {}: its date is too long", note.id));
     }
@@ -190,6 +198,18 @@ mod tests {
         let mut lost = note("a");
         lost.dx = f64::NAN;
         assert!(checked(lost).is_err());
+        let mut silent = note("a");
+        silent.kind = Kind::Brainstorm;
+        silent.text = "  ".to_string();
+        assert!(
+            checked(silent.clone())
+                .unwrap_err()
+                .contains("write it first")
+        );
+        silent.kind = Kind::Asking;
+        assert!(checked(silent.clone()).is_err());
+        silent.kind = Kind::Note;
+        assert!(checked(silent).is_ok(), "an empty note is still a note");
     }
 
     #[test]
@@ -214,7 +234,7 @@ mod tests {
     proptest! {
         #[test]
         fn a_kept_pin_comes_back_as_written(
-            text in "\\PC{0,200}",
+            text in "[a-z]\\PC{0,199}",
             dx in (-1_000_000_i32..1_000_000).prop_map(f64::from),
         ) {
             let mut n = note("p-1");

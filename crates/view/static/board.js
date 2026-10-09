@@ -193,7 +193,7 @@
       session.hidden = kind === 'note' || !opts.onSession;
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
       textarea.disabled = busy;
-      textarea.placeholder = kind === 'asking' ? 'The change you want considered…' : kind === 'brainstorm' ? 'What to explore with the AI…' : 'Write a note…';
+      textarea.placeholder = kind === 'note' ? 'Write a note — or the first prompt of a brainstorm or an asking…' : 'Where the discussion stands — rewritten when you leave the session';
     }
     function openNote(n) {
       flush();
@@ -309,6 +309,12 @@
           drawEditor(n);
           drawPins();
         }
+        return;
+      }
+      // A brainstorm or an asking opens its session on what the note says.
+      if (kind !== 'note' && !(n.text || '').trim()) {
+        setState('write the first prompt first: the note is what the AI is asked');
+        textarea.focus();
         return;
       }
       n.kind = kind;

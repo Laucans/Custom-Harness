@@ -137,6 +137,24 @@ impl Conversation {
         }
     }
 
+    /// The conversation as a one-shot question reads it — for a compact, a
+    /// conclusion, a request: whole while it is light, else the kept summary
+    /// and the turns after it, else its last [`FULL_LIMIT`] tokens.
+    #[must_use]
+    pub fn digest(&self) -> String {
+        match self.handback() {
+            Handback::Nothing => String::new(),
+            Handback::Whole(whole) => whole,
+            Handback::Compacted { summary, recent } => {
+                format!("(a summary of the start)\n{summary}\n\n{recent}")
+            }
+            Handback::Summarize { .. } => {
+                let start = start_within(&self.turns, FULL_LIMIT);
+                render(self.turns.get(start..).unwrap_or_default())
+            }
+        }
+    }
+
     /// Keeps a summary just made of `turns[..covers]`.
     pub fn summarized(&mut self, text: String, covers: usize) {
         let at_tokens = self.weight();
@@ -151,11 +169,17 @@ impl Conversation {
 /// Where the recent turns begin: the last ones that weigh at most
 /// [`RECENT`] together — always at least the last one.
 fn recent_start(turns: &[Turn]) -> usize {
+    start_within(turns, RECENT)
+}
+
+/// Where the last turns that weigh at most `budget` together begin — always
+/// at least the last one.
+fn start_within(turns: &[Turn], budget: usize) -> usize {
     let mut weight = 0;
     let mut start = turns.len();
     for (k, turn) in turns.iter().enumerate().rev() {
         weight += tokens(&turn.text) + 3;
-        if weight > RECENT && start < turns.len() {
+        if weight > budget && start < turns.len() {
             break;
         }
         start = k;
@@ -327,6 +351,25 @@ pub fn summary_prompt(about: &About, older: &str) -> String {
     )
 }
 
+/// What the compact is asked of — written into the pin's note when its
+/// session closes, so the note always says where the discussion stands.
+#[must_use]
+pub fn compact_prompt(about: &About, conversation: &str) -> String {
+    format!(
+        "This is a discussion between a human and an AI about {target}, from a pin of kind {kind}. \
+         Compact it into the text the pin will show: where the discussion stands — what was decided, \
+         the options still open and why, the questions left — so that the human, reading it in a \
+         month, knows exactly where they are. At most 150 words, plain sentences and short lists, \
+         no preamble. Output the text only.\n\n<conversation>\n{conversation}\n</conversation>",
+        target = if about.target.is_empty() {
+            "a part of their product"
+        } else {
+            &about.target
+        },
+        kind = about.kind,
+    )
+}
+
 /// What the conclusion is asked of — the brainstorm becomes a plain note.
 #[must_use]
 pub fn conclusion_prompt(about: &About, conversation: &str) -> String {
@@ -474,6 +517,7 @@ not json
         assert!(again.contains("<conversation>\nHuman: a\n</conversation>"));
         assert!(request_prompt(&about, "Human: a").contains("next roadmap"));
         assert!(conclusion_prompt(&about, "Human: a").contains("unique?"));
+        assert!(compact_prompt(&about, "Human: a").contains("where the discussion stands"));
     }
 
     proptest! {
