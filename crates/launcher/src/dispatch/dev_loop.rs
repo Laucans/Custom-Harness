@@ -732,6 +732,9 @@ mod tests {
         async fn branch_sha(&self, _branch: &str) -> Outcome<Option<String>> {
             Err(refused())
         }
+        async fn branches(&self, _prefix: &str) -> Outcome<Vec<String>> {
+            Err(refused())
+        }
         async fn create_branch(&self, _branch: &str, _sha: &str) -> Outcome<()> {
             Err(refused())
         }

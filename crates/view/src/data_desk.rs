@@ -18,7 +18,7 @@ use harness_workflows::data_snapshot::data::index::Index;
 use jiff::tz::TimeZone;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::domain::data_versions::{self, Versions};
+use crate::domain::data_versions::{self, FEATURE_PREFIX, Versions};
 use crate::ports::Product;
 use harness_architecture::model::{self as data_model, DataModel, MODEL_PATH, SCHEMA_PATH};
 
@@ -135,6 +135,8 @@ pub fn open(
 
 struct Kept {
     index: Option<(Instant, Option<Index>)>,
+    /// The milestone branches, read with the index.
+    features: Vec<String>,
     /// The live files, by branch.
     live: HashMap<String, (Instant, Arc<DataModel>)>,
     versions: HashMap<String, Arc<DataModel>>,
@@ -148,6 +150,7 @@ async fn serve(
 ) {
     let mut kept = Kept {
         index: None,
+        features: Vec::new(),
         live: HashMap::new(),
         versions: HashMap::new(),
     };
@@ -158,6 +161,7 @@ async fn serve(
                 let _ = reply.send(Arc::new(data_versions::versions(
                     index.as_ref(),
                     &product.live_ref(),
+                    &kept.features,
                 )));
             }
             Ask::Model(wanted, reply) => {
@@ -177,11 +181,16 @@ async fn serve(
 }
 
 /// The archive's index, read again once stale; `None` when there is no archive.
+/// The milestone branches are read again with it.
 async fn index(product: &dyn Product, kept: &mut Kept) -> Option<Index> {
     if let Some((at, index)) = &kept.index
         && at.elapsed() < INDEX_FRESH
     {
         return index.clone();
+    }
+    // A failed read keeps the branches known.
+    if let Ok(features) = product.branches(FEATURE_PREFIX).await {
+        kept.features = features;
     }
     let read = product.file(INDEX, ARCHIVE_BRANCH).await;
     let index = match read {
@@ -336,6 +345,14 @@ mod tests {
                 .get(&(path.to_string(), git_ref.to_string()))
                 .cloned())
         }
+        async fn branches(&self, prefix: &str) -> Outcome<Vec<String>> {
+            Ok(self
+                .files
+                .keys()
+                .map(|(_, git_ref)| git_ref.clone())
+                .filter(|r| r.starts_with(prefix))
+                .collect())
+        }
         async fn open_issue(&self, title: &str, _body: &str, labels: &[&str]) -> Outcome<String> {
             Ok(format!("{title} [{}]", labels.join(",")))
         }
@@ -356,6 +373,12 @@ mod tests {
             "main_agent",
             "CREATE TABLE live (a int);",
         );
+        put(
+            &mut shelf,
+            SCHEMA_PATH,
+            "milestone/3-campaigns",
+            "CREATE TABLE feature (a int);",
+        );
         let shelf = Rc::new(shelf);
         let local = tokio::task::LocalSet::new();
         local
@@ -368,6 +391,21 @@ mod tests {
                 let task = tokio::task::spawn_local(task);
                 let versions = desk.versions().await.expect("answered");
                 assert!(!versions.archive);
+                assert!(
+                    versions
+                        .branches
+                        .iter()
+                        .any(|b| b.branch == "milestone/3-campaigns" && b.versions.is_empty()),
+                    "a milestone with nothing archived is offered"
+                );
+                let feature = desk
+                    .model(Wanted {
+                        branch: Some("milestone/3-campaigns".into()),
+                        ..Wanted::default()
+                    })
+                    .await
+                    .expect("answered");
+                assert_eq!(feature.model.tables[0].name, "feature", "its live files");
                 let opened = desk
                     .open_issue(Issue {
                         title: "t".into(),

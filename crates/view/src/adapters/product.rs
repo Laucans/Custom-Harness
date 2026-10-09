@@ -51,6 +51,10 @@ impl Product for GhProduct {
         self.gh.file_text(path, git_ref).await
     }
 
+    async fn branches(&self, prefix: &str) -> Outcome<Vec<String>> {
+        self.gh.branches(prefix).await
+    }
+
     async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String> {
         let number = self.gh.create_issue(title, body, labels).await?;
         Ok(if self.slug.is_empty() {
@@ -114,6 +118,11 @@ impl Product for DirProduct {
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
             Err(e) => Err(Halt::Unreadable(format!("{}: {e}", full.display()))),
         }
+    }
+
+    /// A folder has one set of files: no branch beside it.
+    async fn branches(&self, _prefix: &str) -> Outcome<Vec<String>> {
+        Ok(Vec::new())
     }
 
     async fn open_issue(&self, _title: &str, _body: &str, _labels: &[&str]) -> Outcome<String> {

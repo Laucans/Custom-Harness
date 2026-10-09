@@ -391,6 +391,13 @@ pub trait Product {
     /// The read failed for another reason than absence.
     async fn file(&self, path: &str, git_ref: &str) -> Outcome<Option<String>>;
 
+    /// The product's branches named `prefix…` — its milestones', for one.
+    ///
+    /// # Errors
+    ///
+    /// The read failed.
+    async fn branches(&self, prefix: &str) -> Outcome<Vec<String>>;
+
     /// Opens an issue on the product's board — the one write the data pane
     /// makes, on a human's click — and says where it is.
     ///

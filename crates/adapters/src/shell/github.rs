@@ -797,6 +797,26 @@ impl GitHub for GhCli {
         Ok(Some(sha.to_string()))
     }
 
+    async fn branches(&self, prefix: &str) -> Outcome<Vec<String>> {
+        let what = format!("branches named {prefix}*");
+        let value = self
+            .read(
+                &what,
+                &format!("git/matching-refs/heads/{prefix}"),
+                &[("per_page", "100".to_string())],
+            )
+            .await?;
+        let refs = value
+            .as_array()
+            .ok_or_else(|| unreadable(&what, "not a list of refs"))?;
+        Ok(refs
+            .iter()
+            .filter_map(|r| r.get("ref").and_then(Value::as_str))
+            .filter_map(|r| r.strip_prefix("refs/heads/"))
+            .map(ToString::to_string)
+            .collect())
+    }
+
     async fn create_branch(&self, branch: &str, sha: &str) -> Outcome<()> {
         self.write(
             &format!("create branch {branch}"),

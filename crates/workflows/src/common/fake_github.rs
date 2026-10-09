@@ -305,6 +305,18 @@ impl GitHub for FakeGitHub {
             .ok_or_else(|| Halt::Failed(format!("branch_sha({branch}) not set up in this test")))
     }
 
+    async fn branches(&self, prefix: &str) -> Outcome<Vec<String>> {
+        self.ok()?;
+        let mut names: Vec<String> = self
+            .branch_shas
+            .iter()
+            .filter(|(name, sha)| sha.is_some() && name.starts_with(prefix))
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
     async fn create_branch(&self, branch: &str, sha: &str) -> Outcome<()> {
         self.wrote
             .borrow_mut()

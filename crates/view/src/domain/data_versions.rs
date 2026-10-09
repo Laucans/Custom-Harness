@@ -1,7 +1,8 @@
 //! The versions of the product's data model the archive keeps — the target's
 //! branch `harness/data-model`, written by the watch after every merge — put
 //! in the order the page offers them: `main`, the integration branch, then
-//! one entry per feature (milestone) branch, newest version first.
+//! one entry per feature (milestone) branch, newest version first. A
+//! milestone branch with no version yet is offered too: the page builds it.
 
 use serde::Serialize;
 
@@ -59,9 +60,13 @@ pub struct Versions {
 /// The release branch's name.
 pub const RELEASE: &str = "main";
 
-/// Orders the archive's versions for the page.
+/// How a milestone's branch is named: `milestone/<number>-<slug>`.
+pub const FEATURE_PREFIX: &str = "milestone/";
+
+/// Orders the archive's versions for the page; `features` are the product's
+/// milestone branches, offered even when nothing was archived for them.
 #[must_use]
-pub fn versions(index: Option<&Index>, integration: &str) -> Versions {
+pub fn versions(index: Option<&Index>, integration: &str, features: &[String]) -> Versions {
     let none = Index::default();
     let archive = index.is_some();
     let index = index.unwrap_or(&none);
@@ -70,6 +75,7 @@ pub fn versions(index: Option<&Index>, integration: &str) -> Versions {
     let mut names: Vec<&str> = vec![RELEASE, integration];
     names.extend(index.snapshots.iter().map(|s| s.branch.as_str()));
     names.extend(index.heads.keys().map(String::as_str));
+    names.extend(features.iter().map(String::as_str));
     names.sort_by_key(|name| rank(name, integration));
     names.dedup();
     let branches = names
@@ -125,7 +131,7 @@ fn rank(name: &str, integration: &str) -> (u8, u64, String) {
 }
 
 fn milestone_number(name: &str) -> Option<u64> {
-    name.strip_prefix("milestone/")?
+    name.strip_prefix(FEATURE_PREFIX)?
         .split('-')
         .next()?
         .parse()
@@ -134,7 +140,7 @@ fn milestone_number(name: &str) -> Option<u64> {
 
 /// `milestone/12-data-model` → `#12 data model`; any other name as is.
 fn label_of(name: &str) -> String {
-    match (milestone_number(name), name.strip_prefix("milestone/")) {
+    match (milestone_number(name), name.strip_prefix(FEATURE_PREFIX)) {
         (Some(n), Some(rest)) => {
             let words = rest
                 .split_once('-')
@@ -179,7 +185,7 @@ mod tests {
 
     #[test]
     fn release_then_integration_then_features_newest_first() {
-        let v = versions(Some(&index()), "main_agent");
+        let v = versions(Some(&index()), "main_agent", &[]);
         assert!(v.archive);
         let order: Vec<(&str, Kind, &str)> = v
             .branches
@@ -203,7 +209,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a2", "a1"]
         );
-        let empty = versions(None, "main_agent");
+        let empty = versions(None, "main_agent", &[]);
         assert!(!empty.archive);
         assert_eq!(
             empty
@@ -213,6 +219,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["main", "main_agent"],
             "both are offered, to be built"
+        );
+    }
+
+    #[test]
+    fn a_milestone_with_nothing_archived_is_offered_empty() {
+        let features = [
+            "milestone/4-imports".to_string(),
+            "milestone/3-campaigns".to_string(),
+        ];
+        let v = versions(Some(&index()), "main_agent", &features);
+        let features: Vec<(&str, usize)> = v
+            .branches
+            .iter()
+            .filter(|b| b.kind == Kind::Feature)
+            .map(|b| (b.branch.as_str(), b.versions.len()))
+            .collect();
+        assert_eq!(
+            features,
+            [
+                ("milestone/3-campaigns", 1),
+                ("milestone/4-imports", 0),
+                ("milestone/12-data-model", 1),
+            ],
+            "listed once, by number, the archived and the not yet archived"
         );
     }
 }

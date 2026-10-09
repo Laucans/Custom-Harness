@@ -205,6 +205,12 @@ pub trait GitHub {
     /// "absent".
     async fn branch_sha(&self, branch: &str) -> Outcome<Option<String>>;
 
+    /// The branches whose name starts with `prefix` (`milestone/`), by name.
+    ///
+    /// # Errors
+    /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) if the read fails.
+    async fn branches(&self, prefix: &str) -> Outcome<Vec<String>>;
+
     /// Create `refs/heads/{branch}` at this sha.
     ///
     /// # Errors
