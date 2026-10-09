@@ -406,7 +406,16 @@
     const liveRun = e.target.closest('[data-live-run]');
     if (liveRun && S.pane) { S.pane.liveRun = liveRun.dataset.liveRun; S.pane.jump = true; renderPane(S.pane, false); return undefined; }
     const help = e.target.closest('[data-help]');
-    if (help && S.pane) { S.pane.help = !S.pane.help; renderPane(S.pane, false); return undefined; }
+    if (help && S.pane) {
+      const key = help.dataset.help;
+      if (key) {
+        const open = new Set(S.pane.helps || []);
+        if (open.has(key)) open.delete(key); else open.add(key);
+        S.pane.helps = [...open];
+      } else S.pane.help = !S.pane.help;
+      renderPane(S.pane, false);
+      return undefined;
+    }
     const paneTab = e.target.closest('[data-tab]');
     if (paneTab && S.pane) { S.pane.tab = paneTab.dataset.tab; renderPane(S.pane, false); return undefined; }
     const pane = e.target.closest('[data-pane]');
@@ -548,36 +557,61 @@
     const m = Math.floor(ms / 60000);
     return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : m >= 1 ? `${m} min` : `${Math.round(ms / 1000)} s`;
   }
+  // A section's `?`: what it monitors, where the numbers come from. Open ones
+  // are kept on the pane, so a refresh of the data does not close them.
+  const helpBtn = (p, key) => `<button class="help-btn ${(p.helps || []).includes(key) ? 'on' : ''}" data-help="${esc(key)}" title="What is monitored here?" aria-expanded="${(p.helps || []).includes(key)}">?</button>`;
+  const helpBox = (p, key) => ((p.helps || []).includes(key) && HELP[key] ? `<div class="callout purpose">${HELP[key]}</div>` : '');
+  const section = (p, key, title) => `<h3 class="with-help">${esc(title)}${helpBtn(p, key)}</h3>` + helpBox(p, key);
+  const HELP = {
+    costs: 'What the plant has spent, from <code>.llocal/logs/agent-loop/costs.tsv</code>: one row per paid session a run opened (one stage of one task). The dollars are Claude\'s own estimate for each session, not an invoice.',
+    'costs.totals': '<b>spent</b>: the sum of every session\'s estimate. <b>paid sessions</b>: rows in the ledger. The four token counts add up what every session reported: <b>output</b> written by the model, <b>cache read</b> and <b>cache write</b> of the prompt cache, and <b>uncached input</b>.',
+    'costs.data': 'The tasks labelled <code>harness:data-layer</code> run every stage on the strongest model. Their spending, and its share of all spending, says what that choice costs.',
+    'costs.side': 'Spending grouped by the side of the architecture the task carries as a label: <code>harness:read-side</code>, <code>harness:write-side</code>, <code>harness:data-layer</code>. A task with none is counted apart.',
+    'costs.day': 'Spending per day (UTC), the last fourteen days the ledger holds.',
+    'costs.stage': 'Spending per stage of the pipeline — technical refinement, code, create-test, review… — with how many sessions each took.',
+    'costs.task': 'Spending per issue: what each task has cost so far, every round and stage together.',
+    'costs.outcome': 'How the paid sessions ended: <b>ok</b>, <b>STOP</b> (the session stopped itself, or a question), <b>FAILED</b> (it rendered nothing usable, or was killed), <b>QUOTA</b> (the window was exhausted). Money spent on anything but ok bought nothing.',
+    'costs.last': 'The newest sessions of the ledger: when, which task and stage, the estimate, the round-trips with the model, the minutes it took, and how it ended.',
+    quota: 'Claude\'s subscription windows, as the last session that ran read them. Nothing here is polled: the reading is only as fresh as the last paid session.',
+    'quota.windows': 'Each window (<code>five_hour</code>, <code>seven_day</code>, …) with the share already used and when it resets. Above 70 % it turns orange, above 90 % red. A run reads the tightest window when it starts (its <code>run.log</code> says how much is left); a session refused for an exhausted window ends as QUOTA and costs nothing.',
+    errors: 'Every time a workflow stopped, from <code>.llocal/logs/agent-loop/errors.tsv</code>, newest first.',
+    'errors.list': '<b>STOP</b>: the run halted for a human — a question in its SPEC, a gate, or the breaker refusing to pay again for a prompt that already failed twice. <b>FAILED</b>: something broke — a command, a timeout, an unreadable board. <b>QUOTA</b>: the subscription window was exhausted. The reason is the run\'s own words.',
+    journal: 'The polling loop, <code>harness watch</code>, read from <code>.llocal/logs/agent-loop/watch.log</code> (its last 256 kB). Every tick it reads the board, decides, and starts work on lanes or runs a workflow itself.',
+    'journal.now': '<b>agents at work</b>: runs whose files moved in the last minutes — what the plant shows walking. <b>lanes open</b>: lanes the journal saw start and not yet finish. <b>ticks</b>: polls since the watch last started. <b>empty ticks</b>: polls that started nothing — the board had not moved, or every runnable task was already on a lane or parked. <b>failed board reads</b>: polls whose GitHub read failed (a rate limit, the network). When the start of the watch is older than the part of the journal read, the counts are a floor.',
+    'journal.triggers': 'Everything the loop started, newest first: a <b>lane</b> (a dev loop on a task, a refinement, a split — a separate process, numbered by its lane) or a workflow it ran itself (planner, PR review, merges). <b>running</b>: not reported back yet. <b>ok</b>: exit 0. <b>failed</b>: a non-zero exit, or it could not start. <b>killed</b>: ended by a signal. <b>unknown</b>: the watch restarted before it reported. A task that stops (exit 1) is parked until its issue changes; the logs say so.',
+    'journal.logs': 'The last forty lines of the journal as written, clock in UTC: polls (<code>saw</code>, <code>quiet</code>), routes (<code>tick</code>), lanes taken and freed, warnings, and a soft stop (<code>draining</code>, <code>stopped</code>).',
+  };
   const STATE_TAG = { running: ['running', 'acc'], ok: ['ok', 'ok'], failed: ['failed', 'bad'], killed: ['killed', 'bad'], unknown: ['unknown', 'warn'] };
   const DASH = {
-    costs() {
+    costs(p) {
       const c = S.snap.costs;
-      let h = tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
+      let h = section(p, 'costs.totals', 'Totals') + tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
       // The data layer runs on the strongest model: what it costs against the rest.
       const dl = (c.by_side || []).find((b) => b.key === 'data-layer');
-      if (dl) h += tiles([[usd(dl.usd), 'data layer (strongest model)'], [c.total_usd > 0 ? Math.round(100 * dl.usd / c.total_usd) + '%' : '—', 'of all spending'], [dl.count, 'sessions']]);
-      if ((c.by_side || []).length) h += '<h3>By side of the architecture</h3>' + bars(c.by_side);
-      h += '<h3>By day</h3>' + bars(c.by_day.slice(-14));
-      h += '<h3>By stage</h3>' + bars(c.by_stage);
-      h += '<h3>By task</h3>' + bars(c.by_task);
-      h += '<h3>By outcome</h3>' + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
-      h += '<h3>Last paid sessions</h3><table class="rows"><tr><th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th></tr>' + c.last.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
+      if (dl) h += section(p, 'costs.data', 'Data layer') + tiles([[usd(dl.usd), 'data layer (strongest model)'], [c.total_usd > 0 ? Math.round(100 * dl.usd / c.total_usd) + '%' : '—', 'of all spending'], [dl.count, 'sessions']]);
+      if ((c.by_side || []).length) h += section(p, 'costs.side', 'By side of the architecture') + bars(c.by_side);
+      h += section(p, 'costs.day', 'By day') + bars(c.by_day.slice(-14));
+      h += section(p, 'costs.stage', 'By stage') + bars(c.by_stage);
+      h += section(p, 'costs.task', 'By task') + bars(c.by_task);
+      h += section(p, 'costs.outcome', 'By outcome') + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
+      h += section(p, 'costs.last', 'Last paid sessions') + '<table class="rows"><tr><th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th></tr>' + c.last.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
       return h;
     },
-    quota() {
+    quota(p) {
       const q = S.snap.quota;
-      if (!q) return '<div class="muted">no reading yet</div>';
-      return '<div class="gauges">' + q.windows.map((w) => { const pct = Math.round(w.utilization * 100); const reset = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString() : 'unknown'; return `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(w.name)} · ${pct}% used</div><div class="bar"><span style="width:${pct}%"></span></div><div class="muted">resets ${esc(reset)}</div></div>`; }).join('') + '</div>' + `<div class="muted" style="margin-top:6px;font:11px var(--mono)">read ${new Date(q.at * 1000).toLocaleString()}</div>`;
+      const head = section(p, 'quota.windows', 'Windows');
+      if (!q) return head + '<div class="muted">no reading yet</div>';
+      return head + '<div class="gauges">' + q.windows.map((w) => { const pct = Math.round(w.utilization * 100); const reset = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString() : 'unknown'; return `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(w.name)} · ${pct}% used</div><div class="bar"><span style="width:${pct}%"></span></div><div class="muted">resets ${esc(reset)}</div></div>`; }).join('') + '</div>' + `<div class="muted" style="margin-top:6px;font:11px var(--mono)">read ${new Date(q.at * 1000).toLocaleString()}</div>`;
     },
-    errors() {
-      return S.snap.errors.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + S.snap.errors.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>';
+    errors(p) {
+      return section(p, 'errors.list', 'Last stops') + (S.snap.errors.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + S.snap.errors.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>');
     },
-    journal() {
+    journal(p) {
       const j = S.snap.journal, f = S.snap.factory;
       const atWork = S.snap.employees.filter((e) => e.active).length;
       const lanes = j.triggers.filter((t) => t.state === 'running' && t.lane != null).length;
       const pct = j.ticks ? Math.round(100 * j.empty_ticks / j.ticks) : 0;
-      let h = tiles([
+      let h = section(p, 'journal.now', 'Now') + tiles([
         [atWork, 'agents at work'],
         [lanes, 'lanes open'],
         [j.ticks, 'ticks' + (j.since ? '' : ' (at least)')],
@@ -587,7 +621,7 @@
       h += `<div class="muted loop-line">${f.draining ? tag('stopping', 'warn') : f.watching ? tag('polling', 'ok') : tag('off')} `
         + (j.since ? `since ${esc(when(j.since))}` : 'its start is older than the journal read')
         + (j.last_empty_at ? ` · last empty tick ${esc(when(j.last_empty_at))}` : '') + '</div>';
-      h += '<h3>Triggers</h3>';
+      h += section(p, 'journal.triggers', 'Triggers');
       h += j.triggers.length
         ? '<table class="rows triggers"><tr><th>when</th><th>what</th><th>on</th><th class="num">lane</th><th>state</th><th class="num">lasted</th><th>detail</th></tr>'
           + j.triggers.map((t) => {
@@ -598,7 +632,7 @@
             return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${tag(label, cls)}</td><td class="num">${esc(lasted(t.at, t.ended_at))}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
           }).join('') + '</table>'
         : '<div class="muted">nothing triggered since the start of the journal read</div>';
-      h += '<h3>Logs</h3><pre class="log">' + esc(S.snap.recent.join('\n') || '(empty)') + '</pre>';
+      h += section(p, 'journal.logs', 'Logs') + '<pre class="log">' + esc(S.snap.recent.join('\n') || '(empty)') + '</pre>';
       return h;
     },
   };
@@ -854,8 +888,8 @@
     dashboards(p) {
       const screens = { costs: 'Spending', quota: 'Rate limits', errors: 'Stops', journal: 'Watch loop' };
       const focus = screens[p.focus] ? p.focus : 'costs';
-      const nav = '<nav class="screens">' + Object.entries(screens).map(([k, name]) => `<button class="${k === focus ? 'here' : ''}" data-pane='${esc(JSON.stringify({ kind: 'dashboards', focus: k }))}'>${esc(name)}</button>`).join('') + '</nav>';
-      const h = nav + DASH[focus]();
+      const nav = '<nav class="screens">' + Object.entries(screens).map(([k, name]) => `<button class="${k === focus ? 'here' : ''}" data-pane='${esc(JSON.stringify({ kind: 'dashboards', focus: k }))}'>${esc(name)}</button>`).join('') + helpBtn(p, focus) + '</nav>' + helpBox(p, focus);
+      const h = nav + DASH[focus](p);
       return ['Control room · ' + screens[focus], h];
     },
 

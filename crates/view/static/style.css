@@ -306,6 +306,18 @@ button.mini:hover { color: var(--bad); border-color: var(--bad); }
 .crew-bubble .who small { color: var(--dim); }
 
 /* A pane's `?`: what the element is for, in a sentence. */
+.help-btn {
+  width: 22px; height: 22px; padding: 0; border-radius: 50%; flex: none;
+  background: transparent; color: var(--dim); border: 1px solid var(--line);
+  font: 700 12px/1 var(--mono, monospace); cursor: pointer;
+}
+.help-btn:hover, .help-btn.on { color: var(--accent); border-color: var(--accent); }
+.help-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+h3.with-help { display: flex; align-items: center; gap: 8px; }
+h3.with-help .help-btn { text-transform: none; letter-spacing: 0; }
+nav.screens .help-btn { margin-left: auto; align-self: center; padding: 0; border-radius: 50%; color: var(--dim); }
+nav.screens .help-btn.on { color: var(--accent); border-color: var(--accent); }
+.callout.purpose code { font-size: 11px; }
 .tabs .help-btn {
   margin-left: auto; width: 26px; height: 26px; padding: 0; border-radius: 50%;
   font-weight: 700;
