@@ -219,9 +219,17 @@ dump and `data/model.json` of that commit are archived on the target's
 orphan branch **`harness/data-model`** — `index.json` at its root, one
 folder per version that changed something (`<branch>/<stamp>-<sha7>/`).
 The pane offers `main`, `main_agent` and `feature ▾` (the milestone
-branches), then the versions of the branch shown, newest first. Without an
-archive yet, it reads the live `data/schema.sql` and `data/model.json` at
-the integration branch.
+branches — every `milestone/*` branch of the product, `GitHub::branches`,
+an unarchived one marked "live, not archived"), then the versions of the
+branch shown, newest first. A branch with no version archived shows its
+live `data/schema.sql` and `data/model.json`.
+
+A table or a field selected tells who **uses** it on the branch shown
+(`domain::data_usage`, `GET /api/data-model/used-by?branch=&dir=`): the
+Capabilities whose persisted query reads it — `queries/registry.json`,
+`<entity>.<field>`, a view read back to its table through the `CREATE VIEW`
+the schema carries — and the `DataCapabilities` that write it, their target
+aggregate read as the table of that name and their payload's fields.
 
 Everything is read through core's `GitHub::file_text` (`ports::Product`,
 `adapters::product`), or from a folder with `--data-dir <product root>`, by
@@ -231,7 +239,7 @@ once read (a version never changes), and reads the index and the live files
 again after a while. Routes `GET /api/data-model?branch=&dir=` and
 `GET /api/data-model/versions`.
 
-`harness_architecture::schema_sql` reads the DDL (a tokenizer and five statement shapes,
+`harness_architecture::schema_sql` reads the DDL (a tokenizer and six statement shapes, views included,
 never a panic: what it does not understand it skips), `harness_architecture::model`
 merges the two field by field and lists every **divergence** — a table, a
 field or a key only one side has, a type or a nullability they disagree on.
@@ -293,7 +301,9 @@ pane can mount: a canvas to pan (drag) and zoom (wheel, the toolbar), and a
 **pin** the human drags off the toolbar onto any part marked
 `data-pin="<target>"` — a table, a field, the bare canvas. A pin follows its
 part as the diagram unfolds and re-lays; a field's pin stands on its folded
-table; a part gone leaves its pin grey where it was.
+table; a part gone leaves its pin grey where it was. A pin belongs to **one
+branch**: the data pane keeps a board per branch (`data-model--main-agent`,
+`data-model--milestone-3`), switched with the branch shown (`board.setBoard`).
 
 A pin is one of five kinds (`domain::annotations::Kind`):
 
@@ -314,7 +324,11 @@ A brainstorm or an asking starts from the note's text — it cannot be one
 while the note is empty — and that text is the **first prompt** of its first
 session. A pin's session is an interactive Claude Code (the steward's model, plan
 mode, in the product's snapshot clone when there is one) in the
-`note_session` pane, run by `note_desks.rs`. It opens with a fixed
+`note_session` pane, run by `note_desks.rs`. Its system prompt carries the
+pin's note, its branch — and on a `milestone/<n>-…` branch, milestone #n as
+the board has it: title, state, description, tasks — what the page shows of
+the part it sits on (its rules, links, users) and that branch's
+`data/schema.sql` as the version shown has it (`DataDesk::schema`). It opens with a fixed
 `--session-id` and the pin's **conversation handed back** in its system
 prompt (`domain::note_session`): whole up to 40k tokens, else a kept summary
 of the older turns plus the last ~10k word for word — the summary is made

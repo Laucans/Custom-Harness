@@ -594,7 +594,8 @@ pub struct RefUnits {
     /// The branch.
     pub git_ref: String,
     /// Its `capability.json`, `data-capability.json`, `micro-ui.json`,
-    /// `aggregate.json` and `concept.json` files.
+    /// `aggregate.json` and `concept.json` files, and its persisted query
+    /// registries (`queries/registry.json`).
     pub files: Vec<UnitFile>,
 }
 

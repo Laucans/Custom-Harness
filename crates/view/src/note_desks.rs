@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::desk::Desk;
 use crate::domain::annotations::{Kind, MAX_TEXT, Note};
-use crate::domain::note_session::{self, About, Conversation, Handback};
+use crate::domain::note_session::{self, About, Brief, Conversation, Handback};
 use crate::ports::{NoteStore, Oneshot, TerminalMaker, Transcripts};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -38,31 +38,6 @@ pub struct Setup {
     /// The permission mode a session that edits the mock-up opens with —
     /// the launcher's; a conversation opens in plan mode whatever this says.
     pub permission_mode: String,
-}
-
-/// What the page sends to open a pin's session.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Opening {
-    /// What the page shows of what the pin sits on.
-    pub context: String,
-    /// Where the session runs instead of the product's clone: the branch's
-    /// mock-up workspace, for a pin on the mock-up.
-    pub cwd: Option<PathBuf>,
-    /// On the mock-up: the page the pin sits on.
-    pub page: String,
-    /// On the mock-up: the branch shown.
-    pub branch: String,
-}
-
-impl Opening {
-    /// A conversation about what the page shows.
-    #[must_use]
-    pub fn talk(context: String) -> Self {
-        Self {
-            context,
-            ..Self::default()
-        }
-    }
 }
 
 struct Open {
@@ -169,24 +144,27 @@ impl NoteDesks {
 
     /// Opens a pin's session — or finds it open. The conversation so far is
     /// handed back in its system prompt; a heavy one is summarized first.
-    /// `context` is what the page shows of what the pin sits on.
+    /// `brief` is what the page shows of what the pin sits on, its branch
+    /// and that branch's schema.
     ///
     /// # Errors
     ///
     /// No such pin, the store unreadable, or the summary failed.
-    pub async fn open(&self, board: &str, id: &str, opening: Opening) -> Result<String, String> {
+    pub async fn open(&self, board: &str, id: &str, brief: Brief) -> Result<String, String> {
         if let Some(open) = lock(&self.open).get(&key(board, id)) {
             return Ok(open.desk.command());
         }
         let note = self.note(board, id)?;
         let about = About {
-            context: opening.context,
+            context: brief.context,
             page: if note.kind == Kind::Link && !note.page.is_empty() {
                 note.page.clone()
             } else {
-                opening.page
+                brief.page
             },
-            branch: opening.branch,
+            branch: brief.branch,
+            schema: brief.schema,
+            milestone: brief.milestone,
             ..Self::about(board, &note)
         };
         let mut conversation = self.conversation(board, id)?;
@@ -222,7 +200,7 @@ impl NoteDesks {
         {
             args.push(first);
         }
-        let cwd = opening.cwd.as_deref().unwrap_or(&self.setup.cwd);
+        let cwd = brief.cwd.as_deref().unwrap_or(&self.setup.cwd);
         let desk = Desk::new(self.setup.maker.make(cwd, args));
         let command = desk.command();
         {
@@ -281,6 +259,9 @@ impl NoteDesks {
             board: board.to_string(),
             target: described(&note.target),
             context: String::new(),
+            branch: String::new(),
+            schema: String::new(),
+            milestone: String::new(),
             note: note.text.clone(),
             kind: match note.kind {
                 Kind::Note | Kind::Brainstorm => "brainstorm",
@@ -288,7 +269,6 @@ impl NoteDesks {
             }
             .to_string(),
             page: note.page.clone(),
-            branch: String::new(),
         }
     }
 
@@ -487,13 +467,16 @@ mod tests {
             .open(
                 "data-model",
                 "n1",
-                Opening::talk("type: varchar(40)".into()),
+                Brief {
+                    context: "type: varchar(40)".into(),
+                    ..Brief::default()
+                },
             )
             .await
             .expect("opened");
         assert!(desks.desk("data-model", "n1").is_some());
         desks
-            .open("data-model", "n1", Opening::default())
+            .open("data-model", "n1", Brief::default())
             .await
             .expect("found open");
         assert_eq!(lock(&maker.args).len(), 1, "opened once");
@@ -541,7 +524,7 @@ mod tests {
         assert_eq!(compacted.kind, Kind::Brainstorm, "a compact keeps the kind");
 
         desks
-            .open("data-model", "n1", Opening::default())
+            .open("data-model", "n1", Brief::default())
             .await
             .expect("opened again");
         let again = lock(&maker.args)[1].clone();
@@ -591,11 +574,11 @@ mod tests {
             .open(
                 "mockup--main--home",
                 "n1",
-                Opening {
-                    context: String::new(),
+                Brief {
                     cwd: Some(PathBuf::from("/ws/mock-main")),
                     page: "pages/home.html".into(),
                     branch: "main".into(),
+                    ..Brief::default()
                 },
             )
             .await

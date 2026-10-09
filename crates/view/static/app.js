@@ -598,7 +598,7 @@
     data_model: (el, p) => (window.DataModelPane ? window.DataModelPane.mount(el, {
       branch: p.branch,
       dir: p.dir,
-      onSession: (s) => openPane({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: p.branch, dir: p.dir }),
+      onSession: (s) => openPane({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, dir: s.dir }),
     }) : null),
     mockup: (el, p) => (window.MockupPane ? window.MockupPane.mount(el, {
       branch: p.branch,
@@ -1021,7 +1021,7 @@
         ['What are the options?', 'List the options we have here, with their trade-offs.'],
         ['What would you recommend?', 'What would you recommend, and why?'],
       ],
-      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', page: p.page || '' }) })
+      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', dir: p.dir || '', page: p.page || '' }) })
         .then(async (r) => (r.ok ? r.json() : { available: false, why: await r.text() })),
       socket: (p) => `/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/term`,
       close: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/close`, { method: 'POST', keepalive: true }),

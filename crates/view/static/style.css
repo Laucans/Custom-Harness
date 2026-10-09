@@ -563,6 +563,11 @@ svg.process .name { fill: var(--dim); pointer-events: none; }
 .dm-rules.bad li { border-left-color: var(--warn); font-family: var(--sans); }
 .dm-links li { padding: 4px 0; overflow-wrap: anywhere; }
 .dm-flist li { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.dm-used { margin: 0; padding: 0; list-style: none; }
+.dm-used li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 3px 0; }
+.dm-used small { flex-basis: 100%; padding-left: 4px; }
+.dm-used .tag.reads { color: var(--accent); }
+.dm-used .tag.writes { color: #e0a040; border-color: #e0a040; }
 .dm-flist .dm-type { margin-left: auto; }
 .dm-legend li { padding: 3px 0; color: var(--dim); line-height: 1.5; }
 .dm-notes button { width: 100%; text-align: left; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; padding: 6px 8px; margin-bottom: 4px; font: 12px var(--sans); cursor: pointer; white-space: pre-wrap; }

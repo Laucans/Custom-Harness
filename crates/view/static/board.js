@@ -21,6 +21,7 @@
 // `resolve(target)` and `under(clientX, clientY)` may answer a stand-in for
 // a part the board cannot reach itself — one inside an iframe — as long as
 // it has getBoundingClientRect(), getAttribute('data-pin') and a classList.
+//   board.setBoard(id)   // another set of pins: the same canvas, another branch
 (() => {
   'use strict';
 
@@ -49,10 +50,12 @@
   const typing = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
 
   function create(host, opts) {
-    const id = opts.id;
+    // No id yet: no pin is read until `setBoard` names the board.
+    let id = opts.id || null;
     const describe = opts.describe || ((target) => (target ? target : 'the canvas'));
     const kinds = (opts.kinds || DEFAULT_KINDS).filter((k) => KINDS[k]);
-    const base = `/api/notes/${encodeURIComponent(id)}`;
+    const baseOf = (board) => (board ? `/api/notes/${encodeURIComponent(board)}` : null);
+    let base = baseOf(id);
     host.classList.add('hb');
     host.innerHTML = '<div class="hb-world"><svg class="hb-edges" xmlns="http://www.w3.org/2000/svg"></svg><div class="hb-content"></div>'
       + '<svg class="hb-zones" xmlns="http://www.w3.org/2000/svg"></svg></div>'
@@ -411,11 +414,30 @@
       } catch (e) { /* nothing to bring back */ }
     }
     async function load() {
+      if (!base) { notes = []; drawPins(); return; }
+      const asked = base;
       try {
         const res = await fetch(base);
-        notes = res.ok ? await res.json() : [];
+        const read = res.ok ? await res.json() : [];
+        // Another board was named meanwhile: its own read draws.
+        if (asked !== base) return;
+        notes = read;
       } catch (e) { notes = []; }
       drawPins();
+    }
+    // Another board on the same canvas: what is typed is saved where it was
+    // written, then the other board's pins are read.
+    function setBoard(next) {
+      if (!next || next === id) return;
+      flush();
+      openId = null;
+      editor.hidden = true;
+      list.hidden = true;
+      id = next;
+      base = baseOf(id);
+      notes = [];
+      drawPins();
+      load();
     }
     function showList() {
       if (!list.hidden) { list.hidden = true; return; }
@@ -713,6 +735,8 @@
       focus,
       refresh: drawPins,
       reload: load,
+      setBoard,
+      board: () => id,
       zoom: () => view.k,
       // A link to a page that does not exist yet, dropped near the top left
       // of what is shown and opened on its "new page" form.

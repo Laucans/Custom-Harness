@@ -130,7 +130,10 @@ fn rank(name: &str, integration: &str) -> (u8, u64, String) {
     }
 }
 
-fn milestone_number(name: &str) -> Option<u64> {
+/// `milestone/12-data-model` → `12`: the milestone issue a feature branch
+/// belongs to.
+#[must_use]
+pub fn milestone_number(name: &str) -> Option<u64> {
     name.strip_prefix(FEATURE_PREFIX)?
         .split('-')
         .next()?
