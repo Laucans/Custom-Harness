@@ -10,14 +10,15 @@
 //!
 //! # What is chained, and what is not
 //!
-//! A milestone's write-side slices are its **data layer** — the first
-//! task(s), labelled `harness:data-layer`. They are chained on one another
-//! (and the first on the last task that already existed): the architecture
-//! serializes mutations behind one `DataGuard`, and so does the board. Every
-//! read-side slice placed after the data layer waits on its last slice, plus
-//! whatever it named in `depends_on`; two Capabilities share nothing else,
-//! so the loop runs them in parallel. A slice placed before any data layer —
-//! a Concept — waits on its `depends_on` alone.
+//! A milestone is built in the architecture's layers ([`Layer`]): Concepts,
+//! the data layer, the contract, the Capabilities, the UI. A task waits on
+//! every task of the nearest earlier layer this split opened, plus whatever
+//! it named in `depends_on`; inside a layer nothing is chained, so the loop
+//! runs a layer's tasks in parallel. Two exceptions: the data layer is
+//! chained on itself (and its first task on the last task that already
+//! existed), because the architecture serializes mutations behind one
+//! `DataGuard` and so does the board; and a Composition also waits on the
+//! Micro-UIs before it, since it composes them.
 
 use std::rc::Rc;
 
@@ -26,7 +27,9 @@ use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
 
-use crate::common::architecture::Side;
+use std::collections::BTreeMap;
+
+use crate::common::architecture::{Layer, Side, Unit};
 use crate::common::{branching, labels, sections};
 use crate::split::data::plan;
 use crate::split::data::state::SplitState;
@@ -57,6 +60,36 @@ fn body_and_labels(
         vec![kind, side.label()]
     };
     (body, labels)
+}
+
+/// What a task waits on by its place in the architecture alone.
+///
+/// The data layer chains on the last write before it; every other layer
+/// waits on the whole nearest earlier layer this split opened, a Composition
+/// on the Micro-UIs before it too. A Concept waits on nothing.
+fn implied_blockers(
+    unit: Unit,
+    last_write: Option<u64>,
+    by_layer: &BTreeMap<Layer, Vec<u64>>,
+) -> Vec<u64> {
+    let layer = unit.layer();
+    match layer {
+        Layer::Concept => Vec::new(),
+        Layer::Data => last_write.into_iter().collect(),
+        Layer::Contract | Layer::Capability | Layer::Ui => {
+            let mut implied = by_layer
+                .range(..layer)
+                .next_back()
+                .map(|(_, tasks)| tasks.clone())
+                .unwrap_or_default();
+            if unit == Unit::Composition
+                && let Some(fragments) = by_layer.get(&Layer::Ui)
+            {
+                implied.extend(fragments);
+            }
+            implied
+        }
+    }
 }
 
 /// Opens one task per item of the parsed plan, in order, then marks the
@@ -99,9 +132,8 @@ impl Action<SplitState> for Write {
         // The data layer's chain starts after whatever already exists: a
         // mutation never runs beside a task that was open before this split.
         let mut last_write = ctx.state.existing.last().map(|issue| issue.number);
-        // The data layer this split opened, once one is: what every reader
-        // after it waits on.
-        let mut data_layer: Option<u64> = None;
+        // The tasks this split opened, by layer: what the next layer waits on.
+        let mut by_layer: BTreeMap<Layer, Vec<u64>> = BTreeMap::new();
         let mut created: Vec<u64> = Vec::new();
         for (index, item) in items.iter().enumerate() {
             let kind = if item.needs_human {
@@ -109,7 +141,9 @@ impl Action<SplitState> for Write {
             } else {
                 labels::AGENT
             };
-            let side = item.declaration().side();
+            let declaration = item.declaration();
+            let side = declaration.side();
+            let layer = declaration.unit.layer();
             let (body, labels) = body_and_labels(item, kind, side);
             let number = self.gh.create_issue(&item.title, &body, &labels).await?;
             self.gh
@@ -125,32 +159,23 @@ impl Action<SplitState> for Write {
                     )),
                 }
             }
-            let implied = if side == Side::Write {
-                last_write
-            } else {
-                data_layer
-            };
-            if let Some(blocker) = implied
-                && !blockers.contains(&blocker)
-            {
-                blockers.push(blocker);
+            for blocker in implied_blockers(declaration.unit, last_write, &by_layer) {
+                if !blockers.contains(&blocker) {
+                    blockers.push(blocker);
+                }
             }
             for blocker in &blockers {
                 self.gh.add_blocked_by(number, *blocker).await?;
             }
-            if side == Side::Write {
+            if layer == Layer::Data {
                 last_write = Some(number);
-                data_layer = Some(number);
             }
+            by_layer.entry(layer).or_default().push(number);
             ctx.traces.say(&format!(
-                "opened task #{number}: {} ({kind}, {}{}, {})",
+                "opened task #{number}: {} ({kind}, {}, {}, {})",
                 item.title,
                 side.label(),
-                if side == Side::Write {
-                    ", data layer"
-                } else {
-                    ""
-                },
+                layer.name(),
                 if blockers.is_empty() {
                     "unblocked".to_string()
                 } else {
@@ -482,6 +507,66 @@ mod tests {
             links,
             vec![(3, 2), (4, 2)],
             "A and T wait on D; C and D wait on nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_milestone_is_built_in_layers_each_waiting_on_the_one_before() {
+        let gh = Rc::new(gh_with_base());
+        // A pure insert (read side, still the data layer), the contract, two
+        // Capabilities, a Micro-UI, the Composition. Nobody named anything:
+        // the layers chain, the Capabilities run in parallel, the UI waits
+        // on every action, the Composition on the fragment too.
+        let mut context = ctx(
+            false,
+            r#"[{"title":"D","brief":"d","branch":"feat/d","unit":"data-capability","system":"shop","effect":"insert","touches":[]},
+               {"title":"T","brief":"t","branch":"feat/t","unit":"tooling","system":"shop"},
+               {"title":"A","brief":"a","branch":"feat/a","unit":"capability","system":"shop"},
+               {"title":"B","brief":"b","branch":"feat/b","unit":"persisted-query","system":"shop"},
+               {"title":"U","brief":"u","branch":"feat/u","unit":"micro-ui","system":"shop"},
+               {"title":"S","brief":"s","branch":"test/s","unit":"composition","system":"shop"}]"#,
+        );
+        Write {
+            gh: gh.clone(),
+            slice_stage: "slice".to_string(),
+            base_branch: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("published");
+        let links: Vec<(u64, u64)> = gh
+            .writes()
+            .into_iter()
+            .filter_map(|w| match w {
+                Wrote::BlockedByLink(task, dependency) => Some((task, dependency)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            links,
+            vec![
+                (2, 1),
+                (3, 2),
+                (4, 2),
+                (5, 3),
+                (5, 4),
+                (6, 3),
+                (6, 4),
+                (6, 5)
+            ],
+            "T waits on D; A and B on T; U on A and B; S on A, B and U"
+        );
+        let sides: Vec<Vec<String>> = gh
+            .writes()
+            .into_iter()
+            .filter_map(|w| match w {
+                Wrote::CreatedIssue(_, _, labels) => Some(labels),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sides[0].contains(&labels::READ_SIDE.to_string()),
+            "a pure insert keeps the read side: it merges alone"
         );
     }
 

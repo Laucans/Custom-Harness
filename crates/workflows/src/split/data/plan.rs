@@ -41,8 +41,9 @@ pub struct TaskItem {
     #[serde(default)]
     pub touches: Vec<String>,
     /// The 0-based indexes, in the same array, of the slices this one builds
-    /// on. Empty: none — a read-side slice then runs in parallel with its
-    /// peers.
+    /// on, beyond the layer before its own (that wait is added by `publish`).
+    /// Empty: none — a slice then runs in parallel with the rest of its
+    /// layer.
     #[serde(default)]
     pub depends_on: Vec<usize>,
 }

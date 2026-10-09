@@ -88,7 +88,7 @@ gh api repos/{owner}/{repo}/issues/<n> --jq .id
 # 3. parent it under the milestone
 gh api -X POST repos/{owner}/{repo}/issues/<m>/sub_issues \
   -F sub_issue_id=<id of the task>
-# 4. block it on each task it builds on — not on "the previous one"
+# 4. block it on each task of the layer before — and on a peer only if it builds on it
 gh api -X POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by \
   -F issue_id=<id of a task it depends on>
 # 5. its side of the architecture
@@ -130,29 +130,42 @@ first.
 one that proves the whole milestone actually runs end to end — not a
 cleanup task tacked on after everything else.
 
-### Three layers, in this order: Concepts, the data layer, the readers
+### Five layers, in this order: Concepts, data, contract, Capabilities, UI
 
 Every task carries `harness:read-side` or `harness:write-side`, next to
-`harness:agent`/`harness:human`; the data layer also carries
+`harness:agent`/`harness:human`; the write-side data layer also carries
 `harness:data-layer`.
 
-1. **Concepts** the milestone defines (`concept`), if any — read side,
-   first: everything else reads them.
-2. **The data layer** — ONE write-side task when one session can build it:
-   the milestone's aggregates, invariants, migrations, DataCapabilities that
-   mutate (or touch existing fields), and any `infrastructure` (the store's
-   own plumbing). Cut it into two or three tasks only when it is too big for
-   one session, each `blocked_by` the previous: mutations are serialized
-   behind the DataGuard, and so is this. Label it `harness:data-layer`: the
-   loop builds it on its strongest model, and its review blocks on a weak
-   invariant or a migration that cannot be replayed. Its PR is merged by
-   `milestone_merge` once reviewed clean and green.
-3. **The readers** — capability, persisted-query, micro-ui, composition,
-   `tooling` (Rust with no store in it: contract types, helpers, CI), and a
-   data-capability whose effect is `insert` with nothing in `touches`. Each
-   is `blocked_by` the last data-layer task, and by another reader **only**
-   when it reads what that one produces. Otherwise they share nothing and
-   run **in parallel**, each in its own session and clone.
+A layer is built once the one before it exists: each task is `blocked_by`
+every task of the layer before its own, and by a task of its own layer
+**only** when it really builds on it. Inside a layer, tasks run **in
+parallel**, each in its own session and clone.
+
+1. **Concepts** the milestone defines (`concept`), if any — first:
+   everything else reads them.
+2. **The data layer** — every `data-capability` of the milestone (an insert
+   included), its aggregates, invariants, migrations and any
+   `infrastructure` (the store's own plumbing). ONE task when one session
+   can build it; cut it into two or three only when it is too big for one
+   session, each `blocked_by` the previous: mutations are serialized behind
+   the DataGuard, and so is this. Built first: everything after it reads it
+   or calls it. When it mutates existing data it is write-side and
+   `harness:data-layer`: the loop builds it on its strongest model, and its
+   review blocks on a weak invariant or a migration that cannot be
+   replayed. Its PR is merged by `milestone_merge` once reviewed clean and
+   green.
+3. **The interface contract** — ONE `tooling` task: the types the
+   Capabilities and the Micro-UIs of this milestone exchange (each
+   Capability's input and output, each Micro-UI's `needs` and `props`, the
+   closed failure sets) and their manifests. With the contract fixed, the
+   next two layers build against it with fakes, in parallel.
+4. **The Capabilities** (`capability`, `persisted-query`) — ONE task per
+   action: list the objects, describe one, generate a value, compute a
+   value, ask for a creation (a call to a DataCapability)... Never cut one
+   action further, never merge two actions into one task.
+5. **The UI** (`micro-ui`, then `composition`) — the screen fragments once
+   every action exists, and last the Composition that proves the whole
+   milestone runs end to end.
 
 ### Mark `harness:human` honestly
 

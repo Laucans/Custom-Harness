@@ -45,24 +45,36 @@ the existing fields it `touches` (empty for a pure insert). `infrastructure`
 is the store's own plumbing (DataQueue, DataGuard, Resolver, schema); Rust
 that touches no store — contract types, helpers, CI — is `tooling`.
 
-Order the slices in three layers, in this order and no other:
+Order the slices in five layers, in this order and no other. A layer is
+built once the one before it exists: the loop runs a layer's slices in
+parallel and waits between layers. Those waits are added for you — give a
+slice a `depends_on` only when it builds on a slice of its own layer, which
+should be rare.
 1. The Concepts the milestone defines, if any (`concept`): everything else
    reads them.
-2. The milestone's **data layer**, as ONE slice when one session can build
-   it: its aggregates, invariants, migrations and DataCapabilities, and any
-   `infrastructure`. Cut it into two or three slices only when it is too
-   big for one session, each chained on the previous — they are serialized
-   anyway, behind the DataGuard. This is where the data design is decided;
-   the loop builds it on its strongest model.
-3. Everything that reads: `capability`, `persisted-query`, `micro-ui`,
-   `composition`, `tooling`, an insert-only `data-capability`. Independent
-   by design, these run in parallel, each waiting on the data layer (added
-   for you): give such a slice no other `depends_on` unless it really reads
-   what another slice produces.
+2. The **data layer**: every `data-capability` of the milestone (an insert
+   included), its aggregates, `invariant`, `migration` and `infrastructure`.
+   ONE slice when one session can build it; two or three only when it is
+   too big for one session, each chained on the previous — they are
+   serialized anyway, behind the DataGuard. Built first: everything after
+   it reads it or calls it. This is where the data design is decided; the
+   loop builds it on its strongest model.
+3. The **interface contract**, ONE `tooling` slice: the types the
+   Capabilities and the Micro-UIs of this milestone exchange — each
+   Capability's input and output, each Micro-UI's `needs` and `props`, the
+   closed failure sets — and their manifests. Once the contract is fixed,
+   the next two layers build against it, with fakes, in parallel.
+4. The **Capabilities** (`capability`, `persisted-query`): ONE slice per
+   action — list the objects, describe one, generate a value, compute a
+   value, ask for a creation (a call to a DataCapability)... Never cut one
+   action further, never merge two actions into one slice. They share
+   nothing and run in parallel.
+5. The **UI** (`micro-ui`, then `composition`): the screen fragments, once
+   every action exists, and last the Composition that proves the whole
+   milestone runs end to end.
 
-Make the last slice the one that proves the whole milestone runs end to
-end. `depends_on` lists the 0-based indexes, in this same array, of the
-slices one builds on.
+`depends_on` lists the 0-based indexes, in this same array, of the slices
+one builds on beyond the layer before it.
 
 {existing}
 

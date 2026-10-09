@@ -158,6 +158,60 @@ impl Side {
     }
 }
 
+/// The layer of the architecture a task is built in — the order a
+/// milestone is built in.
+///
+/// Each layer reads the one before it: a Concept is read by everything, the
+/// data layer exists before anything reads or calls it, the contract fixes
+/// what the Capabilities and the Micro-UIs exchange, the Capabilities each
+/// implement one action in parallel against it, and the UI composes them
+/// last. `split` chains a task on the layer before its own; inside a layer
+/// nothing is chained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Layer {
+    /// `concept`: a definition everything else reads.
+    Concept,
+    /// `data-capability` (insert included), `invariant`, `migration`,
+    /// `infrastructure`: built first, serialized behind the `DataGuard`.
+    Data,
+    /// `tooling`: the interface contracts and the types they exchange.
+    Contract,
+    /// `capability`, `persisted-query`: one action each, in parallel.
+    Capability,
+    /// `micro-ui`, `composition`: the screen, once every action exists.
+    Ui,
+}
+
+impl Layer {
+    /// The layer's name, as a trace says it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Concept => "concept",
+            Self::Data => "data layer",
+            Self::Contract => "contract",
+            Self::Capability => "capability",
+            Self::Ui => "ui",
+        }
+    }
+}
+
+impl Unit {
+    /// The layer this unit is built in.
+    #[must_use]
+    pub const fn layer(self) -> Layer {
+        match self {
+            Self::Concept => Layer::Concept,
+            Self::DataCapability | Self::Invariant | Self::Migration | Self::Infrastructure => {
+                Layer::Data
+            }
+            Self::Tooling => Layer::Contract,
+            Self::Capability | Self::PersistedQuery => Layer::Capability,
+            Self::MicroUi | Self::Composition => Layer::Ui,
+        }
+    }
+}
+
 /// A task's place in the architecture — the `## Architecture` section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declaration {
@@ -314,6 +368,18 @@ mod tests {
         assert_eq!(Unit::parse("data_capability"), Some(Unit::DataCapability));
         assert_eq!(Unit::parse("Persisted Query"), Some(Unit::PersistedQuery));
         assert_eq!(Unit::parse("widget"), None);
+    }
+
+    #[test]
+    fn the_layers_are_built_in_order_and_a_pure_insert_is_still_data() {
+        assert!(Layer::Concept < Layer::Data);
+        assert!(Layer::Data < Layer::Contract);
+        assert!(Layer::Contract < Layer::Capability);
+        assert!(Layer::Capability < Layer::Ui);
+        assert_eq!(Unit::DataCapability.layer(), Layer::Data);
+        assert_eq!(Unit::Tooling.layer(), Layer::Contract);
+        assert_eq!(Unit::PersistedQuery.layer(), Layer::Capability);
+        assert_eq!(Unit::Composition.layer(), Layer::Ui);
     }
 
     #[test]
