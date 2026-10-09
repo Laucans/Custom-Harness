@@ -135,6 +135,9 @@ real output. "Looks done" is not verification; a pass/fail signal is
   `npm run lint`, `npm run format:check`, `npm run typecheck`,
   `npm run build`, `npm test`. CI runs all of them, and a file that is
   merely Prettier-dirty turns `ci` red at a step nobody was thinking about.
+- Where the repository carries `scripts/test-scope.sh`, the Rust tests run
+  through it — `bash scripts/test-scope.sh origin/<PR base>` — as its CI
+  does: a change confined to Capability crates runs their tests alone.
 
 ## 6. Review
 

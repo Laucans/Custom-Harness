@@ -13,6 +13,11 @@
 #
 # The two branch patterns are the harness's: `main_agent` is where finished
 # milestones land, `milestone/**` is what a task's pull request targets.
+#
+# The Rust tests run through `scripts/test-scope.sh`: a change that stays
+# inside Capability crates runs their tests alone, anything else the whole
+# workspace. A push to `main_agent` — a milestone landing — always runs the
+# whole workspace.
 name: ci
 
 on:
@@ -44,6 +49,9 @@ jobs:
       DATABASE_URL_READONLY: postgres://postgres:postgres@localhost:5432/app
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The history the test scope measures the change against.
+          fetch-depth: 0
       - name: Toolchain (rust-toolchain.toml)
         if: hashFiles('Cargo.toml') != ''
         run: rustup show active-toolchain || rustup toolchain install
@@ -57,7 +65,16 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         if: hashFiles('Cargo.toml') != ''
-        run: cargo test --workspace --all-features
+        env:
+          # A pull request against its target, a push against what it
+          # replaced; empty on main_agent, which the script reads as "all".
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || (github.ref_name != 'main_agent' && github.event.before || '') }}
+        run: |
+          if [ -f scripts/test-scope.sh ]; then
+            bash scripts/test-scope.sh "$BASE"
+          else
+            cargo test --workspace --all-features
+          fi
       - name: No Rust workspace yet
         if: hashFiles('Cargo.toml') == ''
         run: echo "no Cargo.toml — nothing to check yet"

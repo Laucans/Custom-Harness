@@ -3,8 +3,8 @@
 //!
 //! Pure: decides from texts already read, writes nothing. The files are the
 //! harness's own assets, compiled in — the architecture document, the
-//! rules section of `CLAUDE.md`, the twelve contracts, the CI gates and the
-//! project's CI for its stack — so a
+//! rules section of `CLAUDE.md`, the twelve contracts, the CI gates, the
+//! project's CI for its stack and the script that scopes its tests — so a
 //! repository brought under the plant carries the same architecture as every
 //! other one, from the same source.
 //!
@@ -35,8 +35,9 @@ pub const MARKER_CLOSE: &str = "<!-- /harness:architecture -->";
 /// The rules section appended to `CLAUDE.md`, markers included.
 pub const CLAUDE_RULES: &str = include_str!("../assets/CLAUDE-rules.md");
 
-/// The files installed as they are: the document, the gates, the contracts.
-pub const FILES: [Asset; 16] = [
+/// The files installed as they are: the document, the gates, the CI, the
+/// test scope, the contracts.
+pub const FILES: [Asset; 17] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -48,6 +49,10 @@ pub const FILES: [Asset; 16] = [
     Asset {
         path: ".github/workflows/ci.yml",
         content: include_str!("../assets/ci.yml"),
+    },
+    Asset {
+        path: "scripts/test-scope.sh",
+        content: include_str!("../assets/test-scope.sh"),
     },
     Asset {
         path: "contracts/README.md",
@@ -241,6 +246,21 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(asset.content)
                 .unwrap_or_else(|e| panic!("{} is not JSON: {e}", asset.path));
         }
+    }
+
+    #[test]
+    fn the_ci_tests_through_the_script_it_is_installed_with() {
+        let text = |path: &str| {
+            FILES
+                .iter()
+                .find(|a| a.path == path)
+                .map(|a| a.content)
+                .unwrap_or_default()
+        };
+        let ci = text(".github/workflows/ci.yml");
+        assert!(ci.contains("bash scripts/test-scope.sh \"$BASE\""), "{ci}");
+        assert!(ci.contains("fetch-depth: 0"), "the scope needs the history");
+        assert!(text("scripts/test-scope.sh").starts_with("#!/usr/bin/env bash"));
     }
 
     #[test]

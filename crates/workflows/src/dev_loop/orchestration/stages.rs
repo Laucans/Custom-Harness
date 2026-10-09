@@ -79,6 +79,18 @@ const CODE_SKIPS: &[&str] = &["Business Goal"];
 /// [`Cut::TaskOnly`](crate::dev_loop::data::brief::Cut::TaskOnly).
 const TEST_SKIPS: &[&str] = &["Business Goal", "Technical", "Assumptions"];
 
+/// How `code` and `/create-test` run the Rust tests of a repository under the
+/// architecture: through the script `init-repo` installs, which the CI runs
+/// too. A task that stays inside Capability crates then waits for their
+/// tests alone instead of the whole workspace's.
+const TEST_SCOPE: &str =
+    "Run the Rust tests with `bash scripts/test-scope.sh origin/<the branch your
+PR targets>` whenever the repository has that script, never a bare
+`cargo test --workspace`: a change that stays inside Capability crates
+(`crates/<system>/capabilities/<name>/`) then runs their tests alone, and
+anything else the whole workspace — the CI runs the same script on the PR.
+Arguments after `--` go to `cargo test`, to run one test while you work.";
+
 const TECHNICAL_REFINEMENT: &str =
     "Take issue #{num} (\"{title}\") — its body is below, under SCOPE, and already
 carries its business sections. Read the real code, then write the two missing
@@ -265,6 +277,8 @@ pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<
 /// two stages would lose it.
 #[must_use]
 pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
+    let instructions = format!("{CODE}\n{TEST_SCOPE}");
+    let write_side = format!("{CODE_WRITE_SIDE}\n{TEST_SCOPE}");
     let mut pre = always("code");
     pre.push(Box::new(gates::CodeAlreadyDelivered {
         gh: Rc::clone(&ports.gh),
@@ -303,8 +317,8 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             // actually decide — `plan`, `slice` — were cents.
             model: "sonnet",
             lead: "/tech-analyst",
-            instructions: CODE,
-            write_side_instructions: Some(CODE_WRITE_SIDE),
+            instructions: &instructions,
+            write_side_instructions: Some(&write_side),
             cut: Cut::Situated(CODE_SKIPS),
             then: Vec::new(),
         }
@@ -312,11 +326,11 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
     }
 }
 
-/// `/create-test`: hermetic Vitest against an already-written spec.
+/// `/create-test`: hermetic tests against an already-written spec.
 ///
-/// No custom instructions or gate: it works against an existing spec, preamble
-/// and scope are enough, and nothing it produces conditions what follows —
-/// it's the final stage.
+/// No gate: it works against an existing spec, and nothing it produces
+/// conditions what follows — it's the final stage. Its one instruction is how
+/// to run the tests ([`TEST_SCOPE`]).
 #[must_use]
 pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
     Stage {
@@ -330,7 +344,7 @@ pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             stage: "create-test",
             model: "sonnet",
             lead: "/create-test",
-            instructions: "",
+            instructions: TEST_SCOPE,
             write_side_instructions: None,
             cut: Cut::TaskOnly(TEST_SKIPS),
             then: Vec::new(),
@@ -463,6 +477,17 @@ mod tests {
             read.contains("gh pr merge --rebase"),
             "the read side still merges"
         );
+    }
+
+    #[test]
+    fn the_test_scope_names_the_script_init_repo_installs() {
+        // The prompt and the installer agree on one path, or the session
+        // falls back to the whole workspace without anyone noticing.
+        let installed = crate::init_repo::data::install::FILES
+            .iter()
+            .any(|asset| asset.path.starts_with("scripts/") && TEST_SCOPE.contains(asset.path));
+        assert!(installed, "TEST_SCOPE names a script init-repo installs");
+        assert_eq!(with_labels(TEST_SCOPE), TEST_SCOPE, "nothing to splice");
     }
 
     #[test]
