@@ -78,6 +78,9 @@ pub enum Figure {
     /// The doctor: a red lobster-faced physician, white coat, head mirror,
     /// a blue book under the claw.
     Doctor,
+    /// The elder: an old scientist in a lab coat, who stands for a crew of
+    /// several agents at one station.
+    Elder,
     /// A Protectron; `wrench` builds, otherwise it holds a clipboard.
     Robot {
         /// The model it opens.
@@ -284,6 +287,99 @@ fn follower(c: &mut Canvas, model: Model) {
     c.shape(rounded(CX - 86.0, 80.0, 172.0, 16.0, 8.0), GOLD_DARK);
     c.shape(rounded(CX - 14.0, 34.0, 28.0, 22.0, 8.0), GOLD_DARK);
     c.fill(circle(CX, 45.0, 6.0).as_ref(), WHITE, 255);
+}
+
+/// The elder: a stooped old scientist — bald and spotted, white tufts over
+/// the ears, big round tinted spectacles, a long nose over a frown, a white
+/// lab coat open on green scrubs, slippers. The figure of a crew: several
+/// agents at one station, one figure.
+fn elder(c: &mut Canvas) {
+    const SCRUBS: Rgb = (104, 178, 146);
+    const SLIPPERS: Rgb = (170, 222, 214);
+    const LENS: Rgb = (196, 236, 228);
+    // Slippers, then thin green legs under the coat.
+    c.shape(ellipse(CX - 22.0, 368.0, 24.0, 11.0), SLIPPERS);
+    c.shape(ellipse(CX + 22.0, 368.0, 24.0, 11.0), SLIPPERS);
+    c.shape(
+        rounded(CX - 30.0, 282.0, 22.0, 84.0, 10.0),
+        shade(SCRUBS, 0.85),
+    );
+    c.shape(
+        rounded(CX + 8.0, 282.0, 22.0, 84.0, 10.0),
+        shade(SCRUBS, 0.85),
+    );
+    // The scrubs' top, seen between the coat's open sides.
+    c.shape(rounded(CX - 34.0, 176.0, 68.0, 112.0, 16.0), SCRUBS);
+    c.shape(
+        polygon(&[(CX - 18.0, 176.0), (CX + 18.0, 176.0), (CX, 200.0)]),
+        shade(SKIN, 0.95),
+    );
+    // The lab coat: two long panels down to the knees, lapels folded back.
+    c.shape(
+        polygon(&[
+            (CX - 30.0, 172.0),
+            (CX - 58.0, 186.0),
+            (CX - 64.0, 318.0),
+            (CX - 22.0, 322.0),
+            (CX - 14.0, 216.0),
+        ]),
+        WHITE,
+    );
+    c.shape(
+        polygon(&[
+            (CX + 30.0, 172.0),
+            (CX + 58.0, 186.0),
+            (CX + 64.0, 318.0),
+            (CX + 22.0, 322.0),
+            (CX + 14.0, 216.0),
+        ]),
+        WHITE,
+    );
+    c.shape(
+        polygon(&[(CX - 30.0, 172.0), (CX - 12.0, 214.0), (CX - 34.0, 200.0)]),
+        shade(WHITE, 0.9),
+    );
+    c.shape(
+        polygon(&[(CX + 30.0, 172.0), (CX + 12.0, 214.0), (CX + 34.0, 200.0)]),
+        shade(WHITE, 0.9),
+    );
+    // Sleeves hanging, bony hands.
+    c.shape(rounded(CX - 78.0, 188.0, 24.0, 104.0, 11.0), WHITE);
+    c.shape(rounded(CX + 54.0, 188.0, 24.0, 104.0, 11.0), WHITE);
+    c.shape(ellipse(CX - 66.0, 298.0, 10.0, 14.0), SKIN);
+    c.shape(ellipse(CX + 66.0, 298.0, 10.0, 14.0), SKIN);
+    // A thin neck, then the head: tall, bald, a few spots on the crown.
+    c.shape(rounded(CX - 12.0, 150.0, 24.0, 30.0, 8.0), SKIN);
+    for side in [-1.0, 1.0] {
+        c.shape(ellipse(CX + side * 54.0, 112.0, 13.0, 20.0), SKIN);
+    }
+    c.shape(ellipse(CX, 96.0, 54.0, 66.0), SKIN);
+    let spot = shade(SKIN, 0.82);
+    c.fill(ellipse(CX - 16.0, 50.0, 7.0, 5.0).as_ref(), spot, 255);
+    c.fill(ellipse(CX + 12.0, 44.0, 5.0, 4.0).as_ref(), spot, 255);
+    c.fill(ellipse(CX + 26.0, 62.0, 4.0, 3.0).as_ref(), spot, 255);
+    // White tufts over the ears.
+    for side in [-1.0, 1.0] {
+        c.shape(ellipse(CX + side * 50.0, 84.0, 9.0, 13.0), WHITE);
+    }
+    // Big round tinted spectacles.
+    for side in [-1.0, 1.0] {
+        let lens = circle(CX + side * 22.0, 100.0, 19.0);
+        c.fill(lens.as_ref(), LENS, 230);
+        c.stroke(lens.as_ref(), INK, LINE);
+        c.fill(
+            circle(CX + side * 22.0 - 6.0, 94.0, 4.0).as_ref(),
+            WHITE,
+            255,
+        );
+    }
+    c.line((CX - 4.0, 98.0), (CX + 4.0, 98.0), INK, 5.0);
+    // A long nose, and a frown under it.
+    c.shape(ellipse(CX + 2.0, 126.0, 9.0, 15.0), shade(SKIN, 0.93));
+    let mut frown = PathBuilder::new();
+    frown.move_to(CX - 14.0, 152.0);
+    frown.quad_to(CX, 142.0, CX + 14.0, 152.0);
+    c.stroke(frown.finish().as_ref(), INK, 5.0);
 }
 
 /// The steward: the Vault Boy — a grinning mascot of the atomic age in a
@@ -527,6 +623,7 @@ pub fn paint(figure: Figure) -> Sprite {
         Figure::Follower { model } => follower(&mut canvas, model),
         Figure::Steward => steward(&mut canvas),
         Figure::Doctor => doctor(&mut canvas),
+        Figure::Elder => elder(&mut canvas),
         Figure::Robot {
             model,
             wrench,
@@ -576,6 +673,7 @@ mod tests {
             Figure::Follower { model: Model::Opus },
             Figure::Steward,
             Figure::Doctor,
+            Figure::Elder,
             Figure::Robot {
                 model: Model::Sonnet,
                 wrench: true,
