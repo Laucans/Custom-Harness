@@ -179,6 +179,10 @@ pub struct Employee {
     pub round: Option<String>,
     /// The clock of the run's first line.
     pub since: Option<String>,
+    /// The clock of the run's last line — its end, once it clocked out.
+    pub last_at: Option<String>,
+    /// The clock the session at its machine opened, while one runs there.
+    pub stage_since: Option<String>,
     /// Seconds since the run last wrote.
     pub age_secs: Option<u64>,
     /// The last line their session wrote.

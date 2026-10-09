@@ -772,6 +772,7 @@
     }
     S.paneHtml = html;
     if (after) after(refresh);
+    tickClocks();
   }
 
   // A desk's pane: the status bar, the chips, the terminal.
@@ -836,12 +837,38 @@
     const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t;
   }
-  function lasted(from, to) {
-    const ms = (to ? Date.parse(to) : Date.now()) - Date.parse(from);
+  // A duration, to the second under the hour.
+  function fmtDur(ms) {
     if (!(ms >= 0)) return '—';
-    const m = Math.floor(ms / 60000);
-    return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : m >= 1 ? `${m} min` : `${Math.round(ms / 1000)} s`;
+    const sec = Math.floor(ms / 1000);
+    if (sec < 60) return `${sec} s`;
+    const m = Math.floor(sec / 60);
+    return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m} min ${String(sec % 60).padStart(2, '0')} s`;
   }
+  const lasted = (from, to) => fmtDur((to ? Date.parse(to) : Date.now()) - Date.parse(from));
+  // How long something ran: its duration once over, a clock that ticks while
+  // it runs. The ticking text is filled by `tickClocks`, so a pane's html
+  // stays the same from one render to the next.
+  function clockHtml(from, to, running) {
+    if (!from) return '—';
+    if (running) return `<span class="elapsed" data-since="${esc(from)}"></span>`;
+    return to ? esc(lasted(from, to)) : '—';
+  }
+  function tickClocks() {
+    for (const el of document.querySelectorAll('.elapsed[data-since]')) {
+      const text = lasted(el.dataset.since, null);
+      if (el.textContent !== text) el.textContent = text;
+    }
+  }
+  setInterval(tickClocks, 1000);
+  // A run's time: running for…, or took…. `c` is what its stages say.
+  const runClock = (e, c) => {
+    const from = (c && c.started_at) || e.since;
+    if (!from) return '—';
+    return e.active
+      ? `running for ${clockHtml(from, null, true)}`
+      : `took ${clockHtml(from, (c && c.last_at) || e.last_at, false)}`;
+  };
   // ---- a chosen period --------------------------------------------------------
   // `S.range` holds two trace clocks (UTC, `2026-10-08T21:31:21Z`), either
   // null; `S.history` the figures the server recomputed for it.
@@ -1026,7 +1053,7 @@
             const state = t.workflow
               ? `<button class="tag-link" data-trigger-log='${esc(JSON.stringify({ workflow: t.workflow, issue: t.issue, at: t.at, state: t.state, what: t.what }))}' title="${t.state === 'failed' || t.state === 'killed' || t.state === 'unknown' ? 'open its logs at the error' : 'open its logs at the end'}">${tag(label, cls)}</button>`
               : tag(label, cls);
-            return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${state}</td><td class="num">${esc(lasted(t.at, t.ended_at))}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
+            return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${state}</td><td class="num">${t.ended_at ? esc(lasted(t.at, t.ended_at)) : t.state === 'running' ? clockHtml(t.at, null, true) : '—'}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
           })
         : `<div class="muted">${P ? 'nothing triggered during the period' : 'nothing triggered since the start of the journal read'}</div>`;
       const logs = P ? P.logs : S.snap.recent;
@@ -1070,6 +1097,7 @@
         ['line', esc(e.workflow)], ['run', esc(e.run_id)],
         ['works on', worksOn(e) || null],
         ['tokens', fmtTokens(e.tokens)],
+        ['time', `<span id="emp-clock">${runClock(e, p.clock)}</span>`],
         ['stage', `${esc(e.stage || '—')} ${e.model ? tag(e.model, e.model) : ''}`],
         ['task', esc(e.task || '—')], ['milestone', esc(e.milestone || '—')], ['round', esc(e.round || '—')],
         ['since', e.since ? `${hhmm(e.since)} · last write ${fmtAge(e.age_secs)} ago` : null],
@@ -1083,10 +1111,16 @@
         const pull = async () => {
           try {
             const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/stages`);
-            const stages = r.ok ? await r.json() : [];
+            const run = r.ok ? await r.json() : {};
+            const stages = run.stages || [];
             const pre = $('live-log');
             const bar = $('emp-machines');
             if (!pre || !bar) return;
+            const now = S.snap.employees.find((x) => x.id === p.id) || p.last || e;
+            p.clock = { started_at: run.started_at, last_at: run.last_at };
+            const clock = $('emp-clock');
+            const clockText = runClock(now, p.clock);
+            if (clock && p.clockHtml !== clockText) { clock.innerHTML = clockText; p.clockHtml = clockText; }
             // A run that stopped at its gates opened no session: its run.log
             // is all there is.
             if (!stages.length && !p.file) p.file = 'run.log';
@@ -1106,12 +1140,19 @@
             }
             const seen = {};
             const labels = stages.map((x) => { seen[x.stage] = (seen[x.stage] || 0) + 1; return seen[x.stage] > 1 ? `${x.stage} (${seen[x.stage]})` : x.stage; });
+            // Each machine's time: its session's, ticking while it runs.
+            const machineTime = (x, i) => {
+              if (!x.opened_at) return '';
+              if (x.closed_at) return ` <small>· ${esc(lasted(x.opened_at, x.closed_at))}</small>`;
+              return now.active && i === last ? ` <small>· ${clockHtml(x.opened_at, null, true)}</small>` : '';
+            };
             const barHtml = (stages.length ? '' : '<span class="muted">no machine reached — this run stopped before it opened a session; its run.log says why</span> ')
-              + labels.map((label, i) => `<button data-stage-idx="${i}" class="${!p.file && i === p.stageIdx ? 'on' : ''}" title="${e.active && i === stages.length - 1 ? 'where the agent is now — followed live' : 'a machine it went through'}">${e.active && i === stages.length - 1 ? '● ' : ''}${esc(label)}</button>`).join('')
+              + labels.map((label, i) => `<button data-stage-idx="${i}" class="${!p.file && i === p.stageIdx ? 'on' : ''}" title="${e.active && i === stages.length - 1 ? 'where the agent is now — followed live' : 'a machine it went through'}">${e.active && i === stages.length - 1 ? '● ' : ''}${esc(label)}${machineTime(stages[i], i)}</button>`).join('')
               + ['run.log', 'prompts.md'].map((f) => `<button data-file="${f}" class="muted ${f === p.file ? 'on' : ''}">${f}</button>`).join('');
             // Rewritten only when it changed: a button replaced between the
             // press and the release of a click swallows that click.
             if (barHtml !== p.barHtml) { bar.innerHTML = barHtml; p.barHtml = barHtml; }
+            tickClocks();
             let text;
             if (p.file) {
               const f = await fetch(`/api/runs/${e.workflow}/${e.run_id}/${p.file}?bytes=${p.jumpTo ? 200000 : 14000}`);
@@ -1172,24 +1213,31 @@
       const bucket = st.stage ? S.snap.costs.by_stage.find((b) => b.key === st.stage) : null;
       // The sessions at work on it now, first, then the finished ones.
       const now = S.snap.employees.filter((e) => e.workflow === line.id && e.station === st.id && e.active);
-      const rows = [...now.map((e) => ({ live: e })), ...(st.stage ? S.snap.costs.last.filter((r) => r.stage === st.stage) : [])];
+      const done = st.stage ? S.snap.costs.last.filter((r) => r.stage === st.stage) : [];
+      const rows = [...now.map((e) => ({ live: e })), ...done];
+      const sessionClock = (e) => (e.stage_since ? clockHtml(e.stage_since, null, true) : '—');
+      const took = (r) => (r.duration_ms == null ? '—' : esc(fmtDur(r.duration_ms)));
+      const time = now.length
+        ? (now[0].stage_since ? `session running for ${sessionClock(now[0])}` : 'its session has not opened yet')
+        : done.length && done[0].duration_ms != null ? `last session took ${took(done[0])}` : null;
       let h = kv([
         ['line', esc(line.title)], ['kind', `${esc(st.kind)} — ${esc(KIND_TIP[st.kind])}`],
         ['stage', st.stage ? esc(st.stage) : '<span class="muted">a gate of the stage beside it</span>'],
         ['model', st.model ? tag(st.model, st.model) : null],
         ['state', now.length ? liveTag(now[0].id, st.state) : tag(st.state, st.state === 'active' ? 'acc' : st.state === 'done' ? 'ok' : '')],
+        ['time', time],
       ]);
       if (bucket) h += '<h3>What this stage cost, all runs</h3>' + tiles([[usd(bucket.usd), 'total'], [bucket.count, 'sessions'], [usd(bucket.usd / Math.max(1, bucket.count)), 'per session']]);
       if (rows.length) {
-        h += `<h3>${now.length ? 'Sessions on it — now, then the last ones' : 'Last sessions on it'}</h3>` + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => (r.live
-          ? `<tr><td>now${r.live.since ? ' · since ' + esc(hhmm(r.live.since)) : ''}</td><td>${worksOn(r.live) || ((String(r.live.task || '').match(/\d+/) || [])[0] ? '#' + String(r.live.task).match(/\d+/)[0] : '—')}</td><td>${esc(r.live.round || '—')}</td><td class="num">—</td><td class="num">—</td><td>${liveTag(r.live.id)}</td></tr>`
-          : `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
+        h += `<h3>${now.length ? 'Sessions on it — now, then the last ones' : 'Last sessions on it'}</h3>` + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">time</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => (r.live
+          ? `<tr><td>now${r.live.since ? ' · since ' + esc(hhmm(r.live.since)) : ''}</td><td>${worksOn(r.live) || ((String(r.live.task || '').match(/\d+/) || [])[0] ? '#' + String(r.live.task).match(/\d+/)[0] : '—')}</td><td>${esc(r.live.round || '—')}</td><td class="num">${sessionClock(r.live)}</td><td class="num">—</td><td class="num">—</td><td>${liveTag(r.live.id)}</td></tr>`
+          : `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
       return [st.label, paneTabs(p, st.purpose) + h];
     },
 
-    line(p) {
+    line(p, refresh) {
       const line = S.snap.lines.find((l) => l.id === p.id);
       if (!line) return ['Line', ''];
       if (p.tab === 'recent') {
@@ -1204,7 +1252,8 @@
       const lr = line.last_run;
       let h = kv([['trigger', esc(line.trigger)], ['log folder', `<code>.llocal/logs/${esc(line.id)}/</code>`], ['runs', line.runs], ['status', line.active ? (live.length ? liveTag(live[0].id, 'at work') : tag('at work', 'ok')) : tag('idle')]]);
       if (lr) {
-        h += '<h3>Latest run</h3>' + kv([['run', esc(lr.run_id)], ['started', hhmm(lr.started_at)], ['last line at', `${hhmm(lr.last_at)} · ${fmtAge(lr.age_secs)} ago`], ['task', esc(lr.task || '—')], ['round', esc(lr.round || '—')], ['last line', `<code>${esc(lr.last_line)}</code>`], ['warning', lr.warning ? `<span class="tag warn">${esc(lr.warning)}</span>` : null]]);
+        const lrActive = S.snap.employees.some((e) => e.workflow === line.id && e.run_id === lr.run_id && e.active);
+        h += '<h3>Latest run</h3>' + kv([['run', esc(lr.run_id)], ['time', runClock({ active: lrActive, since: lr.started_at, last_at: lr.last_at }, null)], ['started', hhmm(lr.started_at)], ['last line at', `${hhmm(lr.last_at)} · ${fmtAge(lr.age_secs)} ago`], ['task', esc(lr.task || '—')], ['round', esc(lr.round || '—')], ['last line', `<code>${esc(lr.last_line)}</code>`], ['warning', lr.warning ? `<span class="tag warn">${esc(lr.warning)}</span>` : null]]);
         const emp = S.snap.employees.find((e) => e.workflow === line.id);
         h += `<button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: `${line.id}/${lr.run_id}`, last: emp || null }))}'>open its logs →</button>`;
       }
@@ -1222,7 +1271,7 @@
           const bar = $('line-live-bar'); if (bar && p.liveBarHtml !== liveBar) { bar.innerHTML = liveBar; p.liveBarHtml = liveBar; }
           return;
         }
-        p.mainHtml = h; p.liveBarHtml = liveBar;
+        p.mainHtml = h; p.liveBarHtml = liveBar; p.whereHtml = null;
         const pull = async () => {
           const e = S.snap.employees.find((x) => x.id === p.liveRun);
           const pre = $('line-live-log');
@@ -1230,16 +1279,19 @@
           if (!e || !pre) return;
           try {
             const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/stages`);
-            const stages = r.ok ? await r.json() : [];
+            const stages = r.ok ? (await r.json()).stages || [] : [];
             const current = stages[stages.length - 1];
             let text;
             if (current) {
               text = current.text || '(empty)';
-              if (where) where.innerHTML = `${esc(e.name)} — machine: ${esc(current.stage)} ${worksOn(e)}`;
+              const at = current.closed_at ? `took ${esc(lasted(current.opened_at, current.closed_at))}` : current.opened_at ? `running for ${clockHtml(current.opened_at, null, true)}` : '';
+              const whereHtml = `${esc(e.name)} — machine: ${esc(current.stage)}${at ? ' · ' + at : ''} ${worksOn(e)}`;
+              if (where && p.whereHtml !== whereHtml) { where.innerHTML = whereHtml; p.whereHtml = whereHtml; tickClocks(); }
             } else {
               const f = await fetch(`/api/runs/${e.workflow}/${e.run_id}/run.log?bytes=14000`);
               text = f.ok ? (await f.text()) || '(empty)' : '(no log yet)';
               if (where) where.innerHTML = `${esc(e.name)} — no machine reached yet, its run.log ${worksOn(e)}`;
+              p.whereHtml = null;
             }
             const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
             if (pre.textContent !== text) {

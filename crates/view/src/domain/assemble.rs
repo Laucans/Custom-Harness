@@ -188,6 +188,13 @@ fn employee(
         })
         .or_else(|| subject.map(ToString::to_string))
         .unwrap_or_else(|| run.run_id.clone());
+    // Between two sessions the last one opened is a machine behind it.
+    let stage_since = run
+        .log
+        .opened
+        .as_ref()
+        .filter(|(opened, _)| at_work && stage.as_ref() == Some(opened))
+        .map(|(_, at)| at.clone());
     Employee {
         id: format!("{}/{}", line.id, run.run_id),
         name: agent_name(&line.title, &who),
@@ -200,6 +207,8 @@ fn employee(
         milestone: run.log.milestone.as_ref().map(named),
         round: round(&run.log),
         since: run.log.first_at.clone(),
+        last_at: run.log.last_at.clone(),
+        stage_since,
         age_secs: run.age_secs,
         last_line: if run.session_tail.is_empty() {
             run.log.last_line.clone()
@@ -772,6 +781,12 @@ mod tests {
         assert_eq!(worker.task.as_deref(), Some("#62 Asset folder rule"));
         assert_eq!(worker.name, "#62 · Dev loop");
         assert!(worker.active);
+        assert_eq!(worker.since.as_deref(), Some("2026-10-06T20:26:10Z"));
+        assert_eq!(
+            worker.stage_since.as_deref(),
+            Some("2026-10-06T20:28:34Z"),
+            "the code session runs since it opened"
+        );
 
         let dev = snap
             .lines

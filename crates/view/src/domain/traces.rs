@@ -338,6 +338,8 @@ pub struct RunLog {
     pub branch: Option<String>,
     /// The issue or pull request the run announced it works on.
     pub subject: Option<Subject>,
+    /// The last session the run opened: its stage and the clock it opened at.
+    pub opened: Option<(String, String)>,
 }
 
 impl RunLog {
@@ -457,7 +459,9 @@ pub fn parse_run_log(text: &str, known: &[String]) -> RunLog {
             log.delivered = Some(rest.to_string());
         } else if let Some(tag) = stage_tag(rest) {
             // A session that only opened has not reported: it is still at work.
-            if harness_core::traces::stage_opening(rest).is_none() {
+            if harness_core::traces::stage_opening(rest).is_some() {
+                log.opened = Some((tag.to_string(), at.to_string()));
+            } else {
                 push_unique(&mut log.done, tag);
             }
         } else if rest.contains("skipp") {
@@ -639,6 +643,61 @@ pub struct StageLog {
     pub stage: String,
     /// That session's lines of `session.log`, the tail when it is long.
     pub text: String,
+    /// The clock its session opened at; `None` on a run older than the
+    /// `[stage] session opens` lines.
+    pub opened_at: Option<String>,
+    /// The clock of the stage's last line after it opened — its verdict;
+    /// `None` while the session still runs, or when it never reported.
+    pub closed_at: Option<String>,
+}
+
+/// A run's clocks and its sessions — what an agent's pane reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RunStages {
+    /// The clock of the run's first line.
+    pub started_at: Option<String>,
+    /// The clock of the run's last line.
+    pub last_at: Option<String>,
+    /// One per session, in the order they opened.
+    pub stages: Vec<StageLog>,
+}
+
+/// One `[stage] session opens` of a run: its stage, its clock, and the clock
+/// of the stage's last line before the next opening.
+struct Opening<'a> {
+    stage: &'a str,
+    at: &'a str,
+    closed: Option<&'a str>,
+}
+
+fn openings(run_log: &str) -> Vec<Opening<'_>> {
+    let mut found: Vec<Opening<'_>> = Vec::new();
+    for Stamped { at, rest } in run_log.lines().filter_map(stamped) {
+        if let Some(stage) = harness_core::traces::stage_opening(rest) {
+            found.push(Opening {
+                stage,
+                at,
+                closed: None,
+            });
+        } else if let Some(open) = found.last_mut()
+            && stage_tag(rest) == Some(open.stage)
+        {
+            open.closed = Some(at);
+        }
+    }
+    found
+}
+
+/// The clocks of a run's first and last lines.
+#[must_use]
+pub fn clock_span(run_log: &str) -> (Option<String>, Option<String>) {
+    let mut clocks = run_log.lines().filter_map(stamped).map(|s| s.at);
+    let first = clocks.next();
+    let last = clocks.next_back().or(first);
+    (
+        first.map(ToString::to_string),
+        last.map(ToString::to_string),
+    )
 }
 
 /// A run's `session.log`, cut into one entry per session and each named
@@ -655,11 +714,7 @@ pub fn stage_logs(
     ledger_stages: &[String],
     tail_bytes: usize,
 ) -> Vec<StageLog> {
-    let opened: Vec<&str> = run_log
-        .lines()
-        .filter_map(|line| stamped(line).map(|s| s.rest))
-        .filter_map(harness_core::traces::stage_opening)
-        .collect();
+    let opened = openings(run_log);
     let mut sessions: Vec<Vec<&str>> = Vec::new();
     for line in session_log.lines() {
         if line.starts_with("── turn 1 ") || sessions.is_empty() {
@@ -673,9 +728,9 @@ pub fn stage_logs(
         .into_iter()
         .enumerate()
         .map(|(n, lines)| {
-            let stage = opened
-                .get(n)
-                .map(ToString::to_string)
+            let opening = opened.get(n);
+            let stage = opening
+                .map(|o| o.stage.to_string())
                 .or_else(|| {
                     (opened.is_empty())
                         .then(|| ledger_stages.get(n).cloned())
@@ -685,6 +740,8 @@ pub fn stage_logs(
             StageLog {
                 stage,
                 text: tail_of(&lines.join("\n"), tail_bytes),
+                opened_at: opening.map(|o| o.at.to_string()),
+                closed_at: opening.and_then(|o| o.closed).map(ToString::to_string),
             }
         })
         .collect()
@@ -785,6 +842,34 @@ mod tests {
     }
 
     #[test]
+    fn a_session_is_timed_from_its_opening_to_its_verdict() {
+        let run_log = "[2026-10-08T15:21:28Z] run 1\n\
+                       [2026-10-08T15:21:29Z] [technical-refinement] session opens\n\
+                       [2026-10-08T15:27:01Z] [technical-refinement] AGENT_LOOP_OK: planned\n\
+                       [2026-10-08T15:27:04Z] requires: ok\n\
+                       [2026-10-08T15:27:06Z] [code] session opens\n";
+        let session_log = "── turn 1 /tech-analyst ──\nplan\n── turn 1 /code ──\nbuild\n";
+        let stages = stage_logs(run_log, session_log, &[], 10_000);
+        assert_eq!(stages[0].opened_at.as_deref(), Some("2026-10-08T15:21:29Z"));
+        assert_eq!(stages[0].closed_at.as_deref(), Some("2026-10-08T15:27:01Z"));
+        assert_eq!(stages[1].opened_at.as_deref(), Some("2026-10-08T15:27:06Z"));
+        assert_eq!(stages[1].closed_at, None, "code still runs");
+        assert_eq!(
+            clock_span(run_log),
+            (
+                Some("2026-10-08T15:21:28Z".to_string()),
+                Some("2026-10-08T15:27:06Z".to_string())
+            )
+        );
+        assert_eq!(clock_span(""), (None, None));
+        let log = parse_run_log(run_log, &[]);
+        assert_eq!(
+            log.opened,
+            Some(("code".to_string(), "2026-10-08T15:27:06Z".to_string()))
+        );
+    }
+
+    #[test]
     fn an_older_run_falls_back_on_its_ledger_then_on_a_number() {
         let session_log = "── turn 1 a ──\nx\n── turn 1 b ──\ny\n── turn 1 c ──\nz\n";
         let stages = stage_logs(
@@ -795,6 +880,10 @@ mod tests {
         );
         let names: Vec<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
         assert_eq!(names, ["technical-refinement", "code", "session 3"]);
+        assert!(
+            stages.iter().all(|s| s.opened_at.is_none()),
+            "no clock to read"
+        );
     }
 
     use super::*;
