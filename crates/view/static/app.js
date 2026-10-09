@@ -1180,7 +1180,7 @@
   // filled by what the run made of it — green ✓, amber !, red ✕.
   function processGraph(lineId, stations) {
     if (!stations || !stations.length) return '<div class="muted">no graph: this run left no stations</div>';
-    const step = 64, w = 16 + stations.length * step, h = 72;
+    const step = 84, w = 16 + stations.length * step, h = 72;
     const marks = { done: '✓', skipped: '!', failed: '✕', active: '', idle: '' };
     let svg = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" class="process">`;
     stations.forEach((s, i) => {
@@ -1189,7 +1189,7 @@
       const gate = s.kind === 'scanner';
       const open = gate && s.gates && s.gates.length ? { kind: 'station', line: lineId, id: s.id } : { kind: 'station', line: lineId, id: s.id };
       const shape = gate ? `<circle cx="${cx}" cy="${cy}" r="12"/>` : `<rect x="${cx - 12}" y="${cy - 12}" width="24" height="24" rx="4"/>`;
-      const label = s.label.length > 12 ? s.label.slice(0, 11) + '…' : s.label;
+      const label = s.label.length > 14 ? s.label.slice(0, 13) + '…' : s.label;
       svg += `<g class="node ${esc(s.state)} ${gate ? 'gate' : 'stage'}" data-pane='${esc(JSON.stringify(open))}'><title>${esc(s.label)} · ${esc(s.state)}</title>${shape}<text class="mark" x="${cx}" y="${cy + 4.5}" text-anchor="middle">${marks[s.state] || ''}</text><text class="name" x="${cx}" y="${cy + 30}" text-anchor="middle">${esc(label)}</text></g>`;
     });
     return svg + '</svg>';
