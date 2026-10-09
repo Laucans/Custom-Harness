@@ -111,6 +111,30 @@ Then end your reply with one line made of the word DIAGNOSIS, a colon, a space, 
     )
 }
 
+/// How much of an action's log the question carries inline.
+pub const ACTION_LOG_CHARS: usize = 6_000;
+
+/// The question asked about an action the human started from the page that
+/// failed — a build, an issue opened, a sweep: what it was, the error, the
+/// tail of its log.
+#[must_use]
+pub fn about_action(action: &str, error: &str, log: &str) -> String {
+    let start = log.chars().count().saturating_sub(ACTION_LOG_CHARS);
+    let tail: String = log.chars().skip(start).collect();
+    format!(
+        "An action I started from the factory view failed: {action}. The error it ended on: \
+{error}. Say what happened, in order: SYMPTOM (the line that says it failed, quoted), CAUSE (why \
+— read the harness's code and logs, check the binaries and the configuration it ran with), \
+TREATMENT (what to do now, each gesture with its exact command, and whether it needs my go). \
+Read, do not treat. Be brief.\n\nIts log:\n```\n{}\n```",
+        printable(if tail.trim().is_empty() {
+            "(no log)"
+        } else {
+            &tail
+        }),
+    )
+}
+
 /// What the doctor's reply ends with once this run is diagnosed, as it reads
 /// in the terminal's stream with every escape and blank taken out.
 #[must_use]
@@ -213,6 +237,19 @@ mod tests {
             url: "https://github.com/Laucans/dnd_helper".to_string(),
             integration_branch: "main_agent".to_string(),
         }
+    }
+
+    #[test]
+    fn a_failed_action_is_asked_about_with_its_log_tail() {
+        let long = "x".repeat(ACTION_LOG_CHARS + 50) + "error: unrecognized subcommand";
+        let asked = about_action("build schema.sql for main_agent", "exit 2", &long);
+        assert!(asked.contains("build schema.sql for main_agent"));
+        assert!(asked.contains("error: unrecognized subcommand"));
+        assert!(
+            !asked.contains(&"x".repeat(ACTION_LOG_CHARS + 1)),
+            "only the tail"
+        );
+        assert!(about_action("a", "b", "  ").contains("(no log)"));
     }
 
     #[test]

@@ -464,19 +464,23 @@
     P.busy = true; P.since = Date.now();
     P.flash = PENDING[gesture];
     status(); plantMenu();
+    const action = window.HarnessActions && window.HarnessActions.start({ key: 'plant', label: `${gesture} the plant`, button: $('status') });
     try {
       const r = await fetch('/api/plant/' + gesture + (gesture === 'start' ? '?lanes=' + P.lanes : ''), { method: 'POST' });
       const text = await r.text();
       if (r.ok) {
         P.note = JSON.parse(text).message; P.bad = false;
         P.flash = settled(gesture, P.note);
+        if (action) action.ok(P.note);
       } else {
         P.note = text || r.statusText; P.bad = true;
+        if (action) action.fail(P.note);
         // A failure stays on the status line until the menu is opened again.
         P.flash = { text: `${gesture} failed — ${P.note.split('\n')[0]}`, detail: P.note, tone: 'bad', sticky: true };
       }
     } catch (e) {
       P.note = 'cannot reach the server'; P.bad = true;
+      if (action) action.fail(P.note);
       P.flash = { text: `${gesture} failed — cannot reach the server`, tone: 'bad', sticky: true };
     }
     P.busy = false;
@@ -792,14 +796,17 @@
       const button = $('dv-open');
       button.disabled = true;
       said.textContent = 'opening…';
+      const action = window.HarnessActions && window.HarnessActions.start({ key: 'issue:' + d.dir, label: `open the issue for ${d.branch}`, button });
       try {
         const res = await fetch('/api/data-model/issue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: d.branch, dir: d.dir, resolution: $('dv-resolution').value }) });
         const text = await res.text();
         if (!res.ok) throw new Error(text);
         const url = JSON.parse(text).url;
         said.innerHTML = /^https?:/.test(url) ? `opened <a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>` : `opened ${esc(url)}`;
+        if (action) action.ok(url);
       } catch (e) {
         said.textContent = 'not opened: ' + (e.message || e);
+        if (action) action.fail(e.message || e);
         button.disabled = false;
       }
     });
@@ -948,8 +955,12 @@
     SC.armed = false; SC.said = '';
     SC.status = Object.assign({}, SC.status, { doing: what === 'sweep' ? 'sweeping' : 'diagnosing' });
     janitorDraw(false);
-    try { await janitorPost(what); SC.said = what === 'sweep' ? `swept · ${bytes(SC.status.report ? SC.status.report.freed : 0)} freed` : 'weighed'; }
-    catch (err) { SC.said = String(err.message || err); }
+    const action = window.HarnessActions && window.HarnessActions.start({ key: 'janitor:' + what, label: what === 'sweep' ? 'sweep the yard' : 'weigh the yard', button: b });
+    try {
+      await janitorPost(what);
+      SC.said = what === 'sweep' ? `swept · ${bytes(SC.status.report ? SC.status.report.freed : 0)} freed` : 'weighed';
+      if (action) action.ok(SC.said);
+    } catch (err) { SC.said = String(err.message || err); if (action) action.fail(SC.said); }
     janitorHud();
     if (S.pane && S.pane.kind === 'janitor') janitorDraw(false);
   });
@@ -2405,6 +2416,9 @@
       return [p.title || 'Coming', `<div class="callout soon">${esc(p.text || 'Not built yet.')}</div>`];
     },
   };
+
+  // The panes, for the components beside this file (actions.js opens the doctor).
+  window.HarnessPanes = { open: (p) => openPane(p) };
 
   // A page left with a pin's session open still keeps its turns.
   window.addEventListener('pagehide', () => { if (S.term && S.term.close) S.term.close(); });

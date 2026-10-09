@@ -239,19 +239,26 @@ fn banner(cli: &Cli, workspace: &Workspace) -> String {
     )
 }
 
-/// The harness's commands the data pane starts — the binary the switch
-/// starts the watch with — unless `--demo`, which has no product to build.
+/// The harness's commands the data pane starts, unless `--demo`, which has
+/// no product to build. The binary: `--harness-bin`, else a `harness` beside
+/// this view's executable — built with it, so it knows the same commands —
+/// else the program the switch starts the watch with.
 fn builds_for(cli: &Cli, root: &Path) -> Option<Arc<dyn Builds>> {
     if cli.demo {
         return None;
     }
-    let first = cli.watch_command.split_whitespace().next()?;
-    let program = Path::new(first);
-    let program = if program.is_relative() && program.components().count() > 1 {
-        root.join(program)
-    } else {
-        program.to_path_buf()
-    };
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("harness")))
+        .filter(|path| path.is_file());
+    let program = cli.harness_bin.clone().or(beside).or_else(|| {
+        let first = Path::new(cli.watch_command.split_whitespace().next()?);
+        Some(if first.is_relative() && first.components().count() > 1 {
+            root.join(first)
+        } else {
+            first.to_path_buf()
+        })
+    })?;
     Some(Arc::new(HarnessBuilds::new(program, root.to_path_buf())) as Arc<dyn Builds>)
 }
 

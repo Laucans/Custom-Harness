@@ -18,6 +18,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 const TAIL: usize = 6;
 
 struct Run {
+    id: String,
     what: What,
     branch: String,
     started: String,
@@ -45,6 +46,35 @@ impl HarnessBuilds {
     }
 }
 
+impl HarnessBuilds {
+    /// Whether the harness binary knows the command `what` starts — a binary
+    /// built before the command existed answers `unrecognized subcommand`,
+    /// and starting it would only fail the same way, later.
+    fn knows(&self, what: What) -> Result<(), String> {
+        let command = what.args("")[0].clone();
+        let probe = Command::new(&self.program)
+            .args([command.as_str(), "--help"])
+            .current_dir(&self.root)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| {
+                format!(
+                    "the harness binary {} cannot start: {e}",
+                    self.program.display()
+                )
+            })?;
+        if probe.status.success() {
+            return Ok(());
+        }
+        Err(format!(
+            "the harness binary {} does not know `{command}`: it was built before it. Rebuild it \
+             from the harness checkout (`cargo build --release -p harness-launcher`), or point the \
+             view at a fresh one with --harness-bin",
+            self.program.display()
+        ))
+    }
+}
+
 fn now() -> String {
     jiff::Timestamp::now()
         .strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -58,7 +88,7 @@ fn tail(path: &PathBuf) -> String {
 }
 
 impl Builds for HarnessBuilds {
-    fn start(&self, what: What, branch: &str) -> Result<(), String> {
+    fn start(&self, what: What, branch: &str) -> Result<String, String> {
         let twin = {
             let mut runs = lock(&self.runs);
             runs.iter_mut().any(|r| {
@@ -69,18 +99,20 @@ impl Builds for HarnessBuilds {
         if twin {
             return Err(format!("already building for {branch}"));
         }
+        self.knows(what)?;
         let dir = self.root.join(".llocal/logs/view-builds");
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let started = now();
-        let out = dir.join(format!(
-            "{}-{}-{}.out",
+        let id = format!(
+            "{}-{}-{}",
             started.replace(':', ""),
             match what {
                 What::Schema => "schema",
                 What::Model => "model",
             },
             branch.replace('/', "__")
-        ));
+        );
+        let out = dir.join(format!("{id}.out"));
         let file = File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
         let err = file.try_clone().map_err(|e| e.to_string())?;
         let child = Command::new(&self.program)
@@ -94,6 +126,7 @@ impl Builds for HarnessBuilds {
         lock(&self.runs).insert(
             0,
             Run {
+                id: id.clone(),
                 what,
                 branch: branch.to_string(),
                 started,
@@ -102,7 +135,12 @@ impl Builds for HarnessBuilds {
                 state: State::Running,
             },
         );
-        Ok(())
+        Ok(id)
+    }
+
+    fn log(&self, id: &str) -> Option<String> {
+        let out = lock(&self.runs).iter().find(|r| r.id == id)?.out.clone();
+        fs::read_to_string(out).ok()
     }
 
     fn builds(&self) -> Vec<Build> {
@@ -111,6 +149,7 @@ impl Builds for HarnessBuilds {
             .map(|run| {
                 refresh(run);
                 Build {
+                    id: run.id.clone(),
                     what: run.what,
                     branch: run.branch.clone(),
                     state: run.state,
@@ -147,14 +186,17 @@ mod tests {
         fs::create_dir_all(&root).expect("root");
         // A stand-in for the harness: prints its arguments, then fails.
         let program = root.join("fake-harness.sh");
-        fs::write(&program, "#!/bin/sh\necho \"ran $*\"\nsleep 0.3\nexit 3\n").expect("script");
-        #[allow(clippy::permissions_set_readonly_false)]
+        fs::write(
+            &program,
+            "#!/bin/sh\ncase \"$2\" in --help) exit 0 ;; esac\necho \"ran $*\"\nsleep 0.3\nexit 3\n",
+        )
+        .expect("script");
         {
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("chmod");
         }
         let builds = HarnessBuilds::new(program, root.clone());
-        builds.start(What::Schema, "main").expect("started");
+        let id = builds.start(What::Schema, "main").expect("started");
         assert!(
             builds.start(What::Schema, "main").is_err(),
             "the same build twice"
@@ -171,6 +213,31 @@ mod tests {
         let schema = all.iter().find(|b| b.what == What::Schema).expect("schema");
         assert_eq!(schema.state, State::Failed);
         assert_eq!(schema.tail, "ran data-snapshot --branch main");
+        assert_eq!(schema.id, id);
+        assert_eq!(
+            builds.log(&id).as_deref(),
+            Some("ran data-snapshot --branch main\n")
+        );
+        assert!(builds.log("nope").is_none());
+
+        // A binary built before the command: refused up front, with the fix.
+        let old = root.join("old-harness.sh");
+        fs::write(
+            &old,
+            "#!/bin/sh\necho \"error: unrecognized subcommand '$1'\" >&2\nexit 2\n",
+        )
+        .expect("script");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&old, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let stale = HarnessBuilds::new(old, root.clone());
+        let refused = stale.start(What::Schema, "main").expect_err("refused");
+        assert!(
+            refused.contains("built before it") && refused.contains("cargo build --release"),
+            "{refused}"
+        );
+        assert!(stale.builds().is_empty(), "nothing started");
         let _ = fs::remove_dir_all(&root);
     }
 }

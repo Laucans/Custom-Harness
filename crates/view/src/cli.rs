@@ -115,6 +115,12 @@ pub struct Cli {
     )]
     pub trial_command: String,
 
+    /// The harness binary the data pane's builds start (`data-snapshot`,
+    /// `data-model-draft`). Unset: a `harness` beside this view's own
+    /// executable, else the program of `--watch-command`.
+    #[arg(long, env = "HARNESS_BIN")]
+    pub harness_bin: Option<PathBuf>,
+
     /// Show the most recent run as live even though it is over — to see the
     /// plant move when nothing runs.
     #[arg(long)]

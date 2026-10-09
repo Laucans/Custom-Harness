@@ -143,6 +143,7 @@ const XTERM_CSS: &str = include_str!("../static/vendor/xterm.css");
 const XTERM_FIT: &str = include_str!("../static/vendor/addon-fit.js");
 const CLOCK_JS: &str = include_str!("../static/clock.js");
 const BOARD_JS: &str = include_str!("../static/board.js");
+const ACTIONS_JS: &str = include_str!("../static/actions.js");
 const DATA_MODEL_JS: &str = include_str!("../static/data-model.js");
 
 /// The run files a browser may tail.
@@ -165,6 +166,7 @@ pub fn router(state: AppState) -> Router {
         .route("/app.js", get(app))
         .route("/clock.js", get(clock_js))
         .route("/board.js", get(board_js))
+        .route("/actions.js", get(actions_js))
         .route("/data-model.js", get(data_model_js))
         .route("/render/{file}", get(render_asset))
         .route("/vendor/xterm.js", get(xterm_js))
@@ -187,6 +189,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/doctor", get(doctor))
         .route("/api/doctor/term", get(doctor_term))
         .route("/api/doctor/diagnoses", get(diagnoses))
+        .route("/api/doctor/ask", post(ask_doctor))
         .route("/api/doctor/diagnose/{workflow}/{run}", post(diagnose))
         .route("/api/janitor", get(janitor))
         .route("/api/janitor/diagnose", post(janitor_diagnose))
@@ -197,6 +200,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model/divergence", get(data_divergence))
         .route("/api/data-model/build", post(data_build))
         .route("/api/data-model/builds", get(data_builds))
+        .route("/api/data-model/builds/{id}/log", get(data_build_log))
         .route("/api/data-model/issue", post(data_issue))
         .route("/api/capabilities", get(capability_list))
         .route("/api/capabilities/fusion", post(capability_fusion))
@@ -270,6 +274,10 @@ async fn app(State(state): State<AppState>) -> Response {
 
 async fn clock_js(State(state): State<AppState>) -> Response {
     asset(&state, "clock.js", CLOCK_JS, JS)
+}
+
+async fn actions_js(State(state): State<AppState>) -> Response {
+    asset(&state, "actions.js", ACTIONS_JS, JS)
 }
 
 async fn board_js(State(state): State<AppState>) -> Response {
@@ -995,7 +1003,7 @@ async fn data_build(State(state): State<AppState>, body: Bytes) -> Response {
         return (StatusCode::BAD_REQUEST, "not a branch name").into_response();
     }
     match builds.start(what, &branch) {
-        Ok(()) => json(&serde_json::json!({ "started": true, "branch": branch })),
+        Ok(id) => json(&serde_json::json!({ "started": true, "branch": branch, "id": id })),
         Err(why) => (StatusCode::CONFLICT, why).into_response(),
     }
 }
@@ -1009,6 +1017,15 @@ async fn data_builds(State(state): State<AppState>) -> Response {
             .map(|b| b.builds())
             .unwrap_or_default(),
     )
+}
+
+/// A build's whole output, as it stands.
+async fn data_build_log(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    state
+        .builds
+        .as_ref()
+        .and_then(|b| b.log(&id))
+        .map_or_else(|| not_found("no such build"), IntoResponse::into_response)
 }
 
 /// What the human sends to open an issue from a divergence.
@@ -1399,21 +1416,8 @@ async fn diagnose(
     // Listening before the question is typed, so the answer's first bytes are
     // not missed; and before the start, so a program that dies at once is heard.
     let ears = desk.watch();
-    let was_live = desk.is_live();
-    if let Err(why) = desk.summon(TERM_DEFAULT.0, TERM_DEFAULT.1) {
-        return (StatusCode::SERVICE_UNAVAILABLE, why).into_response();
-    }
-    if !was_live {
-        tokio::time::sleep(DOCTOR_WARM_UP).await;
-    }
     let question = doctor::diagnosis(&workflow, &run, &run_log, &session_log);
-    // A bracketed paste: the newlines inside stay text, Enter comes after.
-    let paste = format!("\x1b[200~{question}\x1b[201~");
-    if let Err(why) = desk.write(paste.as_bytes()) {
-        return (StatusCode::SERVICE_UNAVAILABLE, why).into_response();
-    }
-    tokio::time::sleep(PASTE_SETTLE).await;
-    if let Err(why) = desk.write(b"\r") {
+    if let Err(why) = type_to_doctor(&desk, &question).await {
         return (StatusCode::SERVICE_UNAVAILABLE, why).into_response();
     }
     let asked = Diagnosis::Running {
@@ -1424,6 +1428,56 @@ async fn diagnose(
     }
     tokio::spawn(listen(ears, run, key, since, Arc::clone(&state.diagnoses)));
     json(&asked)
+}
+
+/// Types a question into the doctor's terminal — summoning the doctor first
+/// when nobody sits there — as a bracketed paste, then Enter. The caller holds
+/// `AppState::asking`: two questions at once would land in one input line.
+async fn type_to_doctor(desk: &Desk, question: &str) -> Result<(), String> {
+    let was_live = desk.is_live();
+    desk.summon(TERM_DEFAULT.0, TERM_DEFAULT.1)?;
+    if !was_live {
+        tokio::time::sleep(DOCTOR_WARM_UP).await;
+    }
+    // A bracketed paste: the newlines inside stay text, Enter comes after.
+    let paste = format!("\x1b[200~{question}\x1b[201~");
+    desk.write(paste.as_bytes())?;
+    tokio::time::sleep(PASTE_SETTLE).await;
+    desk.write(b"\r")
+}
+
+/// What the page sends when the human asks the doctor about a failed action.
+#[derive(Debug, Deserialize)]
+struct ActionAsk {
+    action: String,
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    log: String,
+}
+
+/// Asks the doctor about an action that failed on the page: what it was, its
+/// error, its log. The page then opens the doctor's pane.
+async fn ask_doctor(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(desk) = state.doctor.clone() else {
+        return (
+            StatusCode::NOT_FOUND,
+            "no doctor: the view runs with --no-doctor",
+        )
+            .into_response();
+    };
+    let ask = match serde_json::from_slice::<ActionAsk>(&body) {
+        Ok(ask) => ask,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("not a question: {e}")).into_response(),
+    };
+    let action: String = ask.action.chars().take(300).collect();
+    let error: String = ask.error.chars().take(2_000).collect();
+    let question = doctor::about_action(&action, &error, &ask.log);
+    let _turn = state.asking.lock().await;
+    match type_to_doctor(&desk, &question).await {
+        Ok(()) => json(&serde_json::json!({ "asked": true })),
+        Err(why) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
+    }
 }
 
 /// Hears the doctor's output until a reply ends with the run's mark, the

@@ -143,6 +143,8 @@
       q('.dm-version').hidden = !(current && current.versions.length);
       q('.dm-version select').innerHTML = (current ? current.versions : []).map((x, i) => `<option value="${esc(x.dir)}"${x.dir === st.dir ? ' selected' : ''}>${esc(when(x.at))} · ${esc(x.sha.slice(0, 7))}${i === 0 ? ' · newest' : ''}</option>`).join('');
     }
+    // One action per file and branch: what its log button is found by.
+    const buildKey = (what) => `build:${what}:${st.branch || 'integration'}`;
     // Starts the build of a missing file for the branch shown, then follows it.
     async function build(what) {
       if (what === 'model' && st.armed !== 'model') {
@@ -153,13 +155,24 @@
       }
       st.armed = null;
       st.said = '';
+      const file = what === 'schema' ? 'schema.sql' : 'model.json';
+      const action = window.HarnessActions
+        ? window.HarnessActions.start({ key: buildKey(what), label: `build ${file} for ${st.branch || 'the integration branch'}`, button: host.querySelector(`[data-build="${what}"]`) })
+        : null;
+      st.lastKey = buildKey(what);
       try {
         const res = await fetch('/api/data-model/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what, branch: st.branch }) });
         const text = await res.text();
         if (!res.ok) throw new Error(text);
-        st.building = { what, branch: JSON.parse(text).branch };
+        const started = JSON.parse(text);
+        st.building = { what, branch: started.branch, id: started.id, action };
+        if (action) {
+          action.note(`started: harness ${what === 'schema' ? 'data-snapshot' : 'data-model-draft'} --branch ${started.branch}`);
+          action.log = () => fetch(`/api/data-model/builds/${encodeURIComponent(started.id)}/log`).then((r) => (r.ok ? r.text() : ''));
+        }
       } catch (e) {
         st.said = 'not started: ' + (e.message || e);
+        if (action) action.fail(e.message || e);
       }
       if (st.model) drawBar(st.model);
       follow();
@@ -175,6 +188,8 @@
       st.said = !b ? '' : b.state === 'done'
         ? (st.building.what === 'schema' ? `schema of ${b.branch} built` : `model drafted: ${last}`)
         : `build failed: ${last}`;
+      const action = st.building.action;
+      if (action && b) { if (b.state === 'done') action.ok(st.said); else action.fail(last || 'the build failed'); }
       st.building = null;
       st.fresh = true;
       st.body = '';
@@ -285,14 +300,16 @@
           const hint = what === 'schema'
             ? 'Dump this branch now (the Docker Postgres, its migrations) and archive it on harness/data-model'
             : 'Opus reads the schema and the code, writes data/model.json and opens a pull request on this branch';
-          return `<button type="button" class="dm-src build${armed ? ' armed' : ''}" data-build="${what}" ${running ? 'disabled' : ''} title="${esc(hint)}">${esc(label)}</button>`;
+          const log = window.HarnessActions ? window.HarnessActions.chip(buildKey(what)) : '';
+          return `<button type="button" class="dm-src build${armed ? ' armed' : ''}" data-build="${what}" ${running ? 'disabled' : ''} title="${esc(hint)}">${esc(label)}${log}</button>`;
         }
         return `<span class="dm-src ${cls}" title="${esc(tip)}">${esc(s.path)}</span>`;
       }).join('');
       const div = m.compared
         ? (m.divergences.length ? `<button type="button" class="dm-div bad" data-dm="divergences">${m.divergences.length} divergence${m.divergences.length > 1 ? 's' : ''}</button>` : '<span class="dm-div ok">in agreement</span>')
         : '';
-      say(`<b>${esc(m.origin)}</b>${src}${div}${st.said ? `<span class="dm-built">${esc(st.said)}</span>` : ''}`);
+      const lastLog = st.lastKey && window.HarnessActions ? window.HarnessActions.chip(st.lastKey) : '';
+      say(`<b>${esc(m.origin)}</b>${src}${div}${st.said ? `<span class="dm-built">${esc(st.said)}${lastLog}</span>` : ''}`);
       q('[data-dm="all"]').textContent = m.tables.every((t) => st.open.has(t.name)) ? 'fold all' : 'unfold all';
     }
     function keyOf(f) {
@@ -515,7 +532,7 @@
     // A build started before this pane opened is followed too.
     fetch('/api/data-model/builds').then((r) => r.json()).then((all) => {
       const running = all.find((x) => x.state === 'running');
-      if (running) { st.building = { what: running.what, branch: running.branch }; follow(); }
+      if (running) { st.building = { what: running.what, branch: running.branch, id: running.id }; follow(); }
     }).catch(() => {});
     return {
       reload: () => board.reload(),

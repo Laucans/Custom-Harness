@@ -628,13 +628,17 @@ pub trait Units: Send + Sync {
 /// The harness's own commands the data pane starts — a snapshot, a draft —
 /// and where each one is.
 pub trait Builds: Send + Sync {
-    /// Starts `what` for `branch`, unless the same build is running.
+    /// Starts `what` for `branch`, unless the same build is running, and
+    /// answers its id.
     ///
     /// # Errors
     ///
     /// The same build is running, or the harness could not be started.
-    fn start(&self, what: crate::domain::builds::What, branch: &str) -> Result<(), String>;
+    fn start(&self, what: crate::domain::builds::What, branch: &str) -> Result<String, String>;
 
     /// Every build started since the view started, newest first.
     fn builds(&self) -> Vec<crate::domain::builds::Build>;
+
+    /// A build's whole output so far, by its id; `None` when there is none.
+    fn log(&self, id: &str) -> Option<String>;
 }

@@ -56,6 +56,8 @@ pub enum State {
 /// One build, as the page shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Build {
+    /// Its id: what its log is asked by.
+    pub id: String,
     /// What.
     pub what: What,
     /// For which branch.

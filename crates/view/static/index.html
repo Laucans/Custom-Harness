@@ -26,6 +26,11 @@
   <div id="tooltip" hidden></div>
   <nav id="dock" aria-label="notifications"></nav>
 </main>
+<div id="action-errors" aria-live="assertive"></div>
+<div id="action-log" hidden role="dialog" aria-label="an action's log">
+  <div class="act-log-head"><b class="act-log-title"></b><span class="act-log-state"></span><button type="button" data-action-close aria-label="close" title="Close (Esc)">×</button></div>
+  <pre></pre>
+</div>
 <aside id="pane" hidden>
   <div id="pane-head">
     <button id="pane-back" title="back to the pane you came from" aria-label="back" hidden>←</button>
@@ -37,6 +42,7 @@
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
 <script src="/clock.js"></script>
+<script src="/actions.js"></script>
 <script src="/board.js"></script>
 <script src="/data-model.js"></script>
 <script src="/app.js"></script>

@@ -255,8 +255,21 @@ and the code, and opens a pull request on the branch). The view only starts
 the harness binary the switch starts the watch with (`ports::Builds`,
 `adapters::harness_builds`, output in `.llocal/logs/view-builds/`); the page
 follows `GET /api/data-model/builds` and reloads (`?fresh=1`) when it ends.
-Routes `POST /api/data-model/build`, `GET /api/data-model/builds`; none under
-`--demo`.
+Routes `POST /api/data-model/build`, `GET /api/data-model/builds`,
+`GET /api/data-model/builds/{id}/log`; none under `--demo`. The binary is
+`--harness-bin`, else a `harness` beside the view's own executable (built
+with it), else the watch command's program — and it is asked first whether
+it knows the command: one built before it is refused up front, with the
+command that rebuilds it.
+
+**Every action is followed** (`static/actions.js`): the button pressed gets
+a log button (≡) that opens a log window — what the action said, and the
+command's own output for a build, live — and an action that fails puts a red
+card at the top of the page with **Ask doctor**, which types the action, its
+error and its log into the doctor's terminal (`POST /api/doctor/ask`,
+`domain::doctor::about_action`) and opens the doctor's pane. Wired so far:
+the builds, the divergence's issue, a pin turned into a note or an asking,
+the janitor's sweep and weighing, the plant's switch.
 
 `--demo` without `--data-dir` reads the sample under `crates/view/sample/`,
 its archive under `sample/archive/` laid out as the branch is.

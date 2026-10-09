@@ -295,6 +295,11 @@
         busy = true;
         drawEditor(n);
         setState(kind === 'note' ? 'the AI draws the conclusion…' : 'the AI formulates the request…');
+        const action = window.HarnessActions && window.HarnessActions.start({
+          key: `pin:${n.id}:${kind}`,
+          label: kind === 'note' ? 'conclude the brainstorm into a note' : 'turn the brainstorm into an asking',
+          button: editor.querySelector(`.hb-kind.${kind}`),
+        });
         try {
           const res = await fetch(`${base}/${encodeURIComponent(n.id)}/into/${kind}`, { method: 'POST' });
           const text = await res.text();
@@ -302,8 +307,10 @@
           Object.assign(n, JSON.parse(text));
           if (openId === n.id) textarea.value = n.text;
           setState(kind === 'note' ? 'concluded' : 'formulated');
+          if (action) action.ok(n.text.split('\n')[0]);
         } catch (e) {
           setState('not changed: ' + (e.message || e));
+          if (action) action.fail(e.message || e);
         } finally {
           busy = false;
           drawEditor(n);
