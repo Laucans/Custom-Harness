@@ -59,9 +59,14 @@ lit. The props wear that palette in *Fallout*'s retro-futurism: chrome
 rings, rivets and skirts, portholes, radar dishes and red beacons, a vault's
 gear door for the entrance, CRT terminals for printers and screens, a
 Protectron for a robot, a Vault Boy for the steward. The plant itself is
-*Futurama*'s Planet Express — a hangar under barrel vaults beside a tall
-round tower with a red cone and a gold ball, the project's name on a gantry
-over the hangar's front. In 3D that becomes:
+*Futurama*'s Planet Express — a brick hangar under dark barrel vaults
+framed by red arches, beside a tall tapering brick tower with a balcony, a
+red ribbed dome and a gold spire, the project's name on a gantry over the
+hangar's front. It stands in a town, not a field: paved ground, a street
+with kerbs, a dashed line and a zebra crossing, lamps and trees, a brick
+neighbour with a water tank, a plank fence, a tulip bed, and on the right
+the quay — stone edge, bollards, an outflow pipe, a boat bobbing on water
+that moves. In 3D that becomes:
 
 - **Shapes** — `scene.rs` draws with rounded boxes, capsules, cones, cut
   cones, spheres and rings (a gate is an arch of torus over the belt, a roof
@@ -73,7 +78,13 @@ over the hangar's front. In 3D that becomes:
   hull reads as an inked line at any zoom and costs one extra draw per prop.
   It is `Pickable::IGNORE`, so a click still lands on the prop.
 - **Ink wash** — `ToonMaterial` (`toon.wgsl`) lights a flat colour in three
-  bands from a fixed corner, plus a glow for lamps, orbs and screens. Smoke
+  bands from a fixed corner, plus a glow for lamps, orbs and screens.
+- **Patterns** — a prop may wear a `scene::Pattern` (brick, pavers, planks,
+  a roof's seams, water) that the same shader paints in world space, on the
+  plane the surface faces most: no texture file, no UV, and a wall of any
+  size gets bricks of one size. Water reads the engine's clock and moves.
+  The material cache is keyed by colour *and* pattern. Outside, the walls,
+  roofs, fence, ground and harbour wear one; inside, only the floors do. Smoke
   and the scanner's disc stay on the engine's material, since they are
   see-through, and wear no outline.
 - **Figures** — followers, robots and the steward are not built from shapes
