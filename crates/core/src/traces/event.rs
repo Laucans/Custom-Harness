@@ -106,7 +106,8 @@ pub enum Event {
         /// How many times in a row the same prompt failed.
         failures: u32,
     },
-    /// A workflow stopped. Recorded only: the error ledger is its line.
+    /// A workflow stopped. Told in the run's own log as `STOP: …` — the line
+    /// a reader of that log jumps to — and kept.
     Halted {
         /// The workflow, or the task a lane ran.
         workflow: String,
@@ -177,16 +178,18 @@ impl Event {
                 "watch: lanes -> #{task} parked: it stopped for a human, and is not taken \
                  again until its issue changes"
             ),
-            Self::SessionEnded { .. } | Self::BreakerRefused { .. } | Self::Halted { .. } => {
-                return None;
-            }
+            Self::Halted { kind, reason, .. } => format!("{kind}: {reason}"),
+            Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
 
     /// Whether its line is a warning: something went wrong, the run goes on.
     #[must_use]
     pub const fn warns(&self) -> bool {
-        matches!(self, Self::TickFailed { .. } | Self::LaneNotStarted { .. })
+        matches!(
+            self,
+            Self::TickFailed { .. } | Self::LaneNotStarted { .. } | Self::Halted { .. }
+        )
     }
 }
 
@@ -241,12 +244,20 @@ mod tests {
 
     #[test]
     fn a_ledger_event_has_no_line_and_a_failure_warns() {
-        let halted = Event::Halted {
-            workflow: "15".to_string(),
-            kind: "STOP".to_string(),
-            reason: "x".to_string(),
+        let ended = Event::SessionEnded {
+            task: "15".to_string(),
+            stage: "code".to_string(),
+            outcome: "ok".to_string(),
+            cost_usd: None,
         };
-        assert_eq!(halted.line(), None);
+        assert_eq!(ended.line(), None);
+        let halted = Event::Halted {
+            workflow: "dev_loop #15".to_string(),
+            kind: "STOP".to_string(),
+            reason: "refusing to pay".to_string(),
+        };
+        assert_eq!(halted.line().as_deref(), Some("STOP: refusing to pay"));
+        assert!(halted.warns());
         assert!(
             Event::TickFailed {
                 reason: "x".to_string()

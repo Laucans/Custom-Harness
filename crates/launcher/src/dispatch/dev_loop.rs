@@ -78,6 +78,32 @@ pub async fn run(args: &RunArgs, here: &Path) -> harness_core::domain::Outcome<R
     );
     let log_path = sink.path().to_path_buf();
     let log = Logbook::new(Rc::clone(&sink) as Rc<dyn Sink>, verbosity(args));
+    let ran = logged(args, &source, &run_id, &log, log_path).await;
+    // Why the run stopped goes into its own log: a reader of `run.log` finds
+    // the stop where it happened, not only in the lane's console.
+    if let Err(halt) = &ran {
+        log.event(&harness_core::traces::Event::Halted {
+            workflow: args
+                .task
+                .map_or_else(|| "dev_loop".to_string(), |n| format!("dev_loop #{n}")),
+            kind: halt.prefix().to_string(),
+            reason: halt.reason().to_string(),
+        });
+    }
+    ran
+}
+
+/// The run, once its log is open.
+async fn logged(
+    args: &RunArgs,
+    source: &Workspace,
+    run_id: &str,
+    log: &Logbook,
+    log_path: std::path::PathBuf,
+) -> harness_core::domain::Outcome<Ran> {
+    let log = log.clone();
+    let source = source.clone();
+    let run_id = run_id.to_string();
 
     let disk: Rc<dyn Disk> = Rc::new(RealDisk);
     let repos: Rc<dyn Repos> = Rc::new(GitRepos);

@@ -110,7 +110,8 @@ body {
 /* The plant's notifications: three signs, bottom right — grey until
    something of their level is unread. */
 :root { --info: #4aa3ff; --idle-sign: #64748b; }
-#dock { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column; gap: 10px; }
+/* Inside the plant's view, so it follows its right edge when a pane opens. */
+#dock { position: absolute; right: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column; gap: 10px; }
 #dock .sign { position: relative; width: 40px; height: 40px; padding: 6px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, .3); }
 #dock .sign:hover { border-color: var(--accent); }
 #dock .sign:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -209,6 +210,13 @@ body.split > #pane { grid-area: pane; }
   width: 30px; height: 30px; border-radius: 6px; font-size: 18px; cursor: pointer;
 }
 #pane-close:hover { border-color: var(--bad); color: var(--bad); }
+#pane-back { background: transparent; border: 1px solid var(--line); color: var(--dim); border-radius: 6px; width: 28px; height: 28px; font-size: 16px; line-height: 1; cursor: pointer; margin-right: 8px; flex: none; }
+#pane-back:hover { border-color: var(--accent); color: var(--accent); }
+#pane-back[hidden] { display: none; }
+button.tag-link { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
+button.tag-link:hover .tag { border-color: var(--accent); color: var(--accent); }
+button.tag-link.missing .tag { text-decoration: line-through; }
+pre.log mark.hit { background: color-mix(in srgb, var(--bad) 35%, transparent); color: var(--text); outline: 1px solid var(--bad); border-radius: 2px; }
 #pane-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px 30px; }
 
 /* Pane vocabulary */

@@ -13,7 +13,7 @@
 use serde::Serialize;
 
 use crate::domain::history::Range;
-use crate::domain::traces::{Stamped, route_subject, stamped};
+use crate::domain::traces::{Stamped, route_subject, stamped, workflow_of_route};
 
 /// How many triggers the journal keeps, newest first.
 pub const TRIGGERS_KEPT: usize = 60;
@@ -48,6 +48,9 @@ pub struct Trigger {
     pub issue: Option<u64>,
     /// `pr 71`, `milestone 3`, … for an inline route that names no issue.
     pub subject: Option<String>,
+    /// The log folder its run writes into (`agent-loop`, `refinement`, …) —
+    /// `None` when it never started a run.
+    pub workflow: Option<String>,
     /// The lane it runs on; `None` inline.
     pub lane: Option<u32>,
     /// How it stands.
@@ -202,6 +205,7 @@ impl Journal {
                 what: what.to_string(),
                 issue: issue_at(&issue_text),
                 subject: None,
+                workflow: None,
                 lane: None,
                 state: State::Failed,
                 detail: issue_text.split_once(": ").map(|(_, e)| e.to_string()),
@@ -245,16 +249,20 @@ impl Journal {
         let Some((verb, target)) = rest.split_once(' ') else {
             return;
         };
-        let what = match verb {
-            "takes" => "dev loop".to_string(),
-            "refines" => "refinement".to_string(),
-            other => other.trim_end_matches('s').to_string(),
+        let (what, workflow) = match verb {
+            "takes" => ("dev loop".to_string(), "agent-loop".to_string()),
+            "refines" => ("refinement".to_string(), "refinement".to_string()),
+            other => {
+                let what = other.trim_end_matches('s').to_string();
+                (what.clone(), what)
+            }
         };
         self.triggers.push(Trigger {
             at: at.to_string(),
             what,
             issue: issue_at(target),
             subject: None,
+            workflow: Some(workflow),
             lane: Some(lane),
             state: State::Running,
             detail: None,
@@ -281,6 +289,7 @@ impl Journal {
                 what: spoken(name),
                 issue: None,
                 subject: route_subject(&route),
+                workflow: workflow_of_route(&route).map(str::to_string),
                 lane: None,
                 state,
                 detail: Some(outcome.to_string()),
@@ -352,6 +361,7 @@ pub fn read_within(text: &str, range: Option<&Range>) -> Journal {
                     what: spoken(tag(route)),
                     issue: None,
                     subject: route_subject(route),
+                    workflow: workflow_of_route(route).map(str::to_string),
                     lane: None,
                     state: State::Running,
                     detail: None,
@@ -443,6 +453,10 @@ mod tests {
         );
         let review = &journal.triggers[0];
         assert_eq!(review.subject.as_deref(), Some("pr 29"));
+        assert_eq!(review.workflow.as_deref(), Some("pr-review"));
+        assert_eq!(journal.triggers[1].workflow, None, "never started: no run");
+        assert_eq!(journal.triggers[2].workflow.as_deref(), Some("agent-loop"));
+        assert_eq!(journal.triggers[3].workflow.as_deref(), Some("refinement"));
         assert_eq!(review.detail.as_deref(), Some("the review session failed"));
         assert_eq!(
             journal.triggers[3].detail.as_deref(),

@@ -102,6 +102,43 @@ pub fn workflow_of_route(route: &str) -> Option<&'static str> {
     }
 }
 
+/// How long after its trigger a run may start and still be the trigger's. A
+/// run opens its log first thing — before it mounts anything — so a few
+/// seconds are the norm; wider, and a trigger whose run never began would be
+/// handed the next trigger's.
+const RUN_STARTS_WITHIN_SECS: i64 = 60;
+
+/// The run a trigger started: of `runs` (folder names), the first one that
+/// began at most a few seconds before `at` and at most
+/// [`RUN_STARTS_WITHIN_SECS`] after it — for `issue` when the run names one.
+#[must_use]
+pub fn run_of(runs: &[String], issue: Option<u64>, at: &str) -> Option<String> {
+    let at = unix(at)?;
+    let clock_of = |run: &str| -> Option<i64> {
+        let c = run.get(..15)?;
+        unix(&format!(
+            "{}-{}-{}T{}:{}:{}Z",
+            c.get(..4)?,
+            c.get(4..6)?,
+            c.get(6..8)?,
+            c.get(9..11)?,
+            c.get(11..13)?,
+            c.get(13..15)?
+        ))
+    };
+    let names = |run: &str| -> Option<u64> { run.get(16..)?.parse().ok() };
+    runs.iter()
+        .filter(|run| is_run_id(run))
+        .filter(|run| match (issue, names(run)) {
+            (Some(wanted), Some(named)) => wanted == named,
+            (Some(_), None) | (None, _) => true,
+        })
+        .filter_map(|run| clock_of(run).map(|clock| (clock, run)))
+        .filter(|(clock, _)| *clock >= at - 5 && *clock <= at + RUN_STARTS_WITHIN_SECS)
+        .min_by_key(|(clock, _)| *clock)
+        .map(|(_, run)| run.clone())
+}
+
 /// What a route is about — `milestone 17`, `issue 66`, `pr 71` — read from
 /// its first field.
 #[must_use]
@@ -733,6 +770,34 @@ mod tests {
 
         let reported: String = WATCH.lines().take(4).collect::<Vec<_>>().join("\n");
         assert!(parse_watch(&reported, 10).in_flight.is_none());
+    }
+
+    #[test]
+    fn a_trigger_finds_the_run_it_started() {
+        let runs: Vec<String> = [
+            "20261009-003827-15",
+            "20261009-004034-15",
+            "20261009-004035-16",
+            "20261009-010000",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert_eq!(
+            run_of(&runs, Some(15), "2026-10-09T00:40:34Z").as_deref(),
+            Some("20261009-004034-15")
+        );
+        assert_eq!(
+            run_of(&runs, Some(16), "2026-10-09T00:40:34Z").as_deref(),
+            Some("20261009-004035-16")
+        );
+        assert_eq!(
+            run_of(&runs, None, "2026-10-09T00:59:30Z").as_deref(),
+            Some("20261009-010000"),
+            "an inline run, named by its clock alone"
+        );
+        assert_eq!(run_of(&runs, Some(15), "2026-10-09T02:00:00Z"), None);
+        assert_eq!(run_of(&runs, Some(15), "not a clock"), None);
     }
 
     #[test]

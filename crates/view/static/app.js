@@ -205,6 +205,25 @@
     if (!$('plant-menu').hidden) plantMenu();
   }
 
+  // ---- from a trigger to its run's logs ----------------------------------------------
+  async function openTriggerLog(t, button) {
+    const q = new URLSearchParams({ at: t.at });
+    if (t.issue != null) q.set('issue', t.issue);
+    let run = null;
+    try {
+      const r = await fetch(`/api/runs/${t.workflow}/locate?${q}`);
+      if (r.ok) run = (await r.json()).run;
+    } catch (e) { /* said below */ }
+    if (!run) { button.title = 'no run of this trigger was found in the logs'; button.classList.add('missing'); return; }
+    const failed = t.state === 'failed' || t.state === 'killed' || t.state === 'unknown';
+    const id = `${t.workflow}/${run}`;
+    const name = `${t.issue != null ? '#' + t.issue + ' · ' : ''}${t.what} · ${run}`;
+    openPane({ kind: 'employee', id, last: { id, name, workflow: t.workflow, run_id: run, active: false }, file: 'run.log', jumpTo: failed ? 'error' : 'end' });
+  }
+  // A line that says why a run stopped: its halt, a warning, a session that
+  // broke, the breaker's refusal.
+  const ERROR_LINE = /(^|\] )(warning: |STOP: |FAILED: |QUOTA: |! )|refusing to pay|timed out|printed nothing|ran past its/;
+
   // ---- notifications ------------------------------------------------------------
   // Three signs at the bottom right — info, warning, error — grey when nothing
   // of their level is unread, in their colour when something is. A sign opens
@@ -453,8 +472,17 @@
   }
 
   // ---- D · the pane ------------------------------------------------------------
-  function openPane(p) {
+  // The panes walked through, so the arrow at the top left goes back to the
+  // one this came from. Closing the pane forgets the walk.
+  const PANE_HISTORY = 50;
+  S.paneHistory = [];
+  function openPane(p, goingBack = false) {
     acknowledge(S.pane);
+    if (S.pane && !goingBack) {
+      S.paneHistory.push(S.pane);
+      if (S.paneHistory.length > PANE_HISTORY) S.paneHistory.shift();
+    }
+    $('pane-back').hidden = !S.paneHistory.length;
     clearInterval(S.logTimer); S.logTimer = null;
     teardownTerminal();
     S.pane = Object.assign({}, p);
@@ -468,6 +496,8 @@
     if (!S.pane) return;
     acknowledge(S.pane);
     S.pane = null;
+    S.paneHistory = [];
+    $('pane-back').hidden = true;
     clearInterval(S.logTimer); S.logTimer = null;
     teardownTerminal();
     document.body.classList.remove('split');
@@ -475,6 +505,10 @@
     $('pane-body').classList.remove('terminal');
   }
   $('pane-close').addEventListener('click', closePane);
+  $('pane-back').addEventListener('click', () => {
+    const previous = S.paneHistory.pop();
+    if (previous) openPane(previous, true);
+  });
   $('pane-body').addEventListener('change', (e) => {
     const field = e.target.closest('[data-range]');
     if (!field) return;
@@ -523,6 +557,8 @@
         return undefined;
       }
     }
+    const toLog = e.target.closest('[data-trigger-log]');
+    if (toLog) { openTriggerLog(JSON.parse(toLog.dataset.triggerLog), toLog); return undefined; }
     const help = e.target.closest('[data-help]');
     if (help && S.pane) {
       const key = help.dataset.help;
@@ -862,7 +898,12 @@
               ? `<button class="link" data-issue="${t.issue}">#${t.issue}</button> <span class="muted">${esc(issueTitle(t.issue).slice(0, 60))}</span>`
               : esc(t.subject || '');
             const [label, cls] = STATE_TAG[t.state] || [t.state, ''];
-            return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${tag(label, cls)}</td><td class="num">${esc(lasted(t.at, t.ended_at))}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
+            // The state leads to the run's logs: on its error when it failed,
+            // at its end otherwise.
+            const state = t.workflow
+              ? `<button class="tag-link" data-trigger-log='${esc(JSON.stringify({ workflow: t.workflow, issue: t.issue, at: t.at, state: t.state, what: t.what }))}' title="${t.state === 'failed' || t.state === 'killed' || t.state === 'unknown' ? 'open its logs at the error' : 'open its logs at the end'}">${tag(label, cls)}</button>`
+              : tag(label, cls);
+            return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${state}</td><td class="num">${esc(lasted(t.at, t.ended_at))}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
           })
         : `<div class="muted">${P ? 'nothing triggered during the period' : 'nothing triggered since the start of the journal read'}</div>`;
       const logs = P ? P.logs : S.snap.recent;
@@ -949,12 +990,29 @@
             if (barHtml !== p.barHtml) { bar.innerHTML = barHtml; p.barHtml = barHtml; }
             let text;
             if (p.file) {
-              const f = await fetch(`/api/runs/${e.workflow}/${e.run_id}/${p.file}?bytes=14000`);
+              const f = await fetch(`/api/runs/${e.workflow}/${e.run_id}/${p.file}?bytes=${p.jumpTo ? 200000 : 14000}`);
               text = f.ok ? (await f.text()) || '(empty)' : `(${f.status}) ${await f.text()}`;
             } else {
               text = (stages[p.stageIdx] && stages[p.stageIdx].text) || '(empty)';
             }
             const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+            if (p.jumpTo && !p.jumped && p.file) {
+              // Opened from a trigger: land on the error, in its context, or
+              // on the end. A run older than its halt line keeps its error in
+              // session.log — looked for there before giving up on it.
+              const lines = text.replace(/\s+$/, '').split('\n');
+              let at = -1;
+              if (p.jumpTo === 'error') {
+                for (let i = lines.length - 1; i >= 0; i -= 1) if (ERROR_LINE.test(lines[i])) { at = i; break; }
+                if (at < 0 && p.file === 'run.log') { p.file = 'session.log'; p.barHtml = null; pull(); return; }
+              }
+              if (at < 0) at = lines.length - 1;
+              pre.innerHTML = lines.map((l, i) => (i === at ? `<mark class="hit">${esc(l) || ' '}</mark>` : esc(l))).join('\n');
+              const lineHeight = pre.scrollHeight / Math.max(lines.length, 1);
+              pre.scrollTop = Math.max(0, at * lineHeight - pre.clientHeight / 3);
+              p.jumped = true; p.jump = false;
+              return;
+            }
             if (pre.textContent !== text) {
               pre.textContent = text;
               if (atBottom || p.jump) pre.scrollTop = pre.scrollHeight;

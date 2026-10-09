@@ -90,13 +90,8 @@ async fn main() -> ExitCode {
                 println!("journal : {}", ran.log.display());
                 ExitCode::SUCCESS
             }
-            Err(halt) => {
-                if args.run.lane {
-                    let task = args.run.task.map_or_else(String::new, |n| format!(" #{n}"));
-                    tell_halt(&here, &format!("dev_loop{task}"), &halt);
-                }
-                halt_to_code(&halt)
-            }
+            // Its run told the halt in its own log, and kept it as an event.
+            Err(halt) => halt_to_code(&halt),
         },
     }
 }

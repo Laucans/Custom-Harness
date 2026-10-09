@@ -22,15 +22,16 @@
   <nav id="crew-bar" aria-label="agents at work"></nav>
   <div id="render-notice" class="notice" hidden></div>
   <div id="tooltip" hidden></div>
+  <nav id="dock" aria-label="notifications"></nav>
 </main>
 <aside id="pane" hidden>
   <div id="pane-head">
+    <button id="pane-back" title="back to the pane you came from" aria-label="back" hidden>←</button>
     <h2 id="pane-title"></h2>
     <button id="pane-close" title="close (Esc)">×</button>
   </div>
   <div id="pane-body"></div>
 </aside>
-<nav id="dock" aria-label="notifications"></nav>
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
 <script src="/app.js"></script>

@@ -37,7 +37,7 @@ use crate::domain::limits::{self, Read, Report};
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::snapshot::Snapshot;
 use crate::domain::steward::Status;
-use crate::domain::traces::{is_run_id, stage_logs};
+use crate::domain::traces::{is_run_id, run_of, stage_logs};
 use crate::ports::{BoardReading, Limits, Plant, Traces};
 use harness_core::domain::quota::Reading;
 
@@ -98,6 +98,7 @@ pub fn router(state: AppState) -> Router {
         .route("/vendor/addon-fit.js", get(xterm_fit))
         .route("/api/snapshot", get(snapshot))
         .route("/api/events", get(events))
+        .route("/api/runs/{workflow}/locate", get(locate_run))
         .route("/api/runs/{workflow}/{run}/stages", get(run_stages))
         .route("/api/runs/{workflow}/{run}/{file}", get(run_file))
         .route("/api/issues/{number}", get(issue))
@@ -236,6 +237,32 @@ fn is_workflow(name: &str) -> bool {
 
 fn not_found(what: &str) -> Response {
     (StatusCode::NOT_FOUND, what.to_string()).into_response()
+}
+
+/// `?at=…&issue=…`: a trigger, as the journal stamped it.
+#[derive(Debug, Deserialize)]
+struct LocateQuery {
+    at: String,
+    issue: Option<u64>,
+}
+
+/// The run a trigger started, so its row leads to its logs.
+#[derive(Debug, Serialize)]
+struct Located {
+    run: Option<String>,
+}
+
+async fn locate_run(
+    State(state): State<AppState>,
+    Path(workflow): Path<String>,
+    Query(query): Query<LocateQuery>,
+) -> Response {
+    if !is_workflow(&workflow) {
+        return not_found("no such workflow");
+    }
+    json(&Located {
+        run: run_of(&state.traces.runs(&workflow), query.issue, &query.at),
+    })
 }
 
 async fn run_file(
