@@ -9,10 +9,11 @@
 //! The look is *Cult of the Lamb*'s palette and ink on *Fallout*'s atomic
 //! age: nothing has a sharp corner, every shape wears a thick ink outline
 //! (drawn by [`crate::app`]), the light falls in three flat bands, the
-//! palette is grass, mauve earth, red, cream and gold under a dark plum ink
+//! palette is brick red, slate, cream, pavement and gold under a dark plum ink
 //! — and the props are chrome and portholes, a vault's gear door, CRT
 //! terminals, radar dishes and red beacons. The plant itself is *Futurama*'s
-//! Planet Express: a hangar with a tall round tower under a red cone. The figures — followers, robots, the steward —
+//! Planet Express: a brick hangar beside a tall tower under a red dome, in a
+//! town by the water. The figures — followers, robots, the steward —
 //! are not built from shapes but painted: flat cut-outs ([`crate::sprites`])
 //! standing on the ground and always facing the camera, as a paper doll
 //! would.
@@ -96,15 +97,13 @@ pub const CAMERA_FROM: [f32; 3] = [1.0, 1.0, 1.0];
 /// it, so its feet stay on the ground as seen.
 pub const CAMERA_UP: [f32; 3] = [-0.408_248_3, 0.816_496_6, -0.408_248_3];
 
-// The palette: Cult of the Lamb's. A bright, welcoming world — grass and
-// mauve earth under foot, red roofs on cream walls, warm wood, gold for what
-// shines, teal as the accent — drawn in an ink that is dark plum, never
+// The palette: a bright, welcoming town — red brick under cream copings,
+// slate roofs, pavement and tiles under foot, warm wood, leaves, gold for
+// what shines, teal as the accent — drawn in an ink that is dark plum, never
 // black. The last block is for text: light on the dark pills, dark where it
 // is written straight on the ground.
 const GRASS: &str = "#7f9f52";
 const GRASS_DARK: &str = "#6b8a44";
-const EARTH: &str = "#a0708b";
-const EARTH_DARK: &str = "#7f5c73";
 const RED: &str = "#c6392f";
 const RED_DARK: &str = "#962a2a";
 const CREAM: &str = "#f3e7c9";
@@ -120,6 +119,26 @@ const TEAL: &str = "#3fa58c";
 const PLUM: &str = "#3b2a40";
 const INK: &str = "#2a1b2e";
 const ACCENT: &str = "#f2c75c";
+// The town around the plant: brick, slate roofs, pavement, asphalt, the
+// harbour's water and the warm globes of the street lamps.
+const BRICK: &str = "#b5452e";
+const BRICK_DARK: &str = "#86372b";
+const ROOF: &str = "#3f4953";
+const ROOF_DARK: &str = "#353d47";
+const PAVEMENT: &str = "#bdb6a8";
+const ASPHALT: &str = "#4c5058";
+const WATER: &str = "#2e9a98";
+const LAMP: &str = "#fff0c0";
+const SOIL: &str = "#6e5140";
+// Inside the plant: a dark concrete hall, rooms tiled warm when they run,
+// greyer while drafted, raw while built; daylight in the factory windows.
+const HALL: &str = "#74777b";
+const CONCRETE: &str = "#aca598";
+const TILE_LIVE: &str = "#cfc1a4";
+const TILE_DRAFT: &str = "#b2aa9c";
+const TILE_RAW: &str = "#968b7b";
+const DAYLIGHT: &str = "#bfe3dc";
+const BELT: &str = "#4f5a66";
 const OK: &str = "#7ee081";
 const WARN: &str = "#ffb547";
 const BAD: &str = "#ff6b6b";
@@ -270,6 +289,54 @@ pub enum Shape {
     },
 }
 
+/// What a surface is painted with, in world space, by the toon shader —
+/// the brick of a wall, the slabs of a pavement, water that moves. Plain
+/// for most props: a pattern is what tells a wall from a toy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Pattern {
+    /// The flat colour alone.
+    #[default]
+    Plain,
+    /// Courses of bricks with darker mortar.
+    Brick,
+    /// Square slabs with thin grout.
+    Pavers,
+    /// Boards, for fences and docks.
+    Planks,
+    /// A metal roof's seams, along `z`, one every tile across `x`.
+    Seams,
+    /// Water, its crests drifting with time.
+    Water,
+}
+
+impl Pattern {
+    /// The number `toon.wgsl` knows this pattern by.
+    #[must_use]
+    pub const fn id(self) -> u8 {
+        match self {
+            Self::Plain => 0,
+            Self::Brick => 1,
+            Self::Pavers => 2,
+            Self::Planks => 3,
+            Self::Seams => 4,
+            Self::Water => 5,
+        }
+    }
+
+    /// The size of one tile, in world units — a brick's length, a slab's
+    /// side, a board's width, the gap between seams.
+    #[must_use]
+    pub const fn tile(self) -> f32 {
+        match self {
+            Self::Plain | Self::Water => 1.0,
+            Self::Brick => 0.42,
+            Self::Pavers => 0.6,
+            Self::Planks => 0.22,
+            Self::Seams => 0.34,
+        }
+    }
+}
+
 /// One thing to draw.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prop {
@@ -281,6 +348,8 @@ pub struct Prop {
     pub color: Rgba,
     /// Emissive colour, for lamps and orbs.
     pub emissive: Option<Rgba>,
+    /// What its surface is painted with.
+    pub pattern: Pattern,
     /// Transparent, for smoke and scanner planes — drawn without an outline.
     pub translucent: bool,
     /// Rotation around `x`, `y`, `z`, in degrees, applied in that order.
@@ -389,6 +458,7 @@ impl Builder {
             shape,
             color,
             emissive: None,
+            pattern: Pattern::Plain,
             translucent: false,
             tilt: [0.0; 3],
             hot: None,
@@ -581,12 +651,53 @@ impl Builder {
         }
     }
 
-    /// The floor of a room, with two low back walls that read as a corner.
+    /// The floor of a room, tiled, with two brick back walls that read as
+    /// a corner: a cream coping on top, factory windows letting daylight in.
     fn floor(&mut self, w: f32, d: f32) {
         let color = self.scene.floor;
-        self.slab(0.0, -0.06, 0.0, w, 0.06, d, color);
-        self.rounded(0.0, -0.08, -0.3, w, 1.1, 0.3, 0.12, Rgba::hex(STONE));
-        self.rounded(-0.3, -0.08, 0.0, 0.3, 1.1, d, 0.12, Rgba::hex(STONE));
+        self.slab(0.0, -0.06, 0.0, w, 0.06, d, color).pattern = Pattern::Pavers;
+        let (wall, brick, bone) = (1.4, Rgba::hex(BRICK), Rgba::hex(BONE));
+        self.rounded(0.0, -0.08, -0.3, w, wall, 0.3, 0.06, brick)
+            .pattern = Pattern::Brick;
+        self.rounded(-0.3, -0.08, 0.0, 0.3, wall, d, 0.06, brick)
+            .pattern = Pattern::Brick;
+        // The copings' top faces must not overlap in the corner, or they
+        // flicker: the side one starts past the back one.
+        self.rounded(-0.33, wall - 0.12, -0.33, w + 0.33, 0.1, 0.36, 0.03, bone);
+        self.rounded(-0.33, wall - 0.12, 0.04, 0.36, 0.1, d - 0.04, 0.03, bone);
+        let windows = |len: f32| {
+            (0..)
+                .map(|k| 1.2 + k as f32 * 2.4)
+                .take_while(move |at| at + 0.6 < len)
+        };
+        for x in windows(w) {
+            self.rounded(x, 0.3, -0.04, 0.7, 0.8, 0.06, 0.03, bone);
+            self.rounded(
+                x + 0.08,
+                0.38,
+                -0.01,
+                0.54,
+                0.64,
+                0.06,
+                0.03,
+                Rgba::hex(DAYLIGHT),
+            )
+            .emissive = Some(Rgba::hex("#3a5a55"));
+        }
+        for z in windows(d) {
+            self.rounded(-0.04, 0.3, z, 0.06, 0.8, 0.7, 0.03, bone);
+            self.rounded(
+                -0.01,
+                0.38,
+                z + 0.08,
+                0.06,
+                0.64,
+                0.54,
+                0.03,
+                Rgba::hex(DAYLIGHT),
+            )
+            .emissive = Some(Rgba::hex("#3a5a55"));
+        }
     }
 }
 
@@ -663,7 +774,7 @@ fn chimney(
 /// A belt: a chrome frame on riveted feet, a dark rubber track between two
 /// gold rails, and moving cream stripes.
 fn conveyor(b: &mut Builder, x: f32, z: f32, len: f32, active: bool, key: &str) {
-    let track = Rgba::hex(if active { WOOD } else { WOOD_DARK });
+    let track = Rgba::hex(if active { BELT } else { ROOF_DARK });
     b.rounded(x, 0.0, z, len, 0.3, 1.0, 0.1, Rgba::hex(STONE_DARK));
     b.rounded(
         x + 0.02,
@@ -1129,22 +1240,268 @@ fn employee_hot(e: &Employee) -> Hot {
     )
 }
 
+/// A horizontal pipe along `x`, from `x0` to `x1`, its axis at `(y, z)`.
+fn pipe(b: &mut Builder, x0: f32, x1: f32, y: f32, z: f32, r: f32) {
+    let len = x1 - x0;
+    let run = b.cylinder(
+        f32::midpoint(x0, x1),
+        y - len / 2.0,
+        z,
+        r,
+        len,
+        Rgba::hex(STONE),
+    );
+    run.tilt = [0.0, 0.0, 90.0];
+}
+
+/// A street lamp with its feet at `(x, z)`: a dark post and a warm globe.
+fn lamp(b: &mut Builder, x: f32, z: f32) {
+    b.cylinder(x, 0.0, z, 0.13, 0.22, Rgba::hex(STONE_DARK));
+    b.cylinder(x, 0.0, z, 0.05, 2.4, Rgba::hex(PLUM));
+    b.cylinder(x, 2.36, z, 0.12, 0.08, Rgba::hex(PLUM));
+    let globe = b.sphere(x, 2.6, z, 0.2, Rgba::hex(LAMP));
+    globe.emissive = Some(Rgba::hex("#a8873a"));
+}
+
+/// A round tree with its foot at `(x, z)`.
+fn tree(b: &mut Builder, x: f32, z: f32) {
+    b.cylinder(x, 0.0, z, 0.3, 0.12, Rgba::hex(SOIL));
+    b.cylinder(x, 0.0, z, 0.1, 1.2, Rgba::hex(WOOD_DARK));
+    b.sphere(x, 1.55, z, 0.62, Rgba::hex(GRASS));
+    b.sphere(x + 0.3, 1.25, z + 0.25, 0.4, Rgba::hex(GRASS_DARK));
+}
+
+/// The harbour along the plant's right side: the quay's stone edge with its
+/// bollards, and a little boat bobbing at its mooring.
+fn harbour(b: &mut Builder, quay: f32, depth: f32) {
+    b.rounded(
+        quay - 0.25,
+        -0.5,
+        0.0,
+        0.35,
+        0.54,
+        depth,
+        0.06,
+        Rgba::hex(STONE),
+    );
+    for z in [1.6, 4.4, 9.6, 14.2] {
+        b.capsule(quay - 0.08, 0.04, z, 0.11, 0.36, Rgba::hex(PLUM));
+    }
+    let m = b.mark();
+    b.rounded(quay + 1.5, -0.46, 2.4, 1.3, 0.42, 3.2, 0.2, Rgba::hex(BONE));
+    b.rounded(
+        quay + 1.46,
+        -0.16,
+        2.36,
+        1.38,
+        0.1,
+        3.28,
+        0.05,
+        Rgba::hex(RED),
+    );
+    b.rounded(
+        quay + 1.75,
+        -0.06,
+        3.4,
+        0.8,
+        0.5,
+        1.0,
+        0.12,
+        Rgba::hex(TEAL),
+    );
+    b.capsule(quay + 2.15, 0.4, 3.9, 0.07, 0.4, Rgba::hex(STONE_DARK));
+    b.anim_since(
+        m,
+        Anim::Bob {
+            amp: 0.04,
+            speed: 1.3,
+            seed: 0.0,
+        },
+    );
+}
+
+/// The street across the plant's front, from the left edge to the quay:
+/// asphalt between two kerbs, a dashed gold line down the middle and a
+/// zebra crossing by the door.
+fn street(b: &mut Builder, end: f32, z: f32) {
+    let width = 2.8;
+    b.slab(0.0, 0.0, z, end, 0.012, width, Rgba::hex(ASPHALT));
+    for kz in [z - 0.12, z + width - 0.02] {
+        b.rounded(0.0, 0.0, kz, end, 0.07, 0.14, 0.03, Rgba::hex(STONE));
+    }
+    // Dashes from past the crossing to short of the quay.
+    let dashes = (0..)
+        .map(|k| 3.2 + k as f32 * 1.2)
+        .take_while(|x| x + 0.6 < end - 0.4);
+    for x in dashes {
+        b.rounded(
+            x,
+            0.012,
+            z + width / 2.0 - 0.03,
+            0.6,
+            0.012,
+            0.06,
+            0.005,
+            Rgba::hex(GOLD),
+        );
+    }
+    for k in 0..6 {
+        b.rounded(
+            0.9,
+            0.012,
+            z + 0.2 + k as f32 * 0.42,
+            1.4,
+            0.012,
+            0.24,
+            0.005,
+            Rgba::hex(PAPER),
+        );
+    }
+}
+
+/// A bed of tulips in a stone planter, its back corner at `(fx, fz)`.
+fn tulip_bed(b: &mut Builder, fx: f32, fz: f32) {
+    let (fw, fd) = (1.8, 5.4);
+    b.rounded(fx, 0.0, fz, fw, 0.25, fd, 0.06, Rgba::hex(STONE));
+    b.rounded(
+        fx + 0.1,
+        0.0,
+        fz + 0.1,
+        fw - 0.2,
+        0.27,
+        fd - 0.2,
+        0.05,
+        Rgba::hex(SOIL),
+    );
+    let blooms = [RED, "#e88aa8", GOLD, "#e88aa8"];
+    for row in 0..6 {
+        for col in 0..2 {
+            let (x, z) = (fx + 0.5 + col as f32 * 0.8, fz + 0.5 + row as f32 * 0.85);
+            b.capsule(x, 0.27, z, 0.025, 0.3, Rgba::hex(GRASS_DARK));
+            b.sphere(
+                x,
+                0.6,
+                z,
+                0.12,
+                Rgba::hex(blooms[(row + col) % blooms.len()]),
+            );
+        }
+    }
+}
+
+/// What stands around the plant: a brick neighbour in the back corner with
+/// its rooftop water tank, a plank fence along the back, a bed of tulips
+/// on the left, trees and lamps along the pavement.
+fn neighbourhood(b: &mut Builder, quay: f32, street_z: f32) {
+    // The neighbour: three storeys of brick, windows on the two faces the
+    // camera sees, a cornice and a wooden water tank on cone legs.
+    let (nx, nz, nw, nd, nh) = (0.3, 0.4, 2.3, 2.1, 4.4);
+    b.rounded(nx, 0.0, nz, nw, nh, nd, 0.1, Rgba::hex(BRICK_DARK))
+        .pattern = Pattern::Brick;
+    b.rounded(
+        nx - 0.06,
+        nh - 0.22,
+        nz - 0.06,
+        nw + 0.12,
+        0.22,
+        nd + 0.12,
+        0.06,
+        Rgba::hex(BONE),
+    );
+    for row in 0..3 {
+        let y = 0.7 + row as f32 * 1.25;
+        for col in 0..2 {
+            let off = 0.45 + col as f32 * 0.95;
+            b.rounded(nx + off, y, nz + nd, 0.5, 0.75, 0.06, 0.03, Rgba::hex(BONE));
+            b.rounded(
+                nx + off + 0.07,
+                y + 0.07,
+                nz + nd + 0.03,
+                0.36,
+                0.61,
+                0.06,
+                0.03,
+                Rgba::hex(PLUM),
+            );
+            b.rounded(
+                nx + nw,
+                y,
+                nz + off - 0.1,
+                0.06,
+                0.75,
+                0.5,
+                0.03,
+                Rgba::hex(BONE),
+            );
+            b.rounded(
+                nx + nw + 0.03,
+                y + 0.07,
+                nz + off - 0.03,
+                0.06,
+                0.61,
+                0.36,
+                0.03,
+                Rgba::hex(PLUM),
+            );
+        }
+    }
+    let (wx, wz) = (nx + 0.9, nz + 0.9);
+    for (dx, dz) in [(-0.3, -0.3), (0.3, -0.3), (-0.3, 0.3), (0.3, 0.3)] {
+        b.cylinder(wx + dx, nh, wz + dz, 0.03, 0.5, Rgba::hex(WOOD_DARK));
+    }
+    b.cylinder(wx, nh + 0.5, wz, 0.45, 0.7, Rgba::hex(WOOD))
+        .pattern = Pattern::Planks;
+    b.cone(wx, nh + 1.2, wz, 0.52, 0.35, Rgba::hex(WOOD_DARK));
+    // The fence along the back, posts every two tiles.
+    b.rounded(
+        nx + nw + 0.2,
+        0.0,
+        0.15,
+        quay - nx - nw - 0.6,
+        0.9,
+        0.1,
+        0.04,
+        Rgba::hex(WOOD),
+    )
+    .pattern = Pattern::Planks;
+    let posts = (0..)
+        .map(|k| nx + nw + 0.3 + k as f32 * 2.0)
+        .take_while(|x| *x < quay - 0.4);
+    for px in posts {
+        b.rounded(px, 0.0, 0.1, 0.14, 1.05, 0.16, 0.04, Rgba::hex(WOOD_DARK));
+    }
+    tulip_bed(b, 0.5, 3.2);
+    tree(b, 0.9, street_z - 0.75);
+    tree(b, quay - 1.1, 1.3);
+    // One lamp on the plant's side, by the quay, so none stands in front
+    // of the door or the board; two across the street, at its ends, so none
+    // stands in front of the workers waiting on the asphalt.
+    lamp(b, quay - 1.2, street_z - 0.45);
+    lamp(b, 4.0, street_z + 3.15);
+    lamp(b, quay - 1.4, street_z + 3.15);
+}
+
 #[allow(clippy::too_many_lines)] // One level is one list of props; cutting it in two hides the layout.
 fn factory(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
-    let (gw, gd) = (19.0, 15.0);
+    let mut b = Builder::new(PAVEMENT);
+    // Paved ground up to the quay, the harbour a step down beyond it, and a
+    // street across the front that ends at the water.
+    let (gw, gd, quay) = (21.0, 15.0, 17.0);
     let ground = b.scene.floor;
-    b.slab(0.0, -0.06, 0.0, gw, 0.06, gd, ground);
-    // The road lies on the ground, a hair above it: two slabs sharing a top
-    // face flicker against each other.
-    b.slab(0.0, 0.0, 11.2, gw, 0.012, 1.6, Rgba::hex(EARTH));
-    b.slab(0.0, 0.0, 11.98, gw, 0.02, 0.05, Rgba::hex(GOLD_DARK));
-    // Planet Express: a cream hangar under red barrel vaults, with the tall
-    // round tower at its side — a red cone for a hat, a gold ball on the
-    // tip — and the project's name on a gantry over the hangar's front.
+    b.slab(0.0, -0.06, 0.0, quay, 0.06, gd, ground).pattern = Pattern::Pavers;
+    b.slab(quay, -0.42, 0.0, gw - quay, 0.08, gd, Rgba::hex(WATER))
+        .pattern = Pattern::Water;
+    let street_z = 10.9;
+    harbour(&mut b, quay, gd);
+    street(&mut b, quay - 0.25, street_z);
+    neighbourhood(&mut b, quay, street_z);
+    // Planet Express: a brick hangar under dark barrel vaults framed by red
+    // arches, the tall tapering tower at its side — a balcony, a red dome,
+    // a gold spire — and the project's name on a gantry over the front.
     let (bx, bz, bw, bd, bh) = (3.0, 2.5, 9.2, 6.5, 3.0);
-    b.rounded(bx, 0.0, bz, bw, bh, bd, 0.35, Rgba::hex(CREAM));
-    // A chrome cornice, and a chrome skirt at the foot.
+    b.rounded(bx, 0.0, bz, bw, bh, bd, 0.2, Rgba::hex(BRICK))
+        .pattern = Pattern::Brick;
+    // A cream cornice, and a darker brick plinth at the foot.
     b.rounded(
         bx - 0.08,
         bh - 0.3,
@@ -1153,54 +1510,152 @@ fn factory(snap: &Snapshot) -> Scene {
         0.28,
         bd + 0.16,
         0.12,
-        Rgba::hex(STONE),
+        Rgba::hex(BONE),
     );
     b.rounded(
         bx - 0.06,
         0.0,
         bz - 0.06,
         bw + 0.12,
-        0.35,
+        0.4,
         bd + 0.12,
         0.1,
-        Rgba::hex(STONE_DARK),
+        Rgba::hex(BRICK_DARK),
     );
+    // Drain pipes down the front corners.
+    // A drain pipe down the front's right corner; the left one is the door's.
+    b.cylinder(
+        bx + bw - 0.3,
+        0.0,
+        bz + bd + 0.12,
+        0.07,
+        bh - 0.2,
+        Rgba::hex(STONE),
+    );
+    // A flat, seamed roof. Low vaults cover only its front half, so the
+    // back half stays clear for the chimneys.
+    b.rounded(
+        bx + 0.1,
+        bh - 0.02,
+        bz + 0.1,
+        bw - 0.2,
+        0.06,
+        bd - 0.2,
+        0.02,
+        Rgba::hex(ROOF_DARK),
+    )
+    .pattern = Pattern::Seams;
+    let vault_z = bz + bd - 1.9;
     for i in 0..4 {
-        let red = Rgba::hex(if i % 2 == 0 { RED } else { RED_DARK });
-        b.barrel(
-            bx + 1.3 + i as f32 * 2.2,
-            bh + 0.1,
-            bz + bd / 2.0,
-            0.85,
-            bd - 1.6,
-            red,
-        );
+        let cx = bx + 1.3 + i as f32 * 2.2;
+        let roof = Rgba::hex(if i % 2 == 0 { ROOF } else { ROOF_DARK });
+        b.barrel(cx, bh, vault_z, 0.5, 2.6, roof).pattern = Pattern::Seams;
+        // The red arch framing each vault's front end, its lower half
+        // inside the wall.
+        let arch = b.ring(cx, bh, vault_z + 0.8, 0.5, 0.09, Rgba::hex(RED));
+        arch.tilt = [90.0, 0.0, 0.0];
     }
     let glow = !snap.factory.idle;
     let pane_color = Rgba::hex(if glow { "#f3cf6b" } else { PLUM });
-    // The tower: a cream drum in a chrome skirt with two red bands, three
-    // portholes up its front, the red cone and the gold ball.
+    // The tower: a brick drum narrowing as it rises, two cream bands, three
+    // portholes facing the viewer; a balcony with its railing, a band, the
+    // red dome with its ribs, and a gold spire with a glowing ball.
     let (tx, tz, tr, th) = (bx + bw + 1.5, bz + bd / 2.0 - 0.3, 1.5, 6.4);
-    b.cylinder(tx, 0.0, tz, tr + 0.08, 0.35, Rgba::hex(STONE_DARK));
-    b.cylinder(tx, 0.0, tz, tr, th, Rgba::hex(CREAM));
-    b.cylinder(tx, 2.3, tz, tr + 0.05, 0.3, Rgba::hex(RED));
-    b.cylinder(tx, 4.6, tz, tr + 0.05, 0.3, Rgba::hex(RED));
-    b.cylinder(tx, th - 0.25, tz, tr + 0.12, 0.25, Rgba::hex(STONE));
-    b.cone(tx, th, tz, tr + 0.25, 1.7, Rgba::hex(RED));
-    b.cylinder(tx, th + 1.6, tz, 0.05, 0.4, Rgba::hex(INK));
-    let ball = b.sphere(tx, th + 2.25, tz, 0.3, Rgba::hex(GOLD));
+    let radius_at = |y: f32| tr + 0.12 - 0.24 * y / th;
+    b.frustum(
+        tx,
+        0.0,
+        tz,
+        radius_at(0.0) + 0.1,
+        radius_at(0.45) + 0.1,
+        0.45,
+        Rgba::hex(BRICK_DARK),
+    );
+    b.frustum(
+        tx,
+        0.0,
+        tz,
+        radius_at(0.0),
+        radius_at(th),
+        th,
+        Rgba::hex(BRICK),
+    )
+    .pattern = Pattern::Brick;
+    for y in [2.3, 4.6] {
+        b.frustum(
+            tx,
+            y,
+            tz,
+            radius_at(y) + 0.05,
+            radius_at(y + 0.3) + 0.05,
+            0.3,
+            Rgba::hex(BONE),
+        );
+    }
+    b.cylinder(tx, th - 0.1, tz, tr + 0.4, 0.18, Rgba::hex(STONE));
+    b.ring(tx, th + 0.5, tz, tr + 0.33, 0.05, Rgba::hex(STONE));
+    for k in 0..12 {
+        let a = (k as f32 * 30.0).to_radians();
+        b.cylinder(
+            tx + a.cos() * (tr + 0.33),
+            th + 0.08,
+            tz + a.sin() * (tr + 0.33),
+            0.03,
+            0.42,
+            Rgba::hex(STONE),
+        );
+    }
+    b.cylinder(tx, th + 0.08, tz, tr - 0.1, 0.4, Rgba::hex("#4f7a73"));
+    let dome = tr - 0.22;
+    b.sphere(tx, th + 0.48, tz, dome, Rgba::hex(RED));
+    for k in 0..4 {
+        let rib = b.ring(tx, th + 0.48, tz, dome, 0.04, Rgba::hex(RED_DARK));
+        rib.tilt = [0.0, k as f32 * 45.0, 90.0];
+    }
+    b.cylinder(tx, th + 0.4 + dome, tz, 0.22, 0.25, Rgba::hex(STONE));
+    b.cone(tx, th + 0.6 + dome, tz, 0.12, 1.3, Rgba::hex(GOLD));
+    b.ring(tx, th + 0.9 + dome, tz, 0.16, 0.03, Rgba::hex(GOLD_DARK));
+    let ball = b.sphere(tx, th + 2.0 + dome, tz, 0.22, Rgba::hex(GOLD));
     ball.emissive = Some(Rgba::hex(GOLD).shade(0.5));
     ball.anim = Some(Anim::Glow { speed: 2.6 });
+    let toward = std::f32::consts::FRAC_1_SQRT_2;
     for k in 0..3 {
         let wy = 1.3 + k as f32 * 1.75;
-        let rim = b.ring(tx, wy, tz + tr + 0.02, 0.3, 0.06, Rgba::hex(STONE));
-        rim.tilt = [90.0, 0.0, 0.0];
-        let pane = b.cylinder(tx, wy + 0.02, tz + tr + 0.03, 0.27, 0.08, pane_color);
-        pane.tilt = [90.0, 0.0, 0.0];
+        let r = radius_at(wy);
+        let rim = b.ring(
+            tx + (r + 0.02) * toward,
+            wy,
+            tz + (r + 0.02) * toward,
+            0.3,
+            0.06,
+            Rgba::hex(BONE),
+        );
+        rim.tilt = [90.0, 0.0, -45.0];
+        let pane = b.cylinder(
+            tx + (r + 0.03) * toward,
+            wy - 0.04,
+            tz + (r + 0.03) * toward,
+            0.27,
+            0.08,
+            pane_color,
+        );
+        pane.tilt = [90.0, 0.0, -45.0];
         if glow {
             pane.emissive = Some(Rgba::hex("#9c7a28"));
         }
     }
+    // The outflow: a pipe from the tower's foot to the quay, down into the
+    // water.
+    pipe(&mut b, tx + 1.0, quay + 0.2, 0.32, tz + 1.05, 0.12);
+    b.cylinder(quay + 0.2, -0.4, tz + 1.05, 0.14, 0.86, Rgba::hex(STONE));
+    b.ring(
+        quay + 0.2,
+        0.32,
+        tz + 1.05,
+        0.15,
+        0.04,
+        Rgba::hex(STONE_DARK),
+    );
     // The bridge from the hangar to the tower.
     b.rounded(
         bx + bw - 0.2,
@@ -1209,26 +1664,75 @@ fn factory(snap: &Snapshot) -> Scene {
         1.9,
         1.3,
         1.8,
+        0.15,
+        Rgba::hex(BRICK),
+    )
+    .pattern = Pattern::Brick;
+    b.rounded(
+        bx + bw + 0.1,
+        2.55,
+        tz - 0.98,
+        1.3,
         0.2,
-        Rgba::hex(CREAM),
+        1.96,
+        0.06,
+        Rgba::hex(BONE),
     );
-    // A radar dish on the hangar's front corner.
-    let (dx, dz) = (bx + bw - 1.0, bz + bd - 1.0);
+    // A radar dish on the roof's back corner.
+    let (dx, dz) = (bx + bw - 0.8, bz + 0.8);
     b.cylinder(dx, bh, dz, 0.04, 0.9, Rgba::hex(STONE));
     let dish = b.cone(dx, bh + 0.9, dz, 0.45, 0.22, Rgba::hex(STONE));
     dish.tilt = [180.0, 0.0, 0.0];
     for i in 0..5 {
-        // Portholes along the hangar's front, past the door: a chrome rim, a
-        // round pane that glows when the plant is at work. Proud of the
-        // wall's face at `bz + bd`.
-        let (wx, wy) = (bx + 3.0 + i as f32 * 1.3, 1.7);
-        let rim = b.ring(wx, wy - 0.06, bz + bd + 0.02, 0.3, 0.06, Rgba::hex(STONE));
-        rim.tilt = [90.0, 0.0, 0.0];
-        let pane = b.cylinder(wx, wy - 0.04, bz + bd + 0.03, 0.27, 0.08, pane_color);
-        pane.tilt = [90.0, 0.0, 0.0];
+        // Windows along the hangar's front, past the door: a cream frame, a
+        // pane that glows when the plant is at work, and a cross of
+        // mullions — each a step proud of the one behind, toward `+z`.
+        let (wx, wy, wz) = (bx + 2.95 + i as f32 * 1.3, 1.25, bz + bd);
+        b.rounded(
+            wx - 0.36,
+            wy,
+            wz - 0.02,
+            0.72,
+            1.0,
+            0.08,
+            0.05,
+            Rgba::hex(BONE),
+        );
+        let pane = b.rounded(wx - 0.28, wy + 0.08, wz, 0.56, 0.84, 0.08, 0.03, pane_color);
         if glow {
             pane.emissive = Some(Rgba::hex("#9c7a28"));
         }
+        b.rounded(
+            wx - 0.03,
+            wy + 0.08,
+            wz + 0.03,
+            0.06,
+            0.84,
+            0.08,
+            0.02,
+            Rgba::hex(BONE),
+        );
+        b.rounded(
+            wx - 0.28,
+            wy + 0.47,
+            wz + 0.04,
+            0.56,
+            0.06,
+            0.08,
+            0.02,
+            Rgba::hex(BONE),
+        );
+        // A sill under each.
+        b.rounded(
+            wx - 0.42,
+            wy - 0.08,
+            wz - 0.02,
+            0.84,
+            0.08,
+            0.16,
+            0.03,
+            Rgba::hex(BONE),
+        );
     }
     // The gantry: two chrome posts on the roof's front edge and the board
     // between them, the name on its face.
@@ -1257,10 +1761,11 @@ fn factory(snap: &Snapshot) -> Scene {
         Rgba::hex(RED_DARK),
     );
     for (i, ch) in snap.factory.chimneys.iter().enumerate() {
-        // On the roof's back edge, clear of the tower that stands in front
-        // of the hangar's right end as the camera sees it.
+        // On the roof's back half, behind the vaults and clear of the
+        // tower that stands in front of the hangar's right end as the
+        // camera sees it.
         let x = bx + bw - 3.3 - i as f32 * 1.9;
-        let z = bz + 0.7;
+        let z = bz + 1.4;
         let h = 2.1 + (i % 2) as f32 * 0.35;
         let hot = pane(
             serde_json::json!({"kind": "chimney", "model": ch.model}),
@@ -1309,7 +1814,7 @@ fn factory(snap: &Snapshot) -> Scene {
     };
     door(
         &mut b,
-        bx + 1.2,
+        bx + 0.5,
         bz + bd + 0.08,
         !snap.factory.idle,
         &go_inside,
@@ -1333,11 +1838,12 @@ fn factory(snap: &Snapshot) -> Scene {
         "The steward\nA Claude Code terminal in the harness checkout — ask them to start the plant, stop it, read the board.",
     );
     wizard(&mut b, bx - 0.9, bz + bd + 1.4, &steward_hot);
-    // The workers stand on the grass between the door and the sign, two to
-    // a column, the second a step nearer the wall.
+    // The workers stand out on the street, in front of the sign rather than
+    // hidden behind it: three to a column across the asphalt, the columns
+    // marching toward the quay.
     for (i, e) in snap.employees.iter().enumerate() {
-        let x = bx + 5.3 + (i / 2) as f32 * 1.5;
-        let z = bz + bd + 0.6 - (i % 2) as f32 * 0.8;
+        let x = bx + 5.3 + (i / 3) as f32 * 1.5;
+        let z = street_z + 0.6 + (i % 3) as f32 * 0.8;
         person(&mut b, x, z, e.model.as_deref(), &e.name, &employee_hot(e));
     }
     let watch = if snap.factory.watching {
@@ -1556,7 +2062,7 @@ fn room_props(b: &mut Builder, snap: &Snapshot, room: &Room, x0: f32, z0: f32, r
 }
 
 fn interior(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS_DARK);
+    let mut b = Builder::new(HALL);
     let (rw, rd, gap) = (7.0, 6.0, 1.2);
     let (w, d) = (3.0 * rw + 4.0 * gap, 2.0 * rd + 3.0 * gap);
     b.floor(w, d);
@@ -1565,15 +2071,19 @@ fn interior(snap: &Snapshot) -> Scene {
         let x0 = gap + col * (rw + gap);
         let z0 = gap + row * (rd + gap);
         let color = match room.status {
-            RoomStatus::Construction => EARTH_DARK,
-            RoomStatus::Draft => "#957d90",
-            RoomStatus::Live => EARTH,
+            RoomStatus::Construction => TILE_RAW,
+            RoomStatus::Draft => TILE_DRAFT,
+            RoomStatus::Live => TILE_LIVE,
         };
         let hot = room_hot(room);
         let m = b.mark();
-        b.slab(x0, -0.02, z0, rw, 0.04, rd, Rgba::hex(color));
-        b.rounded(x0, 0.0, z0 - 0.15, rw, 0.6, 0.15, 0.07, Rgba::hex(WOOD));
-        b.rounded(x0 - 0.15, 0.0, z0, 0.15, 0.6, rd, 0.07, Rgba::hex(WOOD));
+        b.slab(x0, -0.02, z0, rw, 0.04, rd, Rgba::hex(color))
+            .pattern = Pattern::Pavers;
+        // Low brick partitions on the room's two back sides.
+        b.rounded(x0, 0.0, z0 - 0.15, rw, 0.6, 0.15, 0.04, Rgba::hex(BRICK))
+            .pattern = Pattern::Brick;
+        b.rounded(x0 - 0.15, 0.0, z0, 0.15, 0.6, rd, 0.04, Rgba::hex(BRICK))
+            .pattern = Pattern::Brick;
         b.hot_since(m, &hot);
         room_props(&mut b, snap, room, x0, z0, rw);
         let active = room.key == "lines" && !snap.employees.is_empty();
@@ -1642,7 +2152,7 @@ const fn state_name(state: StationState) -> &'static str {
 
 #[allow(clippy::too_many_lines)] // One level is one list of props; cutting it in two hides the layout.
 fn lines_room(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     let (sp, row, x0) = (STATION_SPACING, LINE_SPACING, LINE_X0);
     let max_n = snap
         .lines
@@ -1819,7 +2329,7 @@ fn age(secs: u64) -> String {
 }
 
 fn office_room(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     b.floor(14.0, 9.0);
     b.rounded(0.6, 0.7, -0.22, 12.4, 2.6, 0.14, 0.14, Rgba::hex(PAPER));
     b.label(
@@ -1922,7 +2432,7 @@ fn url_hot(url: &str, tip_text: &str) -> Option<Hot> {
 }
 
 fn store_room(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     b.floor(15.0, 9.0);
     let v = &snap.versions;
     let versions_pane = pane(
@@ -1983,7 +2493,7 @@ fn store_room(snap: &Snapshot) -> Scene {
 }
 
 fn value_room(_snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     b.floor(14.0, 9.0);
     let mock = pane(
         serde_json::json!({"kind": "placeholder", "title": "The mock-up", "text": "The interface, drawn as micro-frontends: click a part, read the feature behind it. Nothing to show yet — the product's mock-up has no source the view can read."}),
@@ -2027,7 +2537,7 @@ fn kfmt(n: u64) -> String {
 }
 
 fn control_room(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     b.floor(14.0, 9.0);
     let c = &snap.costs;
     let costs_pane = pane(
@@ -2106,7 +2616,7 @@ fn control_room(snap: &Snapshot) -> Scene {
 }
 
 fn construction_room(_snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(EARTH_DARK);
+    let mut b = Builder::new(TILE_RAW);
     b.floor(12.0, 8.0);
     barrier(&mut b, 1.5, 2.5, 5.0);
     barrier(&mut b, 6.5, 3.5, 4.0);
@@ -2615,6 +3125,17 @@ mod tests {
         assert!(panes(&scene, "board") >= 3, "the sign's posts and board");
         assert_eq!(panes(&scene, "steward"), 2, "the card and its shadow");
         assert_eq!(panes(&scene, "employee"), 2, "one worker: card and shadow");
+        // The worker stands out on the street, in front of the board — not
+        // hidden between it and the wall.
+        let nearest = |kind: &str| {
+            scene
+                .props
+                .iter()
+                .filter(|p| p.hot.as_ref().is_some_and(|h| pane_kind(h) == Some(kind)))
+                .map(|p| p.at[2])
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(nearest("employee") > nearest("board") + 0.5);
         let door = hots(&scene)
             .into_iter()
             .filter(|h| h.go.as_deref() == Some("B"))
@@ -2641,6 +3162,104 @@ mod tests {
             .filter(|p| matches!(p.shape, Shape::Capsule { .. }) && p.tilt[0] > 89.0)
             .count();
         assert!(barrels >= 4, "the roof is barrel vaults");
+    }
+
+    #[test]
+    fn the_plant_is_brick_on_a_paved_street_by_moving_water() {
+        let scene = build(&picture(), &View::A);
+        let worn = |pattern: Pattern| scene.props.iter().filter(|p| p.pattern == pattern).count();
+        assert!(
+            worn(Pattern::Brick) >= 4,
+            "hangar, tower, bridge, neighbour"
+        );
+        assert!(worn(Pattern::Seams) >= 4, "every vault shows its seams");
+        assert!(worn(Pattern::Planks) >= 1, "the fence");
+        assert_eq!(worn(Pattern::Water), 1, "one harbour");
+        let floor = |pattern: Pattern| {
+            scene
+                .props
+                .iter()
+                .find(|p| p.pattern == pattern && matches!(p.shape, Shape::Cuboid { .. }))
+                .map(|p| p.at)
+        };
+        let (Some(ground), Some(water)) = (floor(Pattern::Pavers), floor(Pattern::Water)) else {
+            panic!("the ground is paved and the harbour is water");
+        };
+        assert!(
+            water[1] < ground[1] - 0.2,
+            "the water lies a step below the quay"
+        );
+        assert!(
+            water[0] > ground[0],
+            "the harbour is past the plant, toward +x"
+        );
+        assert!(
+            scene
+                .props
+                .iter()
+                .any(|p| p.at[0] > 17.0 && matches!(p.anim, Some(Anim::Bob { .. }))),
+            "a boat bobs at the quay"
+        );
+    }
+
+    #[test]
+    fn inside_wears_the_outside_s_brick_and_tiles() {
+        for view in [
+            View::B,
+            View::C {
+                room: "lines".to_string(),
+            },
+            View::C {
+                room: "office".to_string(),
+            },
+        ] {
+            let scene = build(&picture(), &view);
+            let floor = scene
+                .props
+                .iter()
+                .find(|p| matches!(p.shape, Shape::Cuboid { .. }));
+            assert_eq!(
+                floor.map(|p| p.pattern),
+                Some(Pattern::Pavers),
+                "{view:?}: the floor is tiled"
+            );
+            assert!(
+                scene
+                    .props
+                    .iter()
+                    .filter(|p| p.pattern == Pattern::Brick)
+                    .count()
+                    >= 2,
+                "{view:?}: the back walls are brick"
+            );
+            assert!(
+                scene.props.iter().all(|p| matches!(
+                    p.pattern,
+                    Pattern::Plain | Pattern::Pavers | Pattern::Brick
+                )),
+                "{view:?}: no water or roof indoors"
+            );
+            assert!(
+                scene.props.iter().all(|p| p.color != Rgba::hex(GRASS)),
+                "{view:?}: no grass indoors"
+            );
+        }
+    }
+
+    #[test]
+    fn every_pattern_has_its_own_id_and_a_positive_tile() {
+        let all = [
+            Pattern::Plain,
+            Pattern::Brick,
+            Pattern::Pavers,
+            Pattern::Planks,
+            Pattern::Seams,
+            Pattern::Water,
+        ];
+        let ids: std::collections::BTreeSet<u8> = all.iter().map(|p| p.id()).collect();
+        assert_eq!(ids.len(), all.len());
+        assert_eq!(Pattern::default().id(), 0, "plain is what the shader skips");
+        assert!(all.iter().all(|p| p.tile() > 0.0));
     }
 
     #[test]
