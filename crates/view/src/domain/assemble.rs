@@ -15,9 +15,9 @@ use crate::domain::observe::{Observed, ObservedLine, ObservedRun};
 use crate::domain::snapshot::{
     BoardView, Chimney, Employee, Factory, IssueStatus, IssueView, LastRun, LineView,
     MilestoneView, Project, RecentRun, Snapshot, StationState, StationView, Tokens, Version,
-    Versions,
+    Versions, WorksOn,
 };
-use crate::domain::traces::{self, Watch, summarize_costs};
+use crate::domain::traces::{self, Subject, Watch, summarize_costs};
 use crate::ports::{BoardReading, LedgerRow};
 
 /// A run that wrote in the last two minutes is live whatever the watch says.
@@ -166,6 +166,7 @@ fn employee(
     at_work: bool,
     subject: Option<&str>,
     ledger: &[LedgerRow],
+    project: &Project,
 ) -> Employee {
     let stage = line
         .stations
@@ -180,6 +181,11 @@ fn employee(
         .as_ref()
         .map(|task| format!("#{}", task.number))
         .or_else(|| traces::issue_of_run(&run.run_id).map(|n| format!("#{n}")))
+        .or_else(|| match run.log.subject {
+            Some(Subject::Issue(n)) => Some(format!("#{n}")),
+            Some(Subject::PullRequest(n)) => Some(format!("PR #{n}")),
+            Some(Subject::Branch(_)) | None => None,
+        })
         .or_else(|| subject.map(ToString::to_string))
         .unwrap_or_else(|| run.run_id.clone());
     Employee {
@@ -202,6 +208,25 @@ fn employee(
         },
         active: at_work,
         tokens: tokens_of(ledger, &run.run_id),
+        works_on: run.log.works_on().map(|on| works_on(project, &on)),
+    }
+}
+
+/// A run's subject as a link to its page on GitHub.
+fn works_on(project: &Project, on: &Subject) -> WorksOn {
+    match on {
+        Subject::Issue(n) => WorksOn {
+            label: format!("#{n}"),
+            url: issue_url(project, *n),
+        },
+        Subject::PullRequest(n) => WorksOn {
+            label: format!("PR #{n}"),
+            url: pull_url(project, *n),
+        },
+        Subject::Branch(branch) => WorksOn {
+            label: branch.clone(),
+            url: tree_url(project, branch),
+        },
     }
 }
 
@@ -356,6 +381,7 @@ fn lines_and_employees(inputs: &Inputs<'_>) -> (Vec<LineView>, Vec<Employee>) {
                 true,
                 subject,
                 &inputs.observed.ledger,
+                inputs.project,
             ));
         }
         let recent_work = recent_work(line, observed, &inputs.observed.ledger, &employees);
@@ -449,6 +475,14 @@ fn issue_url(project: &Project, number: u64) -> String {
         String::new()
     } else {
         format!("{}/issues/{number}", project.url)
+    }
+}
+
+fn pull_url(project: &Project, number: u64) -> String {
+    if project.url.is_empty() {
+        String::new()
+    } else {
+        format!("{}/pull/{number}", project.url)
     }
 }
 
@@ -752,6 +786,35 @@ mod tests {
         assert_eq!(state("code.pre"), StationState::Idle);
         assert!(!snap.factory.idle);
         assert!(snap.factory.watching);
+    }
+
+    #[test]
+    fn an_agent_links_to_what_it_works_on() {
+        let on = |subject| works_on(&project(), &subject);
+        assert_eq!(
+            on(Subject::PullRequest(31)),
+            WorksOn {
+                label: "PR #31".to_string(),
+                url: "https://github.com/Laucans/dnd_helper/pull/31".to_string(),
+            }
+        );
+        assert_eq!(
+            on(Subject::Issue(24)).url,
+            "https://github.com/Laucans/dnd_helper/issues/24"
+        );
+        assert_eq!(
+            on(Subject::Branch("milestone/3-campaign".to_string())).url,
+            "https://github.com/Laucans/dnd_helper/tree/milestone/3-campaign"
+        );
+        let nowhere = Project {
+            url: String::new(),
+            ..project()
+        };
+        assert_eq!(
+            works_on(&nowhere, &Subject::Issue(1)).url,
+            "",
+            "no URL, no link"
+        );
     }
 
     #[test]

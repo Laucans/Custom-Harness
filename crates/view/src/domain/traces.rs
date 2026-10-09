@@ -286,6 +286,29 @@ pub struct Named {
     pub title: String,
 }
 
+/// What a run works on, as its `run.log` announces it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Subject {
+    /// An issue: the one refined, split, planned, or the task merged.
+    Issue(u64),
+    /// A pull request: the one reviewed or repaired.
+    PullRequest(u64),
+    /// A branch: the milestone a dev loop builds on.
+    Branch(String),
+}
+
+/// A line's head, and the subject the number after it names.
+type Announce = (&'static str, fn(u64) -> Subject);
+
+/// The lines that announce a run's subject, and what they name.
+const ANNOUNCES: [Announce; 5] = [
+    ("reviewing #", Subject::PullRequest),
+    ("repairing #", Subject::PullRequest),
+    ("refining #", Subject::Issue),
+    ("splitting #", Subject::Issue),
+    ("planning #", Subject::Issue),
+];
+
 /// What one run's `run.log` says about where the run is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunLog {
@@ -313,6 +336,20 @@ pub struct RunLog {
     pub warning: Option<String>,
     /// The branch the run announced it works on.
     pub branch: Option<String>,
+    /// The issue or pull request the run announced it works on.
+    pub subject: Option<Subject>,
+}
+
+impl RunLog {
+    /// What the run works on: the subject it announced, else its branch (a
+    /// dev loop builds a milestone's branch), else its task.
+    #[must_use]
+    pub fn works_on(&self) -> Option<Subject> {
+        self.subject
+            .clone()
+            .or_else(|| self.branch.clone().map(Subject::Branch))
+            .or_else(|| self.task.as_ref().map(|task| Subject::Issue(task.number)))
+    }
 }
 
 /// `technical-refinement(opus/high) -> code(sonnet/high) -> deliver(local)`.
@@ -381,6 +418,18 @@ pub fn parse_run_log(text: &str, known: &[String]) -> RunLog {
         }
         log.last_at = Some(at.to_string());
         log.last_line = rest.to_string();
+        if log.subject.is_none()
+            && let Some(subject) = ANNOUNCES.iter().find_map(|(head, kind)| {
+                let digits: String = rest
+                    .strip_prefix(head)?
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                digits.parse().ok().map(kind)
+            })
+        {
+            log.subject = Some(subject);
+        }
         if let Some(pipeline) = rest.strip_prefix("pipeline: ") {
             log.planned = parse_pipeline(pipeline);
         } else if let Some(round) = rest.strip_prefix("--- round ") {
@@ -750,6 +799,38 @@ mod tests {
 
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_run_says_what_it_works_on() {
+        let said =
+            |line: &str| parse_run_log(&format!("[2026-10-09T03:02:32Z] {line}\n"), &[]).works_on();
+        assert_eq!(
+            said("reviewing #31  feat/x -> milestone/3-y  (feat: z)"),
+            Some(Subject::PullRequest(31))
+        );
+        assert_eq!(
+            said("repairing #30  feat/x -> milestone/3"),
+            Some(Subject::PullRequest(30))
+        );
+        assert_eq!(
+            said("refining #24 — round 1 (business-goal)"),
+            Some(Subject::Issue(24))
+        );
+        assert_eq!(
+            said("splitting #3 — Campaign knows its party"),
+            Some(Subject::Issue(3))
+        );
+        assert_eq!(said("planning #2 — MVP"), Some(Subject::Issue(2)));
+        assert_eq!(
+            said("run 20261009-023527-16 — branch milestone/3-campaign, 3 round(s)"),
+            Some(Subject::Branch("milestone/3-campaign".to_string()))
+        );
+        assert_eq!(
+            said("task #15: reviewed and green — merged into its milestone, closed"),
+            Some(Subject::Issue(15))
+        );
+        assert_eq!(said("workspace: kept"), None);
+    }
 
     #[test]
     fn a_run_leads_to_the_line_that_holds_it() {
