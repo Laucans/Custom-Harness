@@ -411,6 +411,13 @@
     const liveRun = e.target.closest('[data-live-run]');
     if (liveRun && S.pane) { S.pane.liveRun = liveRun.dataset.liveRun; S.pane.jump = true; renderPane(S.pane, false); return undefined; }
     if (e.target.closest('[data-limits-read]') && S.pane && S.pane.kind === 'dashboards') { readLimits(S.pane, true); return undefined; }
+    const turn = e.target.closest('[data-page]');
+    if (turn && S.pane && !turn.disabled) {
+      const pager = turn.closest('[data-pager]');
+      S.pane.pages = { ...(S.pane.pages || {}), [pager.dataset.pager]: Number(turn.dataset.page) };
+      renderPane(S.pane, false);
+      return undefined;
+    }
     const preset = e.target.closest('[data-range-preset]');
     if (preset) { presetRange(preset.dataset.rangePreset); return undefined; }
     if (e.target.closest('[data-range-clear]')) { setRange(null); return undefined; }
@@ -524,6 +531,22 @@
 
   const kv = (pairs) => '<dl class="kv">' + pairs.filter(([, v]) => v != null && v !== '').map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('') + '</dl>';
   const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
+  // A table shown a page at a time. The page is kept on the pane, so a
+  // refresh of the data keeps the reader where they were.
+  const PAGE_SIZE = 15;
+  function pagedTable(p, key, cls, head, rows, row) {
+    const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+    const page = Math.min((p.pages || {})[key] || 0, pages - 1);
+    const shown = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+    let h = `<table class="rows ${cls}"><tr>${head}</tr>` + shown.map(row).join('') + '</table>';
+    if (pages > 1) {
+      const go = (to, label, off) => `<button class="mini" data-page="${to}"${off ? ' disabled' : ''}>${label}</button>`;
+      h += `<div class="pager" data-pager="${esc(key)}">${go(0, '«', page === 0)}${go(page - 1, '‹', page === 0)}`
+        + `<span class="muted">${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + shown.length} of ${rows.length} · page ${page + 1} / ${pages}</span>`
+        + `${go(page + 1, '›', page === pages - 1)}${go(pages - 1, '»', page === pages - 1)}</div>`;
+    }
+    return h;
+  }
   // A pane's two tabs — what the element is, and who recently worked on it —
   // and its `?`, which says in a sentence what the element is for.
   const paneTabs = (p, purpose) => '<div class="tabs">' + [['details', 'Details'], ['recent', 'Recent work']].map(([k, label]) => `<button data-tab="${k}" class="${(p.tab || 'details') === k ? 'on' : ''}">${label}</button>`).join('')
@@ -610,6 +633,8 @@
   function setRange(range) {
     S.range = range && (range.from || range.to) ? range : null;
     S.history = null;
+    // Other rows: back to their first page.
+    if (S.pane) S.pane.pages = {};
     if (S.range) readHistory(); else if (S.pane && S.pane.kind === 'dashboards') renderPane(S.pane, false);
   }
   function presetRange(key) {
@@ -668,7 +693,7 @@
       h += section(p, 'costs.stage', 'By stage') + bars(c.by_stage);
       h += section(p, 'costs.task', 'By task') + bars(c.by_task);
       h += section(p, 'costs.outcome', 'By outcome') + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
-      h += section(p, 'costs.last', 'Last paid sessions') + '<table class="rows"><tr><th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th></tr>' + c.last.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
+      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`);
       return h;
     },
     quota(p) {
@@ -697,7 +722,7 @@
     errors(p) {
       if (S.range && !period()) return '';
       const rows = period() ? period().errors : S.snap.errors;
-      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + rows.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>');
+      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
     },
     journal(p) {
       if (S.range && !period()) return '';
@@ -726,14 +751,13 @@
       }
       h += section(p, 'journal.triggers', 'Triggers');
       h += j.triggers.length
-        ? '<table class="rows triggers"><tr><th>when</th><th>what</th><th>on</th><th class="num">lane</th><th>state</th><th class="num">lasted</th><th>detail</th></tr>'
-          + j.triggers.map((t) => {
+        ? pagedTable(p, 'triggers', 'triggers', '<th>when</th><th>what</th><th>on</th><th class="num">lane</th><th>state</th><th class="num">lasted</th><th>detail</th>', j.triggers, (t) => {
             const on = t.issue != null
               ? `<button class="link" data-issue="${t.issue}">#${t.issue}</button> <span class="muted">${esc(issueTitle(t.issue).slice(0, 60))}</span>`
               : esc(t.subject || '');
             const [label, cls] = STATE_TAG[t.state] || [t.state, ''];
             return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${tag(label, cls)}</td><td class="num">${esc(lasted(t.at, t.ended_at))}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
-          }).join('') + '</table>'
+          })
         : `<div class="muted">${P ? 'nothing triggered during the period' : 'nothing triggered since the start of the journal read'}</div>`;
       const logs = P ? P.logs : S.snap.recent;
       h += section(p, 'journal.logs', 'Logs') + (P && P.logs_cut ? '<div class="muted">the period holds more lines: its last ones are shown</div>' : '') + '<pre class="log">' + esc(logs.join('\n') || '(empty)') + '</pre>';
@@ -876,7 +900,7 @@
       ]);
       if (bucket) h += '<h3>What this stage cost, all runs</h3>' + tiles([[usd(bucket.usd), 'total'], [bucket.count, 'sessions'], [usd(bucket.usd / Math.max(1, bucket.count)), 'per session']]);
       if (rows.length) {
-        h += '<h3>Last sessions on it</h3><table class="rows"><tr><th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th></tr>' + rows.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
+        h += '<h3>Last sessions on it</h3>' + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`);
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
       return [st.label, paneTabs(p, st.purpose) + h];

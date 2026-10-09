@@ -247,6 +247,9 @@ table.rows { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
 table.rows th, table.rows td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
 table.rows th { color: var(--dim); font-weight: 500; }
 table.rows td.num { text-align: right; }
+.pager { display: flex; align-items: center; gap: 6px; justify-content: flex-end; margin: 6px 0 4px; font-size: 12px; }
+.pager button.mini:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.pager button.mini:disabled { opacity: .4; cursor: default; }
 nav.screens { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 nav.screens button { background: transparent; color: var(--dim); font: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
 nav.screens button:hover { border-color: var(--accent); color: var(--text); }
