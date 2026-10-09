@@ -1474,10 +1474,11 @@ fn neighbourhood(b: &mut Builder, quay: f32, street_z: f32) {
     tree(b, 0.9, street_z - 0.75);
     tree(b, quay - 1.1, 1.3);
     // One lamp on the plant's side, by the quay, so none stands in front
-    // of the door or the board; two across the street.
+    // of the door or the board; two across the street, at its ends, so none
+    // stands in front of the workers waiting on the asphalt.
     lamp(b, quay - 1.2, street_z - 0.45);
     lamp(b, 4.0, street_z + 3.15);
-    lamp(b, 11.0, street_z + 3.15);
+    lamp(b, quay - 1.4, street_z + 3.15);
 }
 
 #[allow(clippy::too_many_lines)] // One level is one list of props; cutting it in two hides the layout.
