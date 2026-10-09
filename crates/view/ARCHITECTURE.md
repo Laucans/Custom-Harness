@@ -73,18 +73,20 @@ src/domain/            the inside — no disk, no subprocess, no clock
   blueprint.rs         the rooms, the models, one line per workflow, station by station
   traces.rs            parsers: watch.log, run.log, prompts.md headers, the stream's first event, the ledger sums
   journal.rs           the watch loop out of watch.log: what it triggered and how each ended, empty and failed ticks
+  limits.rs            the rate limits read on demand: GitHub's buckets, and when a Claude probe is worth paying again
   observe.rs           what one tick reads through the Traces port
   assemble.rs          Observed + board → Snapshot (who is live, where the product is, what smokes)
   snapshot.rs          the serializable picture the page receives
   steward.rs           the steward's standing orders, and the status the page asks for
   plant.rs             the switch: which watch is this checkout's, what start / soft / hard send to whom
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (the steward's program), Plant (the watch process)
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (the steward's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket)
+  limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket)
 static/                index.html, style.css, app.js (data, navigation, panes, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
 ```
 

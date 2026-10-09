@@ -32,11 +32,13 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
 use crate::desk::Desk;
+use crate::domain::limits::{self, Read, Report};
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::snapshot::Snapshot;
 use crate::domain::steward::Status;
 use crate::domain::traces::{is_run_id, stage_logs};
-use crate::ports::{BoardReading, Plant, Traces};
+use crate::ports::{BoardReading, Limits, Plant, Traces};
+use harness_core::domain::quota::Reading;
 
 /// What every handler can reach.
 #[derive(Clone)]
@@ -57,6 +59,11 @@ pub struct AppState {
     pub plant: Option<Arc<dyn Plant>>,
     /// How long a started watch must live before the start counts.
     pub start_grace: Duration,
+    /// The rate limits, read on demand — `None` when nothing can read them.
+    pub limits: Option<Arc<dyn Limits>>,
+    /// The last Claude reading the page paid for, kept so a click is not a
+    /// session.
+    pub claude_read: Arc<std::sync::Mutex<Option<Read<Reading>>>>,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -93,6 +100,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/runs/{workflow}/{run}/stages", get(run_stages))
         .route("/api/runs/{workflow}/{run}/{file}", get(run_file))
         .route("/api/issues/{number}", get(issue))
+        .route("/api/limits", get(rate_limits))
         .route("/api/plant", get(plant_status))
         .route("/api/plant/{gesture}", post(plant_gesture))
         .route("/api/steward", get(steward))
@@ -357,6 +365,54 @@ async fn steward(State(state): State<AppState>) -> Response {
     ))
 }
 
+/// `?force=1`: the human asked to read again.
+#[derive(Debug, Deserialize)]
+struct LimitsQuery {
+    force: Option<u8>,
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Both rate limits, read now: GitHub every time (it is free), Claude when
+/// the reading the page last paid for has aged (`domain::limits`). The two
+/// reads run side by side, off the server's thread.
+async fn rate_limits(State(state): State<AppState>, Query(query): Query<LimitsQuery>) -> Response {
+    let Some(source) = state.limits.clone() else {
+        return (StatusCode::NOT_FOUND, "this view reads no rate limit").into_response();
+    };
+    let now = unix_now();
+    let kept = state.claude_read.lock().ok().and_then(|kept| kept.clone());
+    let paid_at = kept
+        .as_ref()
+        .filter(|read| read.value.is_some())
+        .map(|read| read.at);
+    let pay_again = limits::claude_stale(paid_at, now, query.force == Some(1));
+    let github = {
+        let source = Arc::clone(&source);
+        tokio::task::spawn_blocking(move || Read::of(source.github(), now))
+    };
+    let claude = match kept {
+        Some(read) if !pay_again => read,
+        _ => {
+            let probed = tokio::task::spawn_blocking(move || Read::of(source.claude(), now))
+                .await
+                .unwrap_or_else(|e| Read::of(Err(format!("the probe broke: {e}")), now));
+            if let Ok(mut kept) = state.claude_read.lock() {
+                *kept = Some(probed.clone());
+            }
+            probed
+        }
+    };
+    let github = github
+        .await
+        .unwrap_or_else(|e| Read::of(Err(format!("the read broke: {e}")), now));
+    json(&Report { claude, github })
+}
+
 /// Whether the page has a hand on the plant, and the watch that runs.
 async fn plant_status(State(state): State<AppState>) -> Response {
     json(&plant::Status {
@@ -574,6 +630,8 @@ mod tests {
             desk,
             plant: None,
             start_grace: Duration::ZERO,
+            limits: None,
+            claude_read: Arc::default(),
         }
     }
 
@@ -662,6 +720,45 @@ mod tests {
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(body.contains("exited as soon as it started"), "{body}");
         assert!(body.contains("no git repository"), "{body}");
+    }
+
+    /// Counts what it was asked, and answers the same every time.
+    #[derive(Default)]
+    struct Gauges {
+        probes: std::sync::atomic::AtomicU32,
+    }
+
+    impl Limits for Gauges {
+        fn claude(&self) -> Result<Reading, String> {
+            self.probes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Reading {
+                windows: Vec::new(),
+                at: 1,
+            })
+        }
+
+        fn github(&self) -> Result<Vec<crate::ports::GithubWindow>, String> {
+            Err("gh: not logged in".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_opened_panel_reads_both_limits_and_pays_claude_once() {
+        let gauges = Arc::new(Gauges::default());
+        let mut state = state(Shelf::default(), None);
+        state.limits = Some(Arc::clone(&gauges) as Arc<dyn Limits>);
+        let (status, body) = get(state.clone(), "/api/limits").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"claude\":{\"value\":{"), "{body}");
+        assert!(body.contains("gh: not logged in"), "{body}");
+        let _ = get(state.clone(), "/api/limits").await;
+        let _ = get(state, "/api/limits?force=1").await;
+        assert_eq!(
+            gauges.probes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a fresh reading is reused, even when asked again at once"
+        );
     }
 
     #[tokio::test]

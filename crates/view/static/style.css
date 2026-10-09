@@ -318,6 +318,9 @@ h3.with-help .help-btn { text-transform: none; letter-spacing: 0; }
 nav.screens .help-btn { margin-left: auto; align-self: center; padding: 0; border-radius: 50%; color: var(--dim); }
 nav.screens .help-btn.on { color: var(--accent); border-color: var(--accent); }
 .callout.purpose code { font-size: 11px; }
+.limits-bar { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin-bottom: 4px; }
+.limits-bar button.mini:hover { color: var(--accent); border-color: var(--accent); }
+.limits-from { margin-top: 6px; font: 11px var(--mono); }
 .tabs .help-btn {
   margin-left: auto; width: 26px; height: 26px; padding: 0; border-radius: 50%;
   font-weight: 700;

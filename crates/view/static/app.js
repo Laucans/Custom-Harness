@@ -405,6 +405,7 @@
     }
     const liveRun = e.target.closest('[data-live-run]');
     if (liveRun && S.pane) { S.pane.liveRun = liveRun.dataset.liveRun; S.pane.jump = true; renderPane(S.pane, false); return undefined; }
+    if (e.target.closest('[data-limits-read]') && S.pane && S.pane.kind === 'dashboards') { readLimits(S.pane, true); return undefined; }
     const help = e.target.closest('[data-help]');
     if (help && S.pane) {
       const key = help.dataset.help;
@@ -557,6 +558,16 @@
     const m = Math.floor(ms / 60000);
     return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : m >= 1 ? `${m} min` : `${Math.round(ms / 1000)} s`;
   }
+  async function readLimits(p, force) {
+    p.limitsAsked = true; p.limitsBusy = true;
+    if (S.pane === p) renderPane(p, false);
+    try {
+      const r = await fetch('/api/limits' + (force ? '?force=1' : ''));
+      if (r.ok) p.limits = await r.json();
+    } catch (e) { /* the screen keeps what it had */ }
+    p.limitsBusy = false;
+    if (S.pane === p) renderPane(p, false);
+  }
   // A section's `?`: what it monitors, where the numbers come from. Open ones
   // are kept on the pane, so a refresh of the data does not close them.
   const helpBtn = (p, key) => `<button class="help-btn ${(p.helps || []).includes(key) ? 'on' : ''}" data-help="${esc(key)}" title="What is monitored here?" aria-expanded="${(p.helps || []).includes(key)}">?</button>`;
@@ -572,8 +583,9 @@
     'costs.task': 'Spending per issue: what each task has cost so far, every round and stage together.',
     'costs.outcome': 'How the paid sessions ended: <b>ok</b>, <b>STOP</b> (the session stopped itself, or a question), <b>FAILED</b> (it rendered nothing usable, or was killed), <b>QUOTA</b> (the window was exhausted). Money spent on anything but ok bought nothing.',
     'costs.last': 'The newest sessions of the ledger: when, which task and stage, the estimate, the round-trips with the model, the minutes it took, and how it ended.',
-    quota: 'Claude\'s subscription windows, as the last session that ran read them. Nothing here is polled: the reading is only as fresh as the last paid session.',
-    'quota.windows': 'Each window (<code>five_hour</code>, <code>seven_day</code>, …) with the share already used and when it resets. Above 70 % it turns orange, above 90 % red. A run reads the tightest window when it starts (its <code>run.log</code> says how much is left); a session refused for an exhausted window ends as QUOTA and costs nothing.',
+    quota: 'How much of each rate limit is left, read when this screen opens — not remembered. <b>read again</b> reads them once more.',
+    'quota.claude': 'Claude\'s subscription windows (<code>five_hour</code>, <code>seven_day</code>, …): the share already used and when each resets. Claude only says it inside a session, so opening this screen runs the smallest session there is — the cheapest model, no tool, about a tenth of a cent — and keeps its reading a minute, so clicks do not pay again. When that probe fails, the reading the runs kept at the end of their last session is shown instead, with its time. Above 70 % orange, above 90 % red.',
+    'quota.github': 'The GitHub API buckets of the account <code>gh</code> is logged in with, from <code>gh api rate_limit</code> — a read GitHub does not count. <b>core</b> is the REST API (issues, labels, PRs), <b>graphql</b> the GraphQL API (sub-issues, blockers), <b>search</b> the search API; any other bucket shows once used. An exhausted bucket makes the watch\'s board reads fail until it resets (Stops, and failed board reads on Watch loop).',
     errors: 'Every time a workflow stopped, from <code>.llocal/logs/agent-loop/errors.tsv</code>, newest first.',
     'errors.list': '<b>STOP</b>: the run halted for a human — a question in its SPEC, a gate, or the breaker refusing to pay again for a prompt that already failed twice. <b>FAILED</b>: something broke — a command, a timeout, an unreadable board. <b>QUOTA</b>: the subscription window was exhausted. The reason is the run\'s own words.',
     journal: 'The polling loop, <code>harness watch</code>, read from <code>.llocal/logs/agent-loop/watch.log</code> (its last 256 kB). Every tick it reads the board, decides, and starts work on lanes or runs a workflow itself.',
@@ -598,10 +610,27 @@
       return h;
     },
     quota(p) {
-      const q = S.snap.quota;
-      const head = section(p, 'quota.windows', 'Windows');
-      if (!q) return head + '<div class="muted">no reading yet</div>';
-      return head + '<div class="gauges">' + q.windows.map((w) => { const pct = Math.round(w.utilization * 100); const reset = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString() : 'unknown'; return `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(w.name)} · ${pct}% used</div><div class="bar"><span style="width:${pct}%"></span></div><div class="muted">resets ${esc(reset)}</div></div>`; }).join('') + '</div>' + `<div class="muted" style="margin-top:6px;font:11px var(--mono)">read ${new Date(q.at * 1000).toLocaleString()}</div>`;
+      const L = p.limits;
+      const at = (secs) => when(new Date(secs * 1000).toISOString());
+      const gauge = (name, pct, sub) => `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(name)} · ${pct}% used</div><div class="bar"><span style="width:${Math.min(pct, 100)}%"></span></div><div class="muted">${sub}</div></div>`;
+      const resets = (secs) => (secs ? 'resets ' + esc(new Date(secs * 1000).toLocaleString()) : 'reset unknown');
+      let h = `<div class="limits-bar"><span class="muted">${p.limitsBusy ? 'reading the limits now…' : L ? 'read at ' + esc(at(Math.max(L.claude.at, L.github.at))) : ''}</span><button class="mini" data-limits-read${p.limitsBusy ? ' disabled' : ''}>read again</button></div>`;
+      // Claude: the probe's reading, or the one the runs kept when the probe failed.
+      h += section(p, 'quota.claude', 'Claude');
+      const kept = S.snap.quota;
+      const claude = L && L.claude.value ? L.claude.value : null;
+      const shown = claude || kept;
+      if (L && L.claude.error) h += `<div class="callout soon">the probe failed: ${esc(L.claude.error)}${kept ? ' — showing the reading the runs last kept' : ''}</div>`;
+      if (shown) {
+        h += '<div class="gauges">' + shown.windows.map((w) => gauge(w.name, Math.round(w.utilization * 100), resets(w.resets_at))).join('') + '</div>';
+        h += `<div class="muted limits-from">${claude ? 'read now by a minimal session' : 'kept by the last run that ended'}, ${esc(at(shown.at))}</div>`;
+      } else h += `<div class="muted">${p.limitsBusy ? 'reading…' : 'no reading yet'}</div>`;
+      // GitHub: free to read, read every time.
+      h += section(p, 'quota.github', 'GitHub API');
+      if (!L) h += `<div class="muted">${p.limitsBusy ? 'reading…' : 'not read'}</div>`;
+      else if (L.github.error) h += `<div class="callout soon">${esc(L.github.error)}</div>`;
+      else h += '<div class="gauges">' + L.github.value.map((w) => gauge(w.name, w.limit ? Math.round(100 * w.used / w.limit) : 0, `${w.used} / ${w.limit} requests · ${resets(w.resets_at)}`)).join('') + '</div>';
+      return h;
     },
     errors(p) {
       return section(p, 'errors.list', 'Last stops') + (S.snap.errors.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + S.snap.errors.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>');
@@ -890,7 +919,9 @@
       const focus = screens[p.focus] ? p.focus : 'costs';
       const nav = '<nav class="screens">' + Object.entries(screens).map(([k, name]) => `<button class="${k === focus ? 'here' : ''}" data-pane='${esc(JSON.stringify({ kind: 'dashboards', focus: k }))}'>${esc(name)}</button>`).join('') + helpBtn(p, focus) + '</nav>' + helpBox(p, focus);
       const h = nav + DASH[focus](p);
-      return ['Control room · ' + screens[focus], h];
+      // The rate limits are read when their screen opens, not remembered.
+      const after = () => { if (focus === 'quota' && !p.limitsAsked) readLimits(p, false); };
+      return ['Control room · ' + screens[focus], h, after];
     },
 
     versions() {

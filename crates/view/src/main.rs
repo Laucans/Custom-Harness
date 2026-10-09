@@ -42,6 +42,7 @@ use tokio::sync::watch;
 use crate::adapters::claude_bin;
 use crate::adapters::fs_traces::FsTraces;
 use crate::adapters::gh_board::GhBoard;
+use crate::adapters::limits_cli::CliLimits;
 use crate::adapters::pty::Pty;
 use crate::adapters::watch_proc::WatchProcess;
 use crate::cli::Cli;
@@ -52,7 +53,7 @@ use crate::domain::observe::{Observed, observe};
 use crate::domain::plant;
 use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
-use crate::ports::{Board, BoardReading, Plant, TerminalFactory, Traces};
+use crate::ports::{Board, BoardReading, Limits, Plant, TerminalFactory, Traces};
 use crate::server::{AppState, router};
 
 /// `current_thread`, like the harness: the board port is `?Send`, and one
@@ -95,6 +96,10 @@ async fn main() -> anyhow::Result<()> {
         desk: desk.clone(),
         plant: plant.clone(),
         start_grace: Duration::from_millis(1500),
+        limits: Some(Arc::new(CliLimits::new(
+            claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
+        )) as Arc<dyn Limits>),
+        claude_read: Arc::default(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))

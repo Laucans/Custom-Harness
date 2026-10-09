@@ -4,6 +4,7 @@
 pub mod assemble;
 pub mod blueprint;
 pub mod journal;
+pub mod limits;
 pub mod observe;
 pub mod plant;
 pub mod snapshot;

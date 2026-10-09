@@ -164,6 +164,9 @@ pub fn parse_watch(text: &str, keep: usize) -> Watch {
                 subject: route_subject(route),
                 since: at.to_string(),
             });
+        } else if rest.starts_with("quiet:") {
+            // A quiet tick is a tick: the board did not move, the loop polled.
+            watch.last_tick_at = Some(at.to_string());
         } else if let Some(saw) = rest.strip_prefix("saw: ") {
             watch.saw = Some(saw.to_string());
         } else if let Some(every) = rest.strip_prefix("watch: every ") {
@@ -730,6 +733,16 @@ mod tests {
 
         let reported: String = WATCH.lines().take(4).collect::<Vec<_>>().join("\n");
         assert!(parse_watch(&reported, 10).in_flight.is_none());
+    }
+
+    #[test]
+    fn a_quiet_tick_is_still_a_tick() {
+        let text = "\
+[2026-10-09T00:52:32Z] tick: DevLoop { milestone: 3 }
+[2026-10-09T00:54:42Z] quiet: nothing moved on the board — no snapshot read
+";
+        let watch = parse_watch(text, 5);
+        assert_eq!(watch.last_tick_at.as_deref(), Some("2026-10-09T00:54:42Z"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! What the view needs from the outside, as traits — and the values those
 //! traits exchange: the traces the harness leaves on disk, the board it keeps
-//! on GitHub, the steward's terminal, and the watch process the page starts
-//! and stops.
+//! on GitHub, the steward's terminal, the watch process the page starts
+//! and stops, and the rate limits it reads on demand.
 //!
 //! A port decides nothing. `FsTraces` knows where `.llocal/logs` is and what
 //! a TSV looks like; what a row *means* is `domain`'s business.
@@ -245,4 +245,38 @@ pub trait Plant: Send + Sync {
     ///
     /// Why the signal could not be sent.
     fn send(&self, signal: Signal, target: Target) -> Result<(), String>;
+}
+
+/// One GitHub API rate-limit bucket (`core`, `graphql`, `search`, …).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GithubWindow {
+    /// The bucket, as GitHub names it.
+    pub name: String,
+    /// Requests allowed per window.
+    pub limit: u64,
+    /// Requests already made in this window.
+    pub used: u64,
+    /// When the window resets, in seconds since the epoch.
+    pub resets_at: u64,
+}
+
+/// The rate limits, read now rather than remembered.
+///
+/// Synchronous and `Send + Sync`: the server calls it off its thread, one
+/// short process per read.
+pub trait Limits: Send + Sync {
+    /// Claude's subscription windows, as a minimal session sees them now.
+    ///
+    /// # Errors
+    ///
+    /// Why no reading came back — no `claude`, a timeout, no event.
+    fn claude(&self) -> Result<Reading, String>;
+
+    /// The GitHub API buckets of the account `gh` is logged in with — a read
+    /// GitHub does not count against them.
+    ///
+    /// # Errors
+    ///
+    /// Why `gh` gave no answer.
+    fn github(&self) -> Result<Vec<GithubWindow>, String>;
 }
