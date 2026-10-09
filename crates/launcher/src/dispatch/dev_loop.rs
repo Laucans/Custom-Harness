@@ -707,6 +707,9 @@ mod tests {
         async fn protect_branch(&self, _branch: &str) -> Outcome<()> {
             Err(refused())
         }
+        async fn require_squash_merges(&self) -> Outcome<()> {
+            Err(refused())
+        }
         async fn can_push(&self) -> Outcome<bool> {
             Err(refused())
         }

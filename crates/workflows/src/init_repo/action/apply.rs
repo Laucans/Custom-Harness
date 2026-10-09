@@ -39,7 +39,11 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<(Report, Verdict)> {
     let labels_created = create_missing_labels(ports, config, &plan).await?;
     create_grill_backlog_label_if_needed(ports, config, &existing).await?;
     let branch_line = create_branch_if_needed(ports, config, &plan, &default).await?;
-    let (guard_lines, protection_advisory) = guard_branches(ports, config, &default).await?;
+    let (mut guard_lines, mut protection_advisory) =
+        guard_branches(ports, config, &default).await?;
+    let (policy_lines, policy_advisory) = require_squash_merges(ports, config).await?;
+    guard_lines.extend(policy_lines);
+    protection_advisory.extend(policy_advisory);
     let install_lines = install::run(ports, config).await?;
     // After the install: a `CLAUDE.md` it just pushed is one the map reads.
     let audit = read_audit(ports, config).await?;
@@ -241,6 +245,34 @@ async fn guard_branches(
     Ok((lines, advisory))
 }
 
+/// Allows only squash merges, the squash commit keeping the pull request's
+/// title and number.
+///
+/// Why: the integration branch then carries one commit per pull request,
+/// and the `(#n)` in its title is the way back to the branch's own commits —
+/// the history is not lost, it is read on the pull request. A refusal is an
+/// advisory, not an error: a token may push without administering.
+async fn require_squash_merges(
+    ports: &Ports,
+    config: &Config,
+) -> Outcome<(Vec<String>, Vec<String>)> {
+    const WHAT: &str = "squash merges only (commit: PR title (#n), PR body)";
+    if config.dry_run {
+        return Ok((vec![format!("merges would be {WHAT}")], Vec::new()));
+    }
+    match ports.gh.require_squash_merges().await {
+        Ok(()) => Ok((vec![format!("merges are {WHAT}")], Vec::new())),
+        Err(halt) => Ok((
+            Vec::new(),
+            vec![format!(
+                "merges are not squash only — {} (set it by hand in the \
+                 repository's settings, under Pull Requests)",
+                halt.reason()
+            )],
+        )),
+    }
+}
+
 /// Step 7: what the audit turns into BLOCKING and advisory report lines.
 fn blocking_and_advisory(audit: &Audit, branch: &str) -> (Vec<(String, String)>, Vec<String>) {
     let mut blocking = Vec::new();
@@ -365,7 +397,30 @@ mod tests {
         let writes = gh.writes();
         assert!(writes.contains(&Wrote::DefaultBranch("main_agent".to_string())));
         assert!(writes.contains(&Wrote::ProtectedBranch("main".to_string())));
-        assert_eq!(report.guard_lines.len(), 2);
+        assert!(writes.contains(&Wrote::SquashMergesRequired));
+        assert_eq!(report.guard_lines.len(), 3);
+        assert!(
+            report
+                .guard_lines
+                .iter()
+                .any(|l| l == "merges are squash merges only (commit: PR title (#n), PR body)")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_squash_policy_is_an_advisory_not_a_failure() {
+        let mut gh = ready_gh();
+        gh.squash_merges_refused = true;
+        let ports = ports_fake::with(Rc::new(gh));
+        let (report, verdict) = run(&ports, &config_fake::config()).await.expect("run");
+        assert!(matches!(verdict, Verdict::Ready));
+        assert!(
+            report
+                .advisory
+                .iter()
+                .any(|a| a.contains("merges are not squash only"))
+        );
+        assert!(!report.guard_lines.iter().any(|l| l.contains("squash")));
     }
 
     #[tokio::test]
@@ -409,6 +464,12 @@ mod tests {
         assert_eq!(report.labels_created.len(), labels::ALL.len());
         assert!(gh.writes().is_empty(), "the fake gh recorded a write");
         assert!(report.env_line.contains("would be set"));
+        assert!(
+            report
+                .guard_lines
+                .iter()
+                .any(|l| l.starts_with("merges would be squash"))
+        );
     }
 
     #[tokio::test]
