@@ -108,7 +108,7 @@ pub const ROOMS: [Room; 6] = [
         id: 2,
         key: "office",
         name: "Architecture office",
-        blurb: "The issues in detail, and where the need gets built with Claude Code.",
+        blurb: "The issues in detail, the mock-up, the feature list, the data sources — and where the need gets built with Claude Code.",
         status: RoomStatus::Draft,
     },
     Room {
@@ -120,10 +120,10 @@ pub const ROOMS: [Room; 6] = [
     },
     Room {
         id: 4,
-        key: "value",
-        name: "Product value",
-        blurb: "The mock-up, the feature list and the data sources.",
-        status: RoomStatus::Draft,
+        key: "infirmary",
+        name: "Infirmary",
+        blurb: "The doctor: a check-up of the plant, and the repair `harness doctor` performs when asked.",
+        status: RoomStatus::Live,
     },
     Room {
         id: 5,

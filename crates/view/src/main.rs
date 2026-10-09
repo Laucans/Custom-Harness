@@ -8,7 +8,7 @@
 //! The factory view: a local web server that renders the harness as an
 //! isometric plant, read from the traces the harness leaves behind.
 //!
-//! Two pollers, one server, one steward, on one thread. The pollers read the
+//! Two pollers, one server, one steward, one doctor, on one thread. The pollers read the
 //! traces every few seconds and the GitHub board every minute, and publish a
 //! `Snapshot` on a `watch` channel; the server hands that picture to the page
 //! and streams every change to it. The steward is an interactive Claude Code
@@ -49,6 +49,7 @@ use crate::cli::Cli;
 use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
 use crate::domain::blueprint;
+use crate::domain::doctor;
 use crate::domain::limits::Read;
 use crate::domain::observe::{Observed, observe};
 use crate::domain::plant;
@@ -79,7 +80,9 @@ async fn main() -> anyhow::Result<()> {
         );
         Rc::new(GhBoard::new(gh))
     });
-    let desk = desk_for(&cli, &root, &project);
+    let program = program_for(&cli);
+    let desk = desk_for(&cli, &root, &project, &program);
+    let doctor = doctor_for(&cli, &root, &project, &program);
     // A demo replays a finished run: there is no plant to switch.
     let plant: Option<Arc<dyn Plant>> = (!cli.demo).then(|| {
         Arc::new(WatchProcess::new(workspace.clone(), &cli.watch_command)) as Arc<dyn Plant>
@@ -100,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         static_dir: cli.static_dir.clone(),
         render_dir: root.join("crates/view/static/render"),
         desk: desk.clone(),
+        doctor: doctor.clone(),
         plant: plant.clone(),
         start_grace: Duration::from_millis(1500),
         limits: Some(Arc::new(CliLimits::new(
@@ -111,22 +115,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
         .await
         .with_context(|| format!("binding {}:{}", cli.bind, cli.port))?;
-    println!(
-        "harness-view: http://{}:{} — reading {}{}{}",
-        cli.bind,
-        cli.port,
-        workspace.rel(&workspace.logs()),
-        if cli.demo {
-            " (demo: the latest run is shown live)"
-        } else {
-            ""
-        },
-        if cli.no_steward {
-            ""
-        } else {
-            " — the steward answers at the desk"
-        }
-    );
+    println!("{}", banner(&cli, &workspace));
 
     let local = tokio::task::LocalSet::new();
     local
@@ -164,31 +153,63 @@ async fn main() -> anyhow::Result<()> {
             if let Some(desk) = desk {
                 desk.shutdown();
             }
+            if let Some(doctor) = doctor {
+                doctor.shutdown();
+            }
             Ok(())
         })
         .await
 }
 
-/// The steward's desk, unless `--no-steward`: the newest Claude Code on the
-/// machine, on the model the human chose, briefed on this plant.
-fn desk_for(cli: &Cli, root: &Path, project: &Project) -> Option<Desk> {
-    (!cli.no_steward).then(|| {
-        // `claude` on PATH is often a stale wrapper: when the human named no
-        // other program, the newest Claude Code on the machine takes the desk.
-        let command = if cli.steward_command == "claude" {
-            claude_bin::newest().map_or_else(
-                || cli.steward_command.clone(),
-                |(path, version)| {
-                    println!("harness-view: steward runs {} ({version})", path.display());
-                    path.to_string_lossy().into_owned()
-                },
-            )
+/// The line printed when the page is up: where it listens, what it reads,
+/// who is in.
+fn banner(cli: &Cli, workspace: &Workspace) -> String {
+    format!(
+        "harness-view: http://{}:{} — reading {}{}{}{}",
+        cli.bind,
+        cli.port,
+        workspace.rel(&workspace.logs()),
+        if cli.demo {
+            " (demo: the latest run is shown live)"
         } else {
-            cli.steward_command.clone()
-        };
+            ""
+        },
+        if cli.no_steward {
+            ""
+        } else {
+            " — the steward answers at the desk"
+        },
+        if cli.no_doctor {
+            ""
+        } else {
+            " — the doctor is in"
+        }
+    )
+}
+
+/// The Claude Code both desks run. `claude` on PATH is often a stale
+/// wrapper: when the human named no other program, the newest Claude Code on
+/// the machine takes the desks.
+fn program_for(cli: &Cli) -> String {
+    if cli.steward_command != "claude" || (cli.no_steward && cli.no_doctor) {
+        return cli.steward_command.clone();
+    }
+    claude_bin::newest().map_or_else(
+        || cli.steward_command.clone(),
+        |(path, version)| {
+            println!("harness-view: the desks run {} ({version})", path.display());
+            path.to_string_lossy().into_owned()
+        },
+    )
+}
+
+/// The steward's desk, unless `--no-steward`: on the model the human chose,
+/// briefed on this plant.
+fn desk_for(cli: &Cli, root: &Path, project: &Project, program: &str) -> Option<Desk> {
+    (!cli.no_steward).then(|| {
         let terminal: Arc<dyn TerminalFactory> = Arc::new(Pty::new(
             root,
-            &command,
+            program,
             vec![
                 "--model".to_string(),
                 cli.steward_model.clone(),
@@ -196,6 +217,30 @@ fn desk_for(cli: &Cli, root: &Path, project: &Project) -> Option<Desk> {
                 cli.permission_mode.clone(),
                 "--append-system-prompt".to_string(),
                 steward::briefing(project),
+            ],
+        ));
+        Desk::new(terminal)
+    })
+}
+
+/// The doctor's desk, unless `--no-doctor`: the same program on the doctor's
+/// model and effort, briefed on the instruments, the check-up already asked.
+fn doctor_for(cli: &Cli, root: &Path, project: &Project, program: &str) -> Option<Desk> {
+    (!cli.no_doctor).then(|| {
+        let terminal: Arc<dyn TerminalFactory> = Arc::new(Pty::new(
+            root,
+            program,
+            vec![
+                "--model".to_string(),
+                cli.doctor_model.clone(),
+                "--effort".to_string(),
+                cli.doctor_effort.clone(),
+                "--permission-mode".to_string(),
+                cli.permission_mode.clone(),
+                "--append-system-prompt".to_string(),
+                doctor::briefing(project),
+                // The positional prompt: sent the moment the session opens.
+                doctor::CHECKUP.to_string(),
             ],
         ));
         Desk::new(terminal)

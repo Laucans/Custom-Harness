@@ -1,5 +1,5 @@
 //! The HTTP side: the page, its scripts, a few small routes, and the
-//! steward's terminal over a WebSocket.
+//! steward's and the doctor's terminals over a WebSocket.
 //!
 //! The handlers never read the disk for the picture — they read the latest
 //! `Snapshot` the poller published, so a slow `gh` never slows a page. Two
@@ -57,6 +57,8 @@ pub struct AppState {
     pub render_dir: PathBuf,
     /// The steward's desk — `None` under `--no-steward`.
     pub desk: Option<Desk>,
+    /// The doctor's desk — `None` under `--no-doctor`.
+    pub doctor: Option<Desk>,
     /// The watch process the page starts and stops — `None` under `--demo`.
     pub plant: Option<Arc<dyn Plant>>,
     /// How long a started watch must live before the start counts.
@@ -109,7 +111,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/plant", get(plant_status))
         .route("/api/plant/{gesture}", post(plant_gesture))
         .route("/api/steward", get(steward))
-        .route("/api/steward/term", get(term))
+        .route("/api/steward/term", get(steward_term))
+        .route("/api/doctor", get(doctor))
+        .route("/api/doctor/term", get(doctor_term))
         .with_state(state)
 }
 
@@ -412,9 +416,9 @@ async fn issue(State(state): State<AppState>, Path(number): Path<u64>) -> Respon
     )
 }
 
-/// Whether there is a steward, and whether they are at the desk.
-async fn steward(State(state): State<AppState>) -> Response {
-    json(&state.desk.as_ref().map_or_else(
+/// Whether there is someone for this desk, and whether they sit at it.
+fn status_of(desk: Option<&Desk>) -> Status {
+    desk.map_or_else(
         || Status {
             available: false,
             live: false,
@@ -425,7 +429,17 @@ async fn steward(State(state): State<AppState>) -> Response {
             live: desk.is_live(),
             command: desk.command(),
         },
-    ))
+    )
+}
+
+/// Whether there is a steward, and whether they are at the desk.
+async fn steward(State(state): State<AppState>) -> Response {
+    json(&status_of(state.desk.as_ref()))
+}
+
+/// Whether there is a doctor, and whether they are in.
+async fn doctor(State(state): State<AppState>) -> Response {
+    json(&status_of(state.doctor.as_ref()))
 }
 
 /// `?from=…&to=…`: two trace clocks, either left out.
@@ -644,13 +658,36 @@ enum Control {
     Restart,
 }
 
-async fn term(
+async fn steward_term(
     ws: WebSocketUpgrade,
     Query(query): Query<TermQuery>,
     State(state): State<AppState>,
 ) -> Response {
-    let Some(desk) = state.desk else {
-        return not_found("no steward: the view runs with --no-steward");
+    term(
+        ws,
+        &query,
+        state.desk,
+        "no steward: the view runs with --no-steward",
+    )
+}
+
+async fn doctor_term(
+    ws: WebSocketUpgrade,
+    Query(query): Query<TermQuery>,
+    State(state): State<AppState>,
+) -> Response {
+    term(
+        ws,
+        &query,
+        state.doctor,
+        "no doctor: the view runs with --no-doctor",
+    )
+}
+
+/// Sits the visitor at this desk, or says why there is none.
+fn term(ws: WebSocketUpgrade, query: &TermQuery, desk: Option<Desk>, missing: &str) -> Response {
+    let Some(desk) = desk else {
+        return not_found(missing);
     };
     let cols = query.cols.unwrap_or(TERM_DEFAULT.0).max(20);
     let rows = query.rows.unwrap_or(TERM_DEFAULT.1).max(5);
@@ -764,6 +801,7 @@ mod tests {
             static_dir: None,
             render_dir: PathBuf::from("/nonexistent/render"),
             desk,
+            doctor: None,
             plant: None,
             start_grace: Duration::ZERO,
             limits: None,
@@ -1070,6 +1108,29 @@ mod tests {
         // A plain GET is not a WebSocket handshake: the route exists and
         // refuses it before any desk is consulted.
         let (status, _) = get(state(Shelf::default(), None), "/api/steward/term").await;
+        assert!(status.is_client_error(), "{status}");
+    }
+
+    #[tokio::test]
+    async fn the_doctor_has_a_desk_of_their_own() {
+        let (status, body) = get(state(Shelf::default(), None), "/api/doctor").await;
+        assert_eq!(status, StatusCode::OK);
+        let none: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(none["available"], false);
+
+        let mut with = state(Shelf::default(), None);
+        with.doctor = Some(Desk::new(Arc::new(Echoing::default())));
+        let (_, body) = get(with.clone(), "/api/doctor").await;
+        let some: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(some["available"], true, "the doctor is in");
+        let (_, body) = get(with, "/api/steward").await;
+        let steward: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(
+            steward["available"], false,
+            "but the steward's desk is another"
+        );
+
+        let (status, _) = get(state(Shelf::default(), None), "/api/doctor/term").await;
         assert!(status.is_client_error(), "{status}");
     }
 
