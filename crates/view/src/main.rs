@@ -40,6 +40,7 @@ use harness_adapters::shell::github::GhCli;
 use harness_core::domain::Slug;
 use harness_core::domain::workspace::Workspace;
 use harness_core::ports::shell::github::GitHub;
+use jiff::tz::TimeZone;
 use tokio::sync::watch;
 
 use crate::adapters::claude_bin;
@@ -115,13 +116,12 @@ async fn main() -> anyhow::Result<()> {
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
     let (data, data_task) = product
-        .map(|(product, every)| data_desk::open(product, every))
+        .map(|(product, every)| data_desk::open(product, every, TimeZone::system()))
         .unzip();
 
     // One per process: what tells a page the server it talks to was rebuilt.
     let build = jiff::Timestamp::now().to_string();
-    let mut first = first_picture(&project, cli.demo);
-    first.build.clone_from(&build);
+    let first = first_picture(&project, cli.demo, &build);
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first));
     let (board_tx, board_rx) = watch::channel(None);
     let state = AppState {
@@ -150,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
         trials: trials(&cli, &workspace),
         restart: Arc::default(),
         restart_poll: Duration::from_secs(3),
+        zone: TimeZone::system(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -380,10 +381,11 @@ fn doctor_for(cli: &Cli, root: &Path, project: &Project, program: &str) -> Optio
     })
 }
 
-/// The picture before the first read: an empty plant with the right name.
-fn first_picture(project: &Project, demo: bool) -> Snapshot {
+/// The picture before the first read: an empty plant with the right name and
+/// the process's `build`.
+fn first_picture(project: &Project, demo: bool, build: &str) -> Snapshot {
     let observed = Observed::default();
-    assemble::snapshot(&Inputs {
+    let mut first = assemble::snapshot(&Inputs {
         observed: &observed,
         board: None,
         project,
@@ -391,7 +393,10 @@ fn first_picture(project: &Project, demo: bool) -> Snapshot {
         now: jiff::Timestamp::now().as_second(),
         demo,
         told: &Told::default(),
-    })
+        zone: &TimeZone::system(),
+    });
+    first.build = build.to_string();
+    first
 }
 
 /// Reads the traces on a cadence and publishes the picture when it changed.
@@ -508,6 +513,7 @@ async fn poll_traces(
     demo: bool,
 ) {
     let lines = blueprint::lines();
+    let zone = TimeZone::system();
     // The first picture carries this process's build; every later one too.
     let build = tx.borrow().build.clone();
     let mut last_body = String::new();
@@ -535,6 +541,7 @@ async fn poll_traces(
             now: now.as_second(),
             demo,
             told: &told,
+            zone: &zone,
         });
         snap.build.clone_from(&build);
         snap.notifications = notifications(&hands, &observed, reading.as_deref(), now);

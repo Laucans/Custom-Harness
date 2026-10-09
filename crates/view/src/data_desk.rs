@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use harness_workflows::data_snapshot::action::archive::{INDEX, MODEL_FILE, SCHEMA_FILE};
 use harness_workflows::data_snapshot::config::ARCHIVE_BRANCH;
 use harness_workflows::data_snapshot::data::index::Index;
+use jiff::tz::TimeZone;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::domain::data_versions::{self, Versions};
@@ -123,12 +124,15 @@ impl DataDesk {
 }
 
 /// The desk and the task that serves it; the task must run on a `LocalSet`.
+///
+/// `zone` is the one a version's clock is shown in: the harness machine's.
 pub fn open(
     product: Rc<dyn Product>,
     live_every: Duration,
+    zone: TimeZone,
 ) -> (DataDesk, impl Future<Output = ()>) {
     let (tx, rx) = mpsc::channel(16);
-    (DataDesk { tx }, serve(product, rx, live_every))
+    (DataDesk { tx }, serve(product, rx, live_every, zone))
 }
 
 struct Kept {
@@ -138,7 +142,12 @@ struct Kept {
     versions: HashMap<String, Arc<DataModel>>,
 }
 
-async fn serve(product: Rc<dyn Product>, mut rx: mpsc::Receiver<Ask>, live_every: Duration) {
+async fn serve(
+    product: Rc<dyn Product>,
+    mut rx: mpsc::Receiver<Ask>,
+    live_every: Duration,
+    zone: TimeZone,
+) {
     let mut kept = Kept {
         index: None,
         live: HashMap::new(),
@@ -154,7 +163,7 @@ async fn serve(product: Rc<dyn Product>, mut rx: mpsc::Receiver<Ask>, live_every
                 )));
             }
             Ask::Model(wanted, reply) => {
-                let shown = model(&*product, &mut kept, &wanted, live_every).await;
+                let shown = model(&*product, &mut kept, &wanted, live_every, &zone).await;
                 let _ = reply.send(shown);
             }
             Ask::Issue(issue, reply) => {
@@ -192,6 +201,7 @@ async fn model(
     kept: &mut Kept,
     wanted: &Wanted,
     live_every: Duration,
+    zone: &TimeZone,
 ) -> Result<Shown, String> {
     let branch = wanted.branch.clone().unwrap_or_else(|| product.live_ref());
     if wanted.fresh {
@@ -239,7 +249,7 @@ async fn model(
         "{} · {} @ {short} · {}",
         product.origin(),
         snapshot.branch,
-        snapshot.at.replace('T', " ").trim_end_matches('Z')
+        local_clock(&snapshot.at, zone)
     );
     let model = Arc::new(data_model::build(&origin, &schema, &declared));
     // Kept only when both reads answered: a failed read is tried again.
@@ -252,6 +262,19 @@ async fn model(
         branch: snapshot.branch,
         dir: snapshot.dir,
     })
+}
+
+/// A trace clock (`2026-10-02T14:00:00Z`) as the wall clock of `zone`
+/// (`2026-10-02 10:00:00`); one that does not parse is shown as written.
+fn local_clock(at: &str, zone: &TimeZone) -> String {
+    at.parse::<jiff::Timestamp>().map_or_else(
+        |_| at.to_string(),
+        |at| {
+            at.to_zoned(zone.clone())
+                .strftime("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        },
+    )
 }
 
 async fn live(product: &dyn Product, kept: &mut Kept, branch: &str, every: Duration) -> Shown {
@@ -342,6 +365,7 @@ mod tests {
                 let (desk, task) = open(
                     Rc::clone(&shelf) as Rc<dyn Product>,
                     Duration::from_secs(60),
+                    TimeZone::fixed(jiff::tz::offset(-4)),
                 );
                 let task = tokio::task::spawn_local(task);
                 let versions = desk.versions().await.expect("answered");
@@ -390,6 +414,7 @@ mod tests {
                 let (desk, task) = open(
                     Rc::clone(&shelf) as Rc<dyn Product>,
                     Duration::from_secs(60),
+                    TimeZone::fixed(jiff::tz::offset(-4)),
                 );
                 let task = tokio::task::spawn_local(task);
                 let versions = desk.versions().await.expect("answered");
@@ -408,7 +433,7 @@ mod tests {
                     newest
                         .model
                         .origin
-                        .contains("main_agent @ bbbbbbb · 2026-10-02 10:00:00")
+                        .contains("main_agent @ bbbbbbb · 2026-10-02 06:00:00")
                 );
                 let old = desk
                     .model(Wanted {

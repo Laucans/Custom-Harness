@@ -139,7 +139,7 @@
         + of('integration').map((b) => button(b, b.label, 'where the agents integrate')).join('')
         + `<button type="button" class="${featureOn ? 'on' : ''}" data-dm="features" ${features.length ? '' : 'disabled'} aria-haspopup="menu" title="a milestone's branch">${featureOn ? esc(current.label) : 'feature'} ▾</button>`;
       q('.dm-features').innerHTML = features.map((b) => `<button type="button" role="menuitem" data-branch="${esc(b.branch)}">${esc(b.label)}<small>${b.versions.length} version${b.versions.length > 1 ? 's' : ''}</small></button>`).join('');
-      const when = (at) => at.replace('T', ' ').replace(/:\d\dZ$/, '');
+      const when = (at) => window.HarnessClock.stamp(at).slice(0, 16);
       q('.dm-version').hidden = !(current && current.versions.length);
       q('.dm-version select').innerHTML = (current ? current.versions : []).map((x, i) => `<option value="${esc(x.dir)}"${x.dir === st.dir ? ' selected' : ''}>${esc(when(x.at))} · ${esc(x.sha.slice(0, 7))}${i === 0 ? ' · newest' : ''}</option>`).join('');
     }
