@@ -363,6 +363,14 @@ where it stands (`domain::capabilities`):
 | blue | planned | an open task of an open milestone declares a `capability` or `data-capability` under `## Architecture`, and no task names an existing unit |
 | red | bug | an open issue labelled `bug` names it — its id, or its name as a word of the title |
 
+Like the data pane, a switch picks the branch shown: **all** (every branch
+at once, the default), `main`, the integration branch, or a milestone's
+(`feature ▾`). On one branch the list holds only the units that branch
+carries, each as its manifest reads there, and nothing planned; the colour
+still says where the unit stands across every branch. A detail and a fusion
+test opened from it read the units as that branch has them
+(`GET /api/capabilities?branch=`, `branch` in the fusion's body).
+
 A row shows the name, the kind, the system, and the dates its manifest was
 first and last committed, on any branch. The page searches by name as the
 human types (only the list is redrawn, never the search box), sorts by

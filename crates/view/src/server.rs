@@ -1139,10 +1139,17 @@ struct CatalogueAsk {
     /// Read the product again, rather than the kept reading.
     #[serde(default)]
     fresh: bool,
+    /// One branch's units only; every branch when absent.
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 /// The capabilities list, from the kept reading and the latest board.
-async fn catalogue_of(state: &AppState, fresh: bool) -> Result<Catalogue, (StatusCode, String)> {
+async fn catalogue_of(
+    state: &AppState,
+    fresh: bool,
+    branch: Option<&str>,
+) -> Result<Catalogue, (StatusCode, String)> {
     let Some(desk) = state.units.clone() else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1168,6 +1175,7 @@ async fn catalogue_of(state: &AppState, fresh: bool) -> Result<Catalogue, (Statu
         &reading,
         &desk.integration,
         &issues,
+        branch.filter(|b| !b.is_empty()),
     ))
 }
 
@@ -1176,7 +1184,7 @@ async fn capability_list(
     State(state): State<AppState>,
     Query(ask): Query<CatalogueAsk>,
 ) -> Response {
-    match catalogue_of(&state, ask.fresh).await {
+    match catalogue_of(&state, ask.fresh, ask.branch.as_deref()).await {
         Ok(catalogue) => json(&catalogue),
         Err(refused) => refused.into_response(),
     }
@@ -1190,6 +1198,9 @@ struct FusionAsk {
     /// Ask the model to word the answer; without it, the tooling's alone.
     #[serde(default)]
     ai: bool,
+    /// Compare the two as this branch has them; every branch when absent.
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 /// Could two units be one? The tooling compares; the model, if asked,
@@ -1208,7 +1219,7 @@ async fn capability_fusion(State(state): State<AppState>, body: Bytes) -> Respon
     if ask.a == ask.b {
         return (StatusCode::BAD_REQUEST, "pick two different units").into_response();
     }
-    let catalogue = match catalogue_of(&state, false).await {
+    let catalogue = match catalogue_of(&state, false, ask.branch.as_deref()).await {
         Ok(catalogue) => catalogue,
         Err(refused) => return refused.into_response(),
     };
