@@ -18,6 +18,10 @@ that can be checked mechanically.
   imports their code.
 - **PostgreSQL** alone as the store: the DataQueue is a table, invalidations
   travel over `LISTEN/NOTIFY`, read models are views. No message broker.
+  Locally it runs **in Docker**, provided by the harness and reached through
+  `DATABASE_URL` / `DATABASE_URL_READONLY`: never install, start or
+  configure a database yourself, and never create by hand what a migration
+  would not recreate.
 - **These rules bind every new unit, even where the existing code predates
   them.** A repository that began as one TypeScript program (a plugin, a
   static app) is the Micro-UI shell; every Capability, DataCapability or

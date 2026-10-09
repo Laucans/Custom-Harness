@@ -57,6 +57,10 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   `ports/`, `execution/` — no public item lives directly in `lib.rs`.
   Integration tests for a crate live in that crate's own `tests/` and only
   see its public API (see `crates/workflows/tests/depends_on_core.rs`).
+- **Persistence runs in Docker** (`docs/PERSISTENCE.md`): the products'
+  PostgreSQL is `docker/postgres/compose.yml`, driven by
+  `scripts/postgres.sh`; any future store is a Docker service of the same
+  shape. Never a Homebrew service or a database a session installs itself.
 - External calls (subprocesses like `git`/`gh`, network, filesystem) are
   isolated behind trait-based ports — core logic decides, an adapter
   executes. Tests substitute a fake adapter; nothing mocks at the call site.
