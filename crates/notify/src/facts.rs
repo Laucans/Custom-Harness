@@ -25,10 +25,10 @@ pub struct Facts {
     pub waiting: Vec<Waiting>,
     /// The last reading of Claude's windows.
     pub claude: Option<Reading>,
+    /// When that reading was made, as the traces write a clock.
+    pub claude_at: String,
     /// Now, in seconds since the epoch — what says a window has reset.
     pub now: u64,
-    /// Now, as the traces write a clock.
-    pub now_at: String,
 }
 
 /// The open issues among `issues` that carry `harness:human` or

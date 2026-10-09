@@ -22,9 +22,15 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   and how the dependencies form. Current detail per crate in
   `crates/<crate>/ARCHITECTURE.md`; read the one for the crate you are touching
   before moving a file or adding a module.
-- Cargo workspace, five crates, one direction only:
+- Cargo workspace, six crates, one direction only:
   `harness-launcher` (bin) → `harness-workflows` (lib) → `harness-core`
   (lib), and `harness-view` (bin) beside the launcher on the same arrow.
+  `harness-notify` (lib) decides what to tell a human from the harness's
+  events and a few observed facts; `view` uses it, it depends on
+  `workflows` and `core` only, and does no I/O (`crates/notify/ARCHITECTURE.md`).
+  Events are recorded once, where they happen, with `Logbook::event` — the
+  journal line is written from the event — into `.llocal/harness.db`
+  (core's `EventLog` port, SQLite adapter).
   `core` never depends on `workflows`, `launcher` or `view` — enforced by
   Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
   a warning. `view` is read-only: it shows the traces the harness leaves in

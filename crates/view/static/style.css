@@ -106,6 +106,25 @@ body {
 .dot.on { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
 .dot.off { background: #64748b; }
 .dot.warn { background: var(--warn); }
+
+/* The plant's notifications, bottom right. */
+#toasts { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column-reverse; gap: 8px; width: min(360px, calc(100vw - 32px)); pointer-events: none; }
+#toasts .toast { pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 8px; padding: 8px 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); cursor: pointer; text-align: left; color: var(--text); font: inherit; }
+#toasts .toast.error { border-left-color: var(--bad); }
+#toasts .toast.warning { border-left-color: var(--warn); }
+#toasts .toast.info { border-left-color: var(--ok); }
+#toasts .toast:hover { border-color: var(--accent); }
+#toasts .toast-head { display: flex; align-items: center; gap: 8px; }
+#toasts .toast-head b { flex: 1; font-size: 13px; }
+#toasts .count { font: 11px var(--mono); color: var(--dim); }
+#toasts .toast-close { background: transparent; border: 0; color: var(--dim); font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px; }
+#toasts .toast-close:hover { color: var(--text); }
+#toasts .toast-body { color: var(--dim); font-size: 12px; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+#toasts .toast-foot { display: flex; justify-content: space-between; color: var(--dim); font: 11px var(--mono); margin-top: 4px; }
+#toasts .toast-foot .open { color: var(--accent); }
+#toasts .toast.more { text-align: center; color: var(--dim); font-size: 12px; }
+@media (prefers-reduced-motion: no-preference) { #toasts .toast { animation: toast-in .2s ease-out; } }
+@keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
 .dot.bad { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
 .dot.pending { animation: dot-pulse 1s ease-in-out infinite; }
 @keyframes dot-pulse { 50% { opacity: .35; } }

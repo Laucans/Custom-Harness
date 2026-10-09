@@ -49,12 +49,16 @@ use crate::cli::Cli;
 use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
 use crate::domain::blueprint;
+use crate::domain::limits::Read;
 use crate::domain::observe::{Observed, observe};
 use crate::domain::plant;
 use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
 use crate::ports::{Board, BoardReading, Limits, Plant, TerminalFactory, Traces};
 use crate::server::{AppState, router};
+use harness_core::adapters::store::events::SqliteEvents;
+use harness_core::domain::quota::Reading;
+use harness_core::ports::store::events::EventLog;
 
 /// `current_thread`, like the harness: the board port is `?Send`, and one
 /// human watching one plant needs no second thread.
@@ -80,6 +84,8 @@ async fn main() -> anyhow::Result<()> {
     let plant: Option<Arc<dyn Plant>> = (!cli.demo).then(|| {
         Arc::new(WatchProcess::new(workspace.clone(), &cli.watch_command)) as Arc<dyn Plant>
     });
+    let events = event_store(&workspace);
+    let claude_read = Arc::default();
 
     // One per process: what tells a page the server it talks to was rebuilt.
     let build = jiff::Timestamp::now().to_string();
@@ -99,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
         limits: Some(Arc::new(CliLimits::new(
             claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
         )) as Arc<dyn Limits>),
-        claude_read: Arc::default(),
+        claude_read: Arc::clone(&claude_read),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -127,7 +133,11 @@ async fn main() -> anyhow::Result<()> {
         .run_until(async move {
             let traces_task = tokio::task::spawn_local(poll_traces(
                 traces,
-                plant,
+                Hands {
+                    plant,
+                    events,
+                    claude_read,
+                },
                 board_rx,
                 project,
                 snapshot_tx,
@@ -206,9 +216,84 @@ fn first_picture(project: &Project, demo: bool) -> Snapshot {
 }
 
 /// Reads the traces on a cadence and publishes the picture when it changed.
+/// The harness's events, shared with every run of the checkout. Opening
+/// creates the store when no run has yet: an empty table, nothing a run reads
+/// differently.
+fn event_store(workspace: &Workspace) -> Option<Arc<dyn EventLog + Send + Sync>> {
+    match SqliteEvents::open(&workspace.events()) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(why) => {
+            eprintln!("harness-view: no notifications — {}", why.reason());
+            None
+        }
+    }
+}
+
+/// What the traces poller reads besides the traces: the watch process, the
+/// event store, and the last Claude reading the page paid for.
+struct Hands {
+    plant: Option<Arc<dyn Plant>>,
+    events: Option<Arc<dyn EventLog + Send + Sync>>,
+    claude_read: Arc<std::sync::Mutex<Option<Read<Reading>>>>,
+}
+
+/// How far back the notifications look.
+const NOTIFY_SINCE: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
+
+/// What to tell the human now: the last day's events, and what is observed.
+fn notifications(
+    hands: &Hands,
+    observed: &Observed,
+    board: Option<&BoardReading>,
+    now: jiff::Timestamp,
+) -> Vec<harness_notify::Notification> {
+    let clock = |at: jiff::Timestamp| at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let since = clock(now - NOTIFY_SINCE);
+    let events = hands
+        .events
+        .as_ref()
+        .and_then(|store| store.between(Some(&since), None, 5_000).ok())
+        .unwrap_or_default();
+    let waiting = board.map_or_else(Vec::new, |board| {
+        harness_notify::waiting_on_a_human(
+            board.roadmap.iter().chain(
+                board
+                    .milestones
+                    .iter()
+                    .flat_map(|m| std::iter::once(&m.issue).chain(m.tasks.iter())),
+            ),
+        )
+    });
+    // The freshest of what the runs kept and what the page probed.
+    let probed = hands
+        .claude_read
+        .lock()
+        .ok()
+        .and_then(|read| read.as_ref().and_then(|read| read.value.clone()));
+    let claude = [observed.quota.clone(), probed]
+        .into_iter()
+        .flatten()
+        .max_by_key(|reading| reading.at);
+    let claude_at = claude
+        .as_ref()
+        .and_then(|reading| jiff::Timestamp::from_second(i64::try_from(reading.at).ok()?).ok())
+        .map(clock)
+        .unwrap_or_default();
+    harness_notify::feed(
+        &events,
+        &harness_notify::Facts {
+            watch_running: observed.watch_process,
+            waiting,
+            claude,
+            claude_at,
+            now: u64::try_from(now.as_second()).unwrap_or(0),
+        },
+    )
+}
+
 async fn poll_traces(
     traces: Arc<dyn Traces>,
-    plant: Option<Arc<dyn Plant>>,
+    hands: Hands,
     board: watch::Receiver<Option<Arc<BoardReading>>>,
     project: Project,
     tx: watch::Sender<Arc<Snapshot>>,
@@ -221,7 +306,8 @@ async fn poll_traces(
     let mut last_body = String::new();
     loop {
         let mut observed = observe(&*traces, &lines);
-        observed.watch_process = plant
+        observed.watch_process = hands
+            .plant
             .as_ref()
             .map(|plant| plant::running(plant.as_ref()).is_some());
         let reading = board.borrow().clone();
@@ -235,6 +321,7 @@ async fn poll_traces(
             demo,
         });
         snap.build.clone_from(&build);
+        snap.notifications = notifications(&hands, &observed, reading.as_deref(), now);
         // Compared before it is stamped: a picture that only differs by its
         // clock is the same picture, and pushing it would wake every page for
         // nothing.

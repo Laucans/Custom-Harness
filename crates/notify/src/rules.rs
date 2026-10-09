@@ -179,6 +179,8 @@ fn lane_ended(board: &mut Board, n: u64, status: &str, code: Option<i32>, at: &s
 
 fn halted(board: &mut Board, workflow: &str, kind: &str, reason: &str, at: &str) {
     match kind {
+        // The watch's own halt is a failed read, and `tick-failed` says it.
+        _ if workflow == "watch" => {}
         "QUOTA" => board.add(Notification::once(
             "quota",
             Level::Error,
@@ -277,6 +279,32 @@ mod tests {
         let keys: Vec<&str> = all.iter().map(|n| n.key.as_str()).collect();
         assert_eq!(keys, ["parked:#15"]);
         assert_eq!(all[0].level, Level::Warning);
+    }
+
+    #[test]
+    fn a_failed_read_is_told_once_not_as_a_halt_too() {
+        let events = [
+            stored(
+                1,
+                Event::TickFailed {
+                    reason: "no remote".to_string(),
+                },
+            ),
+            stored(
+                1,
+                Event::Halted {
+                    workflow: "watch".to_string(),
+                    kind: "STOP".to_string(),
+                    reason: "no remote".to_string(),
+                },
+            ),
+        ];
+        let keys: Vec<String> = from_events(&events)
+            .into_sorted()
+            .into_iter()
+            .map(|n| n.key)
+            .collect();
+        assert_eq!(keys, ["tick-failed"]);
     }
 
     #[test]

@@ -329,6 +329,9 @@ pub struct Snapshot {
     pub recent: Vec<String>,
     /// The loop: what it triggered, and how many ticks found nothing to do.
     pub journal: Journal,
+    /// What the plant should tell the human now, loudest first
+    /// (`harness_notify::feed`).
+    pub notifications: Vec<harness_notify::Notification>,
     /// The latest run is shown live even though it is over.
     pub demo: bool,
 }

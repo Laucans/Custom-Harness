@@ -1,4 +1,8 @@
 //! The notifications of the moment: the events' and the facts', together.
+//!
+//! Every notification carries the time of what it tells, never the time of
+//! the read: the same plant read twice gives the same notifications, so a
+//! reader that compares them wakes nobody for nothing.
 
 use harness_core::ports::store::events::Stored;
 use harness_core::traces::Event;
@@ -33,7 +37,7 @@ pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
             "The watch is not running",
             "it ended without a soft stop: it crashed, or was killed (a hard stop does that). \
              Nothing new starts until it runs again.",
-            &facts.now_at,
+            since,
             Some(Link::Screen {
                 screen: "journal".to_string(),
                 at: Some(since.clone()),
@@ -46,7 +50,9 @@ pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
             Level::Warning,
             format!("#{} needs you", waiting.number),
             format!("{} — {}", waiting.title, waiting.label),
-            &facts.now_at,
+            // When the label was posed is not known: such a notification
+            // sorts after the timed ones of its level.
+            "",
             Some(Link::Issue {
                 number: waiting.number,
             }),
@@ -68,7 +74,7 @@ pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
                 (window.utilization * 100.0).round()
             ),
             "sessions stop when it runs out; the Rate limits screen says when it resets",
-            &facts.now_at,
+            &facts.claude_at,
             Some(Link::Screen {
                 screen: "quota".to_string(),
                 at: None,
@@ -97,7 +103,6 @@ mod tests {
     fn facts() -> Facts {
         Facts {
             now: 1_000,
-            now_at: "2026-10-09T01:00:00Z".to_string(),
             ..Facts::default()
         }
     }

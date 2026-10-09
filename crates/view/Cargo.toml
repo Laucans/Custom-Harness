@@ -17,6 +17,7 @@ axum.workspace = true
 clap.workspace = true
 harness-core.workspace = true
 harness-workflows.workspace = true
+harness-notify.workspace = true
 jiff.workspace = true
 portable-pty.workspace = true
 serde.workspace = true

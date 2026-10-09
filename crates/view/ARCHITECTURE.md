@@ -66,7 +66,7 @@ a reason: this terminal is a shell in the checkout.
 ## The modules
 
 ```
-src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread
+src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
 src/desk.rs            the steward's desk: one terminal kept alive between visits, scrollback, broadcast
 src/domain/            the inside — no disk, no subprocess, no clock
@@ -88,7 +88,7 @@ src/adapters/
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
 src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket)
-static/                index.html, style.css, app.js (data, navigation, panes, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
+static/                index.html, style.css, app.js (data, navigation, panes, the notification bubbles, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
 ```
 
 The drawing itself is **another crate**, `harness-view-render`: a Bevy scene

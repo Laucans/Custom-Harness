@@ -2815,6 +2815,7 @@ dependencies = [
  "axum",
  "clap",
  "harness-core",
+ "harness-notify",
  "harness-workflows",
  "jiff",
  "portable-pty",

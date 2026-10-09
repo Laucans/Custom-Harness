@@ -85,6 +85,13 @@ human tunes instead.
 decide` (pure, tested without a fake adapter), dispatch, sleep `--interval`
 seconds, repeat. `--once` does a single pass.
 
+**Every line of the watch and its lanes is an event first**
+(`Logbook::event`): the sink of a `run.log` or of `watch.log`
+(`adapters::sink::Both`) also keeps it in the checkout's event store,
+`.llocal/harness.db`, through `adapters::events::Teller`. A lane's halt is
+kept there as `Halted` — not in `errors.tsv`, whose last row the doctor
+repairs from.
+
 **`SIGTERM` is a soft stop.** The tick under way finishes, the lanes close
 (`Lanes::closed_by` — no slot is free from then on, so no task starts), the
 running lanes are waited for, and the watch exits 0, writing

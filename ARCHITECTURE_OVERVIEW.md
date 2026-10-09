@@ -1,12 +1,13 @@
 # Architecture overview
 
-Five crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
+Six crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
 detail; this file is only the split and why the dependencies form the way they
 do.
 
 ```
 harness-launcher (bin)  →  harness-workflows (lib)  →  harness-core (lib)
 harness-view     (bin)  →  harness-workflows (lib)  →  harness-core (lib)
+harness-view     (bin)  →  harness-notify    (lib)  →  harness-workflows, harness-core
 harness-view-render (cdylib → wasm)   depends on none of them: it draws what harness-view serves
 ```
 
@@ -18,6 +19,7 @@ harness-view-render (cdylib → wasm)   depends on none of them: it draws what h
 | `harness-workflows` | **the instances**: the workflows declared against that framework — `dev_loop`, `refinement`, `planner`, `split`, `pr_review`, `pr_fix`, plus two deterministic commands. | [crates/workflows/ARCHITECTURE.md](crates/workflows/ARCHITECTURE.md) |
 | `harness-launcher` | **the entry points**: the `harness` binary, the CLI, the router, and the place that builds the adapters a run needs. | [crates/launcher/ARCHITECTURE.md](crates/launcher/ARCHITECTURE.md) |
 | `harness-view` | **the plant**: a local web page that shows the harness as an isometric factory, read from the traces a run leaves behind. A second outer ring; it writes nothing the harness reads. | [crates/view/ARCHITECTURE.md](crates/view/ARCHITECTURE.md) |
+| `harness-notify` | **what to tell a human**: notifications from the harness's events (kept once, in `.llocal/harness.db`) and a few observed facts — severity, grouping, what a success clears. Pure: no I/O; the view hands it the events and shows what comes back. | [crates/notify/ARCHITECTURE.md](crates/notify/ARCHITECTURE.md) |
 | `harness-view-render` | **the drawing**: a Bevy scene compiled to WebAssembly, bound to the view's canvas. Shares no type with the rest; mirrors the picture it draws. | [crates/view-render/ARCHITECTURE.md](crates/view-render/ARCHITECTURE.md) |
 
 ## The shape: hexagonal, and it is a rule

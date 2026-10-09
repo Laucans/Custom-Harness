@@ -638,6 +638,7 @@ pub fn snapshot(inputs: &Inputs<'_>) -> Snapshot {
             .collect(),
         recent: watch.recent.clone(),
         journal: watch.journal.clone(),
+        notifications: Vec::new(),
         demo: inputs.demo,
     }
 }

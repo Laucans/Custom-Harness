@@ -117,6 +117,7 @@
   }
   function onSnapshot() {
     status();
+    toasts();
     crewBar();
     crumbs();
     pushPicture();
@@ -203,6 +204,59 @@
     $('watch-text').textContent = s;
     if (!$('plant-menu').hidden) plantMenu();
   }
+
+  // ---- notifications ------------------------------------------------------------
+  // What `harness-notify` decided, as bubbles at the bottom right. Errors and
+  // warnings stay until closed; infos fade. A closed notification stays closed
+  // until it happens again (its `at` moves). Infos older than the page are
+  // not replayed: they were news when they happened.
+  const TOASTS_SHOWN = 4;
+  const INFO_FADES_MS = 8000;
+  const N = { dismissed: {}, openedAt: null, timers: {}, html: '' };
+  try { N.dismissed = JSON.parse(localStorage.getItem('harness.dismissed') || '{}'); } catch (e) { N.dismissed = {}; }
+  function dismiss(key, at) {
+    N.dismissed[key] = at;
+    try { localStorage.setItem('harness.dismissed', JSON.stringify(N.dismissed)); } catch (e) { /* kept for this visit only */ }
+    toasts();
+  }
+  const ICON = { error: '⛔', warning: '⚠️', info: 'ℹ️' };
+  function liveNotes() {
+    if (N.openedAt === null) N.openedAt = (S.snap && S.snap.at) || new Date().toISOString().slice(0, 19) + 'Z';
+    return ((S.snap && S.snap.notifications) || []).filter((n) => N.dismissed[n.key] !== n.at && !(n.level === 'info' && n.at < N.openedAt));
+  }
+  function toasts() {
+    const live = liveNotes();
+    const shown = live.slice(0, TOASTS_SHOWN);
+    const bubble = (n) => `<div class="toast ${n.level}" data-note="${esc(n.key)}" role="status">`
+      + `<div class="toast-head"><b>${ICON[n.level] || ''} ${esc(n.title)}</b>${n.count > 1 ? `<span class="count">×${n.count}</span>` : ''}`
+      + `<button class="toast-close" data-close="${esc(n.key)}" title="Dismiss until it happens again" aria-label="dismiss">×</button></div>`
+      + `<div class="toast-body">${esc(n.detail)}</div>`
+      + `<div class="toast-foot">${n.at ? esc(when(n.at)) : ''}${n.link ? '<span class="open">open →</span>' : ''}</div></div>`;
+    const html = shown.map(bubble).join('') + (live.length > shown.length ? `<button class="toast more" data-notes>+${live.length - shown.length} more…</button>` : '');
+    if (html !== N.html) { $('toasts').innerHTML = html; N.html = html; }
+    for (const n of shown) {
+      const id = n.key + '@' + n.at;
+      if (n.level === 'info' && !N.timers[id]) N.timers[id] = setTimeout(() => dismiss(n.key, n.at), INFO_FADES_MS);
+    }
+  }
+  function followNote(n) {
+    if (!n.link) return;
+    if (n.link.to === 'issue') { openPane({ kind: 'issue', number: n.link.number }); return; }
+    if (n.link.at && n.link.screen !== 'quota') {
+      // The screen, read around the moment it happened.
+      const around = (ms) => new Date(Date.parse(n.link.at) + ms).toISOString().slice(0, 19) + 'Z';
+      setRange({ from: around(-30 * 60e3), to: around(30 * 60e3) });
+    }
+    openPane({ kind: 'dashboards', focus: n.link.screen });
+  }
+  $('toasts').addEventListener('click', (e) => {
+    const close = e.target.closest('[data-close]');
+    const note = (key) => ((S.snap && S.snap.notifications) || []).find((n) => n.key === key);
+    if (close) { const n = note(close.dataset.close); if (n) dismiss(n.key, n.at); return; }
+    if (e.target.closest('[data-notes]')) { openPane({ kind: 'notifications' }); return; }
+    const bubble = e.target.closest('[data-note]');
+    if (bubble) { const n = note(bubble.dataset.note); if (n) followNote(n); }
+  });
 
   // ---- the plant's switch --------------------------------------------------
   // The status is a button: it opens the gestures that make sense now — start
@@ -1050,6 +1104,15 @@
         + '<div class="chips">' + CHIPS.map(([label, say]) => `<button data-type="${esc(say)}">${esc(label)}</button>`).join('') + '</div>'
         + '<div id="term"></div>';
       return ['The steward · Claude Code in the harness checkout', html, () => { mountTerminal(); }];
+    },
+
+    notifications() {
+      const all = (S.snap && S.snap.notifications) || [];
+      if (!all.length) return ['Notifications', '<div class="muted">nothing to tell</div>'];
+      const LEVEL_TAG = { error: 'bad', warning: 'warn', info: '' };
+      let h = '<div class="callout purpose">What the plant has to tell, the last 24 hours: errors, then what waits on you, then news. Closed ones stay closed until they happen again.</div>';
+      h += '<table class="rows"><tr><th>level</th><th>what</th><th class="num">times</th><th>last</th><th></th></tr>' + all.map((n) => `<tr><td>${tag(n.level, LEVEL_TAG[n.level])}</td><td><b>${esc(n.title)}</b><div class="muted">${esc(n.detail)}</div></td><td class="num">${n.count}</td><td>${n.at ? esc(when(n.at)) : '—'}</td><td>${N.dismissed[n.key] === n.at ? '<span class="muted">closed</span>' : ''}</td></tr>`).join('') + '</table>';
+      return ['Notifications', h];
     },
 
     placeholder(p) {
