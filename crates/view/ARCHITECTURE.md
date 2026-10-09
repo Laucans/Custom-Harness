@@ -20,7 +20,7 @@ router about what a label means or what a milestone's branch is called.
 | level | what | read from |
 | --- | --- | --- |
 | **A** the plant | one chimney per model, smoking while a session on it is open; a sign (to do / done); a door | the latest run of each line; `costs.tsv`; the GitHub board |
-| **B** inside | six rooms: lines, office, store, value, control, construction | the blueprint; the same picture |
+| **B** inside | six rooms: lines, office, store, infirmary, control, construction | the blueprint; the same picture |
 | **C** a room | the lines station by station, the product on the belt, an employee beside each station in progress — several when a parallel watch runs the line on several lanes; a crew that shares a station fans out and opens a pane to pick one | `run.log`, `prompts.md`, `stream.jsonl` of every fresh run; `watch.log` |
 | **D** a pane | logs live, a station's cost, an issue body, the dashboards, the versions | `/api/runs/…` tails; `/api/issues/…`; the picture |
 
@@ -29,7 +29,7 @@ workflow and has not reported back, or its folder was written to in the last
 two minutes. The harness logs no "run over" line, so this is a judgement, and
 it lives in one function (`assemble::is_live`) with its two thresholds.
 
-## The steward
+## The steward, and the doctor
 
 The grinning mascot in a blue jumpsuit giving a thumbs-up, on the forecourt and in the hall.
 Click them — or the `steward` button in the header — and the pane becomes a
@@ -56,6 +56,19 @@ the first visit and again on the first keystroke after it exits. The desk
 is a fake-able seam (`ports::TerminalFactory`); the pseudo-terminal itself
 is tested against a real `cat`.
 
+**The doctor** is a second desk, the same way: the coral, lobster-faced
+physician in a white coat in the infirmary (room 4), and the `doctor`
+button in the header. Their Claude Code opens on its own model and effort
+(`--doctor-model`, `--doctor-effort`: Sonnet, high), briefed on the
+instruments — `harness doctor --dry-run`, `errors.tsv`, the workspaces —
+(`domain::doctor::briefing`), and with the check-up already asked as the
+positional prompt (`domain::doctor::CHECKUP`), so the pane opens on a
+diagnosis rather than an empty line. The one rule in the briefing: the
+repair, `harness doctor`, discards uncommitted files, so the doctor runs it
+only on the human's explicit go. Routes `/api/doctor` and `/api/doctor/term`;
+`--no-doctor` leaves the infirmary empty. The infirmary's other props open
+the same pane, and the chart on its wall opens the stops dashboard.
+
 The briefing names exact commands — `pgrep`, `setsid nohup ./target/release/harness watch …`,
 `pkill`, `gh issue edit … --add-label` — because the two mistakes a steward
 must not make are starting a second watch and stopping one mid-session
@@ -68,7 +81,7 @@ a reason: this terminal is a shell in the checkout.
 ```
 src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
-src/desk.rs            the steward's desk: one terminal kept alive between visits, scrollback, broadcast
+src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
 src/domain/            the inside — no disk, no subprocess, no clock
   blueprint.rs         the rooms, the models, one line per workflow, station by station
   traces.rs            parsers: watch.log, run.log, prompts.md headers, the stream's first event, the ledger sums
@@ -79,15 +92,16 @@ src/domain/            the inside — no disk, no subprocess, no clock
   assemble.rs          Observed + board → Snapshot (who is live, where the product is, what smokes)
   snapshot.rs          the serializable picture the page receives
   steward.rs           the steward's standing orders, and the status the page asks for
+  doctor.rs            the doctor's standing orders and the check-up asked when they sit down
   plant.rs             the switch: which watch is this checkout's, what start / soft / hard send to whom
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (the steward's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now)
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket)
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket)
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
 ```
 
@@ -133,6 +147,7 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
 cargo run -p harness-view -- --demo          # the latest run shown live
 cargo run -p harness-view -- --no-board      # never call gh
 cargo run -p harness-view -- --no-steward    # no terminal, nobody to talk to
+cargo run -p harness-view -- --no-doctor     # the infirmary has nobody in
 cargo run -p harness-view -- --static-dir crates/view/static   # edit the front without a rebuild
 ```
 
@@ -143,8 +158,8 @@ same `.env.local` the launcher reads. The page listens on `127.0.0.1:7878`
 ## What is deliberately not here yet
 
 Room 2's own conversation with Claude Code about an issue (the steward's
-terminal is the plant-wide one), room 4's mock-up and data sources, room 6 —
+terminal is the plant-wide one), its mock-up and data sources, room 6 —
 each shows its place and says so. Level D is wired for the lines (station,
 employee, line), the sign, the chimneys, the issues, the store, the control
-room and the steward; the other components open a placeholder that names
+room, the steward and the doctor; the other components open a placeholder that names
 what will come.

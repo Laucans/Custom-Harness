@@ -1,4 +1,5 @@
-//! The steward's desk: one terminal, kept alive between visits.
+//! A desk: one terminal, kept alive between visits. The steward has one,
+//! the doctor another.
 //!
 //! The browser's pane comes and goes — the pane closes, the tab reloads — and
 //! the program behind it must not: a `claude` mid-command would lose its work.
@@ -30,7 +31,7 @@ const LAG: usize = 512;
 
 /// What the desk says when the program ends.
 const GONE: &[u8] =
-    b"\r\n\x1b[2m[the steward left the desk \xe2\x80\x94 press Enter to call them back]\x1b[0m\r\n";
+    b"\r\n\x1b[2m[nobody at the desk any more \xe2\x80\x94 press Enter to call them back]\x1b[0m\r\n";
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -326,7 +327,7 @@ mod tests {
         let (mut stream, _) = desk.attach(80, 24).expect("attach");
         desk.shutdown();
         let said = next(&mut stream).await;
-        assert!(String::from_utf8_lossy(&said).contains("left the desk"));
+        assert!(String::from_utf8_lossy(&said).contains("nobody at the desk"));
         assert!(desk.write(b"x").is_err(), "nobody to type to");
         desk.summon(100, 30).expect("summon");
         assert!(desk.is_live());

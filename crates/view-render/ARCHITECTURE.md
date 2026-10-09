@@ -23,7 +23,7 @@ knows.
 | --- | --- | --- |
 | data | receives the picture over SSE, pushes it as JSON | parses it, draws it |
 | navigation | owns level and room, the URL hash, the breadcrumbs | is told the viewpoint, frames it |
-| interaction | opens panes, GitHub, the steward's terminal | reports clicks and hovers as `{kind, hot}` |
+| interaction | opens panes, GitHub, the steward's and the doctor's terminals | reports clicks and hovers as `{kind, hot}` |
 | chrome | the HUD, the panes, the tooltip, xterm.js | nothing — it owns the canvas and only the canvas |
 
 The `hot` a click reports is the same shape the canvas engine used
@@ -61,7 +61,8 @@ the dusk-teal sky behind the plant, so everything in front of it reads as
 lit. The props wear that palette in *Fallout*'s retro-futurism: chrome
 rings, rivets and skirts, portholes, radar dishes and red beacons, a vault's
 gear door for the entrance, CRT terminals for printers and screens, a
-Protectron for a robot, a Vault Boy for the steward. The plant itself is
+Protectron for a robot, a Vault Boy for the steward, a lobster-faced
+physician out of *Futurama* for the doctor. The plant itself is
 *Futurama*'s Planet Express — a brick hangar under dark barrel vaults
 framed by red arches, beside a tall tapering brick tower with a balcony, a
 red ribbed dome and a gold spire, the project's name on a gantry over the
@@ -91,14 +92,16 @@ that moves. In 3D that becomes:
   and the floors tiled, nothing else. Smoke
   and the scanner's disc stay on the engine's material, since they are
   see-through, and wear no outline.
-- **Figures** — followers, robots and the steward are not built from shapes
+- **Figures** — followers, robots, the steward and the doctor are not built from shapes
   but painted, the way the game and *Don't Starve* stand paper characters in
   a world. `sprites.rs` draws each one with vector paths (a vault jumpsuit
   in the model's colour with gold belt and trim, a big head with bead eyes
   and pink cheeks under a domed gold hard hat; a Protectron robot — domed
   head, a visor whose slits glow green while it works, a riveted chest
   plate, a wrench or a clipboard in its chrome hand; the steward as the
-  Vault Boy — blue jumpsuit, blond quiff, a wink and a thumbs-up) and
+  Vault Boy — blue jumpsuit, blond quiff, a wink and a thumbs-up; the
+  doctor as Zoidberg — coral shell, four mouth tentacles, head mirror, a
+  white coat over scrubs, a blue book under the claw) and
   `tiny-skia` rasterises it into a 256×384 RGBA texture at run time, once per
   figure, the first time it is needed — no image file is shipped. The scene
   places a `Shape::Card` for it: a quad that `app.rs` turns with the camera's
