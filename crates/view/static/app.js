@@ -1830,22 +1830,39 @@
     modified: ['last modified', (a, b) => String(b.modified || '').localeCompare(String(a.modified || ''))],
     created: ['created', (a, b) => String(b.created || '').localeCompare(String(a.created || ''))],
   };
+  // One reading per branch shown, '' for every branch at once; S.caps is the
+  // one the open pane shows.
   S.caps = null;
+  S.capsBy = {};
   const capDay = (iso) => (iso ? new Date(iso).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }) : '—');
   const capDot = (status) => `<span class="cap-dot ${esc(status)}" title="${esc(CAP_STATUS[status][1])}"></span>`;
   const capTag = (status) => `<span class="tag cap-${esc(status)}">${esc(CAP_STATUS[status][0])}</span>`;
   const capKind = (k) => (k === 'data_capability' ? 'data capability' : 'capability');
-  async function loadCaps(fresh) {
+  async function loadCaps(fresh, branch = '') {
     S.capsBusy = true;
+    let got;
     try {
-      const r = await fetch('/api/capabilities' + (fresh ? '?fresh=true' : ''));
-      S.caps = r.ok ? { at: Date.now(), ...(await r.json()) } : { at: Date.now(), error: await r.text(), entries: [] };
-    } catch (err) { S.caps = { at: Date.now(), error: 'cannot reach the server', entries: [] }; }
+      const ask = new URLSearchParams();
+      if (fresh) ask.set('fresh', 'true');
+      if (branch) ask.set('branch', branch);
+      const r = await fetch('/api/capabilities' + (ask.toString() ? '?' + ask : ''));
+      got = r.ok ? { at: Date.now(), ...(await r.json()) } : { at: Date.now(), error: await r.text(), entries: [], branches: [] };
+    } catch (err) { got = { at: Date.now(), error: 'cannot reach the server', entries: [], branches: [] }; }
+    S.capsBy[branch] = got;
     S.capsBusy = false;
+    if (!S.pane || (S.pane.branch || '') !== branch) {
+      // The human switched while this read: the branch now shown is read next.
+      const now = S.pane && S.pane.kind === 'capabilities' ? S.pane.branch || '' : null;
+      if (now !== null && !S.capsBy[now]) loadCaps(false, now);
+      return;
+    }
+    S.caps = got;
     // The list alone is redrawn: a search being typed keeps its box.
     const list = $('caps-list');
     if (S.pane && S.pane.kind === 'capabilities' && list) {
       list.innerHTML = capList(S.pane);
+      const switcher = $('caps-switch');
+      if (switcher) switcher.innerHTML = capSwitch(S.pane);
       const again = document.querySelector('[data-cap-refresh]');
       if (again) again.textContent = '↻';
     } else if (S.pane && S.pane.kind === 'capability') renderPane(S.pane, false);
@@ -1878,7 +1895,8 @@
     const count = S.caps.entries.reduce((n, e) => ({ ...n, [e.status]: (n[e.status] || 0) + 1 }), {});
     const legend = '<div class="cap-legend">' + Object.keys(CAP_STATUS).map((s) => `<button class="mini ${(p.hidden || []).includes(s) ? 'off' : ''}" data-cap-status="${s}" title="${esc(CAP_STATUS[s][1])} — click to hide or show">${capDot(s)}${esc(CAP_STATUS[s][0])} · ${count[s] || 0}</button>`).join('') + '</div>';
     const warn = (S.caps.warnings || []).length ? `<div class="callout">${S.caps.warnings.map(esc).join('<br>')}</div>` : '';
-    return legend + body + warn + `<div class="muted cap-foot">${S.caps.branches.length} branch(es) read · ${esc(when(new Date(S.caps.at).toISOString()))}</div>`;
+    const read = S.caps.on ? `the units on ${esc(S.caps.on)}, as that branch has them` : `${S.caps.branches.length} branch(es) read`;
+    return legend + body + warn + `<div class="muted cap-foot">${read} · ${esc(when(new Date(S.caps.at).toISOString()))}</div>`;
   }
   function fusionBar(p) {
     if (!p.fusion) return '';
@@ -1908,7 +1926,7 @@
   }
   async function fuse(p) {
     const [a, b] = p.pick || [];
-    const ask = (ai) => fetch('/api/capabilities/fusion', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ a, b, ai }) });
+    const ask = (ai) => fetch('/api/capabilities/fusion', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ a, b, ai, branch: p.branch || null }) });
     const show = () => { const el = $('caps-fusion'); if (el && S.pane === p) el.innerHTML = fusionResult(p); };
     try {
       const r = await ask(false);
@@ -1922,7 +1940,26 @@
     } catch (err) { p.fused = { ...(p.fused || {}), asking: false, error: 'cannot reach the server' }; }
     show();
   }
+  // The branches the list can be shown on, as the data pane offers them:
+  // every branch at once, main, the integration branch, a milestone's.
+  const featureLabel = (b) => b.replace(/^milestone\/(\d+)-?/, '#$1 ').replace(/-/g, ' ');
+  function capSwitch(p) {
+    const known = ((S.capsBy[''] || S.caps || {}).branches) || [];
+    const features = known.filter((b) => b.startsWith('milestone/'));
+    const on = p.branch || '';
+    const integration = S.snap.project.integration_branch || 'main_agent';
+    const button = (b, label, tip) => `<button type="button" class="${on === b ? 'on' : ''}" data-cap-branch="${esc(b)}" title="${esc(tip)}">${esc(label)}</button>`;
+    const featureOn = on.startsWith('milestone/');
+    let h = '<div class="dm-branches">' + button('', 'all', 'every branch at once: the colour says where each unit stands')
+      + button('main', 'main', 'what a human released') + button(integration, integration, 'the agents\' version')
+      + `<button type="button" class="${featureOn ? 'on' : ''}" data-cap-features ${features.length ? '' : 'disabled'} aria-haspopup="menu" title="a milestone's branch">${featureOn ? esc(featureLabel(on)) : 'feature'} ▾</button></div>`;
+    if (p.featureMenu && features.length) {
+      h += '<div class="cap-features" role="menu">' + features.map((b) => `<button type="button" role="menuitem" class="${on === b ? 'on' : ''}" data-cap-branch="${esc(b)}" title="${esc(b)}">${esc(featureLabel(b))}</button>`).join('') + '</div>';
+    }
+    return h;
+  }
   function capsPane(p, refresh) {
+    S.caps = S.capsBy[p.branch || ''] || null;
     const sort = p.sort || 'name';
     const bar = '<div class="cap-bar">'
       + `<input type="search" class="cap-search" data-cap-q placeholder="search by name…" value="${esc(p.q || '')}" aria-label="search the capabilities by name">`
@@ -1931,8 +1968,13 @@
       + '<select data-cap-kind aria-label="kind"><option value="">all kinds</option>' + ['capability', 'data_capability'].map((k) => `<option value="${k}" ${p.unit === k ? 'selected' : ''}>${capKind(k)}</option>`).join('') + '</select>'
       + `<button class="mini ${p.fusion ? 'on' : ''}" data-cap-fusion title="pick two units and ask whether they could be one">⚭ fusion</button>`
       + `<button class="mini" data-cap-refresh title="fetch the product's branches again">${S.capsBusy ? '<span class="spin"></span>' : '↻'}</button></div>`;
-    const html = bar + fusionBar(p) + `<div id="caps-list">${capList(p)}</div>`;
-    const after = (again) => { if (!again && !S.capsBusy && (!S.caps || Date.now() - S.caps.at > 60000)) loadCaps(false); };
+    const html = `<div class="cap-switch" id="caps-switch">${capSwitch(p)}</div>` + bar + fusionBar(p) + `<div id="caps-list">${capList(p)}</div>`;
+    const after = (again) => {
+      if (again || S.capsBusy) return;
+      if (!S.caps || Date.now() - S.caps.at > 60000) loadCaps(false, p.branch || '');
+      // The feature menu lists every branch: read them once when shown on one.
+      else if (p.branch && !S.capsBy['']) loadCaps(false, '').then(() => { const sw = $('caps-switch'); if (sw && S.pane === p) sw.innerHTML = capSwitch(p); });
+    };
     return ['Capabilities list · ' + S.snap.project.name, html, after, true];
   }
   // A branch of a unit, linked to its folder on that branch on GitHub — a
@@ -1946,11 +1988,13 @@
     return `<a class="cap-branch" href="${esc(href)}" target="_blank" rel="noopener" title="open ${esc(dir || 'the repository')} on ${esc(branch)} on GitHub">${label}</a>`;
   }
   function capPane(p) {
+    S.caps = S.capsBy[p.branch || ''] || null;
     const e = S.caps && S.caps.entries.find((x) => x.id === p.id);
-    if (!e) return ['Capability', S.caps ? '<div class="callout">not in the list any more</div>' : '<div class="muted">reading…</div>', () => { if (!S.caps && !S.capsBusy) loadCaps(false); }];
+    if (!e) return ['Capability', S.caps ? '<div class="callout">not in the list any more</div>' : '<div class="muted">reading…</div>', () => { if (!S.caps && !S.capsBusy) loadCaps(false, p.branch || ''); }];
     const c = e.contract;
     const fields = (m) => (Object.keys(m || {}).length ? '<table class="rows"><tr><th>field</th><th>type</th></tr>' + Object.entries(m).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') + '</table>' : '<div class="muted">none</div>');
     let h = kv([
+      ['as on', p.branch ? tag(p.branch, 'acc') : null],
       ['status', capTag(e.status) + `<span class="muted">${esc(CAP_STATUS[e.status][1])}</span>`],
       ['kind', esc(capKind(e.kind))],
       ['system', esc(e.system || '—')],
@@ -2011,7 +2055,11 @@
       p.hidden = [...off]; p.pages = {};
     } else if (hit('[data-cap-desc]')) p.desc = !p.desc;
     else if (hit('[data-cap-fusion]')) { p.fusion = !p.fusion; p.pick = []; p.fused = null; }
-    else if (hit('[data-cap-refresh]')) { if (!S.capsBusy) { S.caps = null; loadCaps(true); } }
+    else if (hit('[data-cap-refresh]')) { if (!S.capsBusy) { S.caps = null; S.capsBy = {}; loadCaps(true, p.branch || ''); } }
+    else if ((b = hit('[data-cap-branch]'))) {
+      p.branch = b.dataset.capBranch; p.featureMenu = false;
+      p.pages = {}; p.pick = []; p.fused = null;
+    } else if (hit('[data-cap-features]')) p.featureMenu = !p.featureMenu;
     else if ((b = hit('[data-cap-pick]'))) {
       const id = b.dataset.capPick;
       let pick = (p.pick || []).filter((x) => x !== id);
@@ -2024,7 +2072,7 @@
       const was = (p.pick || []).includes(id);
       p.pick = was ? p.pick.filter((x) => x !== id) : [...(p.pick || []), id].slice(-2);
       p.fused = null;
-    } else if ((b = hit('[data-cap]'))) { openPane({ kind: 'capability', id: b.dataset.cap }); return; }
+    } else if ((b = hit('[data-cap]'))) { openPane({ kind: 'capability', id: b.dataset.cap, branch: p.branch || '' }); return; }
     else return;
     e.stopPropagation();
     renderPane(p, false);

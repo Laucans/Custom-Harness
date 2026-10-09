@@ -177,6 +177,8 @@ pub struct Catalogue {
     pub entries: Vec<Entry>,
     /// The branches read, `main` first.
     pub branches: Vec<String>,
+    /// The one branch shown, or `None` for every branch at once.
+    pub on: Option<String>,
     /// What could not be read: a manifest that is not JSON.
     pub warnings: Vec<String>,
 }
@@ -505,10 +507,24 @@ fn planned(issue: &Issue) -> Option<Entry> {
 /// The list: every unit on a branch, plus what open tasks plan.
 ///
 /// `issues` are the open issues the board read — tasks and bugs; a closed
-/// one is ignored.
+/// one is ignored. With `on`, the list as that one branch has it: only its
+/// units, each as its manifest reads there, and nothing planned; a unit
+/// keeps its status, which says where it stands across every branch.
 #[must_use]
-pub fn catalogue(reading: &UnitsReading, integration: &str, issues: &[Issue]) -> Catalogue {
-    let branches = ordered(reading, integration);
+pub fn catalogue(
+    reading: &UnitsReading,
+    integration: &str,
+    issues: &[Issue],
+    on: Option<&str>,
+) -> Catalogue {
+    let mut branches = ordered(reading, integration);
+    if let Some(on) = on
+        && let Some(at) = branches.iter().position(|b| b == on)
+    {
+        // Read first, its manifests win: the unit as this branch has it.
+        let first = branches.remove(at);
+        branches.insert(0, first);
+    }
     let mut warnings = Vec::new();
     let all = read_manifests(reading, &branches, &mut warnings);
     let dates: BTreeMap<&str, (&str, &str)> = reading
@@ -557,11 +573,16 @@ pub fn catalogue(reading: &UnitsReading, integration: &str, issues: &[Issue]) ->
         .iter()
         .flat_map(|e| e.issues.iter().map(|i| i.number))
         .collect();
-    entries.extend(
-        open.iter()
-            .filter(|i| !is_bug(i) && !linked.contains(&i.number))
-            .filter_map(|i| planned(i)),
-    );
+    if let Some(on) = on {
+        entries.retain(|e| e.branches.iter().any(|b| b == on));
+        branches = ordered(reading, integration);
+    } else {
+        entries.extend(
+            open.iter()
+                .filter(|i| !is_bug(i) && !linked.contains(&i.number))
+                .filter_map(|i| planned(i)),
+        );
+    }
     entries.sort_by(|a, b| {
         a.name
             .to_lowercase()
@@ -571,6 +592,7 @@ pub fn catalogue(reading: &UnitsReading, integration: &str, issues: &[Issue]) ->
     Catalogue {
         entries,
         branches,
+        on: on.map(str::to_string),
         warnings,
     }
 }
@@ -642,7 +664,7 @@ mod tests {
 
     #[test]
     fn a_unit_on_main_is_available_and_one_elsewhere_is_building() {
-        let c = catalogue(&reading(), "main_agent", &[]);
+        let c = catalogue(&reading(), "main_agent", &[], None);
         assert_eq!(
             find(&c, "campagne.niveauDuGroupe").status,
             Status::Available
@@ -654,7 +676,7 @@ mod tests {
 
     #[test]
     fn a_capability_carries_its_contract_its_callers_its_concept_and_dates() {
-        let c = catalogue(&reading(), "main_agent", &[]);
+        let c = catalogue(&reading(), "main_agent", &[], None);
         let cap = find(&c, "campagne.niveauDuGroupe");
         assert_eq!(
             cap.contract.input.get("campagneId").map(String::as_str),
@@ -670,7 +692,7 @@ mod tests {
 
     #[test]
     fn a_data_capability_carries_its_aggregate_s_invariants_by_id() {
-        let c = catalogue(&reading(), "main_agent", &[]);
+        let c = catalogue(&reading(), "main_agent", &[], None);
         let dc = find(&c, "campagne.ajouterPj");
         assert_eq!(dc.kind, Kind::DataCapability);
         assert_eq!(dc.rules[0].text, "The name is not empty.");
@@ -680,9 +702,37 @@ mod tests {
     }
 
     #[test]
+    fn one_branch_shows_its_own_units_as_it_has_them_and_nothing_planned() {
+        let body = "## Architecture\nunit: capability\nsystem: campagne\n";
+        let tasks = [issue(9, "List the encounters", body, &["harness:agent"])];
+        let mut reading = reading();
+        // The branch carries an older text of a unit main has too.
+        reading.refs[0].files.push(file(
+            "crates/campagne/capabilities/niveau/capability.json",
+            &CAP.replace("Party level.", "Older words."),
+        ));
+        let on = catalogue(&reading, "main_agent", &tasks, Some("feat/dc"));
+        let ids: Vec<&str> = on.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["campagne.ajouterPj", "campagne.niveauDuGroupe"]);
+        assert_eq!(find(&on, "campagne.niveauDuGroupe").role, "Older words.");
+        assert_eq!(
+            find(&on, "campagne.niveauDuGroupe").status,
+            Status::Available
+        );
+        assert_eq!(on.on.as_deref(), Some("feat/dc"));
+        assert_eq!(on.branches, vec!["main", "feat/dc"]);
+        let main = catalogue(&reading, "main_agent", &tasks, Some("main"));
+        assert!(
+            main.entries
+                .iter()
+                .all(|e| e.id != "campagne.ajouterPj" && e.id != "#9")
+        );
+    }
+
+    #[test]
     fn an_open_bug_naming_a_unit_turns_it_red() {
         let bugs = [issue(7, "niveauDuGroupe rounds .5 down", "", &["bug"])];
-        let c = catalogue(&reading(), "main_agent", &bugs);
+        let c = catalogue(&reading(), "main_agent", &bugs, None);
         let cap = find(&c, "campagne.niveauDuGroupe");
         assert_eq!(cap.status, Status::Bug);
         assert_eq!(cap.issues[0].number, 7);
@@ -695,6 +745,7 @@ mod tests {
             &reading(),
             "main_agent",
             &[issue(9, "List the encounters", body, &["harness:agent"])],
+            None,
         );
         let plan = find(&c, "#9");
         assert_eq!(plan.status, Status::Planned);
@@ -705,7 +756,12 @@ mod tests {
     #[test]
     fn a_task_that_names_an_existing_unit_is_not_planned_twice() {
         let body = "Builds `campagne.ajouterPj`.\n## Architecture\nunit: data-capability\nsystem: campagne\n";
-        let c = catalogue(&reading(), "main_agent", &[issue(4, "Add a PC", body, &[])]);
+        let c = catalogue(
+            &reading(),
+            "main_agent",
+            &[issue(4, "Add a PC", body, &[])],
+            None,
+        );
         assert!(c.entries.iter().all(|e| e.id != "#4"));
         assert_eq!(find(&c, "campagne.ajouterPj").issues[0].number, 4);
     }
