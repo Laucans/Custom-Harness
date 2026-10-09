@@ -1527,16 +1527,6 @@
   setInterval(loadPending, 5000);
   loadPending();
 
-  // The details tab: the prompt, read-only, and the way to the editor.
-  function promptPeek(line, st) {
-    const list = PR.byStation[line.id + '/' + st.id];
-    if (!list) {
-      loadPrompts(line.id, st.id, () => { if (S.pane && S.pane.kind === 'station' && S.pane.id === st.id && (S.pane.tab || 'details') === 'details') renderPane(S.pane, false); });
-      return '<h3>Prompt</h3><div class="muted">loading…</div>';
-    }
-    if (list.error) return `<h3>Prompt</h3><div class="callout">${esc(list.error)}</div>`;
-    return '<h3>Prompt <button class="mini" data-tab="prompt">edit · dry-run</button></h3>' + list.map((v) => `<div class="prompt-peek-title">${esc(v.title)} ${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}${v.draft ? ' ' + tag('waiting for a restart', 'wrench') : ''}</div><pre class="md prompt-peek">${esc(v.running)}</pre>`).join('');
-  }
   function promptDrift(v, text) {
     const wanted = placeholdersOf(v.default);
     const named = placeholdersOf(text);
@@ -1634,9 +1624,22 @@
     const el = $('prompt-editor');
     const list = PR.byStation[line.id + '/' + st.id];
     if (!el || !list) return;
-    el.innerHTML = list.error ? `<div class="callout">${esc(list.error)}</div>` : list.map((v) => promptCard(v, line, st)).join('');
+    el.innerHTML = list.error ? `<div class="callout">${esc(list.error)}</div>` : list.length > 1 ? promptFolds(list, line, st) : list.map((v) => promptCard(v, line, st)).join('');
     if (!list.error) list.forEach((v) => loadTrials(v.key));
   }
+  // Several prompts: a list to scan first, each one unfolding into its
+  // editor. What is open stays open across a redraw of the tab.
+  PR.open = {};
+  function promptFolds(list, line, st) {
+    return `<div class="muted">${list.length} prompts — click one to open its editor.</div>` + list.map((v) => `<details class="prompt-fold" data-fold-key="${esc(v.key)}"${PR.open[v.key] ? ' open' : ''}>`
+      + `<summary><span class="t">${esc(v.title)}</span>${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}${v.draft ? tag('waiting for a restart', 'wrench') : ''}`
+      + `<span class="muted first">${esc(firstLine(v.draft ? v.draft.text : v.running))}</span></summary>`
+      + promptCard(v, line, st) + '</details>').join('');
+  }
+  document.addEventListener('toggle', (e) => {
+    const fold = e.target.closest && e.target.closest('[data-fold-key]');
+    if (fold && fold === e.target) PR.open[fold.dataset.foldKey] = fold.open;
+  }, true);
   function shownPrompt(key) {
     for (const list of Object.values(PR.byStation)) {
       if (Array.isArray(list)) { const v = list.find((x) => x.key === key); if (v) return v; }
@@ -1917,7 +1920,7 @@
       if (!st) return ['Station', '<div class="callout">Unknown station.</div>'];
       if (st.gates && st.gates.length) return gatesPane(p, line, st);
       const robot = isRobot(st);
-      const extra = robot ? [['prompt', 'Prompt']] : [];
+      const extra = robot ? [['prompt', 'Prompt(s)']] : [];
       if (p.tab === 'prompt' && robot) return promptPane(p, line, st, paneTabs(p, st.purpose, extra));
       if (p.tab === 'recent') {
         // A machine's work: the runs that finished its stage, or stand at it.
@@ -1948,7 +1951,6 @@
           : `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
-      if (robot) h += promptPeek(line, st);
       return [st.label, paneTabs(p, st.purpose, extra) + h];
     },
 

@@ -623,8 +623,13 @@ svg.process .name { fill: var(--dim); pointer-events: none; }
 .dm-version select:focus { outline: none; border-color: var(--accent); }
 
 /* A robot's prompts: read on the details tab, edited on the prompt tab. */
-.prompt-peek-title { font: 12px var(--mono); color: var(--dim); margin: 8px 0 4px; }
-pre.md.prompt-peek { max-height: 260px; overflow: auto; font: 12px/1.45 var(--mono); }
+.prompt-fold { border-bottom: 1px dashed var(--line); }
+.prompt-fold > summary { cursor: pointer; padding: 7px 0; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.prompt-fold > summary:hover .t { color: var(--accent); }
+.prompt-fold > summary .t { font-weight: 600; }
+.prompt-fold > summary .first { flex-basis: 100%; font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prompt-fold[open] > summary .first { display: none; }
+.prompt-fold > .prompt-card { border-top: 0; padding-left: 12px; border-left: 2px solid var(--line); }
 .prompt-card { border-top: 1px solid var(--line); padding-top: 6px; margin-bottom: 18px; }
 .prompt-card code { font-family: var(--mono); color: var(--accent); }
 .prompt-text { display: block; width: 100%; box-sizing: border-box; min-height: 340px; resize: vertical; margin: 8px 0 6px; padding: 10px 12px; font: 12px/1.45 var(--mono); color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
@@ -694,3 +699,4 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .hb-list button b.brainstorm { color: var(--pin-brainstorm); }
 .hb-list button b.asking { color: var(--pin-asking); }
 .hb-tools [data-hb="undo"] { color: var(--dim); }
+.prompt-fold > .prompt-card > h3:first-child { display: none; }
