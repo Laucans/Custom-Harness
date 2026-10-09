@@ -126,10 +126,10 @@ pub fn run_of(runs: &[String], issue: Option<u64>, at: &str) -> Option<String> {
             c.get(13..15)?
         ))
     };
-    let names = |run: &str| -> Option<u64> { run.get(16..)?.parse().ok() };
+    let issue_of = |run: &str| -> Option<u64> { run.get(16..)?.parse().ok() };
     runs.iter()
         .filter(|run| is_run_id(run))
-        .filter(|run| match (issue, names(run)) {
+        .filter(|run| match (issue, issue_of(run)) {
             (Some(wanted), Some(named)) => wanted == named,
             (Some(_), None) | (None, _) => true,
         })
