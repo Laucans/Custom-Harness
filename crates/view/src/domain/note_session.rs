@@ -281,6 +281,9 @@ pub struct About {
     pub branch: String,
     /// That branch's `data/schema.sql`, as the version shown has it.
     pub schema: String,
+    /// The milestone a feature branch belongs to, in words
+    /// ([`milestone_words`]); empty for another branch.
+    pub milestone: String,
 }
 
 /// What the page tells a session it opens: what it shows of the pin's
@@ -293,6 +296,36 @@ pub struct Brief {
     pub branch: String,
     /// The branch's `data/schema.sql`; empty when it was not read.
     pub schema: String,
+    /// The branch's milestone, in words; empty when it is not a feature
+    /// branch or the board does not know it.
+    pub milestone: String,
+}
+
+/// The most of a milestone's description a session is handed.
+const MILESTONE_BODY_CHARS: usize = 6_000;
+
+/// A milestone as a session reads it: its title, where it stands, what it
+/// says, and its tasks.
+#[must_use]
+pub fn milestone_words(milestone: &crate::ports::Milestone) -> String {
+    let issue = &milestone.issue;
+    let mut text = format!("#{} {} ({})\n", issue.number, issue.title, issue.state);
+    let body: String = issue
+        .body
+        .trim()
+        .chars()
+        .take(MILESTONE_BODY_CHARS)
+        .collect();
+    if !body.is_empty() {
+        let _ = writeln!(text, "{body}");
+    }
+    if !milestone.tasks.is_empty() {
+        let _ = writeln!(text, "Its tasks:");
+        for task in &milestone.tasks {
+            let _ = writeln!(text, "  - #{} {} ({})", task.number, task.title, task.state);
+        }
+    }
+    text
 }
 
 /// The system prompt a pin's session opens with.
@@ -324,6 +357,13 @@ pub fn briefing(about: &About, handback: &Handback) -> String {
             text,
             "The pin belongs to the branch `{}`: talk about the product as that branch has it.",
             about.branch
+        );
+    }
+    if !about.milestone.trim().is_empty() {
+        let _ = writeln!(
+            text,
+            "That branch is a milestone's: its tasks merge there. The milestone:\n<milestone>\n{}\n</milestone>",
+            about.milestone.trim()
         );
     }
     if !about.note.trim().is_empty() {
@@ -446,6 +486,8 @@ pub fn request_prompt(about: &About, conversation: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use harness_core::domain::Issue;
+
     use super::*;
     use proptest::prelude::*;
 
@@ -540,12 +582,30 @@ not json
             kind: "brainstorm".into(),
             branch: "milestone/3-campaigns".into(),
             schema: "CREATE TABLE character (name varchar(40));".into(),
+            milestone: milestone_words(&crate::ports::Milestone {
+                issue: Issue {
+                    number: 3,
+                    title: "Campaigns".into(),
+                    state: "OPEN".into(),
+                    body: "A campaign knows its party.".into(),
+                    ..Issue::default()
+                },
+                tasks: vec![Issue {
+                    number: 12,
+                    title: "List the PCs".into(),
+                    state: "CLOSED".into(),
+                    ..Issue::default()
+                }],
+            }),
         };
         let first = briefing(&about, &Handback::Nothing);
         assert!(first.contains("field character.name"));
         assert!(first.contains("type: varchar(40)"));
         assert!(first.contains("branch `milestone/3-campaigns`"));
         assert!(first.contains("<schema.sql>\nCREATE TABLE character"));
+        assert!(first.contains(
+            "<milestone>\n#3 Campaigns (OPEN)\nA campaign knows its party.\nIts tasks:\n  - #12 List the PCs (CLOSED)"
+        ));
         assert!(!first.contains("<conversation>"));
         let again = briefing(&about, &Handback::Whole("Human: a".into()));
         assert!(again.contains("<conversation>\nHuman: a\n</conversation>"));

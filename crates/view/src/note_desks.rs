@@ -165,6 +165,7 @@ impl NoteDesks {
             .to_string(),
             branch: brief.branch,
             schema: brief.schema,
+            milestone: brief.milestone,
         };
         let mut conversation = self.conversation(board, id)?;
         if let Handback::Summarize { older, covers } = conversation.handback() {
@@ -250,6 +251,7 @@ impl NoteDesks {
             context: String::new(),
             branch: String::new(),
             schema: String::new(),
+            milestone: String::new(),
             note: note.text.clone(),
             kind: if note.kind == Kind::Asking {
                 "asking"

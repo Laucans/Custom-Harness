@@ -318,9 +318,10 @@ while the note is empty — and that text is the **first prompt** of its first
 session. A pin's session is an interactive Claude Code (the steward's model, plan
 mode, in the product's snapshot clone when there is one) in the
 `note_session` pane, run by `note_desks.rs`. Its system prompt carries the
-pin's note, its branch, what the page shows of the part it sits on (its
-rules, links, users) and that branch's `data/schema.sql` as the version shown
-has it (`DataDesk::schema`). It opens with a fixed
+pin's note, its branch — and on a `milestone/<n>-…` branch, milestone #n as
+the board has it: title, state, description, tasks — what the page shows of
+the part it sits on (its rules, links, users) and that branch's
+`data/schema.sql` as the version shown has it (`DataDesk::schema`). It opens with a fixed
 `--session-id` and the pin's **conversation handed back** in its system
 prompt (`domain::note_session`): whole up to 40k tokens, else a kept summary
 of the older turns plus the last ~10k word for word — the summary is made

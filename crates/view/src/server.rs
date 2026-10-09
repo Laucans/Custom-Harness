@@ -41,14 +41,14 @@ use crate::domain::builds;
 use crate::domain::capabilities::{self, Catalogue};
 use crate::domain::cleanup::Settings;
 use crate::domain::data_usage::{self, UsedBy};
-use crate::domain::data_versions::Versions;
+use crate::domain::data_versions::{self, Versions};
 use crate::domain::divergence;
 use crate::domain::doctor::{self, Diagnosis};
 use crate::domain::fusion;
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
-use crate::domain::note_session::Brief;
+use crate::domain::note_session::{self, Brief};
 use crate::domain::observe::observe_run;
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::prompts::{self, Deactivate, Edit, OnShelf, Refused, Restore};
@@ -1372,10 +1372,22 @@ async fn open_session(
             .unwrap_or_default(),
         _ => String::new(),
     };
+    // A feature branch: the milestone it belongs to, as the board has it.
+    let milestone = data_versions::milestone_number(&ask.branch)
+        .and_then(|number| {
+            let board = state.board.borrow().clone()?;
+            board
+                .milestones
+                .iter()
+                .find(|m| m.issue.number == number)
+                .map(note_session::milestone_words)
+        })
+        .unwrap_or_default();
     let brief = Brief {
         context,
         branch: ask.branch,
         schema,
+        milestone,
     };
     match desks.open(&board, &id, brief).await {
         Ok(command) => json(&serde_json::json!({ "available": true, "command": command })),
