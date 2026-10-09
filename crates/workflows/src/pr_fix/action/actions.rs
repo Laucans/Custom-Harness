@@ -195,7 +195,7 @@ mod tests {
         let said = conflict_block(true, "milestone/53-data");
         assert!(said.contains("git merge origin/milestone/53-data"));
         assert!(said.contains("never a rebase"));
-        assert!(conflict_block(false, "x").is_empty());
+        assert_eq!(conflict_block(false, "x"), "");
     }
 
     fn ctx() -> Context<FixState> {
