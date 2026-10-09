@@ -22,6 +22,6 @@ pub mod feed;
 pub mod notification;
 pub mod rules;
 
-pub use facts::{Facts, Waiting, waiting_on_a_human};
+pub use facts::{Diagnosed, Facts, Waiting, waiting_on_a_human};
 pub use feed::feed;
 pub use notification::{Level, Link, Notification};

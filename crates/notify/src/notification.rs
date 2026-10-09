@@ -30,6 +30,13 @@ pub enum Link {
         /// The instant the screen should be read around.
         at: Option<String>,
     },
+    /// An agent's pane: the run on its line, opened on its logs.
+    Agent {
+        /// The line: `split`.
+        workflow: String,
+        /// The run: `20261008-145556`.
+        run: String,
+    },
 }
 
 /// One thing to tell, grouped: the same subject happening again counts up

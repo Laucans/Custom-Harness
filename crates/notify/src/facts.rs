@@ -16,6 +16,19 @@ pub struct Waiting {
     pub label: String,
 }
 
+/// A diagnosis the doctor was asked about one run, once it ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnosed {
+    /// The line the run was on: `split`.
+    pub workflow: String,
+    /// The run: `20261008-145556`.
+    pub run: String,
+    /// The doctor answered — otherwise the question went unanswered.
+    pub answered: bool,
+    /// When it ended, as the traces write a clock.
+    pub at: String,
+}
+
 /// Everything observed, as of one read.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Facts {
@@ -29,6 +42,8 @@ pub struct Facts {
     pub claude_at: String,
     /// Now, in seconds since the epoch — what says a window has reset.
     pub now: u64,
+    /// The diagnoses the doctor was asked for that have ended.
+    pub diagnoses: Vec<Diagnosed>,
 }
 
 /// The open issues among `issues` that carry `harness:human` or

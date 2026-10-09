@@ -81,6 +81,35 @@ pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
             }),
         ));
     }
+    for diagnosed in &facts.diagnoses {
+        let agent = format!("{}/{}", diagnosed.workflow, diagnosed.run);
+        board.add(if diagnosed.answered {
+            Notification::once(
+                format!("diagnosis:{agent}"),
+                Level::Info,
+                format!("Diagnostic done · {agent}"),
+                "the doctor read this run's logs and answered; open the agent, then the doctor",
+                &diagnosed.at,
+                Some(Link::Agent {
+                    workflow: diagnosed.workflow.clone(),
+                    run: diagnosed.run.clone(),
+                }),
+            )
+        } else {
+            Notification::once(
+                format!("diagnosis:{agent}"),
+                Level::Warning,
+                format!("The doctor did not answer · {agent}"),
+                "the question went unanswered: the doctor's program ended, or twenty minutes \
+                 passed — ask again from the agent's pane",
+                &diagnosed.at,
+                Some(Link::Agent {
+                    workflow: diagnosed.workflow.clone(),
+                    run: diagnosed.run.clone(),
+                }),
+            )
+        });
+    }
     board.into_sorted()
 }
 
@@ -105,6 +134,48 @@ mod tests {
             now: 1_000,
             ..Facts::default()
         }
+    }
+
+    #[test]
+    fn a_diagnosis_that_ended_is_told_and_leads_to_the_agent() {
+        use crate::facts::Diagnosed;
+        let facts = Facts {
+            diagnoses: vec![
+                Diagnosed {
+                    workflow: "split".to_string(),
+                    run: "20261008-145556".to_string(),
+                    answered: true,
+                    at: "2026-10-09T14:47:00Z".to_string(),
+                },
+                Diagnosed {
+                    workflow: "agent-loop".to_string(),
+                    run: "20261008-150000".to_string(),
+                    answered: false,
+                    at: "2026-10-09T15:10:00Z".to_string(),
+                },
+            ],
+            ..facts()
+        };
+        let all = feed(&[], &facts);
+        let done = all
+            .iter()
+            .find(|n| n.key == "diagnosis:split/20261008-145556")
+            .expect("told");
+        assert_eq!(done.level, Level::Info);
+        assert!(done.title.starts_with("Diagnostic done"));
+        assert_eq!(
+            done.link,
+            Some(Link::Agent {
+                workflow: "split".to_string(),
+                run: "20261008-145556".to_string(),
+            })
+        );
+        let lost = all
+            .iter()
+            .find(|n| n.key == "diagnosis:agent-loop/20261008-150000")
+            .expect("told");
+        assert_eq!(lost.level, Level::Warning);
+        assert!(matches!(lost.link, Some(Link::Agent { .. })));
     }
 
     fn started() -> Stored {

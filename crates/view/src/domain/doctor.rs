@@ -131,11 +131,15 @@ pub enum Diagnosis {
     Done {
         /// When it was asked, a UTC clock.
         since: String,
+        /// When the mark was heard.
+        at: String,
     },
     /// The doctor's program ended, or did not answer in time.
     Lost {
         /// When it was asked, a UTC clock.
         since: String,
+        /// When it was given up on.
+        at: String,
     },
 }
 

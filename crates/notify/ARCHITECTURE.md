@@ -26,8 +26,8 @@ facts (watch process, board,     │
 ```
 src/notification.rs  Level, Link, Notification; Board merges repeats by key
 src/rules.rs         events → notifications, one rule per event, keyed so repeats count up and an end clears
-src/facts.rs         Facts, and which board issues wait on a human
-src/feed.rs          both together: the watch gone without a word, the windows, the waiting issues
+src/facts.rs         Facts, which board issues wait on a human, and the doctor's diagnoses that ended
+src/feed.rs          both together: the watch gone without a word, the windows, the waiting issues, a diagnosis done or unanswered
 ```
 
 ## Decisions

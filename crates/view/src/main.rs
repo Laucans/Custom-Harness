@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
     });
     let events = event_store(&workspace);
     let claude_read = Arc::default();
+    let diagnoses: server::Diagnoses = Arc::default();
 
     // One per process: what tells a page the server it talks to was rebuilt.
     let build = jiff::Timestamp::now().to_string();
@@ -105,7 +106,8 @@ async fn main() -> anyhow::Result<()> {
         render_dir: root.join("crates/view/static/render"),
         desk: desk.clone(),
         doctor: doctor.clone(),
-        diagnoses: Arc::default(),
+        diagnoses: Arc::clone(&diagnoses),
+        asking: Arc::default(),
         plant: plant.clone(),
         start_grace: Duration::from_millis(1500),
         limits: Some(Arc::new(CliLimits::new(
@@ -129,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
                     plant,
                     events,
                     claude_read,
+                    diagnoses,
                 },
                 board_rx,
                 project,
@@ -284,6 +287,7 @@ struct Hands {
     plant: Option<Arc<dyn Plant>>,
     events: Option<Arc<dyn EventLog + Send + Sync>>,
     claude_read: Arc<std::sync::Mutex<Option<Read<Reading>>>>,
+    diagnoses: server::Diagnoses,
 }
 
 /// How far back the notifications look.
@@ -331,6 +335,29 @@ fn notifications(
         .and_then(|reading| jiff::Timestamp::from_second(i64::try_from(reading.at).ok()?).ok())
         .map(clock)
         .unwrap_or_default();
+    // The doctor's diagnoses that ended, answered or not.
+    let diagnoses = hands
+        .diagnoses
+        .lock()
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, diagnosis)| {
+                    let (workflow, run) = key.split_once('/')?;
+                    let (answered, at) = match diagnosis {
+                        doctor::Diagnosis::Done { at, .. } => (true, at),
+                        doctor::Diagnosis::Lost { at, .. } => (false, at),
+                        doctor::Diagnosis::Running { .. } => return None,
+                    };
+                    Some(harness_notify::Diagnosed {
+                        workflow: workflow.to_string(),
+                        run: run.to_string(),
+                        answered,
+                        at: at.clone(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     harness_notify::feed(
         &events,
         &harness_notify::Facts {
@@ -339,6 +366,7 @@ fn notifications(
             claude,
             claude_at,
             now: u64::try_from(now.as_second()).unwrap_or(0),
+            diagnoses,
         },
     )
 }
