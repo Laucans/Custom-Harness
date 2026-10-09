@@ -66,6 +66,12 @@ pub async fn run(args: &crate::cli::DataModelDraftArgs, here: &Path) -> Outcome<
         .map_err(|e| Halt::Failed(format!("log file cannot be opened: {e}")))?,
     );
     let log = Logbook::new(Rc::clone(&sink) as Rc<dyn Sink>, Verbosity::Normal);
+    // Where this run's journal is, for whoever follows its output: the
+    // view's build log reads the session's own log from there, live.
+    if let Some(dir) = sink.path().parent() {
+        log.say(&format!("journal: {}", dir.display()));
+    }
+
     let built = shared::adapters(
         &workspace,
         &run_id,

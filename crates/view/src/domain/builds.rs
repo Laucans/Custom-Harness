@@ -70,6 +70,20 @@ pub struct Build {
     pub tail: String,
 }
 
+/// The run folders a harness command said it journals in — its
+/// `journal: <dir>` lines — whose `session.log` the build's log shows too.
+#[must_use]
+pub fn journals(output: &str) -> Vec<String> {
+    let mut dirs: Vec<String> = output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("journal: "))
+        .map(|dir| dir.trim().to_string())
+        .filter(|dir| !dir.is_empty())
+        .collect();
+    dirs.dedup();
+    dirs
+}
+
 /// A branch name the page may send: what git accepts, nothing a shell or a
 /// path could make more of.
 #[must_use]
@@ -100,6 +114,19 @@ mod tests {
         );
         assert_eq!(What::Model.args("main_agent")[0], "data-model-draft");
         assert!(What::parse("other").is_none());
+    }
+
+    #[test]
+    fn the_journals_a_command_named_are_found_in_its_output() {
+        let out = "draft: dumped\njournal: /r/.llocal/logs/data-model-draft/1\n[draft] session opens\n  journal: /r/.llocal/logs/data-diagnosis/2\njournal: \n";
+        assert_eq!(
+            journals(out),
+            [
+                "/r/.llocal/logs/data-model-draft/1",
+                "/r/.llocal/logs/data-diagnosis/2"
+            ]
+        );
+        assert!(journals("nothing").is_empty());
     }
 
     #[test]

@@ -144,7 +144,7 @@
       q('.dm-version select').innerHTML = (current ? current.versions : []).map((x, i) => `<option value="${esc(x.dir)}"${x.dir === st.dir ? ' selected' : ''}>${esc(when(x.at))} · ${esc(x.sha.slice(0, 7))}${i === 0 ? ' · newest' : ''}</option>`).join('');
     }
     // One action per file and branch: what its log button is found by.
-    const buildKey = (what) => `build:${what}:${st.branch || 'integration'}`;
+    const buildKey = (what) => `build:${what}:${(st.building && st.building.what === what && st.building.branch) || st.branch || 'integration'}`;
     // Starts the build of a missing file for the branch shown, then follows it.
     async function build(what) {
       if (what === 'model' && st.armed !== 'model') {
@@ -301,7 +301,7 @@
             ? 'Dump this branch now (the Docker Postgres, its migrations) and archive it on harness/data-model'
             : 'Opus reads the schema and the code, writes data/model.json and opens a pull request on this branch';
           const log = window.HarnessActions ? window.HarnessActions.chip(buildKey(what)) : '';
-          return `<button type="button" class="dm-src build${armed ? ' armed' : ''}" data-build="${what}" ${running ? 'disabled' : ''} title="${esc(hint)}">${esc(label)}${log}</button>`;
+          return `<button type="button" class="dm-src build${armed ? ' armed' : ''}" data-build="${what}" ${running ? 'aria-disabled="true"' : ''} title="${esc(hint)}">${esc(label)}${log}</button>`;
         }
         return `<span class="dm-src ${cls}" title="${esc(tip)}">${esc(s.path)}</span>`;
       }).join('');
@@ -505,7 +505,8 @@
     };
     const onBuild = (e) => {
       const b = e.target.closest('[data-build]');
-      if (b && !b.disabled) build(b.dataset.build);
+      // A running build's button stays clickable for its log button only.
+      if (b && b.getAttribute('aria-disabled') !== 'true' && !st.building) build(b.dataset.build);
       return undefined;
     };
     q('.dm-switch').addEventListener('click', (e) => {
@@ -532,7 +533,19 @@
     // A build started before this pane opened is followed too.
     fetch('/api/data-model/builds').then((r) => r.json()).then((all) => {
       const running = all.find((x) => x.state === 'running');
-      if (running) { st.building = { what: running.what, branch: running.branch, id: running.id }; follow(); }
+      if (running) {
+        const file = running.what === 'schema' ? 'schema.sql' : 'model.json';
+        const action = window.HarnessActions
+          ? window.HarnessActions.start({ key: `build:${running.what}:${running.branch}`, label: `build ${file} for ${running.branch}` })
+          : null;
+        if (action) {
+          action.note(`picked up: started ${running.started}`);
+          action.log = () => fetch(`/api/data-model/builds/${encodeURIComponent(running.id)}/log`).then((r) => (r.ok ? r.text() : ''));
+        }
+        st.building = { what: running.what, branch: running.branch, id: running.id, action };
+        if (st.model) drawBar(st.model);
+        follow();
+      }
     }).catch(() => {});
     return {
       reload: () => board.reload(),

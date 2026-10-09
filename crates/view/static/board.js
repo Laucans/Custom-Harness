@@ -187,7 +187,8 @@
       editor.querySelectorAll('.hb-kind').forEach((b) => {
         b.classList.toggle('on', b.dataset.kind === kind);
         b.setAttribute('aria-checked', b.dataset.kind === kind);
-        b.disabled = busy;
+        // Not `disabled`: a log button inside must stay clickable.
+        if (busy) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
       });
       const session = editor.querySelector('.hb-session');
       session.hidden = kind === 'note' || !opts.onSession;

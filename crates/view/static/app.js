@@ -794,7 +794,8 @@
     $('dv-open').addEventListener('click', async () => {
       const said = $('dv-said');
       const button = $('dv-open');
-      button.disabled = true;
+      if (button.getAttribute('aria-disabled') === 'true') return;
+      button.setAttribute('aria-disabled', 'true');
       said.textContent = 'opening…';
       const action = window.HarnessActions && window.HarnessActions.start({ key: 'issue:' + d.dir, label: `open the issue for ${d.branch}`, button });
       try {
@@ -807,7 +808,7 @@
       } catch (e) {
         said.textContent = 'not opened: ' + (e.message || e);
         if (action) action.fail(e.message || e);
-        button.disabled = false;
+        button.removeAttribute('aria-disabled');
       }
     });
   }

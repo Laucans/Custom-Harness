@@ -2,17 +2,21 @@
 //! data-snapshot` and `harness data-model-draft`, each a child of the view,
 //! its output in `.llocal/logs/view-builds/`.
 
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::domain::builds::{Build, State, What};
+use crate::domain::builds::{self, Build, State, What};
 use crate::ports::Builds;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+/// How much of a session's own log the build's log carries.
+const SESSION_TAIL: usize = 64 * 1024;
 
 /// How many of a build's last lines the page reads.
 const TAIL: usize = 6;
@@ -151,7 +155,29 @@ impl Builds for HarnessBuilds {
 
     fn log(&self, id: &str) -> Option<String> {
         let out = lock(&self.runs).iter().find(|r| r.id == id)?.out.clone();
-        fs::read_to_string(out).ok()
+        let mut text = fs::read_to_string(out).ok()?;
+        // The sessions the command opened say what they do in their own
+        // journal: followed too, as long as it lies in this checkout's logs.
+        let logs = self.root.join(".llocal/logs");
+        for dir in builds::journals(&text.clone()) {
+            let dir = PathBuf::from(dir);
+            if !dir.starts_with(&logs)
+                || dir
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+            {
+                continue;
+            }
+            if let Ok(session) = fs::read_to_string(dir.join("session.log")) {
+                let start = session.len().saturating_sub(SESSION_TAIL);
+                let start = (start..session.len())
+                    .find(|&k| session.is_char_boundary(k))
+                    .unwrap_or(0);
+                let _ = write!(text, "\n--- the session · {} ---\n", dir.display());
+                text.push_str(&session[start..]);
+            }
+        }
+        Some(text)
     }
 
     fn builds(&self) -> Vec<Build> {
@@ -251,5 +277,56 @@ mod tests {
         );
         assert!(stale.builds().is_empty(), "nothing started");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_build_s_log_follows_the_sessions_its_command_journals() {
+        let root =
+            std::env::temp_dir().join(format!("harness-builds-journal-{}", std::process::id()));
+        let journal = root.join(".llocal/logs/data-model-draft/1");
+        fs::create_dir_all(&journal).expect("journal");
+        fs::write(
+            journal.join("session.log"),
+            "[  0m03s] → Read crates/dataguard/src/queue.rs\n",
+        )
+        .expect("session");
+        let outside =
+            std::env::temp_dir().join(format!("harness-builds-outside-{}", std::process::id()));
+        fs::create_dir_all(&outside).expect("outside");
+        fs::write(outside.join("session.log"), "secret").expect("outside");
+        let program = root.join("fake-harness.sh");
+        fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\ncase \"$2\" in --help) exit 0 ;; esac\necho \"journal: {}\"\necho \"journal: {}\"\n",
+                journal.display(),
+                outside.display()
+            ),
+        )
+        .expect("script");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let builds = HarnessBuilds::new(vec![program], root.clone());
+        let id = builds.start(What::Model, "main_agent").expect("started");
+        for _ in 0..50 {
+            if builds.builds().iter().all(|b| b.state != State::Running) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let log = builds.log(&id).expect("a log");
+        assert!(log.contains("--- the session ·"), "{log}");
+        assert!(
+            log.contains("→ Read crates/dataguard/src/queue.rs"),
+            "{log}"
+        );
+        assert!(
+            !log.contains("secret"),
+            "a journal outside the checkout's logs is not read"
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
     }
 }
