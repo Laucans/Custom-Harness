@@ -32,15 +32,20 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
 use crate::desk::Desk;
+use crate::domain::assemble;
 use crate::domain::blueprint;
+use crate::domain::gates;
 use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
+use crate::domain::observe::observe_run;
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::snapshot::Snapshot;
+use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::ports::{BoardReading, Limits, Plant, Traces};
 use harness_core::domain::quota::Reading;
+use harness_core::ports::store::events::EventLog;
 
 /// What every handler can reach.
 #[derive(Clone)]
@@ -68,6 +73,9 @@ pub struct AppState {
     /// The last Claude reading the page paid for, kept so a click is not a
     /// session.
     pub claude_read: Arc<std::sync::Mutex<Option<Read<Reading>>>>,
+    /// The harness's events, for a run's gate verdicts — `None` when the
+    /// store could not be opened.
+    pub events: Option<Arc<dyn EventLog + Send + Sync>>,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -104,6 +112,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/runs/{workflow}/locate", get(locate_run))
         .route("/api/run-of/{run}", get(line_of))
         .route("/api/runs/{workflow}/{run}/stages", get(run_stages))
+        .route("/api/runs/{workflow}/{run}/graph", get(run_graph))
         .route("/api/runs/{workflow}/{run}/{file}", get(run_file))
         .route("/api/issues/{number}", get(issue))
         .route("/api/history", get(period))
@@ -361,6 +370,43 @@ async fn run_stages(
         started_at,
         last_at,
         stages: stage_logs(&run_log, &session_log, &ledger_stages, tail),
+    })
+}
+
+/// A run's process graph: every station of its line, as the run left it.
+#[derive(Debug, Serialize)]
+struct RunGraph {
+    /// In belt order.
+    stations: Vec<StationView>,
+}
+
+/// How many of the newest events a graph reads for its gate verdicts.
+const GRAPH_EVENTS: usize = 5_000;
+
+async fn run_graph(
+    State(state): State<AppState>,
+    Path((workflow, run)): Path<(String, String)>,
+) -> Response {
+    if !is_workflow(&workflow) || !is_run_id(&run) {
+        return not_found("no such run");
+    }
+    let lines = blueprint::lines();
+    let Some(line) = lines.iter().find(|line| line.id == workflow) else {
+        return not_found("no such line");
+    };
+    if state.traces.read(&workflow, &run, "run.log").is_none() {
+        return not_found("no such run");
+    }
+    let observed = observe_run(state.traces.as_ref(), line, &run);
+    let at_work = observed.alive.unwrap_or(false);
+    let told = state
+        .events
+        .as_ref()
+        .and_then(|store| store.between(None, None, GRAPH_EVENTS).ok())
+        .map(|events| gates::told(&events))
+        .unwrap_or_default();
+    json(&RunGraph {
+        stations: assemble::run_stations(line, &observed, at_work, &told),
     })
 }
 
@@ -790,6 +836,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
         };
         let observed = Observed::default();
+        let told = crate::domain::gates::Told::default();
         let snap = assemble::snapshot(&Inputs {
             observed: &observed,
             board: None,
@@ -797,6 +844,7 @@ mod tests {
             lines: &lines,
             now: 0,
             demo: false,
+            told: &told,
         });
         let (_, snapshot) = watch::channel(Arc::new(snap));
         let (_, board) = watch::channel(None);
@@ -812,6 +860,7 @@ mod tests {
             start_grace: Duration::ZERO,
             limits: None,
             claude_read: Arc::default(),
+            events: None,
         }
     }
 

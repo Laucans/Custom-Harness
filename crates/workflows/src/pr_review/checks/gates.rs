@@ -21,6 +21,10 @@ pub struct InlinePassIsOff {
 
 #[async_trait(?Send)]
 impl Verification<ReviewState> for InlinePassIsOff {
+    fn purpose(&self) -> String {
+        "the inline pass is not switched off (--no-inline)".to_string()
+    }
+
     async fn verify(&self, _ctx: &Context<ReviewState>) -> Outcome<Verdict> {
         if !self.no_inline {
             return Ok(Verdict::Continue);
@@ -34,6 +38,10 @@ pub struct NothingIsPosted;
 
 #[async_trait(?Send)]
 impl Verification<ReviewState> for NothingIsPosted {
+    fn purpose(&self) -> String {
+        "nothing is posted under --dry-run".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<ReviewState>) -> Outcome<Verdict> {
         if !ctx.settings.dry_run {
             return Ok(Verdict::Continue);

@@ -127,7 +127,7 @@ pub async fn run(
             context: String::new(),
             force: false,
         },
-        Gate::empty("outillage"),
+        Gate::empty("tooling"),
     );
     let mut ctx = Context::new(
         Settings {

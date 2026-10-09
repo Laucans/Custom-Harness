@@ -53,7 +53,7 @@ mod tests {
             &ports_fake::ports(),
             &config_fake::config(),
             &Request { milestone: 4 },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         );
         assert_eq!(built.milestone_key, "4");
         assert_eq!(built.remaining.get(), 1, "a run is one round");

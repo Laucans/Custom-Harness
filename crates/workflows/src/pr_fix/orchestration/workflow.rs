@@ -150,7 +150,7 @@ mod tests {
             &run::Request {
                 pr_ref: "32".to_string(),
             },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         )
     }
 

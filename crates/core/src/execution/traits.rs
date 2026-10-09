@@ -17,6 +17,25 @@ pub trait Verification<S> {
     /// Returns `Continue` if everything holds, `Skip` to skip without paying,
     /// or a `Halt` to stop the sequence.
     async fn verify(&self, ctx: &Context<S>) -> Outcome<Verdict>;
+
+    /// How the check is named in the traces: its type name, module path and
+    /// generics stripped. A gate tells it with every verdict, so a reader of
+    /// the journal or the view sees *which* check let the product through.
+    fn name(&self) -> String {
+        short_type_name(std::any::type_name::<Self>())
+    }
+
+    /// What the check verifies, in one sentence — what the view shows beside
+    /// its verdict. Empty by default: a test fake has nothing to say.
+    fn purpose(&self) -> String {
+        String::new()
+    }
+}
+
+/// `a::b::Check<c::State>` → `Check`.
+fn short_type_name(full: &str) -> String {
+    let bare = full.split('<').next().unwrap_or(full);
+    bare.rsplit("::").next().unwrap_or(bare).to_string()
 }
 
 /// The work proper to one level — Workflow, Round, Stage or Action.
@@ -140,6 +159,19 @@ mod tests {
             (),
             Logbook::null(),
         )
+    }
+
+    #[test]
+    fn a_check_is_named_by_its_bare_type() {
+        assert_eq!(
+            short_type_name("harness_core::execution::checks::guards::InThisRun"),
+            "InThisRun"
+        );
+        assert_eq!(
+            short_type_name("a::Gate<harness_workflows::dev_loop::data::state::Loop>"),
+            "Gate"
+        );
+        assert_eq!(short_type_name("Plain"), "Plain");
     }
 
     #[tokio::test]

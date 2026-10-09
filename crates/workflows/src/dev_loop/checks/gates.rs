@@ -33,6 +33,10 @@ pub struct TechAlreadyWritten;
 
 #[async_trait(?Send)]
 impl Verification<Loop> for TechAlreadyWritten {
+    fn purpose(&self) -> String {
+        "the issue does not already carry harness:tech-written — the technical sections are not paid for twice".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if !ctx.state.tech_written {
             return Ok(Verdict::Continue);
@@ -55,6 +59,10 @@ pub struct TaskHasABusinessSpec;
 
 #[async_trait(?Send)]
 impl Verification<Loop> for TaskHasABusinessSpec {
+    fn purpose(&self) -> String {
+        "the issue body carries its business sections (Business Goal, Acceptance Criteria, Business Rules) before the technical ones are planned".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if ctx.settings.dry_run || ctx.state.spec_written {
             return Ok(Verdict::Continue);
@@ -75,6 +83,10 @@ pub struct CodeHasASpec;
 
 #[async_trait(?Send)]
 impl Verification<Loop> for CodeHasASpec {
+    fn purpose(&self) -> String {
+        "the issue body is not empty — there is a SPEC to build".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if ctx.settings.dry_run || !ctx.state.task.body.trim().is_empty() {
             return Ok(Verdict::Continue);
@@ -108,6 +120,10 @@ pub struct CodeAlreadyDelivered {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for CodeAlreadyDelivered {
+    fn purpose(&self) -> String {
+        "on a resumed round, no merged pull request already closes this task — /code is not paid for twice".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if !ctx.state.resumed || ctx.settings.dry_run || self.restart {
             return Ok(Verdict::Continue);
@@ -148,6 +164,10 @@ pub struct IssueBodyIsNotEmpty {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for IssueBodyIsNotEmpty {
+    fn purpose(&self) -> String {
+        "the issue body, re-read from GitHub after the stage, is not empty".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if ctx.settings.dry_run {
             return Ok(Verdict::Continue);
@@ -187,6 +207,11 @@ pub struct AMergedPrClosesTheTask {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for AMergedPrClosesTheTask {
+    fn purpose(&self) -> String {
+        "a merged pull request on the integration branch carries `Closes #N` for this task"
+            .to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if ctx.settings.dry_run || !ctx.state.has_task() {
             return Ok(Verdict::Continue);

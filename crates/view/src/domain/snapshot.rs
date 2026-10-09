@@ -71,6 +71,46 @@ pub enum StationState {
     Done,
     /// Skipped in this round.
     Skipped,
+    /// Stopped here: a gate halted the round, or the stage broke.
+    Failed,
+}
+
+/// One check of a gate, with the verdict it last gave in a run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckView {
+    /// `CodeHasASpec` — the check's type name.
+    pub name: String,
+    /// What it verifies, in a sentence.
+    pub purpose: String,
+    /// `pass`, `skip` or `halt`.
+    pub verdict: String,
+    /// Why, for a skip or a halt.
+    pub reason: String,
+    /// When it said so.
+    pub at: String,
+}
+
+/// One gate of a scanner station, with what the latest run said of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GateView {
+    /// From the blueprint.
+    pub id: String,
+    /// From the blueprint: `code requires`.
+    pub name: String,
+    /// From the blueprint: what it checks.
+    pub purpose: String,
+    /// What the run last said: idle until it passed here.
+    pub state: StationState,
+    /// `pass`, `skip` or `halt` — the verdict of its last check.
+    pub verdict: Option<String>,
+    /// Why, for a skip or a halt.
+    pub reason: Option<String>,
+    /// When the last check spoke.
+    pub at: Option<String>,
+    /// The run that said so.
+    pub run_id: Option<String>,
+    /// The checks of its last pass, in the order they ran.
+    pub checks: Vec<CheckView>,
 }
 
 /// One station with its state.
@@ -90,6 +130,9 @@ pub struct StationView {
     pub purpose: String,
     /// From the latest run.
     pub state: StationState,
+    /// A scanner's gates, each with the latest run's verdict; empty for
+    /// every other kind.
+    pub gates: Vec<GateView>,
 }
 
 /// The latest run of a line, in a few words.
@@ -152,6 +195,21 @@ pub struct RecentRun {
     pub tokens: Option<Tokens>,
     /// Still at work.
     pub active: bool,
+    /// What each gate last said in this run, in the order they first spoke.
+    pub gates: Vec<GateVerdict>,
+}
+
+/// What a gate said in one run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GateVerdict {
+    /// `code requires`.
+    pub gate: String,
+    /// `pass`, `skip` or `halt`.
+    pub verdict: String,
+    /// Why, for a skip or a halt.
+    pub reason: String,
+    /// When.
+    pub at: String,
 }
 
 /// A running process, drawn as a person.

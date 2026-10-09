@@ -1061,6 +1061,84 @@
       return h;
     },
   };
+  // ---- the gates ------------------------------------------------------------
+  // A station's state as a tag: what the latest run left there.
+  const STATION_TAG = { done: ['✓ passed', 'ok'], skipped: ['! skipped', 'warn'], failed: ['✕ halted', 'bad'], active: ['● here', 'acc'], idle: ['idle', ''] };
+  const stateTag = (state) => { const [label, cls] = STATION_TAG[state] || [state, '']; return tag(label, cls); };
+  const VERDICT_TAG = { pass: ['✓ pass', 'ok'], skip: ['! skip', 'warn'], halt: ['✕ halt', 'bad'] };
+  const verdictTag = (v) => { const [label, cls] = VERDICT_TAG[v] || [v || '—', '']; return tag(label, cls); };
+  const STATE_CLASS = { done: 'done', skipped: 'skipped', failed: 'human', active: 'ready', idle: 'todo' };
+  // `14:03 · 08/10` from a run id, for the lists.
+  const runWhen = (runId) => runId.slice(9, 11) + ':' + runId.slice(11, 13) + ' · ' + runId.slice(4, 6) + '/' + runId.slice(6, 8);
+  // A gate's own journal: one line per check of its last pass.
+  const gateLog = (g) => (g.checks || []).map((c) => `[${c.at}] gate "${g.name}" · ${c.name}: ${c.verdict}${c.reason ? ' — ' + c.reason : ''}`).join('\n');
+  // The run a gate last spoke in, as a link to its logs.
+  const runLink = (lineId, runId, stage) => {
+    if (!runId) return null;
+    const open = { kind: 'employee', id: `${lineId}/${runId}`, last: { id: `${lineId}/${runId}`, name: runId, workflow: lineId, run_id: runId }, file: 'run.log', stage: stage || null };
+    return `<button class="link" data-pane='${esc(JSON.stringify(open))}'>${esc(runId)} →</button>`;
+  };
+  // The runs a gate spoke in, newest first, each with its verdict.
+  function gateRuns(line, names) {
+    const runs = (line.recent_work || []).filter((r) => (r.gates || []).some((g) => names.includes(g.gate)));
+    if (!runs.length) return '<div class="muted">no run has reached this gate yet — a run older than the event store leaves no verdict</div>';
+    return '<ul class="issues">' + runs.map((r) => {
+      const open = { kind: 'employee', id: `${line.id}/${r.run_id}`, last: { id: `${line.id}/${r.run_id}`, name: r.name, workflow: line.id, run_id: r.run_id, tokens: r.tokens, active: r.active }, file: 'run.log' };
+      const said = (r.gates || []).filter((g) => names.includes(g.gate)).map((g) => `${names.length > 1 ? esc(g.gate) + ' ' : ''}${verdictTag(g.verdict)}${g.reason ? `<span class="muted"> ${esc(g.reason)}</span>` : ''}`).join('<br>');
+      return `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify(open))}'>${esc(r.name)}</button><div class="muted">${esc(runWhen(r.run_id))}</div></span><span class="said">${said}</span>${r.active ? liveTag(open.id) : ''}</li>`;
+    }).join('') + '</ul>';
+  }
+  // One gate in full: what it checks, what it last said, its checks, its log.
+  function gateDetail(line, st, g) {
+    let h = `<div class="callout purpose">${esc(g.purpose)}</div>`;
+    h += kv([
+      ['state', stateTag(g.state)],
+      ['last verdict', g.verdict ? verdictTag(g.verdict) : '<span class="muted">never reached</span>'],
+      ['reason', g.reason ? esc(g.reason) : null],
+      ['when', g.at ? hhmm(g.at) + ' · ' + g.at.slice(0, 10) : null],
+      ['run', runLink(line.id, g.run_id)],
+    ]);
+    if (g.checks && g.checks.length) {
+      h += '<h3>Checks of its last pass</h3><table class="rows checks"><tr><th>check</th><th>verifies</th><th>verdict</th></tr>'
+        + g.checks.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td>${esc(c.purpose)}${c.reason ? `<div class="muted">${esc(c.reason)}</div>` : ''}</td><td>${verdictTag(c.verdict)}</td></tr>`).join('') + '</table>';
+      h += '<h3>Its log</h3><pre class="log">' + logHtml(gateLog(g)) + '</pre>';
+    } else {
+      h += '<div class="muted">No verdict recorded: no run has reached this gate since the event store exists. Its checks are named in the log the first time it runs.</div>';
+    }
+    return h;
+  }
+  // A scanner's pane: its gates, each one a click away.
+  function gatesPane(p, line, st) {
+    const names = st.gates.map((g) => g.name);
+    if (p.tab === 'recent') return [st.label, paneTabs(p, st.purpose) + gateRuns(line, names)];
+    let h = kv([['line', esc(line.title)], ['kind', `${esc(st.kind)} — ${esc(KIND_TIP[st.kind])}`], ['state', stateTag(st.state)], ['gates', st.gates.length]]);
+    h += `<h3>${st.gates.length > 1 ? 'Gates, in the order the product walks through them' : 'Gate'}</h3><ul class="issues gates">` + st.gates.map((g) => {
+      const open = { kind: 'gate', line: line.id, station: st.id, id: g.id };
+      return `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify(open))}'>${esc(g.name)}</button><div class="muted">${esc(g.purpose)}</div>${g.reason ? `<div class="muted why">${esc(g.reason)}</div>` : ''}</span>${stateTag(g.state)}</li>`;
+    }).join('') + '</ul>';
+    if (st.gates.length === 1) h += '<h3>In detail</h3>' + gateDetail(line, st, st.gates[0]);
+    h += '<div class="callout">A gate judges and never writes: each of its checks reads the issue, the labels, the ledger or the checkout, and lets the product through, skips the stage, or halts the round. Every verdict is told to the run\'s log and kept in the event store.</div>';
+    return [st.label, paneTabs(p, st.purpose) + h];
+  }
+  // The process graph of one run: a circle per gate, a square per stage,
+  // filled by what the run made of it — green ✓, amber !, red ✕.
+  function processGraph(lineId, stations) {
+    if (!stations || !stations.length) return '<div class="muted">no graph: this run left no stations</div>';
+    const step = 64, w = 16 + stations.length * step, h = 72;
+    const marks = { done: '✓', skipped: '!', failed: '✕', active: '', idle: '' };
+    let svg = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" class="process">`;
+    stations.forEach((s, i) => {
+      const cx = 8 + step / 2 + i * step, cy = 26;
+      if (i < stations.length - 1) svg += `<line class="edge ${esc(s.state)}" x1="${cx + 13}" y1="${cy}" x2="${cx + step - 13}" y2="${cy}"/>`;
+      const gate = s.kind === 'scanner';
+      const open = gate && s.gates && s.gates.length ? { kind: 'station', line: lineId, id: s.id } : { kind: 'station', line: lineId, id: s.id };
+      const shape = gate ? `<circle cx="${cx}" cy="${cy}" r="12"/>` : `<rect x="${cx - 12}" y="${cy - 12}" width="24" height="24" rx="4"/>`;
+      const label = s.label.length > 12 ? s.label.slice(0, 11) + '…' : s.label;
+      svg += `<g class="node ${esc(s.state)} ${gate ? 'gate' : 'stage'}" data-pane='${esc(JSON.stringify(open))}'><title>${esc(s.label)} · ${esc(s.state)}</title>${shape}<text class="mark" x="${cx}" y="${cy + 4.5}" text-anchor="middle">${marks[s.state] || ''}</text><text class="name" x="${cx}" y="${cy + 30}" text-anchor="middle">${esc(label)}</text></g>`;
+    });
+    return svg + '</svg>';
+  }
+
   const KIND_TIP = {
     scanner: 'gate · a deterministic check',
     builder: 'LLM that writes',
@@ -1105,10 +1183,24 @@
       ]);
       // The logs are read machine by machine: one button per stage the run
       // went through (its session in session.log), then the run's own files.
-      const html = `<div id="emp-head">${head}</div><h3>Machines it went through</h3><div class="tabs" id="emp-machines"><span class="muted">loading…</span></div><pre class="log" id="live-log">loading…</pre>`;
+      const html = `<div id="emp-head">${head}</div><h3>Its process</h3><div class="graph" id="emp-graph"><span class="muted">loading…</span></div><h3>Machines it went through</h3><div class="tabs" id="emp-machines"><span class="muted">loading…</span></div><pre class="log" id="live-log">loading…</pre>`;
       const after = (isRefresh) => {
         if (isRefresh) { const h = $('emp-head'); if (h) h.innerHTML = head; return; }
+        // The process graph: a circle per gate, a square per stage, coloured
+        // by what this run made of each — refreshed with the log, redrawn
+        // only when it changed.
+        const graph = async () => {
+          try {
+            const g = $('emp-graph');
+            if (!g) return;
+            const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/graph`);
+            const data = r.ok ? await r.json() : { stations: [] };
+            const html = processGraph(e.workflow, data.stations);
+            if (html !== p.graphHtml) { g.innerHTML = html; p.graphHtml = html; }
+          } catch (err) { /* the next pull will say */ }
+        };
         const pull = async () => {
+          graph();
           try {
             const r = await fetch(`/api/runs/${e.workflow}/${e.run_id}/stages`);
             const run = r.ok ? await r.json() : {};
@@ -1187,6 +1279,7 @@
         };
         p.jump = true;
         p.barHtml = null;
+        p.graphHtml = null;
         pull();
         clearInterval(S.logTimer);
         S.logTimer = setInterval(pull, 2000);
@@ -1205,6 +1298,7 @@
       const line = S.snap.lines.find((l) => l.id === p.line);
       const st = line && line.stations.find((s) => s.id === p.id);
       if (!st) return ['Station', '<div class="callout">Unknown station.</div>'];
+      if (st.gates && st.gates.length) return gatesPane(p, line, st);
       if (p.tab === 'recent') {
         // A machine's work: the runs that finished its stage, or stand at it.
         const here = (line.recent_work || []).filter((r) => (st.stage && r.stages.includes(st.stage)) || S.snap.employees.some((e) => e.workflow === line.id && e.run_id === r.run_id && e.station === st.id) || !st.stage);
@@ -1224,7 +1318,7 @@
         ['line', esc(line.title)], ['kind', `${esc(st.kind)} — ${esc(KIND_TIP[st.kind])}`],
         ['stage', st.stage ? esc(st.stage) : '<span class="muted">a gate of the stage beside it</span>'],
         ['model', st.model ? tag(st.model, st.model) : null],
-        ['state', now.length ? liveTag(now[0].id, st.state) : tag(st.state, st.state === 'active' ? 'acc' : st.state === 'done' ? 'ok' : '')],
+        ['state', now.length ? liveTag(now[0].id, st.state) : stateTag(st.state)],
         ['time', time],
       ]);
       if (bucket) h += '<h3>What this stage cost, all runs</h3>' + tiles([[usd(bucket.usd), 'total'], [bucket.count, 'sessions'], [usd(bucket.usd / Math.max(1, bucket.count)), 'per session']]);
@@ -1235,6 +1329,17 @@
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
       return [st.label, paneTabs(p, st.purpose) + h];
+    },
+
+    gate(p) {
+      const line = S.snap.lines.find((l) => l.id === p.line);
+      const st = line && line.stations.find((s) => s.id === p.station);
+      const g = st && (st.gates || []).find((x) => x.id === p.id);
+      if (!g) return ['Gate', '<div class="callout">Unknown gate.</div>'];
+      const head = paneTabs(p, g.purpose);
+      if (p.tab === 'recent') return [g.name, head + gateRuns(line, [g.name])];
+      const back = `<div class="muted" style="margin-bottom:8px">on <button class="link" data-pane='${esc(JSON.stringify({ kind: 'station', line: line.id, id: st.id }))}'>${esc(st.label)}</button> · ${esc(line.title)}</div>`;
+      return [g.name, head + back + gateDetail(line, st, g)];
     },
 
     line(p, refresh) {
@@ -1257,7 +1362,7 @@
         const emp = S.snap.employees.find((e) => e.workflow === line.id);
         h += `<button class="link" data-pane='${esc(JSON.stringify({ kind: 'employee', id: `${line.id}/${lr.run_id}`, last: emp || null }))}'>open its logs →</button>`;
       }
-      h += '<h3>Stations</h3><ul class="issues">' + line.stations.map((s) => `<li><span class="n">${esc(s.kind)}</span><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'station', line: line.id, id: s.id }))}'>${esc(s.label)}</button></span>${s.model ? tag(s.model, s.model) : ''}<span class="st ${s.state === 'done' ? 'done' : s.state === 'active' ? 'ready' : 'todo'}">${s.state}</span></li>`).join('') + '</ul>';
+      h += '<h3>Stations</h3><ul class="issues">' + line.stations.map((s) => `<li><span class="n">${esc(s.kind)}</span><span class="t"><button class="link" data-pane='${esc(JSON.stringify({ kind: 'station', line: line.id, id: s.id }))}'>${esc(s.label)}</button></span>${s.model ? tag(s.model, s.model) : ''}<span class="st ${STATE_CLASS[s.state] || 'todo'}">${s.state}</span></li>`).join('') + '</ul>';
       const head = paneTabs(p, line.purpose);
       if (!live.length) { clearInterval(S.logTimer); S.logTimer = null; p.liveCount = 0; return [line.title, head + h]; }
       const html = `${head}<h3>Live log</h3><div class="tabs" id="line-live-bar">${liveBar}</div><div class="muted" id="line-live-where"></div><pre class="log" id="line-live-log">loading…</pre><div id="line-main">${h}</div>`;

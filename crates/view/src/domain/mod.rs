@@ -4,6 +4,7 @@
 pub mod assemble;
 pub mod blueprint;
 pub mod doctor;
+pub mod gates;
 pub mod history;
 pub mod journal;
 pub mod limits;

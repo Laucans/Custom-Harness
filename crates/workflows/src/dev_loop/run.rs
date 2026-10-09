@@ -370,7 +370,7 @@ mod tests {
             &ports_fake::ports(),
             &config_fake::config(),
             request(None),
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
             None,
             "run-1".to_string(),
         );

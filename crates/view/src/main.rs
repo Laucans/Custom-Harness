@@ -50,6 +50,7 @@ use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
 use crate::domain::blueprint;
 use crate::domain::doctor;
+use crate::domain::gates::{self, Told};
 use crate::domain::limits::Read;
 use crate::domain::observe::{Observed, observe};
 use crate::domain::plant;
@@ -110,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
             claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
         )) as Arc<dyn Limits>),
         claude_read: Arc::clone(&claude_read),
+        events: events.clone(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -257,6 +259,7 @@ fn first_picture(project: &Project, demo: bool) -> Snapshot {
         lines: &blueprint::lines(),
         now: jiff::Timestamp::now().as_second(),
         demo,
+        told: &Told::default(),
     })
 }
 
@@ -284,6 +287,9 @@ struct Hands {
 
 /// How far back the notifications look.
 const NOTIFY_SINCE: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
+
+/// How many of the newest events a tick reads for the gates.
+pub const EVENTS_READ: usize = 5_000;
 
 /// What to tell the human now: the last day's events, and what is observed.
 fn notifications(
@@ -357,6 +363,14 @@ async fn poll_traces(
             .map(|plant| plant::running(plant.as_ref()).is_some());
         let reading = board.borrow().clone();
         let now = jiff::Timestamp::now();
+        // The newest events, whatever their age: a gate's last verdict is
+        // worth showing days later, and the store is a local SQLite file.
+        let told = hands
+            .events
+            .as_ref()
+            .and_then(|store| store.between(None, None, EVENTS_READ).ok())
+            .map(|events| gates::told(&events))
+            .unwrap_or_default();
         let mut snap = assemble::snapshot(&Inputs {
             observed: &observed,
             board: reading.as_deref(),
@@ -364,6 +378,7 @@ async fn poll_traces(
             lines: &lines,
             now: now.as_second(),
             demo,
+            told: &told,
         });
         snap.build.clone_from(&build);
         snap.notifications = notifications(&hands, &observed, reading.as_deref(), now);

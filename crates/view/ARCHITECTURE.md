@@ -83,7 +83,8 @@ src/main.rs            the wiring: two pollers, one server, one desk, one switch
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
 src/domain/            the inside — no disk, no subprocess, no clock
-  blueprint.rs         the rooms, the models, one line per workflow, station by station
+  blueprint.rs         the rooms, the models, one line per workflow, station by station; the gates each stage really declares, two in a row shown as one arch
+  gates.rs             the gate verdicts out of the event store: which gate said what in which run, the checks of its last pass, the state an arch takes
   traces.rs            parsers: watch.log, run.log, prompts.md headers, the stream's first event, the ledger sums
   journal.rs           the watch loop out of watch.log: what it triggered and how each ended, empty and failed ticks
   history.rs           the control room over a chosen period: ledger, stops and journal recomputed between two trace clocks
@@ -101,7 +102,7 @@ src/adapters/
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/…, /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket)
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket)
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
 ```
 
@@ -139,7 +140,18 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
 - **The blueprint is declared, not derived.** `harness-workflows`' stage tables
   are built against ports and boxed actions; what a stage *looks like* is a
   fact of the view. The stage names in `blueprint.rs` are the ones the runs
-  log, and `assemble`'s tests pin a real `run.log` shape against them.
+  log, and `assemble`'s tests pin a real `run.log` shape against them. The
+  gate names are the `Gate::name`s the workflows build (`code requires`),
+  and only the gates a stage really declares are drawn; a stage's `post`
+  and the next stage's `pre` stand as one arch, named by its neighbours
+  (`technical refinement → code`), which lists its gates when clicked.
+- **A gate's state comes from the event store, not from the log.** Every
+  verdict a gate gives is a `gate_checked` event under the run's source;
+  `gates.rs` reads the newest ones each tick and gives each arch its state —
+  passed, skipped, halted — its last pass's checks with their verdicts, and
+  the runs it spoke in. A run's own graph (`/api/runs/{workflow}/{run}/graph`)
+  is the same reading for one run: a circle per gate, a square per stage,
+  green ✓, amber !, red ✕ — what the agent's pane draws over its logs.
 
 ## Running it
 
