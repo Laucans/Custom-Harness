@@ -14,7 +14,8 @@
 //! - [`tree`] — a checkout read as the architecture sees it, and the rules it
 //!   must keep;
 //! - [`model`] and [`schema_sql`] — the product's data model, the agents' side
-//!   and the database's, merged with their divergences;
+//!   and the database's, merged with their divergences; [`compare`] — two of
+//!   them side by side, what one changes relative to the other;
 //! - [`assets`] — the files `init-repo` installs to bring a repository under
 //!   the architecture.
 //!
@@ -25,6 +26,7 @@
 //! Pure but for [`tree::Tree::read`], which reads through core's `Disk` port.
 
 pub mod assets;
+pub mod compare;
 pub mod model;
 pub mod schema_sql;
 pub mod tree;

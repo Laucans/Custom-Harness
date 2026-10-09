@@ -224,6 +224,14 @@ an unarchived one marked "live, not archived"), then the versions of the
 branch shown, newest first. A branch with no version archived shows its
 live `data/schema.sql` and `data/model.json`.
 
+**Compare ▾** holds the version shown against another — any other branch
+at its newest, or an older version of the same branch — and draws what this
+version changes (`harness_architecture::compare`, `GET
+/api/data-model/compare?branch=&dir=&with_branch=&with_dir=`): a table or a
+field here only is green, one that differs amber, one the other side only
+has is ghosted in red; the inspector lists every difference, and a table or
+field selected says what differs on it.
+
 A table or a field selected tells who **uses** it on the branch shown
 (`domain::data_usage`, `GET /api/data-model/used-by?branch=&dir=`): the
 Capabilities whose persisted query reads it — `queries/registry.json`,
@@ -420,6 +428,14 @@ where it stands (`domain::capabilities`):
 | blue | planned | an open task of an open milestone declares a `capability` or `data-capability` under `## Architecture`, and no task names an existing unit |
 | red | bug | an open issue labelled `bug` names it — its id, or its name as a word of the title |
 
+Like the data pane, a switch picks the branch shown: **all** (every branch
+at once, the default), `main`, the integration branch, or a milestone's
+(`feature ▾`). On one branch the list holds only the units that branch
+carries, each as its manifest reads there, and nothing planned; the colour
+still says where the unit stands across every branch. A detail and a fusion
+test opened from it read the units as that branch has them
+(`GET /api/capabilities?branch=`, `branch` in the fusion's body).
+
 A row shows the name, the kind, the system, and the dates its manifest was
 first and last committed, on any branch. The page searches by name as the
 human types (only the list is redrawn, never the search box), sorts by
@@ -504,6 +520,14 @@ src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle
 static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```
+
+**Every table sorts on a click of its header** — ascending, then
+descending, a ▲ or ▼ beside it. A paged table (`pagedTable`) orders all its
+rows before cutting the page; any other is ordered where it stands, and kept
+so when it is redrawn (a `MutationObserver` on the pane). A cell sorts by
+its `data-sort` when it carries one — a date's raw value — else by its
+text, numbers as numbers, empty cells last. The order lives on the pane, so
+the back arrow brings it back.
 
 The drawing itself is **another crate**, `harness-view-render`: a Bevy scene
 compiled to WebAssembly that owns the canvas and reports pointer events back

@@ -1129,6 +1129,7 @@
     }
     S.paneHtml = html;
     if (after) after(refresh);
+    applySorts();
     tickClocks();
   }
 
@@ -1148,8 +1149,11 @@
   function pagedTable(p, key, cls, head, rows, row) {
     const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
     const page = Math.min((p.pages || {})[key] || 0, pages - 1);
-    const shown = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-    let h = `<table class="rows ${cls}"><tr>${head}</tr>` + shown.map(row).join('') + '</table>';
+    // Sorted by a click on its header: every row is drawn, then ordered, then cut.
+    const order = (p.sorts || {})[key];
+    const drawn = order ? sortedRows(rows.map(row), order) : rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(row);
+    const shown = order ? drawn.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) : drawn;
+    let h = `<table class="rows ${cls}" data-paged="${esc(key)}"><tr>${head}</tr>` + shown.join('') + '</table>';
     if (pages > 1) {
       const go = (to, label, off) => `<button class="mini" data-page="${to}"${off ? ' disabled' : ''}>${label}</button>`;
       h += `<div class="pager" data-pager="${esc(key)}">${go(0, '«', page === 0)}${go(page - 1, '‹', page === 0)}`
@@ -1158,6 +1162,82 @@
     }
     return h;
   }
+  // ---- Every table sorts on a click of its header: ascending, then descending ----
+  // A cell sorts by its `data-sort` when it has one (a date's raw value), else
+  // by its text; numbers as numbers, empty cells last either way.
+  const sortValue = (cell) => (cell ? (cell.dataset.sort ?? cell.textContent.trim()) : '');
+  const asNumber = (text) => {
+    const t = String(text).replace(/[$,%\s]/g, '').replace(/(tok|ms|min|s|k)$/i, '');
+    return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : null;
+  };
+  function compareCells(a, b) {
+    const empty = (v) => v === '' || v === '—';
+    if (empty(a) || empty(b)) return empty(a) - empty(b);
+    const x = asNumber(a);
+    const y = asNumber(b);
+    if (x !== null && y !== null) return x - y;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  }
+  function orderRows(rows, cellOf, order) {
+    const keyed = rows.map((r, i) => ({ r, i, v: sortValue(cellOf(r)) }));
+    keyed.sort((x, y) => {
+      const empty = (v) => v === '' || v === '—';
+      if (empty(x.v) !== empty(y.v)) return empty(x.v) - empty(y.v);
+      return (order.desc ? -1 : 1) * compareCells(x.v, y.v) || x.i - y.i;
+    });
+    return keyed.map((k) => k.r);
+  }
+  // A paged table's rows, as HTML, read back to sort them.
+  function sortedRows(html, order) {
+    const t = document.createElement('template');
+    t.innerHTML = '<table><tbody>' + html.join('') + '</tbody></table>';
+    const trs = [...t.content.querySelectorAll('tbody > tr')];
+    if (trs.length !== html.length) return html;
+    const index = new Map(trs.map((tr, i) => [tr, i]));
+    return orderRows(trs, (tr) => tr.cells[order.col], order).map((tr) => html[index.get(tr)]);
+  }
+  // Every table of the pane: its header marked, and — not paged — its rows
+  // put in the order asked, again after each redraw.
+  let sortObserver = null;
+  function applySorts() {
+    const body = $('pane-body');
+    if (!S.pane || !body) return;
+    const sorts = S.pane.sorts || {};
+    if (sortObserver) sortObserver.disconnect();
+    body.querySelectorAll('table.rows').forEach((t, i) => {
+      const key = t.dataset.paged || 'table-' + i;
+      t.dataset.sortKey = key;
+      const head = t.rows[0];
+      if (!head || !head.querySelector('th')) return;
+      const order = sorts[key];
+      [...head.cells].forEach((th, c) => {
+        th.classList.toggle('sortable', th.textContent.trim() !== '');
+        th.classList.toggle('asc', !!order && order.col === c && !order.desc);
+        th.classList.toggle('desc', !!order && order.col === c && !!order.desc);
+      });
+      if (order && !t.dataset.paged) {
+        const rows = [...t.rows].slice(1).filter((r) => r.querySelector('td'));
+        const parent = rows.length && rows[0].parentNode;
+        if (parent) orderRows(rows, (r) => r.cells[order.col], order).forEach((r) => parent.appendChild(r));
+      }
+    });
+    if (!sortObserver) sortObserver = new MutationObserver(() => applySorts());
+    sortObserver.observe(body, { childList: true, subtree: true });
+  }
+  $('pane-body').addEventListener('click', (e) => {
+    const th = e.target.closest('table.rows th.sortable');
+    if (!th || !S.pane) return;
+    const table = th.closest('table');
+    const key = table.dataset.sortKey;
+    const col = th.cellIndex;
+    S.pane.sorts = S.pane.sorts || {};
+    const was = S.pane.sorts[key];
+    S.pane.sorts[key] = { col, desc: !!was && was.col === col && !was.desc };
+    if (table.dataset.paged) {
+      S.pane.pages = { ...(S.pane.pages || {}), [key]: 0 };
+      renderPane(S.pane, false);
+    } else applySorts();
+  });
   // A pane's two tabs — what the element is, and who recently worked on it —
   // and its `?`, which says in a sentence what the element is for.
   const paneTabs = (p, purpose, extra = []) => '<div class="tabs">' + [['details', 'Details'], ['recent', 'Recent work'], ...extra].map(([k, label]) => `<button data-tab="${k}" class="${(p.tab || 'details') === k ? 'on' : ''}">${label}</button>`).join('')
@@ -1334,7 +1414,7 @@
       h += section(p, 'costs.stage', 'By stage') + bars(c.by_stage);
       h += section(p, 'costs.task', 'By task') + bars(c.by_task);
       h += section(p, 'costs.outcome', 'By outcome') + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
-      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td>${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${sessionTag(r)}</td></tr>`);
+      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td data-sort="${esc(r.when)}">${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${sessionTag(r)}</td></tr>`);
       return h;
     },
     quota(p) {
@@ -1375,7 +1455,7 @@
           : runTag(e.kind, cls, { run: e.run, failed: true, name: `${e.workflow} · ${e.kind} · ${e.run}` });
       };
       const rows = period() ? period().errors : S.snap.errors;
-      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td>${esc(when(e.when))}</td><td>${esc(e.workflow)}</td><td>${stopTag(e)}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
+      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td data-sort="${esc(e.when)}">${esc(when(e.when))}</td><td>${esc(e.workflow)}</td><td>${stopTag(e)}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
     },
     journal(p) {
       if (S.range && !period()) return '';
@@ -1414,7 +1494,7 @@
             const state = t.workflow
               ? `<button class="tag-link" data-trigger-log='${esc(JSON.stringify({ workflow: t.workflow, issue: t.issue, at: t.at, state: t.state, what: t.what }))}' title="${t.state === 'failed' || t.state === 'killed' || t.state === 'unknown' ? 'open its logs at the error' : 'open its logs at the end'}">${tag(label, cls)}</button>`
               : tag(label, cls);
-            return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${state}</td><td class="num">${t.ended_at ? esc(lasted(t.at, t.ended_at)) : t.state === 'running' ? clockHtml(t.at, null, true) : '—'}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
+            return `<tr><td data-sort="${esc(t.at)}">${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${state}</td><td class="num">${t.ended_at ? esc(lasted(t.at, t.ended_at)) : t.state === 'running' ? clockHtml(t.at, null, true) : '—'}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
           })
         : `<div class="muted">${P ? 'nothing triggered during the period' : 'nothing triggered since the start of the journal read'}</div>`;
       const logs = P ? P.logs : S.snap.recent;
@@ -1839,22 +1919,39 @@
     modified: ['last modified', (a, b) => String(b.modified || '').localeCompare(String(a.modified || ''))],
     created: ['created', (a, b) => String(b.created || '').localeCompare(String(a.created || ''))],
   };
+  // One reading per branch shown, '' for every branch at once; S.caps is the
+  // one the open pane shows.
   S.caps = null;
+  S.capsBy = {};
   const capDay = (iso) => (iso ? new Date(iso).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }) : '—');
   const capDot = (status) => `<span class="cap-dot ${esc(status)}" title="${esc(CAP_STATUS[status][1])}"></span>`;
   const capTag = (status) => `<span class="tag cap-${esc(status)}">${esc(CAP_STATUS[status][0])}</span>`;
   const capKind = (k) => (k === 'data_capability' ? 'data capability' : 'capability');
-  async function loadCaps(fresh) {
+  async function loadCaps(fresh, branch = '') {
     S.capsBusy = true;
+    let got;
     try {
-      const r = await fetch('/api/capabilities' + (fresh ? '?fresh=true' : ''));
-      S.caps = r.ok ? { at: Date.now(), ...(await r.json()) } : { at: Date.now(), error: await r.text(), entries: [] };
-    } catch (err) { S.caps = { at: Date.now(), error: 'cannot reach the server', entries: [] }; }
+      const ask = new URLSearchParams();
+      if (fresh) ask.set('fresh', 'true');
+      if (branch) ask.set('branch', branch);
+      const r = await fetch('/api/capabilities' + (ask.toString() ? '?' + ask : ''));
+      got = r.ok ? { at: Date.now(), ...(await r.json()) } : { at: Date.now(), error: await r.text(), entries: [], branches: [] };
+    } catch (err) { got = { at: Date.now(), error: 'cannot reach the server', entries: [], branches: [] }; }
+    S.capsBy[branch] = got;
     S.capsBusy = false;
+    if (!S.pane || (S.pane.branch || '') !== branch) {
+      // The human switched while this read: the branch now shown is read next.
+      const now = S.pane && S.pane.kind === 'capabilities' ? S.pane.branch || '' : null;
+      if (now !== null && !S.capsBy[now]) loadCaps(false, now);
+      return;
+    }
+    S.caps = got;
     // The list alone is redrawn: a search being typed keeps its box.
     const list = $('caps-list');
     if (S.pane && S.pane.kind === 'capabilities' && list) {
       list.innerHTML = capList(S.pane);
+      const switcher = $('caps-switch');
+      if (switcher) switcher.innerHTML = capSwitch(S.pane);
       const again = document.querySelector('[data-cap-refresh]');
       if (again) again.textContent = '↻';
     } else if (S.pane && S.pane.kind === 'capability') renderPane(S.pane, false);
@@ -1882,12 +1979,13 @@
         + (p.fusion ? `<td><input type="checkbox" data-cap-pick="${esc(e.id)}" ${picked.has(e.id) ? 'checked' : ''} aria-label="pick ${esc(e.name)} for the fusion"></td>` : '')
         + `<td>${capDot(e.status)}</td><td><b>${esc(e.name)}</b><div class="muted">${esc(e.id)}</div></td>`
         + `<td>${esc(capKind(e.kind))}</td><td>${esc(e.system || '—')}</td><td>${capTag(e.status)}</td>`
-        + `<td>${esc(capDay(e.created))}</td><td>${esc(capDay(e.modified))}</td></tr>`)
+        + `<td data-sort="${esc(e.created || '')}">${esc(capDay(e.created))}</td><td data-sort="${esc(e.modified || '')}">${esc(capDay(e.modified))}</td></tr>`)
       : `<div class="muted">${(p.q || '').trim() ? `nothing named “${esc(p.q.trim())}”` : 'no unit here'}</div>`;
     const count = S.caps.entries.reduce((n, e) => ({ ...n, [e.status]: (n[e.status] || 0) + 1 }), {});
     const legend = '<div class="cap-legend">' + Object.keys(CAP_STATUS).map((s) => `<button class="mini ${(p.hidden || []).includes(s) ? 'off' : ''}" data-cap-status="${s}" title="${esc(CAP_STATUS[s][1])} — click to hide or show">${capDot(s)}${esc(CAP_STATUS[s][0])} · ${count[s] || 0}</button>`).join('') + '</div>';
     const warn = (S.caps.warnings || []).length ? `<div class="callout">${S.caps.warnings.map(esc).join('<br>')}</div>` : '';
-    return legend + body + warn + `<div class="muted cap-foot">${S.caps.branches.length} branch(es) read · ${esc(when(new Date(S.caps.at).toISOString()))}</div>`;
+    const read = S.caps.on ? `the units on ${esc(S.caps.on)}, as that branch has them` : `${S.caps.branches.length} branch(es) read`;
+    return legend + body + warn + `<div class="muted cap-foot">${read} · ${esc(when(new Date(S.caps.at).toISOString()))}</div>`;
   }
   function fusionBar(p) {
     if (!p.fusion) return '';
@@ -1917,7 +2015,7 @@
   }
   async function fuse(p) {
     const [a, b] = p.pick || [];
-    const ask = (ai) => fetch('/api/capabilities/fusion', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ a, b, ai }) });
+    const ask = (ai) => fetch('/api/capabilities/fusion', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ a, b, ai, branch: p.branch || null }) });
     const show = () => { const el = $('caps-fusion'); if (el && S.pane === p) el.innerHTML = fusionResult(p); };
     try {
       const r = await ask(false);
@@ -1931,7 +2029,26 @@
     } catch (err) { p.fused = { ...(p.fused || {}), asking: false, error: 'cannot reach the server' }; }
     show();
   }
+  // The branches the list can be shown on, as the data pane offers them:
+  // every branch at once, main, the integration branch, a milestone's.
+  const featureLabel = (b) => b.replace(/^milestone\/(\d+)-?/, '#$1 ').replace(/-/g, ' ');
+  function capSwitch(p) {
+    const known = ((S.capsBy[''] || S.caps || {}).branches) || [];
+    const features = known.filter((b) => b.startsWith('milestone/'));
+    const on = p.branch || '';
+    const integration = S.snap.project.integration_branch || 'main_agent';
+    const button = (b, label, tip) => `<button type="button" class="${on === b ? 'on' : ''}" data-cap-branch="${esc(b)}" title="${esc(tip)}">${esc(label)}</button>`;
+    const featureOn = on.startsWith('milestone/');
+    let h = '<div class="dm-branches">' + button('', 'all', 'every branch at once: the colour says where each unit stands')
+      + button('main', 'main', 'what a human released') + button(integration, integration, 'the agents\' version')
+      + `<button type="button" class="${featureOn ? 'on' : ''}" data-cap-features ${features.length ? '' : 'disabled'} aria-haspopup="menu" title="a milestone's branch">${featureOn ? esc(featureLabel(on)) : 'feature'} ▾</button></div>`;
+    if (p.featureMenu && features.length) {
+      h += '<div class="cap-features" role="menu">' + features.map((b) => `<button type="button" role="menuitem" class="${on === b ? 'on' : ''}" data-cap-branch="${esc(b)}" title="${esc(b)}">${esc(featureLabel(b))}</button>`).join('') + '</div>';
+    }
+    return h;
+  }
   function capsPane(p, refresh) {
+    S.caps = S.capsBy[p.branch || ''] || null;
     const sort = p.sort || 'name';
     const bar = '<div class="cap-bar">'
       + `<input type="search" class="cap-search" data-cap-q placeholder="search by name…" value="${esc(p.q || '')}" aria-label="search the capabilities by name">`
@@ -1940,8 +2057,13 @@
       + '<select data-cap-kind aria-label="kind"><option value="">all kinds</option>' + ['capability', 'data_capability'].map((k) => `<option value="${k}" ${p.unit === k ? 'selected' : ''}>${capKind(k)}</option>`).join('') + '</select>'
       + `<button class="mini ${p.fusion ? 'on' : ''}" data-cap-fusion title="pick two units and ask whether they could be one">⚭ fusion</button>`
       + `<button class="mini" data-cap-refresh title="fetch the product's branches again">${S.capsBusy ? '<span class="spin"></span>' : '↻'}</button></div>`;
-    const html = bar + fusionBar(p) + `<div id="caps-list">${capList(p)}</div>`;
-    const after = (again) => { if (!again && !S.capsBusy && (!S.caps || Date.now() - S.caps.at > 60000)) loadCaps(false); };
+    const html = `<div class="cap-switch" id="caps-switch">${capSwitch(p)}</div>` + bar + fusionBar(p) + `<div id="caps-list">${capList(p)}</div>`;
+    const after = (again) => {
+      if (again || S.capsBusy) return;
+      if (!S.caps || Date.now() - S.caps.at > 60000) loadCaps(false, p.branch || '');
+      // The feature menu lists every branch: read them once when shown on one.
+      else if (p.branch && !S.capsBy['']) loadCaps(false, '').then(() => { const sw = $('caps-switch'); if (sw && S.pane === p) sw.innerHTML = capSwitch(p); });
+    };
     return ['Capabilities list · ' + S.snap.project.name, html, after, true];
   }
   // A branch of a unit, linked to its folder on that branch on GitHub — a
@@ -1955,11 +2077,13 @@
     return `<a class="cap-branch" href="${esc(href)}" target="_blank" rel="noopener" title="open ${esc(dir || 'the repository')} on ${esc(branch)} on GitHub">${label}</a>`;
   }
   function capPane(p) {
+    S.caps = S.capsBy[p.branch || ''] || null;
     const e = S.caps && S.caps.entries.find((x) => x.id === p.id);
-    if (!e) return ['Capability', S.caps ? '<div class="callout">not in the list any more</div>' : '<div class="muted">reading…</div>', () => { if (!S.caps && !S.capsBusy) loadCaps(false); }];
+    if (!e) return ['Capability', S.caps ? '<div class="callout">not in the list any more</div>' : '<div class="muted">reading…</div>', () => { if (!S.caps && !S.capsBusy) loadCaps(false, p.branch || ''); }];
     const c = e.contract;
     const fields = (m) => (Object.keys(m || {}).length ? '<table class="rows"><tr><th>field</th><th>type</th></tr>' + Object.entries(m).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') + '</table>' : '<div class="muted">none</div>');
     let h = kv([
+      ['as on', p.branch ? tag(p.branch, 'acc') : null],
       ['status', capTag(e.status) + `<span class="muted">${esc(CAP_STATUS[e.status][1])}</span>`],
       ['kind', esc(capKind(e.kind))],
       ['system', esc(e.system || '—')],
@@ -2004,7 +2128,7 @@
   });
   $('pane-body').addEventListener('change', (e) => {
     if (!S.pane || S.pane.kind !== 'capabilities') return;
-    if (e.target.matches('[data-cap-sort]')) { S.pane.sort = e.target.value; S.pane.pages = {}; renderPane(S.pane, false); }
+    if (e.target.matches('[data-cap-sort]')) { S.pane.sort = e.target.value; S.pane.pages = {}; if (S.pane.sorts) delete S.pane.sorts.caps; renderPane(S.pane, false); }
     if (e.target.matches('[data-cap-kind]')) { S.pane.unit = e.target.value; S.pane.pages = {}; renderPane(S.pane, false); }
   });
   // Clicks on the list: filters, fusion, a row's detail. Runs before the
@@ -2020,7 +2144,11 @@
       p.hidden = [...off]; p.pages = {};
     } else if (hit('[data-cap-desc]')) p.desc = !p.desc;
     else if (hit('[data-cap-fusion]')) { p.fusion = !p.fusion; p.pick = []; p.fused = null; }
-    else if (hit('[data-cap-refresh]')) { if (!S.capsBusy) { S.caps = null; loadCaps(true); } }
+    else if (hit('[data-cap-refresh]')) { if (!S.capsBusy) { S.caps = null; S.capsBy = {}; loadCaps(true, p.branch || ''); } }
+    else if ((b = hit('[data-cap-branch]'))) {
+      p.branch = b.dataset.capBranch; p.featureMenu = false;
+      p.pages = {}; p.pick = []; p.fused = null;
+    } else if (hit('[data-cap-features]')) p.featureMenu = !p.featureMenu;
     else if ((b = hit('[data-cap-pick]'))) {
       const id = b.dataset.capPick;
       let pick = (p.pick || []).filter((x) => x !== id);
@@ -2033,7 +2161,7 @@
       const was = (p.pick || []).includes(id);
       p.pick = was ? p.pick.filter((x) => x !== id) : [...(p.pick || []), id].slice(-2);
       p.fused = null;
-    } else if ((b = hit('[data-cap]'))) { openPane({ kind: 'capability', id: b.dataset.cap }); return; }
+    } else if ((b = hit('[data-cap]'))) { openPane({ kind: 'capability', id: b.dataset.cap, branch: p.branch || '' }); return; }
     else return;
     e.stopPropagation();
     renderPane(p, false);
@@ -2224,7 +2352,7 @@
       if (rows.length) {
         h += `<h3>${now.length ? 'Sessions on it — now, then the last ones' : 'Last sessions on it'}</h3>` + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">time</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => (r.live
           ? `<tr><td>now${r.live.since ? ' · since ' + esc(hhmm(r.live.since)) : ''}</td><td>${worksOn(r.live) || ((String(r.live.task || '').match(/\d+/) || [])[0] ? '#' + String(r.live.task).match(/\d+/)[0] : '—')}</td><td>${esc(r.live.round || '—')}</td><td class="num">${sessionClock(r.live)}</td><td class="num">—</td><td class="num">—</td><td>${liveTag(r.live.id)}</td></tr>`
-          : `<tr><td>${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
+          : `<tr><td data-sort="${esc(r.when)}">${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
       return [st.label, paneTabs(p, st.purpose, extra) + h];
@@ -2404,7 +2532,7 @@
           return `<tr class="note ${level} ${unread ? 'unread' : 'read'} ${keep ? 'locked' : ''}" data-note-lock="${esc(n.key)}" title="${keep ? 'kept unread when you leave — click to release' : 'click to keep it unread when you leave'}">`
             + `<td class="sign-cell">${SIGN[level]}</td>`
             + `<td><b>${esc(n.title)}</b>${keep ? ' <span class="tag acc">kept unread</span>' : unread ? ' <span class="tag">new</span>' : ''}${n.resolved ? ' <span class="tag ok">resolved</span>' : ''}<div class="muted">${esc(n.detail)}</div></td>`
-            + `<td class="num">${n.count}</td><td>${n.at ? esc(when(n.at)) : '—'}</td>`
+            + `<td class="num">${n.count}</td><td data-sort="${esc(n.at || '')}">${n.at ? esc(when(n.at)) : '—'}</td>`
             + `<td>${n.link ? `<button class="mini" data-note-open="${esc(n.key)}">open →</button>` : ''}</td></tr>`;
         })
         : `<div class="muted">${p.unreadOnly ? 'nothing unread here' : 'nothing to tell'}</div>`;
