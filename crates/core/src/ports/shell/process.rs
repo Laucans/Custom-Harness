@@ -1,10 +1,42 @@
-//! What a shell port hands back: an exit code and two streams.
+//! What a shell port hands back — an exit code and two streams — and the
+//! port that runs a program of the target's own: [`Process`].
 //!
-//! A value, not a trait, and it sits with the ports because it is what
+//! [`Ran`] sits with the ports because it is what
 //! [`Repo`](crate::ports::shell::git::Repo)'s setup verbs return. A failing
 //! `reset --hard` must be able to say *why* — the last line of its stderr is
 //! all a human will read — and translating that to `Outcome<()>` at the
 //! boundary would lose exactly that.
+
+use std::path::Path;
+use std::time::Duration;
+
+use async_trait::async_trait;
+
+use crate::domain::Outcome;
+
+/// Runs a program a workflow names — a script of the target repository —
+/// in a folder, and says what it left behind.
+///
+/// The program inherits the harness's environment (`.env.local` is in it),
+/// so a script reaches what the run reaches: `DATABASE_URL`, `gh`'s token.
+#[async_trait(?Send)]
+pub trait Process {
+    /// Runs `program` with `args` from `cwd`, for at most `timeout`.
+    ///
+    /// A non-zero exit code is data, not an error: the caller reads it.
+    ///
+    /// # Errors
+    ///
+    /// The program could not be launched, or outlived `timeout` (it is
+    /// killed).
+    async fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        timeout: Duration,
+    ) -> Outcome<Ran>;
+}
 
 /// What a process left behind.
 #[derive(Debug, Clone)]

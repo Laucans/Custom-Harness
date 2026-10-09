@@ -21,6 +21,7 @@
 
 mod adapters;
 mod cli;
+mod data_desk;
 mod desk;
 mod domain;
 mod janitor;
@@ -54,7 +55,6 @@ use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
 use crate::domain::blueprint;
 use crate::domain::cleanup;
-use crate::domain::data_model::{self, DataModel};
 use crate::domain::doctor;
 use crate::domain::gates::{self, Told};
 use crate::domain::limits::Read;
@@ -92,7 +92,9 @@ async fn main() -> anyhow::Result<()> {
         .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>));
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
-    let (data_tx, data_rx) = watch::channel(None);
+    let (data, data_task) = product
+        .map(|(product, every)| data_desk::open(product, every))
+        .unzip();
 
     // One per process: what tells a page the server it talks to was rebuilt.
     let build = jiff::Timestamp::now().to_string();
@@ -118,8 +120,7 @@ async fn main() -> anyhow::Result<()> {
         claude_read: Arc::clone(&claude_read),
         events: events.clone(),
         janitor: janitor.clone(),
-        data_model: data_rx,
-        data_enabled: product.is_some(),
+        data,
         notebook: Arc::new(FsNotebook::new(workspace.state_root())),
         notes_lock: Arc::default(),
     };
@@ -154,9 +155,7 @@ async fn main() -> anyhow::Result<()> {
                 ))
             });
             let janitor_task = janitor.map(|janitor| tokio::task::spawn_local(chronic(janitor)));
-            let data_task = product.map(|(product, every)| {
-                tokio::task::spawn_local(poll_data(product, data_tx, every))
-            });
+            let data_task = data_task.map(tokio::task::spawn_local);
             axum::serve(listener, router(state))
                 .with_graceful_shutdown(async {
                     let _ = tokio::signal::ctrl_c().await;
@@ -501,40 +500,22 @@ fn product_for(
         .clone()
         .or_else(|| cli.demo.then(|| root.join(SAMPLE_DATA)));
     if let Some(dir) = local {
-        return Some((Rc::new(DirProduct::new(&dir)), Duration::from_secs(5)));
+        // The sample carries an archive too, laid out as the branch is.
+        let archive = (cli.data_dir.is_none()).then(|| dir.join("archive"));
+        return Some((
+            Rc::new(DirProduct::new(
+                &dir,
+                archive.as_deref(),
+                &cli.integration_branch,
+            )),
+            Duration::from_secs(5),
+        ));
     }
     let gh = Rc::clone(gh?);
     Some((
         Rc::new(GhProduct::new(gh, &project.slug, &cli.integration_branch)),
         Duration::from_secs(cli.board_interval.max(5)),
     ))
-}
-
-/// Reads the product's two data files on a cadence and publishes the merge.
-async fn poll_data(
-    product: Rc<dyn Product>,
-    tx: watch::Sender<Option<Arc<DataModel>>>,
-    interval: Duration,
-) {
-    loop {
-        let schema = product
-            .file(data_model::SCHEMA_PATH)
-            .await
-            .map_err(|halt| halt.to_string());
-        let model = product
-            .file(data_model::MODEL_PATH)
-            .await
-            .map_err(|halt| halt.to_string());
-        let merged = data_model::build(&product.origin(), &schema, &model);
-        tx.send_if_modified(|kept| {
-            let changed = kept.as_deref() != Some(&merged);
-            if changed {
-                *kept = Some(Arc::new(merged));
-            }
-            changed
-        });
-        tokio::time::sleep(interval).await;
-    }
 }
 
 /// Reads the board on a slower cadence; a failed read keeps the last one.

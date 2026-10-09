@@ -123,6 +123,13 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
             kind,
             reason,
         } => halted(board, workflow, kind, reason, at),
+        Event::DataSnapshotFailed {
+            branch,
+            sha,
+            reason,
+        } => snapshot_failed(board, branch, sha, reason, at),
+        // A later snapshot of the branch clears its failure.
+        Event::DataSnapshotTaken { branch, .. } => board.clear(&format!("data-snapshot:{branch}")),
         // A gate's verdict is the line's business, not a sign: a halt that matters
         // arrives as the `Halted` event that follows it.
         Event::SessionEnded { .. }
@@ -130,6 +137,19 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::LaneTaken { .. }
         | Event::GateChecked { .. } => {}
     }
+}
+
+/// A branch's data model not archived: one warning per branch, cleared by
+/// its next snapshot.
+fn snapshot_failed(board: &mut Board, branch: &str, sha: &str, reason: &str, at: &str) {
+    board.add(Notification::once(
+        format!("data-snapshot:{branch}"),
+        Level::Warning,
+        format!("The data model of {branch} was not archived"),
+        format!("{sha}: {reason}"),
+        at,
+        Some(screen("journal", at)),
+    ));
 }
 
 /// The watch's life is one line, telling its last state.

@@ -137,6 +137,27 @@ pub enum Event {
         /// Why, for a skip or a halt; empty for a pass.
         reason: String,
     },
+    /// The data model of a branch's head was archived: its schema dump and
+    /// its agents' model, on the archive branch.
+    DataSnapshotTaken {
+        /// The branch whose head was read.
+        branch: String,
+        /// That head.
+        sha: String,
+        /// The folder on the archive branch; empty when nothing changed
+        /// since the branch's last snapshot.
+        dir: String,
+    },
+    /// A branch's data model could not be archived; retried when the board
+    /// moves again.
+    DataSnapshotFailed {
+        /// The branch.
+        branch: String,
+        /// Its head.
+        sha: String,
+        /// Why, in the script's or `git`'s words.
+        reason: String,
+    },
     /// A workflow stopped. Told in the run's own log as `STOP: …` — the line
     /// a reader of that log jumps to — and kept.
     Halted {
@@ -210,6 +231,17 @@ impl Event {
                  again until its issue changes"
             ),
             Self::Halted { kind, reason, .. } => format!("{kind}: {reason}"),
+            Self::DataSnapshotTaken { branch, sha, dir } if dir.is_empty() => {
+                format!("watch: data snapshot -> {branch} @ {sha}: schema unchanged")
+            }
+            Self::DataSnapshotTaken { branch, sha, dir } => {
+                format!("watch: data snapshot -> {branch} @ {sha} archived in {dir}")
+            }
+            Self::DataSnapshotFailed {
+                branch,
+                sha,
+                reason,
+            } => format!("watch: data snapshot -> {branch} @ {sha} failed: {reason}"),
             Self::GateChecked {
                 gate,
                 check,
@@ -232,6 +264,7 @@ impl Event {
             Self::Halted { kind, .. } if kind == "FAILED" => Level::Error,
             Self::LaneEnded { code: Some(0), .. } => Level::Info,
             Self::TickFailed { .. }
+            | Self::DataSnapshotFailed { .. }
             | Self::Halted { .. }
             | Self::LaneEnded {
                 code: Some(1 | 3), ..

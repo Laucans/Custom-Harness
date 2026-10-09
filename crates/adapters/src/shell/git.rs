@@ -222,6 +222,10 @@ impl Repo for GitCli {
     async fn push(&self, branch: &str) -> Outcome<Ran> {
         self.git(&["push", "-u", "origin", branch]).await
     }
+
+    async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
+        self.git(&["switch", "--orphan", name]).await
+    }
 }
 
 #[cfg(test)]

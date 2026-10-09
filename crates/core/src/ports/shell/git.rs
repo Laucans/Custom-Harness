@@ -178,6 +178,22 @@ pub trait Repo {
     /// # Errors
     /// If `git` couldn't be launched.
     async fn push(&self, branch: &str) -> Outcome<Ran>;
+
+    /// `switch --orphan <name>`: a new branch with no history and an empty
+    /// tree — where a store that is not code (an archive) begins.
+    ///
+    /// Answers a refusal by default: only a real `git` and the fakes that
+    /// test an archive need it.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: format!("this git cannot create the orphan branch {name}"),
+        })
+    }
 }
 
 /// Open a [`Repo`] on a given repository.

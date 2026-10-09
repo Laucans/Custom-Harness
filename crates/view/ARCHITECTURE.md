@@ -11,9 +11,12 @@ adapter — and it **writes nothing the harness reads**. The crate graph is in
 harness-view (bin)  →  harness-workflows (lib)  →  harness-core (lib)
 ```
 
-It depends on `harness-workflows` for two words only — the `harness:*` labels
-and `milestone_branch` — so the sign and the store cannot disagree with the
-router about what a label means or what a milestone's branch is called.
+It depends on `harness-workflows` for the words the plant shares with the
+router — the `harness:*` labels and `milestone_branch` — so the sign and the
+store cannot disagree with the router about what a label means or what a
+milestone's branch is called; and for the data archive's layout
+(`data_snapshot`'s index, file names and branch), so the pane reads exactly
+what the watch writes.
 
 ## What it shows, and from where
 
@@ -132,14 +135,32 @@ that tells a table or a field in full: type, purpose, links in and out, the
 technical rules the database holds (keys, `NOT NULL`, defaults, checks,
 unique indexes, enum values), the business rules the agents wrote.
 
-Two files in the **product's** repository, read at the integration branch
-through core's `GitHub::file_text` (`ports::Product`, `adapters::product`),
-or from a folder with `--data-dir <product root>`:
+Two sides, each a file in the **product's** repository:
 
 | file | side | what it says |
 | --- | --- | --- |
-| `data/schema.sql` | the database | `pg_dump --schema-only`: the structure as deployed |
-| `data/model.json` | the agents | what each table and field is *for*, its business rules, links no key carries |
+| `schema.sql` | the database | `pg_dump --schema-only`: the structure the migrations build |
+| `model.json` | the agents | what each table and field is *for*, its business rules, links no key carries |
+
+**Versions.** After every merge that moves `main`, `main_agent` or a
+milestone branch, the watch runs `data_snapshot` (`harness-workflows`): the
+head is checked out, the target's `scripts/dump-schema.sh` (or the harness's
+default) builds a scratch database from its migrations and dumps it, and the
+dump and `data/model.json` of that commit are archived on the target's
+orphan branch **`harness/data-model`** — `index.json` at its root, one
+folder per version that changed something (`<branch>/<stamp>-<sha7>/`).
+The pane offers `main`, `main_agent` and `feature ▾` (the milestone
+branches), then the versions of the branch shown, newest first. Without an
+archive yet, it reads the live `data/schema.sql` and `data/model.json` at
+the integration branch.
+
+Everything is read through core's `GitHub::file_text` (`ports::Product`,
+`adapters::product`), or from a folder with `--data-dir <product root>`, by
+**the data desk** (`data_desk.rs`): one local task that owns the `?Send`
+port, answers the handlers through a channel, keeps every archived version
+once read (a version never changes), and reads the index and the live files
+again after a while. Routes `GET /api/data-model?branch=&dir=` and
+`GET /api/data-model/versions`.
 
 `domain::schema_sql` reads the DDL (a tokenizer and five statement shapes,
 never a panic: what it does not understand it skips), `domain::data_model`
@@ -156,9 +177,8 @@ Either file alone draws the diagram. `model.json`:
   "links": [ { "from": "item.code", "to": "rule_reference.code", "purpose": "…" } ] }
 ```
 
-`--demo` without `--data-dir` reads the sample under `crates/view/sample/`.
-Route `GET /api/data-model`, read every board interval (every 5 s from a
-folder).
+`--demo` without `--data-dir` reads the sample under `crates/view/sample/`,
+its archive under `sample/archive/` laid out as the branch is.
 
 The diagram is drawn on **the board** (`static/board.js`), a component any
 pane can mount: a canvas to pan (drag) and zoom (wheel, the toolbar), and a
@@ -183,6 +203,7 @@ a reason: this terminal is a shell in the checkout.
 ```
 src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
+src/data_desk.rs       the data desk: one task owning the Product port, versions cached, the handlers answered by channel
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
 src/domain/            the inside — no disk, no subprocess, no clock
@@ -201,6 +222,7 @@ src/domain/            the inside — no disk, no subprocess, no clock
   cleanup.rs           the janitor's rules: what in the yard is no longer useful, the pie, the limit and the threshold
   schema_sql.rs        a Postgres schema out of its DDL: tables, columns, constraints, indexes, enums, comments
   data_model.rs        the product's data model: the database's DDL and the agents' model merged, and where they diverge
+  data_versions.rs     the archive's versions in the page's order: main, the integration branch, the features
   annotations.rs       the human's pins: what a note is, and the checks before a board's list is kept
 src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), Notebook (the pins)
 src/adapters/
@@ -212,9 +234,9 @@ src/adapters/
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   fs_notes.rs          .llocal/annotations.json, written aside then renamed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/notes/{board}
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/notes/{board}
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
-sample/data/           a product's data model to show under --demo
+sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions)
 ```
 
 The drawing itself is **another crate**, `harness-view-render`: a Bevy scene

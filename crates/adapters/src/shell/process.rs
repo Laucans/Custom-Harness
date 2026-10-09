@@ -7,8 +7,9 @@
 use std::path::Path;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome};
-use harness_core::ports::shell::process::Ran;
+use harness_core::ports::shell::process::{Process, Ran};
 
 /// How long a `git`/`gh` call may run before it's treated as hung.
 ///
@@ -67,6 +68,24 @@ async fn run_within(binary: &str, args: &[String], cwd: &Path, timeout: Duration
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
+}
+
+/// The [`Process`] port: a program of the target's, run like `git` and `gh`
+/// — here, the one place that spawns.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Processes;
+
+#[async_trait(?Send)]
+impl Process for Processes {
+    async fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: &Path,
+        timeout: Duration,
+    ) -> Outcome<Ran> {
+        run_within(program, args, cwd, timeout).await
+    }
 }
 
 /// Which pipe a streamed line came from.

@@ -80,11 +80,12 @@ pub const INIT: &str = "init";
 /// Every folder the harness itself writes under the yard — the launcher's
 /// own list, mirrored: a store added there without its name here shows up
 /// as a stray, which is the reminder to add it.
-const KNOWN: [&str; 8] = [
+const KNOWN: [&str; 9] = [
     WORKSPACES,
     LOGS,
     "grill",
     INIT,
+    "data-snapshot",
     "lanes",
     "planner-locks",
     "split-locks",

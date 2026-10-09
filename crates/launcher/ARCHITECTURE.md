@@ -28,6 +28,9 @@ src/dispatch/     one module per thing that can be run, plus what they share
   refinement.rs     an issue body into its five canonical sections
   pr_review.rs      an advisory review on a PR
   pr_fix.rs         one repair attempt on a red PR — the only writable checkout here
+  data_snapshot.rs  every tick that read the board: the data model of each branch whose head
+                    moved (main, main_agent, open milestones), dumped and archived on the
+                    target's `harness/data-model` branch; a failure is an event, never a failed tick
   main_agent_merge.rs  a finished milestone's PR into main_agent, opened then merged
                        (a task's PR into its milestone — `milestone_merge` —
                        needs no wiring of its own: the router calls it with its `gh`)

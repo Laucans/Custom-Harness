@@ -2864,6 +2864,7 @@ dependencies = [
  "async-trait",
  "harness-adapters",
  "harness-core",
+ "proptest",
  "serde",
  "serde_json",
  "tokio",

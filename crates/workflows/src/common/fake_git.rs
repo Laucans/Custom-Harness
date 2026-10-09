@@ -154,4 +154,7 @@ impl Repo for FakeRepo {
     async fn push(&self, branch: &str) -> Outcome<Ran> {
         Ok(self.note(&format!("push {branch}")))
     }
+    async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
+        Ok(self.note(&format!("create_orphan_branch {name}")))
+    }
 }

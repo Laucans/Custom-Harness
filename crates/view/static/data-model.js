@@ -35,6 +35,9 @@
 
   function mount(host) {
     host.innerHTML = '<div class="dm">'
+      + '<div class="dm-switch" hidden><div class="dm-branches" role="group" aria-label="branch"></div>'
+      + '<div class="dm-features" hidden role="menu" aria-label="feature branches"></div>'
+      + '<label class="dm-version">version <select aria-label="version"></select></label></div>'
       + '<div class="dm-bar"><span class="dm-origin">reading the data model…</span><span class="spacer"></span>'
       + '<input type="search" class="dm-search" placeholder="Find a table or a field" aria-label="find a table or a field">'
       + '<button type="button" class="mini" data-dm="all">unfold all</button></div>'
@@ -43,7 +46,9 @@
     const q = (s) => host.querySelector(s);
     const inspector = q('.dm-inspector');
     const search = q('.dm-search');
-    const st = { model: null, body: '', open: remembered(), sel: null, boxes: new Map(), bounds: null, timer: null, fitted: false, gone: false };
+    const st = { model: null, body: '', open: remembered(), sel: null, boxes: new Map(), bounds: null, timer: null, fitted: false, gone: false,
+      // Which version is shown: a branch and a folder of the archive; empty, the server's default.
+      versions: null, branch: '', dir: '', newest: true };
 
     const describe = (target) => {
       if (!target) return 'the canvas';
@@ -66,13 +71,20 @@
       if (st.gone) return;
       let reply = null;
       try {
-        const res = await fetch('/api/data-model');
-        reply = res.ok ? await res.json() : null;
+        const [versions, model] = await Promise.all([
+          fetch('/api/data-model/versions').then((r) => (r.ok ? r.json() : null)),
+          fetch('/api/data-model?' + new URLSearchParams({ branch: st.branch, dir: st.newest ? '' : st.dir })).then((r) => (r.ok ? r.json() : null)),
+        ]);
+        st.versions = versions;
+        reply = model;
       } catch (e) { reply = null; }
       if (st.gone) return;
       if (!reply) { say('The view did not answer.'); st.timer = setTimeout(load, 3000); return; }
       if (!reply.enabled) { say('Nothing reads the product\'s data model: the view runs with <code>--no-board</code> and no <code>--data-dir</code>.'); return; }
-      if (!reply.model) { say('Reading the data model…'); st.timer = setTimeout(load, 2000); return; }
+      if (!reply.model) { say(esc(reply.error || 'Reading the data model…')); drawSwitch(); st.timer = setTimeout(load, 2000); return; }
+      st.branch = reply.branch;
+      st.dir = reply.dir;
+      drawSwitch();
       const body = JSON.stringify(reply.model);
       if (body !== st.body) {
         st.body = body;
@@ -80,6 +92,33 @@
         draw();
       }
       st.timer = setTimeout(load, REFRESH_MS);
+    }
+    // The archive's versions: one button per kept branch kind, the features
+    // in a menu, the versions of the branch shown in a list.
+    function drawSwitch() {
+      const v = st.versions;
+      const sw = q('.dm-switch');
+      sw.hidden = !(v && v.archive && v.branches.length);
+      if (sw.hidden) return;
+      const of = (kind) => v.branches.filter((b) => b.kind === kind);
+      const current = v.branches.find((b) => b.branch === st.branch);
+      const button = (b, label, tip) => `<button type="button" class="${current && current.branch === b.branch ? 'on' : ''}" data-branch="${esc(b.branch)}" title="${esc(tip)}">${esc(label)}</button>`;
+      const features = of('feature');
+      const featureOn = current && current.kind === 'feature';
+      q('.dm-branches').innerHTML = of('release').map((b) => button(b, b.label, 'what a human released')).join('')
+        + of('integration').map((b) => button(b, b.label, 'where the agents integrate')).join('')
+        + `<button type="button" class="${featureOn ? 'on' : ''}" data-dm="features" ${features.length ? '' : 'disabled'} aria-haspopup="menu" title="a milestone's branch">${featureOn ? esc(current.label) : 'feature'} ▾</button>`;
+      q('.dm-features').innerHTML = features.map((b) => `<button type="button" role="menuitem" data-branch="${esc(b.branch)}">${esc(b.label)}<small>${b.versions.length} version${b.versions.length > 1 ? 's' : ''}</small></button>`).join('');
+      const when = (at) => at.replace('T', ' ').replace(/:\d\dZ$/, '');
+      q('.dm-version select').innerHTML = (current ? current.versions : []).map((x, i) => `<option value="${esc(x.dir)}"${x.dir === st.dir ? ' selected' : ''}>${esc(when(x.at))} · ${esc(x.sha.slice(0, 7))}${i === 0 ? ' · newest' : ''}</option>`).join('');
+    }
+    function show(branch, dir) {
+      st.branch = branch;
+      st.dir = dir || '';
+      st.newest = !dir;
+      st.sel = null;
+      q('.dm-features').hidden = true;
+      load();
     }
     function say(html) {
       q('.dm-origin').innerHTML = html;
@@ -364,8 +403,17 @@
         board.fit();
       }
       if (act.dataset.dm === 'divergences') { st.sel = null; draw(); }
+      if (act.dataset.dm === 'features') q('.dm-features').hidden = !q('.dm-features').hidden;
       return undefined;
     };
+    q('.dm-switch').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-branch]');
+      if (b) show(b.dataset.branch, '');
+    });
+    q('.dm-version select').addEventListener('change', (e) => {
+      const first = e.target.options[0];
+      show(st.branch, first && e.target.value === first.value ? '' : e.target.value);
+    });
     host.addEventListener('click', onClick);
     search.addEventListener('input', markSearch);
     search.addEventListener('keydown', (e) => {

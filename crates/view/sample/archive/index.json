@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "heads": {
+    "main_agent": "5e4d3c2b1a",
+    "main": "f0e1d2c3b4",
+    "milestone/14-sessions": "77aa88bb99"
+  },
+  "snapshots": [
+    {
+      "branch": "main_agent",
+      "sha": "a1b2c3d4e5",
+      "at": "2026-10-01T09:12:00Z",
+      "dir": "main_agent/20261001T091200Z-a1b2c3d",
+      "schema": true,
+      "model": true
+    },
+    {
+      "branch": "main",
+      "sha": "f0e1d2c3b4",
+      "at": "2026-10-03T17:40:00Z",
+      "dir": "main/20261003T174000Z-f0e1d2c",
+      "schema": true,
+      "model": true
+    },
+    {
+      "branch": "main_agent",
+      "sha": "9a8b7c6d5e",
+      "at": "2026-10-05T14:03:00Z",
+      "dir": "main_agent/20261005T140300Z-9a8b7c6",
+      "schema": true,
+      "model": true
+    },
+    {
+      "branch": "main_agent",
+      "sha": "5e4d3c2b1a",
+      "at": "2026-10-08T11:27:00Z",
+      "dir": "main_agent/20261008T112700Z-5e4d3c2",
+      "schema": true,
+      "model": true
+    },
+    {
+      "branch": "milestone/14-sessions",
+      "sha": "77aa88bb99",
+      "at": "2026-10-09T10:05:00Z",
+      "dir": "milestone/14-sessions/20261009T100500Z-77aa88b",
+      "schema": true,
+      "model": true
+    }
+  ]
+}

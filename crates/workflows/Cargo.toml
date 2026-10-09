@@ -17,3 +17,4 @@ serde_json.workspace = true
 # session factory. Shipped code never sees this crate.
 harness-adapters.workspace = true
 tokio.workspace = true
+proptest.workspace = true

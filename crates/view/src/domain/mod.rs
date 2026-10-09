@@ -6,6 +6,7 @@ pub mod assemble;
 pub mod blueprint;
 pub mod cleanup;
 pub mod data_model;
+pub mod data_versions;
 pub mod doctor;
 pub mod gates;
 pub mod history;

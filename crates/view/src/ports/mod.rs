@@ -368,21 +368,25 @@ pub trait Yard: Send + Sync {
     fn write_settings(&self, json: &str) -> Result<(), String>;
 }
 
-/// The product's own repository — the one the harness builds — read where
-/// its work lands, for the files that describe it (its data model).
+/// The product's own repository — the one the harness builds — for the
+/// files that describe it: its data model, live on the integration branch,
+/// and every version the watch archived on `harness/data-model`.
 ///
 /// `?Send`, like [`Board`]: the GitHub adapter wraps core's `GitHub`.
 #[async_trait(?Send)]
 pub trait Product {
-    /// Where the files are read, in words: `owner/name @ main_agent`.
+    /// Where the files are read, in words: `owner/name`.
     fn origin(&self) -> String;
 
-    /// The text of `path`, `None` when the file is not there.
+    /// The ref the live files are read at: the integration branch.
+    fn live_ref(&self) -> String;
+
+    /// The text of `path` at `git_ref`, `None` when the file is not there.
     ///
     /// # Errors
     ///
     /// The read failed for another reason than absence.
-    async fn file(&self, path: &str) -> Outcome<Option<String>>;
+    async fn file(&self, path: &str, git_ref: &str) -> Outcome<Option<String>>;
 }
 
 /// Where the human's pins are kept between visits.

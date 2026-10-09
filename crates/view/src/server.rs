@@ -32,12 +32,14 @@ use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
+use crate::data_desk::{DataDesk, Wanted};
 use crate::desk::Desk;
 use crate::domain::annotations::{self, Note};
 use crate::domain::assemble;
 use crate::domain::blueprint;
 use crate::domain::cleanup::Settings;
 use crate::domain::data_model::DataModel;
+use crate::domain::data_versions::Versions;
 use crate::domain::doctor::{self, Diagnosis};
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
@@ -93,11 +95,9 @@ pub struct AppState {
     pub events: Option<Arc<dyn EventLog + Send + Sync>>,
     /// The janitor, who weighs and sweeps the yard — `None` under `--no-janitor`.
     pub janitor: Option<Janitor>,
-    /// The product's data model, merged — `None` until first read, or
-    /// when nothing can read it.
-    pub data_model: watch::Receiver<Option<Arc<DataModel>>>,
-    /// Whether anything reads the data model at all.
-    pub data_enabled: bool,
+    /// The product's data model, its versions — `None` when nothing can
+    /// read it (`--no-board` without `--data-dir`).
+    pub data: Option<DataDesk>,
     /// Where the human's pins are kept.
     pub notebook: Arc<dyn Notebook>,
     /// Held across a pin list's read-modify-write.
@@ -160,6 +160,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/janitor/sweep", post(janitor_sweep))
         .route("/api/janitor/settings", post(janitor_settings))
         .route("/api/data-model", get(data_model))
+        .route("/api/data-model/versions", get(data_versions))
         .route("/api/notes/{board}", get(notes).put(put_notes))
         .with_state(state)
 }
@@ -785,20 +786,82 @@ async fn janitor_settings(State(state): State<AppState>, body: Bytes) -> Respons
     }
 }
 
-/// What the data pane reads: the merged model once read, and whether
-/// anything reads it at all.
+/// What the data pane reads: one version merged, and which one it is.
 #[derive(Serialize)]
 struct DataModelReply<'a> {
     enabled: bool,
     model: Option<&'a DataModel>,
+    /// The branch shown; empty for the live files.
+    branch: String,
+    /// The version's folder; empty for the live files.
+    dir: String,
+    /// Why there is no model.
+    error: Option<String>,
 }
 
-async fn data_model(State(state): State<AppState>) -> Response {
-    let model = state.data_model.borrow().clone();
-    json(&DataModelReply {
-        enabled: state.data_enabled,
-        model: model.as_deref(),
-    })
+/// `?branch=…&dir=…`: a version of the data model; neither, the integration
+/// branch's newest.
+#[derive(Debug, Default, Deserialize)]
+struct DataModelQuery {
+    branch: Option<String>,
+    dir: Option<String>,
+}
+
+async fn data_model(
+    State(state): State<AppState>,
+    Query(query): Query<DataModelQuery>,
+) -> Response {
+    let mut reply = DataModelReply {
+        enabled: state.data.is_some(),
+        model: None,
+        branch: String::new(),
+        dir: String::new(),
+        error: None,
+    };
+    let Some(desk) = state.data else {
+        return json(&reply);
+    };
+    let wanted = Wanted {
+        branch: query.branch.filter(|b| !b.is_empty()),
+        dir: query.dir.filter(|d| !d.is_empty()),
+    };
+    match desk.model(wanted).await {
+        Ok(shown) => {
+            reply.branch = shown.branch;
+            reply.dir = shown.dir;
+            reply.model = Some(&shown.model);
+            json(&reply)
+        }
+        Err(why) => {
+            reply.error = Some(why);
+            json(&reply)
+        }
+    }
+}
+
+/// Every version the archive keeps, by branch.
+#[derive(Serialize)]
+struct VersionsReply<'a> {
+    enabled: bool,
+    #[serde(flatten)]
+    versions: &'a Versions,
+}
+
+async fn data_versions(State(state): State<AppState>) -> Response {
+    let none = Versions::default();
+    let Some(desk) = state.data else {
+        return json(&VersionsReply {
+            enabled: false,
+            versions: &none,
+        });
+    };
+    match desk.versions().await {
+        Ok(versions) => json(&VersionsReply {
+            enabled: true,
+            versions: &versions,
+        }),
+        Err(why) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
+    }
 }
 
 /// A board's pins.
@@ -1158,8 +1221,7 @@ mod tests {
             claude_read: Arc::default(),
             events: None,
             janitor: None,
-            data_model: watch::channel(None).1,
-            data_enabled: false,
+            data: None,
             notebook: Arc::new(Pages::default()),
             notes_lock: Arc::default(),
         }
@@ -1225,7 +1287,18 @@ mod tests {
     #[tokio::test]
     async fn the_data_model_says_when_nothing_reads_it() {
         let (_, body) = send(state(Shelf::default(), None), "GET", "/api/data-model", "").await;
-        assert_eq!(body, r#"{"enabled":false,"model":null}"#);
+        assert_eq!(
+            body,
+            r#"{"enabled":false,"model":null,"branch":"","dir":"","error":null}"#
+        );
+        let (_, body) = send(
+            state(Shelf::default(), None),
+            "GET",
+            "/api/data-model/versions",
+            "",
+        )
+        .await;
+        assert_eq!(body, r#"{"enabled":false,"archive":false,"branches":[]}"#);
     }
 
     async fn post_to(state: AppState, uri: &str) -> (StatusCode, String) {

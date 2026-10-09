@@ -46,7 +46,7 @@ third is the entry point that, with that contract filled, assembles the whole
 workflow.
 
 **A deterministic command departs from this skeleton**: no `orchestration/`,
-no `checks/`. `init_repo` and `main_agent_merge` are both this, not a
+no `checks/`. `init_repo`, `main_agent_merge` and `data_snapshot` are all this, not a
 workflow — no `Context`, no stage table, no session, no cost — so a stage
 table would name one entry for a sequence that does not exist, and a
 `Verification` would judge against a `Context<S>` nobody carries. What

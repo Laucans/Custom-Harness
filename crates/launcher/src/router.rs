@@ -46,6 +46,7 @@ use harness_core::ports::shell::github::{Activity, GitHub};
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
 use harness_workflows::common::{branching, hierarchy, labels, review};
+use harness_workflows::data_snapshot::data::report::Snapped;
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
 use harness_workflows::main_agent_merge::data::report::Outcome as MergeReport;
@@ -166,6 +167,9 @@ async fn tick(
     };
     let (found, idle, watching_ci) = snapshot(gh.as_ref()).await?;
     pulse.read_in_full(etag, watching_ci);
+    // The board moved: a merge may have moved a branch, whose data model is
+    // archived before anything else is dispatched.
+    snapshot_data(args, here, &gh, &found.milestones, log).await;
     // What the decision was made from, for a tick whose choice later looks
     // wrong: the counts are the whole input to `routing::decide`.
     log.debug(&format!(
@@ -194,6 +198,60 @@ async fn tick(
     }
     dispatch(args, here, gh.as_ref(), &found, route, log, lanes).await;
     Ok(())
+}
+
+/// Archives the data model of every branch whose head moved: `main`, the
+/// integration branch, each open milestone's. Never fails the tick — a
+/// branch that could not be archived is an event, and is tried again when
+/// the board next moves. A target named by this checkout's own `origin`
+/// has no slug to clone: skipped.
+async fn snapshot_data(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &Rc<dyn GitHub>,
+    milestones: &[Issue],
+    log: &Logbook,
+) {
+    let Some(slug) = Slug::parse(&args.target_repo_url) else {
+        return;
+    };
+    let mut branches = vec!["main".to_string(), args.branch.clone()];
+    branches.extend(
+        milestones
+            .iter()
+            .map(|m| branching::milestone_branch(m.number, &m.title)),
+    );
+    branches.dedup();
+    match crate::dispatch::data_snapshot::run(Rc::clone(gh), &slug, here, branches).await {
+        Ok(report) => {
+            for snapped in report.snapped {
+                log.event(&match snapped {
+                    Snapped::Archived { branch, sha, dir } => {
+                        Event::DataSnapshotTaken { branch, sha, dir }
+                    }
+                    Snapped::Unchanged { branch, sha } => Event::DataSnapshotTaken {
+                        branch,
+                        sha,
+                        dir: String::new(),
+                    },
+                    Snapped::Failed {
+                        branch,
+                        sha,
+                        reason,
+                    } => Event::DataSnapshotFailed {
+                        branch,
+                        sha,
+                        reason,
+                    },
+                });
+            }
+        }
+        Err(halt) => log.event(&Event::DataSnapshotFailed {
+            branch: "every branch".to_string(),
+            sha: String::new(),
+            reason: halt.reason().to_string(),
+        }),
+    }
 }
 
 /// The `GitHub` used for the routing decision alone — no checkout: a named

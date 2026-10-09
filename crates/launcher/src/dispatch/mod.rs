@@ -29,6 +29,7 @@
 //! **Nothing here decides *whether* to run.** That is `cli` (a human typed
 //! it) or `router` (a poll found the conditions met).
 
+pub mod data_snapshot;
 pub mod dev_loop;
 pub mod doctor;
 pub mod init_repo;
