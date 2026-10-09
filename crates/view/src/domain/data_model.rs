@@ -870,7 +870,7 @@ mod tests {
     fn one_side_alone_draws_without_divergences() {
         let model = build("here", &Ok(Some(SQL.into())), &Ok(None));
         assert!(!model.compared);
-        assert!(model.divergences.is_empty());
+        assert_eq!(model.divergences, Vec::<String>::new());
         assert_eq!(
             field(&model, "character", "name").purpose,
             "from the database"
@@ -879,7 +879,7 @@ mod tests {
 
         let model = build("here", &Ok(None), &Ok(Some(MODEL.into())));
         assert_eq!(field(&model, "character", "id").data_type, "int4");
-        assert!(model.divergences.is_empty());
+        assert_eq!(model.divergences, Vec::<String>::new());
     }
 
     #[test]
@@ -894,7 +894,7 @@ mod tests {
         assert_eq!(model.tables.len(), 3);
         let model = build("here", &Err("gh refused".into()), &Ok(None));
         assert_eq!(model.sources[0].problem.as_deref(), Some("gh refused"));
-        assert!(model.tables.is_empty());
+        assert_eq!(model.tables.len(), 0);
     }
 
     #[test]
