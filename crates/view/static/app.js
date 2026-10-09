@@ -311,7 +311,14 @@
   // The status is a button: it opens the gestures that make sense now — start
   // an empty plant, or stop a running one softly (running tasks finish, none
   // starts) or hard (the watch and its lanes are killed, after a second click).
-  const P = { status: null, armed: null, busy: false, note: '', bad: false, flash: null };
+  const P = { status: null, armed: null, busy: false, note: '', bad: false, flash: null, lanes: 1 };
+  // The agents a start runs at once: the last count asked, kept per viewer.
+  try { P.lanes = Math.max(1, parseInt(localStorage.getItem('plant.lanes'), 10) || 1); } catch (e) { /* storage off: 1 */ }
+  function lanesSet(n) {
+    const max = (P.status && P.status.max_lanes) || 16;
+    P.lanes = Math.min(max, Math.max(1, n));
+    try { localStorage.setItem('plant.lanes', String(P.lanes)); } catch (e) { /* storage off */ }
+  }
   // What the status line says while a gesture is under way, and when it lets go.
   const PENDING = {
     start: { text: 'starting the watch…', tone: 'warn pending' },
@@ -336,8 +343,17 @@
     let html = '';
     if (!st) html = '<div class="note">reading the plant…</div>';
     else if (!st.available) html = '<div class="note">this view has no hand on the plant (demo)</div>';
-    else if (!st.running) html = plantOption('▶ Start the plant', 'starts harness watch in this checkout', 'start');
-    else {
+    else if (!st.running) {
+      const max = st.max_lanes || 16;
+      if (P.lanes > max) P.lanes = max;
+      const off = P.busy ? ' disabled' : '';
+      html = `<div class="lanes"><span>Agents at once<small>the most tasks the watch runs together</small></span>`
+        + `<button type="button" class="step" data-lanes="-1" aria-label="one agent less"${off || (P.lanes <= 1 ? ' disabled' : '')}>−</button>`
+        + `<output aria-live="polite">${P.lanes}</output>`
+        + `<button type="button" class="step" data-lanes="1" aria-label="one agent more"${off || (P.lanes >= max ? ' disabled' : '')}>+</button></div>`
+        + plantOption(`▶ Start the plant · ${P.lanes} agent${P.lanes > 1 ? 's' : ''}`, `starts harness watch --parallel ${P.lanes} in this checkout`, 'start');
+    } else {
+      if (st.running.lanes) html += `<div class="note">running with at most ${st.running.lanes} agent${st.running.lanes > 1 ? 's' : ''} at once</div>`;
       if (f.draining) html += '<div class="note">soft stop under way — running tasks finish, then the watch exits</div>';
       else html += plantOption('⏸ Soft stop', 'no new task; stops once the running ones finish', 'soft');
       html += P.armed
@@ -355,7 +371,7 @@
     plantMenu();
     await plantRead();
     plantMenu();
-    const first = $('plant-menu').querySelector('button:not(:disabled)');
+    const first = $('plant-menu').querySelector('button[data-gesture]:not(:disabled)');
     if (first) first.focus();
   }
   function plantClose() {
@@ -376,7 +392,7 @@
     P.flash = PENDING[gesture];
     status(); plantMenu();
     try {
-      const r = await fetch('/api/plant/' + gesture, { method: 'POST' });
+      const r = await fetch('/api/plant/' + gesture + (gesture === 'start' ? '?lanes=' + P.lanes : ''), { method: 'POST' });
       const text = await r.text();
       if (r.ok) {
         P.note = JSON.parse(text).message; P.bad = false;
@@ -398,10 +414,30 @@
   }
   $('status').addEventListener('click', () => { if ($('plant-menu').hidden) plantOpen(); else plantClose(); });
   $('plant-menu').addEventListener('click', (ev) => {
+    const step = ev.target.closest('button[data-lanes]');
+    if (step && !step.disabled) {
+      lanesSet(P.lanes + Number(step.dataset.lanes));
+      plantMenu();
+      const again = $('plant-menu').querySelector(`button[data-lanes="${step.dataset.lanes}"]:not(:disabled)`) || $('plant-menu').querySelector('button[data-gesture]');
+      if (again) again.focus();
+      return;
+    }
     const b = ev.target.closest('button[data-gesture]');
     if (b && !b.disabled) plantDo(b.dataset.gesture);
   });
   $('plant-menu').addEventListener('keydown', (ev) => {
+    // Left and right turn the agents counter, wherever the focus is.
+    if ((ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') && $('plant-menu').querySelector('.lanes') && !P.busy) {
+      ev.preventDefault();
+      lanesSet(P.lanes + (ev.key === 'ArrowRight' ? 1 : -1));
+      const d = document.activeElement && document.activeElement.dataset;
+      const focused = d && (d.gesture ? `[data-gesture="${d.gesture}"]` : d.lanes ? `[data-lanes="${d.lanes}"]` : null);
+      plantMenu();
+      // A step at its bound is disabled: the focus falls back to the start.
+      const back = (focused && $('plant-menu').querySelector(`button${focused}:not(:disabled)`)) || $('plant-menu').querySelector('button[data-gesture]');
+      if (back) back.focus();
+      return;
+    }
     if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
     ev.preventDefault();
     const items = [...$('plant-menu').querySelectorAll('button:not(:disabled)')];
@@ -410,7 +446,9 @@
     if (next) next.focus();
   });
   document.addEventListener('click', (ev) => {
-    if (!$('plant-menu').hidden && !ev.target.closest('#status-wrap')) plantClose();
+    // The path is taken at dispatch: a button the menu redrew under the click
+    // is detached by now, yet the click still came from inside.
+    if (!$('plant-menu').hidden && !ev.composedPath().includes($('status-wrap'))) plantClose();
   });
 
   // ---- navigation ----------------------------------------------------------

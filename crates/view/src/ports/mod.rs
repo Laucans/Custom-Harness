@@ -184,6 +184,9 @@ pub struct Running {
     pub pid: u32,
     /// Its process group — what a hard stop kills, lanes included.
     pub group: u32,
+    /// The `--parallel` its command line carries: the most agents it runs
+    /// at once. `None`: not on the line, so the launcher's own default.
+    pub lanes: Option<usize>,
 }
 
 /// The signal a stop sends.
@@ -229,12 +232,13 @@ pub trait Plant: Send + Sync {
     /// same machine is none of this page's business.
     fn works_here(&self, pid: u32) -> bool;
 
-    /// Starts the watch, detached in a process group of its own.
+    /// Starts the watch, detached in a process group of its own, with at
+    /// most `lanes` agents at once — `None` keeps the configured command.
     ///
     /// # Errors
     ///
     /// Why it could not start, as a sentence the page can show.
-    fn start(&self) -> Result<u32, String>;
+    fn start(&self, lanes: Option<usize>) -> Result<u32, String>;
 
     /// The last lines the watch printed — what says why it died at start.
     fn output_tail(&self) -> String;

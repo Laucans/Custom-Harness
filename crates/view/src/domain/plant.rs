@@ -55,6 +55,66 @@ pub struct Status {
     pub available: bool,
     /// The watch process, if one runs.
     pub running: Option<Running>,
+    /// The most agents the page's counter may ask a start for.
+    pub max_lanes: usize,
+}
+
+/// The most agents a start may ask for: past it, a typo starts a fleet.
+pub const MAX_LANES: usize = 16;
+
+/// The flag of `harness watch` that bounds its lanes.
+const PARALLEL: &str = "--parallel";
+
+/// Checks the lanes a start asks for.
+///
+/// # Errors
+///
+/// `lanes` is `0` or above [`MAX_LANES`].
+pub fn lanes(asked: Option<usize>) -> Result<Option<usize>, String> {
+    match asked {
+        Some(n) if n == 0 || n > MAX_LANES => Err(format!(
+            "{n} agents: a start runs between 1 and {MAX_LANES} at once"
+        )),
+        other => Ok(other),
+    }
+}
+
+/// `command` with its `--parallel` replaced by `lanes`; `None` leaves it as
+/// configured.
+#[must_use]
+pub fn with_lanes(command: &[String], lanes: Option<usize>) -> Vec<String> {
+    let Some(lanes) = lanes else {
+        return command.to_vec();
+    };
+    let mut out = Vec::with_capacity(command.len() + 2);
+    let mut words = command.iter();
+    while let Some(word) = words.next() {
+        if word == PARALLEL {
+            words.next();
+        } else if !word.starts_with(&format!("{PARALLEL}=")) {
+            out.push(word.clone());
+        }
+    }
+    out.push(PARALLEL.to_string());
+    out.push(lanes.to_string());
+    out
+}
+
+/// The `--parallel` a command line carries, if it carries one.
+fn lanes_of(command: &str) -> Option<usize> {
+    let mut words = command.split_whitespace();
+    while let Some(word) = words.next() {
+        if word == PARALLEL {
+            return words.next()?.parse().ok();
+        }
+        if let Some(value) = word
+            .strip_prefix(PARALLEL)
+            .and_then(|w| w.strip_prefix('='))
+        {
+            return value.parse().ok();
+        }
+    }
+    None
 }
 
 /// Parses a `ps -axo pid=,ppid=,pgid=,command=` listing.
@@ -102,6 +162,7 @@ pub fn running(plant: &dyn Plant) -> Option<Running> {
         .map(|p| Running {
             pid: p.pid,
             group: p.group,
+            lanes: lanes_of(&p.command),
         })
 }
 
@@ -195,9 +256,9 @@ pub mod fake {
             true
         }
 
-        fn start(&self) -> Result<u32, String> {
+        fn start(&self, lanes: Option<usize>) -> Result<u32, String> {
             if let Ok(mut sent) = self.sent.lock() {
-                sent.push("start".to_string());
+                sent.push(lanes.map_or_else(|| "start".to_string(), |n| format!("start {n}")));
             }
             if !self.dies_at_start
                 && let Ok(mut started) = self.started.lock()
@@ -242,6 +303,7 @@ mod tests {
     const WATCH: Running = Running {
         pid: 100,
         group: 50,
+        lanes: Some(10),
     };
 
     /// A watch whose group leader is gone, a lane, its session, and a
@@ -339,6 +401,48 @@ mod tests {
         assert_eq!(Gesture::parse("soft"), Some(Gesture::Soft));
         assert_eq!(Gesture::parse("hard"), Some(Gesture::Hard));
         assert_eq!(Gesture::parse("kill"), None);
+    }
+
+    fn words(command: &str) -> Vec<String> {
+        command.split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn a_start_asks_between_one_and_the_most_agents() {
+        assert_eq!(lanes(None), Ok(None));
+        assert_eq!(lanes(Some(1)), Ok(Some(1)));
+        assert_eq!(lanes(Some(MAX_LANES)), Ok(Some(MAX_LANES)));
+        assert!(lanes(Some(0)).is_err());
+        assert!(lanes(Some(MAX_LANES + 1)).is_err());
+    }
+
+    #[test]
+    fn the_asked_lanes_replace_the_configured_ones() {
+        let configured = words("target/release/harness watch --parallel 3 --force-reset");
+        assert_eq!(with_lanes(&configured, None), configured);
+        assert_eq!(
+            with_lanes(&configured, Some(5)),
+            words("target/release/harness watch --force-reset --parallel 5")
+        );
+        assert_eq!(
+            with_lanes(&words("harness watch --parallel=2"), Some(4)),
+            words("harness watch --parallel 4")
+        );
+    }
+
+    #[test]
+    fn the_running_watch_says_its_lanes() {
+        assert_eq!(lanes_of("harness watch --parallel 10"), Some(10));
+        assert_eq!(
+            lanes_of("harness watch --parallel=4 --force-reset"),
+            Some(4)
+        );
+        assert_eq!(lanes_of("harness watch"), None);
+        let found = running(&fake::Switch {
+            processes: plant(),
+            ..fake::Switch::default()
+        });
+        assert_eq!(found.and_then(|w| w.lanes), Some(10));
     }
 
     proptest! {

@@ -66,7 +66,7 @@ impl Plant for WatchProcess {
             .any(|cwd| Path::new(cwd).canonicalize().ok() == here)
     }
 
-    fn start(&self) -> Result<u32, String> {
+    fn start(&self, lanes: Option<usize>) -> Result<u32, String> {
         let program = self
             .program()
             .ok_or_else(|| "no watch command is configured".to_string())?;
@@ -90,8 +90,9 @@ impl Plant for WatchProcess {
         // A group of its own: the view restarting does not take the watch
         // with it, and a hard stop reaches its lanes and nothing else. Tokio
         // reaps the child once it is dropped, so no zombie stays behind.
+        let command = plant::with_lanes(&self.command, lanes);
         let child = tokio::process::Command::new(&program)
-            .args(self.command.iter().skip(1))
+            .args(command.iter().skip(1))
             .current_dir(self.workspace.root())
             .process_group(0)
             .stdin(Stdio::null())
