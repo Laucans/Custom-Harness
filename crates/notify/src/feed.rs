@@ -171,7 +171,7 @@ mod tests {
                 },
             )
         };
-        assert!(at(0.5).is_empty());
+        assert_eq!(at(0.5), [] as [Notification; 0]);
         assert_eq!(at(0.85)[0].level, Level::Warning);
         assert_eq!(at(0.97)[0].level, Level::Error);
     }
