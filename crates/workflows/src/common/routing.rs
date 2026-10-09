@@ -13,10 +13,14 @@
 //! that can be wrong with a pull request already in flight — a red one to
 //! repair before a green one to review, since reviewing a change whose CI
 //! is broken reviews something about to change; then merging a reviewed,
-//! green task PR into its milestone; then finishing a milestone
-//! that's done, a pending refinement (business, then technical), and finally grinding on a task.
-//! Structural decomposition before unblocking what's in flight before
-//! closing out before polish before grind.
+//! green task PR into its milestone; then finishing a milestone that's
+//! done; then a runnable task; and last a pending refinement (business, then
+//! technical). Structural decomposition before unblocking what's in flight
+//! before closing out before delivering before preparing the next delivery.
+//!
+//! A parallel watch does not stop at the route: it first fills every free
+//! lane, the runnable tasks before splits and refinements ([`lane_work`]),
+//! so a pending refinement never keeps a task off a lane that sits free.
 //!
 //! `harness:ready` is the same human gate at every issue level: it means
 //! "plan this" on a roadmap item, "split this" on a milestone, and "build
@@ -25,6 +29,7 @@
 //! nobody has opened the tap on.
 
 use harness_core::domain::{Issue, Pr};
+use harness_core::ports::shell::github::Activity;
 
 use crate::common::labels;
 
@@ -170,6 +175,11 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     if let Some(milestone) = snapshot.ready_to_merge {
         return Route::MergeMainAgent { milestone };
     }
+    // Delivering before preparing: a runnable task is work already decided,
+    // and a pending refinement only ever prepares the next one.
+    if let Some(milestone) = snapshot.dev_loop_milestone {
+        return Route::DevLoop { milestone };
+    }
     if let Some(issue) = lowest_open(&snapshot.refining) {
         return Route::Refinement {
             issue: issue.number,
@@ -180,10 +190,77 @@ pub fn decide(snapshot: &Snapshot) -> Route {
             issue: issue.number,
         };
     }
-    if let Some(milestone) = snapshot.dev_loop_milestone {
-        return Route::DevLoop { milestone };
-    }
     Route::Nothing
+}
+
+/// What a parallel watch hands its free lanes, in the order it hands it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaneWork {
+    /// The milestone whose runnable tasks take the free lanes first.
+    pub tasks_of: Option<u64>,
+    /// Whether a milestone waits on its split or an issue on its business
+    /// refinement — what takes the lanes the tasks left.
+    pub preparation: bool,
+}
+
+/// What a parallel watch fills its free lanes with, whatever [`decide`]
+/// chose: the runnable tasks first, then splits and refinements.
+///
+/// [`decide`] is one route per tick, and a lane route used to fill the lanes
+/// with its own kind only: while one refinement was pending, no task reached
+/// a lane, however many lanes sat free.
+#[must_use]
+pub fn lane_work(snapshot: &Snapshot) -> LaneWork {
+    LaneWork {
+        tasks_of: snapshot.dev_loop_milestone,
+        preparation: snapshot.refining.iter().any(Issue::is_open)
+            || snapshot.milestones.iter().any(splittable),
+    }
+}
+
+/// How many quiet ticks a poll lets pass before it reads the board in full
+/// anyway — the valve for a change the activity read cannot see.
+pub const FULL_READ_EVERY: u32 = 10;
+
+/// What a poll keeps between two ticks to know whether to read the board.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Pulse {
+    /// The tag of the last activity read, handed back as `If-None-Match`.
+    pub etag: Option<String>,
+    /// Whether the last full read saw a pull request the board waits on —
+    /// a check run or a review changes nothing on an issue, so those are
+    /// read in full every tick while one is open.
+    pub watching_ci: bool,
+    /// Ticks since the last full read.
+    pub quiet_ticks: u32,
+}
+
+impl Pulse {
+    /// What the pulse remembers after a full read.
+    pub fn read_in_full(&mut self, etag: Option<String>, watching_ci: bool) {
+        self.etag = etag;
+        self.watching_ci = watching_ci;
+        self.quiet_ticks = 0;
+    }
+
+    /// What the pulse remembers after a tick that read nothing.
+    pub const fn stayed_quiet(&mut self) {
+        self.quiet_ticks = self.quiet_ticks.saturating_add(1);
+    }
+}
+
+/// Whether this tick may skip the full read of the board.
+///
+/// Only when the one conditional read said nothing moved, no pull request's
+/// checks or review are being waited on, no lane was just freed — a lane
+/// freed with the board unchanged is a crashed lane whose work is still
+/// due — and the valve has not run out.
+#[must_use]
+pub const fn may_skip(pulse: &Pulse, activity: &Activity, freed_lanes: usize) -> bool {
+    matches!(activity, Activity::Unchanged)
+        && !pulse.watching_ci
+        && freed_lanes == 0
+        && pulse.quiet_ticks < FULL_READ_EVERY
 }
 
 /// Whether this milestone is a candidate for a split, its blockers aside:
@@ -455,13 +532,14 @@ mod tests {
     }
 
     #[test]
-    fn pending_refinement_outranks_the_dev_loop() {
+    fn the_dev_loop_outranks_pending_refinement() {
         let snapshot = Snapshot {
             refining: vec![issue(6, &[labels::REFINEMENT])],
+            tech_refining: vec![issue(7, &[labels::TECH_REFINEMENT])],
             dev_loop_milestone: Some(3),
             ..empty()
         };
-        assert_eq!(decide(&snapshot), Route::Refinement { issue: 6 });
+        assert_eq!(decide(&snapshot), Route::DevLoop { milestone: 3 });
     }
 
     #[test]
@@ -477,11 +555,10 @@ mod tests {
     }
 
     #[test]
-    fn business_refinement_goes_before_technical_and_both_before_the_dev_loop() {
+    fn business_refinement_goes_before_technical() {
         let snapshot = Snapshot {
             refining: vec![issue(9, &[labels::REFINEMENT])],
             tech_refining: vec![issue(6, &[labels::TECH_REFINEMENT])],
-            dev_loop_milestone: Some(3),
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::Refinement { issue: 9 });
@@ -504,5 +581,99 @@ mod tests {
     #[test]
     fn an_entirely_quiet_repo_routes_to_nothing() {
         assert_eq!(decide(&empty()), Route::Nothing);
+    }
+
+    fn quiet() -> Pulse {
+        Pulse {
+            etag: Some("W/\"abc\"".to_string()),
+            watching_ci: false,
+            quiet_ticks: 0,
+        }
+    }
+
+    #[test]
+    fn an_unchanged_board_skips_the_full_read() {
+        assert!(may_skip(&quiet(), &Activity::Unchanged, 0));
+    }
+
+    #[test]
+    fn a_changed_board_is_read_in_full() {
+        let changed = Activity::Changed {
+            etag: None,
+            moved_at: None,
+        };
+        assert!(!may_skip(&quiet(), &changed, 0));
+    }
+
+    #[test]
+    fn a_waited_on_pull_request_keeps_the_full_read_going() {
+        let pulse = Pulse {
+            watching_ci: true,
+            ..quiet()
+        };
+        assert!(!may_skip(&pulse, &Activity::Unchanged, 0));
+    }
+
+    #[test]
+    fn a_freed_lane_reads_the_board_again() {
+        assert!(!may_skip(&quiet(), &Activity::Unchanged, 1));
+    }
+
+    #[test]
+    fn the_valve_forces_a_full_read_after_enough_quiet_ticks() {
+        let mut pulse = quiet();
+        for _ in 0..FULL_READ_EVERY {
+            assert!(may_skip(&pulse, &Activity::Unchanged, 0));
+            pulse.stayed_quiet();
+        }
+        assert!(!may_skip(&pulse, &Activity::Unchanged, 0));
+        pulse.read_in_full(Some("W/\"def\"".to_string()), false);
+        assert_eq!(pulse.quiet_ticks, 0);
+        assert!(may_skip(&pulse, &Activity::Unchanged, 0));
+    }
+
+    #[test]
+    fn lanes_take_the_tasks_and_the_preparation_together() {
+        let snapshot = Snapshot {
+            refining: vec![issue(6, &[labels::REFINEMENT])],
+            dev_loop_milestone: Some(3),
+            ..empty()
+        };
+        assert_eq!(
+            lane_work(&snapshot),
+            LaneWork {
+                tasks_of: Some(3),
+                preparation: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_ready_milestone_is_lane_preparation_but_a_closed_refinement_is_not() {
+        let closed = Issue {
+            state: "closed".to_string(),
+            ..issue(6, &[labels::REFINEMENT])
+        };
+        let snapshot = Snapshot {
+            refining: vec![closed],
+            ..empty()
+        };
+        assert!(!lane_work(&snapshot).preparation);
+        let snapshot = Snapshot {
+            milestones: vec![issue(4, &[labels::MILESTONE, labels::READY])],
+            ..empty()
+        };
+        assert!(lane_work(&snapshot).preparation);
+    }
+
+    #[test]
+    fn a_quiet_board_gives_the_lanes_nothing() {
+        assert_eq!(
+            lane_work(&empty()),
+            LaneWork {
+                tasks_of: None,
+                preparation: false,
+            }
+        );
     }
 }

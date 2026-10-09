@@ -14,11 +14,23 @@
 //!
 //! # What it keeps
 //!
-//! Tool calls and their most telling argument, tool results, the assistant's
-//! prose, and the final cost. Not the token-level deltas (the carrier does not
-//! ask for `--include-partial-messages`): the question this log answers is
-//! "what is it doing, and where did it stall", and a thousand text fragments
-//! per minute answer it worse than one line per action.
+//! The session's own prose — it narrates what it just saw and what comes
+//! next — then one line per action: a `Bash` call by the one-line
+//! `description` the session wrote for it (the command itself is in
+//! `stream.jsonl`), a write marked `✎` with its file, a read kept quiet in
+//! the margin, a failed tool marked `✗`, a successful one by the last line it
+//! printed (the verdict sits at the bottom of a test run, not the top), a
+//! push and a published pull request, and the final cost.
+//!
+//! # What it drops
+//!
+//! Reasoning blocks and their token counters, task and hook bookkeeping,
+//! progress ticks: hundreds of events per run that say only "still going",
+//! which the next line says better. The question this log answers is "what
+//! is it doing, and where did it stall", and a thousand fragments per minute
+//! answer it worse than one line per action.
+
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -44,6 +56,38 @@ const TELLING: [&str; 8] = [
     "prompt",
     "description",
 ];
+
+/// `system` subtypes that only say "still going": the task that owns a
+/// background command, a hook firing, a progress tick. The line after them
+/// says what happened; these say that something will.
+const BOOKKEEPING: [&str; 5] = [
+    "task_started",
+    "task_notification",
+    "tool_progress",
+    "hook_started",
+    "hook_response",
+];
+
+/// A path as the session sees it: relative to the workspace when it sits
+/// inside it, as given otherwise.
+fn rel(path: &str, root: &Path) -> String {
+    let root = root.to_string_lossy();
+    if root.is_empty() {
+        return path.to_string();
+    }
+    path.strip_prefix(root.as_ref())
+        .map_or(path, |rest| rest.trim_start_matches('/'))
+        .to_string()
+}
+
+/// The last non-empty line of a text, collapsed: where a command's verdict
+/// sits — `test result: ok` is the last line of a test run, not the first.
+fn last_line(text: &str) -> String {
+    text.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map_or_else(String::new, |line| flat(line, WIDTH))
+}
 
 /// Text with its whitespace collapsed, cut to `width` characters.
 ///
@@ -72,7 +116,37 @@ fn scalar(value: &Value, key: &str) -> Option<String> {
 }
 
 /// What a tool call is doing, in a few words.
-fn call(name: &str, input: &Value) -> String {
+///
+/// A `Bash` call by the `description` the session wrote for it, when there
+/// is one: "Run the full test suite twice" over the first 160 characters of
+/// a heredoc. A write is marked so a reader can find what the run changed;
+/// a read is set in the margin, like prose, because a review reads dozens.
+fn call(name: &str, input: &Value, root: &Path) -> String {
+    match name {
+        "Bash" => {
+            if let Some(what) = scalar(input, "description") {
+                return format!("→ {}", flat(&what, WIDTH));
+            }
+        }
+        "Edit" | "Write" | "NotebookEdit" => {
+            if let Some(file) =
+                scalar(input, "file_path").or_else(|| scalar(input, "notebook_path"))
+            {
+                return format!("✎ {} {}", name.to_lowercase(), rel(&file, root));
+            }
+        }
+        "Read" => {
+            if let Some(file) = scalar(input, "file_path") {
+                return format!("  read {}", rel(&file, root));
+            }
+        }
+        "Skill" => {
+            if let Some(skill) = scalar(input, "skill") {
+                return format!("→ /{skill}");
+            }
+        }
+        _ => {}
+    }
     if let Some(said) = TELLING.iter().find_map(|key| scalar(input, key)) {
         return format!("→ {name}: {}", flat(&said, WIDTH));
     }
@@ -84,19 +158,29 @@ fn call(name: &str, input: &Value) -> String {
 }
 
 /// The text of a tool result, which the API gives as a string or as blocks.
-fn result_text(content: &Value) -> String {
+///
+/// A failure is read from its head — the error names itself first — and a
+/// success from its tail, where a command leaves its verdict.
+fn result_text(content: &Value, failed: bool) -> String {
+    let cut = |text: &str| {
+        if failed {
+            flat(text, WIDTH)
+        } else {
+            last_line(text)
+        }
+    };
     match content {
-        Value::String(text) => flat(text, WIDTH),
+        Value::String(text) => cut(text),
         Value::Array(blocks) => {
             let joined = blocks
                 .iter()
                 .filter_map(|block| scalar(block, "text"))
                 .collect::<Vec<_>>()
-                .join(" ");
-            flat(&joined, WIDTH)
+                .join("\n");
+            cut(&joined)
         }
         Value::Null => String::new(),
-        other => flat(&other.to_string(), WIDTH),
+        other => cut(&other.to_string()),
     }
 }
 
@@ -109,8 +193,9 @@ fn blocks(event: &Value) -> &[Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// What an `assistant` event did: its prose, and each tool it called.
-fn said(event: &Value) -> Vec<String> {
+/// What an `assistant` event did: its prose, and each tool it called. A
+/// reasoning block is not an event: the action it leads to is.
+fn said(event: &Value, root: &Path) -> Vec<String> {
     blocks(event)
         .iter()
         .filter_map(|block| match scalar(block, "type")?.as_str() {
@@ -123,8 +208,8 @@ fn said(event: &Value) -> Vec<String> {
             "tool_use" => Some(call(
                 &scalar(block, "name").unwrap_or_else(|| "?".to_string()),
                 block.get("input").unwrap_or(&Value::Null),
+                root,
             )),
-            "thinking" => Some("  (thinking)".to_string()),
             _ => None,
         })
         .collect()
@@ -136,11 +221,12 @@ fn came_back(event: &Value) -> Vec<String> {
         .iter()
         .filter(|block| scalar(block, "type").as_deref() == Some("tool_result"))
         .map(|block| {
-            let text = result_text(block.get("content").unwrap_or(&Value::Null));
+            let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
+            let text = result_text(block.get("content").unwrap_or(&Value::Null), failed);
             // A failing tool is the thing a human scanning this log is looking
             // for, so it says so rather than blending in.
-            if block.get("is_error").and_then(Value::as_bool) == Some(true) {
-                format!("← error: {text}")
+            if failed {
+                format!("✗ {text}")
             } else if text.is_empty() {
                 "← ok".to_string()
             } else {
@@ -169,9 +255,35 @@ fn finished(event: &Value) -> String {
 ///
 /// `thinking_tokens` is a running counter: it arrives several times per
 /// reasoning block, and seven consecutive lines of it bury the tool call that
-/// follows. The `(thinking)` line from the message itself already says the
-/// session is reasoning.
+/// follows.
 const COUNTERS: [&str; 1] = ["thinking_tokens"];
+
+/// What a `system` event says, or nothing: the model at `init`, a `git`
+/// state change by its kind, a published pull request by its number and
+/// URL; bookkeeping is dropped, and an unknown subtype is named rather than
+/// parsed.
+fn system(event: &Value) -> Vec<String> {
+    let subtype = scalar(event, "subtype").unwrap_or_default();
+    if COUNTERS.contains(&subtype.as_str()) || BOOKKEEPING.contains(&subtype.as_str()) {
+        return Vec::new();
+    }
+    match subtype.as_str() {
+        "vcs_state_changed" => {
+            let kind = scalar(event, "kind").unwrap_or_else(|| "change".to_string());
+            vec![format!("· git {kind}")]
+        }
+        "code_change_published" => {
+            let number = scalar(event, "identifier").map_or_else(String::new, |n| format!(" #{n}"));
+            let action = scalar(event, "action").unwrap_or_else(|| "published".to_string());
+            let url = scalar(event, "url").map_or_else(String::new, |u| format!(" {u}"));
+            vec![format!("· PR{number} {action}{url}")]
+        }
+        _ => {
+            let model = scalar(event, "model").map_or_else(String::new, |m| format!(" {m}"));
+            vec![format!("· {subtype}{model}")]
+        }
+    }
+}
 
 /// How much of the window is gone, when that is worth saying.
 ///
@@ -285,6 +397,14 @@ fn windows_in(info: &Value) -> Vec<harness_core::domain::quota::Window> {
 /// turn never produced an event.
 #[must_use]
 pub fn render(line: &str) -> Vec<String> {
+    render_under(line, Path::new(""))
+}
+
+/// [`render`], with every file path written relative to `root` — the
+/// workspace the session runs in, so a line reads `✎ edit src/a.rs` and not
+/// the forty characters of clone path before it.
+#[must_use]
+pub fn render_under(line: &str, root: &Path) -> Vec<String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return Vec::new();
@@ -293,15 +413,8 @@ pub fn render(line: &str) -> Vec<String> {
         return vec![flat(trimmed, WIDTH)];
     };
     match scalar(&event, "type").unwrap_or_default().as_str() {
-        "system" => {
-            let subtype = scalar(&event, "subtype").unwrap_or_default();
-            if COUNTERS.contains(&subtype.as_str()) {
-                return Vec::new();
-            }
-            let model = scalar(&event, "model").map_or_else(String::new, |m| format!(" {m}"));
-            vec![format!("· {subtype}{model}")]
-        }
-        "assistant" => said(&event),
+        "system" => system(&event),
+        "assistant" => said(&event, root),
         "user" => came_back(&event),
         "result" => vec![finished(&event)],
         "rate_limit_event" => rate_limit(&event).into_iter().collect(),
@@ -329,7 +442,7 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"content":[
             {"type":"tool_use","name":"Edit","input":{"file_path":"src/core/codec.ts",
              "old_string":"a very long block of code","new_string":"another one"}}]}}"#;
-        assert_eq!(render(line), ["→ Edit: src/core/codec.ts"]);
+        assert_eq!(render(line), ["✎ edit src/core/codec.ts"]);
     }
 
     #[test]
@@ -357,7 +470,7 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"content":[
             {"type":"text","text":"  "},
             {"type":"tool_use","name":"Read","input":{"file_path":"a.ts"}}]}}"#;
-        assert_eq!(render(line), ["→ Read: a.ts"]);
+        assert_eq!(render(line), ["  read a.ts"]);
     }
 
     #[test]
@@ -365,7 +478,7 @@ mod tests {
         // What a human scanning this log is looking for.
         let line = r#"{"type":"user","message":{"content":[
             {"type":"tool_result","is_error":true,"content":"1 test failed"}]}}"#;
-        assert_eq!(render(line), ["← error: 1 test failed"]);
+        assert_eq!(render(line), ["✗ 1 test failed"]);
     }
 
     #[test]
@@ -572,5 +685,76 @@ mod tests {
         let said = render(line);
         assert_eq!(said, ["→ Bash: a b c"]);
         assert!(!said[0].contains('\n'));
+    }
+
+    #[test]
+    fn a_bash_call_is_named_by_the_description_the_session_wrote() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"tool_use","name":"Bash","input":{"command":"python3 - <<'EOF'\nimport json\nEOF",
+             "description":"Run the full test suite twice in a row"}}]}}"#;
+        assert_eq!(render(line), ["→ Run the full test suite twice in a row"]);
+    }
+
+    #[test]
+    fn a_write_is_marked_with_its_file_relative_to_the_workspace() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"tool_use","name":"Write","input":{"file_path":"/w/lane-0/crates/a/src/lib.rs","content":"..."}}]}}"#;
+        assert_eq!(
+            render_under(line, Path::new("/w/lane-0")),
+            ["✎ write crates/a/src/lib.rs"]
+        );
+        assert_eq!(render(line), ["✎ write /w/lane-0/crates/a/src/lib.rs"]);
+    }
+
+    #[test]
+    fn a_read_sits_in_the_margin_like_prose() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"tool_use","name":"Read","input":{"file_path":"/w/src/a.rs","offset":10}}]}}"#;
+        assert_eq!(render_under(line, Path::new("/w")), ["  read src/a.rs"]);
+    }
+
+    #[test]
+    fn a_skill_call_names_the_skill() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"tool_use","name":"Skill","input":{"skill":"code-review","args":"medium"}}]}}"#;
+        assert_eq!(render(line), ["→ /code-review"]);
+    }
+
+    #[test]
+    fn a_reasoning_block_is_not_an_event() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"thinking","thinking":"let me see"},
+            {"type":"tool_use","name":"Bash","input":{"command":"ls","description":"List files"}}]}}"#;
+        assert_eq!(render(line), ["→ List files"]);
+    }
+
+    #[test]
+    fn a_successful_result_shows_its_last_line_where_the_verdict_sits() {
+        let line = r#"{"type":"user","message":{"content":[
+            {"type":"tool_result","tool_use_id":"t","content":"Compiling a\n   Running tests\ntest result: ok. 47 passed\n\n"}]}}"#;
+        assert_eq!(render(line), ["← test result: ok. 47 passed"]);
+    }
+
+    #[test]
+    fn bookkeeping_subtypes_are_dropped() {
+        for subtype in BOOKKEEPING {
+            let line = format!(r#"{{"type":"system","subtype":"{subtype}","task_id":"x"}}"#);
+            assert!(render(&line).is_empty(), "{subtype} should be silent");
+        }
+    }
+
+    #[test]
+    fn a_push_and_a_published_pull_request_are_named() {
+        assert_eq!(
+            render(r#"{"type":"system","subtype":"vcs_state_changed","kind":"push"}"#),
+            ["· git push"]
+        );
+        assert_eq!(
+            render(
+                r#"{"type":"system","subtype":"code_change_published","provider":"github",
+                    "url":"https://github.com/o/r/pull/29","identifier":"29","action":"created"}"#
+            ),
+            ["· PR #29 created https://github.com/o/r/pull/29"]
+        );
     }
 }

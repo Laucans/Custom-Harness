@@ -99,6 +99,15 @@ running lanes are waited for, and the watch exits 0, writing
 sends `SIGTERM`, so it drains too. A hard stop is `SIGKILL` to the watch's
 tree and process group, sent from outside (the view's switch).
 
+**A quiet tick costs no quota.** Before the snapshot, one conditional read
+(`GitHub::activity`, the newest issue or PR with `If-None-Match`): a `304`
+is free, and when nothing moved — no PR waiting on its checks, no lane just
+freed — the tick ends there (`routing::may_skip`, `routing::Pulse`). The
+forty-odd reads of a snapshot are paid when something changed, or every
+`routing::FULL_READ_EVERY` ticks as a valve. Under `--parallel` the tick
+then fills every free lane before dispatching its route — the runnable tasks
+first, then splits and refinements (`routing::lane_work`).
+
 Two rules, and they are not symmetric:
 
 - **A failed routing read stops the loop.** Bad credentials or an unreadable
