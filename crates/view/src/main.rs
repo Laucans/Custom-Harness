@@ -8,7 +8,7 @@
 //! The factory view: a local web server that renders the harness as an
 //! isometric plant, read from the traces the harness leaves behind.
 //!
-//! Two pollers, one server, one steward, one doctor, on one thread. The pollers read the
+//! Two pollers, one server, one steward, one doctor, one janitor, on one thread. The pollers read the
 //! traces every few seconds and the GitHub board every minute, and publish a
 //! `Snapshot` on a `watch` channel; the server hands that picture to the page
 //! and streams every change to it. The steward is an interactive Claude Code
@@ -23,6 +23,7 @@ mod adapters;
 mod cli;
 mod desk;
 mod domain;
+mod janitor;
 mod ports;
 mod server;
 
@@ -40,15 +41,20 @@ use harness_core::ports::shell::github::GitHub;
 use tokio::sync::watch;
 
 use crate::adapters::claude_bin;
+use crate::adapters::fs_notes::FsNotebook;
 use crate::adapters::fs_traces::FsTraces;
+use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
 use crate::adapters::limits_cli::CliLimits;
+use crate::adapters::product::{DirProduct, GhProduct};
 use crate::adapters::pty::Pty;
 use crate::adapters::watch_proc::WatchProcess;
 use crate::cli::Cli;
 use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
 use crate::domain::blueprint;
+use crate::domain::cleanup;
+use crate::domain::data_model::{self, DataModel};
 use crate::domain::doctor;
 use crate::domain::gates::{self, Told};
 use crate::domain::limits::Read;
@@ -56,7 +62,8 @@ use crate::domain::observe::{Observed, observe};
 use crate::domain::plant;
 use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
-use crate::ports::{Board, BoardReading, Limits, Plant, TerminalFactory, Traces};
+use crate::janitor::Janitor;
+use crate::ports::{Board, BoardReading, Limits, Plant, Product, TerminalFactory, Traces, Yard};
 use crate::server::{AppState, router};
 use harness_adapters::store::events::SqliteEvents;
 use harness_core::domain::quota::Reading;
@@ -72,15 +79,7 @@ async fn main() -> anyhow::Result<()> {
     let workspace = Workspace::new(&root);
     let traces: Arc<dyn Traces> = Arc::new(FsTraces::new(workspace.clone()));
     let project = project_of(&cli, &root);
-    let board: Option<Rc<dyn Board>> = (!cli.no_board).then(|| -> Rc<dyn Board> {
-        // A named target needs no checkout; an unnamed one reads this
-        // checkout's own `origin`, as `harness watch` does.
-        let gh: Rc<dyn GitHub> = Slug::parse(&cli.target_repo_url).map_or_else(
-            || Rc::new(GhCli::new(&root)) as Rc<dyn GitHub>,
-            |slug| Rc::new(GhCli::for_slug(&slug)) as Rc<dyn GitHub>,
-        );
-        Rc::new(GhBoard::new(gh))
-    });
+    let (board, product) = github_for(&cli, &root, &project);
     let program = program_for(&cli);
     let desk = desk_for(&cli, &root, &project, &program);
     let doctor = doctor_for(&cli, &root, &project, &program);
@@ -89,8 +88,11 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(WatchProcess::new(workspace.clone(), &cli.watch_command)) as Arc<dyn Plant>
     });
     let events = event_store(&workspace);
+    let janitor = (!cli.no_janitor)
+        .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>));
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
+    let (data_tx, data_rx) = watch::channel(None);
 
     // One per process: what tells a page the server it talks to was rebuilt.
     let build = jiff::Timestamp::now().to_string();
@@ -115,6 +117,11 @@ async fn main() -> anyhow::Result<()> {
         )) as Arc<dyn Limits>),
         claude_read: Arc::clone(&claude_read),
         events: events.clone(),
+        janitor: janitor.clone(),
+        data_model: data_rx,
+        data_enabled: product.is_some(),
+        notebook: Arc::new(FsNotebook::new(workspace.state_root())),
+        notes_lock: Arc::default(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -146,6 +153,10 @@ async fn main() -> anyhow::Result<()> {
                     Duration::from_secs(cli.board_interval.max(5)),
                 ))
             });
+            let janitor_task = janitor.map(|janitor| tokio::task::spawn_local(chronic(janitor)));
+            let data_task = product.map(|(product, every)| {
+                tokio::task::spawn_local(poll_data(product, data_tx, every))
+            });
             axum::serve(listener, router(state))
                 .with_graceful_shutdown(async {
                     let _ = tokio::signal::ctrl_c().await;
@@ -153,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("serving the page")?;
             traces_task.abort();
-            if let Some(task) = board_task {
+            for task in [board_task, janitor_task, data_task].into_iter().flatten() {
                 task.abort();
             }
             if let Some(desk) = desk {
@@ -171,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
 /// who is in.
 fn banner(cli: &Cli, workspace: &Workspace) -> String {
     format!(
-        "harness-view: http://{}:{} — reading {}{}{}{}",
+        "harness-view: http://{}:{} — reading {}{}{}{}{}",
         cli.bind,
         cli.port,
         workspace.rel(&workspace.logs()),
@@ -189,6 +200,11 @@ fn banner(cli: &Cli, workspace: &Workspace) -> String {
             ""
         } else {
             " — the doctor is in"
+        },
+        if cli.no_janitor {
+            ""
+        } else {
+            " — the janitor minds the yard"
         }
     )
 }
@@ -420,6 +436,103 @@ async fn poll_traces(
             tx.send_replace(Arc::new(snap));
             last_body = body;
         }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+/// The janitor's chronic round: the yard weighed at start and every two hours,
+/// swept on their own when allowed and past the threshold.
+async fn chronic(janitor: Janitor) {
+    loop {
+        let next = jiff::Timestamp::now()
+            .checked_add(jiff::SignedDuration::try_from(cleanup::CHRONIC).unwrap_or_default())
+            .unwrap_or_else(|_| jiff::Timestamp::now());
+        janitor.plan(next.strftime("%Y-%m-%dT%H:%M:%SZ").to_string());
+        if let Some(report) = janitor.round().await {
+            tracing::info!(
+                "the janitor swept on their own: {} freed, {} heap(s) gone, {} refused",
+                cleanup::human(report.freed),
+                report.removed.len(),
+                report.failed.len()
+            );
+        }
+        tokio::time::sleep(cleanup::CHRONIC).await;
+    }
+}
+
+/// Where the data model is read, and how often.
+type DataSource = (Rc<dyn Product>, Duration);
+
+/// What the view reads on GitHub — the board, and the product's data
+/// model — unless `--no-board`; the data model may come from a folder.
+fn github_for(
+    cli: &Cli,
+    root: &Path,
+    project: &Project,
+) -> (Option<Rc<dyn Board>>, Option<DataSource>) {
+    let gh: Option<Rc<dyn GitHub>> = (!cli.no_board).then(|| {
+        // A named target needs no checkout; an unnamed one reads this
+        // checkout's own `origin`, as `harness watch` does.
+        Slug::parse(&cli.target_repo_url).map_or_else(
+            || Rc::new(GhCli::new(root)) as Rc<dyn GitHub>,
+            |slug| Rc::new(GhCli::for_slug(&slug)) as Rc<dyn GitHub>,
+        )
+    });
+    let board = gh
+        .clone()
+        .map(|gh| Rc::new(GhBoard::new(gh)) as Rc<dyn Board>);
+    (board, product_for(cli, root, project, gh.as_ref()))
+}
+
+/// Where the sample data model lies, for `--demo`.
+const SAMPLE_DATA: &str = "crates/view/sample";
+
+/// Where the product's data model is read, and how often: a folder the
+/// human named, the sample under `--demo`, else GitHub at the integration
+/// branch — nothing under `--no-board`.
+fn product_for(
+    cli: &Cli,
+    root: &Path,
+    project: &Project,
+    gh: Option<&Rc<dyn GitHub>>,
+) -> Option<DataSource> {
+    let local = cli
+        .data_dir
+        .clone()
+        .or_else(|| cli.demo.then(|| root.join(SAMPLE_DATA)));
+    if let Some(dir) = local {
+        return Some((Rc::new(DirProduct::new(&dir)), Duration::from_secs(5)));
+    }
+    let gh = Rc::clone(gh?);
+    Some((
+        Rc::new(GhProduct::new(gh, &project.slug, &cli.integration_branch)),
+        Duration::from_secs(cli.board_interval.max(5)),
+    ))
+}
+
+/// Reads the product's two data files on a cadence and publishes the merge.
+async fn poll_data(
+    product: Rc<dyn Product>,
+    tx: watch::Sender<Option<Arc<DataModel>>>,
+    interval: Duration,
+) {
+    loop {
+        let schema = product
+            .file(data_model::SCHEMA_PATH)
+            .await
+            .map_err(|halt| halt.to_string());
+        let model = product
+            .file(data_model::MODEL_PATH)
+            .await
+            .map_err(|halt| halt.to_string());
+        let merged = data_model::build(&product.origin(), &schema, &model);
+        tx.send_if_modified(|kept| {
+            let changed = kept.as_deref() != Some(&merged);
+            if changed {
+                *kept = Some(Arc::new(merged));
+            }
+            changed
+        });
         tokio::time::sleep(interval).await;
     }
 }

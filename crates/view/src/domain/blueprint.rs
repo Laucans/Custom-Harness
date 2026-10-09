@@ -125,7 +125,7 @@ pub const ROOMS: [Room; 6] = [
         id: 2,
         key: "office",
         name: "Architecture office",
-        blurb: "The issues in detail, the mock-up, the feature list, the data sources — and where the need gets built with Claude Code.",
+        blurb: "The issues in detail, the mock-up, the feature list, the data model — and where the need gets built with Claude Code.",
         status: RoomStatus::Draft,
     },
     Room {
@@ -816,7 +816,7 @@ mod tests {
             None,
         );
         assert_eq!(none.len(), 1);
-        assert!(none[0].gates.is_empty());
+        assert_eq!(none[0].gates.len(), 0);
     }
 
     #[test]

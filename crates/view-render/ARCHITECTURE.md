@@ -62,7 +62,8 @@ lit. The props wear that palette in *Fallout*'s retro-futurism: chrome
 rings, rivets and skirts, portholes, radar dishes and red beacons, a vault's
 gear door for the entrance, CRT terminals for printers and screens, a
 *Futurama*'s Bender and Hedonismbot for the robots, a Vault Boy for the
-steward, a lobster-faced physician out of the same show for the doctor. The
+steward, a lobster-faced physician out of the same show for the doctor, and
+its weary janitor, moustache and push broom, by the tower and the water. The
 plant itself is
 *Futurama*'s Planet Express — a brick hangar under dark barrel vaults
 framed by red arches, beside a tall tapering brick tower with a balcony, a
@@ -103,6 +104,8 @@ that moves. In 3D that becomes:
   inspects, sprawled on his chaise with his laurels, his belly and a
   clipboard held up, eyes that open while he works; the steward as the
   Vault Boy — blue jumpsuit, blond quiff, a wink and a thumbs-up; the
+  janitor as Scruffy — teal coveralls, a brown cap, a white walrus
+  moustache, half-shut eyes, both hands on a push broom; the
   doctor as Zoidberg — coral shell, four mouth tentacles, head mirror, a
   white coat over scrubs, a blue book under the claw) and
   `tiny-skia` rasterises it into a 256×384 RGBA texture at run time, once per

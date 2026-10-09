@@ -13,7 +13,7 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(name = "harness-view", version, about)]
 // A command line's switches are bools by nature: `--no-board`, `--no-steward`,
-// `--no-doctor`, `--demo` are each present or absent, and an enum for each
+// `--no-doctor`, `--no-janitor`, `--demo` are each present or absent, and an enum for each
 // would only rename `true`.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
@@ -48,6 +48,12 @@ pub struct Cli {
     #[arg(long)]
     pub no_board: bool,
 
+    /// Read the product's data model (`data/schema.sql`, `data/model.json`)
+    /// from this folder, the product's root, instead of GitHub at the
+    /// integration branch. `--demo` without it shows a sample.
+    #[arg(long)]
+    pub data_dir: Option<PathBuf>,
+
     /// No steward: the plant has nobody to talk to.
     #[arg(long)]
     pub no_steward: bool,
@@ -74,6 +80,10 @@ pub struct Cli {
     /// The effort the doctor's `claude` opens with (`--effort`).
     #[arg(long, env = "DOCTOR_EFFORT", default_value = "high")]
     pub doctor_effort: String,
+
+    /// No janitor: the yard is never weighed nor swept.
+    #[arg(long)]
+    pub no_janitor: bool,
 
     /// Passed to the steward's and the doctor's `claude` as `--permission-mode`, like the
     /// launcher passes it to every session.
