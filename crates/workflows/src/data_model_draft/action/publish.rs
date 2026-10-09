@@ -26,6 +26,21 @@ pub struct Publish {
     pub base: String,
 }
 
+/// What the session changed besides the model. `git status` names a new
+/// folder rather than the files in it: the model's own folder, new on a
+/// branch that had no model, is the model.
+#[must_use]
+pub fn unexpected(dirty: Vec<String>) -> Vec<String> {
+    let folder = MODEL_PATH.rsplit_once('/').map_or("", |(dir, _)| dir);
+    dirty
+        .into_iter()
+        .filter(|path| {
+            let path = path.trim_end_matches('/');
+            path != MODEL_PATH && path != folder
+        })
+        .collect()
+}
+
 /// The pull request's body: what it is, and where the draft still disagrees.
 #[must_use]
 pub fn body(base: &str, sha: &str, tables: usize, divergences: &[String]) -> String {
@@ -59,12 +74,7 @@ impl Action<DraftState> for Publish {
         let clone = ctx.state.clone.clone();
         let repo = self.repos.at(&clone);
         // Only the model: a session that touched anything else is not published.
-        let others: Vec<String> = repo
-            .dirty_files()
-            .await?
-            .into_iter()
-            .filter(|path| path != MODEL_PATH)
-            .collect();
+        let others = unexpected(repo.dirty_files().await?);
         if !others.is_empty() {
             return Err(Halt::Failed(format!(
                 "the session changed more than data/model.json: {}",
@@ -113,6 +123,23 @@ impl Action<DraftState> for Publish {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_model_or_its_new_folder_is_all_a_session_may_change() {
+        assert!(unexpected(vec!["data/model.json".into()]).is_empty());
+        assert!(
+            unexpected(vec!["data/".into()]).is_empty(),
+            "a new folder, as git names it"
+        );
+        assert_eq!(
+            unexpected(vec![
+                "data/".into(),
+                "src/main.rs".into(),
+                "database/".into()
+            ]),
+            ["src/main.rs", "database/"]
+        );
+    }
 
     #[test]
     fn the_body_says_what_to_read_and_where_it_disagrees() {
