@@ -32,12 +32,13 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
 use crate::desk::Desk;
+use crate::domain::blueprint;
 use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::snapshot::Snapshot;
 use crate::domain::steward::Status;
-use crate::domain::traces::{is_run_id, run_of, stage_logs};
+use crate::domain::traces::{is_run_id, line_of_run, run_of, stage_logs};
 use crate::ports::{BoardReading, Limits, Plant, Traces};
 use harness_core::domain::quota::Reading;
 
@@ -99,6 +100,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/snapshot", get(snapshot))
         .route("/api/events", get(events))
         .route("/api/runs/{workflow}/locate", get(locate_run))
+        .route("/api/run-of/{run}", get(line_of))
         .route("/api/runs/{workflow}/{run}/stages", get(run_stages))
         .route("/api/runs/{workflow}/{run}/{file}", get(run_file))
         .route("/api/issues/{number}", get(issue))
@@ -262,6 +264,38 @@ async fn locate_run(
     }
     json(&Located {
         run: run_of(&state.traces.runs(&workflow), query.issue, &query.at),
+    })
+}
+
+/// `?stage=…`: the stage a status was of, to tell two lines apart.
+#[derive(Debug, Deserialize)]
+struct LineOfQuery {
+    stage: Option<String>,
+}
+
+/// The line a run id belongs to.
+#[derive(Debug, Serialize)]
+struct LineOf {
+    workflow: Option<String>,
+}
+
+/// The line whose logs hold `run`, so a status known only by its run id —
+/// a paid session, a stop — leads to those logs.
+async fn line_of(
+    State(state): State<AppState>,
+    Path(run): Path<String>,
+    Query(query): Query<LineOfQuery>,
+) -> Response {
+    if !is_run_id(&run) {
+        return not_found("no such run");
+    }
+    json(&LineOf {
+        workflow: line_of_run(
+            &run,
+            query.stage.as_deref(),
+            &blueprint::lines(),
+            |workflow| state.traces.runs(workflow),
+        ),
     })
 }
 

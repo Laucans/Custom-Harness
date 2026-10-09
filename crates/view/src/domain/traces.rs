@@ -12,6 +12,7 @@
 
 use serde::Serialize;
 
+use crate::domain::blueprint::Line;
 use crate::domain::journal::{self, Journal};
 use crate::ports::LedgerRow;
 
@@ -99,6 +100,37 @@ pub fn workflow_of_route(route: &str) -> Option<&'static str> {
         "MergeMainAgent" => Some("main-agent-merge"),
         "MergeIntoMilestone" => Some("milestone-merge"),
         _ => None,
+    }
+}
+
+/// The line whose logs hold `run` — what a status named only by its run id
+/// leads to. The one line that has the folder; when two lines share the id,
+/// the one with a station of `stage`. `None` when no line has it, or when
+/// the stage cannot tell the lines that do apart.
+#[must_use]
+pub fn line_of_run(
+    run: &str,
+    stage: Option<&str>,
+    lines: &[Line],
+    runs_of: impl Fn(&str) -> Vec<String>,
+) -> Option<String> {
+    let holding: Vec<&Line> = lines
+        .iter()
+        .filter(|line| runs_of(&line.id).iter().any(|r| r == run))
+        .collect();
+    let staged = |line: &&&Line| {
+        stage.is_some_and(|stage| {
+            line.stations
+                .iter()
+                .any(|s| s.stage.as_deref() == Some(stage))
+        })
+    };
+    match holding.as_slice() {
+        [one] => Some(one.id.clone()),
+        many => match many.iter().filter(staged).collect::<Vec<_>>().as_slice() {
+            [one] => Some(one.id.clone()),
+            _ => None,
+        },
     }
 }
 
@@ -718,6 +750,35 @@ mod tests {
 
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_run_leads_to_the_line_that_holds_it() {
+        let lines = crate::domain::blueprint::lines();
+        let runs_of = |workflow: &str| -> Vec<String> {
+            match workflow {
+                "agent-loop" => vec![
+                    "20261009-023527-16".to_string(),
+                    "20261009-015325".to_string(),
+                ],
+                "pr-review" => vec!["20261009-015325".to_string()],
+                _ => Vec::new(),
+            }
+        };
+        assert_eq!(
+            line_of_run("20261009-023527-16", None, &lines, runs_of).as_deref(),
+            Some("agent-loop")
+        );
+        assert_eq!(line_of_run("20261001-000000", None, &lines, runs_of), None);
+        assert_eq!(
+            line_of_run("20261009-015325", None, &lines, runs_of),
+            None,
+            "two lines hold it and no stage tells them apart"
+        );
+        assert_eq!(
+            line_of_run("20261009-015325", Some("brief"), &lines, runs_of).as_deref(),
+            Some("pr-review")
+        );
+    }
 
     const WATCH: &str = "\
 [2026-10-07T05:53:00Z] watch: every 30s on Laucans/dnd_helper — journal .llocal/logs/agent-loop/watch.log
