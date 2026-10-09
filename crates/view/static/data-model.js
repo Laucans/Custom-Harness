@@ -63,7 +63,34 @@
       const table = target.slice(6).split('.').slice(0, -1).join('.');
       return board.content.querySelector(`[data-pin="${CSS.escape('table:' + table)}"]`);
     };
-    const board = window.HarnessBoard.create(q('.dm-board'), { id: 'data-model', describe, resolve, bounds: () => st.bounds });
+    // What a pin's AI session is told of what the pin sits on: the field or
+    // the table as this version shows it.
+    const context = (target) => {
+      const m = st.model;
+      if (!m || !target) return '';
+      const name = target.slice(target.indexOf(':') + 1);
+      const version = `Shown: ${m.origin}.`;
+      if (target.startsWith('table:')) {
+        const t = m.tables.find((x) => x.name === name);
+        if (!t) return version;
+        const fields = t.fields.map((f) => `  - ${f.name} ${f.data_type}${f.purpose ? ' — ' + f.purpose : ''}`).join('\n');
+        return `${version}\nTable ${t.name}: ${t.purpose || '(no purpose written)'}\nBusiness rules: ${t.business.join(' · ') || 'none'}\nTechnical rules: ${t.technical.join(' · ') || 'none'}\nFields:\n${fields}`;
+      }
+      const cut = name.lastIndexOf('.');
+      const t = m.tables.find((x) => x.name === name.slice(0, cut));
+      const f = t && t.fields.find((x) => x.name === name.slice(cut + 1));
+      if (!f) return version;
+      const links = m.links
+        .filter((l) => (l.from_table === t.name && l.from_field === f.name) || (l.to_table === t.name && l.to_field === f.name))
+        .map((l) => `  - ${l.from_table}.${l.from_field} → ${l.to_table}.${l.to_field} (${l.kind}${l.on_delete ? ', on delete ' + l.on_delete : ''})`)
+        .join('\n');
+      return `${version}\nField ${t.name}.${f.name}, type ${f.data_type}${f.declared_type ? ` (the model says ${f.declared_type})` : ''}, ${f.nullable === false ? 'required' : 'may be empty'}.\n`
+        + `Purpose: ${f.purpose || '(none written)'}\nTechnical rules: ${f.technical.join(' · ') || 'none'}\nBusiness rules: ${f.business.join(' · ') || 'none'}\nLinks:\n${links || '  none'}\nIts table, ${t.name}: ${t.purpose || '(no purpose written)'}`;
+    };
+    const onSession = opts && opts.onSession
+      ? (note, ctx) => opts.onSession({ board: 'data-model', id: note.id, on: describe(note.target), kind: note.kind, context: ctx })
+      : null;
+    const board = window.HarnessBoard.create(q('.dm-board'), { id: 'data-model', describe, resolve, context, onSession, bounds: () => st.bounds });
 
     // ---- reading -------------------------------------------------------------------
     async function load() {
@@ -427,6 +454,7 @@
 
     load();
     return {
+      reload: () => board.reload(),
       destroy() {
         st.gone = true;
         clearTimeout(st.timer);

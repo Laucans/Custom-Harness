@@ -667,3 +667,30 @@ label.switch .track::after { content: ''; position: absolute; top: 2px; left: 2p
 label.switch input:checked + .track { background: color-mix(in srgb, var(--wrench) 35%, transparent); border-color: var(--wrench); }
 label.switch input:checked + .track::after { transform: translateX(12px); background: var(--wrench); }
 label.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- The pins' kinds: note (yellow), brainstorm (green), asking (orange) ---- */
+:root { --pin-note: #e2b240; --pin-brainstorm: #4fbf72; --pin-asking: #f08a2c; }
+.hb-pin.note { background: var(--pin-note); }
+.hb-pin.brainstorm { background: var(--pin-brainstorm); border-color: #10351d; }
+.hb-pin.brainstorm > span { color: #0b2915; }
+.hb-pin.asking { background: var(--pin-asking); border-color: #3d1d00; }
+.hb-pin.asking > span { color: #2e1500; }
+.hb-pin.note.empty { background: #f3e7c9; }
+.hb-note[data-kind="brainstorm"] { border-color: var(--pin-brainstorm); }
+.hb-note[data-kind="asking"] { border-color: var(--pin-asking); }
+.hb-kinds { display: flex; gap: 4px; margin: 6px 0 0; }
+.hb-kind { flex: 1; background: transparent; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: 12px var(--sans); cursor: pointer; }
+.hb-kind:hover:not(:disabled) { color: var(--text); }
+.hb-kind:disabled { opacity: 0.5; cursor: progress; }
+.hb-kind.note.on { background: var(--pin-note); border-color: var(--pin-note); color: #2a1d00; }
+.hb-kind.brainstorm.on { background: var(--pin-brainstorm); border-color: var(--pin-brainstorm); color: #0b2915; }
+.hb-kind.asking.on { background: var(--pin-asking); border-color: var(--pin-asking); color: #2e1500; }
+.hb-session { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.hb-session[hidden] { display: none; }
+.hb-session button { background: var(--panel-2); color: var(--text); border: 1px solid var(--pin-brainstorm); border-radius: 6px; padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
+.hb-note[data-kind="asking"] .hb-session button { border-color: var(--pin-asking); }
+.hb-session button:hover { background: var(--bg); }
+.hb-turns { font: 11px var(--mono); color: var(--dim); }
+.hb-list button b.brainstorm { color: var(--pin-brainstorm); }
+.hb-list button b.asking { color: var(--pin-asking); }
+.hb-tools [data-hb="undo"] { color: var(--dim); }

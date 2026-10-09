@@ -587,7 +587,11 @@
 
   // The panes drawn on a board: what mounts each.
   const CANVASES = {
-    data_model: (el, p) => (window.DataModelPane ? window.DataModelPane.mount(el, { branch: p.branch, dir: p.dir }) : null),
+    data_model: (el, p) => (window.DataModelPane ? window.DataModelPane.mount(el, {
+      branch: p.branch,
+      dir: p.dir,
+      onSession: (s) => openPane({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: p.branch, dir: p.dir }),
+    }) : null),
   };
 
   // ---- D · the pane ------------------------------------------------------------
@@ -980,6 +984,21 @@
         ['What did it cost today?', 'What did the plant spend today, and on what?'],
       ],
     },
+    // A pin's AI session: opened by the server with the pin's conversation
+    // handed back, closed when the pane is left — its turns are then kept.
+    note_session: {
+      title: (p) => `${p.pin === 'asking' ? 'Asking' : 'Brainstorm'} · ${p.on}`,
+      flag: '--no-steward',
+      chips: [
+        ['Where are we?', 'Summarize where we are: what is decided, what is open.'],
+        ['What are the options?', 'List the options we have here, with their trade-offs.'],
+        ['What would you recommend?', 'What would you recommend, and why?'],
+      ],
+      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '' }) })
+        .then(async (r) => (r.ok ? r.json() : { available: false, why: await r.text() })),
+      socket: (p) => `/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/term`,
+      close: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/close`, { method: 'POST', keepalive: true }),
+    },
     doctor: {
       title: 'The doctor · a check-up of the plant',
       flag: '--no-doctor',
@@ -1002,21 +1021,25 @@
   function teardownTerminal() {
     teardownCanvas();
     if (!S.term) return;
+    // A pin's session ends with its pane: its turns are kept with the pin.
+    if (S.term.close) { try { S.closing = S.term.close(); } catch (e) { /* the server keeps what it can */ } }
     try { S.term.ro.disconnect(); } catch (e) { /* already gone */ }
     try { S.term.ws.close(); } catch (e) { /* already gone */ }
     try { S.term.term.dispose(); } catch (e) { /* already gone */ }
     S.term = null;
   }
   function stewardStatus(text) { const el = $('term-status'); if (el) el.textContent = text; }
-  async function mountTerminal(who) {
+  async function mountTerminal(who, p) {
     const el = $('term');
     if (!el) return;
     const desk = TERMINALS[who];
     let status = null;
-    try { status = await (await fetch('/api/' + who)).json(); } catch (e) { /* shown below */ }
+    if (desk.status) stewardStatus('opening the session — a long conversation is summarized first…');
+    try { status = desk.status ? await desk.status(p) : await (await fetch('/api/' + who)).json(); } catch (e) { /* shown below */ }
+    if (!S.pane || S.pane.kind !== who || !$('term')) return;
     if (!status || !status.available) {
       $('pane-body').classList.remove('terminal');
-      $('pane-body').innerHTML = `<div class="callout">No ${who}: the view runs with <code>${desk.flag}</code>, or the server is unreachable.</div>`;
+      $('pane-body').innerHTML = `<div class="callout">No ${who === 'note_session' ? 'session' : who}: ${status && status.why ? esc(status.why) : `the view runs with <code>${desk.flag}</code>, or the server is unreachable`}.</div>`;
       return;
     }
     if (typeof Terminal === 'undefined' || typeof FitAddon === 'undefined') {
@@ -1033,7 +1056,8 @@
     term.open(el);
     try { fit.fit(); } catch (e) { /* not laid out yet */ }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/api/${who}/term?cols=${term.cols}&rows=${term.rows}`);
+    const path = desk.socket ? desk.socket(p) : `/api/${who}/term`;
+    const ws = new WebSocket(`${proto}://${location.host}${path}?cols=${term.cols}&rows=${term.rows}`);
     ws.binaryType = 'arraybuffer';
     const enc = new TextEncoder();
     const send = (bytes) => { if (ws.readyState === 1) ws.send(bytes); };
@@ -1047,7 +1071,7 @@
       try { fit.fit(); send(JSON.stringify({ t: 'size', cols: term.cols, rows: term.rows })); } catch (e) { /* mid-layout */ }
     });
     ro.observe(el);
-    S.term = { term, ws, ro };
+    S.term = { term, ws, ro, close: desk.close ? () => desk.close(p) : null };
     const restart = $('term-restart');
     if (restart) restart.onclick = () => {
       if (ws.readyState === 1 && window.confirm(`Kill the ${who}'s Claude Code and start a fresh one?`)) {
@@ -1082,12 +1106,12 @@
   }
 
   // A desk's pane: the status bar, the chips, the terminal.
-  function terminalPane(who) {
+  function terminalPane(who, p) {
     const desk = TERMINALS[who];
     const html = `<div class="steward-bar"><span id="term-status">connecting…</span><span class="spacer"></span><button class="mini" id="term-restart" title="kill this Claude Code and start a fresh one">restart</button></div>`
       + '<div class="chips">' + desk.chips.map(([label, say]) => `<button data-type="${esc(say)}">${esc(label)}</button>`).join('') + '</div>'
       + '<div id="term"></div>';
-    return [desk.title, html, () => { mountTerminal(who); }];
+    return [typeof desk.title === 'function' ? desk.title(p) : desk.title, html, (again) => { if (!again || !S.term) mountTerminal(who, p); }, true];
   }
   const kv = (pairs) => '<dl class="kv">' + pairs.filter(([, v]) => v != null && v !== '').map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('') + '</dl>';
   const tag = (text, cls = '') => `<span class="tag ${cls}">${esc(text)}</span>`;
@@ -2085,8 +2109,9 @@
       return ['The janitor · the yard', html, (refresh) => { if (!refresh) janitorLoad(true); }, true];
     },
 
-    steward(p) { return terminalPane(p.kind); },
-    doctor(p) { return terminalPane(p.kind); },
+    steward(p) { return terminalPane(p.kind, p); },
+    doctor(p) { return terminalPane(p.kind, p); },
+    note_session(p) { return terminalPane(p.kind, p); },
 
     notifications(p) {
       const level = LEVELS.some(([l]) => l === p.level) ? p.level : 'error';
@@ -2124,6 +2149,8 @@
         if (again && S.canvas) return;
         teardownCanvas();
         S.canvas = CANVASES.data_model($('dm-host'), p);
+        // Back from a pin's session: its turns are counted once it is closed.
+        if (S.closing) { const canvas = S.canvas; S.closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); S.closing = null; }
       }, true];
     },
 
@@ -2138,6 +2165,9 @@
       return [p.title || 'Coming', `<div class="callout soon">${esc(p.text || 'Not built yet.')}</div>`];
     },
   };
+
+  // A page left with a pin's session open still keeps its turns.
+  window.addEventListener('pagehide', () => { if (S.term && S.term.close) S.term.close(); });
 
   // ---- go --------------------------------------------------------------------
   fromHash();

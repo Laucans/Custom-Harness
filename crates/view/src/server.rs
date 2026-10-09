@@ -26,7 +26,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::WatchStream;
@@ -34,7 +34,7 @@ use tokio_stream::{Stream, StreamExt as _};
 
 use crate::data_desk::{DataDesk, Issue, Wanted};
 use crate::desk::Desk;
-use crate::domain::annotations::{self, Note};
+use crate::domain::annotations;
 use crate::domain::assemble;
 use crate::domain::blueprint;
 use crate::domain::cleanup::Settings;
@@ -52,7 +52,8 @@ use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::janitor::Janitor;
-use crate::ports::{BoardReading, Limits, Notebook, Plant, Prompts, Traces, TrialAsk, Trials};
+use crate::note_desks::NoteDesks;
+use crate::ports::{BoardReading, Limits, NoteStore, Plant, Prompts, Traces, TrialAsk, Trials};
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
 use harness_workflows::data_snapshot::data::model::DataModel;
@@ -100,10 +101,10 @@ pub struct AppState {
     /// The product's data model, its versions — `None` when nothing can
     /// read it (`--no-board` without `--data-dir`).
     pub data: Option<DataDesk>,
-    /// Where the human's pins are kept.
-    pub notebook: Arc<dyn Notebook>,
-    /// Held across a pin list's read-modify-write.
-    pub notes_lock: Arc<std::sync::Mutex<()>>,
+    /// Where the human's pins and their conversations are kept.
+    pub pins: Arc<dyn NoteStore>,
+    /// The pins' AI sessions — `None` when the view runs no terminal.
+    pub note_desks: Option<NoteDesks>,
     /// The prompt book, read only, and the drafts the human leaves for the
     /// next start.
     pub prompts: Arc<dyn Prompts>,
@@ -176,7 +177,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model/versions", get(data_versions))
         .route("/api/data-model/divergence", get(data_divergence))
         .route("/api/data-model/issue", post(data_issue))
-        .route("/api/notes/{board}", get(notes).put(put_notes))
+        .route("/api/notes/{board}", get(notes))
+        .route("/api/notes/{board}/undo", post(undo_note))
+        .route("/api/notes/{board}/{id}", put(put_note).delete(delete_note))
+        .route("/api/notes/{board}/{id}/session", post(open_session))
+        .route("/api/notes/{board}/{id}/session/term", get(session_term))
+        .route("/api/notes/{board}/{id}/session/close", post(close_session))
+        .route("/api/notes/{board}/{id}/into/{kind}", post(turn_note))
         .route("/api/prompts/edit", post(edit_prompt))
         .route("/api/prompts/restore", post(restore_prompt))
         .route("/api/prompts/withdraw", post(withdraw_prompt))
@@ -963,54 +970,183 @@ async fn data_issue(State(state): State<AppState>, body: Bytes) -> Response {
     }
 }
 
-/// A board's pins.
+/// A board's pins, the deleted ones left out.
 async fn notes(State(state): State<AppState>, Path(board): Path<String>) -> Response {
     if !annotations::is_board(&board) {
         return not_found("no such board");
     }
-    let shelf = annotations::shelf(state.notebook.read().as_deref());
-    json(&shelf.get(&board).cloned().unwrap_or_default())
+    match state.pins.notes(&board) {
+        Ok(kept) => json(
+            &kept
+                .into_iter()
+                .filter(|k| k.deleted_at.is_none())
+                .map(|k| k.note)
+                .collect::<Vec<_>>(),
+        ),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
 }
 
-/// Replaces a board's pins with the list the page sends.
-async fn put_notes(
+/// The clock, as the traces write it.
+fn stamp() -> String {
+    jiff::Timestamp::now()
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
+/// Keeps one pin — new, moved, rewritten, its kind changed.
+async fn put_note(
     State(state): State<AppState>,
-    Path(board): Path<String>,
+    Path((board, id)): Path<(String, String)>,
     body: Bytes,
 ) -> Response {
+    if !annotations::is_board(&board) || !annotations::is_id(&id) {
+        return not_found("no such pin");
+    }
+    let note = match serde_json::from_slice::<annotations::Note>(&body) {
+        Ok(note) if note.id == id => note,
+        Ok(_) => {
+            return (StatusCode::BAD_REQUEST, "the pin's id is not the path's").into_response();
+        }
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("not a pin: {e}")).into_response(),
+    };
+    let note = match annotations::checked(note) {
+        Ok(note) => note,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    match state.pins.put(&board, &note) {
+        Ok(()) => json(&note),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// Deletes a pin — only marked, so ctrl+z brings it back; the deleted pins
+/// past the undo depth are destroyed, conversation and all.
+async fn delete_note(
+    State(state): State<AppState>,
+    Path((board, id)): Path<(String, String)>,
+) -> Response {
+    if !annotations::is_board(&board) || !annotations::is_id(&id) {
+        return not_found("no such pin");
+    }
+    // An open session's turns are kept with the pin before it goes.
+    if let Some(desks) = &state.note_desks {
+        let _ = desks.close(&board, &id).await;
+    }
+    let done = state
+        .pins
+        .mark_deleted(&board, &id, Some(&stamp()))
+        .and_then(|()| state.pins.notes(&board))
+        .and_then(|kept| {
+            let deleted: Vec<(String, String)> = kept
+                .into_iter()
+                .filter_map(|k| Some((k.note.id, k.deleted_at?)))
+                .collect();
+            annotations::beyond_undo(&deleted)
+                .iter()
+                .try_for_each(|gone| state.pins.destroy(&board, gone))
+        });
+    match done {
+        Ok(()) => json(&serde_json::json!({ "deleted": id })),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// Brings back the pin deleted last.
+async fn undo_note(State(state): State<AppState>, Path(board): Path<String>) -> Response {
     if !annotations::is_board(&board) {
         return not_found("no such board");
     }
-    let list = match serde_json::from_slice::<Vec<Note>>(&body) {
-        Ok(list) => list,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("not a list of pins: {e}")).into_response();
-        }
+    let last = match state.pins.notes(&board) {
+        Ok(kept) => kept
+            .into_iter()
+            .filter(|k| k.deleted_at.is_some())
+            .max_by(|a, b| a.deleted_at.cmp(&b.deleted_at)),
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     };
-    let list = match annotations::checked(list) {
-        Ok(list) => list,
-        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    let Some(last) = last else {
+        return not_found("nothing to bring back");
     };
-    // Read, change, write: no await between, the lock only keeps two pages apart.
-    let Ok(_guard) = state.notes_lock.lock() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "the notebook is poisoned",
-        )
-            .into_response();
-    };
-    let mut shelf = annotations::shelf(state.notebook.read().as_deref());
-    if list.is_empty() {
-        shelf.remove(&board);
-    } else {
-        shelf.insert(board, list.clone());
-    }
-    let written = serde_json::to_string_pretty(&shelf)
-        .map_err(|e| e.to_string())
-        .and_then(|text| state.notebook.write(&text));
-    match written {
-        Ok(()) => json(&list),
+    match state.pins.mark_deleted(&board, &last.note.id, None) {
+        Ok(()) => json(&last.note),
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// What the page sends to open a pin's session: what it shows of the pin's
+/// target.
+#[derive(Debug, Default, Deserialize)]
+struct SessionAsk {
+    #[serde(default)]
+    context: String,
+}
+
+/// Why a pin has no session here.
+const NO_SESSIONS: &str = "no AI session here: the view runs with --no-steward";
+
+/// Opens a pin's session — or finds it open — and says what runs it.
+async fn open_session(
+    State(state): State<AppState>,
+    Path((board, id)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let Some(desks) = state.note_desks.clone() else {
+        return not_found(NO_SESSIONS);
+    };
+    let ask: SessionAsk = serde_json::from_slice(&body).unwrap_or_default();
+    // The page's context is a description, never a megabyte.
+    let context: String = ask.context.chars().take(20_000).collect();
+    match desks.open(&board, &id, context).await {
+        Ok(command) => json(&serde_json::json!({ "available": true, "command": command })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
+/// A pin's session's terminal.
+async fn session_term(
+    ws: WebSocketUpgrade,
+    Path((board, id)): Path<(String, String)>,
+    Query(query): Query<TermQuery>,
+    State(state): State<AppState>,
+) -> Response {
+    let desk = state
+        .note_desks
+        .as_ref()
+        .and_then(|desks| desks.desk(&board, &id));
+    term(ws, &query, desk, "this pin's session is not open")
+}
+
+/// Closes a pin's session; its turns join the pin's conversation.
+async fn close_session(
+    State(state): State<AppState>,
+    Path((board, id)): Path<(String, String)>,
+) -> Response {
+    let Some(desks) = state.note_desks.clone() else {
+        return not_found(NO_SESSIONS);
+    };
+    match desks.close(&board, &id).await {
+        Ok(turns) => json(&serde_json::json!({ "turns": turns })),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// Turns a brainstorm into a note (its conclusion) or an asking (its
+/// request), the AI writing either.
+async fn turn_note(
+    State(state): State<AppState>,
+    Path((board, id, kind)): Path<(String, String, String)>,
+) -> Response {
+    let kind = match kind.as_str() {
+        "note" => annotations::Kind::Note,
+        "asking" => annotations::Kind::Asking,
+        _ => return not_found("a brainstorm turns into a note or an asking"),
+    };
+    let Some(desks) = state.note_desks.clone() else {
+        return not_found(NO_SESSIONS);
+    };
+    match desks.turn_into(&board, &id, kind).await {
+        Ok(note) => json(&note),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }
 }
 
@@ -1626,8 +1762,8 @@ mod tests {
             events: None,
             janitor: None,
             data: None,
-            notebook: Arc::new(Pages::default()),
-            notes_lock: Arc::default(),
+            pins: Arc::new(Pins::default()),
+            note_desks: None,
             prompts: Arc::new(Book::default()),
             prompts_lock: Arc::default(),
             trials: Some(Arc::new(Bench::default())),
@@ -1821,17 +1957,60 @@ mod tests {
         panic!("the factory never started again");
     }
 
-    /// A notebook in memory.
+    /// A pins' store in memory.
     #[derive(Default)]
-    struct Pages(std::sync::Mutex<Option<String>>);
+    struct Pins(std::sync::Mutex<Vec<(String, crate::ports::KeptNote)>>);
 
-    impl Notebook for Pages {
-        fn read(&self) -> Option<String> {
-            self.0.lock().ok()?.clone()
+    // A test fake: each method holds its lock for the whole of its few lines.
+    #[allow(clippy::significant_drop_tightening)]
+    impl NoteStore for Pins {
+        fn notes(&self, board: &str) -> Result<Vec<crate::ports::KeptNote>, String> {
+            let kept = self.0.lock().map_err(|e| e.to_string())?;
+            Ok(kept
+                .iter()
+                .filter(|(b, _)| b == board)
+                .map(|(_, k)| k.clone())
+                .collect())
         }
-
-        fn write(&self, json: &str) -> Result<(), String> {
-            *self.0.lock().map_err(|e| e.to_string())? = Some(json.to_string());
+        fn put(&self, board: &str, note: &annotations::Note) -> Result<(), String> {
+            let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+            match kept
+                .iter_mut()
+                .find(|(b, k)| b == board && k.note.id == note.id)
+            {
+                Some((_, k)) => k.note = note.clone(),
+                None => kept.push((
+                    board.to_string(),
+                    crate::ports::KeptNote {
+                        note: note.clone(),
+                        deleted_at: None,
+                    },
+                )),
+            }
+            Ok(())
+        }
+        fn mark_deleted(&self, board: &str, id: &str, at: Option<&str>) -> Result<(), String> {
+            let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+            if let Some((_, k)) = kept.iter_mut().find(|(b, k)| b == board && k.note.id == id) {
+                k.deleted_at = at.map(str::to_string);
+            }
+            Ok(())
+        }
+        fn destroy(&self, board: &str, id: &str) -> Result<(), String> {
+            let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+            kept.retain(|(b, k)| !(b == board && k.note.id == id));
+            Ok(())
+        }
+        fn conversation(&self, _board: &str, _id: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn save_conversation(
+            &self,
+            _board: &str,
+            _id: &str,
+            _json: &str,
+            _turns: usize,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -1855,27 +2034,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_board_s_pins_are_kept_checked_and_apart_from_another_s() {
+    async fn a_pin_is_kept_deleted_brought_back_and_destroyed_past_ten() {
         let state = state(Shelf::default(), None);
-        let pin = r#"[{"id":"p1","target":"table:campaign","dx":3,"dy":4,"x":0,"y":0,"text":"why uuid?","at":"t"}]"#;
-        let (status, _) = send(state.clone(), "PUT", "/api/notes/data-model", pin).await;
+        let pin = |id: &str, kind: &str| {
+            format!(
+                r#"{{"id":"{id}","target":"table:campaign","dx":3,"dy":4,"x":0,"y":0,"text":"why uuid?","at":"t","kind":"{kind}"}}"#
+            )
+        };
+        let (status, _) = send(
+            state.clone(),
+            "PUT",
+            "/api/notes/data-model/p1",
+            &pin("p1", "brainstorm"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
-        let (_, other) = send(state.clone(), "PUT", "/api/notes/elsewhere", "[]").await;
-        assert_eq!(other, "[]");
+        let (status, _) = send(
+            state.clone(),
+            "PUT",
+            "/api/notes/data-model/p2",
+            &pin("p1", "note"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "the path names the pin");
         let (_, back) = send(state.clone(), "GET", "/api/notes/data-model", "").await;
-        assert!(back.contains("why uuid?"), "{back}");
-        let (status, _) = send(state.clone(), "PUT", "/api/notes/data-model", "[1]").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let twice = format!("[{},{}]", &pin[1..pin.len() - 1], &pin[1..pin.len() - 1]);
-        let (status, why) = send(state.clone(), "PUT", "/api/notes/data-model", &twice).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}");
-        let (status, _) = send(state.clone(), "GET", "/api/notes/..%2Fetc", "").await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        let (_, back) = send(state, "GET", "/api/notes/data-model", "").await;
-        assert!(
-            back.contains("why uuid?"),
-            "a refused list leaves the kept one"
+        assert!(back.contains(r#""kind":"brainstorm""#), "{back}");
+
+        let (status, _) = send(state.clone(), "DELETE", "/api/notes/data-model/p1", "").await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, back) = send(state.clone(), "GET", "/api/notes/data-model", "").await;
+        assert_eq!(back, "[]");
+        let (status, restored) =
+            send(state.clone(), "POST", "/api/notes/data-model/undo", "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(restored.contains("why uuid?"));
+        let (status, _) = send(state.clone(), "POST", "/api/notes/data-model/undo", "").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "nothing left to bring back");
+
+        for k in 0..12 {
+            let id = format!("q{k:02}");
+            send(
+                state.clone(),
+                "PUT",
+                &format!("/api/notes/data-model/{id}"),
+                &pin(&id, "note"),
+            )
+            .await;
+            send(
+                state.clone(),
+                "DELETE",
+                &format!("/api/notes/data-model/{id}"),
+                "",
+            )
+            .await;
+        }
+        let kept = state.pins.notes("data-model").expect("read");
+        assert_eq!(
+            kept.iter().filter(|k| k.deleted_at.is_some()).count(),
+            annotations::UNDO_DEPTH,
+            "only the last ten deleted pins can come back"
         );
+        let (status, _) = send(
+            state.clone(),
+            "POST",
+            "/api/notes/data-model/p1/session",
+            "{}",
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "no sessions without terminals"
+        );
+        let (status, _) = send(state, "GET", "/api/notes/..%2Fetc", "").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

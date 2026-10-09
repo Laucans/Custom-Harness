@@ -1,11 +1,16 @@
-// The board: a canvas to pan and zoom, and pins a human drags onto its parts,
-// each holding a short note. Reusable — a pane mounts one, draws into
-// `board.content` (HTML placed in board units) and `board.edges` (an SVG in
-// the same units), and names every part a pin may sit on with
-// `data-pin="<target>"`. The pins are kept per board by the server
-// (`/api/notes/<id>`), personal notes nothing else reads.
+// The board: a canvas to pan and zoom, and pins a human drags onto its parts.
+// Reusable — a pane mounts one, draws into `board.content` (HTML placed in
+// board units) and `board.edges` (an SVG in the same units), and names every
+// part a pin may sit on with `data-pin="<target>"`.
 //
-//   const board = HarnessBoard.create(host, { id: 'data-model', describe, resolve });
+// A pin is a note (yellow), a brainstorm (green: an AI session behind it,
+// opened from the pin, remembered between visits) or an asking (orange: a
+// change to consider when the next roadmap is built). Turning a brainstorm
+// into a note has the AI write its conclusion; into an asking, the request.
+// Pins are kept by the server one by one (`/api/notes/<board>/<id>`); a
+// deleted one comes back with ctrl+z, the last ten of a board.
+//
+//   const board = HarnessBoard.create(host, { id, describe, resolve, context, onSession });
 //   board.setSize(w, h); board.refresh(); board.fit(); board.destroy();
 (() => {
   'use strict';
@@ -15,14 +20,21 @@
   // A press that moves less than this is a click, not a drag.
   const SLOP = 4;
   const SAVE_DELAY = 600;
+  const KINDS = {
+    note: ['note', 'Your words'],
+    brainstorm: ['brainstorm', 'A conversation with an AI session about this part'],
+    asking: ['asking', 'A change to consider when the next roadmap is built'],
+  };
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const newId = () => 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const typing = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
 
   function create(host, opts) {
     const id = opts.id;
     const describe = opts.describe || ((target) => (target ? target : 'the canvas'));
+    const base = `/api/notes/${encodeURIComponent(id)}`;
     host.classList.add('hb');
     host.innerHTML = '<div class="hb-world"><svg class="hb-edges" xmlns="http://www.w3.org/2000/svg"></svg><div class="hb-content"></div></div>'
       + '<div class="hb-pins"></div>'
@@ -35,11 +47,16 @@
       + '<button type="button" data-hb="fit" title="Fit everything in view">fit</button>'
       + '<span class="hb-sep"></span>'
       + '<button type="button" data-hb="list" title="Every note on this board">notes <span class="hb-count">0</span></button>'
+      + '<button type="button" data-hb="undo" title="Bring back the pin deleted last (ctrl+z)">undo</button>'
       + '</div>'
       + '<div class="hb-list" hidden></div>'
       + '<div class="hb-note" hidden role="dialog" aria-label="note">'
       + '<div class="hb-note-head"><span class="hb-note-on"></span><button type="button" data-note="close" title="Close (Esc)" aria-label="close">×</button></div>'
+      + '<div class="hb-kinds" role="radiogroup" aria-label="kind of pin">'
+      + Object.entries(KINDS).map(([k, [label, tip]]) => `<button type="button" role="radio" class="hb-kind ${k}" data-kind="${k}" title="${esc(tip)}">${label}</button>`).join('')
+      + '</div>'
       + '<textarea maxlength="4000" placeholder="Write a note…"></textarea>'
+      + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
       + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="delete">delete</button></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
@@ -56,11 +73,11 @@
     let notes = [];
     let openId = null;
     let saveTimer = null;
-    let saved = true;
+    let pending = null; // the pin whose text waits to be saved
+    let busy = false; // an AI is writing the open pin
     let press = null; // a press on the canvas, until it is a pan or a click
     let carry = null; // a pin being dragged: new, or one already placed
     let swallowClick = false;
-    let gone = false;
 
     const resolve = opts.resolve || ((target) => (target ? content.querySelector(`[data-pin="${CSS.escape(target)}"]`) : null));
 
@@ -140,8 +157,9 @@
         const p = placeOf(n);
         const s = toScreen(p.x, p.y);
         if (s.x < -30 || s.y < -30 || s.x > r.width + 30 || s.y > r.height + 60) return;
-        const cls = ['hb-pin', p.orphan ? 'orphan' : '', n.text ? '' : 'empty', openId === n.id ? 'open' : ''].join(' ');
-        const tip = (n.text || 'empty note') + (p.orphan ? ' — what it was on is gone' : '');
+        const kind = n.kind || 'note';
+        const cls = ['hb-pin', kind, p.orphan ? 'orphan' : '', n.text || kind !== 'note' ? '' : 'empty', openId === n.id ? 'open' : ''].join(' ');
+        const tip = `${kind}: ${n.text || 'empty'}${p.orphan ? ' — what it was on is gone' : ''}`;
         h += `<button type="button" class="${cls}" data-note-id="${esc(n.id)}" style="left:${s.x}px;top:${s.y}px" title="${esc(tip)}"><span>${i + 1}</span></button>`;
       });
       pinLayer.innerHTML = h;
@@ -151,54 +169,107 @@
     function placeEditor() {
       if (!openId) return;
       const n = notes.find((x) => x.id === openId);
-      if (!n) return closeNote();
+      if (!n) { closeNote(); return; }
       const r = host.getBoundingClientRect();
       const s = toScreen(n.x, n.y);
-      const w = editor.offsetWidth || 260;
-      const h = editor.offsetHeight || 150;
+      const w = editor.offsetWidth || 280;
+      const h = editor.offsetHeight || 190;
       let left = s.x + 18;
       if (left + w > r.width - 8) left = s.x - w - 18;
       editor.style.left = clamp(left, 8, Math.max(8, r.width - w - 8)) + 'px';
       editor.style.top = clamp(s.y - 30, 8, Math.max(8, r.height - h - 8)) + 'px';
     }
+    // The editor shows the pin's kind, its text, and — for a brainstorm or
+    // an asking — its AI session.
+    function drawEditor(n) {
+      const kind = n.kind || 'note';
+      editor.dataset.kind = kind;
+      editor.querySelectorAll('.hb-kind').forEach((b) => {
+        b.classList.toggle('on', b.dataset.kind === kind);
+        b.setAttribute('aria-checked', b.dataset.kind === kind);
+        b.disabled = busy;
+      });
+      const session = editor.querySelector('.hb-session');
+      session.hidden = kind === 'note' || !opts.onSession;
+      editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
+      textarea.disabled = busy;
+      textarea.placeholder = kind === 'asking' ? 'The change you want considered…' : kind === 'brainstorm' ? 'What to explore with the AI…' : 'Write a note…';
+    }
     function openNote(n) {
+      flush();
       openId = n.id;
       editor.hidden = false;
       editor.querySelector('.hb-note-on').textContent = 'on ' + describe(n.target);
       textarea.value = n.text || '';
       setState(n.at ? 'kept ' + n.at.slice(0, 16).replace('T', ' ') : '');
+      drawEditor(n);
       drawPins();
       setTimeout(() => textarea.focus(), 0);
     }
     function closeNote() {
+      flush();
       const n = notes.find((x) => x.id === openId);
       openId = null;
       editor.hidden = true;
-      // A note left empty is a pin dropped by mistake.
-      if (n && !n.text.trim()) { notes = notes.filter((x) => x !== n); save(true); }
+      // An empty note that never was saved is a pin dropped by mistake.
+      if (n && n.fresh && !n.text.trim() && (n.kind || 'note') === 'note') {
+        notes = notes.filter((x) => x !== n);
+      }
       drawPins();
     }
     function setState(text) { editor.querySelector('.hb-note-state').textContent = text; }
-    function save(now) {
+    async function put(n) {
+      const body = Object.assign({}, n);
+      delete body.fresh;
+      const res = await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(await res.text());
+      delete n.fresh;
+    }
+    // Saves a pin now, or a beat after the last keystroke.
+    function save(n, now) {
       clearTimeout(saveTimer);
-      saved = false;
+      pending = n;
       const send = async () => {
-        if (gone && saved) return;
-        setState('saving…');
+        if (pending !== n) return;
+        pending = null;
+        if (openId === n.id) setState('saving…');
         try {
-          const res = await fetch(`/api/notes/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(notes) });
-          if (!res.ok) throw new Error(await res.text());
-          saved = true;
-          setState('saved');
+          await put(n);
+          if (openId === n.id) setState('saved');
         } catch (e) {
-          setState('not saved: ' + (e.message || e));
+          if (openId === n.id) setState('not saved: ' + (e.message || e));
         }
       };
       if (now) send(); else saveTimer = setTimeout(send, SAVE_DELAY);
     }
+    // What waits to be saved is saved now: a pin closed, a pane left.
+    function flush() {
+      if (!pending) return;
+      clearTimeout(saveTimer);
+      const n = pending;
+      pending = null;
+      put(n).catch(() => { /* the next edit saves it again */ });
+    }
+    async function remove(n) {
+      notes = notes.filter((x) => x !== n);
+      if (openId === n.id) { openId = null; editor.hidden = true; }
+      if (pending === n) { pending = null; clearTimeout(saveTimer); }
+      drawPins();
+      if (n.fresh) return;
+      try { await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'DELETE' }); } catch (e) { /* shown by its absence on reload */ }
+    }
+    async function undo() {
+      try {
+        const res = await fetch(`${base}/undo`, { method: 'POST' });
+        if (!res.ok) return;
+        const n = await res.json();
+        if (!notes.some((x) => x.id === n.id)) notes.push(n);
+        drawPins();
+      } catch (e) { /* nothing to bring back */ }
+    }
     async function load() {
       try {
-        const res = await fetch(`/api/notes/${encodeURIComponent(id)}`);
+        const res = await fetch(base);
         notes = res.ok ? await res.json() : [];
       } catch (e) { notes = []; }
       drawPins();
@@ -206,9 +277,45 @@
     function showList() {
       if (!list.hidden) { list.hidden = true; return; }
       list.innerHTML = notes.length
-        ? notes.map((n, i) => `<button type="button" data-goto-note="${esc(n.id)}"><b>${i + 1}</b><span>${esc(n.text || 'empty note')}</span><small>${esc(describe(n.target))}</small></button>`).join('')
+        ? notes.map((n, i) => `<button type="button" data-goto-note="${esc(n.id)}"><b class="${esc(n.kind || 'note')}">${i + 1}</b><span>${esc(n.text || (n.kind || 'note'))}</span><small>${esc(n.kind || 'note')} · ${esc(describe(n.target))}</small></button>`).join('')
         : '<div class="hb-empty">No note yet. Drag the pin onto a part of the board.</div>';
       list.hidden = false;
+    }
+    // A pin's kind changed. From a brainstorm, the AI writes what it becomes:
+    // the conclusion for a note, the request for an asking.
+    async function rekind(n, kind) {
+      const from = n.kind || 'note';
+      if (kind === from || busy) return;
+      if (from === 'brainstorm' && kind !== 'brainstorm') {
+        if (n.fresh || !n.turns) {
+          setState('nothing said yet: open the AI session first');
+          return;
+        }
+        flush();
+        busy = true;
+        drawEditor(n);
+        setState(kind === 'note' ? 'the AI draws the conclusion…' : 'the AI formulates the request…');
+        try {
+          const res = await fetch(`${base}/${encodeURIComponent(n.id)}/into/${kind}`, { method: 'POST' });
+          const text = await res.text();
+          if (!res.ok) throw new Error(text);
+          Object.assign(n, JSON.parse(text));
+          if (openId === n.id) textarea.value = n.text;
+          setState(kind === 'note' ? 'concluded' : 'formulated');
+        } catch (e) {
+          setState('not changed: ' + (e.message || e));
+        } finally {
+          busy = false;
+          drawEditor(n);
+          drawPins();
+        }
+        return;
+      }
+      n.kind = kind;
+      n.at = new Date().toISOString();
+      drawEditor(n);
+      drawPins();
+      save(n, true);
     }
 
     // ---- carrying a pin: a new one off the toolbar, or one already placed ----------
@@ -217,7 +324,7 @@
       e.stopPropagation();
       list.hidden = true;
       const ghost = document.createElement('div');
-      ghost.className = 'hb-pin ghost';
+      ghost.className = 'hb-pin ghost ' + ((note && note.kind) || 'note');
       ghost.innerHTML = '<span>+</span>';
       pinLayer.appendChild(ghost);
       carry = { note, ghost, over: null, startX: e.clientX, startY: e.clientY, moved: !note };
@@ -249,19 +356,19 @@
       if (c.over) c.over.classList.remove('hb-target');
       // A placed pin pressed and released in place is opened, not moved.
       if (c.note && !c.moved) { openNote(c.note); return; }
-      const r = host.getBoundingClientRect();
-      const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
       // The pointer is captured: what lies under it is asked, not the event's target.
       const under = document.elementFromPoint(e.clientX, e.clientY);
+      const r = host.getBoundingClientRect();
+      const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
       const onTools = under && under.closest('.hb-tools, .hb-list, .hb-note');
       if (!inside || onTools) { drawPins(); return; }
       const at = toBoard(e.clientX, e.clientY);
       const target = c.over ? c.over.getAttribute('data-pin') : '';
       const b = c.over ? boxOf(c.over) : { x: 0, y: 0 };
-      const n = c.note || { id: newId(), text: '', at: '' };
+      const n = c.note || { id: newId(), text: '', at: '', kind: 'note', turns: 0, fresh: true };
       Object.assign(n, { target, dx: at.x - b.x, dy: at.y - b.y, x: at.x, y: at.y });
       if (!c.note) notes.push(n);
-      else if (n.text) { n.at = new Date().toISOString(); save(true); }
+      else if (!n.fresh) save(n, true);
       openNote(n);
     }
 
@@ -314,6 +421,15 @@
       const rate = e.ctrlKey ? 0.01 : 0.0015;
       zoomAt(view.k * Math.exp(-e.deltaY * unit * rate), e.clientX - r.left, e.clientY - r.top);
     };
+    // Opens the open pin's AI session; a pin the server does not have yet
+    // is saved first.
+    async function openSession(n) {
+      flush();
+      if (n.fresh) {
+        try { await put(n); } catch (err) { setState('not saved: ' + (err.message || err)); return; }
+      }
+      opts.onSession(n, opts.context ? opts.context(n.target) : '');
+    }
     const onToolClick = (e) => {
       const b = e.target.closest('[data-hb]');
       if (b) {
@@ -322,6 +438,7 @@
         if (b.dataset.hb === 'out') zoomAt(view.k / 1.25, r.width / 2, r.height / 2);
         if (b.dataset.hb === 'fit') fit();
         if (b.dataset.hb === 'list') showList();
+        if (b.dataset.hb === 'undo') undo();
         return;
       }
       const go = e.target.closest('[data-goto-note]');
@@ -337,23 +454,22 @@
         openNote(n);
         return;
       }
+      const n = notes.find((x) => x.id === openId);
+      const kindButton = e.target.closest('.hb-kind');
+      if (kindButton && n) { rekind(n, kindButton.dataset.kind); return; }
       const act = e.target.closest('[data-note]');
-      if (act && act.dataset.note === 'close') closeNote();
-      if (act && act.dataset.note === 'delete') {
-        notes = notes.filter((x) => x.id !== openId);
-        openId = null;
-        editor.hidden = true;
-        save(true);
-        drawPins();
-      }
+      if (!act) return;
+      if (act.dataset.note === 'close') closeNote();
+      if (act.dataset.note === 'delete' && n) remove(n);
+      if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
     };
     const onInput = () => {
       const n = notes.find((x) => x.id === openId);
-      if (!n) return;
+      if (!n || busy) return;
       n.text = textarea.value;
       n.at = new Date().toISOString();
       setState('…');
-      save(false);
+      save(n, false);
       drawPins();
     };
     // Keys typed in a note belong to the note: the page's Escape and
@@ -361,6 +477,13 @@
     const onKey = (e) => {
       e.stopPropagation();
       if (e.key === 'Escape') { e.preventDefault(); closeNote(); }
+    };
+    // ctrl+z (cmd+z) anywhere but in a field brings back the pin deleted last.
+    const onUndoKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' || e.shiftKey) return;
+      if (typing(e.target) || !host.isConnected) return;
+      e.preventDefault();
+      undo();
     };
 
     host.addEventListener('pointerdown', onPointerDown);
@@ -372,6 +495,7 @@
     host.addEventListener('wheel', onWheel, { passive: false });
     textarea.addEventListener('input', onInput);
     editor.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onUndoKey);
     const resized = new ResizeObserver(() => drawPins());
     resized.observe(host);
 
@@ -385,12 +509,13 @@
       fit,
       focus,
       refresh: drawPins,
+      reload: load,
       notesOn: (target) => notes.filter((n) => n.target === target),
       open: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n) openNote(n); },
       destroy() {
-        gone = true;
         // A note being typed is not lost to a closed pane.
-        if (!saved) save(true);
+        flush();
+        document.removeEventListener('keydown', onUndoKey);
         resized.disconnect();
         host.innerHTML = '';
         host.classList.remove('hb', 'placing', 'panning');

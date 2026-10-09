@@ -17,6 +17,10 @@ pub struct Pty {
     cwd: PathBuf,
     command: String,
     args: Vec<String>,
+    /// Set in the program's environment, over what it inherits.
+    env: Vec<(String, String)>,
+    /// Taken out of what it inherits.
+    unset: Vec<String>,
 }
 
 impl Pty {
@@ -27,7 +31,21 @@ impl Pty {
             cwd: cwd.to_path_buf(),
             command: command.to_string(),
             args,
+            env: Vec::new(),
+            unset: Vec::new(),
         }
+    }
+
+    /// The same program, `set` added to its environment and `unset` taken
+    /// out of it.
+    #[must_use]
+    pub fn with_env(mut self, set: &[(&str, &str)], unset: &[&str]) -> Self {
+        self.env = set
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        self.unset = unset.iter().map(|k| (*k).to_string()).collect();
+        self
     }
 }
 
@@ -85,6 +103,12 @@ impl TerminalFactory for Pty {
         command.cwd(&self.cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
+        for key in &self.unset {
+            command.env_remove(key);
+        }
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
         let child = pair
             .slave
             .spawn_command(command)
@@ -117,6 +141,33 @@ impl TerminalFactory for Pty {
             }))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+}
+
+/// Makes [`Pty`]s running one program — a pin's Claude Code session.
+pub struct PtyMaker {
+    command: String,
+}
+
+impl PtyMaker {
+    /// Terminals that run `command`.
+    #[must_use]
+    pub fn new(command: &str) -> Self {
+        Self {
+            command: command.to_string(),
+        }
+    }
+}
+
+impl crate::ports::TerminalMaker for PtyMaker {
+    fn make(&self, cwd: &Path, args: Vec<String>) -> std::sync::Arc<dyn TerminalFactory> {
+        // A pin's session must keep its transcript — its turns are read back
+        // from it — even when the view itself was started from a Claude Code
+        // session, whose marker turns the transcript off in its children.
+        std::sync::Arc::new(Pty::new(cwd, &self.command, args).with_env(
+            &[("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1")],
+            &["CLAUDE_CODE_CHILD_SESSION"],
+        ))
     }
 }
 
@@ -162,6 +213,37 @@ mod tests {
         // Once echoed by the terminal, once by cat.
         assert!(seen.matches("hello steward").count() >= 2, "{seen:?}");
         open.resize(100, 30).expect("resize");
+        open.kill();
+    }
+
+    #[test]
+    fn a_session_s_program_keeps_its_transcript_whatever_it_inherits() {
+        // The marker a Claude Code session leaves in its children's
+        // environment, as if the view had been started from one.
+        let pty = Pty::new(
+            Path::new("."),
+            "sh",
+            vec![
+                "-c".to_string(),
+                "echo \"[$CLAUDE_CODE_FORCE_SESSION_PERSISTENCE|$CLAUDE_CODE_CHILD_SESSION|$KEEP]\"".to_string(),
+            ],
+        )
+        .with_env(
+            &[("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1"), ("KEEP", "yes")],
+            &["CLAUDE_CODE_CHILD_SESSION"],
+        );
+        let mut open = pty.spawn(80, 24).expect("a pty with sh in it");
+        let mut reader = open.output().expect("the output");
+        let mut buf = [0_u8; 256];
+        let mut seen = String::new();
+        for _ in 0..20 {
+            let n = reader.read(&mut buf).unwrap_or(0);
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if n == 0 || seen.contains(']') {
+                break;
+            }
+        }
+        assert!(seen.contains("[1||yes]"), "{seen:?}");
         open.kill();
     }
 

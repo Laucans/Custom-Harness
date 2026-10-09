@@ -25,6 +25,7 @@ mod data_desk;
 mod desk;
 mod domain;
 mod janitor;
+mod note_desks;
 mod ports;
 mod server;
 
@@ -42,7 +43,7 @@ use harness_core::ports::shell::github::GitHub;
 use tokio::sync::watch;
 
 use crate::adapters::claude_bin;
-use crate::adapters::fs_notes::FsNotebook;
+use crate::adapters::claude_cli::{ClaudeOneshot, ClaudeTranscripts};
 use crate::adapters::fs_traces::FsTraces;
 use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
@@ -50,6 +51,8 @@ use crate::adapters::limits_cli::CliLimits;
 use crate::adapters::product::{DirProduct, GhProduct};
 use crate::adapters::prompt_files::PromptFiles;
 use crate::adapters::pty::Pty;
+use crate::adapters::pty::PtyMaker;
+use crate::adapters::sqlite_notes::SqliteNotes;
 use crate::adapters::trial_proc::TrialProcess;
 use crate::adapters::watch_proc::WatchProcess;
 use crate::cli::Cli;
@@ -65,8 +68,9 @@ use crate::domain::plant;
 use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
 use crate::janitor::Janitor;
+use crate::note_desks::NoteDesks;
 use crate::ports::{
-    Board, BoardReading, Limits, Plant, Product, TerminalFactory, Traces, Trials, Yard,
+    Board, BoardReading, Limits, NoteStore, Plant, Product, TerminalFactory, Traces, Trials, Yard,
 };
 use crate::server::{AppState, router};
 use harness_adapters::store::events::SqliteEvents;
@@ -100,12 +104,12 @@ async fn main() -> anyhow::Result<()> {
     let project = project_of(&cli, &root);
     let (board, product) = github_for(&cli, &root, &project);
     let program = program_for(&cli);
+    let (pins, note_desks) = notes_for(&cli, &root, &project, &program, &workspace)?;
     let desk = desk_for(&cli, &root, &project, &program);
     let doctor = doctor_for(&cli, &root, &project, &program);
     let plant = plant_for(&cli, &workspace);
     let events = event_store(&workspace);
-    let janitor = (!cli.no_janitor)
-        .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>));
+    let janitor = janitor_for(&cli, &workspace);
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
     let (data, data_task) = product
@@ -137,8 +141,8 @@ async fn main() -> anyhow::Result<()> {
         events: events.clone(),
         janitor: janitor.clone(),
         data,
-        notebook: Arc::new(FsNotebook::new(workspace.state_root())),
-        notes_lock: Arc::default(),
+        pins: Arc::clone(&pins),
+        note_desks: note_desks.clone(),
         prompts: Arc::new(PromptFiles::new(workspace.state_root())),
         prompts_lock: Arc::default(),
         trials: trials(&cli, &workspace),
@@ -187,11 +191,11 @@ async fn main() -> anyhow::Result<()> {
             for task in [board_task, janitor_task, data_task].into_iter().flatten() {
                 task.abort();
             }
-            if let Some(desk) = desk {
+            for desk in [desk, doctor].into_iter().flatten() {
                 desk.shutdown();
             }
-            if let Some(doctor) = doctor {
-                doctor.shutdown();
+            if let Some(desks) = note_desks {
+                desks.shutdown();
             }
             Ok(())
         })
@@ -227,6 +231,68 @@ fn banner(cli: &Cli, workspace: &Workspace) -> String {
             " — the janitor minds the yard"
         }
     )
+}
+
+/// The janitor, unless `--no-janitor`.
+fn janitor_for(cli: &Cli, workspace: &Workspace) -> Option<Janitor> {
+    (!cli.no_janitor)
+        .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>))
+}
+
+/// The pins' store, and their AI sessions.
+fn notes_for(
+    cli: &Cli,
+    root: &Path,
+    project: &Project,
+    program: &str,
+    workspace: &Workspace,
+) -> anyhow::Result<(Arc<dyn NoteStore>, Option<NoteDesks>)> {
+    let pins: Arc<dyn NoteStore> = Arc::new(
+        SqliteNotes::open(
+            &workspace.events(),
+            &workspace.state_root().join(".llocal/annotations.json"),
+        )
+        .map_err(anyhow::Error::msg)
+        .context("opening the pins' store")?,
+    );
+    let desks = note_desks_for(cli, root, project, program, &pins);
+    Ok((pins, desks))
+}
+
+/// The pins' AI sessions, unless `--no-steward`: Claude Code on the
+/// steward's model, in the product's snapshot clone when there is one — a
+/// brainstorm reads the product, not the harness.
+fn note_desks_for(
+    cli: &Cli,
+    root: &Path,
+    project: &Project,
+    program: &str,
+    pins: &Arc<dyn NoteStore>,
+) -> Option<NoteDesks> {
+    if cli.no_steward {
+        return None;
+    }
+    let clone = root
+        .join(".llocal/data-snapshot")
+        .join(project.slug.replace('/', "-"));
+    let cwd = if project.slug.is_empty() || !clone.is_dir() {
+        root.to_path_buf()
+    } else {
+        clone
+    };
+    let claude = claude_bin::newest().map_or_else(|| PathBuf::from(program), |(path, _)| path);
+    let projects = std::env::var_os("HOME").map_or_else(
+        || PathBuf::from(".claude/projects"),
+        |home| PathBuf::from(home).join(".claude/projects"),
+    );
+    Some(NoteDesks::new(note_desks::Setup {
+        store: Arc::clone(pins),
+        maker: Arc::new(PtyMaker::new(program)),
+        oneshot: Arc::new(ClaudeOneshot::new(claude)),
+        transcripts: Arc::new(ClaudeTranscripts::new(projects)),
+        model: cli.steward_model.clone(),
+        cwd,
+    }))
 }
 
 /// The Claude Code both desks run. `claude` on PATH is often a stale

@@ -255,13 +255,40 @@ the diagnosis back from the event store.
 The diagram is drawn on **the board** (`static/board.js`), a component any
 pane can mount: a canvas to pan (drag) and zoom (wheel, the toolbar), and a
 **pin** the human drags off the toolbar onto any part marked
-`data-pin="<target>"` — a table, a field, the bare canvas — which opens a
-small note. A pin follows its part as the diagram unfolds and re-lays; a
-field's pin stands on its folded table; a part gone leaves its pin grey where
-it was. Personal notes, nothing the harness reads: kept in
-`.llocal/annotations.json` (`ports::Notebook`, `adapters::fs_notes`), one
-list per board, `GET`/`PUT /api/notes/{board}`, checked by
-`domain::annotations` (500 pins, 4 000 characters a note).
+`data-pin="<target>"` — a table, a field, the bare canvas. A pin follows its
+part as the diagram unfolds and re-lays; a field's pin stands on its folded
+table; a part gone leaves its pin grey where it was.
+
+A pin is one of three kinds (`domain::annotations::Kind`):
+
+| kind | colour | what it is |
+| --- | --- | --- |
+| note | yellow | the human's words |
+| brainstorm | green | an **AI session** about the part, opened from the pin |
+| asking | orange | a change to consider when the next roadmap is built — its session kept too; how it reaches the planner is parked (`docs/PARKED.md`) |
+
+A pin's session is an interactive Claude Code (the steward's model, plan
+mode, in the product's snapshot clone when there is one) in the
+`note_session` pane, run by `note_desks.rs`. It opens with a fixed
+`--session-id` and the pin's **conversation handed back** in its system
+prompt (`domain::note_session`): whole up to 40k tokens, else a kept summary
+of the older turns plus the last ~10k word for word — the summary is made
+again only once the conversation grew 20k more, so a handback stays
+identical for the prompt cache. Leaving the pane closes the session: its
+turns are read from Claude Code's transcript (`~/.claude/projects/…/<id>.jsonl`,
+`adapters::claude_cli::ClaudeTranscripts`) and appended to the conversation —
+always kept whole. Turning a brainstorm into a note has Claude (`claude -p`,
+`ClaudeOneshot`) write its **conclusion** into the note; into an asking, the
+**request**; the conversation stays with the pin.
+
+Pins and conversations live in `.llocal/harness.db`, table `notes`
+(`ports::NoteStore`, `adapters::sqlite_notes`; the old
+`annotations.json` is imported once). A deleted pin is only marked: ctrl+z
+(or the toolbar's undo) brings back the last one, ten per board; the
+eleventh is destroyed with its conversation. Routes: `GET
+/api/notes/{board}`, `PUT`/`DELETE /api/notes/{board}/{id}`, `POST
+…/undo`, `POST …/{id}/session` (open), `…/session/term` (WebSocket), `POST
+…/session/close`, `POST …/{id}/into/{note|asking}`.
 
 The briefing names exact commands — `pgrep`, `setsid nohup ./target/release/harness watch …`,
 `pkill`, `gh issue edit … --add-label` — because the two mistakes a steward
@@ -275,6 +302,7 @@ a reason: this terminal is a shell in the checkout.
 ```
 src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
+src/note_desks.rs      the pins' sessions at work: one Claude Code per open pin, its turns read back when it closes
 src/data_desk.rs       the data desk: one task owning the Product port, versions cached, the handlers answered by channel
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
@@ -294,9 +322,10 @@ src/domain/            the inside — no disk, no subprocess, no clock
   cleanup.rs           the janitor's rules: what in the yard is no longer useful, the pie, the limit and the threshold
   data_versions.rs     the archive's versions in the page's order: main, the integration branch, the features
   divergence.rs        a diagnosed divergence found in the events, and the issue a human opens from it
-  annotations.rs       the human's pins: what a note is, and the checks before a board's list is kept
+  annotations.rs       the human's pins: their kinds, the checks before one is kept, what ctrl+z can still bring back
+  note_session.rs      a pin's AI session: what it is told, what is kept of it, what is handed back (40k whole, else summary + 10k)
   prompts.rs           a station's prompts for the pane: the catalog, the book and the drafts together; an edit, a revert, a withdrawal; what waits
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), Notebook (the pins), Prompts (the book read only, the drafts), Trials (the dry-runs)
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), NoteStore (the pins), Oneshot / Transcripts / TerminalMaker (a pin's session), Prompts (the book read only, the drafts), Trials (the dry-runs)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
@@ -304,7 +333,8 @@ src/adapters/
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   fs_yard.rs           .llocal walked and swept with std::fs, symlinks never followed, every path kept inside
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
-  fs_notes.rs          .llocal/annotations.json, written aside then renamed
+  sqlite_notes.rs      the pins and their conversations, in .llocal/harness.db
+  claude_cli.rs        claude -p asked once (summary, conclusion, request), and Claude Code's transcripts read back
   prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub

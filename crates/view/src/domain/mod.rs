@@ -12,6 +12,7 @@ pub mod gates;
 pub mod history;
 pub mod journal;
 pub mod limits;
+pub mod note_session;
 pub mod observe;
 pub mod plant;
 pub mod prompts;

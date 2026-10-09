@@ -397,20 +397,95 @@ pub trait Product {
     async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String>;
 }
 
-/// Where the human's pins are kept between visits.
-///
-/// Synchronous, like [`Yard`]'s settings: one small file, read and written
-/// whole. `Send + Sync` because the HTTP handlers share it.
-pub trait Notebook: Send + Sync {
-    /// Every board's pins as last written, `None` when never.
-    fn read(&self) -> Option<String>;
+/// One pin as kept: the pin, and when it was deleted, if it was.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeptNote {
+    /// The pin.
+    pub note: crate::domain::annotations::Note,
+    /// When it was deleted — `None` while it is on its board.
+    pub deleted_at: Option<String>,
+}
 
-    /// Keeps every board's pins.
+/// Where the human's pins and their conversations are kept.
+///
+/// Synchronous, like [`Yard`]: a small local database. `Send + Sync`
+/// because the HTTP handlers share it.
+pub trait NoteStore: Send + Sync {
+    /// A board's pins, deleted ones included, each with its conversation's
+    /// turn count in `note.turns`.
     ///
     /// # Errors
     ///
-    /// The OS refused the write.
-    fn write(&self, json: &str) -> Result<(), String>;
+    /// The store could not be read.
+    fn notes(&self, board: &str) -> Result<Vec<KeptNote>, String>;
+
+    /// Keeps a pin — a new one, or a new version of one; its conversation and
+    /// its deletion mark are left as they are.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn put(&self, board: &str, note: &crate::domain::annotations::Note) -> Result<(), String>;
+
+    /// Marks a pin deleted at `at` (`None` brings it back).
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn mark_deleted(&self, board: &str, id: &str, at: Option<&str>) -> Result<(), String>;
+
+    /// Destroys a pin and its conversation for good.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn destroy(&self, board: &str, id: &str) -> Result<(), String>;
+
+    /// A pin's conversation, as JSON; `None` when it has none.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read.
+    fn conversation(&self, board: &str, id: &str) -> Result<Option<String>, String>;
+
+    /// Keeps a pin's conversation and its turn count.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn save_conversation(
+        &self,
+        board: &str,
+        id: &str,
+        json: &str,
+        turns: usize,
+    ) -> Result<(), String>;
+}
+
+/// One question to Claude, answered in one go (`claude -p`): a summary, a
+/// conclusion, a request. Blocking — a handler runs it on a blocking thread.
+pub trait Oneshot: Send + Sync {
+    /// The answer to `prompt`, on `model`.
+    ///
+    /// # Errors
+    ///
+    /// Claude could not be run, or answered nothing.
+    fn ask(&self, model: &str, prompt: &str) -> Result<String, String>;
+}
+
+/// What Claude Code kept of a session it ran: its transcript.
+pub trait Transcripts: Send + Sync {
+    /// The transcript of session `id`, JSON lines; `None` when there is none.
+    fn read(&self, id: &str) -> Option<String>;
+}
+
+/// Makes the terminal a pin's session runs in: a program, its folder, its
+/// arguments.
+pub trait TerminalMaker: Send + Sync {
+    /// A factory for a terminal running the configured program in `cwd`
+    /// with `args`.
+    fn make(&self, cwd: &std::path::Path, args: Vec<String>)
+    -> std::sync::Arc<dyn TerminalFactory>;
 }
 
 /// The prompt book and its drafts, as the view may touch them: the book read

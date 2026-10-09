@@ -6,7 +6,7 @@
 //! process.
 
 pub mod claude_bin;
-pub mod fs_notes;
+pub mod claude_cli;
 pub mod fs_traces;
 pub mod fs_yard;
 pub mod gh_board;
@@ -14,5 +14,6 @@ pub mod limits_cli;
 pub mod product;
 pub mod prompt_files;
 pub mod pty;
+pub mod sqlite_notes;
 pub mod trial_proc;
 pub mod watch_proc;
