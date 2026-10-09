@@ -3,6 +3,7 @@
 
 pub mod assemble;
 pub mod blueprint;
+pub mod cleanup;
 pub mod doctor;
 pub mod gates;
 pub mod history;

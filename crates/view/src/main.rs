@@ -8,7 +8,7 @@
 //! The factory view: a local web server that renders the harness as an
 //! isometric plant, read from the traces the harness leaves behind.
 //!
-//! Two pollers, one server, one steward, one doctor, on one thread. The pollers read the
+//! Two pollers, one server, one steward, one doctor, one janitor, on one thread. The pollers read the
 //! traces every few seconds and the GitHub board every minute, and publish a
 //! `Snapshot` on a `watch` channel; the server hands that picture to the page
 //! and streams every change to it. The steward is an interactive Claude Code
@@ -23,6 +23,7 @@ mod adapters;
 mod cli;
 mod desk;
 mod domain;
+mod janitor;
 mod ports;
 mod server;
 
@@ -41,6 +42,7 @@ use tokio::sync::watch;
 
 use crate::adapters::claude_bin;
 use crate::adapters::fs_traces::FsTraces;
+use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
 use crate::adapters::limits_cli::CliLimits;
 use crate::adapters::pty::Pty;
@@ -49,6 +51,7 @@ use crate::cli::Cli;
 use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
 use crate::domain::blueprint;
+use crate::domain::cleanup;
 use crate::domain::doctor;
 use crate::domain::gates::{self, Told};
 use crate::domain::limits::Read;
@@ -56,7 +59,8 @@ use crate::domain::observe::{Observed, observe};
 use crate::domain::plant;
 use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
-use crate::ports::{Board, BoardReading, Limits, Plant, TerminalFactory, Traces};
+use crate::janitor::Janitor;
+use crate::ports::{Board, BoardReading, Limits, Plant, TerminalFactory, Traces, Yard};
 use crate::server::{AppState, router};
 use harness_core::adapters::store::events::SqliteEvents;
 use harness_core::domain::quota::Reading;
@@ -89,6 +93,8 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(WatchProcess::new(workspace.clone(), &cli.watch_command)) as Arc<dyn Plant>
     });
     let events = event_store(&workspace);
+    let janitor = (!cli.no_janitor)
+        .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>));
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
 
@@ -115,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
         )) as Arc<dyn Limits>),
         claude_read: Arc::clone(&claude_read),
         events: events.clone(),
+        janitor: janitor.clone(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -146,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
                     Duration::from_secs(cli.board_interval.max(5)),
                 ))
             });
+            let janitor_task = janitor.map(|janitor| tokio::task::spawn_local(chronic(janitor)));
             axum::serve(listener, router(state))
                 .with_graceful_shutdown(async {
                     let _ = tokio::signal::ctrl_c().await;
@@ -154,6 +162,9 @@ async fn main() -> anyhow::Result<()> {
                 .context("serving the page")?;
             traces_task.abort();
             if let Some(task) = board_task {
+                task.abort();
+            }
+            if let Some(task) = janitor_task {
                 task.abort();
             }
             if let Some(desk) = desk {
@@ -171,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
 /// who is in.
 fn banner(cli: &Cli, workspace: &Workspace) -> String {
     format!(
-        "harness-view: http://{}:{} — reading {}{}{}{}",
+        "harness-view: http://{}:{} — reading {}{}{}{}{}",
         cli.bind,
         cli.port,
         workspace.rel(&workspace.logs()),
@@ -189,6 +200,11 @@ fn banner(cli: &Cli, workspace: &Workspace) -> String {
             ""
         } else {
             " — the doctor is in"
+        },
+        if cli.no_janitor {
+            ""
+        } else {
+            " — the janitor minds the yard"
         }
     )
 }
@@ -421,6 +437,26 @@ async fn poll_traces(
             last_body = body;
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+/// The janitor's chronic round: the yard weighed at start and every two hours,
+/// swept on their own when allowed and past the threshold.
+async fn chronic(janitor: Janitor) {
+    loop {
+        let next = jiff::Timestamp::now()
+            .checked_add(jiff::SignedDuration::try_from(cleanup::CHRONIC).unwrap_or_default())
+            .unwrap_or_else(|_| jiff::Timestamp::now());
+        janitor.plan(next.strftime("%Y-%m-%dT%H:%M:%SZ").to_string());
+        if let Some(report) = janitor.round().await {
+            tracing::info!(
+                "the janitor swept on their own: {} freed, {} heap(s) gone, {} refused",
+                cleanup::human(report.freed),
+                report.removed.len(),
+                report.failed.len()
+            );
+        }
+        tokio::time::sleep(cleanup::CHRONIC).await;
     }
 }
 

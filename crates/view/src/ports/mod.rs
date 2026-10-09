@@ -284,3 +284,86 @@ pub trait Limits: Send + Sync {
     /// Why `gh` gave no answer.
     fn github(&self) -> Result<Vec<GithubWindow>, String>;
 }
+
+/// One thing lying in the yard — a folder or a file under `.llocal/` —
+/// measured, not judged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Heap {
+    /// Its path, relative to the yard: `agentic_workspaces/lane-0/target`.
+    pub rel: String,
+    /// Bytes under it, symlinks counted as themselves and never followed.
+    pub bytes: u64,
+    /// Seconds since anything in it, or just under it, was last written.
+    pub idle_secs: u64,
+    /// A folder, rather than a file.
+    pub dir: bool,
+}
+
+/// A workspace the harness clones under `agentic_workspaces/`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct WorkspaceHeap {
+    /// The folder, as a heap: its whole weight, how long it has been idle.
+    pub heap: Heap,
+    /// It carries a `.git` — a checkout the harness made, not a stray.
+    pub git: bool,
+    /// The build outputs and dependency folders found in it, each as a heap
+    /// of its own, weight included in the workspace's.
+    pub caches: Vec<Heap>,
+}
+
+/// One run's traces under `logs/<workflow>/<run>/`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RunHeap {
+    /// The line it ran on: `split`.
+    pub workflow: String,
+    /// The run id.
+    pub run: String,
+    /// The folder, as a heap.
+    pub heap: Heap,
+    /// The run's flow file beside the folder, when there is one.
+    pub flow: Option<Heap>,
+}
+
+/// What lies in the yard, as of one walk.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Survey {
+    /// When the walk was made, as the traces write a clock.
+    pub taken_at: String,
+    /// Bytes under the yard, all told.
+    pub total: u64,
+    /// Everything directly under the yard, folders and files alike.
+    pub folders: Vec<Heap>,
+    /// The workspaces, each with its caches.
+    pub workspaces: Vec<WorkspaceHeap>,
+    /// The runs' traces, each with its flow file.
+    pub runs: Vec<RunHeap>,
+}
+
+/// The yard — `.llocal/`, where the harness leaves its clones, its traces
+/// and its stores — walked and swept.
+///
+/// Synchronous: a walk is a few seconds of disk at most and runs on a
+/// blocking thread; a removal is one call. `Send + Sync` because the HTTP
+/// handlers and the chronic tick share it.
+pub trait Yard: Send + Sync {
+    /// Walks the yard and weighs what lies in it.
+    fn survey(&self) -> Survey;
+
+    /// Removes `rel` — a path relative to the yard — and says how many bytes
+    /// it weighed. A symlink is unlinked, never followed.
+    ///
+    /// # Errors
+    ///
+    /// The path leaves the yard, is not there, or the OS refused.
+    fn remove(&self, rel: &str) -> Result<u64, String>;
+
+    /// The janitor's settings as last written, `None` when never.
+    fn read_settings(&self) -> Option<String>;
+
+    /// Keeps the janitor's settings for the next start.
+    ///
+    /// # Errors
+    ///
+    /// The OS refused the write.
+    fn write_settings(&self, json: &str) -> Result<(), String>;
+}

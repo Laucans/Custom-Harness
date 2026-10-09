@@ -1067,6 +1067,26 @@ fn physician(b: &mut Builder, x: f32, z: f32, hot: &Hot) {
     b.label(lx, ly, lz, "the doctor", 11.0, TEXT).backing = Backing::Ink;
 }
 
+/// The janitor: leaning on a push broom at the tower's foot by
+/// the water, a mop bucket beside them. A click opens their yard: what the
+/// workspace weighs, what a sweep would free.
+fn caretaker(b: &mut Builder, x: f32, z: f32) {
+    let hot = pane(
+        serde_json::json!({"kind": "janitor"}),
+        "The janitor\nWeighs what the workspace keeps on disk and sweeps what is no longer useful — no model, just rules.",
+    );
+    let m = b.mark();
+    let (fx, fz) = (x + 0.5, z + 0.5);
+    b.card(fx, fz, 1.5, 2.4, Figure::Janitor);
+    // The mop bucket: a grey pail on its castors, a mop's handle up out of it.
+    b.cylinder(fx + 0.85, 0.0, fz + 0.1, 0.26, 0.34, Rgba::hex(STONE));
+    b.ring(fx + 0.85, 0.34, fz + 0.1, 0.26, 0.04, Rgba::hex(STONE_DARK));
+    b.capsule(fx + 0.9, 0.3, fz + 0.05, 0.035, 0.9, Rgba::hex(WOOD));
+    b.hot_since(m, &hot);
+    let [lx, ly, lz] = over(fx, fz, 2.65);
+    b.label(lx, ly, lz, "the janitor", 11.0, TEXT).backing = Backing::Ink;
+}
+
 /// What a click on the doctor, the bed or the cabinet opens.
 fn doctor_hot(tip_text: &str) -> Hot {
     pane(serde_json::json!({"kind": "doctor"}), tip_text)
@@ -1762,6 +1782,8 @@ fn factory(snap: &Snapshot) -> Scene {
         0.04,
         Rgba::hex(STONE_DARK),
     );
+    // The janitor, at the tower's foot, between it and the quay.
+    caretaker(&mut b, quay - 2.4, tz + 2.2);
     // The bridge from the hangar to the tower.
     b.rounded(
         bx + bw - 0.2,
@@ -3370,6 +3392,46 @@ mod tests {
             .filter(|p| matches!(p.shape, Shape::Capsule { .. }) && p.tilt[0] > 89.0)
             .count();
         assert!(barrels >= 4, "the roof is barrel vaults");
+    }
+
+    #[test]
+    fn the_janitor_leans_on_his_broom_outside_by_the_tower_and_the_water() {
+        let scene = build(&picture(), &View::A);
+        assert!(
+            cards(&scene).contains(&Figure::Janitor),
+            "they stand outside"
+        );
+        assert!(
+            panes(&scene, "janitor") >= 3,
+            "card, shadow and bucket call him"
+        );
+        let at: Vec<[f32; 3]> = scene
+            .props
+            .iter()
+            .filter(|p| p.hot.as_ref().and_then(pane_kind) == Some("janitor"))
+            .map(|p| p.at)
+            .collect();
+        // Between the tower (x 12–15) and the quay (x 17), in front of the
+        // tower's foot rather than behind it.
+        assert!(
+            at.iter().all(|p| p[0] > 14.0 && p[0] < 17.0 && p[2] > 7.0),
+            "{at:?}"
+        );
+        let groups: std::collections::BTreeSet<u32> = scene
+            .props
+            .iter()
+            .filter(|p| p.hot.as_ref().and_then(pane_kind) == Some("janitor"))
+            .filter_map(|p| p.group)
+            .collect();
+        assert_eq!(groups.len(), 1, "they and their bucket grow as one");
+        for view in [
+            View::B,
+            View::C {
+                room: "lines".to_string(),
+            },
+        ] {
+            assert!(!cards(&build(&picture(), &view)).contains(&Figure::Janitor));
+        }
     }
 
     #[test]

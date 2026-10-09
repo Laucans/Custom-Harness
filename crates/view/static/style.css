@@ -73,6 +73,37 @@ body {
 .hud-btn:hover { background: rgba(199, 210, 254, 0.12); }
 .hud-btn.doctor { border-color: rgba(255, 140, 120, 0.5); color: #ffb4a2; }
 .hud-btn.doctor:hover { background: rgba(255, 140, 120, 0.12); }
+.hud-btn.janitor { border-color: rgba(126, 190, 170, 0.5); color: #a8d8c6; }
+.hud-btn.janitor:hover { background: rgba(126, 190, 170, 0.12); }
+.hud-btn.janitor.warn { border-color: var(--warn); color: var(--warn); }
+.hud-btn.janitor.bad { border-color: var(--bad); color: var(--bad); }
+
+/* the janitor's pane: two buttons, two pies, a legend, the settings, the lists. */
+.janitor-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12px; }
+button.act { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 6px 12px; font: 13px var(--sans); cursor: pointer; }
+button.act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button.act.primary { border-color: var(--accent); }
+button.act.armed { background: var(--warn); border-color: var(--warn); color: var(--panel); }
+button.act:disabled { opacity: .5; cursor: default; }
+.spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--dim); border-top-color: var(--accent); border-radius: 50%; margin-right: 6px; vertical-align: -1px; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pies { display: flex; flex-wrap: wrap; gap: 18px; margin: 4px 0 10px; }
+.pies figure { margin: 0; flex: 1 1 200px; max-width: 260px; text-align: center; }
+.pies figcaption { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.pies .cap { font-size: 12px; color: var(--dim); }
+svg.donut { width: 100%; max-width: 200px; height: auto; display: block; margin: 0 auto 4px; }
+svg.donut circle { transition: stroke-dasharray .4s; }
+svg.donut circle:hover { stroke-width: 22; }
+svg.donut text.big { fill: var(--text); font: 600 18px var(--mono); }
+svg.donut text.small { fill: var(--dim); font: 9px var(--mono); }
+table.legend { max-width: 560px; margin-bottom: 6px; }
+table.legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+table.legend tr.total td { color: var(--text); font-weight: 600; border-top: 2px solid var(--line); }
+table.rows td.path { overflow-wrap: anywhere; }
+.janitor-form { display: grid; gap: 8px; max-width: 560px; font-size: 13px; }
+.janitor-form label { display: flex; align-items: center; gap: 8px; }
+.janitor-form input[type="number"] { width: 80px; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 4px 6px; font: 13px var(--mono); }
+details summary { cursor: pointer; color: var(--dim); margin: 12px 0 6px; font-size: 12px; }
 
 #status-wrap { position: relative; margin-left: auto; min-width: 0; }
 #status {
@@ -207,6 +238,9 @@ body.split > #pane { grid-area: pane; }
   border-left: 1px solid var(--line);
   background: var(--panel);
 }
+/* `display: flex` above beats the `hidden` attribute: a closed pane stayed
+   laid out under the plant, and its buttons showed through. */
+#pane[hidden] { display: none; }
 #pane-head {
   display: flex;
   align-items: center;

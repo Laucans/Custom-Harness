@@ -556,6 +556,9 @@
       if (S.pane && S.pane.kind === who) closePane(); else openPane({ kind: who });
     });
   }
+  $('hud-janitor').addEventListener('click', () => {
+    if (S.pane && S.pane.kind === 'janitor') closePane(); else openPane({ kind: 'janitor' });
+  });
   function act(h) {
     if (h.go) return go(h.go, h.room || null);
     if (h.url) return window.open(h.url, '_blank', 'noopener');
@@ -720,6 +723,174 @@
     } catch (err) { button.classList.remove('running'); button.title = 'cannot reach the server'; return; }
     pullDiagnoses();
   }
+
+  // ---- The janitor: what the yard weighs, and a sweep ------------------------------
+  // The yard is `.llocal/`: the clones, their build outputs and dependencies,
+  // the runs' traces. The janitor weighs it every two hours on their own, or on a
+  // click; a sweep removes what the rules say is no longer useful — no model
+  // involved. Two pies: what the yard takes of what it may, and what fills it.
+  const GIB = 1024 ** 3;
+  const bytes = (n) => {
+    const v = Number(n || 0);
+    if (v >= GIB) return (v / GIB).toFixed(v >= 100 * GIB ? 0 : 1) + ' GB';
+    if (v >= 1024 ** 2) return (v / 1024 ** 2).toFixed(0) + ' MB';
+    if (v >= 1024) return (v / 1024).toFixed(0) + ' kB';
+    return v + ' B';
+  };
+  // One hue per category, fixed: a slice keeps its colour whatever its rank.
+  const SLICES = {
+    code: ['Code', '#3987e5', 'the clones\' own files and .git — never swept'],
+    build: ['Build outputs', '#d95926', 'target/, .next/… — swept 2 h after their workspace was last written'],
+    dependencies: ['Dependencies', '#199e70', 'node_modules/, .venv/… — swept after a week idle; harness doctor reinstalls them'],
+    traces: ['Run traces', '#c98500', 'logs/ — a run\'s folder is swept after 30 days'],
+    init: ['init-repo clones', '#d55181', 'init/ — throwaway clones, swept a day after'],
+    strays: ['Strays', '#9085e9', 'folders the harness never writes — swept only if you allow it'],
+    stores: ['Stores', '#e66767', 'the event store, lanes\' journals, locks — never swept'],
+  };
+  const SC = { status: null, timer: null, armed: false, said: '' };
+  async function janitorLoad(full) {
+    try {
+      SC.status = await (await fetch('/api/janitor')).json();
+    } catch (e) { SC.status = null; }
+    janitorHud();
+    if (!S.pane || S.pane.kind !== 'janitor') return;
+    janitorDraw(full);
+    clearTimeout(SC.timer);
+    if (SC.status && SC.status.doing && SC.status.doing !== 'idle') SC.timer = setTimeout(() => janitorLoad(false), 1500);
+  }
+  function janitorHud() {
+    const d = SC.status && SC.status.diagnosis;
+    const b = $('hud-janitor');
+    b.classList.toggle('warn', !!d && d.over_threshold && !d.over_limit);
+    b.classList.toggle('bad', !!d && d.over_limit);
+    b.textContent = d ? `🧹 janitor · ${Math.round((100 * d.used) / Math.max(1, d.limit))} %` : '🧹 janitor';
+  }
+  // A ring of slices, with a 2px gap of the pane's own colour between them.
+  function donut(parts, center, sub, marker) {
+    const R = 54, W = 18, C = 2 * Math.PI * R;
+    const total = parts.reduce((t, p) => t + p.value, 0) || 1;
+    let at = 0;
+    let svg = `<svg viewBox="0 0 140 140" class="donut" role="img" aria-label="${esc(center + ' ' + sub)}"><circle cx="70" cy="70" r="${R}" fill="none" stroke="var(--panel-2)" stroke-width="${W}"/>`;
+    for (const p of parts) {
+      const len = (p.value / total) * C;
+      if (len <= 0) continue;
+      const gap = parts.filter((q) => q.value > 0).length > 1 ? Math.min(2, len / 2) : 0;
+      svg += `<circle cx="70" cy="70" r="${R}" fill="none" stroke="${p.color}" stroke-width="${W}" stroke-dasharray="${Math.max(0, len - gap)} ${C}" stroke-dashoffset="${-at}" transform="rotate(-90 70 70)"><title>${esc(p.title)}</title></circle>`;
+      at += len;
+    }
+    if (marker != null) {
+      const a = (marker * 2 * Math.PI) - Math.PI / 2;
+      const x1 = 70 + Math.cos(a) * (R - W / 2 - 3), y1 = 70 + Math.sin(a) * (R - W / 2 - 3);
+      const x2 = 70 + Math.cos(a) * (R + W / 2 + 3), y2 = 70 + Math.sin(a) * (R + W / 2 + 3);
+      svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--text)" stroke-width="2.5" stroke-linecap="round"><title>auto-sweep threshold</title></line>`;
+    }
+    svg += `<text x="70" y="67" text-anchor="middle" class="big">${esc(center)}</text><text x="70" y="85" text-anchor="middle" class="small">${esc(sub)}</text></svg>`;
+    return svg;
+  }
+  function janitorDraw(full) {
+    const st = SC.status;
+    const live = $('janitor-live');
+    if (!live) return;
+    if (!st || !st.available) {
+      live.innerHTML = `<div class="callout">No janitor: the view runs with <code>--no-janitor</code>, or the server is unreachable.</div>`;
+      $('janitor-settings').innerHTML = ''; $('janitor-lists').innerHTML = '';
+      return;
+    }
+    const d = st.diagnosis;
+    const busy = st.doing !== 'idle';
+    const doing = { diagnosing: 'weighing the yard…', sweeping: 'sweeping…' }[st.doing] || '';
+    const sweepLabel = SC.armed ? `🧹 Click again: sweep ${bytes(d ? d.freeable : 0)}` : '🧹 Run the sweep';
+    let h = '<div class="janitor-actions">'
+      + `<button class="act primary${SC.armed ? ' armed' : ''}" data-janitor="sweep" ${busy || (d && !d.freeable) ? 'disabled' : ''} title="remove what the rules below say is no longer useful">${sweepLabel}</button>`
+      + `<button class="act" data-janitor="diagnose" ${busy ? 'disabled' : ''} title="weigh the yard again, remove nothing">🔍 Diagnose</button>`
+      + `<span class="muted">${busy ? `<span class="spin"></span>${doing}` : d ? `weighed ${hhmm(d.at)} · next ${hhmm(st.next_at)}` : 'not weighed yet'}${SC.said ? ' · ' + esc(SC.said) : ''}</span></div>`;
+    if (!d) { live.innerHTML = h + '<div class="muted">The first weighing runs when the view starts; it takes a few seconds.</div>'; }
+    else {
+      const pct = (100 * d.used) / Math.max(1, d.limit);
+      const state = d.over_limit ? 'bad' : d.over_threshold ? 'warn' : 'ok';
+      const usedColor = { ok: 'var(--ok)', warn: 'var(--warn)', bad: 'var(--bad)' }[state];
+      const usedPie = donut(
+        [{ value: Math.min(d.used, d.limit), color: usedColor, title: `used: ${bytes(d.used)}` }, { value: Math.max(0, d.limit - d.used), color: 'transparent', title: `free under the limit: ${bytes(d.limit - d.used)}` }],
+        `${Math.round(pct)} %`, `${bytes(d.used)} of ${bytes(d.limit)}`, st.settings.auto_sweep ? Math.min(1, d.threshold / Math.max(1, d.limit)) : null);
+      const slices = d.slices.filter((s) => s.bytes > 0);
+      const fillPie = donut(slices.map((s) => ({ value: s.bytes, color: SLICES[s.category][1], title: `${SLICES[s.category][0]}: ${bytes(s.bytes)}${s.sweepable ? ` · ${bytes(s.sweepable)} sweepable` : ''}` })), bytes(d.used), 'in the yard');
+      const legend = '<table class="rows legend"><tr><th></th><th>what</th><th class="num">size</th><th class="num">a sweep frees</th></tr>'
+        + d.slices.map((s) => `<tr title="${esc(SLICES[s.category][2])}"><td><span class="swatch" style="background:${SLICES[s.category][1]}"></span></td><td>${esc(SLICES[s.category][0])}</td><td class="num">${bytes(s.bytes)}</td><td class="num">${s.sweepable ? bytes(s.sweepable) : '—'}</td></tr>`).join('')
+        + `<tr class="total"><td></td><td>all told</td><td class="num">${bytes(d.used)}</td><td class="num">${bytes(d.freeable)}</td></tr></table>`;
+      const verdict = d.over_limit
+        ? `<span class="tag bad">✕ over the limit</span> ${bytes(d.used - d.limit)} too many`
+        : d.over_threshold ? `<span class="tag warn">! past the threshold</span> ${st.settings.auto_sweep ? 'the next round sweeps on its own' : 'auto-sweep is off'}`
+          : '<span class="tag ok">✓ under the limit</span>';
+      h += `<div class="pies"><figure><figcaption>Used of the limit</figcaption>${usedPie}<div class="cap">${verdict}</div></figure>`
+        + `<figure><figcaption>What fills it</figcaption>${fillPie}</figure></div>` + legend;
+      live.innerHTML = h;
+    }
+    if (full || !$('janitor-settings').innerHTML) janitorSettings();
+    janitorLists();
+  }
+  function janitorSettings() {
+    const s = SC.status.settings;
+    $('janitor-settings').innerHTML = '<h3>Settings</h3><form id="janitor-form" class="janitor-form">'
+      + `<label>Limit <input name="limit" type="number" min="1" step="1" value="${Math.round(s.limit_bytes / GIB)}"> GB</label>`
+      + `<label><input name="auto" type="checkbox" ${s.auto_sweep ? 'checked' : ''}> Auto-sweep: when the 2-hourly weighing passes the threshold below, sweep without asking</label>`
+      + `<label>Auto-sweep threshold <input name="threshold" type="number" min="1" max="100" step="1" value="${s.threshold_percent}"> % of the limit</label>`
+      + `<label><input name="strays" type="checkbox" ${s.sweep_strays ? 'checked' : ''}> Strays go too (folders the harness never writes)</label>`
+      + '<div><button class="act" type="submit">Save</button> <span id="janitor-saved" class="muted"></span></div></form>';
+  }
+  function janitorLists() {
+    const d = SC.status && SC.status.diagnosis;
+    const r = SC.status && SC.status.report;
+    let h = '';
+    if (r) {
+      h += `<h3>Last sweep · ${hhmm(r.at)}${r.automatic ? ' · on their own' : ''}</h3><div class="loop-line">${bytes(r.freed)} freed · ${r.removed.length} removed${r.failed.length ? ` · <span class="tag bad">${r.failed.length} refused</span>` : ''}</div>`;
+      if (r.failed.length) h += '<table class="rows">' + r.failed.map((f) => `<tr><td>${esc(f.rel)}</td><td>${esc(f.why)}</td></tr>`).join('') + '</table>';
+    }
+    if (d) {
+      const row = (x) => `<tr><td class="path">${esc(x.rel)}</td><td class="num">${bytes(x.bytes)}</td><td>${esc(x.why)}</td></tr>`;
+      h += `<h3>A sweep would remove · ${bytes(d.freeable)}</h3>` + (d.sweep.length
+        ? '<table class="rows"><tr><th>path under .llocal</th><th class="num">size</th><th>why</th></tr>' + d.sweep.slice(0, 40).map(row).join('') + '</table>' + (d.sweep.length > 40 ? `<div class="muted">and ${d.sweep.length - 40} more</div>` : '')
+        : '<div class="muted">nothing: the yard is clean</div>');
+      if (d.kept.length) h += `<details><summary>Kept although it weighs · ${d.kept.length}</summary><table class="rows">` + d.kept.slice(0, 40).map(row).join('') + '</table></details>';
+    }
+    $('janitor-lists').innerHTML = h;
+  }
+  async function janitorPost(path, body) {
+    const r = await fetch('/api/janitor/' + path, { method: 'POST', body, headers: body ? { 'content-type': 'application/json' } : {} });
+    if (!r.ok) throw new Error(await r.text());
+    SC.status = await r.json();
+  }
+  $('pane-body').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-janitor]');
+    if (!b || !S.pane || S.pane.kind !== 'janitor') return;
+    const what = b.dataset.janitor;
+    if (what === 'sweep' && !SC.armed) { SC.armed = true; janitorDraw(false); setTimeout(() => { if (SC.armed) { SC.armed = false; if (S.pane && S.pane.kind === 'janitor') janitorDraw(false); } }, 4000); return; }
+    SC.armed = false; SC.said = '';
+    SC.status = Object.assign({}, SC.status, { doing: what === 'sweep' ? 'sweeping' : 'diagnosing' });
+    janitorDraw(false);
+    try { await janitorPost(what); SC.said = what === 'sweep' ? `swept · ${bytes(SC.status.report ? SC.status.report.freed : 0)} freed` : 'weighed'; }
+    catch (err) { SC.said = String(err.message || err); }
+    janitorHud();
+    if (S.pane && S.pane.kind === 'janitor') janitorDraw(false);
+  });
+  $('pane-body').addEventListener('submit', async (e) => {
+    if (e.target.id !== 'janitor-form') return;
+    e.preventDefault();
+    const f = e.target;
+    const settings = {
+      limit_bytes: Math.round(Number(f.limit.value) * GIB),
+      auto_sweep: f.auto.checked,
+      threshold_percent: Math.round(Number(f.threshold.value)),
+      sweep_strays: f.strays.checked,
+    };
+    try {
+      await janitorPost('settings', JSON.stringify(settings));
+      $('janitor-saved').textContent = 'saved';
+      janitorDraw(false);
+      janitorHud();
+    } catch (err) { $('janitor-saved').textContent = String(err.message || err); }
+  });
+  janitorLoad(false);
+  setInterval(() => { if (!S.pane || S.pane.kind !== 'janitor') janitorLoad(false); }, 60e3);
 
   // ---- the terminals: the steward's, the doctor's -------------------------------
   // xterm.js in the pane, a WebSocket to a desk. Closing the pane closes the
@@ -1044,7 +1215,7 @@
       h += section(p, 'quota.claude', 'Claude');
       const kept = S.snap.quota;
       const claude = L && L.claude.value ? L.claude.value : null;
-      // The kept reading is old by nature: it stands in only when the probe
+      // Tthey kept reading is old by nature: it stands in only when the probe
       // failed, never while it runs.
       const shown = claude || (L && L.claude.error && !busy ? kept : null);
       if (L && L.claude.error && !busy) h += `<div class="callout soon">the probe failed: ${esc(L.claude.error)}${kept ? ' — showing the reading the runs last kept' : ''}</div>`;
@@ -1537,6 +1708,13 @@
       h += '</ul><h3>In development — one branch per open milestone</h3>';
       h += v.milestones.length ? '<ul class="issues">' + v.milestones.map((m) => `<li><span class="n">${esc(m.name.replace(/^milestone\/(\d+).*$/, '#$1'))}</span><span class="t">${esc(m.label)}<div class="muted" style="font:11px var(--mono)">${esc(m.name)}</div></span>${ext(m.url, 'open ↗')}</li>`).join('') + '</ul>' : '<div class="muted">none open</div>';
       return ['Distribution', h];
+    },
+
+    janitor() {
+      const html = '<div id="janitor-live"><div class="muted">The janitor is looking at the yard…</div></div><div id="janitor-settings"></div><div id="janitor-lists"></div>';
+      // A refresh of the plant leaves the janitor's pane as it is: its numbers
+      // come from his own route, and a limit being typed is not wiped.
+      return ['The janitor · the yard', html, (refresh) => { if (!refresh) janitorLoad(true); }, true];
     },
 
     steward(p) { return terminalPane(p.kind); },

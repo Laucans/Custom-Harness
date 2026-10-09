@@ -87,6 +87,42 @@ that ended is a fact the poller hands `harness-notify` (`Facts::diagnoses`):
 an Info notification when answered, a Warning when not, each leading to the
 agent's pane — so the human hears of it with the pane closed.
 
+## The janitor
+
+An old man in teal coveralls leaning on a push broom, outside at the tower's
+foot by the water, and the `janitor` button in the header. Their job is the
+disk: `.llocal/` — the *yard*, where the clones, their build outputs and
+dependencies, the runs' traces and the stores pile up. **No model is
+involved**: what goes is decided by rules on a heap's name, weight and idle
+time (`domain::cleanup`), the walk and the removal are the `Yard` port's
+(`adapters::fs_yard`), and `janitor.rs` holds the clock and the threads.
+
+| what | goes when |
+| --- | --- |
+| a clone's build output (`target`, `.next`, `__pycache__`, …) | its workspace idle 2 h |
+| a clone's dependencies (`node_modules`, `.venv`, …) | idle a week — `harness doctor` reinstalls them |
+| a run's folder under `logs/`, its `flow-*.jsonl` with it | 30 days old |
+| `init/`, the throwaway clones of `init-repo` | idle a day |
+| a stray, a folder the harness never writes | only when the human allows it, idle a day |
+| a clone's code, `.git`, the ledgers, the event store, the locks | never |
+
+A name that a project might commit (`dist`, `build`) is not on the list: a
+sweep never takes what a reset would not give back. A folder under the
+workspaces without `.git` is left alone, the provisioning rule. The walk
+follows no symlink and a removal unlinks one; every path stays inside the
+yard.
+
+The pane shows two pies — what the yard weighs against its limit (50 GB at
+first), and what fills it by category — then the settings, what a sweep
+would remove and why, and what stays. Two buttons: **Diagnose** weighs again
+and removes nothing; **Run the sweep** (two clicks) weighs afresh, removes,
+and weighs again. The yard is weighed when the view starts and every two
+hours; with auto-sweep on, a weighing past the threshold (a share of the
+limit) sweeps on its own. One job at a time. Settings are kept in
+`.llocal/janitor.json`, which no run reads. Routes `GET /api/janitor`,
+`POST /api/janitor/{diagnose,sweep,settings}`; `--no-janitor` leaves the
+yard alone.
+
 The briefing names exact commands — `pgrep`, `setsid nohup ./target/release/harness watch …`,
 `pkill`, `gh issue edit … --add-label` — because the two mistakes a steward
 must not make are starting a second watch and stopping one mid-session
@@ -99,6 +135,7 @@ a reason: this terminal is a shell in the checkout.
 ```
 src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
+src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
 src/domain/            the inside — no disk, no subprocess, no clock
   blueprint.rs         the rooms, the models, one line per workflow, station by station; the gates each stage really declares, two in a row shown as one arch
@@ -113,14 +150,16 @@ src/domain/            the inside — no disk, no subprocess, no clock
   steward.rs           the steward's standing orders, and the status the page asks for
   doctor.rs            the doctor's standing orders, the check-up asked when they sit down, the question about one run and how its answer is heard
   plant.rs             the switch: which watch is this checkout's, what start / soft / hard send to whom
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now)
+  cleanup.rs           the janitor's rules: what in the yard is no longer useful, the pie, the limit and the threshold
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
+  fs_yard.rs           .llocal walked and swept with std::fs, symlinks never followed, every path kept inside
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
 ```
 
@@ -144,8 +183,10 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
   emit anything for it. A structured event port in `harness-core` would be
   more precise; it can be added later without touching this crate's inside,
   because `observe` already reads through a port. It writes nothing a run
-  reads. Its hands on the plant are two, both the human's: the steward's
-  terminal, and the status button's switch (`Plant` port). The switch does
+  reads. Its hands on the plant are three, all the human's: the steward's
+  terminal, the status button's switch (`Plant` port), and the janitor's
+  broom (`Yard` port), which removes only caches and old traces no run
+  needs, on a click or under the threshold the human set. The switch does
   three things only — start the watch (`HARNESS_WATCH_COMMAND`, detached in
   a process group of its own, output to `watch.out`), soft stop (`SIGTERM`
   to the watch, which drains), hard stop (`SIGKILL` to the watch's tree, and
@@ -178,6 +219,7 @@ cargo run -p harness-view -- --demo          # the latest run shown live
 cargo run -p harness-view -- --no-board      # never call gh
 cargo run -p harness-view -- --no-steward    # no terminal, nobody to talk to
 cargo run -p harness-view -- --no-doctor     # the infirmary has nobody in
+cargo run -p harness-view -- --no-janitor    # the yard is never weighed nor swept
 cargo run -p harness-view -- --static-dir crates/view/static   # edit the front without a rebuild
 ```
 

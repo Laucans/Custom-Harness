@@ -816,7 +816,7 @@ mod tests {
             None,
         );
         assert_eq!(none.len(), 1);
-        assert!(none[0].gates.is_empty());
+        assert_eq!(none[0].gates.len(), 0);
     }
 
     #[test]

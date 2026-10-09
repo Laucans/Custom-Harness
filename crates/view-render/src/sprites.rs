@@ -83,6 +83,9 @@ pub enum Figure {
     /// The elder: an old scientist in a lab coat, who stands for a crew of
     /// several agents at one station.
     Elder,
+    /// The janitor: a bored old man in teal-green coveralls and a
+    /// brown cap, a walrus moustache, leaning on a push broom.
+    Janitor,
     /// A robot: with `wrench` it is Bender, the steel-grey builder;
     /// otherwise Hedonismbot, the gold inspector on his chaise, clipboard
     /// in hand.
@@ -391,6 +394,101 @@ fn elder(c: &mut Canvas) {
     frown.move_to(CX - 14.0, 152.0);
     frown.quad_to(CX, 142.0, CX + 14.0, 152.0);
     c.stroke(frown.finish().as_ref(), INK, 5.0);
+}
+
+/// The janitor: the far future's the janitor, who has seen it all — teal-green
+/// coveralls with a brown belt and a chest pocket, a brown cap with its brim,
+/// grey brows over half-shut eyes, a big nose, a white walrus moustache, both
+/// hands folded on the top of a push broom to lean on.
+fn janitor(c: &mut Canvas) {
+    const COVERALL: Rgb = (62, 102, 98);
+    const CAP: Rgb = (128, 84, 52);
+    const BELT: Rgb = (96, 62, 38);
+    const WOOD: Rgb = (184, 136, 80);
+    const BRISTLE: Rgb = (92, 82, 72);
+    const WHISKER: Rgb = (238, 234, 226);
+    const BROW: Rgb = (196, 194, 190);
+    const SHOE: Rgb = (72, 52, 40);
+    // Shoes wide apart, legs, then the coveralls' body with belt and pocket.
+    c.shape(ellipse(CX - 46.0, 364.0, 24.0, 11.0), SHOE);
+    c.shape(ellipse(CX + 46.0, 364.0, 24.0, 11.0), SHOE);
+    c.shape(
+        rounded(CX - 54.0, 250.0, 38.0, 112.0, 14.0),
+        shade(COVERALL, 0.85),
+    );
+    c.shape(
+        rounded(CX + 16.0, 250.0, 38.0, 112.0, 14.0),
+        shade(COVERALL, 0.85),
+    );
+    c.shape(rounded(CX - 58.0, 158.0, 116.0, 112.0, 28.0), COVERALL);
+    c.shape(rounded(CX - 60.0, 244.0, 120.0, 14.0, 5.0), BELT);
+    c.fill(
+        rounded(CX - 9.0, 246.0, 18.0, 10.0, 2.0).as_ref(),
+        GOLD_DARK,
+        255,
+    );
+    c.shape(
+        rounded(CX - 46.0, 204.0, 26.0, 22.0, 4.0),
+        shade(COVERALL, 0.88),
+    );
+    // The broom: a long wooden handle in front of him, a wide head of
+    // bristles at his feet.
+    c.line((CX + 2.0, 150.0), (CX + 2.0, 350.0), INK, 17.0);
+    c.line((CX + 2.0, 150.0), (CX + 2.0, 350.0), WOOD, 9.0);
+    c.shape(rounded(CX - 44.0, 344.0, 92.0, 14.0, 5.0), WOOD);
+    c.shape(rounded(CX - 40.0, 356.0, 84.0, 16.0, 3.0), BRISTLE);
+    for i in 0..7 {
+        #[allow(clippy::cast_precision_loss)] // i < 7
+        let x = CX - 30.0 + i as f32 * 11.0;
+        c.line((x, 360.0), (x, 370.0), shade(BRISTLE, 0.7), 2.0);
+    }
+    // Arms folded in to the top of the handle, sleeves the coveralls'.
+    for (shoulder, elbow, hand) in [
+        ((CX - 50.0, 176.0), (CX - 66.0, 214.0), (CX - 10.0, 190.0)),
+        ((CX + 50.0, 176.0), (CX + 66.0, 214.0), (CX + 14.0, 184.0)),
+    ] {
+        let mut arm = PathBuilder::new();
+        arm.move_to(shoulder.0, shoulder.1);
+        arm.quad_to(elbow.0, elbow.1, hand.0, hand.1);
+        let arm = arm.finish();
+        c.stroke(arm.as_ref(), INK, 34.0);
+        c.stroke(arm.as_ref(), COVERALL, 22.0);
+    }
+    c.shape(ellipse(CX - 8.0, 188.0, 15.0, 11.0), SKIN);
+    c.shape(ellipse(CX + 12.0, 180.0, 15.0, 11.0), SKIN);
+    // The head, resting low over the hands: ears, then the face.
+    for side in [-1.0, 1.0] {
+        c.shape(ellipse(CX + side * 48.0, 108.0, 10.0, 15.0), SKIN);
+    }
+    c.shape(ellipse(CX, 106.0, 50.0, 56.0), SKIN);
+    // The cap: a brown crown and its brim, pulled low.
+    c.shape(domed(CX - 50.0, 36.0, 100.0, 44.0, 22.0, 6.0), CAP);
+    c.shape(ellipse(CX + 14.0, 78.0, 58.0, 9.0), shade(CAP, 0.8));
+    c.line((CX - 30.0, 48.0), (CX + 30.0, 48.0), shade(CAP, 0.7), 3.0);
+    // Half-shut eyes under bushy grey brows: seen it all.
+    for side in [-1.0, 1.0] {
+        let ex = CX + side * 19.0;
+        c.fill(ellipse(ex, 98.0, 10.0, 7.0).as_ref(), WHITE, 255);
+        c.fill(circle(ex, 100.0, 4.0).as_ref(), INK, 255);
+        c.fill(
+            rounded(ex - 11.0, 90.0, 22.0, 8.0, 3.0).as_ref(),
+            shade(SKIN, 0.9),
+            255,
+        );
+        c.line((ex - 11.0, 97.0), (ex + 11.0, 97.0), INK, 4.0);
+        c.shape(ellipse(ex, 86.0, 15.0, 5.0), BROW);
+    }
+    // A big nose, and the walrus moustache over the mouth.
+    c.shape(ellipse(CX + 2.0, 116.0, 12.0, 14.0), shade(SKIN, 0.92));
+    let mut whiskers = PathBuilder::new();
+    whiskers.move_to(CX - 42.0, 146.0);
+    whiskers.quad_to(CX - 34.0, 120.0, CX, 126.0);
+    whiskers.quad_to(CX + 34.0, 120.0, CX + 42.0, 146.0);
+    whiskers.quad_to(CX, 136.0, CX - 42.0, 146.0);
+    whiskers.close();
+    c.shape(whiskers.finish(), WHISKER);
+    c.fill(circle(CX - 40.0, 124.0, 8.0).as_ref(), PINK, 110);
+    c.fill(circle(CX + 40.0, 124.0, 8.0).as_ref(), PINK, 110);
 }
 
 /// The steward: the Vault Boy — a grinning mascot of the atomic age in a
@@ -712,6 +810,7 @@ pub fn paint(figure: Figure) -> Sprite {
         Figure::Steward => steward(&mut canvas),
         Figure::Doctor => doctor(&mut canvas),
         Figure::Elder => elder(&mut canvas),
+        Figure::Janitor => janitor(&mut canvas),
         Figure::Robot {
             model,
             wrench,
@@ -763,6 +862,7 @@ mod tests {
             Figure::Steward,
             Figure::Doctor,
             Figure::Elder,
+            Figure::Janitor,
             Figure::Robot {
                 model: Model::Sonnet,
                 wrench: true,
@@ -891,6 +991,28 @@ mod tests {
             "the mirror's glass {mirror:?}"
         );
         assert_ne!(s, paint(Figure::Steward));
+    }
+
+    #[test]
+    fn the_janitor_wears_teal_coveralls_a_brown_cap_and_a_white_moustache() {
+        let s = paint(Figure::Janitor);
+        let suit = pixel(&s, WIDTH / 2 + 34, 236);
+        assert_eq!(&suit[..3], &[62, 102, 98], "teal coveralls {suit:?}");
+        let cap = pixel(&s, WIDTH / 2 - 20, 60);
+        assert_eq!(&cap[..3], &[128, 84, 52], "brown cap {cap:?}");
+        let whiskers = pixel(&s, WIDTH / 2 - 26, 136);
+        assert_eq!(
+            &whiskers[..3],
+            &[238, 234, 226],
+            "white moustache {whiskers:?}"
+        );
+        let handle = pixel(&s, WIDTH / 2 + 2, 300);
+        assert_eq!(
+            &handle[..3],
+            &[184, 136, 80],
+            "the broom's handle {handle:?}"
+        );
+        assert_ne!(s, paint(Figure::Elder));
     }
 
     #[test]

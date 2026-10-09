@@ -35,6 +35,7 @@ use tokio_stream::{Stream, StreamExt as _};
 use crate::desk::Desk;
 use crate::domain::assemble;
 use crate::domain::blueprint;
+use crate::domain::cleanup::Settings;
 use crate::domain::doctor::{self, Diagnosis};
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
@@ -45,6 +46,7 @@ use crate::domain::snapshot::Snapshot;
 use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
+use crate::janitor::Janitor;
 use crate::ports::{BoardReading, Limits, Plant, Traces};
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
@@ -87,6 +89,8 @@ pub struct AppState {
     /// The harness's events, for a run's gate verdicts — `None` when the
     /// store could not be opened.
     pub events: Option<Arc<dyn EventLog + Send + Sync>>,
+    /// The janitor, who weighs and sweeps the yard — `None` under `--no-janitor`.
+    pub janitor: Option<Janitor>,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -136,6 +140,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/doctor/term", get(doctor_term))
         .route("/api/doctor/diagnoses", get(diagnoses))
         .route("/api/doctor/diagnose/{workflow}/{run}", post(diagnose))
+        .route("/api/janitor", get(janitor))
+        .route("/api/janitor/diagnose", post(janitor_diagnose))
+        .route("/api/janitor/sweep", post(janitor_sweep))
+        .route("/api/janitor/settings", post(janitor_settings))
         .with_state(state)
 }
 
@@ -706,6 +714,52 @@ async fn plant_gesture(
     json(&Done { message })
 }
 
+/// What a page reads of the janitor when the view runs without him.
+const NO_JANITOR: &str = "no janitor: the view runs with --no-janitor";
+
+/// The janitor's last weighing, last sweep, settings and what they are doing.
+async fn janitor(State(state): State<AppState>) -> Response {
+    state.janitor.as_ref().map_or_else(
+        || json(&serde_json::json!({ "available": false })),
+        |janitor| json(&janitor.status()),
+    )
+}
+
+/// Weighs the yard now; answers once the walk is done.
+async fn janitor_diagnose(State(state): State<AppState>) -> Response {
+    let Some(janitor) = state.janitor.as_ref() else {
+        return (StatusCode::NOT_FOUND, NO_JANITOR).into_response();
+    };
+    janitor.diagnose().await;
+    json(&janitor.status())
+}
+
+/// Sweeps the yard now — a fresh weighing first, so nothing goes on an old
+/// one — and answers with what went.
+async fn janitor_sweep(State(state): State<AppState>) -> Response {
+    let Some(janitor) = state.janitor.as_ref() else {
+        return (StatusCode::NOT_FOUND, NO_JANITOR).into_response();
+    };
+    janitor.sweep(false).await;
+    json(&janitor.status())
+}
+
+/// New settings, as JSON: the limit, the threshold, whether to sweep on their
+/// own and whether strays go. Out of bounds is a `400` with the reason.
+async fn janitor_settings(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(janitor) = state.janitor.as_ref() else {
+        return (StatusCode::NOT_FOUND, NO_JANITOR).into_response();
+    };
+    let settings = match Settings::parse(&String::from_utf8_lossy(&body)) {
+        Ok(settings) => settings,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    match janitor.set(settings) {
+        Ok(status) => json(&status),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
 /// How long the doctor gets to answer before a diagnosis is given up on.
 const DIAGNOSIS_PATIENCE: Duration = Duration::from_mins(20);
 
@@ -1011,16 +1065,21 @@ mod tests {
             limits: None,
             claude_read: Arc::default(),
             events: None,
+            janitor: None,
         }
     }
 
     async fn post_to(state: AppState, uri: &str) -> (StatusCode, String) {
+        post_body(state, uri, "").await
+    }
+
+    async fn post_body(state: AppState, uri: &str, body: &str) -> (StatusCode, String) {
         let response = router(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri(uri)
-                    .body(Body::empty())
+                    .body(Body::from(body.to_string()))
                     .expect("request"),
             )
             .await
@@ -1323,6 +1382,68 @@ mod tests {
         // refuses it before any desk is consulted.
         let (status, _) = get(state(Shelf::default(), None), "/api/steward/term").await;
         assert!(status.is_client_error(), "{status}");
+    }
+
+    #[tokio::test]
+    async fn the_janitor_weighs_sweeps_and_takes_a_new_limit_from_the_page() {
+        use crate::domain::cleanup::fake::Lot;
+        use crate::ports::{Heap, Survey, Yard};
+        let (status, body) = get(state_without_plant(), "/api/janitor").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"available\":false"), "{body}");
+        let (status, _) = post_to(state_without_plant(), "/api/janitor/sweep").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let lot = Arc::new(Lot {
+            survey: Survey {
+                total: 300,
+                folders: vec![Heap {
+                    rel: "init".to_string(),
+                    bytes: 300,
+                    idle_secs: 3 * 86_400,
+                    dir: true,
+                }],
+                ..Survey::default()
+            },
+            ..Lot::default()
+        });
+        let mut state = state_without_plant();
+        state.janitor = Some(Janitor::new(Arc::clone(&lot) as Arc<dyn Yard>));
+        let (status, body) = post_to(state.clone(), "/api/janitor/diagnose").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"freeable\":300"), "{body}");
+        assert!(
+            lot.removed.lock().expect("lock").is_empty(),
+            "a diagnosis removes nothing"
+        );
+        let (status, body) = post_to(state.clone(), "/api/janitor/sweep").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"freed\":300"), "{body}");
+        assert_eq!(*lot.removed.lock().expect("lock"), ["init"]);
+
+        let (status, why) = post_body(
+            state.clone(),
+            "/api/janitor/settings",
+            r#"{"limit_bytes": 1000}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}");
+        let twenty = 20_u64 * 1024 * 1024 * 1024;
+        let (status, body) = post_body(
+            state,
+            "/api/janitor/settings",
+            &format!(r#"{{"limit_bytes": {twenty}, "auto_sweep": true, "threshold_percent": 90}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!("\"limit_bytes\":{twenty}")),
+            "{body}"
+        );
+        assert!(
+            lot.read_settings()
+                .is_some_and(|s| s.contains("\"auto_sweep\": true"))
+        );
     }
 
     #[tokio::test]
