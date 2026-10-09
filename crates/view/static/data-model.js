@@ -37,7 +37,9 @@
     host.innerHTML = '<div class="dm">'
       + '<div class="dm-switch" hidden><div class="dm-branches" role="group" aria-label="branch"></div>'
       + '<div class="dm-features" hidden role="menu" aria-label="feature branches"></div>'
-      + '<label class="dm-version">version <select aria-label="version"></select></label></div>'
+      + '<label class="dm-version">version <select aria-label="version"></select></label>'
+      + '<span class="dm-compare-wrap" hidden><button type="button" class="dm-compare" data-dm="compare" aria-haspopup="menu" title="Hold this version against another branch or version">compare ▾</button>'
+      + '<div class="dm-compares" hidden role="menu" aria-label="compare with"></div></span></div>'
       + '<div class="dm-bar"><span class="dm-origin">reading the data model…</span><span class="spacer"></span>'
       + '<input type="search" class="dm-search" placeholder="Find a table or a field" aria-label="find a table or a field">'
       + '<button type="button" class="mini" data-dm="all">unfold all</button></div>'
@@ -52,7 +54,11 @@
       // A build the page started: polled until it ends; a model's asks a second click.
       fresh: false, building: null, armed: null, buildTimer: null, said: '',
       // Who uses each table and field: the version it was read for, and when.
-      usage: { key: '', at: 0, by: {}, error: null } };
+      usage: { key: '', at: 0, by: {}, error: null },
+      // Compared with another branch or version: what to hold it against,
+      // what differs (the server's reply), and the model as drawn — the
+      // shown one with what only the other side has ghosted in.
+      compare: null, diff: null, drawn: null };
 
     const describe = (target) => {
       if (!target) return 'the canvas';
@@ -74,7 +80,9 @@
       if (!m || !target) return '';
       const name = target.slice(target.indexOf(':') + 1);
       const users = usersOf(target).map((u) => `  - ${u.id} (${u.how}, ${u.via})`).join('\n');
-      const version = `Shown: ${m.origin}.\nUsed by:\n${users || '  no capability'}`;
+      const change = st.compare && st.diff && changeOf(target);
+      const differs = change ? `\nCompared with ${otherLabel()}: ${DIFF_WORDS[change.change]}${change.notes.length ? ' — ' + change.notes.join(' · ') : ''}` : '';
+      const version = `Shown: ${m.origin}.${differs}\nUsed by:\n${users || '  no capability'}`;
       if (target.startsWith('table:')) {
         const t = m.tables.find((x) => x.name === name);
         if (!t) return version;
@@ -110,12 +118,16 @@
       if (st.gone) return;
       let reply = null;
       try {
-        const [versions, model] = await Promise.all([
+        const [versions, model, diff] = await Promise.all([
           fetch('/api/data-model/versions').then((r) => (r.ok ? r.json() : null)),
           fetch('/api/data-model?' + new URLSearchParams({ branch: st.branch, dir: st.newest ? '' : st.dir, fresh: st.fresh ? '1' : '' })).then((r) => (r.ok ? r.json() : null)),
+          st.compare
+            ? fetch('/api/data-model/compare?' + new URLSearchParams({ branch: st.branch, dir: st.newest ? '' : st.dir, with_branch: st.compare.branch, with_dir: st.compare.dir || '' })).then((r) => (r.ok ? r.json() : null))
+            : Promise.resolve(null),
         ]);
         st.versions = versions;
         st.fresh = false;
+        st.diff = st.compare ? diff : null;
         reply = model;
       } catch (e) { reply = null; }
       if (st.gone) return;
@@ -127,7 +139,7 @@
       board.setBoard(boardOf(st.branch || ''));
       readUsage();
       drawSwitch();
-      const body = JSON.stringify(reply.model);
+      const body = JSON.stringify(reply.model) + '\n' + JSON.stringify(st.diff);
       if (body !== st.body) {
         st.body = body;
         st.model = reply.model;
@@ -154,6 +166,45 @@
       const when = (at) => window.HarnessClock.stamp(at).slice(0, 16);
       q('.dm-version').hidden = !(current && current.versions.length);
       q('.dm-version select').innerHTML = (current ? current.versions : []).map((x, i) => `<option value="${esc(x.dir)}"${x.dir === st.dir ? ' selected' : ''}>${esc(when(x.at))} · ${esc(x.sha.slice(0, 7))}${i === 0 ? ' · newest' : ''}</option>`).join('');
+      drawCompare(v);
+    }
+    // The compare menu: every other branch at its newest, and the older
+    // versions of the branch shown — what changed since.
+    function drawCompare(v) {
+      const when = (at) => window.HarnessClock.stamp(at).slice(0, 16);
+      q('.dm-compare-wrap').hidden = false;
+      const on = st.compare;
+      const button = q('.dm-compare');
+      button.classList.toggle('on', !!on);
+      button.textContent = on ? `vs ${otherLabel()} ▾` : 'compare ▾';
+      const items = [];
+      if (on) items.push('<button type="button" role="menuitem" data-compare-off>× stop comparing</button>');
+      for (const b of v.branches) {
+        const newest = b.versions[0];
+        const shownHere = b.branch === st.branch && (st.newest || (newest && newest.dir === st.dir));
+        if (!shownHere) items.push(`<button type="button" role="menuitem" data-compare-branch="${esc(b.branch)}" data-compare-dir="">${esc(b.label)}<small>${newest ? esc(when(newest.at)) : 'live'}</small></button>`);
+        if (b.branch !== st.branch) continue;
+        for (const x of b.versions) {
+          if (x.dir === st.dir || (st.newest && x === newest)) continue;
+          items.push(`<button type="button" role="menuitem" data-compare-branch="${esc(b.branch)}" data-compare-dir="${esc(x.dir)}">${esc(b.label)} · ${esc(when(x.at))}<small>${esc(x.sha.slice(0, 7))}</small></button>`);
+        }
+      }
+      q('.dm-compares').innerHTML = items.length ? items.join('') : '<div class="hb-empty">Nothing else to compare with.</div>';
+    }
+    // The other side of a comparison, in words: `main`, `#3 campaigns · 2026-10-09 17:52`.
+    function otherLabel() {
+      const on = st.compare;
+      if (!on) return '';
+      const b = st.versions && st.versions.branches.find((x) => x.branch === on.branch);
+      const ver = on.dir && b && b.versions.find((x) => x.dir === on.dir);
+      return (b ? b.label : on.branch) + (ver ? ' · ' + window.HarnessClock.stamp(ver.at).slice(0, 16) : '');
+    }
+    function compareWith(branch, dir) {
+      st.compare = branch ? { branch, dir: dir || '' } : null;
+      st.diff = null;
+      st.sel = null;
+      q('.dm-compares').hidden = true;
+      load();
     }
     // One action per file and branch: what its log button is found by.
     const buildKey = (what) => `build:${what}:${(st.building && st.building.what === what && st.building.branch) || st.branch || 'integration'}`;
@@ -213,6 +264,7 @@
       st.newest = !dir;
       st.sel = null;
       q('.dm-features').hidden = true;
+      if (st.compare && st.compare.branch === branch && (st.compare.dir || '') === (dir || '')) st.compare = null;
       load();
     }
     function say(html) {
@@ -277,8 +329,34 @@
     const heightOf = (t) => HEAD + (st.open.has(t.name) && t.fields.length ? t.fields.length * ROW + 2 * PAD : 0);
 
     // ---- drawing -----------------------------------------------------------------
-    function draw() {
+    // What is drawn: the model shown — and, compared, what only the other
+    // side has ghosted in, every part marked with what changed.
+    function drawn() {
       const m = st.model;
+      const d = st.diff && st.diff.comparison;
+      if (!m || !d) { st.drawn = m; return m; }
+      const marked = (x, change, notes, gone) => Object.assign({}, x, { diff: change, notes: notes || [], gone: !!gone });
+      const changes = new Map(d.tables.map((c) => [c.name, c]));
+      const tables = m.tables.map((t) => {
+        const c = changes.get(t.name);
+        if (!c) return t;
+        const fields = new Map(c.fields.map((f) => [f.name, f]));
+        const own = t.fields.map((f) => (fields.has(f.name) ? marked(f, fields.get(f.name).change, fields.get(f.name).notes) : f));
+        const gone = c.fields.filter((f) => f.change === 'removed' && f.was).map((f) => marked(f.was, 'removed', [], true));
+        return Object.assign(marked(t, c.change, c.notes), { fields: own.concat(gone) });
+      });
+      for (const c of d.tables) {
+        if (c.change === 'removed' && c.was) tables.push(Object.assign(marked(c.was, 'removed', [], true), { fields: c.was.fields.map((f) => marked(f, 'removed', [], true)) }));
+      }
+      const ends = (l) => `${l.from_table}.${l.from_field}>${l.to_table}.${l.to_field}`;
+      const linkChanges = new Map(d.links.map((c) => [ends(c.link), c]));
+      const links = m.links.map((l) => { const c = linkChanges.get(ends(l)); return c ? marked(l, c.change, c.notes) : l; });
+      for (const c of d.links) if (c.change === 'removed') links.push(marked(c.link, 'removed', [], true));
+      st.drawn = Object.assign({}, m, { tables, links });
+      return st.drawn;
+    }
+    function draw() {
+      const m = drawn();
       if (!m) return;
       drawBar(m);
       if (!m.tables.length) {
@@ -321,7 +399,14 @@
         ? (m.divergences.length ? `<button type="button" class="dm-div bad" data-dm="divergences">${m.divergences.length} divergence${m.divergences.length > 1 ? 's' : ''}</button>` : '<span class="dm-div ok">in agreement</span>')
         : '';
       const lastLog = st.lastKey && window.HarnessActions ? window.HarnessActions.chip(st.lastKey) : '';
-      say(`<b>${esc(m.origin)}</b>${src}${div}${st.said ? `<span class="dm-built">${esc(st.said)}${lastLog}</span>` : ''}`);
+      let cmp = '';
+      if (st.compare) {
+        const d = st.diff && st.diff.comparison;
+        const count = d ? d.tables.length + d.links.length + d.views.length : 0;
+        const words = !st.diff ? 'comparing…' : st.diff.error ? 'not compared' : count ? `${count} difference${count > 1 ? 's' : ''}` : 'the same';
+        cmp = `<button type="button" class="dm-div ${!st.diff ? '' : st.diff.error || count ? 'bad' : 'ok'}" data-dm="compare-summary" title="What this version changes, compared with ${esc(otherLabel())}">vs ${esc(otherLabel())} · ${words}</button>`;
+      }
+      say(`<b>${esc(m.origin)}</b>${src}${div}${cmp}${st.said ? `<span class="dm-built">${esc(st.said)}${lastLog}</span>` : ''}`);
       q('[data-dm="all"]').textContent = m.tables.every((t) => st.open.has(t.name)) ? 'fold all' : 'unfold all';
     }
     function keyOf(f) {
@@ -341,11 +426,12 @@
       const rows = open ? '<ul class="dm-fields">' + t.fields.map((f) => {
         const fsel = sel && st.sel.field === f.name;
         const warn = f.declared_type ? `<span class="dm-warn" title="the model says ${esc(f.declared_type)}">≠</span>` : '';
-        return `<li class="dm-field seen-${f.seen}${fsel ? ' sel' : ''}" data-pin="field:${esc(t.name)}.${esc(f.name)}" data-field="${esc(f.name)}" title="${esc(f.purpose || f.name)}">`
+        return `<li class="dm-field seen-${f.seen}${fsel ? ' sel' : ''}${f.diff ? ' diff-' + f.diff : ''}" data-pin="field:${esc(t.name)}.${esc(f.name)}" data-field="${esc(f.name)}" title="${esc(f.notes && f.notes.length ? f.notes.join(' · ') : f.gone ? 'only in the other version' : f.purpose || f.name)}">`
           + `${keyOf(f)}<span class="dm-name">${esc(f.name)}${f.nullable === true ? '<i>?</i>' : ''}</span><span class="dm-type">${esc(f.data_type)}</span>${warn}</li>`;
       }).join('') + '</ul>' : '';
-      return `<div class="dm-table seen-${t.seen}${open ? ' open' : ''}${sel && !st.sel.field ? ' sel' : ''}" data-pin="table:${esc(t.name)}" data-table="${esc(t.name)}" style="left:${b.x}px;top:${b.y}px;width:${b.w}px">`
-        + `<div class="dm-head" title="${esc(t.purpose || 'click to show its fields')}"><span class="dm-caret">${open ? '▾' : '▸'}</span><b>${esc(t.name)}</b>${seenTag(t.seen)}<span class="dm-count">${t.fields.length}</span></div>`
+      const mark = t.diff ? `<span class="dm-diff ${t.diff}" title="${esc(DIFF_WORDS[t.diff])}">${DIFF_MARKS[t.diff]}</span>` : '';
+      return `<div class="dm-table seen-${t.seen}${open ? ' open' : ''}${sel && !st.sel.field ? ' sel' : ''}${t.diff ? ' diff-' + t.diff : ''}" data-pin="table:${esc(t.name)}" data-table="${esc(t.name)}" style="left:${b.x}px;top:${b.y}px;width:${b.w}px">`
+        + `<div class="dm-head" title="${esc(t.gone ? 'only in the other version' : t.purpose || 'click to show its fields')}"><span class="dm-caret">${open ? '▾' : '▸'}</span><b>${esc(t.name)}</b>${seenTag(t.seen)}${mark}<span class="dm-count">${t.fields.length}</span></div>`
         + rows + '</div>';
     }
     // Where a link leaves or reaches a table: its field's row when unfolded,
@@ -379,7 +465,7 @@
         }
         const hl = st.sel && ((l.from_table === st.sel.table && (!st.sel.field || l.from_field === st.sel.field))
           || (l.to_table === st.sel.table && (!st.sel.field || l.to_field === st.sel.field)));
-        const cls = ['dm-link', l.kind, 'seen-' + l.seen, hl ? 'hl' : ''].join(' ');
+        const cls = ['dm-link', l.kind, 'seen-' + l.seen, hl ? 'hl' : '', l.diff ? 'diff-' + l.diff : ''].join(' ');
         const tip = `${l.from_table}.${l.from_field} → ${l.to_table}.${l.to_field}${l.on_delete ? ' · on delete ' + l.on_delete : ''}${l.purpose ? ' — ' + l.purpose : ''}`;
         paths += `<path class="${cls}" d="${d}" marker-end="url(#dm-one)" marker-start="url(#dm-many)"><title>${esc(tip)}</title></path>`;
       }
@@ -427,6 +513,50 @@
       return `<h4>Used by <span class="muted">· ${users.length}</span></h4>${body}`;
     }
 
+    // ---- compared with another version ----------------------------------------------
+    const DIFF_WORDS = { added: 'here only', removed: 'there only', changed: 'differs' };
+    const DIFF_MARKS = { added: '+', removed: '−', changed: '~' };
+    const diffTag = (change) => `<span class="tag diff-${change}">${DIFF_WORDS[change]}</span>`;
+    // What a table or a field is, compared: the change found for it.
+    function changeOf(target) {
+      const d = st.diff && st.diff.comparison;
+      if (!d) return null;
+      const name = target.slice(target.indexOf(':') + 1);
+      if (target.startsWith('table:')) return d.tables.find((t) => t.name === name) || null;
+      const cut = name.lastIndexOf('.');
+      const t = d.tables.find((x) => x.name === name.slice(0, cut));
+      return (t && t.fields.find((f) => f.name === name.slice(cut + 1))) || null;
+    }
+    function compared(target) {
+      if (!st.compare) return '';
+      const head = `<h4>Compared with <span class="muted">${esc(otherLabel())}</span></h4>`;
+      if (!st.diff) return head + '<p class="muted">Comparing…</p>';
+      if (st.diff.error) return head + `<p class="bad">${esc(st.diff.error)}</p>`;
+      const c = changeOf(target);
+      if (!c) return head + '<p class="ok">The same there.</p>';
+      const fields = c.fields && c.fields.length
+        ? `<ul class="dm-flist">${c.fields.map((f) => `<li>${diffTag(f.change)}<button type="button" class="dm-go" data-goto="${esc(c.name)}" data-goto-field="${esc(f.name)}">${esc(f.name)}</button>${f.notes.length ? `<small class="muted">${esc(f.notes.join(' · '))}</small>` : ''}</li>`).join('')}</ul>`
+        : '';
+      return head + `<p>${diffTag(c.change)}</p>${c.notes.length ? list(c.notes) : ''}${fields}`;
+    }
+    function comparedOverview() {
+      const head = `<h4>Compared with <span class="muted">${esc(otherLabel())}</span></h4>`;
+      if (!st.diff) return head + '<p class="muted">Comparing…</p>';
+      if (st.diff.error) return head + `<p class="bad">${esc(st.diff.error)}</p>`;
+      const d = st.diff.comparison;
+      if (!d.tables.length && !d.links.length && !d.views.length) return head + '<p class="ok">The same data model.</p>';
+      let h = head + '<p class="muted"><b>here only</b>: this version has it, the other has not. <b>there only</b>: the other has it, drawn ghosted. <b>differs</b>: on both, not the same.</p>';
+      h += `<ul class="dm-flist">${d.tables.map((t) => {
+        const bits = [];
+        if (t.fields.length) bits.push(`${t.fields.length} field${t.fields.length > 1 ? 's' : ''}`);
+        bits.push(...t.notes);
+        return `<li>${diffTag(t.change)}<button type="button" class="dm-go" data-goto="${esc(t.name)}">${esc(t.name)}</button>${bits.length ? `<small class="muted">${esc(bits.join(' · '))}</small>` : ''}</li>`;
+      }).join('')}</ul>`;
+      if (d.links.length) h += `<h4>Links</h4><ul class="dm-links">${d.links.map((l) => `<li>${diffTag(l.change)} ${goto(l.link.from_table, l.link.from_field)} → ${goto(l.link.to_table, l.link.to_field)}${l.notes.length ? ` <small class="muted">${esc(l.notes.join(' · '))}</small>` : ''}</li>`).join('')}</ul>`;
+      if (d.views.length) h += `<h4>Views</h4>${list(d.views.map((v) => `${DIFF_WORDS[v.change]}: ${v.name}`))}`;
+      return h;
+    }
+
     // ---- the inspector -------------------------------------------------------------
     const list = (items, cls = '') => (items && items.length ? `<ul class="dm-rules ${cls}">${items.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : '<p class="muted">None.</p>');
     const goto = (table, field) => `<button type="button" class="dm-go" data-goto="${esc(table)}" data-goto-field="${esc(field || '')}">${esc(table)}${field ? '.' + esc(field) : ''}</button>`;
@@ -446,6 +576,7 @@
         h += `<h4>Divergences <span class="muted">· ${m.divergences.length}</span></h4>`
           + (m.divergences.length ? list(m.divergences, 'bad') : '<p class="ok">The database and the model agree.</p>');
       }
+      if (st.compare) h += comparedOverview();
       h += '<h4>How to read it</h4><ul class="dm-legend">'
         + '<li><span class="dm-key pk">PK</span> primary key · <span class="dm-key fk">FK</span> points at another field · <span class="dm-key uq">UQ</span> unique</li>'
         + '<li><i>?</i> after a name: it may be empty</li>'
@@ -464,6 +595,7 @@
         + t.fields.map((f) => `<li>${keyOf(f)}<button type="button" class="dm-go" data-goto="${esc(t.name)}" data-goto-field="${esc(f.name)}">${esc(f.name)}</button><span class="dm-type">${esc(f.data_type)}</span>${seenTag(f.seen)}</li>`).join('') + '</ul>'
         + (out.length ? `<h4>Points at</h4><ul class="dm-links">${out.map((l) => `<li>${esc(l.from_field)} → ${goto(l.to_table, l.to_field)}${linkWords(l)}</li>`).join('')}</ul>` : '')
         + (into.length ? `<h4>Pointed at by</h4><ul class="dm-links">${into.map((l) => `<li>${goto(l.from_table, l.from_field)} → ${esc(l.to_field)}${linkWords(l)}</li>`).join('')}</ul>` : '')
+        + compared('table:' + t.name)
         + usedBy('table:' + t.name)
         + notesOn('table:' + t.name);
     }
@@ -491,11 +623,12 @@
           + into.map((l) => `<li>← ${goto(l.from_table, l.from_field)}${linkWords(l)}</li>`).join('') + '</ul>' : '<p class="muted">None.</p>'}`
         + `<h4>Technical rules</h4>${list(f.technical)}`
         + `<h4>Business rules</h4>${list(f.business)}`
+        + compared(`field:${t.name}.${f.name}`)
         + usedBy(`field:${t.name}.${f.name}`)
         + notesOn(`field:${t.name}.${f.name}`);
     }
     function inspect() {
-      const m = st.model;
+      const m = st.drawn || st.model;
       if (!m) return;
       const t = st.sel && m.tables.find((x) => x.name === st.sel.table);
       const f = t && st.sel.field && t.fields.find((x) => x.name === st.sel.field);
@@ -544,6 +677,8 @@
       }
       if (act.dataset.dm === 'divergences') { st.sel = null; draw(); }
       if (act.dataset.dm === 'features') q('.dm-features').hidden = !q('.dm-features').hidden;
+      if (act.dataset.dm === 'compare') q('.dm-compares').hidden = !q('.dm-compares').hidden;
+      if (act.dataset.dm === 'compare-summary') { st.sel = null; draw(); }
       return undefined;
     };
     const onBuild = (e) => {
@@ -555,6 +690,9 @@
     q('.dm-switch').addEventListener('click', (e) => {
       const b = e.target.closest('[data-branch]');
       if (b) show(b.dataset.branch, '');
+      const c = e.target.closest('[data-compare-branch]');
+      if (c) compareWith(c.dataset.compareBranch, c.dataset.compareDir);
+      if (e.target.closest('[data-compare-off]')) compareWith(null);
     });
     q('.dm-version select').addEventListener('change', (e) => {
       const first = e.target.options[0];

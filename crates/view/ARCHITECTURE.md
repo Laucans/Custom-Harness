@@ -224,6 +224,14 @@ an unarchived one marked "live, not archived"), then the versions of the
 branch shown, newest first. A branch with no version archived shows its
 live `data/schema.sql` and `data/model.json`.
 
+**Compare ▾** holds the version shown against another — any other branch
+at its newest, or an older version of the same branch — and draws what this
+version changes (`harness_architecture::compare`, `GET
+/api/data-model/compare?branch=&dir=&with_branch=&with_dir=`): a table or a
+field here only is green, one that differs amber, one the other side only
+has is ghosted in red; the inspector lists every difference, and a table or
+field selected says what differs on it.
+
 A table or a field selected tells who **uses** it on the branch shown
 (`domain::data_usage`, `GET /api/data-model/used-by?branch=&dir=`): the
 Capabilities whose persisted query reads it — `queries/registry.json`,

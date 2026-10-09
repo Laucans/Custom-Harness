@@ -62,6 +62,7 @@ use crate::ports::{
     BoardReading, Builds, Limits, NoteStore, Plant, Prompts, Traces, TrialAsk, Trials,
 };
 use crate::units_desk::UnitsDesk;
+use harness_architecture::compare::{self, Comparison};
 use harness_architecture::model::DataModel;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
@@ -200,6 +201,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model", get(data_model))
         .route("/api/data-model/versions", get(data_versions))
         .route("/api/data-model/used-by", get(data_used_by))
+        .route("/api/data-model/compare", get(data_compare))
         .route("/api/data-model/divergence", get(data_divergence))
         .route("/api/data-model/build", post(data_build))
         .route("/api/data-model/builds", get(data_builds))
@@ -912,6 +914,72 @@ async fn data_model(
             json(&reply)
         }
     }
+}
+
+/// What `/api/data-model/compare` is asked: the version shown, and the one
+/// to hold it against.
+#[derive(Deserialize)]
+struct CompareQuery {
+    branch: Option<String>,
+    dir: Option<String>,
+    with_branch: Option<String>,
+    with_dir: Option<String>,
+}
+
+/// One side of a comparison, as shown.
+#[derive(Serialize)]
+struct Side {
+    branch: String,
+    dir: String,
+    origin: String,
+}
+
+/// What the version shown changes relative to the other.
+#[derive(Serialize)]
+struct CompareReply {
+    shown: Option<Side>,
+    other: Option<Side>,
+    comparison: Comparison,
+    error: Option<String>,
+}
+
+async fn data_compare(
+    State(state): State<AppState>,
+    Query(query): Query<CompareQuery>,
+) -> Response {
+    let mut reply = CompareReply {
+        shown: None,
+        other: None,
+        comparison: Comparison::default(),
+        error: None,
+    };
+    let Some(desk) = state.data else {
+        reply.error = Some("nothing reads the product's data model here".to_string());
+        return json(&reply);
+    };
+    let wanted = |branch: Option<String>, dir: Option<String>| Wanted {
+        branch: branch.filter(|b| !b.is_empty()),
+        dir: dir.filter(|d| !d.is_empty()),
+        fresh: false,
+    };
+    let side = |shown: &crate::data_desk::Shown| Side {
+        branch: shown.branch.clone(),
+        dir: shown.dir.clone(),
+        origin: shown.model.origin.clone(),
+    };
+    let (shown, other) = tokio::join!(
+        desk.model(wanted(query.branch, query.dir)),
+        desk.model(wanted(query.with_branch, query.with_dir)),
+    );
+    match (shown, other) {
+        (Ok(shown), Ok(other)) => {
+            reply.comparison = compare::compare(&other.model, &shown.model);
+            reply.shown = Some(side(&shown));
+            reply.other = Some(side(&other));
+        }
+        (Err(why), _) | (_, Err(why)) => reply.error = Some(why),
+    }
+    json(&reply)
 }
 
 /// Who uses each table and field of the version shown.
