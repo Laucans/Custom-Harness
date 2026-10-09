@@ -9,7 +9,7 @@
 //! The look is *Cult of the Lamb*'s palette and ink on *Fallout*'s atomic
 //! age: nothing has a sharp corner, every shape wears a thick ink outline
 //! (drawn by [`crate::app`]), the light falls in three flat bands, the
-//! palette is grass, mauve earth, red, cream and gold under a dark plum ink
+//! palette is brick red, slate, cream, pavement and gold under a dark plum ink
 //! — and the props are chrome and portholes, a vault's gear door, CRT
 //! terminals, radar dishes and red beacons. The plant itself is *Futurama*'s
 //! Planet Express: a brick hangar beside a tall tower under a red dome, in a
@@ -97,15 +97,13 @@ pub const CAMERA_FROM: [f32; 3] = [1.0, 1.0, 1.0];
 /// it, so its feet stay on the ground as seen.
 pub const CAMERA_UP: [f32; 3] = [-0.408_248_3, 0.816_496_6, -0.408_248_3];
 
-// The palette: Cult of the Lamb's. A bright, welcoming world — grass and
-// mauve earth under foot, red roofs on cream walls, warm wood, gold for what
-// shines, teal as the accent — drawn in an ink that is dark plum, never
+// The palette: a bright, welcoming town — red brick under cream copings,
+// slate roofs, pavement and tiles under foot, warm wood, leaves, gold for
+// what shines, teal as the accent — drawn in an ink that is dark plum, never
 // black. The last block is for text: light on the dark pills, dark where it
 // is written straight on the ground.
 const GRASS: &str = "#7f9f52";
 const GRASS_DARK: &str = "#6b8a44";
-const EARTH: &str = "#a0708b";
-const EARTH_DARK: &str = "#7f5c73";
 const RED: &str = "#c6392f";
 const RED_DARK: &str = "#962a2a";
 const CREAM: &str = "#f3e7c9";
@@ -131,6 +129,16 @@ const PAVEMENT: &str = "#bdb6a8";
 const ASPHALT: &str = "#4c5058";
 const WATER: &str = "#2e9a98";
 const LAMP: &str = "#fff0c0";
+const SOIL: &str = "#6e5140";
+// Inside the plant: a dark concrete hall, rooms tiled warm when they run,
+// greyer while drafted, raw while built; daylight in the factory windows.
+const HALL: &str = "#74777b";
+const CONCRETE: &str = "#aca598";
+const TILE_LIVE: &str = "#cfc1a4";
+const TILE_DRAFT: &str = "#b2aa9c";
+const TILE_RAW: &str = "#968b7b";
+const DAYLIGHT: &str = "#bfe3dc";
+const BELT: &str = "#4f5a66";
 const OK: &str = "#7ee081";
 const WARN: &str = "#ffb547";
 const BAD: &str = "#ff6b6b";
@@ -643,12 +651,53 @@ impl Builder {
         }
     }
 
-    /// The floor of a room, with two low back walls that read as a corner.
+    /// The floor of a room, tiled, with two brick back walls that read as
+    /// a corner: a cream coping on top, factory windows letting daylight in.
     fn floor(&mut self, w: f32, d: f32) {
         let color = self.scene.floor;
         self.slab(0.0, -0.06, 0.0, w, 0.06, d, color).pattern = Pattern::Pavers;
-        self.rounded(0.0, -0.08, -0.3, w, 1.1, 0.3, 0.12, Rgba::hex(STONE));
-        self.rounded(-0.3, -0.08, 0.0, 0.3, 1.1, d, 0.12, Rgba::hex(STONE));
+        let (wall, brick, bone) = (1.4, Rgba::hex(BRICK), Rgba::hex(BONE));
+        self.rounded(0.0, -0.08, -0.3, w, wall, 0.3, 0.06, brick)
+            .pattern = Pattern::Brick;
+        self.rounded(-0.3, -0.08, 0.0, 0.3, wall, d, 0.06, brick)
+            .pattern = Pattern::Brick;
+        // The copings' top faces must not overlap in the corner, or they
+        // flicker: the side one starts past the back one.
+        self.rounded(-0.33, wall - 0.12, -0.33, w + 0.33, 0.1, 0.36, 0.03, bone);
+        self.rounded(-0.33, wall - 0.12, 0.04, 0.36, 0.1, d - 0.04, 0.03, bone);
+        let windows = |len: f32| {
+            (0..)
+                .map(|k| 1.2 + k as f32 * 2.4)
+                .take_while(move |at| at + 0.6 < len)
+        };
+        for x in windows(w) {
+            self.rounded(x, 0.3, -0.04, 0.7, 0.8, 0.06, 0.03, bone);
+            self.rounded(
+                x + 0.08,
+                0.38,
+                -0.01,
+                0.54,
+                0.64,
+                0.06,
+                0.03,
+                Rgba::hex(DAYLIGHT),
+            )
+            .emissive = Some(Rgba::hex("#3a5a55"));
+        }
+        for z in windows(d) {
+            self.rounded(-0.04, 0.3, z, 0.06, 0.8, 0.7, 0.03, bone);
+            self.rounded(
+                -0.01,
+                0.38,
+                z + 0.08,
+                0.06,
+                0.64,
+                0.54,
+                0.03,
+                Rgba::hex(DAYLIGHT),
+            )
+            .emissive = Some(Rgba::hex("#3a5a55"));
+        }
     }
 }
 
@@ -725,7 +774,7 @@ fn chimney(
 /// A belt: a chrome frame on riveted feet, a dark rubber track between two
 /// gold rails, and moving cream stripes.
 fn conveyor(b: &mut Builder, x: f32, z: f32, len: f32, active: bool, key: &str) {
-    let track = Rgba::hex(if active { WOOD } else { WOOD_DARK });
+    let track = Rgba::hex(if active { BELT } else { ROOF_DARK });
     b.rounded(x, 0.0, z, len, 0.3, 1.0, 0.1, Rgba::hex(STONE_DARK));
     b.rounded(
         x + 0.02,
@@ -1216,7 +1265,7 @@ fn lamp(b: &mut Builder, x: f32, z: f32) {
 
 /// A round tree with its foot at `(x, z)`.
 fn tree(b: &mut Builder, x: f32, z: f32) {
-    b.cylinder(x, 0.0, z, 0.3, 0.12, Rgba::hex(EARTH_DARK));
+    b.cylinder(x, 0.0, z, 0.3, 0.12, Rgba::hex(SOIL));
     b.cylinder(x, 0.0, z, 0.1, 1.2, Rgba::hex(WOOD_DARK));
     b.sphere(x, 1.55, z, 0.62, Rgba::hex(GRASS));
     b.sphere(x + 0.3, 1.25, z + 0.25, 0.4, Rgba::hex(GRASS_DARK));
@@ -1322,7 +1371,7 @@ fn tulip_bed(b: &mut Builder, fx: f32, fz: f32) {
         0.27,
         fd - 0.2,
         0.05,
-        Rgba::hex(EARTH_DARK),
+        Rgba::hex(SOIL),
     );
     let blooms = [RED, "#e88aa8", GOLD, "#e88aa8"];
     for row in 0..6 {
@@ -2011,7 +2060,7 @@ fn room_props(b: &mut Builder, snap: &Snapshot, room: &Room, x0: f32, z0: f32, r
 }
 
 fn interior(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS_DARK);
+    let mut b = Builder::new(HALL);
     let (rw, rd, gap) = (7.0, 6.0, 1.2);
     let (w, d) = (3.0 * rw + 4.0 * gap, 2.0 * rd + 3.0 * gap);
     b.floor(w, d);
@@ -2020,15 +2069,19 @@ fn interior(snap: &Snapshot) -> Scene {
         let x0 = gap + col * (rw + gap);
         let z0 = gap + row * (rd + gap);
         let color = match room.status {
-            RoomStatus::Construction => EARTH_DARK,
-            RoomStatus::Draft => "#957d90",
-            RoomStatus::Live => EARTH,
+            RoomStatus::Construction => TILE_RAW,
+            RoomStatus::Draft => TILE_DRAFT,
+            RoomStatus::Live => TILE_LIVE,
         };
         let hot = room_hot(room);
         let m = b.mark();
-        b.slab(x0, -0.02, z0, rw, 0.04, rd, Rgba::hex(color));
-        b.rounded(x0, 0.0, z0 - 0.15, rw, 0.6, 0.15, 0.07, Rgba::hex(WOOD));
-        b.rounded(x0 - 0.15, 0.0, z0, 0.15, 0.6, rd, 0.07, Rgba::hex(WOOD));
+        b.slab(x0, -0.02, z0, rw, 0.04, rd, Rgba::hex(color))
+            .pattern = Pattern::Pavers;
+        // Low brick partitions on the room's two back sides.
+        b.rounded(x0, 0.0, z0 - 0.15, rw, 0.6, 0.15, 0.04, Rgba::hex(BRICK))
+            .pattern = Pattern::Brick;
+        b.rounded(x0 - 0.15, 0.0, z0, 0.15, 0.6, rd, 0.04, Rgba::hex(BRICK))
+            .pattern = Pattern::Brick;
         b.hot_since(m, &hot);
         room_props(&mut b, snap, room, x0, z0, rw);
         let active = room.key == "lines" && !snap.employees.is_empty();
@@ -2097,7 +2150,7 @@ const fn state_name(state: StationState) -> &'static str {
 
 #[allow(clippy::too_many_lines)] // One level is one list of props; cutting it in two hides the layout.
 fn lines_room(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     let (sp, row, x0) = (STATION_SPACING, LINE_SPACING, LINE_X0);
     let max_n = snap
         .lines
@@ -2274,7 +2327,7 @@ fn age(secs: u64) -> String {
 }
 
 fn office_room(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     b.floor(14.0, 9.0);
     b.rounded(0.6, 0.7, -0.22, 12.4, 2.6, 0.14, 0.14, Rgba::hex(PAPER));
     b.label(
@@ -2377,7 +2430,7 @@ fn url_hot(url: &str, tip_text: &str) -> Option<Hot> {
 }
 
 fn store_room(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     b.floor(15.0, 9.0);
     let v = &snap.versions;
     let versions_pane = pane(
@@ -2438,7 +2491,7 @@ fn store_room(snap: &Snapshot) -> Scene {
 }
 
 fn value_room(_snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     b.floor(14.0, 9.0);
     let mock = pane(
         serde_json::json!({"kind": "placeholder", "title": "The mock-up", "text": "The interface, drawn as micro-frontends: click a part, read the feature behind it. Nothing to show yet — the product's mock-up has no source the view can read."}),
@@ -2482,7 +2535,7 @@ fn kfmt(n: u64) -> String {
 }
 
 fn control_room(snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(GRASS);
+    let mut b = Builder::new(CONCRETE);
     b.floor(14.0, 9.0);
     let c = &snap.costs;
     let costs_pane = pane(
@@ -2561,7 +2614,7 @@ fn control_room(snap: &Snapshot) -> Scene {
 }
 
 fn construction_room(_snap: &Snapshot) -> Scene {
-    let mut b = Builder::new(EARTH_DARK);
+    let mut b = Builder::new(TILE_RAW);
     b.floor(12.0, 8.0);
     barrier(&mut b, 1.5, 2.5, 5.0);
     barrier(&mut b, 6.5, 3.5, 4.0);
@@ -3134,20 +3187,50 @@ mod tests {
                 .any(|p| p.at[0] > 17.0 && matches!(p.anim, Some(Anim::Bob { .. }))),
             "a boat bobs at the quay"
         );
-        // Patterns are the outside's: a room's floor is paved, the rest of
-        // its props stay plain.
-        let lines = build(
-            &picture(),
-            &View::C {
+    }
+
+    #[test]
+    fn inside_wears_the_outside_s_brick_and_tiles() {
+        for view in [
+            View::B,
+            View::C {
                 room: "lines".to_string(),
             },
-        );
-        assert!(
-            lines
+            View::C {
+                room: "office".to_string(),
+            },
+        ] {
+            let scene = build(&picture(), &view);
+            let floor = scene
                 .props
                 .iter()
-                .all(|p| p.pattern == Pattern::Plain || matches!(p.shape, Shape::Cuboid { .. }))
-        );
+                .find(|p| matches!(p.shape, Shape::Cuboid { .. }));
+            assert_eq!(
+                floor.map(|p| p.pattern),
+                Some(Pattern::Pavers),
+                "{view:?}: the floor is tiled"
+            );
+            assert!(
+                scene
+                    .props
+                    .iter()
+                    .filter(|p| p.pattern == Pattern::Brick)
+                    .count()
+                    >= 2,
+                "{view:?}: the back walls are brick"
+            );
+            assert!(
+                scene.props.iter().all(|p| matches!(
+                    p.pattern,
+                    Pattern::Plain | Pattern::Pavers | Pattern::Brick
+                )),
+                "{view:?}: no water or roof indoors"
+            );
+            assert!(
+                scene.props.iter().all(|p| p.color != Rgba::hex(GRASS)),
+                "{view:?}: no grass indoors"
+            );
+        }
     }
 
     #[test]

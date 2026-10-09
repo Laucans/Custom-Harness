@@ -51,9 +51,12 @@ test in the same file.
 
 The art direction is borrowed from *Cult of the Lamb*: flat, bright colours
 under thick ink outlines, nothing with a sharp corner, big round heads on
-short bodies. The palette is the game's — grass and mauve earth under foot,
-red roofs on cream walls, warm wood, gold for what shines, teal as the
-accent — and the ink is a dark plum, never black; the only dark surface is
+short bodies. The palette is a town's — red brick under cream copings,
+slate roofs, pavement and tiles under foot, warm wood, gold for what
+shines, teal as the accent — one palette for all three levels, so the
+inside reads as the same building: brick back walls with factory windows,
+low brick partitions, tiled floors (warm where a room runs, greyer while
+drafted, raw while built) on a dark concrete hall, slate-rubber belts. The ink is a dark plum, never black; the only dark surface is
 the dusk-teal sky behind the plant, so everything in front of it reads as
 lit. The props wear that palette in *Fallout*'s retro-futurism: chrome
 rings, rivets and skirts, portholes, radar dishes and red beacons, a vault's
@@ -84,7 +87,8 @@ that moves. In 3D that becomes:
   plane the surface faces most: no texture file, no UV, and a wall of any
   size gets bricks of one size. Water reads the engine's clock and moves.
   The material cache is keyed by colour *and* pattern. Outside, the walls,
-  roofs, fence, ground and harbour wear one; inside, only the floors do. Smoke
+  roofs, fence, ground and harbour wear one; inside, the walls are brick
+  and the floors tiled, nothing else. Smoke
   and the scanner's disc stay on the engine's material, since they are
   see-through, and wear no outline.
 - **Figures** — followers, robots and the steward are not built from shapes
