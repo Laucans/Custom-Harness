@@ -95,6 +95,11 @@ verdict is "not worth it".
 
 ## 5. Prove each test can fail
 
+Where the repository carries `scripts/test-scope.sh`, every `cargo test`
+below means `bash scripts/test-scope.sh origin/<PR base>` (and
+`… -- <test name>` for one test): its CI runs the same script, and a change
+confined to Capability crates runs their tests alone.
+
 A test that has never failed has not been shown to test anything. For
 **every** new test:
 
