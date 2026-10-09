@@ -116,6 +116,9 @@ pub struct AppState {
     pub restart: Arc<std::sync::Mutex<Option<Restart>>>,
     /// How often a restart looks whether the watch has drained.
     pub restart_poll: Duration,
+    /// The harness machine's time zone, asked of the system (`TZ`, else
+    /// `/etc/localtime`): the control room counts its days in it.
+    pub zone: jiff::tz::TimeZone,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -124,6 +127,7 @@ const APP: &str = include_str!("../static/app.js");
 const XTERM_JS: &str = include_str!("../static/vendor/xterm.js");
 const XTERM_CSS: &str = include_str!("../static/vendor/xterm.css");
 const XTERM_FIT: &str = include_str!("../static/vendor/addon-fit.js");
+const CLOCK_JS: &str = include_str!("../static/clock.js");
 const BOARD_JS: &str = include_str!("../static/board.js");
 const DATA_MODEL_JS: &str = include_str!("../static/data-model.js");
 
@@ -145,6 +149,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/style.css", get(style))
         .route("/app.js", get(app))
+        .route("/clock.js", get(clock_js))
         .route("/board.js", get(board_js))
         .route("/data-model.js", get(data_model_js))
         .route("/render/{file}", get(render_asset))
@@ -243,6 +248,10 @@ async fn style(State(state): State<AppState>) -> Response {
 
 async fn app(State(state): State<AppState>) -> Response {
     asset(&state, "app.js", APP, JS)
+}
+
+async fn clock_js(State(state): State<AppState>) -> Response {
+    asset(&state, "clock.js", CLOCK_JS, JS)
 }
 
 async fn board_js(State(state): State<AppState>) -> Response {
@@ -613,6 +622,7 @@ async fn period(State(state): State<AppState>, Query(query): Query<PeriodQuery>)
         })
         .unwrap_or_default();
     let traces = Arc::clone(&state.traces);
+    let zone = state.zone.clone();
     let computed = tokio::task::spawn_blocking(move || {
         history::history(
             range,
@@ -620,6 +630,7 @@ async fn period(State(state): State<AppState>, Query(query): Query<PeriodQuery>)
             &traces.errors(),
             &traces.watch_log(HISTORY_BYTES).unwrap_or_default(),
             |task| sides.get(task).copied(),
+            &zone,
         )
     })
     .await;
@@ -1771,6 +1782,7 @@ mod tests {
             now: 0,
             demo: false,
             told: &told,
+            zone: &jiff::tz::TimeZone::UTC,
         });
         let (_, snapshot) = watch::channel(Arc::new(snap));
         let (_, board) = watch::channel(None);
@@ -1798,6 +1810,7 @@ mod tests {
             trials: Some(Arc::new(Bench::default())),
             restart: Arc::default(),
             restart_poll: Duration::from_millis(5),
+            zone: jiff::tz::TimeZone::UTC,
         }
     }
 

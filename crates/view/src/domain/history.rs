@@ -6,6 +6,7 @@
 //! UTC), so a period is two such stamps and "in it" is a comparison: the
 //! form sorts as it reads.
 
+use jiff::tz::TimeZone;
 use serde::Serialize;
 
 use crate::domain::journal::{self, Journal};
@@ -105,13 +106,14 @@ pub fn history(
     errors: &[ErrorRow],
     watch_log: &str,
     is_data_layer: impl Fn(&str) -> Option<bool>,
+    zone: &TimeZone,
 ) -> History {
     let rows: Vec<LedgerRow> = ledger
         .iter()
         .filter(|row| range.holds(&row.when))
         .cloned()
         .collect();
-    let mut costs = summarize_costs(&rows, SESSIONS_LISTED);
+    let mut costs = summarize_costs(&rows, SESSIONS_LISTED, zone);
     attribute_sides(&mut costs, &rows, is_data_layer);
     let errors = errors
         .iter()
@@ -213,7 +215,7 @@ mod tests {
 [2026-10-08T20:30:00Z] quiet: nothing moved
 [2026-10-08T20:31:00Z] quiet: nothing moved
 ";
-        let history = history(range, &ledger, &errors, log, |_| None);
+        let history = history(range, &ledger, &errors, log, |_| None, &TimeZone::UTC);
         assert!((history.costs.total_usd - 3.5).abs() < 1e-9);
         assert_eq!(history.costs.sessions, 2);
         assert_eq!(history.errors.len(), 1);

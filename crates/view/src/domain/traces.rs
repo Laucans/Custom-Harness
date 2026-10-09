@@ -10,6 +10,7 @@
 //! is a contract the harness promised, so every parser answers "unknown"
 //! rather than failing when a line does not match.
 
+use jiff::tz::TimeZone;
 use serde::Serialize;
 
 use crate::domain::blueprint::Line;
@@ -589,16 +590,26 @@ fn bump(buckets: &mut Vec<Bucket>, key: &str, usd: f64) {
     }
 }
 
-/// Adds the ledger up. `keep_last` newest rows are carried along verbatim.
+/// The day a trace clock falls on in `zone` (`2026-10-09`); one that does not
+/// parse keeps its first ten characters.
+fn local_day(at: &str, zone: &TimeZone) -> String {
+    at.parse::<jiff::Timestamp>().map_or_else(
+        |_| at.get(..10).unwrap_or("").to_string(),
+        |at| at.to_zoned(zone.clone()).strftime("%Y-%m-%d").to_string(),
+    )
+}
+
+/// Adds the ledger up. `keep_last` newest rows are carried along verbatim; a
+/// day is a day in `zone`, the harness machine's.
 #[must_use]
-pub fn summarize_costs(rows: &[LedgerRow], keep_last: usize) -> Costs {
+pub fn summarize_costs(rows: &[LedgerRow], keep_last: usize, zone: &TimeZone) -> Costs {
     let mut costs = Costs::default();
     for row in rows {
         let usd = row.cost_usd.unwrap_or(0.0);
         costs.total_usd += usd;
         costs.sessions += 1;
         bump(&mut costs.by_stage, &row.stage, usd);
-        bump(&mut costs.by_day, row.when.get(..10).unwrap_or(""), usd);
+        bump(&mut costs.by_day, &local_day(&row.when, zone), usd);
         // One workflow writes `65`, another `#65`: the same task, one bucket.
         let task = row.task.trim_start_matches('#');
         bump(
@@ -1219,13 +1230,26 @@ mod tests {
     }
 
     #[test]
+    fn a_day_of_spending_is_a_day_on_the_harness_machine() {
+        let rows = vec![
+            row("2026-10-07T02:00:00Z", "50", "code", 1.0, "ok"),
+            row("2026-10-07T05:00:00Z", "50", "code", 2.0, "ok"),
+        ];
+        let montreal = TimeZone::fixed(jiff::tz::offset(-4));
+        let costs = summarize_costs(&rows, 0, &montreal);
+        let days: Vec<_> = costs.by_day.iter().map(|b| b.key.as_str()).collect();
+        assert_eq!(days, ["2026-10-06", "2026-10-07"]);
+        assert_eq!(local_day("not a clock", &montreal), "not a cloc");
+    }
+
+    #[test]
     fn the_ledger_adds_up_by_stage_day_task_and_outcome() {
         let rows = vec![
             row("2026-10-06T15:01:07Z", "50", "code", 0.8, "STOP"),
             row("2026-10-06T15:21:14Z", "#50", "code", 2.0, "ok"),
             row("2026-10-07T09:00:00Z", "62", "create-test", 0.5, "ok"),
         ];
-        let costs = summarize_costs(&rows, 2);
+        let costs = summarize_costs(&rows, 2, &TimeZone::UTC);
         assert!((costs.total_usd - 3.3).abs() < 1e-9);
         assert_eq!(costs.sessions, 3);
         assert_eq!(costs.by_stage[0].key, "code");
