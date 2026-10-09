@@ -46,6 +46,7 @@ use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
 use crate::domain::observe::observe_run;
 use crate::domain::plant::{self, Action, Gesture};
+use crate::domain::prompts::{self, Edit, Refused, Restore};
 use crate::domain::snapshot::Snapshot;
 use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
@@ -54,6 +55,7 @@ use crate::janitor::Janitor;
 use crate::ports::{BoardReading, Limits, Notebook, Plant, Traces};
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
+use harness_core::ports::store::prompts::PromptStore;
 
 /// The diagnoses asked of the doctor, by `workflow/run`, shared with the
 /// listeners that hear them end.
@@ -102,6 +104,11 @@ pub struct AppState {
     pub notebook: Arc<dyn Notebook>,
     /// Held across a pin list's read-modify-write.
     pub notes_lock: Arc<std::sync::Mutex<()>>,
+    /// Where the human's prompt edits are kept — the one store a run reads
+    /// that the view writes.
+    pub prompts: Arc<dyn PromptStore + Send + Sync>,
+    /// Held across the prompt book's read-modify-write.
+    pub prompts_lock: Arc<std::sync::Mutex<()>>,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -162,6 +169,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model", get(data_model))
         .route("/api/data-model/versions", get(data_versions))
         .route("/api/notes/{board}", get(notes).put(put_notes))
+        .route("/api/prompts/edit", post(edit_prompt))
+        .route("/api/prompts/restore", post(restore_prompt))
+        .route("/api/prompts/{line}/{station}", get(station_prompts))
         .with_state(state)
 }
 
@@ -1169,6 +1179,68 @@ async fn attend(mut socket: WebSocket, desk: Desk, mut cols: u16, mut rows: u16)
     }
 }
 
+/// The prompts a station sends: what it sends now, the default, the last edits.
+async fn station_prompts(
+    State(state): State<AppState>,
+    Path((line, station)): Path<(String, String)>,
+) -> Response {
+    match state.prompts.load() {
+        Ok(book) => json(&prompts::of_station(&book, &line, &station)),
+        Err(halt) => (StatusCode::INTERNAL_SERVER_ERROR, halt.reason().to_string()).into_response(),
+    }
+}
+
+/// Saves a prompt the human edited.
+async fn edit_prompt(State(state): State<AppState>, body: Bytes) -> Response {
+    match serde_json::from_slice::<Edit>(&body) {
+        Ok(edit) => change_prompts(&state, |book| prompts::edit(book, &edit, unix_now())),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("not an edit: {e}")).into_response(),
+    }
+}
+
+/// Puts back a prompt's earlier version, or its default.
+async fn restore_prompt(State(state): State<AppState>, body: Bytes) -> Response {
+    match serde_json::from_slice::<Restore>(&body) {
+        Ok(restore) => change_prompts(&state, |book| prompts::restore(book, &restore, unix_now())),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("not a restore: {e}")).into_response(),
+    }
+}
+
+/// Read, change, write the prompt book, one page at a time; answers the
+/// prompt as it now stands.
+fn change_prompts(
+    state: &AppState,
+    change: impl FnOnce(
+        &mut harness_core::domain::prompt_book::PromptBook,
+    ) -> Result<prompts::PromptView, Refused>,
+) -> Response {
+    // No await between read and write: the lock only keeps two pages apart.
+    let Ok(_guard) = state.prompts_lock.lock() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "prompt book lock poisoned",
+        )
+            .into_response();
+    };
+    let mut book = match state.prompts.load() {
+        Ok(book) => book,
+        Err(halt) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, halt.reason().to_string()).into_response();
+        }
+    };
+    let shown = match change(&mut book) {
+        Ok(shown) => shown,
+        Err(why @ Refused::Unknown(_)) => {
+            return (StatusCode::NOT_FOUND, why.to_string()).into_response();
+        }
+        Err(why) => return (StatusCode::BAD_REQUEST, why.to_string()).into_response(),
+    };
+    match state.prompts.save(&book) {
+        Ok(()) => json(&shown),
+        Err(halt) => (StatusCode::INTERNAL_SERVER_ERROR, halt.reason().to_string()).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,7 +1296,75 @@ mod tests {
             data: None,
             notebook: Arc::new(Pages::default()),
             notes_lock: Arc::default(),
+            prompts: Arc::new(Book::default()),
+            prompts_lock: Arc::default(),
         }
+    }
+
+    /// A prompt book in memory.
+    #[derive(Default)]
+    struct Book(std::sync::Mutex<harness_core::domain::prompt_book::PromptBook>);
+
+    impl PromptStore for Book {
+        fn load(
+            &self,
+        ) -> harness_core::domain::Outcome<harness_core::domain::prompt_book::PromptBook> {
+            Ok(self.0.lock().expect("book").clone())
+        }
+
+        fn save(
+            &self,
+            book: &harness_core::domain::prompt_book::PromptBook,
+        ) -> harness_core::domain::Outcome<()> {
+            *self.0.lock().expect("book") = book.clone();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_robot_s_prompt_is_shown_edited_kept_and_restored() {
+        let state = state(Shelf::default(), None);
+        let (status, shown) = send(state.clone(), "GET", "/api/prompts/split/slice", "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            shown.contains("\"key\":\"split/slice\"") && shown.contains("\"edited\":false"),
+            "{shown}"
+        );
+
+        let edit = r#"{"key":"split/slice","text":"Slice #{num}"}"#;
+        let (status, saved) = send(state.clone(), "POST", "/api/prompts/edit", edit).await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        let (_, shown) = send(state.clone(), "GET", "/api/prompts/split/slice", "").await;
+        assert!(
+            shown.contains("\"text\":\"Slice #{num}\"") && shown.contains("\"edited\":true"),
+            "{shown}"
+        );
+
+        let reset = r#"{"key":"split/slice","version":null}"#;
+        let (status, _) = send(state.clone(), "POST", "/api/prompts/restore", reset).await;
+        assert_eq!(status, StatusCode::OK);
+        let again = r#"{"key":"split/slice","version":0}"#;
+        let (_, back) = send(state.clone(), "POST", "/api/prompts/restore", again).await;
+        assert!(back.contains("\"text\":\"Slice #{num}\""), "{back}");
+
+        let (status, _) = send(
+            state.clone(),
+            "POST",
+            "/api/prompts/restore",
+            r#"{"key":"split/slice","version":4}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = send(
+            state.clone(),
+            "POST",
+            "/api/prompts/edit",
+            r#"{"key":"nope","text":"x"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (_, none) = send(state, "GET", "/api/prompts/split/publish", "").await;
+        assert_eq!(none, "[]");
     }
 
     /// A notebook in memory.

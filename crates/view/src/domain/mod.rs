@@ -14,6 +14,7 @@ pub mod journal;
 pub mod limits;
 pub mod observe;
 pub mod plant;
+pub mod prompts;
 pub mod schema_sql;
 pub mod snapshot;
 pub mod steward;

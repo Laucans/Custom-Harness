@@ -10,4 +10,5 @@ pub mod error_ledger;
 pub mod events;
 pub mod ledger;
 pub mod lock;
+pub mod prompt_book;
 pub mod review_ledger;

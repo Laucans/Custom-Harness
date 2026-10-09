@@ -51,6 +51,7 @@ use crate::dev_loop::config::Config;
 use crate::dev_loop::data::brief::Cut;
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::ports::Ports;
+use crate::prompts;
 
 /// What `technical-refinement` leaves out: the three sections it writes.
 ///
@@ -83,7 +84,7 @@ const TEST_SKIPS: &[&str] = &["Business Goal", "Technical", "Assumptions"];
 /// architecture: through the script `init-repo` installs, which the CI runs
 /// too. A task that stays inside Capability crates then waits for their
 /// tests alone instead of the whole workspace's.
-const TEST_SCOPE: &str =
+pub(crate) const TEST_SCOPE: &str =
     "Run the Rust tests with `bash scripts/test-scope.sh origin/<the branch your
 PR targets>` whenever the repository has that script, never a bare
 `cargo test --workspace`: a change that stays inside Capability crates
@@ -91,7 +92,7 @@ PR targets>` whenever the repository has that script, never a bare
 anything else the whole workspace — the CI runs the same script on the PR.
 Arguments after `--` go to `cargo test`, to run one test while you work.";
 
-const TECHNICAL_REFINEMENT: &str =
+pub(crate) const TECHNICAL_REFINEMENT: &str =
     "Take issue #{num} (\"{title}\") — its body is below, under SCOPE, and already
 carries its business sections. Read the real code, then write the two missing
 sections, `## Technical` and `## Technical Implementation Plan`, into the body
@@ -105,7 +106,8 @@ a schema decision the later tasks depend on, a credential only the human
 holds — that is ambiguity, not a default: AGENT_LOOP_STOP instead of
 guessing.";
 
-const CODE: &str = "The task is issue #{num} (\"{title}\"); its body, below under SCOPE, is the
+pub(crate) const CODE: &str =
+    "The task is issue #{num} (\"{title}\"); its body, below under SCOPE, is the
 SPEC. Plan it as /tech-analyst: the pre-flight gate, the ordered checklist
 against the real code, the stop line, the risks. Then, in this same session,
 without waiting for a go-ahead and without /clear, carry out
@@ -130,7 +132,7 @@ in your reply.";
 /// so the session never merges: it opens the PR with `harness:to-review` —
 /// the agent review runs on it — and stops. The loop then marks the task
 /// `review-pending` and waits for the merge.
-const CODE_WRITE_SIDE: &str =
+pub(crate) const CODE_WRITE_SIDE: &str =
     "The task is issue #{num} (\"{title}\"); its body, below under SCOPE, is the
 SPEC. It is on the **write side** of the architecture ({write_side}): it
 mutates existing data or the rules that guard it, and a human merges it.
@@ -237,11 +239,14 @@ impl Paid<'_> {
 /// (`harness:tech-written`); the business half must already exist.
 #[must_use]
 pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
+    let instructions = config
+        .prompts
+        .text(prompts::TECHNICAL_REFINEMENT, TECHNICAL_REFINEMENT);
     let body = Paid {
         stage: "technical-refinement",
         model: "opus",
         lead: "/tech-analyst",
-        instructions: TECHNICAL_REFINEMENT,
+        instructions: &instructions,
         write_side_instructions: None,
         cut: Cut::Situated(REFINEMENT_WRITES),
         // Recording is local work, and it goes *in* the stage — not in a
@@ -277,8 +282,14 @@ pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<
 /// two stages would lose it.
 #[must_use]
 pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
-    let instructions = format!("{CODE}\n{TEST_SCOPE}");
-    let write_side = format!("{CODE_WRITE_SIDE}\n{TEST_SCOPE}");
+    let test_scope = config.prompts.text(prompts::TEST_SCOPE, TEST_SCOPE);
+    let instructions = format!("{}\n{test_scope}", config.prompts.text(prompts::CODE, CODE));
+    let write_side = format!(
+        "{}\n{test_scope}",
+        config
+            .prompts
+            .text(prompts::CODE_WRITE_SIDE, CODE_WRITE_SIDE)
+    );
     let mut pre = always("code");
     pre.push(Box::new(gates::CodeAlreadyDelivered {
         gh: Rc::clone(&ports.gh),
@@ -333,6 +344,7 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
 /// to run the tests ([`TEST_SCOPE`]).
 #[must_use]
 pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
+    let instructions = config.prompts.text(prompts::TEST_SCOPE, TEST_SCOPE);
     Stage {
         name: "create-test".to_string(),
         pre: Some(Gate {
@@ -344,7 +356,7 @@ pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             stage: "create-test",
             model: "sonnet",
             lead: "/create-test",
-            instructions: TEST_SCOPE,
+            instructions: &instructions,
             write_side_instructions: None,
             cut: Cut::TaskOnly(TEST_SKIPS),
             then: Vec::new(),

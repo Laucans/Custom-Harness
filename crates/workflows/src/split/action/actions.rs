@@ -243,7 +243,7 @@ pub struct AskForSlice {
     /// The stage name, for the journal and the `stage` column of the registry.
     pub stage: String,
     /// The prompt template, received from the table.
-    pub template: &'static str,
+    pub template: String,
     /// Where spending is recorded.
     pub spending: Rc<dyn Spending>,
 }
@@ -262,7 +262,7 @@ impl SessionAction<SplitState> for AskForSlice {
             }
         };
         let prompt = splice(
-            self.template,
+            &self.template,
             &[
                 ("num", &milestone.number.to_string()),
                 ("title", &milestone.title),

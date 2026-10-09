@@ -19,6 +19,7 @@ use crate::planner::checks::gates::PlanParses;
 use crate::planner::config::Config;
 use crate::planner::data::state::PlannerState;
 use crate::planner::ports::Ports;
+use crate::prompts;
 
 /// The free context-reading stage name.
 pub const CONTEXT: &str = "context";
@@ -27,7 +28,7 @@ pub const PLAN: &str = "plan";
 /// The publish local stage name.
 pub const PUBLISH: &str = "publish";
 
-const PLAN_PROMPT: &str = r#"Roadmap item #{num} — "{title}":
+pub(crate) const PLAN_PROMPT: &str = r#"Roadmap item #{num} — "{title}":
 {body}
 
 Decide the milestones that deliver this roadmap item — ordered, each one
@@ -100,7 +101,7 @@ pub fn plan(ports: &Ports, config: &Config) -> Stage<PlannerState> {
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskForPlan {
                 stage: PLAN.to_string(),
-                template: PLAN_PROMPT,
+                template: config.prompts.text(prompts::PLAN, PLAN_PROMPT),
                 artifacts_dir: config.artifacts_dir.clone(),
                 explore: config.explore,
                 disk: Rc::clone(&ports.disk),

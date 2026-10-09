@@ -8,7 +8,8 @@
 //!
 //! One submodule per workflow, plus `common` for what at least two of them
 //! actually read — labels, the routing decision, the repo map, a fake GitHub
-//! for their tests.
+//! for their tests — and `prompts`, the index of every prompt a human may
+//! edit.
 //!
 //! **The workflows share the same skeleton** — `ports` / `config` / `run`
 //! at the root, then `data` / `action` / `checks` / `orchestration`. What each
@@ -26,5 +27,6 @@ pub mod milestone_merge;
 pub mod planner;
 pub mod pr_fix;
 pub mod pr_review;
+pub mod prompts;
 pub mod refinement;
 pub mod split;

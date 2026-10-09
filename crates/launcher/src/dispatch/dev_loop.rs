@@ -559,6 +559,7 @@ async fn turns(
         stack: configuration_digest(workspace, disk.as_ref(), log).await,
         signatures,
         root: workspace.root().to_path_buf(),
+        prompts: crate::dispatch::shared::prompts(workspace, log)?,
     };
     announce(args, &ports, &config, run_id, log);
 

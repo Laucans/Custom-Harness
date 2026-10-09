@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use harness_core::execution::{Gate, Stage, StageBody};
 
+use crate::prompts;
 use crate::split::action::actions::{AskForSlice, ReadExistingTasks, ReadInventory};
 use crate::split::action::publish::Write;
 use crate::split::checks::gates::SliceParses;
@@ -21,7 +22,7 @@ pub const SLICE: &str = "slice";
 /// The publish local stage name.
 pub const PUBLISH: &str = "publish";
 
-const SLICE_PROMPT: &str = r#"Milestone #{num} — "{title}":
+pub(crate) const SLICE_PROMPT: &str = r#"Milestone #{num} — "{title}":
 {body}
 
 Decide the task slices that deliver this milestone — each one executable by
@@ -136,7 +137,7 @@ pub fn slice(ports: &Ports, config: &Config) -> Stage<SplitState> {
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskForSlice {
                 stage: SLICE.to_string(),
-                template: SLICE_PROMPT,
+                template: config.prompts.text(prompts::SLICE, SLICE_PROMPT),
                 spending: Rc::clone(&ports.spending),
             })],
         },

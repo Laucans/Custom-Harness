@@ -22,6 +22,7 @@ use crate::pr_review::checks::gates::{InlinePassIsOff, NothingIsPosted};
 use crate::pr_review::config::Config;
 use crate::pr_review::data::state::ReviewState;
 use crate::pr_review::ports::Ports;
+use crate::prompts;
 
 /// The name of the line-by-line pass stage.
 ///
@@ -35,7 +36,11 @@ pub const BRIEF: &str = "brief";
 /// The name of the local publishing stage.
 pub const PUBLISH: &str = "publish";
 
-const BRIEF_PROMPT: &str =
+/// The line-by-line pass: a skill command, not prose — `{level}` is
+/// `/code-review`'s, `{num}` the pull request.
+pub(crate) const INLINE_PROMPT: &str = "/code-review {level} {num} --comment";
+
+pub(crate) const BRIEF_PROMPT: &str =
     "You are writing review notes on pull request #{num} (\"{title}\", {head} -> {base})
 in this repository. The branch was written by an unattended agent loop: a
 human is about to read the diff for the first time and has to decide whether
@@ -118,6 +123,7 @@ pub fn inline(ports: &Ports, config: &Config) -> Stage<ReviewState> {
             actions: vec![Box::new(AskInline {
                 stage: INLINE.to_string(),
                 level: config.level.clone(),
+                template: config.prompts.text(prompts::INLINE, INLINE_PROMPT),
                 spending: Rc::clone(&ports.spending),
             })],
         },
@@ -137,7 +143,7 @@ pub fn brief(ports: &Ports, config: &Config) -> Stage<ReviewState> {
             actions: vec![Box::new(AskBrief {
                 stage: BRIEF.to_string(),
                 inline_stage: INLINE.to_string(),
-                template: BRIEF_PROMPT,
+                template: config.prompts.text(prompts::BRIEF, BRIEF_PROMPT),
                 no_inline: config.no_inline,
                 spending: Rc::clone(&ports.spending),
             })],

@@ -193,6 +193,7 @@ fn rounds(
     let stack = config.stack.clone();
     let signatures = Rc::clone(&config.signatures);
     let root = config.root.clone();
+    let prompts = Rc::clone(&config.prompts);
     Box::new(move |turn| {
         let ports = Ports {
             gh: Rc::clone(&gh),
@@ -210,6 +211,7 @@ fn rounds(
             stack: stack.clone(),
             signatures: Rc::clone(&signatures),
             root: root.clone(),
+            prompts: Rc::clone(&prompts),
         };
         TaskRound {
             turn,

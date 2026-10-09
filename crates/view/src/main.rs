@@ -66,6 +66,7 @@ use crate::janitor::Janitor;
 use crate::ports::{Board, BoardReading, Limits, Plant, Product, TerminalFactory, Traces, Yard};
 use crate::server::{AppState, router};
 use harness_adapters::store::events::SqliteEvents;
+use harness_adapters::store::prompt_book::PromptFile;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
 
@@ -123,6 +124,8 @@ async fn main() -> anyhow::Result<()> {
         data,
         notebook: Arc::new(FsNotebook::new(workspace.state_root())),
         notes_lock: Arc::default(),
+        prompts: Arc::new(PromptFile::new(workspace.state_root())),
+        prompts_lock: Arc::default(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))

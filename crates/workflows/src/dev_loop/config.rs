@@ -44,6 +44,9 @@ pub struct Config {
     pub signatures: std::rc::Rc<crate::dev_loop::data::signatures::Index>,
     /// The checkout's root — what the architecture gates read after `code`.
     pub root: std::path::PathBuf,
+    /// The human's prompt edits, read once per run — a stage sends
+    /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
+    pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
 }
 
 impl Config {
@@ -93,6 +96,7 @@ pub(crate) mod fake {
     /// A test config: branch `main_agent`, no overrides.
     pub fn config() -> Config {
         Config {
+            prompts: std::rc::Rc::default(),
             integration_branch: "main_agent".to_string(),
             model: String::new(),
             effort: String::new(),

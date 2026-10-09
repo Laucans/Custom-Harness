@@ -21,7 +21,9 @@ use harness_adapters::shell::disk::RealDisk;
 use harness_adapters::shell::git::GitRepos;
 use harness_adapters::shell::github::GhCli;
 use harness_adapters::store::lock::DirLocks;
+use harness_adapters::store::prompt_book::PromptFile;
 use harness_core::domain::Outcome;
+use harness_core::domain::prompt_book::PromptBook;
 use harness_core::domain::workspace::{Strategy, Wanted, Workspace};
 use harness_core::execution::provisioning::{Mount, Provisioner, Run};
 use harness_core::ports::agent::SessionFactory;
@@ -29,6 +31,7 @@ use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::git::Repos;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
+use harness_core::ports::store::prompts::PromptStore;
 use harness_core::ports::store::spending::Spending;
 use harness_core::traces::Logbook;
 
@@ -259,4 +262,35 @@ pub async fn adapters(
         locks: Rc::new(DirLocks),
         disk: Rc::new(RealDisk),
     }
+}
+
+/// The human's prompt edits, read once for this run — what every stage's
+/// `prompts.text(KEY, DEFAULT)` answers from.
+///
+/// Read per run, not per watch: an edit made in the view reaches the next
+/// run without restarting anything. The edited prompts are named in the
+/// journal, so a run that behaves differently says why.
+///
+/// # Errors
+///
+/// [`Halt::Unreadable`](harness_core::domain::Halt::Unreadable) when the book
+/// exists and cannot be read: sending the defaults while a human believes
+/// their edit runs is the failure this refuses.
+pub fn prompts(workspace: &Workspace, log: &Logbook) -> Outcome<Rc<PromptBook>> {
+    let book = PromptFile::new(workspace.state_root()).load()?;
+    let edited: Vec<&str> = harness_workflows::prompts::catalog()
+        .iter()
+        .filter(|prompt| {
+            book.entry(prompt.key)
+                .is_some_and(|entry| entry.current.is_some())
+        })
+        .map(|prompt| prompt.key)
+        .collect();
+    if !edited.is_empty() {
+        log.say(&format!(
+            "prompts edited from the view: {}",
+            edited.join(", ")
+        ));
+    }
+    Ok(Rc::new(book))
 }

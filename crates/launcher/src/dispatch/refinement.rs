@@ -79,6 +79,7 @@ pub async fn run(
     )
     .await;
 
+    let prompts = shared::prompts(workspace, &log)?;
     let refinement_dir = workspace.refinement_dir();
     let artifacts_dir = refinement_dir.join(issue.to_string());
 
@@ -102,6 +103,7 @@ pub async fn run(
         coherence: spec(),
         advice: spec(),
         artifacts_dir: artifacts_dir.clone(),
+        prompts: Rc::clone(&prompts),
     };
     let explore_ports = explore::Ports {
         repo: Rc::new(GitCli::new(workspace.root())),
@@ -110,6 +112,7 @@ pub async fn run(
         spending: Rc::clone(&built.spending),
     };
     let explore_config = explore::Config {
+        prompts,
         root: workspace.root().to_path_buf(),
         explore: false,
         spec: spec(),

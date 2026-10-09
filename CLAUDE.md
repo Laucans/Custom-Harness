@@ -36,8 +36,10 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   `core` never depends on `workflows`, `launcher` or `view` — enforced by
   Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
   a warning. `view` is read-only: it shows the traces the harness leaves in
-  `.llocal/logs` and the GitHub board, and never writes anything a run reads.
-  Its hands on the plant are three, all the human's: the steward — an
+  `.llocal/logs` and the GitHub board, and writes one thing a run reads —
+  the prompt book (`.llocal/prompts.json`, core's `PromptStore` port), where
+  the human edits a robot's prompt; the launcher reads it once per run.
+  Its other hands on the plant are three, all the human's: the steward — an
   interactive Claude Code in a pseudo-terminal the human drives from the
   page — the status button's switch, which starts the watch or stops it
   softly (`SIGTERM`, the watch drains) or hard (`SIGKILL`), and the

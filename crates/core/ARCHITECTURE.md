@@ -42,6 +42,7 @@ own `#[cfg(test)]` block (`Held`, the in-memory `Locks` of
 | `Spend`, `Tokens` | what a turn cost. Every field is `Option`: `None` reads as "not observed", never "zero". |
 | `breaker` | the circuit breaker: `fingerprint` (FNV-1a of a prompt), `trailing_failures`, `tripped`, `LIMIT` = 3, and the `outcome` words `STOP`/`FAILED`/`QUOTA` that `Halt::prefix` returns. Identity is task + stage + **prompt**, which is what lets a reworded issue clear the count with no gesture on the ledger. `QUOTA` is transparent: nothing ran, nothing was billed. |
 | `markers` | the verbal contract — `AGENT_LOOP_OK`, `AGENT_LOOP_STOP`. |
+| `prompt_book` | the human's edits to a stage's prompt: what is sent instead of the default, the last five edits, a restore, a reset; the `{placeholders}` a prompt carries and what an edit drops. Knows no workflow — a key and a default are passed in. |
 | `prompts` | the preamble, the `Scope` block, and `splice` — one substitution pass, so values coming back from GitHub can't be re-substituted. `Named`, `Scope`, `Scoped`. |
 | `workspace` | `Strategy`, `Wanted`, `Workspace`. **Two roots**: `root` is the code, `state_root` is the accounting — which is what makes a workspace disposable. Describes only; mounting lives in `execution::provisioning`. |
 | `Resumable` | what a round state must expose so a stage is never billed twice. |
@@ -84,6 +85,7 @@ store/spending    Spending, Entry — implemented in the launcher, not here
 store/lock        Locks — one bearer per name
 store/checkpoint  Checkpoints, Pointer — where a run says what it was doing
 store/review      ReviewCosts — the one *read* of a review's spending
+store/prompts     PromptStore — the human's prompt edits, read once per run
 ```
 
 `Sink` ([`traces/`](#traces--the-journal)) is a port too, and stays with

@@ -75,7 +75,9 @@ pub async fn run(
         locks: Rc::clone(&built.locks),
         disk: Rc::clone(&built.disk),
     };
+    let prompts = shared::prompts(workspace, &log)?;
     let config = Config {
+        prompts: Rc::clone(&prompts),
         planner_dir,
         grill_dir,
         artifacts_dir: artifacts_dir.clone(),
@@ -92,6 +94,7 @@ pub async fn run(
         spending: Rc::clone(&built.spending),
     };
     let explore_config = explore::Config {
+        prompts,
         root: workspace.root().to_path_buf(),
         explore: false,
         spec: SessionSpec {
