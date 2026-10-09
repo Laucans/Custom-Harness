@@ -51,6 +51,12 @@ answer nothing outside a `#[cfg(test)]` block.
 as it knows nothing of workflows. The sink is injected (the launcher writes to
 console *and* file).
 
+A line carries its level at its head: none, `warning: ` (`Logbook::warn`) or
+`error: ` (`Logbook::error`). An `Event` says its own (`Event::level`): a
+`FAILED` stop, a lane that could not start or ended on a signal or exit 2 is an
+error; a `STOP` or a `QUOTA` is a warning — the same split as `Halt::severity`,
+held by a test since the leaf cannot import it. The view colours by that head.
+
 ## `ports/` — what the inside needs from the outside
 
 One module per external component, traits only (plus the few values those

@@ -12,6 +12,21 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How bad an event's line is — what the journal writes at its head, and
+/// what the view colours it by.
+///
+/// Not `domain::Severity`: `traces` imports nothing else from core. The two
+/// agree — a `STOP` or a `QUOTA` is waited on, only a `FAILED` is a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    /// The plant at work: no prefix.
+    Info,
+    /// Something went wrong and the run goes on: `warning: `.
+    Warning,
+    /// Something failed or stopped: `error: `.
+    Error,
+}
+
 /// One thing that happened in the plant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -183,13 +198,25 @@ impl Event {
         })
     }
 
-    /// Whether its line is a warning: something went wrong, the run goes on.
+    /// How bad its line is.
+    ///
+    /// A failed board read is retried at the next tick, a `STOP` waits for a
+    /// human, a `QUOTA` for the window: warnings. A `FAILED`, a lane that
+    /// could not start, or that ended on a signal or on an exit code other
+    /// than 0, 1 (`STOP`) and 3 (`QUOTA`) — the frozen contract — is an error.
     #[must_use]
-    pub const fn warns(&self) -> bool {
-        matches!(
-            self,
-            Self::TickFailed { .. } | Self::LaneNotStarted { .. } | Self::Halted { .. }
-        )
+    pub fn level(&self) -> Level {
+        match self {
+            Self::Halted { kind, .. } if kind == "FAILED" => Level::Error,
+            Self::LaneEnded { code: Some(0), .. } => Level::Info,
+            Self::TickFailed { .. }
+            | Self::Halted { .. }
+            | Self::LaneEnded {
+                code: Some(1 | 3), ..
+            } => Level::Warning,
+            Self::LaneNotStarted { .. } | Self::LaneEnded { .. } => Level::Error,
+            _ => Level::Info,
+        }
     }
 }
 
@@ -243,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ledger_event_has_no_line_and_a_failure_warns() {
+    fn a_ledger_event_has_no_line_and_a_stop_warns() {
         let ended = Event::SessionEnded {
             task: "15".to_string(),
             stage: "code".to_string(),
@@ -257,14 +284,42 @@ mod tests {
             reason: "refusing to pay".to_string(),
         };
         assert_eq!(halted.line().as_deref(), Some("STOP: refusing to pay"));
-        assert!(halted.warns());
-        assert!(
+        assert_eq!(halted.level(), Level::Warning, "a STOP waits for a human");
+        let failed = Event::Halted {
+            workflow: "dev_loop #15".to_string(),
+            kind: "FAILED".to_string(),
+            reason: "the session printed nothing".to_string(),
+        };
+        assert_eq!(failed.level(), Level::Error);
+        assert_eq!(
             Event::TickFailed {
                 reason: "x".to_string()
             }
-            .warns()
+            .level(),
+            Level::Warning
         );
-        assert!(!Event::WatchStopped.warns());
+        assert_eq!(Event::WatchStopped.level(), Level::Info);
+    }
+
+    #[test]
+    fn a_lane_is_an_error_when_it_failed_or_was_killed() {
+        let ended = |code| Event::LaneEnded {
+            lane: 0,
+            issue: 15,
+            status: String::new(),
+            code,
+        };
+        assert_eq!(ended(Some(0)).level(), Level::Info);
+        assert_eq!(ended(Some(1)).level(), Level::Warning, "STOP");
+        assert_eq!(ended(Some(3)).level(), Level::Warning, "QUOTA");
+        assert_eq!(ended(Some(2)).level(), Level::Error, "FAILED");
+        assert_eq!(ended(None).level(), Level::Error, "killed by a signal");
+        let refused = Event::LaneNotStarted {
+            what: None,
+            issue: 15,
+            reason: "no such file".to_string(),
+        };
+        assert_eq!(refused.level(), Level::Error);
     }
 
     #[test]

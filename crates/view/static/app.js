@@ -224,6 +224,18 @@
   // broke, the breaker's refusal.
   const ERROR_LINE = /(^|\] )(warning: |STOP: |FAILED: |QUOTA: |! )|refusing to pay|timed out|printed nothing|ran past its/;
 
+  // The colour of a log line. The journal heads a failure with `error: ` and
+  // what is waited on with `warning: `; a run says its stop as `FAILED: `
+  // (red) or `STOP: `/`QUOTA: ` (amber), and a session's stderr is `! `. A
+  // journal written before `error: ` existed still has its failed lanes red.
+  const LOG_ERROR = /(^|\] )(error: |FAILED: |! )|timed out|printed nothing|ran past its|-> cannot start|done with #\d+ \((exit status: (2|[4-9]|\d{2,})\b|signal)/;
+  const LOG_WARN = /(^|\] )(warning: |STOP: |QUOTA: )|refusing to pay/;
+  function logLine(line) {
+    const level = LOG_ERROR.test(line) ? 'error' : LOG_WARN.test(line) ? 'warn' : '';
+    return level ? `<span class="log-${level}">${esc(line)}</span>` : esc(line);
+  }
+  const logHtml = (text) => text.split('\n').map(logLine).join('\n');
+
   // ---- notifications ------------------------------------------------------------
   // Three signs at the bottom right — info, warning, error — grey when nothing
   // of their level is unread, in their colour when something is. A sign opens
@@ -907,7 +919,7 @@
           })
         : `<div class="muted">${P ? 'nothing triggered during the period' : 'nothing triggered since the start of the journal read'}</div>`;
       const logs = P ? P.logs : S.snap.recent;
-      h += section(p, 'journal.logs', 'Logs') + (P && P.logs_cut ? '<div class="muted">the period holds more lines: its last ones are shown</div>' : '') + '<pre class="log">' + esc(logs.join('\n') || '(empty)') + '</pre>';
+      h += section(p, 'journal.logs', 'Logs') + (P && P.logs_cut ? '<div class="muted">the period holds more lines: its last ones are shown</div>' : '') + '<pre class="log">' + (logs.length ? logHtml(logs.join('\n')) : '(empty)') + '</pre>';
       return h;
     },
   };
@@ -1007,14 +1019,14 @@
                 if (at < 0 && p.file === 'run.log') { p.file = 'session.log'; p.barHtml = null; pull(); return; }
               }
               if (at < 0) at = lines.length - 1;
-              pre.innerHTML = lines.map((l, i) => (i === at ? `<mark class="hit">${esc(l) || ' '}</mark>` : esc(l))).join('\n');
+              pre.innerHTML = lines.map((l, i) => (i === at ? `<mark class="hit">${logLine(l) || ' '}</mark>` : logLine(l))).join('\n');
               const lineHeight = pre.scrollHeight / Math.max(lines.length, 1);
               pre.scrollTop = Math.max(0, at * lineHeight - pre.clientHeight / 3);
               p.jumped = true; p.jump = false;
               return;
             }
             if (pre.textContent !== text) {
-              pre.textContent = text;
+              pre.innerHTML = logHtml(text);
               if (atBottom || p.jump) pre.scrollTop = pre.scrollHeight;
             }
             p.jump = false;
@@ -1124,7 +1136,7 @@
             }
             const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
             if (pre.textContent !== text) {
-              pre.textContent = text;
+              pre.innerHTML = logHtml(text);
               if (atBottom || p.jump) pre.scrollTop = pre.scrollHeight;
             }
             p.jump = false;

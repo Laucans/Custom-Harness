@@ -338,7 +338,7 @@ async fn dispatch(
         match crate::dispatch::doctor::treat(here, &args.workspaces_dir, args.dry_run, log).await {
             Ok(Repair::Nothing) => {}
             Ok(done) => log.say(&format!("watch: doctor -> {}", done.outcome())),
-            Err(broke) => log.warn(&format!("watch: doctor -> {}", broke.reason())),
+            Err(broke) => log.error(&format!("watch: doctor -> {}", broke.reason())),
         }
     }
 }
@@ -394,7 +394,7 @@ async fn dispatched(
         ),
         Route::PrFix { pr } => {
             if let Err(halt) = ask_for_the_repair(gh, &pr, args.dry_run).await {
-                log.warn(&format!("watch: pr_fix -> {}", halt.reason()));
+                log.error(&format!("watch: pr_fix -> {}", halt.reason()));
                 return Some(("pr_fix", halt));
             }
             report_failure(
@@ -638,7 +638,7 @@ async fn run_router_lanes(
             break;
         };
         let Some(command) = router_lane_command(args, here, what, number, &branch, slot) else {
-            log.warn("watch: router lanes -> cannot find this executable");
+            log.error("watch: router lanes -> cannot find this executable");
             return None;
         };
         match lanes.spawn(slot, number, command, here) {
@@ -739,7 +739,7 @@ async fn run_milestone_merge(
             None
         }
         Err(halt) => {
-            log.warn(&format!("watch: milestone_merge -> {}", halt.reason()));
+            log.error(&format!("watch: milestone_merge -> {}", halt.reason()));
             Some(("milestone_merge", halt))
         }
     }
@@ -780,7 +780,7 @@ async fn run_main_agent_merge(
             None
         }
         Err(halt) => {
-            log.warn(&format!("watch: main_agent_merge -> {}", halt.reason()));
+            log.error(&format!("watch: main_agent_merge -> {}", halt.reason()));
             Some(("main_agent_merge", halt))
         }
     }
@@ -867,7 +867,7 @@ async fn run_lanes(
         let mut command = tokio::process::Command::new(match std::env::current_exe() {
             Ok(exe) => exe,
             Err(e) => {
-                log.warn(&format!("watch: lanes -> cannot find this executable: {e}"));
+                log.error(&format!("watch: lanes -> cannot find this executable: {e}"));
                 return None;
             }
         });
@@ -926,7 +926,7 @@ async fn run_dev_loop(
     let mut cli = match crate::cli::Cli::try_parse_from(["harness"]) {
         Ok(cli) => cli,
         Err(e) => {
-            log.warn(&format!(
+            log.error(&format!(
                 "watch: cannot build default dev_loop arguments: {e}"
             ));
             return None;
@@ -940,7 +940,7 @@ async fn run_dev_loop(
             None
         }
         Err(halt) => {
-            log.warn(&format!("watch: dev_loop -> {}", halt.reason()));
+            log.error(&format!("watch: dev_loop -> {}", halt.reason()));
             Some(halt)
         }
     }
@@ -961,7 +961,7 @@ fn report_failure(
             None
         }
         Err(halt) => {
-            log.warn(&format!("watch: {name} -> {}", halt.reason()));
+            log.error(&format!("watch: {name} -> {}", halt.reason()));
             Some((name, halt))
         }
     }

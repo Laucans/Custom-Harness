@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use super::Event;
+use super::{Event, Level};
 
 /// What the user sees on standard output. The file keeps everything — this
 /// distinction exists only for the console.
@@ -93,14 +93,14 @@ impl Logbook {
         }
     }
 
-    /// Tell an event: write its line (a warning when it warns), and keep it
-    /// as data. One call, so the line and the record cannot disagree.
+    /// Tell an event: write its line at its [`Level`], and keep it as
+    /// data. One call, so the line and the record cannot disagree.
     pub fn event(&self, event: &Event) {
         if let Some(line) = event.line() {
-            if event.warns() {
-                self.warn(&line);
-            } else {
-                self.say(&line);
+            match event.level() {
+                Level::Info => self.say(&line),
+                Level::Warning => self.warn(&line),
+                Level::Error => self.error(&line),
             }
         }
         self.sink.record(event);
@@ -130,6 +130,15 @@ impl Logbook {
     /// workspace, local work missing from the clone.
     pub fn warn(&self, line: &str) {
         self.say(&format!("warning: {line}"));
+    }
+
+    /// A line that says something failed or stopped — what the view shows
+    /// in red. Like a warning, written at every verbosity.
+    ///
+    /// Not a way to stop: a `Halt` still travels as a value. This is how
+    /// the stop is told once it has happened.
+    pub fn error(&self, line: &str) {
+        self.say(&format!("error: {line}"));
     }
 
     /// A line of interest only to autopsy — shown only in `Verbose`, **kept
@@ -210,6 +219,29 @@ mod tests {
         let log = Logbook::new(Rc::clone(&capture) as Rc<dyn Sink>, Verbosity::Quiet);
         log.warn("workspace kept");
         assert_eq!(capture.0.borrow()[0], "warning: workspace kept");
+    }
+
+    #[test]
+    fn an_event_is_written_at_its_severity() {
+        let capture = Rc::new(Capture::default());
+        let log = Logbook::new(Rc::clone(&capture) as Rc<dyn Sink>, Verbosity::Quiet);
+        log.event(&Event::TickFailed {
+            reason: "rate limit".to_string(),
+        });
+        log.event(&Event::Halted {
+            workflow: "dev_loop #15".to_string(),
+            kind: "FAILED".to_string(),
+            reason: "printed nothing".to_string(),
+        });
+        log.event(&Event::WatchStopped);
+        assert_eq!(
+            *capture.0.borrow(),
+            [
+                "warning: watch: tick -> rate limit",
+                "error: FAILED: printed nothing",
+                "watch: stopped — soft stop, every lane done",
+            ]
+        );
     }
 
     #[test]

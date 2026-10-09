@@ -105,6 +105,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_journal_calls_an_error_what_the_halt_calls_one() {
+        // `traces` reads the kind as text: a renamed prefix would turn every
+        // failure grey in the journal without a test to say so.
+        for halt in [
+            Halt::Halted(String::new()),
+            Halt::Unreadable(String::new()),
+            Halt::Failed(String::new()),
+            Halt::Quota(String::new()),
+        ] {
+            let told = crate::traces::Event::Halted {
+                workflow: "w".to_string(),
+                kind: halt.prefix().to_string(),
+                reason: String::new(),
+            };
+            assert_eq!(
+                told.level() == crate::traces::Level::Error,
+                halt.severity() == Severity::Error,
+                "{halt:?}"
+            );
+        }
+    }
+
+    #[test]
     fn exit_codes_match_the_frozen_contract() {
         assert_eq!(Halt::Halted(String::new()).exit_code(), 1);
         assert_eq!(Halt::Unreadable(String::new()).exit_code(), 1);

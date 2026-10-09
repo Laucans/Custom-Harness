@@ -216,6 +216,8 @@ body.split > #pane { grid-area: pane; }
 button.tag-link { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
 button.tag-link:hover .tag { border-color: var(--accent); color: var(--accent); }
 button.tag-link.missing .tag { text-decoration: line-through; }
+pre.log .log-error { color: var(--bad); }
+pre.log .log-warn { color: var(--warn); }
 pre.log mark.hit { background: color-mix(in srgb, var(--bad) 35%, transparent); color: var(--text); outline: 1px solid var(--bad); border-radius: 2px; }
 #pane-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px 30px; }
 
