@@ -6,9 +6,12 @@
 //! drafts beside it. What a prompt is — its key, its stations, its default —
 //! is `harness-workflows`' catalog; what a draft, an edit and a revert do is
 //! `harness-core`'s `prompt_book`. This module puts the three together for
-//! the page.
+//! the page. The drafts a human deactivated sit on a shelf beside the
+//! drafts, which only the view reads and writes.
 
-use harness_core::domain::prompt_book::{self, BookError, Draft, Drafts, PromptBook, Version};
+use harness_core::domain::prompt_book::{
+    self, BookError, Draft, Drafts, PromptBook, Shelf, Version,
+};
 use harness_workflows::prompts::{self as catalog, Prompt};
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +41,19 @@ pub struct Waiting {
     pub at: u64,
 }
 
+/// A deactivated draft, as the pane lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Shelved {
+    /// The text it would run — the default's, when it goes back to it.
+    pub text: String,
+    /// Whether it goes back to the default.
+    pub to_default: bool,
+    /// Whether it puts back a text kept earlier.
+    pub revert: bool,
+    /// When it was proposed, Unix seconds.
+    pub at: u64,
+}
+
 /// One prompt, as the pane shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PromptView {
@@ -56,6 +72,8 @@ pub struct PromptView {
     pub edited: bool,
     /// The change waiting for the next start, if any.
     pub draft: Option<Waiting>,
+    /// The drafts the human deactivated, newest first.
+    pub shelved: Vec<Shelved>,
     /// The last edits, newest first.
     pub history: Vec<Kept>,
     /// The last texts a revert replaced, newest first.
@@ -90,6 +108,11 @@ pub struct Edit {
     pub key: String,
     /// The new text.
     pub text: String,
+    /// Whether the draft waiting, if any, is deactivated rather than
+    /// replaced: a text saved from an older version keeps the waiting one
+    /// in the history; one saved over the waiting draft itself replaces it.
+    #[serde(default)]
+    pub shelve_waiting: bool,
 }
 
 /// Where a text put back comes from.
@@ -116,11 +139,20 @@ pub struct Restore {
     pub index: usize,
 }
 
-/// What the page sends to withdraw a draft.
+/// What the page sends to deactivate the draft waiting.
 #[derive(Debug, Deserialize)]
-pub struct Withdraw {
+pub struct Deactivate {
     /// The prompt's key.
     pub key: String,
+}
+
+/// What the page sends about one deactivated draft: to reactivate or delete it.
+#[derive(Debug, Deserialize)]
+pub struct OnShelf {
+    /// The prompt's key.
+    pub key: String,
+    /// Its place among the deactivated, newest first.
+    pub index: usize,
 }
 
 /// Why a change was refused.
@@ -157,8 +189,21 @@ fn kept(list: &[Version], running: &str, default: &str) -> Vec<Kept> {
 
 /// One prompt of the catalog, with what runs and what waits.
 #[must_use]
-pub fn view(book: &PromptBook, drafts: &Drafts, prompt: &Prompt) -> PromptView {
+pub fn view(book: &PromptBook, drafts: &Drafts, shelf: &Shelf, prompt: &Prompt) -> PromptView {
     let running = book.text(prompt.key, prompt.default);
+    let shelved = shelf
+        .of(prompt.key)
+        .iter()
+        .map(|draft| Shelved {
+            text: draft
+                .text
+                .clone()
+                .unwrap_or_else(|| prompt.default.to_string()),
+            to_default: draft.text.is_none(),
+            revert: draft.revert,
+            at: draft.at,
+        })
+        .collect();
     let entry = book.entry(prompt.key);
     let draft = drafts.get(prompt.key).map(|draft| Waiting {
         text: draft
@@ -195,6 +240,7 @@ pub fn view(book: &PromptBook, drafts: &Drafts, prompt: &Prompt) -> PromptView {
         missing,
         unknown,
         draft,
+        shelved,
         running,
     }
 }
@@ -205,12 +251,13 @@ pub fn view(book: &PromptBook, drafts: &Drafts, prompt: &Prompt) -> PromptView {
 pub fn of_station(
     book: &PromptBook,
     drafts: &Drafts,
+    shelf: &Shelf,
     line: &str,
     station: &str,
 ) -> Vec<PromptView> {
     catalog::of_station(line, station)
         .iter()
-        .map(|prompt| view(book, drafts, prompt))
+        .map(|prompt| view(book, drafts, shelf, prompt))
         .collect()
 }
 
@@ -250,7 +297,8 @@ fn known(key: &str) -> Result<Prompt, Refused> {
     catalog::find(key).ok_or_else(|| Refused::Unknown(key.to_string()))
 }
 
-/// Proposes a new text for the next start.
+/// Proposes a new text for the next start; with [`Edit::shelve_waiting`],
+/// the draft it replaces is deactivated rather than lost.
 ///
 /// # Errors
 ///
@@ -259,21 +307,27 @@ fn known(key: &str) -> Result<Prompt, Refused> {
 pub fn propose(
     book: &PromptBook,
     drafts: &mut Drafts,
+    shelf: &mut Shelf,
     edit: &Edit,
     now: u64,
 ) -> Result<PromptView, Refused> {
     let prompt = known(&edit.key)?;
-    drafts
-        .propose(
-            book,
-            prompt.key,
-            prompt.default,
-            Some(&edit.text),
-            false,
-            now,
-        )
-        .map_err(Refused::Book)?;
-    Ok(view(book, drafts, &prompt))
+    let mut next = drafts.clone();
+    let mut next_shelf = shelf.clone();
+    if edit.shelve_waiting {
+        next.deactivate(&mut next_shelf, prompt.key);
+    }
+    next.propose(
+        book,
+        prompt.key,
+        prompt.default,
+        Some(&edit.text),
+        false,
+        now,
+    )
+    .map_err(Refused::Book)?;
+    (*drafts, *shelf) = (next, next_shelf);
+    Ok(view(book, drafts, shelf, &prompt))
 }
 
 /// Proposes, for the next start, a text kept earlier — a revert.
@@ -284,6 +338,7 @@ pub fn propose(
 pub fn restore(
     book: &PromptBook,
     drafts: &mut Drafts,
+    shelf: &mut Shelf,
     restore: &Restore,
     now: u64,
 ) -> Result<PromptView, Refused> {
@@ -301,25 +356,75 @@ pub fn restore(
         From::Reverted => Some(list(|entry| &entry.reverted)?),
     };
     let text = text.filter(|text| text != prompt.default);
-    drafts
-        .propose(book, prompt.key, prompt.default, text.as_deref(), true, now)
+    let mut next = drafts.clone();
+    let mut next_shelf = shelf.clone();
+    // The draft a revert replaces stays in the history, deactivated.
+    next.deactivate(&mut next_shelf, prompt.key);
+    next.propose(book, prompt.key, prompt.default, text.as_deref(), true, now)
         .map_err(Refused::Book)?;
-    Ok(view(book, drafts, &prompt))
+    (*drafts, *shelf) = (next, next_shelf);
+    Ok(view(book, drafts, shelf, &prompt))
 }
 
-/// Withdraws a draft: the next start keeps what runs.
+/// Deactivates the draft waiting: the next start keeps what runs, and the
+/// draft stays in the history to be reactivated or deleted.
 ///
 /// # Errors
 ///
 /// [`Refused::Unknown`] for a key the catalog does not hold.
-pub fn withdraw(
+pub fn deactivate(
     book: &PromptBook,
     drafts: &mut Drafts,
-    withdraw: &Withdraw,
+    shelf: &mut Shelf,
+    deactivate: &Deactivate,
 ) -> Result<PromptView, Refused> {
-    let prompt = known(&withdraw.key)?;
-    drafts.withdraw(prompt.key);
-    Ok(view(book, drafts, &prompt))
+    let prompt = known(&deactivate.key)?;
+    drafts.deactivate(shelf, prompt.key);
+    Ok(view(book, drafts, shelf, &prompt))
+}
+
+/// Makes a deactivated draft the one that waits again; the draft it
+/// replaces is deactivated in its turn.
+///
+/// # Errors
+///
+/// [`Refused::Unknown`] for a key the catalog does not hold,
+/// [`Refused::NoSuchVersion`] past the list, [`Refused::Book`] for a text
+/// the drafts refuse.
+pub fn reactivate(
+    book: &PromptBook,
+    drafts: &mut Drafts,
+    shelf: &mut Shelf,
+    pick: &OnShelf,
+    now: u64,
+) -> Result<PromptView, Refused> {
+    let prompt = known(&pick.key)?;
+    let found = drafts
+        .reactivate(shelf, book, prompt.key, prompt.default, pick.index, now)
+        .map_err(Refused::Book)?;
+    if !found {
+        return Err(Refused::NoSuchVersion(pick.index));
+    }
+    Ok(view(book, drafts, shelf, &prompt))
+}
+
+/// Deletes a deactivated draft from the history.
+///
+/// # Errors
+///
+/// [`Refused::Unknown`] for a key the catalog does not hold,
+/// [`Refused::NoSuchVersion`] past the list.
+pub fn discard(
+    book: &PromptBook,
+    drafts: &Drafts,
+    shelf: &mut Shelf,
+    pick: &OnShelf,
+) -> Result<PromptView, Refused> {
+    let prompt = known(&pick.key)?;
+    shelf
+        .remove(prompt.key, pick.index)
+        .ok_or(Refused::NoSuchVersion(pick.index))?;
+    Ok(view(book, drafts, shelf, &prompt))
 }
 
 #[cfg(test)]
@@ -334,14 +439,14 @@ mod tests {
 
     #[test]
     fn every_robot_shows_a_prompt_and_every_prompt_stands_on_a_station() {
-        let (book, drafts) = (PromptBook::default(), Drafts::default());
+        let (book, drafts, shelf) = (PromptBook::default(), Drafts::default(), Shelf::default());
         let lines = blueprint::lines();
         for line in &lines {
             for station in &line.stations {
                 let paid = matches!(station.kind, Kind::Builder | Kind::Inspector);
                 assert_eq!(
                     paid,
-                    !of_station(&book, &drafts, &line.id, &station.id).is_empty(),
+                    !of_station(&book, &drafts, &shelf, &line.id, &station.id).is_empty(),
                     "{}/{}",
                     line.id,
                     station.id
@@ -363,12 +468,14 @@ mod tests {
 
     #[test]
     fn an_edit_waits_for_the_start_and_then_runs() {
-        let (mut book, mut drafts) = (PromptBook::default(), Drafts::default());
+        let (mut book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
         let edit = Edit {
             key: catalog::FIX.to_string(),
             text: "Repair PR #{num} {nope}".to_string(),
+            shelve_waiting: false,
         };
-        let waiting = propose(&book, &mut drafts, &edit, 5).expect("proposed");
+        let waiting = propose(&book, &mut drafts, &mut shelf, &edit, 5).expect("proposed");
         assert!(!waiting.edited, "nothing runs it yet");
         assert_eq!(
             waiting.draft.as_ref().map(|d| d.text.as_str()),
@@ -379,21 +486,29 @@ mod tests {
         assert_eq!(pending(&drafts)[0].kind, "edit");
 
         started(&mut book, &mut drafts, 6);
-        let now = view(&book, &drafts, &catalog::find(catalog::FIX).expect("known"));
+        let now = view(
+            &book,
+            &drafts,
+            &shelf,
+            &catalog::find(catalog::FIX).expect("known"),
+        );
         assert!(now.edited && now.draft.is_none());
         assert!(now.history[0].running);
     }
 
     #[test]
     fn a_revert_keeps_what_it_replaced_once_the_factory_starts() {
-        let (mut book, mut drafts) = (PromptBook::default(), Drafts::default());
+        let (mut book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
         let key = catalog::FIX.to_string();
         propose(
             &book,
             &mut drafts,
+            &mut shelf,
             &Edit {
                 key: key.clone(),
                 text: "mine".to_string(),
+                shelve_waiting: false,
             },
             1,
         )
@@ -404,7 +519,7 @@ mod tests {
             from: From::Default,
             index: 0,
         };
-        let waiting = restore(&book, &mut drafts, &back, 3).expect("restored");
+        let waiting = restore(&book, &mut drafts, &mut shelf, &back, 3).expect("restored");
         assert!(
             waiting
                 .draft
@@ -413,7 +528,7 @@ mod tests {
         );
         assert_eq!(pending(&drafts)[0].kind, "default");
         started(&mut book, &mut drafts, 4);
-        let now = view(&book, &drafts, &catalog::find(&key).expect("known"));
+        let now = view(&book, &drafts, &shelf, &catalog::find(&key).expect("known"));
         assert!(!now.edited);
         assert_eq!(now.reverted[0].text, "mine");
 
@@ -422,32 +537,37 @@ mod tests {
             from: From::Reverted,
             index: 0,
         };
-        let waiting = restore(&book, &mut drafts, &again, 5).expect("restored");
+        let waiting = restore(&book, &mut drafts, &mut shelf, &again, 5).expect("restored");
         assert_eq!(waiting.draft.map(|d| d.text), Some("mine".to_string()));
     }
 
     #[test]
-    fn withdrawing_leaves_what_runs_and_an_unknown_key_changes_nothing() {
-        let (book, mut drafts) = (PromptBook::default(), Drafts::default());
+    fn deactivating_leaves_what_runs_and_an_unknown_key_changes_nothing() {
+        let (book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
         let key = catalog::FIX.to_string();
         propose(
             &book,
             &mut drafts,
+            &mut shelf,
             &Edit {
                 key: key.clone(),
                 text: "x".to_string(),
+                shelve_waiting: false,
             },
             1,
         )
         .expect("proposed");
-        withdraw(&book, &mut drafts, &Withdraw { key }).expect("withdrawn");
+        deactivate(&book, &mut drafts, &mut shelf, &Deactivate { key }).expect("deactivated");
         assert!(drafts.is_empty());
         let refused = propose(
             &book,
             &mut drafts,
+            &mut shelf,
             &Edit {
                 key: "../etc".to_string(),
                 text: "x".to_string(),
+                shelve_waiting: false,
             },
             1,
         );
@@ -458,9 +578,112 @@ mod tests {
             index: 2,
         };
         assert_eq!(
-            restore(&book, &mut drafts, &far, 1),
+            restore(&book, &mut drafts, &mut shelf, &far, 1),
             Err(Refused::NoSuchVersion(2))
         );
         assert!(drafts.is_empty());
+    }
+
+    fn edit(key: &str, text: &str, shelve_waiting: bool) -> Edit {
+        Edit {
+            key: key.to_string(),
+            text: text.to_string(),
+            shelve_waiting,
+        }
+    }
+
+    #[test]
+    fn a_saved_draft_is_in_the_history_and_deactivating_keeps_it_there() {
+        let (book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
+        let key = catalog::FIX;
+        propose(
+            &book,
+            &mut drafts,
+            &mut shelf,
+            &edit(key, "first", false),
+            1,
+        )
+        .expect("saved");
+        // Saving over the waiting draft itself replaces it: nothing shelved.
+        propose(
+            &book,
+            &mut drafts,
+            &mut shelf,
+            &edit(key, "first, fixed", false),
+            2,
+        )
+        .expect("saved");
+        assert!(shelf.is_empty());
+        // Saving from an older version keeps the waiting one, deactivated.
+        let shown = propose(
+            &book,
+            &mut drafts,
+            &mut shelf,
+            &edit(key, "second", true),
+            3,
+        )
+        .expect("saved");
+        assert_eq!(shown.draft.map(|d| d.text), Some("second".to_string()));
+        assert_eq!(shown.shelved[0].text, "first, fixed");
+        let shown = deactivate(
+            &book,
+            &mut drafts,
+            &mut shelf,
+            &Deactivate {
+                key: key.to_string(),
+            },
+        )
+        .expect("deactivated");
+        assert!(shown.draft.is_none());
+        let texts: Vec<&str> = shown.shelved.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["second", "first, fixed"]);
+    }
+
+    #[test]
+    fn a_deactivated_draft_is_reactivated_or_deleted() {
+        let (book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
+        let key = catalog::FIX;
+        propose(&book, &mut drafts, &mut shelf, &edit(key, "a", false), 1).expect("saved");
+        propose(&book, &mut drafts, &mut shelf, &edit(key, "b", true), 2).expect("saved");
+        let pick = |index| OnShelf {
+            key: key.to_string(),
+            index,
+        };
+        let shown = reactivate(&book, &mut drafts, &mut shelf, &pick(0), 3).expect("reactivated");
+        assert_eq!(shown.draft.map(|d| d.text), Some("a".to_string()));
+        assert_eq!(
+            shown.shelved[0].text, "b",
+            "the one it replaced is deactivated"
+        );
+        assert_eq!(pending(&drafts).len(), 1);
+        let shown = discard(&book, &drafts, &mut shelf, &pick(0)).expect("deleted");
+        assert!(shown.shelved.is_empty());
+        assert_eq!(
+            discard(&book, &drafts, &mut shelf, &pick(0)),
+            Err(Refused::NoSuchVersion(0))
+        );
+        assert_eq!(
+            reactivate(&book, &mut drafts, &mut shelf, &pick(4), 4),
+            Err(Refused::NoSuchVersion(4))
+        );
+    }
+
+    #[test]
+    fn a_revert_keeps_the_waiting_draft_deactivated() {
+        let (book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
+        let key = catalog::FIX;
+        propose(&book, &mut drafts, &mut shelf, &edit(key, "mine", false), 1).expect("saved");
+        let back = Restore {
+            key: key.to_string(),
+            from: From::Default,
+            index: 0,
+        };
+        let shown = restore(&book, &mut drafts, &mut shelf, &back, 2).expect("restored");
+        // Back to the default while the default runs: nothing waits.
+        assert!(shown.draft.is_none());
+        assert_eq!(shown.shelved[0].text, "mine");
     }
 }

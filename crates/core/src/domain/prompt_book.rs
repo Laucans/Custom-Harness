@@ -11,6 +11,11 @@
 //!   [`PromptBook::apply`], which the harness calls itself when the factory
 //!   starts — so whatever proposes a change never writes what a run reads.
 //!
+//! A draft the human sets aside is **deactivated**: it leaves the drafts for
+//! the [`Shelf`], where it waits to be reactivated or deleted. The shelf is
+//! kept apart from the drafts because the harness takes every draft at its
+//! start, and a deactivated one must outlive that.
+//!
 //! Each prompt of the book keeps its last [`KEPT`] edits, newest first, and
 //! its last [`REVERTS_KEPT`] reverted texts — what a revert replaced — so
 //! either can be put back. The default is never in a list: it is always there
@@ -32,6 +37,9 @@ pub const KEPT: usize = 5;
 
 /// How many reverted texts of one prompt are kept.
 pub const REVERTS_KEPT: usize = 3;
+
+/// How many deactivated drafts of one prompt are kept.
+pub const SHELVED_KEPT: usize = 10;
 
 /// The longest prompt a human may save, in characters.
 ///
@@ -89,6 +97,14 @@ pub struct Draft {
 pub struct Drafts {
     #[serde(default)]
     prompts: BTreeMap<String, Draft>,
+}
+
+/// The drafts a human deactivated, by prompt, newest first: kept to be
+/// reactivated or deleted. Nothing that runs reads it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shelf {
+    #[serde(default)]
+    prompts: BTreeMap<String, Vec<Draft>>,
 }
 
 /// Where a prompt's dry-run stands.
@@ -295,6 +311,92 @@ impl Drafts {
     pub fn withdraw(&mut self, key: &str) {
         self.prompts.remove(key);
     }
+
+    /// Deactivates the draft of `key`: it leaves the drafts for the head of
+    /// `aside`. Nothing happens when no draft waits.
+    pub fn deactivate(&mut self, aside: &mut Shelf, key: &str) {
+        if let Some(draft) = self.prompts.remove(key) {
+            aside.put(key, draft);
+        }
+    }
+
+    /// Makes the deactivated draft at `index` of `key` the one that waits
+    /// again; the draft it replaces, if any, is deactivated in its turn.
+    ///
+    /// Answers `false` when nothing is kept at `index`. A text equal to what
+    /// `book` runs leaves nothing waiting, as [`Drafts::propose`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Drafts::propose`]; the shelf and the drafts are then unchanged.
+    #[allow(clippy::too_many_arguments)] // every argument is one `propose` needs
+    pub fn reactivate(
+        &mut self,
+        aside: &mut Shelf,
+        book: &PromptBook,
+        key: &str,
+        default: &str,
+        index: usize,
+        at: u64,
+    ) -> Result<bool, BookError> {
+        let Some(draft) = aside.remove(key, index) else {
+            return Ok(false);
+        };
+        let mut next = self.clone();
+        next.prompts.remove(key);
+        if let Err(why) = next.propose(book, key, default, draft.text.as_deref(), draft.revert, at)
+        {
+            aside.insert(key, index, draft);
+            return Err(why);
+        }
+        self.deactivate(aside, key);
+        *self = next;
+        Ok(true)
+    }
+}
+
+impl Shelf {
+    /// The deactivated drafts of `key`, newest first.
+    #[must_use]
+    pub fn of(&self, key: &str) -> &[Draft] {
+        self.prompts.get(key).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether nothing is kept.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.prompts.is_empty()
+    }
+
+    /// Keeps `draft` at the head of `key`'s list, once per text, and the
+    /// last [`SHELVED_KEPT`] of them.
+    pub fn put(&mut self, key: &str, draft: Draft) {
+        let list = self.prompts.entry(key.to_string()).or_default();
+        list.retain(|kept| kept.text != draft.text);
+        list.insert(0, draft);
+        list.truncate(SHELVED_KEPT);
+    }
+
+    /// Deletes the deactivated draft at `index` of `key` and answers it;
+    /// `None` when nothing is kept there.
+    pub fn remove(&mut self, key: &str, index: usize) -> Option<Draft> {
+        let list = self.prompts.get_mut(key)?;
+        if index >= list.len() {
+            return None;
+        }
+        let draft = list.remove(index);
+        if list.is_empty() {
+            self.prompts.remove(key);
+        }
+        Some(draft)
+    }
+
+    /// Puts `draft` back at `index` of `key`'s list — the undo of
+    /// [`Shelf::remove`].
+    fn insert(&mut self, key: &str, index: usize, draft: Draft) {
+        let list = self.prompts.entry(key.to_string()).or_default();
+        list.insert(index.min(list.len()), draft);
+    }
 }
 
 /// One piece of a template: prose, or a `{name}` the stage fills in.
@@ -479,6 +581,89 @@ mod tests {
             .propose(book, key, DEFAULT, text, revert, at)
             .expect("proposed");
         book.apply(&drafts, default_of, at);
+    }
+
+    fn draft(text: &str, at: u64) -> Draft {
+        Draft {
+            text: Some(text.to_string()),
+            revert: false,
+            at,
+        }
+    }
+
+    #[test]
+    fn a_deactivated_draft_waits_on_the_shelf_not_in_the_drafts() {
+        let (book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
+        drafts
+            .propose(&book, "k", DEFAULT, Some("mine"), false, 1)
+            .expect("proposed");
+        drafts.deactivate(&mut shelf, "k");
+        assert!(drafts.is_empty(), "nothing waits for the start any more");
+        assert_eq!(shelf.of("k"), [draft("mine", 1)]);
+        // Nothing to deactivate is no change.
+        drafts.deactivate(&mut shelf, "k");
+        assert_eq!(shelf.of("k").len(), 1);
+    }
+
+    #[test]
+    fn reactivating_swaps_the_waiting_draft_onto_the_shelf() {
+        let (book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
+        shelf.put("k", draft("old", 1));
+        drafts
+            .propose(&book, "k", DEFAULT, Some("new"), false, 2)
+            .expect("proposed");
+        assert!(
+            drafts
+                .reactivate(&mut shelf, &book, "k", DEFAULT, 0, 3)
+                .expect("reactivated")
+        );
+        assert_eq!(drafts.get("k").and_then(|d| d.text.as_deref()), Some("old"));
+        assert_eq!(shelf.of("k"), [draft("new", 2)]);
+        assert!(
+            !drafts
+                .reactivate(&mut shelf, &book, "k", DEFAULT, 5, 4)
+                .expect("an answer"),
+            "nothing kept at 5"
+        );
+    }
+
+    #[test]
+    fn a_refused_reactivation_changes_nothing() {
+        let (book, mut drafts, mut shelf) =
+            (PromptBook::default(), Drafts::default(), Shelf::default());
+        shelf.put("k", draft("   ", 1));
+        shelf.put("k", draft("kept", 2));
+        drafts
+            .propose(&book, "k", DEFAULT, Some("waits"), false, 3)
+            .expect("proposed");
+        let (before_drafts, before_shelf) = (drafts.clone(), shelf.clone());
+        assert_eq!(
+            drafts.reactivate(&mut shelf, &book, "k", DEFAULT, 1, 4),
+            Err(BookError::Empty)
+        );
+        assert_eq!((drafts, shelf), (before_drafts, before_shelf));
+    }
+
+    #[test]
+    fn the_shelf_keeps_each_text_once_and_the_last_ten() {
+        let mut shelf = Shelf::default();
+        for at in 0..12 {
+            shelf.put("k", draft(&format!("t{at}"), at));
+        }
+        shelf.put("k", draft("t11", 20));
+        let texts: Vec<&str> = shelf
+            .of("k")
+            .iter()
+            .filter_map(|d| d.text.as_deref())
+            .collect();
+        assert_eq!(texts.len(), SHELVED_KEPT);
+        assert_eq!(texts[0], "t11");
+        assert_eq!(texts.iter().filter(|t| **t == "t11").count(), 1);
+        assert_eq!(shelf.remove("k", 0).map(|d| d.at), Some(20));
+        assert!(shelf.remove("k", 99).is_none());
+        assert!(shelf.remove("other", 0).is_none());
     }
 
     #[test]

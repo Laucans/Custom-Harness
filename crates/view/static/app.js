@@ -1551,10 +1551,11 @@
     if (which === 'draft') return v.draft ? v.draft.text : v.running;
     if (which === 'default') return v.default;
     const [list, i] = which.split(':');
-    const kept = (list === 'history' ? v.history : v.reverted)[Number(i)];
+    const kept = (list === 'history' ? v.history : list === 'shelved' ? (v.shelved || []) : v.reverted)[Number(i)];
     return kept ? kept.text : null;
   }
-  const versionName = (which) => (which.includes(':') ? `${which.split(':')[0] === 'history' ? 'edit' : 'reverted'} ${Number(which.split(':')[1]) + 1}` : which);
+  const LIST_NAME = { history: 'edit', reverted: 'reverted', shelved: 'deactivated' };
+  const versionName = (which) => (which.includes(':') ? `${LIST_NAME[which.split(':')[0]] || which} ${Number(which.split(':')[1]) + 1}` : which);
   function trialList(key) {
     const list = PR.trials[key];
     if (!list) return '<div class="muted">loading…</div>';
@@ -1576,28 +1577,53 @@
     // While one answers, look again.
     if ((PR.trials[key] || []).some((t) => t.state === 'running')) setTimeout(() => { if (document.querySelector(`[data-prompt-key="${CSS.escape(key)}"]`)) loadTrials(key); }, 4000);
   }
+  // One entry of a prompt's history. What runs now is read-only; any other
+  // text opens on an editor whose save makes it the draft for the next start.
+  // `waiting` marks the draft itself: saving it replaces it, while saving any
+  // other entry keeps the waiting draft in the history, deactivated.
+  function histEntry(e, runs) {
+    const body = e.running
+      ? `<pre class="md">${esc(e.text)}</pre>`
+      : `<textarea class="hist-text" spellcheck="false">${esc(e.text)}</textarea><div class="prompt-bar"><button class="mini" data-hist-save>save for the next start</button></div>`;
+    const tryBtn = `<button class="mini" data-prompt-try="${e.version}" title="dry-run this version on the run picked above"${runs.length ? '' : ' disabled'}>dry-run</button>`;
+    return `<li class="hist ${e.kind}"${e.kind === 'waiting' ? ' data-waiting' : ''}><details><summary>${esc(e.when)}${e.tags} <span class="muted">${esc(firstLine(e.text))}</span></summary>${body}</details>${tryBtn}${e.actions}</li>`;
+  }
   function promptCard(v, line, st) {
     const next = v.draft ? v.draft.text : v.running;
     const reverted = !!PR.reverted[v.key];
     const runs = replayable(line, st);
+    const shelved = v.shelved || [];
     const pick = PR.picks[v.key] || {};
     const option = (value, label) => `<option value="${esc(value)}"${pick.version === value ? ' selected' : ''}>${esc(label)}</option>`;
     const versions = option('editor', "the editor's text") + option('running', 'what runs now') + (v.draft ? option('draft', 'the draft waiting') : '') + option('default', 'the default')
       + v.history.map((h, i) => option('history:' + i, `edit ${i + 1} · ${savedWhen(h.saved_at)}`)).join('')
+      + shelved.map((h, i) => option('shelved:' + i, `deactivated ${i + 1} · ${savedWhen(h.at)}`)).join('')
       + v.reverted.map((h, i) => option('reverted:' + i, `reverted ${i + 1} · ${savedWhen(h.saved_at)}`)).join('');
     const runOptions = runs.map((r) => `<option value="${esc(r.run_id)}"${pick.run === r.run_id ? ' selected' : ''}>${esc(r.name)} · ${esc(r.run_id)}</option>`).join('');
-    const item = (list, i, h) => `<li><details><summary>${esc(savedWhen(h.saved_at))}${h.running ? ' ' + tag('runs now', 'ok') : ''}${h.is_default ? ' ' + tag('default') : ''} <span class="muted">${esc(firstLine(h.text))}</span></summary><pre class="md">${esc(h.text)}</pre></details>`
-      + `<button class="mini" data-prompt-try="${list}:${i}" title="dry-run this version on the run picked above"${runs.length ? '' : ' disabled'}>dry-run</button>`
-      + `<button class="mini" data-prompt-restore="${list}:${i}"${h.running ? ' disabled' : ''}>revert to it</button></li>`;
-    const kept = reverted
-      ? (v.reverted.length ? v.reverted.map((h, i) => item('reverted', i, h)).join('') : '<li class="muted">Nothing reverted yet.</li>')
-      : `<li><details><summary>default <span class="muted">— the workflow's own text</span>${!v.edited ? ' ' + tag('runs now', 'ok') : ''}</summary><pre class="md">${esc(v.default)}</pre></details><button class="mini" data-prompt-try="default"${runs.length ? '' : ' disabled'}>dry-run</button><button class="mini" data-prompt-restore="default"${!v.edited ? ' disabled' : ''}>revert to it</button></li>`
-        + v.history.map((h, i) => item('history', i, h)).join('');
+    const ranTags = (h) => (h.running ? ' ' + tag('runs now', 'ok') : '') + (h.is_default ? ' ' + tag('default') : '');
+    const revertBtn = (at, off) => `<button class="mini" data-prompt-restore="${at}"${off ? ' disabled' : ''}>revert to it</button>`;
+    const kept = (list, i, h) => ({ kind: 'kept', version: `${list}:${i}`, at: h.saved_at, when: savedWhen(h.saved_at), text: h.text, running: h.running, tags: ranTags(h), actions: revertBtn(`${list}:${i}`, h.running) });
+    let entries;
+    if (reverted) {
+      entries = v.reverted.map((h, i) => kept('reverted', i, h));
+    } else {
+      // Newest first: the draft waiting, then the deactivated drafts and the
+      // edits that ran, by date; the default closes the list.
+      const dated = [
+        ...shelved.map((h, i) => ({ kind: 'shelved', version: `shelved:${i}`, at: h.at, when: savedWhen(h.at), text: h.text, running: false, tags: ' ' + tag('deactivated', 'dim') + (h.to_default ? ' ' + tag('default') : ''), actions: `<button class="mini" data-prompt-reactivate="${i}">reactivate</button><button class="mini" data-prompt-delete="${i}">delete</button>` })),
+        ...v.history.map((h, i) => kept('history', i, h)),
+      ].sort((a, b) => b.at - a.at);
+      entries = [
+        ...(v.draft ? [{ kind: 'waiting', version: 'draft', at: v.draft.at, when: savedWhen(v.draft.at), text: v.draft.text, running: false, tags: ' ' + tag('waiting for a restart', 'wrench') + (v.draft.to_default ? ' ' + tag('default') : ''), actions: '<button class="mini" data-prompt-deactivate>deactivate</button>' }] : []),
+        ...dated,
+        { kind: 'default', version: 'default', when: 'default', text: v.default, running: !v.edited, tags: ' <span class="muted">— the workflow\'s own text</span>' + (!v.edited ? ' ' + tag('runs now', 'ok') : ''), actions: revertBtn('default', !v.edited) },
+      ];
+    }
+    const list = entries.length ? entries.map((e) => histEntry(e, runs)).join('') : '<li class="muted">Nothing reverted yet.</li>';
     return `<section class="prompt-card" data-prompt-key="${esc(v.key)}">`
       + `<h3>${esc(v.title)} ${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}${v.draft ? ' ' + tag('waiting for a restart', 'wrench') : ''}</h3>`
       + (v.stations.length > 1 ? `<div class="muted">shared by ${v.stations.map(esc).join(', ')} — a change reaches every one of them</div>` : '')
       + (v.placeholders.length ? `<div class="muted">filled in by the stage: ${v.placeholders.map((x) => `<code>{${esc(x)}}</code>`).join(' ')}</div>` : '')
-      + (v.draft ? `<div class="callout wrench">${v.draft.to_default ? 'Back to the default' : v.draft.revert ? 'A revert' : 'An edit'}, saved ${esc(savedWhen(v.draft.at))}, waits for the factory to start again — until then it runs <details><summary>the current text</summary><pre class="md">${esc(v.running)}</pre></details><button class="mini" data-prompt-withdraw>withdraw it</button></div>` : '')
       + `<textarea class="prompt-text" spellcheck="false">${esc(next)}</textarea>`
       + `<div class="prompt-warn">${promptDrift(v, next)}</div>`
       + '<div class="prompt-bar"><button class="mini" data-prompt-save>save for the next start</button><button class="mini" data-prompt-discard>discard changes</button><span class="muted prompt-status"></span></div>'
@@ -1607,7 +1633,7 @@
         : '<div class="muted">No finished run of this line to replay yet.</div>')
       + `<div class="trial-list">${trialList(v.key)}</div>`
       + `<h4 class="kept-head">History <label class="switch" title="show the last 3 texts a revert replaced"><input type="checkbox" data-prompt-reverted${reverted ? ' checked' : ''}><span class="track"></span> recently reverted</label></h4>`
-      + `<ul class="prompt-history">${kept}</ul>`
+      + `<ul class="prompt-history">${list}</ul>`
       + '</section>';
   }
   // The prompt tab: one editor per prompt the station sends. The body is kept
@@ -1697,8 +1723,18 @@
     const card = e.target.closest('[data-prompt-key]');
     if (!card) return;
     const key = card.dataset.promptKey;
-    if (e.target.closest('[data-prompt-save]')) { sendPrompt('edit', { key, text: card.querySelector('.prompt-text').value }, card, 'saved — it runs once the factory starts again'); return; }
-    if (e.target.closest('[data-prompt-withdraw]')) { sendPrompt('withdraw', { key }, card, 'withdrawn — the factory keeps what runs'); return; }
+    if (e.target.closest('[data-prompt-save]')) { sendPrompt('edit', { key, text: card.querySelector('.prompt-text').value, shelve_waiting: false }, card, 'saved — it runs once the factory starts again'); return; }
+    const histSave = e.target.closest('[data-hist-save]');
+    if (histSave) {
+      const entry = histSave.closest('li.hist');
+      sendPrompt('edit', { key, text: entry.querySelector('.hist-text').value, shelve_waiting: !entry.hasAttribute('data-waiting') }, card, 'saved — it runs once the factory starts again');
+      return;
+    }
+    if (e.target.closest('[data-prompt-deactivate]')) { sendPrompt('deactivate', { key }, card, 'deactivated — the factory keeps what runs; it stays in the history'); return; }
+    const again = e.target.closest('[data-prompt-reactivate]');
+    if (again) { sendPrompt('reactivate', { key, index: Number(again.dataset.promptReactivate) }, card, 'reactivated — it runs once the factory starts again'); return; }
+    const drop = e.target.closest('[data-prompt-delete]');
+    if (drop) { sendPrompt('discard', { key, index: Number(drop.dataset.promptDelete) }, card, 'deleted from the history'); return; }
     if (e.target.closest('[data-prompt-discard]')) {
       const v = shownPrompt(key);
       if (v) { const next = v.draft ? v.draft.text : v.running; card.querySelector('.prompt-text').value = next; card.querySelector('.prompt-warn').innerHTML = promptDrift(v, next); card.querySelector('.prompt-status').textContent = ''; }

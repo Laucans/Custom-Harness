@@ -3,17 +3,18 @@
 
 use std::path::Path;
 
-use harness_adapters::store::prompt_book::{DraftFile, PromptFile};
-use harness_core::domain::prompt_book::{Drafts, PromptBook};
-use harness_core::ports::store::prompts::{DraftStore, PromptStore};
+use harness_adapters::store::prompt_book::{DraftFile, PromptFile, ShelfFile};
+use harness_core::domain::prompt_book::{Drafts, PromptBook, Shelf};
+use harness_core::ports::store::prompts::{DraftStore, PromptStore, ShelfStore};
 
 use crate::ports::Prompts;
 
-/// `.llocal/prompts.json`, read; `.llocal/prompts.drafts.json`, read and
-/// written.
+/// `.llocal/prompts.json`, read; `.llocal/prompts.drafts.json` and
+/// `.llocal/prompts.shelf.json`, read and written.
 pub struct PromptFiles {
     book: PromptFile,
     drafts: DraftFile,
+    shelf: ShelfFile,
 }
 
 impl PromptFiles {
@@ -23,6 +24,7 @@ impl PromptFiles {
         Self {
             book: PromptFile::new(state_root),
             drafts: DraftFile::new(state_root),
+            shelf: ShelfFile::new(state_root),
         }
     }
 }
@@ -39,6 +41,16 @@ impl Prompts for PromptFiles {
     fn keep_drafts(&self, drafts: &Drafts) -> Result<(), String> {
         self.drafts
             .save(drafts)
+            .map_err(|halt| halt.reason().to_string())
+    }
+
+    fn shelf(&self) -> Result<Shelf, String> {
+        self.shelf.load().map_err(|halt| halt.reason().to_string())
+    }
+
+    fn keep_shelf(&self, deactivated: &Shelf) -> Result<(), String> {
+        self.shelf
+            .save(deactivated)
             .map_err(|halt| halt.reason().to_string())
     }
 }

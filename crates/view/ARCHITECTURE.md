@@ -94,15 +94,16 @@ agent's pane — so the human hears of it with the pane closed.
 
 ## The robots' prompts
 
-A paid station — a robot, builder or inspector — shows its prompt on its
-details tab and carries a **Prompt** tab. What a station sends is
+A paid station — a robot, builder or inspector — carries a **Prompt(s)**
+tab; its details tab shows no prompt. With several prompts the tab lists
+them first, each unfolding into its editor. What a station sends is
 `harness_workflows::prompts`' catalog: a key (`agent-loop/code`), the
 stations that send it (a shared text, like the repository map or how the
 tests are run, stands on several), and the default — the constant beside
 the stage. The tab edits the stage's own text only; the EXECUTION CONTEXT
 and SCOPE blocks stay the framework's.
 
-**An edit is a draft, and only a start applies it.** Two stores, two
+**An edit is a draft, and only a start applies it.** Three stores, two
 writers (`harness_core::domain::prompt_book`, `ports::store::prompts`,
 JSON files in `harness-adapters`, written aside then renamed):
 
@@ -110,6 +111,7 @@ JSON files in `harness-adapters`, written aside then renamed):
 | --- | --- | --- |
 | `.llocal/prompts.drafts.json` — one draft per prompt: a new text, or a revert | the view | the view; `harness watch`, once, when it starts |
 | `.llocal/prompts.json` — the book: what runs, the last 5 edits, the last 3 reverted texts | `harness watch` alone, when it starts | every run, once (`dispatch::shared::prompts`) |
+| `.llocal/prompts.shelf.json` — the drafts a human deactivated, the last 10 per prompt | the view | the view alone: a start never takes them |
 
 The view reads the book through its own `Prompts` port, which has no way
 to write it. `harness watch`, starting, takes the drafts (renamed out of
@@ -117,7 +119,16 @@ the way, so one saved meanwhile waits for the next start), applies them
 (`PromptBook::apply`) and journals `ChangesApplied` — an Info notification.
 A revert — putting back an edit, a reverted text or the default — keeps
 what it replaced among the **recently reverted** (3), the history's second
-list behind a switch. Each run records in its own folder the text of every
+list behind a switch.
+
+**The history is one list, newest first**: the draft waiting for a
+restart, the deactivated drafts and the edits that ran, then the default.
+What runs now carries `runs now` and is read-only; any other entry opens
+on an editor whose save makes it the draft. Saving over the waiting draft
+replaces it; saving any other entry, reverting or reactivating keeps the
+waiting draft in the history, **deactivated** (`POST
+/api/prompts/{deactivate,reactivate,discard}`). A deactivated draft waits
+on the shelf until it is reactivated or deleted. Each run records in its own folder the text of every
 prompt its line could send (`prompt-texts.json`).
 
 **The wrench**, above the notification signs, turns blue while a change

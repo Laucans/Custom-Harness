@@ -700,3 +700,9 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .hb-list button b.asking { color: var(--pin-asking); }
 .hb-tools [data-hb="undo"] { color: var(--dim); }
 .prompt-fold > .prompt-card > h3:first-child { display: none; }
+
+/* A prompt's history: the draft waiting, the deactivated, what ran */
+.prompt-history li.hist textarea.hist-text { width: 100%; min-height: 160px; font: 12px/1.45 var(--mono); background: #070b10; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 6px 0 4px; resize: vertical; }
+.prompt-history li.hist.shelved > details > summary { opacity: 0.75; }
+.prompt-history li.hist.waiting > details > summary { color: var(--text); }
+.tag.dim { color: var(--dim); border-style: dashed; }

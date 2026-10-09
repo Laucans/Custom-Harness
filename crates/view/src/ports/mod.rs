@@ -514,6 +514,23 @@ pub trait Prompts: Send + Sync {
     /// The OS refused the write.
     fn keep_drafts(&self, drafts: &harness_core::domain::prompt_book::Drafts)
     -> Result<(), String>;
+
+    /// The drafts the human deactivated.
+    ///
+    /// # Errors
+    ///
+    /// The shelf exists and cannot be read.
+    fn shelf(&self) -> Result<harness_core::domain::prompt_book::Shelf, String>;
+
+    /// Keeps every deactivated draft.
+    ///
+    /// # Errors
+    ///
+    /// The OS refused the write.
+    fn keep_shelf(
+        &self,
+        deactivated: &harness_core::domain::prompt_book::Shelf,
+    ) -> Result<(), String>;
 }
 
 /// What the human asks of a prompt's dry-run.

@@ -8,6 +8,8 @@
 //!   start, which takes them.
 //! - [`PromptStore`] holds the book, what runs: written only by the harness,
 //!   when it starts and applies the drafts it took; read once per run.
+//! - [`ShelfStore`] holds the drafts a human deactivated: written and read
+//!   by the view only — the harness's start never takes them.
 //!
 //! Synchronous, like [`Checkpoints`](crate::ports::store::checkpoint::Checkpoints):
 //! a few kilobytes gain nothing from `await`.
@@ -21,7 +23,7 @@
 //! `harness_adapters::store::prompt_book`.
 
 use crate::domain::Outcome;
-use crate::domain::prompt_book::{Drafts, PromptBook};
+use crate::domain::prompt_book::{Drafts, PromptBook, Shelf};
 
 /// Where the book — what runs — is kept.
 pub trait PromptStore {
@@ -68,4 +70,23 @@ pub trait DraftStore {
     /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) if they cannot be
     /// read; they are then left where they were.
     fn take(&self) -> Outcome<Drafts>;
+}
+
+/// Where the deactivated drafts are kept.
+pub trait ShelfStore {
+    /// The shelf as last saved; empty when nothing was ever deactivated.
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) if it exists but
+    /// cannot be read or decoded.
+    fn load(&self) -> Outcome<Shelf>;
+
+    /// Keeps the whole shelf, replacing the previous one at once.
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Failed`](crate::domain::Halt::Failed) if it could not be
+    /// written.
+    fn save(&self, deactivated: &Shelf) -> Outcome<()>;
 }

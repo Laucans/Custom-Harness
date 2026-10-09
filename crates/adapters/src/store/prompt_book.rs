@@ -4,6 +4,8 @@
 //!   harness, when the watch starts and applies the drafts.
 //! - `.llocal/prompts.drafts.json` — the drafts, what waits for that start.
 //!   Written by the view.
+//! - `.llocal/prompts.shelf.json` — the drafts a human deactivated. Written
+//!   and read by the view only: the harness's start never takes them.
 //! - `prompt-texts.json`, in a run's own folder — the text of every prompt
 //!   that run could send, as it stood when the run started: what a dry-run
 //!   reads to replay that run with another version.
@@ -15,9 +17,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use harness_core::domain::prompt_book::{Drafts, PromptBook};
+use harness_core::domain::prompt_book::{Drafts, PromptBook, Shelf};
 use harness_core::domain::{Halt, Outcome};
-use harness_core::ports::store::prompts::{DraftStore, PromptStore};
+use harness_core::ports::store::prompts::{DraftStore, PromptStore, ShelfStore};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -26,6 +28,9 @@ pub const FILE: &str = "prompts.json";
 
 /// The drafts, under `.llocal/`.
 pub const DRAFTS: &str = "prompts.drafts.json";
+
+/// The deactivated drafts, under `.llocal/`.
+pub const SHELF: &str = "prompts.shelf.json";
 
 /// What a run could send, in its own folder.
 pub const USED: &str = "prompt-texts.json";
@@ -103,6 +108,34 @@ impl DraftStore for DraftFile {
                 Err(halt)
             }
         }
+    }
+}
+
+/// `.llocal/prompts.shelf.json` of one checkout.
+pub struct ShelfFile {
+    dir: PathBuf,
+}
+
+impl ShelfFile {
+    /// The shelf of the checkout whose state lives under `state_root`.
+    #[must_use]
+    pub fn new(state_root: &Path) -> Self {
+        Self {
+            dir: state_root.join(".llocal"),
+        }
+    }
+}
+
+impl ShelfStore for ShelfFile {
+    fn load(&self) -> Outcome<Shelf> {
+        read_json(&self.dir.join(SHELF), "deactivated prompt drafts")
+    }
+
+    fn save(&self, deactivated: &Shelf) -> Outcome<()> {
+        if deactivated.is_empty() {
+            return remove(&self.dir.join(SHELF));
+        }
+        write_json(&self.dir, SHELF, deactivated)
     }
 }
 
@@ -226,6 +259,24 @@ mod tests {
         assert_eq!(store.load().expect("read"), book);
         assert!(dir.0.join(".llocal/prompts.json").exists());
         assert!(!dir.0.join(".llocal/prompts.json.new").exists());
+    }
+
+    #[test]
+    fn a_shelf_round_trips_and_outlives_the_drafts_being_taken() {
+        let dir = Dir::new("shelf");
+        let store = ShelfFile::new(&dir.0);
+        assert!(store.load().expect("read").is_empty());
+        let mut drafts = drafted(&PromptBook::default());
+        let mut shelf = Shelf::default();
+        drafts.deactivate(&mut shelf, "agent-loop/code");
+        store.save(&shelf).expect("saved");
+        DraftFile::new(&dir.0)
+            .save(&drafted(&PromptBook::default()))
+            .expect("saved");
+        DraftFile::new(&dir.0).take().expect("taken");
+        assert_eq!(store.load().expect("read"), shelf);
+        store.save(&Shelf::default()).expect("saved");
+        assert!(!dir.0.join(".llocal").join(SHELF).exists());
     }
 
     #[test]

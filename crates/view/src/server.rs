@@ -46,7 +46,7 @@ use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
 use crate::domain::observe::observe_run;
 use crate::domain::plant::{self, Action, Gesture};
-use crate::domain::prompts::{self, Edit, Refused, Restore, Withdraw};
+use crate::domain::prompts::{self, Deactivate, Edit, OnShelf, Refused, Restore};
 use crate::domain::snapshot::Snapshot;
 use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
@@ -186,7 +186,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/notes/{board}/{id}/into/{kind}", post(turn_note))
         .route("/api/prompts/edit", post(edit_prompt))
         .route("/api/prompts/restore", post(restore_prompt))
-        .route("/api/prompts/withdraw", post(withdraw_prompt))
+        .route("/api/prompts/deactivate", post(deactivate_prompt))
+        .route("/api/prompts/reactivate", post(reactivate_prompt))
+        .route("/api/prompts/discard", post(discard_prompt))
         .route("/api/prompts/trial", post(start_trial))
         .route("/api/prompts/trials", get(trials))
         .route("/api/prompts/{line}/{station}", get(station_prompts))
@@ -1412,9 +1414,11 @@ async fn station_prompts(
     match state
         .prompts
         .book()
-        .and_then(|book| Ok((book, state.prompts.drafts()?)))
+        .and_then(|book| Ok((book, state.prompts.drafts()?, state.prompts.shelf()?)))
     {
-        Ok((book, drafts)) => json(&prompts::of_station(&book, &drafts, &line, &station)),
+        Ok((book, drafts, shelf)) => json(&prompts::of_station(
+            &book, &drafts, &shelf, &line, &station,
+        )),
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }
 }
@@ -1422,8 +1426,8 @@ async fn station_prompts(
 /// Proposes a new text for the next start.
 async fn edit_prompt(State(state): State<AppState>, body: Bytes) -> Response {
     match serde_json::from_slice::<Edit>(&body) {
-        Ok(edit) => change_drafts(&state, |book, drafts| {
-            prompts::propose(book, drafts, &edit, unix_now())
+        Ok(edit) => change_drafts(&state, |book, drafts, shelf| {
+            prompts::propose(book, drafts, shelf, &edit, unix_now())
         }),
         Err(e) => (StatusCode::BAD_REQUEST, format!("not an edit: {e}")).into_response(),
     }
@@ -1432,30 +1436,51 @@ async fn edit_prompt(State(state): State<AppState>, body: Bytes) -> Response {
 /// Proposes, for the next start, a text kept earlier.
 async fn restore_prompt(State(state): State<AppState>, body: Bytes) -> Response {
     match serde_json::from_slice::<Restore>(&body) {
-        Ok(restore) => change_drafts(&state, |book, drafts| {
-            prompts::restore(book, drafts, &restore, unix_now())
+        Ok(restore) => change_drafts(&state, |book, drafts, shelf| {
+            prompts::restore(book, drafts, shelf, &restore, unix_now())
         }),
         Err(e) => (StatusCode::BAD_REQUEST, format!("not a restore: {e}")).into_response(),
     }
 }
 
-/// Withdraws a draft.
-async fn withdraw_prompt(State(state): State<AppState>, body: Bytes) -> Response {
-    match serde_json::from_slice::<Withdraw>(&body) {
-        Ok(withdraw) => change_drafts(&state, |book, drafts| {
-            prompts::withdraw(book, drafts, &withdraw)
+/// Deactivates the draft waiting: it stays in the history.
+async fn deactivate_prompt(State(state): State<AppState>, body: Bytes) -> Response {
+    match serde_json::from_slice::<Deactivate>(&body) {
+        Ok(ask) => change_drafts(&state, |book, drafts, shelf| {
+            prompts::deactivate(book, drafts, shelf, &ask)
         }),
-        Err(e) => (StatusCode::BAD_REQUEST, format!("not a withdrawal: {e}")).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("not a deactivation: {e}")).into_response(),
     }
 }
 
-/// Read, change, write the drafts, one page at a time; answers the prompt as
-/// it now stands. The book is only read.
+/// Makes a deactivated draft the one that waits again.
+async fn reactivate_prompt(State(state): State<AppState>, body: Bytes) -> Response {
+    match serde_json::from_slice::<OnShelf>(&body) {
+        Ok(pick) => change_drafts(&state, |book, drafts, shelf| {
+            prompts::reactivate(book, drafts, shelf, &pick, unix_now())
+        }),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("not a reactivation: {e}")).into_response(),
+    }
+}
+
+/// Deletes a deactivated draft from the history.
+async fn discard_prompt(State(state): State<AppState>, body: Bytes) -> Response {
+    match serde_json::from_slice::<OnShelf>(&body) {
+        Ok(pick) => change_drafts(&state, |book, drafts, shelf| {
+            prompts::discard(book, drafts, shelf, &pick)
+        }),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("not a deletion: {e}")).into_response(),
+    }
+}
+
+/// Read, change, write the drafts and the shelf, one page at a time;
+/// answers the prompt as it now stands. The book is only read.
 fn change_drafts(
     state: &AppState,
     change: impl FnOnce(
         &harness_core::domain::prompt_book::PromptBook,
         &mut harness_core::domain::prompt_book::Drafts,
+        &mut harness_core::domain::prompt_book::Shelf,
     ) -> Result<prompts::PromptView, Refused>,
 ) -> Response {
     // No await between read and write: the lock only keeps two pages apart.
@@ -1465,19 +1490,23 @@ fn change_drafts(
     let read = state
         .prompts
         .book()
-        .and_then(|book| Ok((book, state.prompts.drafts()?)));
-    let (book, mut drafts) = match read {
-        Ok(both) => both,
+        .and_then(|book| Ok((book, state.prompts.drafts()?, state.prompts.shelf()?)));
+    let (book, mut drafts, mut shelf) = match read {
+        Ok(all) => all,
         Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     };
-    let shown = match change(&book, &mut drafts) {
+    let shown = match change(&book, &mut drafts, &mut shelf) {
         Ok(shown) => shown,
         Err(why @ Refused::Unknown(_)) => {
             return (StatusCode::NOT_FOUND, why.to_string()).into_response();
         }
         Err(why) => return (StatusCode::BAD_REQUEST, why.to_string()).into_response(),
     };
-    match state.prompts.keep_drafts(&drafts) {
+    match state
+        .prompts
+        .keep_drafts(&drafts)
+        .and_then(|()| state.prompts.keep_shelf(&shelf))
+    {
         Ok(()) => json(&shown),
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }
@@ -1778,6 +1807,7 @@ mod tests {
         std::sync::Mutex<(
             harness_core::domain::prompt_book::PromptBook,
             harness_core::domain::prompt_book::Drafts,
+            harness_core::domain::prompt_book::Shelf,
         )>,
     );
 
@@ -1805,6 +1835,18 @@ mod tests {
             drafts: &harness_core::domain::prompt_book::Drafts,
         ) -> Result<(), String> {
             self.0.lock().expect("book").1 = drafts.clone();
+            Ok(())
+        }
+
+        fn shelf(&self) -> Result<harness_core::domain::prompt_book::Shelf, String> {
+            Ok(self.0.lock().expect("book").2.clone())
+        }
+
+        fn keep_shelf(
+            &self,
+            deactivated: &harness_core::domain::prompt_book::Shelf,
+        ) -> Result<(), String> {
+            self.0.lock().expect("book").2 = deactivated.clone();
             Ok(())
         }
     }
