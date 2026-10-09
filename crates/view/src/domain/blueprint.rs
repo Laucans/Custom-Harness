@@ -125,7 +125,7 @@ pub const ROOMS: [Room; 6] = [
         id: 2,
         key: "office",
         name: "Architecture office",
-        blurb: "The issues in detail, the mock-up, the feature list, the data sources — and where the need gets built with Claude Code.",
+        blurb: "The issues in detail, the mock-up, the feature list, the data model — and where the need gets built with Claude Code.",
         status: RoomStatus::Draft,
     },
     Room {

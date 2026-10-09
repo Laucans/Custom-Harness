@@ -6,9 +6,11 @@
 //! process.
 
 pub mod claude_bin;
+pub mod fs_notes;
 pub mod fs_traces;
 pub mod fs_yard;
 pub mod gh_board;
 pub mod limits_cli;
+pub mod product;
 pub mod pty;
 pub mod watch_proc;

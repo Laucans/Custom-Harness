@@ -2594,8 +2594,8 @@ fn product_corner(b: &mut Builder) {
     b.hot_since(m, &features);
     screen(b, 13.3, 4.05, 0.8, "#a78bfa", &features);
     let data = pane(
-        serde_json::json!({"kind": "placeholder", "title": "Data sources", "text": "Where the product reads from and writes to. Not declared anywhere the view can read yet."}),
-        "The data sources",
+        serde_json::json!({"kind": "data_model"}),
+        "The data model: its tables, fields and links",
     );
     let m = b.mark();
     b.cylinder(11.0, 0.0, 7.0, 0.65, 0.16, Rgba::hex(TEAL));
@@ -3652,7 +3652,10 @@ mod tests {
             .filter_map(|h| h.pane.as_ref()?.get("title")?.as_str())
             .collect();
         assert!(titles.contains(&"The mock-up"), "{titles:?}");
-        assert!(titles.contains(&"Data sources"), "{titles:?}");
+        assert!(
+            panes(&office, "data_model") > 0,
+            "the data model opens from the office"
+        );
         assert!(titles.contains(&"Talk to Claude Code"), "{titles:?}");
         let inside = build(&snap, &View::B);
         assert!(

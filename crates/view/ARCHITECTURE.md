@@ -123,6 +123,54 @@ limit) sweeps on its own. One job at a time. Settings are kept in
 `POST /api/janitor/{diagnose,sweep,settings}`; `--no-janitor` leaves the
 yard alone.
 
+## The data model, and the board it is drawn on
+
+The `DATA` cylinder in the architecture office opens the product's data
+model as a **UML class diagram**: one box per table, folded to its name — a
+click unfolds its fields — one curve per link, and an inspector beside it
+that tells a table or a field in full: type, purpose, links in and out, the
+technical rules the database holds (keys, `NOT NULL`, defaults, checks,
+unique indexes, enum values), the business rules the agents wrote.
+
+Two files in the **product's** repository, read at the integration branch
+through core's `GitHub::file_text` (`ports::Product`, `adapters::product`),
+or from a folder with `--data-dir <product root>`:
+
+| file | side | what it says |
+| --- | --- | --- |
+| `data/schema.sql` | the database | `pg_dump --schema-only`: the structure as deployed |
+| `data/model.json` | the agents | what each table and field is *for*, its business rules, links no key carries |
+
+`domain::schema_sql` reads the DDL (a tokenizer and five statement shapes,
+never a panic: what it does not understand it skips), `domain::data_model`
+merges the two field by field and lists every **divergence** — a table, a
+field or a key only one side has, a type or a nullability they disagree on.
+Either file alone draws the diagram. `model.json`:
+
+```json
+{ "version": 1,
+  "tables": [ { "name": "character", "purpose": "…", "business": ["…"],
+      "fields": [ { "name": "campaign_id", "type": "uuid", "nullable": false,
+                    "purpose": "…", "technical": ["…"], "business": ["…"],
+                    "references": "campaign.id" } ] } ],
+  "links": [ { "from": "item.code", "to": "rule_reference.code", "purpose": "…" } ] }
+```
+
+`--demo` without `--data-dir` reads the sample under `crates/view/sample/`.
+Route `GET /api/data-model`, read every board interval (every 5 s from a
+folder).
+
+The diagram is drawn on **the board** (`static/board.js`), a component any
+pane can mount: a canvas to pan (drag) and zoom (wheel, the toolbar), and a
+**pin** the human drags off the toolbar onto any part marked
+`data-pin="<target>"` — a table, a field, the bare canvas — which opens a
+small note. A pin follows its part as the diagram unfolds and re-lays; a
+field's pin stands on its folded table; a part gone leaves its pin grey where
+it was. Personal notes, nothing the harness reads: kept in
+`.llocal/annotations.json` (`ports::Notebook`, `adapters::fs_notes`), one
+list per board, `GET`/`PUT /api/notes/{board}`, checked by
+`domain::annotations` (500 pins, 4 000 characters a note).
+
 The briefing names exact commands — `pgrep`, `setsid nohup ./target/release/harness watch …`,
 `pkill`, `gh issue edit … --add-label` — because the two mistakes a steward
 must not make are starting a second watch and stopping one mid-session
@@ -151,16 +199,22 @@ src/domain/            the inside — no disk, no subprocess, no clock
   doctor.rs            the doctor's standing orders, the check-up asked when they sit down, the question about one run and how its answer is heard
   plant.rs             the switch: which watch is this checkout's, what start / soft / hard send to whom
   cleanup.rs           the janitor's rules: what in the yard is no longer useful, the pie, the limit and the threshold
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept)
+  schema_sql.rs        a Postgres schema out of its DDL: tables, columns, constraints, indexes, enums, comments
+  data_model.rs        the product's data model: the database's DDL and the agents' model merged, and where they diverge
+  annotations.rs       the human's pins: what a note is, and the checks before a board's list is kept
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), Notebook (the pins)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
   pty.rs               a pseudo-terminal running `claude`
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   fs_yard.rs           .llocal walked and swept with std::fs, symlinks never followed, every path kept inside
+  product.rs           the product's files: on GitHub at the integration branch, or in a folder
+  fs_notes.rs          .llocal/annotations.json, written aside then renamed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}
-static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), vendor/ (xterm.js), render/ (built, not committed)
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/notes/{board}
+static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
+sample/data/           a product's data model to show under --demo
 ```
 
 The drawing itself is **another crate**, `harness-view-render`: a Bevy scene
@@ -178,7 +232,8 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
 
 ## Three decisions
 
-- **Read-only, from the files — with one switch.** The view reads what
+- **Read-only, from the files — with one switch.** (The pins are the
+  human's own notes, in a file no run reads.) The view reads what
   `harness watch` and the runs already write, and never asks the harness to
   emit anything for it. A structured event port in `harness-core` would be
   more precise; it can be added later without touching this crate's inside,
@@ -221,6 +276,7 @@ cargo run -p harness-view -- --no-steward    # no terminal, nobody to talk to
 cargo run -p harness-view -- --no-doctor     # the infirmary has nobody in
 cargo run -p harness-view -- --no-janitor    # the yard is never weighed nor swept
 cargo run -p harness-view -- --static-dir crates/view/static   # edit the front without a rebuild
+cargo run -p harness-view -- --data-dir ../my-product           # the data model from a local checkout
 ```
 
 `TARGET_REPO_URL`, `INTEGRATION_BRANCH` and `PERMISSION_MODE` come from the
@@ -230,7 +286,7 @@ same `.env.local` the launcher reads. The page listens on `127.0.0.1:7878`
 ## What is deliberately not here yet
 
 Room 2's own conversation with Claude Code about an issue (the steward's
-terminal is the plant-wide one), its mock-up and data sources, room 6 —
+terminal is the plant-wide one), its mock-up, room 6 —
 each shows its place and says so. Level D is wired for the lines (station,
 employee, line), the sign, the chimneys, the issues, the store, the control
 room, the steward and the doctor; the other components open a placeholder that names

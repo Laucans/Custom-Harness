@@ -367,3 +367,36 @@ pub trait Yard: Send + Sync {
     /// The OS refused the write.
     fn write_settings(&self, json: &str) -> Result<(), String>;
 }
+
+/// The product's own repository — the one the harness builds — read where
+/// its work lands, for the files that describe it (its data model).
+///
+/// `?Send`, like [`Board`]: the GitHub adapter wraps core's `GitHub`.
+#[async_trait(?Send)]
+pub trait Product {
+    /// Where the files are read, in words: `owner/name @ main_agent`.
+    fn origin(&self) -> String;
+
+    /// The text of `path`, `None` when the file is not there.
+    ///
+    /// # Errors
+    ///
+    /// The read failed for another reason than absence.
+    async fn file(&self, path: &str) -> Outcome<Option<String>>;
+}
+
+/// Where the human's pins are kept between visits.
+///
+/// Synchronous, like [`Yard`]'s settings: one small file, read and written
+/// whole. `Send + Sync` because the HTTP handlers share it.
+pub trait Notebook: Send + Sync {
+    /// Every board's pins as last written, `None` when never.
+    fn read(&self) -> Option<String>;
+
+    /// Keeps every board's pins.
+    ///
+    /// # Errors
+    ///
+    /// The OS refused the write.
+    fn write(&self, json: &str) -> Result<(), String>;
+}

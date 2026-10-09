@@ -33,9 +33,11 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
 use crate::desk::Desk;
+use crate::domain::annotations::{self, Note};
 use crate::domain::assemble;
 use crate::domain::blueprint;
 use crate::domain::cleanup::Settings;
+use crate::domain::data_model::DataModel;
 use crate::domain::doctor::{self, Diagnosis};
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
@@ -47,7 +49,7 @@ use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::janitor::Janitor;
-use crate::ports::{BoardReading, Limits, Plant, Traces};
+use crate::ports::{BoardReading, Limits, Notebook, Plant, Traces};
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
 
@@ -91,6 +93,15 @@ pub struct AppState {
     pub events: Option<Arc<dyn EventLog + Send + Sync>>,
     /// The janitor, who weighs and sweeps the yard — `None` under `--no-janitor`.
     pub janitor: Option<Janitor>,
+    /// The product's data model, merged — `None` until first read, or
+    /// when nothing can read it.
+    pub data_model: watch::Receiver<Option<Arc<DataModel>>>,
+    /// Whether anything reads the data model at all.
+    pub data_enabled: bool,
+    /// Where the human's pins are kept.
+    pub notebook: Arc<dyn Notebook>,
+    /// Held across a pin list's read-modify-write.
+    pub notes_lock: Arc<std::sync::Mutex<()>>,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -99,6 +110,8 @@ const APP: &str = include_str!("../static/app.js");
 const XTERM_JS: &str = include_str!("../static/vendor/xterm.js");
 const XTERM_CSS: &str = include_str!("../static/vendor/xterm.css");
 const XTERM_FIT: &str = include_str!("../static/vendor/addon-fit.js");
+const BOARD_JS: &str = include_str!("../static/board.js");
+const DATA_MODEL_JS: &str = include_str!("../static/data-model.js");
 
 /// The run files a browser may tail.
 const TAILABLE: [&str; 4] = ["run.log", "session.log", "prompts.md", "stream.jsonl"];
@@ -118,6 +131,8 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/style.css", get(style))
         .route("/app.js", get(app))
+        .route("/board.js", get(board_js))
+        .route("/data-model.js", get(data_model_js))
         .route("/render/{file}", get(render_asset))
         .route("/vendor/xterm.js", get(xterm_js))
         .route("/vendor/xterm.css", get(xterm_css))
@@ -144,6 +159,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/janitor/diagnose", post(janitor_diagnose))
         .route("/api/janitor/sweep", post(janitor_sweep))
         .route("/api/janitor/settings", post(janitor_settings))
+        .route("/api/data-model", get(data_model))
+        .route("/api/notes/{board}", get(notes).put(put_notes))
         .with_state(state)
 }
 
@@ -193,6 +210,14 @@ async fn style(State(state): State<AppState>) -> Response {
 
 async fn app(State(state): State<AppState>) -> Response {
     asset(&state, "app.js", APP, JS)
+}
+
+async fn board_js(State(state): State<AppState>) -> Response {
+    asset(&state, "board.js", BOARD_JS, JS)
+}
+
+async fn data_model_js(State(state): State<AppState>) -> Response {
+    asset(&state, "data-model.js", DATA_MODEL_JS, JS)
 }
 
 /// The renderer bundle, from disk: the two files wasm-bindgen writes, and
@@ -760,6 +785,73 @@ async fn janitor_settings(State(state): State<AppState>, body: Bytes) -> Respons
     }
 }
 
+/// What the data pane reads: the merged model once read, and whether
+/// anything reads it at all.
+#[derive(Serialize)]
+struct DataModelReply<'a> {
+    enabled: bool,
+    model: Option<&'a DataModel>,
+}
+
+async fn data_model(State(state): State<AppState>) -> Response {
+    let model = state.data_model.borrow().clone();
+    json(&DataModelReply {
+        enabled: state.data_enabled,
+        model: model.as_deref(),
+    })
+}
+
+/// A board's pins.
+async fn notes(State(state): State<AppState>, Path(board): Path<String>) -> Response {
+    if !annotations::is_board(&board) {
+        return not_found("no such board");
+    }
+    let shelf = annotations::shelf(state.notebook.read().as_deref());
+    json(&shelf.get(&board).cloned().unwrap_or_default())
+}
+
+/// Replaces a board's pins with the list the page sends.
+async fn put_notes(
+    State(state): State<AppState>,
+    Path(board): Path<String>,
+    body: Bytes,
+) -> Response {
+    if !annotations::is_board(&board) {
+        return not_found("no such board");
+    }
+    let list = match serde_json::from_slice::<Vec<Note>>(&body) {
+        Ok(list) => list,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("not a list of pins: {e}")).into_response();
+        }
+    };
+    let list = match annotations::checked(list) {
+        Ok(list) => list,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    // Read, change, write: no await between, the lock only keeps two pages apart.
+    let Ok(_guard) = state.notes_lock.lock() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the notebook is poisoned",
+        )
+            .into_response();
+    };
+    let mut shelf = annotations::shelf(state.notebook.read().as_deref());
+    if list.is_empty() {
+        shelf.remove(&board);
+    } else {
+        shelf.insert(board, list.clone());
+    }
+    let written = serde_json::to_string_pretty(&shelf)
+        .map_err(|e| e.to_string())
+        .and_then(|text| state.notebook.write(&text));
+    match written {
+        Ok(()) => json(&list),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
 /// How long the doctor gets to answer before a diagnosis is given up on.
 const DIAGNOSIS_PATIENCE: Duration = Duration::from_mins(20);
 
@@ -1066,7 +1158,74 @@ mod tests {
             claude_read: Arc::default(),
             events: None,
             janitor: None,
+            data_model: watch::channel(None).1,
+            data_enabled: false,
+            notebook: Arc::new(Pages::default()),
+            notes_lock: Arc::default(),
         }
+    }
+
+    /// A notebook in memory.
+    #[derive(Default)]
+    struct Pages(std::sync::Mutex<Option<String>>);
+
+    impl Notebook for Pages {
+        fn read(&self) -> Option<String> {
+            self.0.lock().ok()?.clone()
+        }
+
+        fn write(&self, json: &str) -> Result<(), String> {
+            *self.0.lock().map_err(|e| e.to_string())? = Some(json.to_string());
+            Ok(())
+        }
+    }
+
+    async fn send(state: AppState, method: &str, uri: &str, body: &str) -> (StatusCode, String) {
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[tokio::test]
+    async fn a_board_s_pins_are_kept_checked_and_apart_from_another_s() {
+        let state = state(Shelf::default(), None);
+        let pin = r#"[{"id":"p1","target":"table:campaign","dx":3,"dy":4,"x":0,"y":0,"text":"why uuid?","at":"t"}]"#;
+        let (status, _) = send(state.clone(), "PUT", "/api/notes/data-model", pin).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, other) = send(state.clone(), "PUT", "/api/notes/elsewhere", "[]").await;
+        assert_eq!(other, "[]");
+        let (_, back) = send(state.clone(), "GET", "/api/notes/data-model", "").await;
+        assert!(back.contains("why uuid?"), "{back}");
+        let (status, _) = send(state.clone(), "PUT", "/api/notes/data-model", "[1]").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let twice = format!("[{},{}]", &pin[1..pin.len() - 1], &pin[1..pin.len() - 1]);
+        let (status, why) = send(state.clone(), "PUT", "/api/notes/data-model", &twice).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}");
+        let (status, _) = send(state.clone(), "GET", "/api/notes/..%2Fetc", "").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (_, back) = send(state, "GET", "/api/notes/data-model", "").await;
+        assert!(
+            back.contains("why uuid?"),
+            "a refused list leaves the kept one"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_data_model_says_when_nothing_reads_it() {
+        let (_, body) = send(state(Shelf::default(), None), "GET", "/api/data-model", "").await;
+        assert_eq!(body, r#"{"enabled":false,"model":null}"#);
     }
 
     async fn post_to(state: AppState, uri: &str) -> (StatusCode, String) {

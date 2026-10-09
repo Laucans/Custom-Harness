@@ -48,6 +48,12 @@ pub struct Cli {
     #[arg(long)]
     pub no_board: bool,
 
+    /// Read the product's data model (`data/schema.sql`, `data/model.json`)
+    /// from this folder, the product's root, instead of GitHub at the
+    /// integration branch. `--demo` without it shows a sample.
+    #[arg(long)]
+    pub data_dir: Option<PathBuf>,
+
     /// No steward: the plant has nobody to talk to.
     #[arg(long)]
     pub no_steward: bool,

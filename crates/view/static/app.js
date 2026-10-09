@@ -577,6 +577,11 @@
     return undefined;
   }
 
+  // The panes drawn on a board: what mounts each.
+  const CANVASES = {
+    data_model: (el) => (window.DataModelPane ? window.DataModelPane.mount(el) : null),
+  };
+
   // ---- D · the pane ------------------------------------------------------------
   // The panes walked through, so the arrow at the top left goes back to the
   // one this came from. Closing the pane forgets the walk.
@@ -595,6 +600,7 @@
     document.body.classList.add('split');
     $('pane').hidden = false;
     $('pane-body').classList.toggle('terminal', !!TERMINALS[p.kind]);
+    $('pane-body').classList.toggle('canvas', !!CANVASES[p.kind]);
     hideTip();
     renderPane(S.pane, false);
   }
@@ -608,7 +614,7 @@
     teardownTerminal();
     document.body.classList.remove('split');
     $('pane').hidden = true;
-    $('pane-body').classList.remove('terminal');
+    $('pane-body').classList.remove('terminal', 'canvas');
   }
   $('pane-close').addEventListener('click', closePane);
   $('pane-back').addEventListener('click', () => {
@@ -932,7 +938,15 @@
       ],
     },
   };
+  // A pane drawn on a board (the data model) owns its canvas and its pins:
+  // leaving the pane unmounts it.
+  function teardownCanvas() {
+    if (!S.canvas) return;
+    try { S.canvas.destroy(); } catch (e) { /* already gone */ }
+    S.canvas = null;
+  }
   function teardownTerminal() {
+    teardownCanvas();
     if (!S.term) return;
     try { S.term.ro.disconnect(); } catch (e) { /* already gone */ }
     try { S.term.ws.close(); } catch (e) { /* already gone */ }
@@ -1768,6 +1782,17 @@
         : `<div class="muted">${p.unreadOnly ? 'nothing unread here' : 'nothing to tell'}</div>`;
       const title = LEVELS.find(([l]) => l === level)[1];
       return ['Notifications · ' + title, nav + bar + body];
+    },
+
+    data_model(p, refresh) {
+      // The board keeps its own data and its own refresh: a new picture of
+      // the plant leaves it as it is, zoom and pins included.
+      const html = '<div id="dm-host" class="dm-host"></div>';
+      return ['Data model · ' + (S.snap && S.snap.project ? S.snap.project.name : 'the product'), html, (again) => {
+        if (again && S.canvas) return;
+        teardownCanvas();
+        S.canvas = CANVASES.data_model($('dm-host'));
+      }, true];
     },
 
     placeholder(p) {

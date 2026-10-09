@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "name": "player",
+      "purpose": "A person with an account: plays characters, may run campaigns.",
+      "business": ["An account is never deleted while it runs a campaign."],
+      "fields": [
+        { "name": "id", "type": "uuid", "purpose": "Stable identity, never shown." },
+        { "name": "email", "type": "text", "nullable": false, "purpose": "Where the invitations and the session recaps go.", "business": ["Confirmed before the first campaign is joined."] },
+        { "name": "display_name", "type": "varchar(60)", "nullable": false, "purpose": "The name the table sees." },
+        { "name": "created_at", "type": "timestamptz", "purpose": "When the account was made." }
+      ]
+    },
+    {
+      "name": "campaign",
+      "purpose": "A story a group plays over many sessions.",
+      "business": ["A campaign has exactly one game master.", "An archived campaign is read-only."],
+      "fields": [
+        { "name": "id", "type": "uuid", "purpose": "Stable identity." },
+        { "name": "name", "type": "text", "nullable": false, "purpose": "The title on the cover.", "business": ["Unique among the game master's campaigns."] },
+        { "name": "game_master_id", "type": "uuid", "references": "player.id", "purpose": "Who runs the story.", "business": ["The game master is also a member."] },
+        { "name": "started_on", "type": "date", "purpose": "The first session's date, once played." },
+        { "name": "archived", "type": "boolean", "purpose": "Over: kept for the record, closed to changes." },
+        { "name": "updated_at", "type": "timestamptz", "purpose": "Last change.", "technical": ["kept by the trigger campaign_touch"] }
+      ]
+    },
+    {
+      "name": "membership",
+      "purpose": "Who sits at a campaign's table.",
+      "fields": [
+        { "name": "campaign_id", "type": "uuid", "references": "campaign.id" },
+        { "name": "player_id", "type": "uuid", "references": "player.id" },
+        { "name": "joined_at", "type": "timestamptz", "purpose": "When the invitation was accepted." }
+      ]
+    },
+    {
+      "name": "character",
+      "purpose": "A hero a player plays in one campaign.",
+      "business": ["At most one living character per player and campaign.", "At most 6 characters in a campaign."],
+      "fields": [
+        { "name": "id", "type": "int4", "purpose": "Short identity, shown in URLs." },
+        { "name": "campaign_id", "type": "uuid", "references": "campaign.id", "purpose": "The story they belong to." },
+        { "name": "player_id", "type": "uuid", "references": "player.id", "purpose": "Who plays them.", "business": ["The player is a member of the campaign."] },
+        { "name": "name", "type": "varchar(40)", "purpose": "What the table calls them." },
+        { "name": "class", "type": "class_kind", "purpose": "Their class, which sets the hit dice and the spells." },
+        { "name": "level", "type": "smallint", "purpose": "1 to 20.", "business": ["Rises only after a played session."] },
+        { "name": "hit_points", "type": "integer", "purpose": "Current hit points.", "business": ["0 means unconscious, not dead: death saves decide."] },
+        { "name": "max_hit_points", "type": "integer", "purpose": "The ceiling a long rest restores." },
+        { "name": "inspiration", "type": "boolean", "nullable": false, "purpose": "The game master's reward for good role-play — planned, not yet in the database." },
+        { "name": "updated_at", "type": "timestamptz" }
+      ]
+    },
+    {
+      "name": "item",
+      "purpose": "A thing that can be carried: the catalogue, shared by every campaign.",
+      "fields": [
+        { "name": "id", "type": "integer" },
+        { "name": "code", "type": "text", "purpose": "The rulebook's code: PHB-longsword." },
+        { "name": "name", "type": "text" },
+        { "name": "weight", "type": "numeric(6,2)", "purpose": "In pounds.", "business": ["Counts toward encumbrance."] },
+        { "name": "magical", "type": "boolean", "business": ["A magical item needs attunement when the rulebook says so."] }
+      ]
+    },
+    {
+      "name": "inventory_entry",
+      "purpose": "What a character carries.",
+      "business": ["The total weight stays under 15 × strength."],
+      "fields": [
+        { "name": "character_id", "type": "integer", "references": "character.id" },
+        { "name": "item_id", "type": "integer", "references": "item.id" },
+        { "name": "quantity", "type": "integer", "purpose": "How many." },
+        { "name": "equipped", "type": "boolean", "purpose": "Worn or wielded, not just carried.", "business": ["At most two weapons equipped."] }
+      ]
+    },
+    {
+      "name": "session",
+      "purpose": "One evening of play.",
+      "fields": [
+        { "name": "id", "type": "uuid" },
+        { "name": "campaign_id", "type": "uuid", "references": "campaign.id" },
+        { "name": "number", "type": "integer", "purpose": "1, 2, 3… within the campaign." },
+        { "name": "played_on", "type": "date" },
+        { "name": "state", "type": "session_state", "business": ["A played session cannot go back to planned."] },
+        { "name": "summary", "type": "text", "purpose": "The recap sent to the players.", "business": ["Written by the game master within a week."] }
+      ]
+    },
+    {
+      "name": "rule_reference",
+      "purpose": "Where a rule is written in the books — planned for the rules helper.",
+      "fields": [
+        { "name": "code", "type": "text", "purpose": "PHB-p192." },
+        { "name": "title", "type": "text" }
+      ]
+    }
+  ],
+  "links": [
+    { "from": "item.code", "to": "rule_reference.code", "purpose": "The item's rules, page and paragraph." }
+  ]
+}
