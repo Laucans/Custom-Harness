@@ -779,3 +779,5 @@ table.caps .muted { font-size: 11px; }
 .act-log-state.failed { color: var(--bad); border-color: var(--bad); }
 .act-log-head button { background: transparent; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; }
 #action-log pre { flex: 1; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.45 var(--mono); color: var(--text); background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; }
+a.cap-branch { text-decoration: none; }
+a.cap-branch:hover .tag { border-color: var(--accent); color: var(--accent); }

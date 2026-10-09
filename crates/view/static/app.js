@@ -1934,6 +1934,16 @@
     const after = (again) => { if (!again && !S.capsBusy && (!S.caps || Date.now() - S.caps.at > 60000)) loadCaps(false); };
     return ['Capabilities list · ' + S.snap.project.name, html, after, true];
   }
+  // A branch of a unit, linked to its folder on that branch on GitHub — a
+  // plain tag when the view has no GitHub target.
+  function capBranch(e, branch) {
+    const label = tag(branch, branch === 'main' ? 'ok' : '');
+    const repo = S.snap.project.url;
+    if (!repo) return label;
+    const dir = e.path ? e.path.split('/').slice(0, -1).join('/') : '';
+    const href = `${repo}/tree/${encodeURI(branch)}${dir ? '/' + encodeURI(dir) : ''}`;
+    return `<a class="cap-branch" href="${esc(href)}" target="_blank" rel="noopener" title="open ${esc(dir || 'the repository')} on ${esc(branch)} on GitHub">${label}</a>`;
+  }
   function capPane(p) {
     const e = S.caps && S.caps.entries.find((x) => x.id === p.id);
     if (!e) return ['Capability', S.caps ? '<div class="callout">not in the list any more</div>' : '<div class="muted">reading…</div>', () => { if (!S.caps && !S.capsBusy) loadCaps(false); }];
@@ -1948,7 +1958,7 @@
       ['created', esc(when(e.created))],
       ['modified', esc(when(e.modified))],
       ['manifest', e.path ? `<code>${esc(e.path)}</code>` : null],
-      ['branches', e.branches.map((b) => tag(b, b === 'main' ? 'ok' : '')).join('') || null],
+      ['branches', e.branches.map((b) => capBranch(e, b)).join('') || null],
       ['issues', e.issues.map((i) => `<button class="link" data-issue="${i.number}">#${i.number} ${esc(i.title)}</button> ${i.bug ? tag('bug', 'bad') : ''}`).join('<br>') || null],
     ]);
     h += `<h3>Role</h3><p>${esc(e.role || '—')}</p>`;
