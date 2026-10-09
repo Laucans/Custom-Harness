@@ -64,7 +64,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::adapters::agent::stream_log;
-use crate::adapters::shell::process;
+use crate::adapters::shell::process::{self, Limits};
 use crate::domain::{Halt, Outcome, Spend, Tokens, markers};
 use crate::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
 use crate::ports::shell::process::{Ran, last_line};
@@ -72,12 +72,18 @@ use crate::ports::shell::process::{Ran, last_line};
 /// The called binary. Named here so a test can read it.
 const BINARY: &str = "claude";
 
-/// How long one turn may run before it's treated as hung.
+/// How long one turn may run, and how long it may stay silent.
 ///
-/// A high-effort session can run long — this is deliberately far more
-/// generous than `adapters::shell::process`'s 60s, which is for a `git`/`gh`
-/// round-trip, not a paid turn.
-const TIMEOUT: Duration = Duration::from_mins(30);
+/// The silence is what says a turn hung: a working session reports every
+/// tool call and its progress, seconds apart. A data-layer task on the
+/// strongest model ran past thirty minutes twice while still reading code,
+/// and a wall clock killed it both times, losing the work — so the turn is
+/// bounded by its silence, and the cap is only the last resort against a
+/// session that never stops.
+const LIMITS: Limits = Limits {
+    idle: Duration::from_mins(20),
+    cap: Duration::from_hours(3),
+};
 
 /// Phrases that mark a failure as an exhausted quota.
 ///
@@ -457,15 +463,15 @@ fn append(path: Option<&Path>, lines: &[String]) {
 #[async_trait(?Send)]
 impl Session for ClaudeCli {
     async fn ask(&mut self, prompt: &str) -> Outcome<Reply> {
-        self.ask_within(prompt, TIMEOUT).await
+        self.ask_within(prompt, LIMITS).await
     }
 }
 
 impl ClaudeCli {
-    /// [`Session::ask`], with the deadline as a parameter — the seam a test
-    /// uses to prove a hung turn is a failure without waiting out the real,
-    /// 30-minute [`TIMEOUT`].
-    async fn ask_within(&mut self, prompt: &str, timeout: Duration) -> Outcome<Reply> {
+    /// [`Session::ask`], with the limits as a parameter — the seam a test
+    /// uses to prove a hung turn is a failure without waiting out the real
+    /// [`LIMITS`].
+    async fn ask_within(&mut self, prompt: &str, limits: Limits) -> Outcome<Reply> {
         let started = std::time::Instant::now();
         self.turn = self.turn.saturating_add(1);
         let lead = lead_of(prompt);
@@ -499,7 +505,7 @@ impl ClaudeCli {
                     &stamped(&rendered, started.elapsed()),
                 );
             };
-            process::run_streaming(BINARY, &self.argv(prompt), &self.cwd, timeout, &mut watch).await
+            process::run_streaming(BINARY, &self.argv(prompt), &self.cwd, limits, &mut watch).await
         };
         let out = match out {
             Ok(out) => out,
@@ -826,7 +832,13 @@ mod tests {
         // `claude` exists here.
         let mut session = cli();
         let err = session
-            .ask_within("x", Duration::from_millis(1))
+            .ask_within(
+                "x",
+                Limits {
+                    idle: Duration::from_millis(1),
+                    cap: Duration::from_millis(1),
+                },
+            )
             .await
             .expect_err("a 1ms deadline must not succeed");
         assert!(matches!(err, Halt::Failed(_)));

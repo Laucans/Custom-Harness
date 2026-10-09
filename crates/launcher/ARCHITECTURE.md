@@ -19,7 +19,7 @@ run something** versus **what running it takes**:
 src/main.rs       entry point: parse, find the repo, dispatch, map the exit code
 src/cli.rs        what a human types: the arguments and their environment variables
 src/router.rs     what decides on its own: `harness watch`, the polling loop
-src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`
+src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`; a lane that stops (exit 1) parks its task until the issue's body or labels change
 
 src/dispatch/     one module per thing that can be run, plus what they share
   dev_loop.rs       the first workflow: an exclusive workspace, several sessions deep

@@ -78,6 +78,21 @@ pub enum Stream {
     Err,
 }
 
+/// How long a streamed process may run.
+///
+/// Two clocks, because a long run and a hung one are different things: a
+/// paid session that keeps reporting tool calls for an hour is working, one
+/// that has printed nothing for twenty minutes is not. `idle` bounds the
+/// silence between two lines; `cap` bounds the whole run, so that a process
+/// chattering forever still ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// The longest silence between two lines.
+    pub idle: Duration,
+    /// The longest run, however talkative.
+    pub cap: Duration,
+}
+
 /// Run `binary`, handing each output line to `watch` **as it arrives**.
 ///
 /// Same contract as [`run`] for the result: a non-zero code is data, only a
@@ -93,8 +108,9 @@ pub enum Stream {
 ///
 /// # Errors
 ///
-/// [`Halt::Failed`] if the process could not be launched, or if it outlived
-/// `timeout` — in which case it is killed rather than left behind.
+/// [`Halt::Failed`] if the process could not be launched, if it stayed silent
+/// longer than `limits.idle`, or if it outlived `limits.cap` — in the last two
+/// cases it is killed rather than left behind.
 ///
 /// # Panics
 ///
@@ -105,7 +121,7 @@ pub async fn run_streaming(
     binary: &str,
     args: &[String],
     cwd: &Path,
-    timeout: Duration,
+    limits: Limits,
     watch: &mut dyn FnMut(Stream, &str),
 ) -> Outcome<Ran> {
     use std::process::Stdio;
@@ -131,24 +147,43 @@ pub async fn run_streaming(
     let mut out = BufReader::new(out).lines();
     let mut err = BufReader::new(err).lines();
 
-    let deadline = tokio::time::Instant::now() + timeout;
+    let deadline = tokio::time::Instant::now() + limits.cap;
     let mut stdout = String::new();
     let mut stderr = String::new();
     let drained = tokio::time::timeout_at(
         deadline,
-        drain(&mut out, &mut err, &mut stdout, &mut stderr, watch),
+        drain(
+            &mut out,
+            &mut err,
+            &mut stdout,
+            &mut stderr,
+            limits.idle,
+            watch,
+        ),
     )
     .await;
-    let timed_out =
-        |binary: &str| Halt::Failed(format!("{binary} timed out after {}s", timeout.as_secs()));
-    if drained.is_err() {
+    let past_cap = |binary: &str| {
+        Halt::Failed(format!(
+            "{binary} ran past its {}s cap and was killed",
+            limits.cap.as_secs()
+        ))
+    };
+    let stopped = match drained {
+        Err(_) => Some(past_cap(binary)),
+        Ok(false) => Some(Halt::Failed(format!(
+            "{binary} printed nothing for {}s and was killed as hung",
+            limits.idle.as_secs()
+        ))),
+        Ok(true) => None,
+    };
+    if let Some(halt) = stopped {
         // Nothing is left running behind the harness's back.
         let _ = child.kill().await;
-        return Err(timed_out(binary));
+        return Err(halt);
     }
     let status = tokio::time::timeout_at(deadline, child.wait())
         .await
-        .map_err(|_| timed_out(binary))?
+        .map_err(|_| past_cap(binary))?
         .map_err(|e| Halt::Failed(format!("{binary} could not be waited on: {e}")))?;
     Ok(Ran {
         code: status.code(),
@@ -157,7 +192,8 @@ pub async fn run_streaming(
     })
 }
 
-/// Reads both pipes until each reaches its end, keeping what they said.
+/// Reads both pipes until each reaches its end, keeping what they said —
+/// `false` if neither said anything for `idle`.
 ///
 /// A read error ends that pipe rather than the call: the process may still
 /// have something to say on the other one, and its exit code remains the
@@ -167,17 +203,21 @@ async fn drain<O, E>(
     err: &mut tokio::io::Lines<E>,
     stdout: &mut String,
     stderr: &mut String,
+    idle: Duration,
     watch: &mut dyn FnMut(Stream, &str),
-) where
+) -> bool
+where
     O: tokio::io::AsyncBufRead + Unpin,
     E: tokio::io::AsyncBufRead + Unpin,
 {
     let mut out_open = true;
     let mut err_open = true;
+    let mut quiet_until = tokio::time::Instant::now() + idle;
     while out_open || err_open {
         tokio::select! {
             line = out.next_line(), if out_open => match line {
                 Ok(Some(text)) => {
+                    quiet_until = tokio::time::Instant::now() + idle;
                     watch(Stream::Out, &text);
                     stdout.push_str(&text);
                     stdout.push('\n');
@@ -186,14 +226,17 @@ async fn drain<O, E>(
             },
             line = err.next_line(), if err_open => match line {
                 Ok(Some(text)) => {
+                    quiet_until = tokio::time::Instant::now() + idle;
                     watch(Stream::Err, &text);
                     stderr.push_str(&text);
                     stderr.push('\n');
                 }
                 _ => err_open = false,
             },
+            () = tokio::time::sleep_until(quiet_until) => return false,
         }
     }
+    true
 }
 
 #[cfg(test)]
@@ -206,6 +249,55 @@ mod tests {
             .await
             .expect_err("must fail");
         assert!(matches!(err, Halt::Failed(_)));
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["-c".to_string(), script.to_string()]
+    }
+
+    #[tokio::test]
+    async fn a_run_longer_than_the_silence_bound_lives_while_it_talks() {
+        let limits = Limits {
+            idle: Duration::from_millis(600),
+            cap: Duration::from_secs(10),
+        };
+        let script = sh("for i in 1 2 3 4 5 6; do echo $i; sleep 0.2; done");
+        let ran = run_streaming("sh", &script, Path::new("."), limits, &mut |_, _| {})
+            .await
+            .expect("a talkative run is not hung");
+        assert!(ran.ok());
+        assert_eq!(ran.stdout.lines().count(), 6);
+    }
+
+    #[tokio::test]
+    async fn a_silent_run_is_killed_as_hung() {
+        let limits = Limits {
+            idle: Duration::from_millis(300),
+            cap: Duration::from_secs(10),
+        };
+        let err = run_streaming(
+            "sh",
+            &sh("echo a; sleep 5"),
+            Path::new("."),
+            limits,
+            &mut |_, _| {},
+        )
+        .await
+        .expect_err("silence must end the run");
+        assert!(err.reason().contains("printed nothing"), "{}", err.reason());
+    }
+
+    #[tokio::test]
+    async fn a_run_that_never_stops_talking_still_meets_its_cap() {
+        let limits = Limits {
+            idle: Duration::from_secs(5),
+            cap: Duration::from_millis(400),
+        };
+        let script = sh("while true; do echo x; sleep 0.05; done");
+        let err = run_streaming("sh", &script, Path::new("."), limits, &mut |_, _| {})
+            .await
+            .expect_err("the cap must end the run");
+        assert!(err.reason().contains("cap"), "{}", err.reason());
     }
 
     #[tokio::test]
@@ -226,7 +318,10 @@ mod tests {
                 "echo one; echo two 1>&2; echo three".to_string(),
             ],
             Path::new("."),
-            Duration::from_secs(10),
+            Limits {
+                idle: Duration::from_secs(10),
+                cap: Duration::from_secs(10),
+            },
             &mut |stream, line| seen.push((stream, line.to_string())),
         )
         .await
@@ -246,7 +341,10 @@ mod tests {
             "false",
             &[],
             Path::new("."),
-            Duration::from_secs(10),
+            Limits {
+                idle: Duration::from_secs(10),
+                cap: Duration::from_secs(10),
+            },
             &mut |_, _| {},
         )
         .await
@@ -261,7 +359,10 @@ mod tests {
             "sh",
             &["-c".to_string(), "echo starting; sleep 5".to_string()],
             Path::new("."),
-            Duration::from_millis(80),
+            Limits {
+                idle: Duration::from_secs(10),
+                cap: Duration::from_millis(80),
+            },
             &mut |_, _| seen += 1,
         )
         .await
@@ -277,7 +378,10 @@ mod tests {
             "nonexistent-binary",
             &[],
             Path::new("."),
-            Duration::from_secs(10),
+            Limits {
+                idle: Duration::from_secs(10),
+                cap: Duration::from_secs(10),
+            },
             &mut |_, _| {},
         )
         .await

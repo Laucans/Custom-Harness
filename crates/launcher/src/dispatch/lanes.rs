@@ -16,7 +16,15 @@
 //! A lane's output goes to `.llocal/lanes/lane-<k>.log`; the run itself
 //! writes its own `run.log` under `.llocal/logs/`, which is what the view
 //! reads.
+//!
+//! **A lane that stops (exit 1) parks its task.** Exit 1 is a run that halted
+//! for a human — a question in its SPEC, or the breaker refusing to pay for a
+//! prompt that already failed twice. Taking the task again next tick buys the
+//! same stop, every tick, forever. So the task waits, parked, until its issue
+//! changes (body or labels): the gesture that answers the stop is the one that
+//! frees it.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::process::Stdio;
@@ -35,6 +43,10 @@ struct Lane {
 /// The lanes, by slot.
 pub struct Lanes {
     slots: Vec<Option<Lane>>,
+    /// The issue version each dispatched task was taken at.
+    taken_at: HashMap<u64, String>,
+    /// Tasks whose lane stopped, with the issue version it stopped on.
+    parked: HashMap<u64, String>,
     /// Set once a soft stop is asked: no slot is free from then on.
     closed: Arc<AtomicBool>,
 }
@@ -45,6 +57,8 @@ impl Lanes {
     pub fn new(parallel: usize) -> Self {
         Self {
             slots: (0..parallel.max(1)).map(|_| None).collect(),
+            taken_at: HashMap::new(),
+            parked: HashMap::new(),
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -73,6 +87,17 @@ impl Lanes {
                             "watch: lanes -> lane {slot} done with #{} ({status})",
                             running.task
                         ));
+                        let version = self.taken_at.remove(&running.task);
+                        if status.code() == Some(1)
+                            && let Some(version) = version
+                        {
+                            log.say(&format!(
+                                "watch: lanes -> #{} parked: it stopped for a human, and is not \
+                                 taken again until its issue changes",
+                                running.task
+                            ));
+                            self.parked.insert(running.task, version);
+                        }
                         true
                     }
                     Ok(None) => false,
@@ -89,6 +114,25 @@ impl Lanes {
             if done {
                 *lane = None;
             }
+        }
+    }
+
+    /// Notes the issue version `task` is taken at, so a stop can park it on
+    /// that version.
+    pub fn taken(&mut self, task: u64, version: String) {
+        self.taken_at.insert(task, version);
+    }
+
+    /// Whether `task` is parked on this very `version`. A task whose issue
+    /// moved since its stop is unparked here, and runs again.
+    pub fn is_parked(&mut self, task: u64, version: &str) -> bool {
+        match self.parked.get(&task) {
+            Some(stopped_on) if stopped_on == version => true,
+            Some(_) => {
+                self.parked.remove(&task);
+                false
+            }
+            None => false,
         }
     }
 
@@ -169,6 +213,41 @@ mod tests {
         assert_eq!(lanes.free_slot(), Some(0));
         assert_eq!(lanes.running(), [] as [u64; 0]);
         assert_eq!(Lanes::new(0).slots.len(), 1);
+    }
+
+    #[test]
+    fn a_parked_task_waits_until_its_issue_moves() {
+        let mut lanes = Lanes::new(1);
+        lanes.parked.insert(15, "v1".to_string());
+        assert!(lanes.is_parked(15, "v1"));
+        assert!(!lanes.is_parked(16, "v1"));
+        assert!(!lanes.is_parked(15, "v2"), "a changed issue is free again");
+        assert!(!lanes.is_parked(15, "v1"), "and stays free");
+    }
+
+    #[tokio::test]
+    async fn a_lane_that_stops_parks_its_task_and_one_that_fails_does_not() {
+        let dir = std::env::temp_dir().join(format!("lanes-park-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let log = Logbook::null();
+        let mut lanes = Lanes::new(2);
+        for (slot, task, code) in [(0, 15, 1), (1, 16, 2)] {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(format!("exit {code}"));
+            lanes.taken(task, "v1".to_string());
+            lanes.spawn(slot, task, command, &dir).expect("spawned");
+        }
+        for _ in 0..100 {
+            lanes.reap(&log);
+            if lanes.running().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(lanes.running(), [] as [u64; 0]);
+        assert!(lanes.is_parked(15, "v1"), "exit 1 is a stop: parked");
+        assert!(!lanes.is_parked(16, "v1"), "exit 2 is a failure: retried");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

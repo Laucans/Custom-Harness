@@ -794,6 +794,14 @@ async fn run_main_agent_merge(
     }
 }
 
+/// What a parked task is compared on: its body and labels. Answering the
+/// stop — editing the SPEC, a label — moves it.
+fn issue_version(issue: &Issue) -> String {
+    let mut labels = issue.labels.clone();
+    labels.sort_unstable();
+    harness_core::domain::breaker::fingerprint(&format!("{}\n{}", issue.body, labels.join(",")))
+}
+
 /// Runs the dev loop pointed at this milestone's own branch, derived from
 /// its number and title (`common::branching`) — never the fixed
 /// `--branch`/`INTEGRATION_BRANCH` a direct `harness` invocation would use.
@@ -827,24 +835,39 @@ async fn run_lanes(
     }
     let branch = branching::milestone_branch(milestone, &board.milestone.title);
     let running = lanes.running();
-    let candidates: Vec<u64> =
-        harness_workflows::dev_loop::data::tasks::runnable_tasks(&board.tasks)
-            .into_iter()
-            .map(|task| task.number)
-            .filter(|number| !running.contains(number))
-            .collect();
+    let mut parked = Vec::new();
+    let mut candidates: Vec<(u64, String)> = Vec::new();
+    for task in harness_workflows::dev_loop::data::tasks::runnable_tasks(&board.tasks) {
+        if running.contains(&task.number) {
+            continue;
+        }
+        let version = issue_version(task);
+        if lanes.is_parked(task.number, &version) {
+            parked.push(task.number);
+        } else {
+            candidates.push((task.number, version));
+        }
+    }
     if candidates.is_empty() {
-        log.say(&format!(
-            "watch: lanes -> every runnable task is already on a lane ({})",
-            running
+        let list = |tasks: &[u64]| {
+            tasks
                 .iter()
                 .map(|n| format!("#{n}"))
                 .collect::<Vec<_>>()
                 .join(", ")
+        };
+        log.say(&format!(
+            "watch: lanes -> every runnable task is already on a lane ({}){}",
+            list(&running),
+            if parked.is_empty() {
+                String::new()
+            } else {
+                format!(" or parked until its issue changes ({})", list(&parked))
+            }
         ));
         return None;
     }
-    for number in candidates {
+    for (number, version) in candidates {
         let Some(slot) = lanes.free_slot() else {
             log.say("watch: lanes -> every lane is busy");
             break;
@@ -872,6 +895,7 @@ async fn run_lanes(
         if args.dry_run {
             command.arg("--dry-run");
         }
+        lanes.taken(number, version);
         match lanes.spawn(slot, number, command, here) {
             Ok(pid) => log.say(&format!(
                 "watch: lanes -> lane {slot} takes #{number} on {branch} (pid {pid})"
