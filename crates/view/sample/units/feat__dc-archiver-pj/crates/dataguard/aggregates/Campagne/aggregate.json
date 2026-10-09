@@ -1,0 +1,26 @@
+{
+  "aggregate": "Campagne",
+  "fields": {
+    "name": { "kind": "authoritative", "criticality": "normal" },
+    "archivedAt": { "kind": "authoritative", "criticality": "normal" }
+  },
+  "invariants": [
+    {
+      "id": "campaign-name-required",
+      "rule": "The name, trimmed of Unicode whitespace and NFC-normalised, is a non-empty string.",
+      "onViolation": "reject"
+    },
+    {
+      "id": "campaign-name-length",
+      "rule": "The trimmed NFC name is at most 100 Unicode scalar values.",
+      "onViolation": "reject"
+    },
+    {
+      "id": "campaign-active",
+      "rule": "No command but an archive writes an archived or unknown campaign, nor a PC of one.",
+      "onViolation": "reject"
+    }
+  ],
+  "relations": [],
+  "holds": { "maxTtl": "1m", "renewable": true }
+}

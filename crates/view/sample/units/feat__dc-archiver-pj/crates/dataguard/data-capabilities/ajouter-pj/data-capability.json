@@ -1,0 +1,24 @@
+{
+  "dataCapability": "campagne.ajouterPj",
+  "owner": "dataguard",
+  "version": 1,
+  "effect": "insert",
+  "target": { "aggregate": "PJ" },
+  "touches": [],
+  "payload": {
+    "campagneId": "uuid",
+    "nom": "string",
+    "classe": "string",
+    "niveau": "integer"
+  },
+  "mode": "relative",
+  "invariants": [
+    "pc-name-required",
+    "pc-class-required",
+    "pc-level-range",
+    "pc-name-unique-in-campaign"
+  ],
+  "permissions": [],
+  "callableBy": ["campagne"],
+  "idempotencyKey": "required"
+}

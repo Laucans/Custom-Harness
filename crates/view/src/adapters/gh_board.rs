@@ -48,10 +48,17 @@ impl Board for GhBoard {
             let tasks = self.gh.sub_issues(issue.number).await?;
             milestones.push(Milestone { issue, tasks });
         }
+        // A repository without a `bug` label has no bugs, not a broken board.
+        let bugs = self
+            .gh
+            .issues_labelled("bug", "open")
+            .await
+            .unwrap_or_default();
         Ok(BoardReading {
             slug,
             roadmap,
             milestones,
+            bugs,
         })
     }
 }

@@ -2571,7 +2571,7 @@ fn office_room(snap: &Snapshot) -> Scene {
 }
 
 /// The product's corner of the office — what the old value room held: the
-/// mock-up on its easel, the feature list on a screen, the data floppy.
+/// mock-up on its easel, the capabilities list on a screen, the data floppy.
 fn product_corner(b: &mut Builder) {
     let mock = pane(
         serde_json::json!({"kind": "placeholder", "title": "The mock-up", "text": "The interface, drawn as micro-frontends: click a part, read the feature behind it. Nothing to show yet — the product's mock-up has no source the view can read."}),
@@ -2587,12 +2587,15 @@ fn product_corner(b: &mut Builder) {
     head.backing = Backing::Slate;
     b.label(2.2, 1.6, 6.35, "micro-frontends · coming", 10.0, SCRIPT)
         .backing = Backing::Slate;
-    let features = pane(serde_json::json!({"kind": "features"}), "The feature list");
+    let capabilities = pane(
+        serde_json::json!({"kind": "capabilities"}),
+        "The capabilities list",
+    );
     // On the row of the other two desks, to their right.
     let m = b.mark();
     b.rounded(12.5, 0.0, 4.0, 2.6, 0.8, 1.2, 0.14, Rgba::hex(WOOD));
-    b.hot_since(m, &features);
-    screen(b, 13.3, 4.05, 0.8, "#a78bfa", &features);
+    b.hot_since(m, &capabilities);
+    screen(b, 13.3, 4.05, 0.8, "#a78bfa", &capabilities);
     let data = pane(
         serde_json::json!({"kind": "data_model"}),
         "The data model: its tables, fields and links",
@@ -3633,9 +3636,9 @@ mod tests {
             "the doctor, the bed, the desk and the cabinet all call them"
         );
         assert_eq!(
-            panes(&infirmary, "features"),
+            panes(&infirmary, "capabilities"),
             0,
-            "the feature list moved out"
+            "the capabilities list moved out"
         );
         let office = build(
             &snap,
@@ -3644,8 +3647,8 @@ mod tests {
             },
         );
         assert!(
-            panes(&office, "features") > 0,
-            "the feature list is in the office"
+            panes(&office, "capabilities") > 0,
+            "the capabilities list is in the office"
         );
         let titles: Vec<&str> = hots(&office)
             .iter()

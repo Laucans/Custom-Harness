@@ -119,6 +119,11 @@ pub struct Cli {
     /// plant move when nothing runs.
     #[arg(long)]
     pub demo: bool,
+
+    /// The model that words a fusion test of the capabilities list: the
+    /// tooling compares, the model only explains, so a small one does.
+    #[arg(long, env = "FUSION_MODEL", default_value = "haiku")]
+    pub fusion_model: String,
 }
 
 #[cfg(test)]

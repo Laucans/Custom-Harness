@@ -1085,6 +1085,7 @@ mod tests {
                     issue(67, "import in Foundry", "open", &[labels::HUMAN]),
                 ],
             }],
+            bugs: vec![],
         };
         let observed = Observed::default();
         let lines = blueprint::lines();

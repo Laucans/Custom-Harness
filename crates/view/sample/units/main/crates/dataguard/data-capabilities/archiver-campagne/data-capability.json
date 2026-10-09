@@ -1,0 +1,14 @@
+{
+  "dataCapability": "campagne.archiverCampagne",
+  "owner": "dataguard",
+  "version": 1,
+  "effect": "update",
+  "target": { "aggregate": "Campagne", "id": "$campagneId" },
+  "touches": ["Campagne.archivedAt"],
+  "payload": {},
+  "mode": "overwrite",
+  "invariants": [],
+  "permissions": [],
+  "callableBy": ["campagne"],
+  "idempotencyKey": "required"
+}

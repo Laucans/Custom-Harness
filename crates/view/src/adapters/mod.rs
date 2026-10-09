@@ -10,6 +10,7 @@ pub mod claude_cli;
 pub mod fs_traces;
 pub mod fs_yard;
 pub mod gh_board;
+pub mod git_units;
 pub mod harness_builds;
 pub mod limits_cli;
 pub mod product;

@@ -1,0 +1,20 @@
+{
+  "dataCapability": "campagne.modifierPJ",
+  "owner": "dataguard",
+  "version": 1,
+  "effect": "update",
+  "target": { "aggregate": "PJ", "id": "$pjId" },
+  "touches": ["PJ.name", "PJ.class", "PJ.level"],
+  "payload": { "nom": "string", "classe": "string", "niveau": "integer" },
+  "mode": "confirm_on_stale",
+  "invariants": [
+    "pc-name-required",
+    "pc-class-required",
+    "pc-level-range",
+    "pc-name-unique-in-campaign",
+    "pc-active"
+  ],
+  "permissions": [],
+  "callableBy": ["campagne"],
+  "idempotencyKey": "required"
+}

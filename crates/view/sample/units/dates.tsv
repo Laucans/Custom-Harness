@@ -1,0 +1,8 @@
+crates/campagne/capabilities/lister-campagnes/capability.json	2026-10-09T00:26:20-04:00	2026-10-09T09:13:37-04:00
+crates/campagne/capabilities/lister-pjs/capability.json	2026-10-09T00:31:03-04:00	2026-10-09T09:13:37-04:00
+crates/campagne/capabilities/niveau-du-groupe/capability.json	2026-10-09T00:34:58-04:00	2026-10-09T09:13:37-04:00
+crates/dataguard/data-capabilities/ajouter-pj/data-capability.json	2026-10-08T23:27:10-04:00	2026-10-09T09:13:37-04:00
+crates/dataguard/data-capabilities/archiver-campagne/data-capability.json	2026-10-08T22:54:33-04:00	2026-10-09T09:13:37-04:00
+crates/dataguard/data-capabilities/archiver-pj/data-capability.json	2026-10-08T22:54:33-04:00	2026-10-09T09:13:37-04:00
+crates/dataguard/data-capabilities/creer-campagne/data-capability.json	2026-10-08T23:24:35-04:00	2026-10-09T09:13:37-04:00
+crates/dataguard/data-capabilities/modifier-pj/data-capability.json	2026-10-08T22:54:33-04:00	2026-10-09T09:13:37-04:00

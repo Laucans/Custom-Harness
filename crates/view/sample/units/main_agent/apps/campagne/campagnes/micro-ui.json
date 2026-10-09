@@ -1,0 +1,8 @@
+{
+  "microUi": "Campagnes",
+  "system": "campagne",
+  "description": "Lets the GM see their active campaigns newest first, create a campaign by name, archive one they no longer play, and pick the campaign the rest of the screen works on.",
+  "needs": ["campagne.listerCampagnes"],
+  "actions": ["campagne.creerCampagne", "campagne.archiverCampagne"],
+  "props": { "campagneId": "ID" }
+}

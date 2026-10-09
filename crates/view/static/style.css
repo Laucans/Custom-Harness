@@ -706,6 +706,42 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .prompt-history li.hist.shelved > details > summary { opacity: 0.75; }
 .prompt-history li.hist.waiting > details > summary { color: var(--text); }
 .tag.dim { color: var(--dim); border-style: dashed; }
+
+/* The capabilities list: green on main, yellow on a branch, blue planned, red with a bug */
+:root { --cap-available: var(--ok); --cap-building: #f5d547; --cap-planned: #4aa3ff; --cap-bug: var(--bad); }
+.cap-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+.cap-bar .cap-search { flex: 1 1 180px; min-width: 0; font: 13px var(--sans); padding: 5px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+.cap-bar .cap-search:focus { outline: none; border-color: var(--accent); }
+.cap-bar select { font: 12px var(--sans); padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+.cap-bar button.mini.on, .cap-legend button.mini:not(.off) { color: var(--text); border-color: var(--accent); }
+.cap-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.cap-legend button.mini.off { opacity: 0.45; text-decoration: line-through; }
+.cap-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.cap-dot.available { background: var(--cap-available); }
+.cap-dot.building { background: var(--cap-building); }
+.cap-dot.planned { background: var(--cap-planned); }
+.cap-dot.bug { background: var(--cap-bug); box-shadow: 0 0 6px var(--cap-bug); }
+.tag.cap-available { color: var(--cap-available); border-color: var(--cap-available); }
+.tag.cap-building { color: var(--cap-building); border-color: var(--cap-building); }
+.tag.cap-planned { color: var(--cap-planned); border-color: var(--cap-planned); }
+.tag.cap-bug { color: var(--cap-bug); border-color: var(--cap-bug); }
+table.caps tr.cap-row { cursor: pointer; }
+table.caps tr.cap-row:hover td { background: var(--panel-2); }
+table.caps tr.cap-row td:first-child { border-left: 3px solid transparent; }
+table.caps tr.cap-row.available td:first-child { border-left-color: var(--cap-available); }
+table.caps tr.cap-row.building td:first-child { border-left-color: var(--cap-building); }
+table.caps tr.cap-row.planned td:first-child { border-left-color: var(--cap-planned); }
+table.caps tr.cap-row.bug td:first-child { border-left-color: var(--cap-bug); }
+table.caps tr.cap-row.picked td { background: rgba(226, 178, 64, 0.12); }
+table.caps .muted { font-size: 11px; }
+.cap-foot { font-size: 11px; margin-top: 8px; }
+.cap-fusion-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; margin: 0 0 10px; border: 1px dashed var(--accent); border-radius: 6px; }
+.cap-fusion-bar .spacer { flex: 1; }
+#caps-fusion:not(:empty) { margin: 0 0 14px; padding: 0 0 8px; border-bottom: 1px solid var(--line); }
+.cap-ai { background: var(--panel-2); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; }
+.cap-rules { list-style: none; padding: 0; margin: 0; }
+.cap-rules li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+#pane-body h4 { margin: 12px 0 6px; color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 /* A missing file of the data model, built on a click. */
 .dm-src.build { cursor: pointer; background: transparent; color: var(--accent); border: 1px dashed var(--accent); font: 11px var(--mono); }
 .dm-src.build:hover:not(:disabled) { background: var(--panel-2); }

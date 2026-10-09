@@ -74,13 +74,17 @@ pub const WORKSPACES: &str = "agentic_workspaces";
 /// The folder of the traces.
 pub const LOGS: &str = "logs";
 
+/// The view's own mirror of the product, for the capabilities list: a
+/// store, read by no run.
+pub const VIEW_MIRROR: &str = "view-mirror";
+
 /// The folder of the throwaway clones `harness init-repo` makes.
 pub const INIT: &str = "init";
 
 /// Every folder the harness itself writes under the yard — the launcher's
 /// own list, mirrored: a store added there without its name here shows up
 /// as a stray, which is the reminder to add it.
-const KNOWN: [&str; 10] = [
+const KNOWN: [&str; 11] = [
     WORKSPACES,
     LOGS,
     "grill",
@@ -91,6 +95,7 @@ const KNOWN: [&str; 10] = [
     "split-locks",
     "pr-fix-locks",
     "trials",
+    VIEW_MIRROR,
 ];
 
 /// What a human allowed: how heavy the yard may be, and whether the janitor

@@ -1,0 +1,41 @@
+{
+  "aggregate": "PJ",
+  "fields": {
+    "campagneId": { "kind": "authoritative", "criticality": "normal" },
+    "name": { "kind": "authoritative", "criticality": "normal" },
+    "class": { "kind": "authoritative", "criticality": "normal" },
+    "level": { "kind": "authoritative", "criticality": "normal" },
+    "archivedAt": { "kind": "authoritative", "criticality": "normal" }
+  },
+  "invariants": [
+    {
+      "id": "pc-name-required",
+      "rule": "The name, trimmed of Unicode whitespace and NFC-normalised, is 1 to 100 Unicode scalar values.",
+      "onViolation": "reject"
+    },
+    {
+      "id": "pc-class-required",
+      "rule": "The class, trimmed of Unicode whitespace and NFC-normalised, is 1 to 50 Unicode scalar values of free text.",
+      "onViolation": "reject"
+    },
+    {
+      "id": "pc-level-range",
+      "rule": "The level is a JSON integer literal from 1 to 20 inclusive; strings, decimals and anything else are refused.",
+      "onViolation": "reject"
+    },
+    {
+      "id": "pc-name-unique-in-campaign",
+      "rule": "No two active PCs of one campaign share a name, compared lowercased after trimming and NFC; archived PCs and other campaigns do not count.",
+      "onViolation": "reject"
+    },
+    {
+      "id": "pc-active",
+      "rule": "No command but an archive writes an archived or unknown PC.",
+      "onViolation": "reject"
+    }
+  ],
+  "relations": [
+    { "from": "PJ.campagneId", "onDelete": "archive", "onUpdate": "restrict" }
+  ],
+  "holds": { "maxTtl": "1m", "renewable": true }
+}

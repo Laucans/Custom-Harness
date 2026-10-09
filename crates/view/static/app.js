@@ -604,6 +604,8 @@
   const PANE_HISTORY = 50;
   S.paneHistory = [];
   function openPane(p, goingBack = false) {
+    // The office's screen was the feature list before it was renamed.
+    if (p.kind === 'features') p = { ...p, kind: 'capabilities' };
     acknowledge(S.pane);
     if (S.pane && !goingBack) {
       S.paneHistory.push(S.pane);
@@ -1800,6 +1802,212 @@
     loadPending();
   });
 
+  // ---- The capabilities list: every Capability and DataCapability ------------------
+  // Read once from /api/capabilities, then searched, sorted, filtered and
+  // paged here: a keystroke redraws the list only, never the search box.
+  const CAP_STATUS = {
+    available: ['available', 'on main'],
+    building: ['building', 'on a branch, not on main yet'],
+    planned: ['planned', 'declared by an open task, on no branch yet'],
+    bug: ['bug', 'an open issue labelled bug names it'],
+  };
+  const CAP_ORDER = { available: 0, building: 1, planned: 2, bug: 3 };
+  const CAP_SORTS = {
+    name: ['name', (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })],
+    status: ['availability', (a, b) => CAP_ORDER[a.status] - CAP_ORDER[b.status] || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })],
+    modified: ['last modified', (a, b) => String(b.modified || '').localeCompare(String(a.modified || ''))],
+    created: ['created', (a, b) => String(b.created || '').localeCompare(String(a.created || ''))],
+  };
+  S.caps = null;
+  const capDay = (iso) => (iso ? new Date(iso).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }) : '—');
+  const capDot = (status) => `<span class="cap-dot ${esc(status)}" title="${esc(CAP_STATUS[status][1])}"></span>`;
+  const capTag = (status) => `<span class="tag cap-${esc(status)}">${esc(CAP_STATUS[status][0])}</span>`;
+  const capKind = (k) => (k === 'data_capability' ? 'data capability' : 'capability');
+  async function loadCaps(fresh) {
+    S.capsBusy = true;
+    try {
+      const r = await fetch('/api/capabilities' + (fresh ? '?fresh=true' : ''));
+      S.caps = r.ok ? { at: Date.now(), ...(await r.json()) } : { at: Date.now(), error: await r.text(), entries: [] };
+    } catch (err) { S.caps = { at: Date.now(), error: 'cannot reach the server', entries: [] }; }
+    S.capsBusy = false;
+    // The list alone is redrawn: a search being typed keeps its box.
+    const list = $('caps-list');
+    if (S.pane && S.pane.kind === 'capabilities' && list) {
+      list.innerHTML = capList(S.pane);
+      const again = document.querySelector('[data-cap-refresh]');
+      if (again) again.textContent = '↻';
+    } else if (S.pane && S.pane.kind === 'capability') renderPane(S.pane, false);
+  }
+  // The rows the search, the filters and the sort leave, in order.
+  function capRows(p) {
+    const q = (p.q || '').trim().toLowerCase();
+    const off = new Set(p.hidden || []);
+    const rows = (S.caps ? S.caps.entries : []).filter((e) => !off.has(e.status)
+      && (!p.unit || p.unit === e.kind)
+      && (!q || e.name.toLowerCase().includes(q) || e.id.toLowerCase().includes(q)));
+    const [, by] = CAP_SORTS[p.sort] || CAP_SORTS.name;
+    rows.sort(by);
+    if (p.desc) rows.reverse();
+    return rows;
+  }
+  function capList(p) {
+    if (!S.caps) return '<div class="muted"><span class="spin"></span>reading the product\'s branches…</div>';
+    if (S.caps.error) return `<div class="callout">${esc(S.caps.error)}</div>`;
+    const rows = capRows(p);
+    const picked = new Set(p.pick || []);
+    const head = (p.fusion ? '<th></th>' : '') + '<th></th><th>name</th><th>kind</th><th>system</th><th>status</th><th>created</th><th>modified</th>';
+    const body = rows.length
+      ? pagedTable(p, 'caps', 'caps', head, rows, (e) => `<tr class="cap-row ${esc(e.status)}${picked.has(e.id) ? ' picked' : ''}" data-cap="${esc(e.id)}">`
+        + (p.fusion ? `<td><input type="checkbox" data-cap-pick="${esc(e.id)}" ${picked.has(e.id) ? 'checked' : ''} aria-label="pick ${esc(e.name)} for the fusion"></td>` : '')
+        + `<td>${capDot(e.status)}</td><td><b>${esc(e.name)}</b><div class="muted">${esc(e.id)}</div></td>`
+        + `<td>${esc(capKind(e.kind))}</td><td>${esc(e.system || '—')}</td><td>${capTag(e.status)}</td>`
+        + `<td>${esc(capDay(e.created))}</td><td>${esc(capDay(e.modified))}</td></tr>`)
+      : `<div class="muted">${(p.q || '').trim() ? `nothing named “${esc(p.q.trim())}”` : 'no unit here'}</div>`;
+    const count = S.caps.entries.reduce((n, e) => ({ ...n, [e.status]: (n[e.status] || 0) + 1 }), {});
+    const legend = '<div class="cap-legend">' + Object.keys(CAP_STATUS).map((s) => `<button class="mini ${(p.hidden || []).includes(s) ? 'off' : ''}" data-cap-status="${s}" title="${esc(CAP_STATUS[s][1])} — click to hide or show">${capDot(s)}${esc(CAP_STATUS[s][0])} · ${count[s] || 0}</button>`).join('') + '</div>';
+    const warn = (S.caps.warnings || []).length ? `<div class="callout">${S.caps.warnings.map(esc).join('<br>')}</div>` : '';
+    return legend + body + warn + `<div class="muted cap-foot">${S.caps.branches.length} branch(es) read · ${esc(when(new Date(S.caps.at).toISOString()))}</div>`;
+  }
+  function fusionBar(p) {
+    if (!p.fusion) return '';
+    const pick = p.pick || [];
+    const name = (id) => { const e = S.caps && S.caps.entries.find((x) => x.id === id); return e ? e.name : id; };
+    const ready = pick.length === 2;
+    return `<div class="cap-fusion-bar">${pick.length ? pick.map((id) => `<span class="tag acc">${esc(name(id))}</span>`).join('⇄ ') : '<span class="muted">pick two units in the list</span>'}`
+      + `<span class="spacer"></span><button class="act primary" data-cap-fuse ${ready ? '' : 'disabled'}>test the fusion</button></div><div id="caps-fusion">${fusionResult(p)}</div>`;
+  }
+  const VERDICT = { possible: ['possible', 'ok'], adaptable: ['possible with an adapted contract', 'warn'], impossible: ['not possible', 'bad'] };
+  function fusionResult(p) {
+    const f = p.fused;
+    if (!f) return '';
+    if (f.error && !f.comparison) return `<div class="callout">${esc(f.error)}</div>`;
+    const c = f.comparison;
+    const [word, cls] = VERDICT[c.verdict];
+    let h = `<h3>Fusion of ${esc(c.a)} and ${esc(c.b)}: ${tag(word, cls)}</h3>`;
+    h += '<div class="muted">The tooling compared the manifests; the model only words its answer from that comparison.</div>';
+    if (c.differences.length) {
+      h += '<table class="rows"><tr><th>aspect</th><th>' + esc(c.a) + '</th><th>' + esc(c.b) + '</th><th></th></tr>'
+        + c.differences.map((d) => `<tr><td>${esc(d.aspect)}</td><td>${esc(d.a)}</td><td>${esc(d.b)}</td><td>${tag(d.weight === 'blocks' ? 'blocks' : d.weight === 'adapts' ? 'adapts' : 'note', d.weight === 'blocks' ? 'bad' : d.weight === 'adapts' ? 'warn' : '')}<div class="muted">${esc(d.why)}</div></td></tr>`).join('') + '</table>';
+    }
+    if (c.same.length) h += '<p><b>Identical:</b> ' + c.same.map((s) => tag(s, 'ok')).join('') + '</p>';
+    if (c.callers.length) h += '<p><b>Micro-UIs to repoint:</b> ' + c.callers.map((s) => tag(s)).join('') + '</p>';
+    h += '<h3>AI</h3>' + (f.answer ? `<div class="md cap-ai">${md(f.answer)}</div>` : f.asking ? '<div class="muted"><span class="spin"></span>asking the model…</div>' : `<div class="muted">${esc(f.error || 'no answer')}</div>`);
+    return h;
+  }
+  async function fuse(p) {
+    const [a, b] = p.pick || [];
+    const ask = (ai) => fetch('/api/capabilities/fusion', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ a, b, ai }) });
+    const show = () => { const el = $('caps-fusion'); if (el && S.pane === p) el.innerHTML = fusionResult(p); };
+    try {
+      const r = await ask(false);
+      if (!r.ok) { p.fused = { error: await r.text() }; show(); return; }
+      p.fused = { ...(await r.json()), asking: true };
+      show();
+      const ai = await ask(true);
+      const got = ai.ok ? await ai.json() : { error: await ai.text() };
+      if ((p.pick || []).join() !== [a, b].join()) return;
+      p.fused = { ...p.fused, answer: got.answer, error: got.error, asking: false };
+    } catch (err) { p.fused = { ...(p.fused || {}), asking: false, error: 'cannot reach the server' }; }
+    show();
+  }
+  function capsPane(p, refresh) {
+    const sort = p.sort || 'name';
+    const bar = '<div class="cap-bar">'
+      + `<input type="search" class="cap-search" data-cap-q placeholder="search by name…" value="${esc(p.q || '')}" aria-label="search the capabilities by name">`
+      + '<select data-cap-sort aria-label="sort">' + Object.entries(CAP_SORTS).map(([k, [label]]) => `<option value="${k}" ${k === sort ? 'selected' : ''}>sort: ${label}</option>`).join('') + '</select>'
+      + `<button class="mini" data-cap-desc title="reverse the order">${p.desc ? '↑' : '↓'}</button>`
+      + '<select data-cap-kind aria-label="kind"><option value="">all kinds</option>' + ['capability', 'data_capability'].map((k) => `<option value="${k}" ${p.unit === k ? 'selected' : ''}>${capKind(k)}</option>`).join('') + '</select>'
+      + `<button class="mini ${p.fusion ? 'on' : ''}" data-cap-fusion title="pick two units and ask whether they could be one">⚭ fusion</button>`
+      + `<button class="mini" data-cap-refresh title="fetch the product's branches again">${S.capsBusy ? '<span class="spin"></span>' : '↻'}</button></div>`;
+    const html = bar + fusionBar(p) + `<div id="caps-list">${capList(p)}</div>`;
+    const after = (again) => { if (!again && !S.capsBusy && (!S.caps || Date.now() - S.caps.at > 60000)) loadCaps(false); };
+    return ['Capabilities list · ' + S.snap.project.name, html, after, true];
+  }
+  function capPane(p) {
+    const e = S.caps && S.caps.entries.find((x) => x.id === p.id);
+    if (!e) return ['Capability', S.caps ? '<div class="callout">not in the list any more</div>' : '<div class="muted">reading…</div>', () => { if (!S.caps && !S.capsBusy) loadCaps(false); }];
+    const c = e.contract;
+    const fields = (m) => (Object.keys(m || {}).length ? '<table class="rows"><tr><th>field</th><th>type</th></tr>' + Object.entries(m).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') + '</table>' : '<div class="muted">none</div>');
+    let h = kv([
+      ['status', capTag(e.status) + `<span class="muted">${esc(CAP_STATUS[e.status][1])}</span>`],
+      ['kind', esc(capKind(e.kind))],
+      ['system', esc(e.system || '—')],
+      ['id', `<code>${esc(e.id)}</code>`],
+      ['version', e.version ? esc(e.version) : null],
+      ['created', esc(when(e.created))],
+      ['modified', esc(when(e.modified))],
+      ['manifest', e.path ? `<code>${esc(e.path)}</code>` : null],
+      ['branches', e.branches.map((b) => tag(b, b === 'main' ? 'ok' : '')).join('') || null],
+      ['issues', e.issues.map((i) => `<button class="link" data-issue="${i.number}">#${i.number} ${esc(i.title)}</button> ${i.bug ? tag('bug', 'bad') : ''}`).join('<br>') || null],
+    ]);
+    h += `<h3>Role</h3><p>${esc(e.role || '—')}</p>`;
+    h += '<h3>Interface contracts</h3>';
+    const ui = e.used_by.length
+      ? '<table class="rows"><tr><th>Micro-UI</th><th>how</th><th>props it hands</th></tr>' + e.used_by.map((u) => `<tr><td>${esc(u.system)}.${esc(u.micro_ui)}</td><td>${u.how === 'reads' ? 'reads' : 'triggers'}</td><td>${Object.entries(u.props).map(([k, v]) => esc(`${k}: ${v}`)).join(', ') || '—'}</td></tr>`).join('') + '</table>'
+      : '<div class="muted">no Micro-UI calls it</div>';
+    h += `<h4>From the UI → ${e.kind === 'data_capability' ? 'payload' : 'input'}</h4>` + fields(c.input) + ui;
+    if (e.kind === 'data_capability') {
+      h += '<h4>To the data → DataGuard</h4>' + kv([
+        ['effect', c.effect ? tag(c.effect, c.effect === 'insert' ? 'ok' : 'warn') : null],
+        ['aggregate', c.target ? `<code>${esc(c.target)}</code>` : null],
+        ['touches', c.touches.map((t) => tag(t)).join('') || 'nothing existing'],
+        ['mode', c.mode ? esc(c.mode) : null],
+        ['permissions', c.permissions.map((t) => tag(t)).join('') || null],
+        ['callable by', c.callable_by.map((t) => tag(t)).join('') || null],
+      ]);
+    } else {
+      h += '<h4>To the dataview → persisted queries</h4>' + (c.reads.length ? '<ul class="issues">' + c.reads.map((r) => `<li><code>${esc(r)}</code></li>`).join('') + '</ul>' : '<div class="muted">none declared</div>');
+      h += '<h4>Returns</h4>' + kv([['output', c.output ? `<code>${esc(c.output)}</code>` : '—'], ['implements', c.implements ? tag(c.implements, 'acc') : null]]);
+    }
+    h += '<h3>Business rules</h3>' + (e.rules.length
+      ? '<ul class="cap-rules">' + e.rules.map((r) => `<li><b>${esc(r.id)}</b> <span class="muted">· ${esc(r.from)}</span><div>${esc(r.text)}</div></li>`).join('') + '</ul>'
+      : `<div class="muted">${e.kind === 'data_capability' ? 'no invariant declared' : 'no Concept implemented: its rules live in its code'}</div>`);
+    return [`${e.name} · ${capKind(e.kind)}`, h];
+  }
+  $('pane-body').addEventListener('input', (e) => {
+    if (!e.target.matches('[data-cap-q]') || !S.pane) return;
+    S.pane.q = e.target.value;
+    S.pane.pages = {};
+    const list = $('caps-list');
+    if (list) list.innerHTML = capList(S.pane);
+  });
+  $('pane-body').addEventListener('change', (e) => {
+    if (!S.pane || S.pane.kind !== 'capabilities') return;
+    if (e.target.matches('[data-cap-sort]')) { S.pane.sort = e.target.value; S.pane.pages = {}; renderPane(S.pane, false); }
+    if (e.target.matches('[data-cap-kind]')) { S.pane.unit = e.target.value; S.pane.pages = {}; renderPane(S.pane, false); }
+  });
+  // Clicks on the list: filters, fusion, a row's detail. Runs before the
+  // generic handler, which still turns the pages.
+  $('pane-body').addEventListener('click', (e) => {
+    const p = S.pane;
+    if (!p || p.kind !== 'capabilities') return;
+    const hit = (sel) => e.target.closest(sel);
+    let b;
+    if ((b = hit('[data-cap-status]'))) {
+      const off = new Set(p.hidden || []);
+      if (off.has(b.dataset.capStatus)) off.delete(b.dataset.capStatus); else off.add(b.dataset.capStatus);
+      p.hidden = [...off]; p.pages = {};
+    } else if (hit('[data-cap-desc]')) p.desc = !p.desc;
+    else if (hit('[data-cap-fusion]')) { p.fusion = !p.fusion; p.pick = []; p.fused = null; }
+    else if (hit('[data-cap-refresh]')) { if (!S.capsBusy) { S.caps = null; loadCaps(true); } }
+    else if ((b = hit('[data-cap-pick]'))) {
+      const id = b.dataset.capPick;
+      let pick = (p.pick || []).filter((x) => x !== id);
+      if (b.checked) pick = [...pick, id].slice(-2);
+      p.pick = pick; p.fused = null;
+    } else if (hit('[data-cap-fuse]')) { fuse(p); return; }
+    else if ((b = hit('[data-cap]')) && p.fusion) {
+      // In fusion mode a row is picked, not opened.
+      const id = b.dataset.cap;
+      const was = (p.pick || []).includes(id);
+      p.pick = was ? p.pick.filter((x) => x !== id) : [...(p.pick || []), id].slice(-2);
+      p.fused = null;
+    } else if ((b = hit('[data-cap]'))) { openPane({ kind: 'capability', id: b.dataset.cap }); return; }
+    else return;
+    e.stopPropagation();
+    renderPane(p, false);
+  }, true);
+
   const PANES = {
     changes() { return ['Changes waiting for a restart', changesPane()]; },
 
@@ -2102,15 +2310,8 @@
       return [`#${p.number}`, html, after];
     },
 
-    features() {
-      const b = S.snap.board;
-      if (!b) return ['Features', '<div class="callout">No GitHub board: the feature list is the milestones, and they were not read.</div>'];
-      let h = '<div class="callout">A feature is a milestone: delivered once its branch merged into the agents\' version. Its tasks are the feature\'s pieces.</div>';
-      for (const m of b.milestones) {
-        h += `<h3>${m.issue.state === 'closed' ? '✓ delivered · ' : m.done === m.total && m.total ? '◐ waiting for the merge · ' : '○ in progress · '}<button class="link" data-issue="${m.issue.number}">#${m.issue.number} ${esc(m.issue.title)}</button></h3>` + issueList(m.tasks);
-      }
-      return ['Features · ' + S.snap.project.name, h];
-    },
+    capabilities: capsPane,
+    capability: capPane,
 
     // The control room's four computers: one screen each.
     dashboards(p, refresh) {
