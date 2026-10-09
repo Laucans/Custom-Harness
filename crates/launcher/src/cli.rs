@@ -60,6 +60,51 @@ pub enum Command {
     /// Dry-runs one prompt: replays a past run's prompt with another text,
     /// in a session that cannot act (the view's prompt tab asks for it).
     Trial(TrialArgs),
+    /// Archive the product's data model now, for the branches named: what
+    /// `watch` does after every merge, on demand (the view's data pane asks
+    /// for it when a branch has no version yet).
+    DataSnapshot(DataSnapshotArgs),
+    /// Draft a first `data/model.json` for a branch that has none, and open
+    /// its pull request (the view's data pane asks for it).
+    DataModelDraft(DataModelDraftArgs),
+}
+
+/// `harness data-model-draft`'s own arguments.
+#[derive(Debug, Args)]
+pub struct DataModelDraftArgs {
+    /// The branch the model is drafted for, and the pull request's base.
+    #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
+    pub branch: String,
+
+    /// The target repository.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
+
+    /// Passed to the session's `claude`: it writes one file.
+    #[arg(long, env = "PERMISSION_MODE", default_value = "bypassPermissions")]
+    pub permission_mode: String,
+}
+
+/// `harness data-snapshot`'s own arguments.
+#[derive(Debug, Args)]
+pub struct DataSnapshotArgs {
+    /// A branch whose head is read; repeat it for several. None: `main` and
+    /// the integration branch.
+    #[arg(long = "branch")]
+    pub branches: Vec<String>,
+
+    /// The target repository.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
+
+    /// The integration branch: with `main`, the one whose versions are
+    /// checked for divergences.
+    #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
+    pub integration_branch: String,
+
+    /// Passed to the diagnosis's `claude -p`.
+    #[arg(long, env = "PERMISSION_MODE", default_value = "bypassPermissions")]
+    pub permission_mode: String,
 }
 
 /// `harness refine`'s own arguments.

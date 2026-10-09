@@ -30,6 +30,7 @@
 //! it) or `router` (a poll found the conditions met).
 
 pub mod data_diagnosis;
+pub mod data_model_draft;
 pub mod data_snapshot;
 pub mod dev_loop;
 pub mod doctor;

@@ -39,6 +39,18 @@ async fn main() -> ExitCode {
     };
     match &args.command {
         Some(cli::Command::InitRepo(sub)) => dispatch::init_repo::run(sub, &here).await,
+        Some(cli::Command::DataModelDraft(sub)) => {
+            match dispatch::data_model_draft::run(sub, &here).await {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(halt) => halt_to_code(&halt),
+            }
+        }
+        Some(cli::Command::DataSnapshot(sub)) => {
+            match dispatch::data_snapshot::by_hand(sub, &here).await {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(halt) => halt_to_code(&halt),
+            }
+        }
         Some(cli::Command::Watch(sub)) => match router::run(sub, &here).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(halt) => halt_to_code(&halt),
