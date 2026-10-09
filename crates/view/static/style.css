@@ -706,3 +706,10 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .prompt-history li.hist.shelved > details > summary { opacity: 0.75; }
 .prompt-history li.hist.waiting > details > summary { color: var(--text); }
 .tag.dim { color: var(--dim); border-style: dashed; }
+/* A missing file of the data model, built on a click. */
+.dm-src.build { cursor: pointer; background: transparent; color: var(--accent); border: 1px dashed var(--accent); font: 11px var(--mono); }
+.dm-src.build:hover:not(:disabled) { background: var(--panel-2); }
+.dm-src.build.armed { border-style: solid; background: rgba(226, 178, 64, 0.15); }
+.dm-src.build:disabled { opacity: 0.7; cursor: progress; }
+.dm-built { font: 11px var(--mono); color: var(--dim); }
+.dm-version[hidden] { display: none; }

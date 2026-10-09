@@ -47,6 +47,7 @@ use crate::adapters::claude_cli::{ClaudeOneshot, ClaudeTranscripts};
 use crate::adapters::fs_traces::FsTraces;
 use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
+use crate::adapters::harness_builds::HarnessBuilds;
 use crate::adapters::limits_cli::CliLimits;
 use crate::adapters::product::{DirProduct, GhProduct};
 use crate::adapters::prompt_files::PromptFiles;
@@ -70,7 +71,8 @@ use crate::domain::steward;
 use crate::janitor::Janitor;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    Board, BoardReading, Limits, NoteStore, Plant, Product, TerminalFactory, Traces, Trials, Yard,
+    Board, BoardReading, Builds, Limits, NoteStore, Plant, Product, TerminalFactory, Traces,
+    Trials, Yard,
 };
 use crate::server::{AppState, router};
 use harness_adapters::store::events::SqliteEvents;
@@ -134,15 +136,15 @@ async fn main() -> anyhow::Result<()> {
         asking: Arc::default(),
         plant: plant.clone(),
         start_grace: Duration::from_millis(1500),
-        limits: Some(Arc::new(CliLimits::new(
-            claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
-        )) as Arc<dyn Limits>),
+        limits: Some(limits()),
         claude_read: Arc::clone(&claude_read),
         events: events.clone(),
         janitor: janitor.clone(),
         data,
         pins: Arc::clone(&pins),
         note_desks: note_desks.clone(),
+        builds: builds_for(&cli, &root),
+        integration_branch: cli.integration_branch.clone(),
         prompts: Arc::new(PromptFiles::new(workspace.state_root())),
         prompts_lock: Arc::default(),
         trials: trials(&cli, &workspace),
@@ -231,6 +233,29 @@ fn banner(cli: &Cli, workspace: &Workspace) -> String {
             " — the janitor minds the yard"
         }
     )
+}
+
+/// The harness's commands the data pane starts — the binary the switch
+/// starts the watch with — unless `--demo`, which has no product to build.
+fn builds_for(cli: &Cli, root: &Path) -> Option<Arc<dyn Builds>> {
+    if cli.demo {
+        return None;
+    }
+    let first = cli.watch_command.split_whitespace().next()?;
+    let program = Path::new(first);
+    let program = if program.is_relative() && program.components().count() > 1 {
+        root.join(program)
+    } else {
+        program.to_path_buf()
+    };
+    Some(Arc::new(HarnessBuilds::new(program, root.to_path_buf())) as Arc<dyn Builds>)
+}
+
+/// The rate limits, read through the newest Claude Code and `gh`.
+fn limits() -> Arc<dyn Limits> {
+    Arc::new(CliLimits::new(
+        claude_bin::newest().map_or_else(|| PathBuf::from("claude"), |(path, _)| path),
+    ))
 }
 
 /// The janitor, unless `--no-janitor`.

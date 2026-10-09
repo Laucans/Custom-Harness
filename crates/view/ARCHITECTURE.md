@@ -246,6 +246,18 @@ Either file alone draws the diagram. `model.json`:
   "links": [ { "from": "item.code", "to": "rule_reference.code", "purpose": "…" } ] }
 ```
 
+**Building what is missing.** `main` and the integration branch are always
+offered; a branch with no version archived shows its live files. A file not
+there is a button: `schema.sql` starts `harness data-snapshot --branch <b>`
+(the watch's snapshot pass, on demand), `model.json` — on a second click —
+`harness data-model-draft --branch <b>` (Opus drafts the file from the dump
+and the code, and opens a pull request on the branch). The view only starts
+the harness binary the switch starts the watch with (`ports::Builds`,
+`adapters::harness_builds`, output in `.llocal/logs/view-builds/`); the page
+follows `GET /api/data-model/builds` and reloads (`?fresh=1`) when it ends.
+Routes `POST /api/data-model/build`, `GET /api/data-model/builds`; none under
+`--demo`.
+
 `--demo` without `--data-dir` reads the sample under `crates/view/sample/`,
 its archive under `sample/archive/` laid out as the branch is.
 

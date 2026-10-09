@@ -33,6 +33,9 @@ pub struct Wanted {
     pub branch: Option<String>,
     /// A version, by its folder on the archive branch.
     pub dir: Option<String>,
+    /// Read the archive's index and the live files again — a build just
+    /// ended.
+    pub fresh: bool,
 }
 
 /// A version merged, and which one it is.
@@ -130,14 +133,15 @@ pub fn open(
 
 struct Kept {
     index: Option<(Instant, Option<Index>)>,
-    live: Option<(Instant, Arc<DataModel>)>,
+    /// The live files, by branch.
+    live: HashMap<String, (Instant, Arc<DataModel>)>,
     versions: HashMap<String, Arc<DataModel>>,
 }
 
 async fn serve(product: Rc<dyn Product>, mut rx: mpsc::Receiver<Ask>, live_every: Duration) {
     let mut kept = Kept {
         index: None,
-        live: None,
+        live: HashMap::new(),
         versions: HashMap::new(),
     };
     while let Some(ask) = rx.recv().await {
@@ -189,22 +193,29 @@ async fn model(
     wanted: &Wanted,
     live_every: Duration,
 ) -> Result<Shown, String> {
-    let live_ref = product.live_ref();
-    let Some(index) = index(product, kept)
-        .await
-        .filter(|i| !i.snapshots.is_empty())
-    else {
-        // No archive yet: the live files of the integration branch.
-        return Ok(live(product, kept, &live_ref, live_every).await);
+    let branch = wanted.branch.clone().unwrap_or_else(|| product.live_ref());
+    if wanted.fresh {
+        kept.index = None;
+        kept.live.clear();
+    }
+    let index = index(product, kept).await;
+    let snapshot = match (&index, &wanted.dir) {
+        (Some(index), Some(dir)) => Some(
+            index
+                .snapshots
+                .iter()
+                .find(|s| &s.dir == dir)
+                .cloned()
+                .ok_or_else(|| "no such version in the archive".to_string())?,
+        ),
+        (None, Some(_)) => return Err("there is no archive yet".to_string()),
+        (Some(index), None) => index.latest(&branch).cloned(),
+        (None, None) => None,
     };
-    let snapshot = data_versions::pick(
-        &index,
-        wanted.branch.as_deref(),
-        wanted.dir.as_deref(),
-        &live_ref,
-    )
-    .cloned()
-    .ok_or_else(|| "no such version in the archive".to_string())?;
+    // A branch with no version archived: its live files, if it has any.
+    let Some(snapshot) = snapshot else {
+        return Ok(live(product, kept, &branch, live_every).await);
+    };
     if let Some(model) = kept.versions.get(&snapshot.dir) {
         return Ok(Shown {
             model: Arc::clone(model),
@@ -243,30 +254,31 @@ async fn model(
     })
 }
 
-async fn live(product: &dyn Product, kept: &mut Kept, live_ref: &str, every: Duration) -> Shown {
-    let fresh = kept.live.as_ref().filter(|(at, _)| at.elapsed() < every);
+async fn live(product: &dyn Product, kept: &mut Kept, branch: &str, every: Duration) -> Shown {
+    let fresh = kept.live.get(branch).filter(|(at, _)| at.elapsed() < every);
     let model = if let Some((_, model)) = fresh {
         Arc::clone(model)
     } else {
         let schema = product
-            .file(SCHEMA_PATH, live_ref)
+            .file(SCHEMA_PATH, branch)
             .await
             .map_err(|h| h.to_string());
         let declared = product
-            .file(MODEL_PATH, live_ref)
+            .file(MODEL_PATH, branch)
             .await
             .map_err(|h| h.to_string());
         let origin = format!(
-            "{} @ {live_ref} (live files, no archive yet)",
+            "{} @ {branch} (live files, no version archived)",
             product.origin()
         );
         let model = Arc::new(data_model::build(&origin, &schema, &declared));
-        kept.live = Some((Instant::now(), Arc::clone(&model)));
+        kept.live
+            .insert(branch.to_string(), (Instant::now(), Arc::clone(&model)));
         model
     };
     Shown {
         model,
-        branch: String::new(),
+        branch: branch.to_string(),
         dir: String::new(),
     }
 }
@@ -381,7 +393,14 @@ mod tests {
                 );
                 let task = tokio::task::spawn_local(task);
                 let versions = desk.versions().await.expect("answered");
-                assert_eq!(versions.branches[0].versions.len(), 2);
+                assert_eq!(
+                    versions
+                        .branches
+                        .iter()
+                        .find(|b| b.branch == "main_agent")
+                        .map_or(0, |b| b.versions.len()),
+                    2
+                );
                 let newest = desk.model(Wanted::default()).await.expect("answered");
                 assert_eq!(newest.dir, "main_agent/v2");
                 assert_eq!(newest.model.tables.len(), 2);
@@ -395,6 +414,7 @@ mod tests {
                     .model(Wanted {
                         branch: None,
                         dir: Some("main_agent/v1".into()),
+                        fresh: false,
                     })
                     .await
                     .expect("answered");
@@ -404,19 +424,24 @@ mod tests {
                     .model(Wanted {
                         branch: None,
                         dir: Some("main_agent/v1".into()),
+                        fresh: false,
                     })
                     .await
                     .expect("answered");
                 assert_eq!(again.model.tables.len(), 1);
                 assert_eq!(*counted.reads.borrow(), before, "kept, not read again");
-                assert!(
-                    desk.model(Wanted {
+                // A branch with no version shows its live files: none here.
+                let unbuilt = desk
+                    .model(Wanted {
                         branch: Some("nowhere".into()),
                         dir: None,
+                        fresh: false,
                     })
                     .await
-                    .is_err()
-                );
+                    .expect("answered");
+                assert_eq!(unbuilt.branch, "nowhere");
+                assert!(unbuilt.dir.is_empty() && unbuilt.model.tables.is_empty());
+                assert!(!unbuilt.model.sources[0].found, "schema.sql to build");
                 task.abort();
             })
             .await;

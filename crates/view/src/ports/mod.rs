@@ -568,3 +568,17 @@ pub trait Trials: Send + Sync {
     /// reporting reads as failed.
     fn reports(&self) -> Vec<(String, harness_core::domain::prompt_book::TrialReport)>;
 }
+
+/// The harness's own commands the data pane starts — a snapshot, a draft —
+/// and where each one is.
+pub trait Builds: Send + Sync {
+    /// Starts `what` for `branch`, unless the same build is running.
+    ///
+    /// # Errors
+    ///
+    /// The same build is running, or the harness could not be started.
+    fn start(&self, what: crate::domain::builds::What, branch: &str) -> Result<(), String>;
+
+    /// Every build started since the view started, newest first.
+    fn builds(&self) -> Vec<crate::domain::builds::Build>;
+}
