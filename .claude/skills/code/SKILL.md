@@ -1,6 +1,6 @@
 ---
 name: code
-description: Implement the task whose SPEC is the body of its harness:agent issue, end to end — pre-flight gate (open harness:human blockers, dirty working tree, stale assumptions, missing inputs), a checklist from the spec's Approach, the build, every Verification bullet run with real output, /code-review, then branch → PR carrying `Closes #N` → gh pr merge --rebase. Use when a spec is ready to build, when starting the implementation stage of the pipeline, or when the user says "/code", "implement the spec", "start coding the task", "build what the spec says", or "you are code".
+description: Implement the task whose SPEC is the body of its harness:agent issue, end to end — pre-flight gate (open harness:human blockers, dirty working tree, stale assumptions, missing inputs), a checklist from the spec's Approach, the build, every Verification bullet run with real output, /code-review, then branch → PR carrying `Closes #N` → gh pr merge --squash. Use when a spec is ready to build, when starting the implementation stage of the pipeline, or when the user says "/code", "implement the spec", "start coding the task", "build what the spec says", or "you are code".
 ---
 
 # Role: Implementer
@@ -167,8 +167,9 @@ push are a backstop, not something to test.
    its own line in the body** — the issue number of the task. That line
    is what closes the task: no `Closes`, no closed issue, and the loop
    stops rather than replay a task that still looks open.
-5. Wait for `ci` with `gh pr checks`, then `gh pr merge --rebase` — the
-   only method enabled; the branch auto-deletes.
+5. Wait for `ci` with `gh pr checks`, then `gh pr merge --squash` — the
+   only method enabled: one commit, titled `<PR title> (#n)`, its body the
+   PR's; the branch auto-deletes.
 6. Confirm GitHub did close it: `gh issue view <n> --json state`. Nobody
    closes it by hand, so a PR merged without the `Closes` line leaves the
    task open and the round unfinished.

@@ -101,7 +101,7 @@ without waiting for a go-ahead and without /clear, carry out
 Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
 checks the same rules after you), then branch -> PR ->
-gh pr merge --rebase. The PR body MUST carry the line `Closes #{num}` on its
+gh pr merge --squash. The PR body MUST carry the line `Closes #{num}` on its
 own: the loop reads that line off the merged PR to confirm the task shipped,
 and without it the round stops rather than replay a task nothing marks as
 delivered. The issue will stay open under `{waiting_merge}` until a
@@ -460,7 +460,7 @@ mod tests {
         }
         let read = with_labels(CODE);
         assert!(
-            read.contains("gh pr merge --rebase"),
+            read.contains("gh pr merge --squash"),
             "the read side still merges"
         );
     }

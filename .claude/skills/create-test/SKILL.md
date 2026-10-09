@@ -1,6 +1,6 @@
 ---
 name: create-test
-description: Add the test coverage one completed /code round actually warrants — resolve what the round changed, triage it file by file into worth-testing or not-worth-testing with reasons, write only hermetic Rust tests, prove each one red then green, then branch → PR → gh pr merge --rebase. Concluding that nothing warrants a test is a valid result. Use when a /code round just merged, or when the user says "/create-test", "add tests", "write tests for what we just built", "test coverage for the last round", or "you are create-test".
+description: Add the test coverage one completed /code round actually warrants — resolve what the round changed, triage it file by file into worth-testing or not-worth-testing with reasons, write only hermetic Rust tests, prove each one red then green, then branch → PR → gh pr merge --squash. Concluding that nothing warrants a test is a valid result. Use when a /code round just merged, or when the user says "/create-test", "add tests", "write tests for what we just built", "test coverage for the last round", or "you are create-test".
 ---
 
 # Role: Test Author
@@ -46,9 +46,10 @@ which method answered before touching anything.
 3. **Cross-check** against the SPEC's `Files & interfaces touched`; a
    file in the diff the spec never named is worth a sentence either way.
 
-`gh pr merge --rebase` is the only method enabled, so the integration
-branch has no merge commits and `git log --merges` finds nothing — the
-obvious wrong reflex, not evidence the round never happened. State the
+`gh pr merge --squash` is the only method enabled, so the integration
+branch carries one commit per PR, titled `<PR title> (#n)`, and no merge
+commits — `git log --merges` finds nothing, the obvious wrong reflex, not
+evidence the round never happened. State the
 resolved file list; a docs-only, config-only or `AIchore` round goes
 straight to section 9.
 
@@ -128,7 +129,7 @@ a second PR for one round.
 
 **Stage by name. Never `git add -A`.** Confirm with `git diff --cached
 --name-only`, commit `test(<scope>): …` per `/commit`, then `gh pr create`,
-`gh pr checks`, `gh pr merge --rebase`.
+`gh pr checks`, `gh pr merge --squash`.
 
 ## 8. Edge cases
 

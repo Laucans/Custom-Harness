@@ -832,6 +832,37 @@ impl GitHub for GhCli {
         )))
     }
 
+    async fn require_squash_merges(&self) -> Outcome<()> {
+        // `-F` types `true`/`false` as booleans, which the string-only
+        // `write` cannot send.
+        let repo = self.repo().await?;
+        let url = format!("repos/{repo}");
+        let mut args = vec![
+            "api".to_string(),
+            "-X".to_string(),
+            "PATCH".to_string(),
+            url.clone(),
+        ];
+        for field in [
+            "allow_squash_merge=true",
+            "allow_merge_commit=false",
+            "allow_rebase_merge=false",
+            "squash_merge_commit_title=PR_TITLE",
+            "squash_merge_commit_message=PR_BODY",
+        ] {
+            args.push("-F".to_string());
+            args.push(field.to_string());
+        }
+        let ran = self.gh(&args).await?;
+        if ran.ok() {
+            return Ok(());
+        }
+        Err(Halt::Halted(format!(
+            "GitHub refused to require squash merges on {repo} (PATCH {url}): {}",
+            ran.why()
+        )))
+    }
+
     async fn can_push(&self) -> Outcome<bool> {
         let what = "push permission";
         let value = self.repo_json(what).await?;
@@ -934,7 +965,7 @@ impl GitHub for GhCli {
                 "pr".to_string(),
                 "merge".to_string(),
                 pr_ref.to_string(),
-                "--rebase".to_string(),
+                "--squash".to_string(),
             ])
             .await?;
         if ran.ok() {

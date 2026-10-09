@@ -99,8 +99,9 @@ pub trait Repo {
     /// Local branches carrying a patch that `upstream` doesn't have.
     ///
     /// **By patch, not by sha**, and that's not a detail: the target repository
-    /// merges with rebase, so commits from a merged PR no longer exist anywhere
-    /// with their original sha. Counting them as work to save was blocking a permanent
+    /// merges by squash (`init-repo` leaves no other method), so commits from
+    /// a merged PR no longer exist anywhere with their original sha, nor one
+    /// by one. Counting them as work to save was blocking a permanent
     /// workspace on every run.
     ///
     /// # Errors
