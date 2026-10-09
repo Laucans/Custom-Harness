@@ -30,17 +30,48 @@
     return `<span class="act-log ${a.state}" role="button" tabindex="0" data-action-log="${a.id}" title="${esc(a.label)} — its log">≡</span>`;
   }
 
+  // How to find a button again once its pane redrew it: its id, else its
+  // first data-* attribute.
+  function selectorOf(button) {
+    if (!button) return null;
+    if (button.id) return '#' + CSS.escape(button.id);
+    const data = [...button.attributes].find((at) => at.name.startsWith('data-') && at.name !== 'data-action-log');
+    return data ? `[${data.name}="${CSS.escape(data.value)}"]` : null;
+  }
   // Puts the log button inside the pressed button, or refreshes it there.
   function mark(a) {
-    if (!a.button || !a.button.isConnected) return;
-    const old = a.button.querySelector('[data-action-log]');
+    const button = a.button && a.button.isConnected ? a.button : (a.selector && document.querySelector(a.selector));
+    if (!button) return;
+    a.button = button;
+    const old = button.querySelector('[data-action-log]');
     if (old) old.remove();
-    a.button.insertAdjacentHTML('beforeend', chip(a.key));
+    button.insertAdjacentHTML('beforeend', chip(a.key));
   }
+  // A pane that redraws its buttons drops their log buttons: put back, for
+  // the newest action of each button still on the page.
+  let healing = false;
+  const healer = new MutationObserver(() => {
+    if (healing) return;
+    healing = true;
+    // A timer, not an animation frame: a tab in the background gets no frames.
+    setTimeout(() => {
+      const seen = new Set();
+      for (const a of [...A.list].reverse()) {
+        if (!a.selector || seen.has(a.selector)) continue;
+        seen.add(a.selector);
+        const button = document.querySelector(a.selector);
+        if (button && !button.querySelector('[data-action-log]')) { a.button = button; button.insertAdjacentHTML('beforeend', chip(a.key)); }
+      }
+      // What this pass inserted is not a change to heal.
+      healer.takeRecords();
+      healing = false;
+    }, 0);
+  });
+  healer.observe(document.body, { childList: true, subtree: true });
 
   function start({ key, label, button, log }) {
     const a = {
-      id: ++A.seq, key, label, button: button || null, log: log || null,
+      id: ++A.seq, key, label, button: button || null, selector: selectorOf(button), log: log || null,
       state: 'running', lines: [], output: '', error: '', dismissed: false,
     };
     a.note = (text) => { a.lines.push(`${clock()}  ${text}`); refresh(a); };
