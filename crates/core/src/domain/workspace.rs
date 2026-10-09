@@ -37,6 +37,9 @@ pub const DEFAULT_BASE: &str = ".llocal/agentic_workspaces";
 /// the loop stopped. Now `.llocal/` holds the clones and `logs/`.
 pub const LOGS: &str = ".llocal/logs";
 
+/// The event store every process of the checkout writes to, beside the logs.
+pub const EVENTS: &str = ".llocal/harness.db";
+
 /// How long a run's workspace survives the run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Strategy {
@@ -164,6 +167,12 @@ impl Workspace {
     #[must_use]
     pub fn logs(&self) -> PathBuf {
         self.state_root.join(LOGS)
+    }
+
+    /// The event store, shared by the watch, its lanes and the view.
+    #[must_use]
+    pub fn events(&self) -> PathBuf {
+        self.state_root.join(EVENTS)
     }
 
     /// One workflow's folder of traces: its run folders, its ledgers.

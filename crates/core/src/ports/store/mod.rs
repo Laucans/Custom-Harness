@@ -9,6 +9,7 @@
 //! [`adapters::store`](crate::adapters::store).
 
 pub mod checkpoint;
+pub mod events;
 pub mod lock;
 pub mod review;
 pub mod spending;

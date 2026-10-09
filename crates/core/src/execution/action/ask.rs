@@ -10,6 +10,7 @@ use crate::domain::{Halt, Outcome, Spend, breaker, markers};
 use crate::execution::action::kinds::Open;
 use crate::ports::agent::Reply;
 use crate::ports::store::spending::{Entry, Spending};
+use crate::traces::Event;
 
 /// Sends `prompt` to the open session, and does what every paid stage does
 /// with its response.
@@ -49,6 +50,11 @@ pub async fn ask_and_record<S>(
     if !dry_run {
         let failures = spending.failures(task, stage, &fingerprint)?;
         if breaker::tripped(failures) {
+            log.record(&Event::BreakerRefused {
+                task: task.to_string(),
+                stage: stage.to_string(),
+                failures,
+            });
             return Err(Halt::Halted(refusal(stage, task, failures)));
         }
     }
@@ -76,6 +82,12 @@ pub async fn ask_and_record<S>(
             outcome,
             fingerprint: &fingerprint,
         })?;
+        log.record(&Event::SessionEnded {
+            task: task.to_string(),
+            stage: stage.to_string(),
+            outcome: outcome.to_string(),
+            cost_usd: spend.cost_usd,
+        });
         // After the row, and never fatal: the row is what the budget and the
         // breaker read, the reading is only what spares the *next* run a stage
         // it cannot finish. A convenience that could not be kept must not undo

@@ -3,8 +3,10 @@
 //! A leaf — it imports nothing else from `harness-core`, and knows neither
 //! `Halt`/`Verdict` nor the workflows.
 
+mod event;
 mod logbook;
 
+pub use event::Event;
 pub use logbook::{Logbook, Sink, Verbosity};
 
 /// The file a run's process keeps an OS lock on while it lives.

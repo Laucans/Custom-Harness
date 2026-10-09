@@ -51,6 +51,13 @@ use crate::adapters::spending;
 pub fn record(here: &Path, run_id: &str, workflow: &str, halt: &Halt) {
     let ledger = ErrorLedger::new(&Workspace::new(here).error_ledger());
     let row = error_ledger::Row::of(&spending::now(), run_id, workflow, halt);
+    if let Some(events) = crate::adapters::events::Teller::open(here, "watch") {
+        events.tell(&harness_core::traces::Event::Halted {
+            workflow: row.workflow.clone(),
+            kind: row.kind.clone(),
+            reason: row.reason.clone(),
+        });
+    }
     if let Err(broke) = ledger.append(&row) {
         eprintln!(
             "watch: the failure could not be recorded: {}",

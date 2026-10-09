@@ -10,7 +10,9 @@ use std::cell::RefCell;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use harness_core::traces::Sink;
+use harness_core::traces::{Event, Sink};
+
+use crate::adapters::events::Teller;
 
 /// The console alone.
 ///
@@ -56,6 +58,9 @@ pub struct Both {
     /// could not be taken: the run goes on, the view falls back to the age of
     /// its files.
     _alive: Option<std::fs::File>,
+    /// The checkout's event store, told under this log's run — `None` for a
+    /// log outside a checkout, or a store that could not open.
+    events: Option<Teller>,
 }
 
 impl Both {
@@ -91,6 +96,7 @@ impl Both {
             path: path.to_path_buf(),
             file: RefCell::new(Some(file)),
             _alive: alive,
+            events: Teller::for_log(path),
         })
     }
 
@@ -122,6 +128,12 @@ impl Sink for Both {
         {
             *held = None;
             eprintln!("warning: log file {} no longer writes", self.path.display());
+        }
+    }
+
+    fn record(&self, event: &Event) {
+        if let Some(events) = &self.events {
+            events.tell(event);
         }
     }
 }

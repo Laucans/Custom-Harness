@@ -3,6 +3,8 @@
 
 use std::rc::Rc;
 
+use super::Event;
+
 /// What the user sees on standard output. The file keeps everything — this
 /// distinction exists only for the console.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +32,12 @@ pub trait Sink {
     fn keep(&self, line: &str) {
         self.emit(line);
     }
+
+    /// Keep an event as data, besides its line.
+    ///
+    /// Defaults to nothing: a console, a test sink, has nowhere to keep it,
+    /// and the line it already received tells the human.
+    fn record(&self, _event: &Event) {}
 }
 
 /// A sink that writes nowhere — for tests and the fast path.
@@ -83,6 +91,24 @@ impl Logbook {
             verbosity: self.verbosity,
             tag: Some(tag),
         }
+    }
+
+    /// Tell an event: write its line (a warning when it warns), and keep it
+    /// as data. One call, so the line and the record cannot disagree.
+    pub fn event(&self, event: &Event) {
+        if let Some(line) = event.line() {
+            if event.warns() {
+                self.warn(&line);
+            } else {
+                self.say(&line);
+            }
+        }
+        self.sink.record(event);
+    }
+
+    /// Keep an event as data only — one whose line is a ledger row.
+    pub fn record(&self, event: &Event) {
+        self.sink.record(event);
     }
 
     /// Write a line, with tag at the head if `bind` set one.

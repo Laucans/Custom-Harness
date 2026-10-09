@@ -69,7 +69,7 @@ async fn main() -> ExitCode {
                 sub.lane.dry_run,
             )
             .await;
-            lane_exit("refine", sub.issue, ran)
+            lane_exit(&here, "refine", sub.issue, ran)
         }
         Some(cli::Command::Split(sub)) => {
             let ran = dispatch::split::run(
@@ -80,7 +80,7 @@ async fn main() -> ExitCode {
                 sub.lane.dry_run,
             )
             .await;
-            lane_exit("split", sub.milestone, ran)
+            lane_exit(&here, "split", sub.milestone, ran)
         }
         None => match dispatch::dev_loop::run(&args.run, &here).await {
             Ok(ran) => {
@@ -90,7 +90,13 @@ async fn main() -> ExitCode {
                 println!("journal : {}", ran.log.display());
                 ExitCode::SUCCESS
             }
-            Err(halt) => halt_to_code(&halt),
+            Err(halt) => {
+                if args.run.lane {
+                    let task = args.run.task.map_or_else(String::new, |n| format!(" #{n}"));
+                    tell_halt(&here, &format!("dev_loop{task}"), &halt);
+                }
+                halt_to_code(&halt)
+            }
         },
     }
 }
@@ -137,6 +143,7 @@ fn checkout_of(lane: &cli::LaneArgs) -> dispatch::shared::Checkout<'_> {
 
 /// What a lane's child prints and returns once its workflow is done.
 fn lane_exit(
+    here: &Path,
     what: &str,
     issue: u64,
     ran: harness_core::domain::Outcome<harness_core::domain::Verdict>,
@@ -146,7 +153,23 @@ fn lane_exit(
             println!("{what} #{issue}: {verdict:?}");
             ExitCode::SUCCESS
         }
-        Err(halt) => halt_to_code(&halt),
+        Err(halt) => {
+            tell_halt(here, &format!("{what} #{issue}"), &halt);
+            halt_to_code(&halt)
+        }
+    }
+}
+
+/// A lane's halt, kept as an event. Not in the error ledger: the doctor
+/// repairs from that ledger's last row, and lanes ending side by side would
+/// put rows there it was not called for.
+fn tell_halt(here: &Path, workflow: &str, halt: &harness_core::domain::Halt) {
+    if let Some(events) = adapters::events::Teller::open(here, "lanes") {
+        events.tell(&harness_core::traces::Event::Halted {
+            workflow: workflow.to_string(),
+            kind: halt.prefix().to_string(),
+            reason: halt.reason().to_string(),
+        });
     }
 }
 

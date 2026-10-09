@@ -11,5 +11,6 @@
 //! `harness-core` and are merely *wired* per run. These two are **written
 //! here**.
 
+pub mod events;
 pub mod sink;
 pub mod spending;

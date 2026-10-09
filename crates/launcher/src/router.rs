@@ -36,7 +36,7 @@ use harness_core::domain::doctor::Repair;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug, Verdict};
 use harness_core::ports::shell::github::GitHub;
-use harness_core::traces::{Logbook, Sink, Verbosity};
+use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Route, Snapshot};
 use harness_workflows::common::{branching, hierarchy, labels, review};
 use harness_workflows::dev_loop::data::{board, tasks};
@@ -70,16 +70,15 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
     // Appended across restarts on purpose: the question this answers — what
     // has the loop been doing — does not stop at a restart.
     let log = Logbook::new(Rc::clone(&sink) as Rc<dyn Sink>, Verbosity::Normal);
-    log.say(&format!(
-        "watch: every {}s on {} — journal {}",
-        args.interval,
-        if args.target_repo_url.is_empty() {
+    log.event(&Event::WatchStarted {
+        interval: args.interval,
+        target: if args.target_repo_url.is_empty() {
             "this checkout's own origin".to_string()
         } else {
             args.target_repo_url.clone()
         },
-        Workspace::new(here).rel(&journal)
-    ));
+        journal: Workspace::new(here).rel(&journal),
+    });
     let draining = Arc::new(AtomicBool::new(false));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| Halt::Failed(format!("SIGTERM cannot be listened to: {e}")))?;
@@ -103,7 +102,9 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
             // `connection reset by peer` on one GitHub call used to kill an
             // unattended watch outright, and the milestone it was about to
             // merge waited for a human to notice.
-            log.warn(&format!("watch: tick -> {}", halt.reason()));
+            log.event(&Event::TickFailed {
+                reason: halt.reason().to_string(),
+            });
             crate::dispatch::doctor::record(here, &spending::run_id(), "watch", &halt);
         }
         // A finished listener is never polled again: the check below returns.
@@ -122,25 +123,11 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
 
 /// The soft stop: says what it waits for, waits for every lane, says so.
 async fn drain(lanes: &mut Lanes, log: &Logbook) -> Outcome<()> {
-    let running = lanes.running();
-    log.say(&format!(
-        "watch: draining — soft stop asked, no new task; waiting for {} lane(s){}",
-        running.len(),
-        if running.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " ({})",
-                running
-                    .iter()
-                    .map(|task| format!("#{task}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        }
-    ));
+    log.event(&Event::WatchDraining {
+        lanes: lanes.running(),
+    });
     lanes.wait_all(log).await;
-    log.say("watch: stopped — soft stop, every lane done");
+    log.event(&Event::WatchStopped);
     Ok(())
 }
 
@@ -657,13 +644,18 @@ async fn run_router_lanes(
         match lanes.spawn(slot, number, command, here) {
             Ok(pid) => {
                 started += 1;
-                log.say(&format!(
-                    "watch: router lanes -> lane {slot} {what}s #{number} (pid {pid})"
-                ));
+                log.event(&Event::PreparationTaken {
+                    lane: u32::try_from(slot).unwrap_or(u32::MAX),
+                    what: what.to_string(),
+                    issue: number,
+                    pid,
+                });
             }
-            Err(e) => log.warn(&format!(
-                "watch: router lanes -> cannot start {what} #{number}: {e}"
-            )),
+            Err(e) => log.event(&Event::LaneNotStarted {
+                what: Some(what.to_string()),
+                issue: number,
+                reason: e.to_string(),
+            }),
         }
     }
     if started == 0 && lanes.free_slot().is_some() {
@@ -897,10 +889,17 @@ async fn run_lanes(
         }
         lanes.taken(number, version);
         match lanes.spawn(slot, number, command, here) {
-            Ok(pid) => log.say(&format!(
-                "watch: lanes -> lane {slot} takes #{number} on {branch} (pid {pid})"
-            )),
-            Err(e) => log.warn(&format!("watch: lanes -> cannot start #{number}: {e}")),
+            Ok(pid) => log.event(&Event::LaneTaken {
+                lane: u32::try_from(slot).unwrap_or(u32::MAX),
+                task: number,
+                branch: branch.clone(),
+                pid,
+            }),
+            Err(e) => log.event(&Event::LaneNotStarted {
+                what: None,
+                issue: number,
+                reason: e.to_string(),
+            }),
         }
     }
     None

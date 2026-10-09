@@ -31,8 +31,18 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use harness_core::traces::Logbook;
+use harness_core::traces::{Event, Logbook};
 use tokio::process::{Child, Command};
+
+/// A lane's process ended, as an event.
+fn ended(slot: usize, task: u64, status: std::process::ExitStatus) -> Event {
+    Event::LaneEnded {
+        lane: u32::try_from(slot).unwrap_or(u32::MAX),
+        issue: task,
+        status: status.to_string(),
+        code: status.code(),
+    }
+}
 
 /// One running lane.
 struct Lane {
@@ -83,19 +93,12 @@ impl Lanes {
             let done = match lane {
                 Some(running) => match running.child.try_wait() {
                     Ok(Some(status)) => {
-                        log.say(&format!(
-                            "watch: lanes -> lane {slot} done with #{} ({status})",
-                            running.task
-                        ));
+                        log.event(&ended(slot, running.task, status));
                         let version = self.taken_at.remove(&running.task);
                         if status.code() == Some(1)
                             && let Some(version) = version
                         {
-                            log.say(&format!(
-                                "watch: lanes -> #{} parked: it stopped for a human, and is not \
-                                 taken again until its issue changes",
-                                running.task
-                            ));
+                            log.event(&Event::TaskParked { task: running.task });
                             self.parked.insert(running.task, version);
                         }
                         true
@@ -189,10 +192,7 @@ impl Lanes {
             if let Some(running) = lane.take() {
                 let mut child = running.child;
                 match child.wait().await {
-                    Ok(status) => log.say(&format!(
-                        "watch: lanes -> lane {slot} done with #{} ({status})",
-                        running.task
-                    )),
+                    Ok(status) => log.event(&ended(slot, running.task, status)),
                     Err(e) => log.warn(&format!(
                         "watch: lanes -> lane {slot} (#{}) cannot be waited on: {e}",
                         running.task
