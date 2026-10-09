@@ -69,7 +69,7 @@ mod tests {
             &explore::fake::ports(),
             &explore::fake::config(config.artifacts_dir.clone()),
             &Request { roadmap: 4 },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         );
         assert_eq!(built.roadmap_key, "4");
         assert_eq!(built.remaining.get(), 1, "a run is one round");

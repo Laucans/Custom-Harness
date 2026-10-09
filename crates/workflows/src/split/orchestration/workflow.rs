@@ -147,7 +147,7 @@ mod tests {
             &ports_fake::with(Rc::clone(gh)),
             &config_fake::in_dir(split_dir),
             &run::Request { milestone: 4 },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         )
     }
 

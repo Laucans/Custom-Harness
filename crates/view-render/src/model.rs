@@ -99,6 +99,8 @@ pub enum StationState {
     Done,
     /// Skipped.
     Skipped,
+    /// Stopped here.
+    Failed,
 }
 
 /// How a station looks.

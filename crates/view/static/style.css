@@ -423,3 +423,22 @@ nav.screens .help-btn.on { color: var(--accent); border-color: var(--accent); }
 
 /* A clock that ticks while something runs: digits that do not jitter. */
 .elapsed { font-variant-numeric: tabular-nums; }
+
+/* The gates: a scanner's list, and the process graph of a run */
+ul.issues.gates li .why { color: var(--warn); }
+ul.issues li .said { font: 11px var(--mono); text-align: right; }
+.st.skipped { color: var(--warn); border-color: var(--warn); }
+table.rows.checks td:first-child { white-space: nowrap; }
+.graph { overflow-x: auto; margin: 0 0 12px; padding: 4px 0; }
+svg.process { display: block; font: 9px var(--mono); }
+svg.process .edge { stroke: var(--line); stroke-width: 2; }
+svg.process .edge.done, svg.process .edge.skipped { stroke: var(--ok); }
+svg.process .node circle, svg.process .node rect { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; cursor: pointer; }
+svg.process .node.done circle, svg.process .node.done rect { fill: var(--ok); stroke: var(--ok); }
+svg.process .node.skipped circle, svg.process .node.skipped rect { fill: var(--warn); stroke: var(--warn); }
+svg.process .node.failed circle, svg.process .node.failed rect { fill: var(--bad); stroke: var(--bad); }
+svg.process .node.active circle, svg.process .node.active rect { stroke: var(--accent); stroke-width: 2.5; animation: pulse 1.2s ease-in-out infinite; }
+svg.process .node:hover circle, svg.process .node:hover rect { stroke: var(--accent); }
+svg.process .mark { fill: #0b1016; font: 700 13px var(--sans); pointer-events: none; }
+svg.process .name { fill: var(--dim); pointer-events: none; }
+@keyframes pulse { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.35; } }

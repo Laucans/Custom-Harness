@@ -2050,10 +2050,12 @@ fn room_props(b: &mut Builder, snap: &Snapshot, room: &Room, x0: f32, z0: f32, r
                     .stations
                     .iter()
                     .position(|s| s.state == StationState::Active);
-                let done = line
-                    .stations
-                    .iter()
-                    .rposition(|s| matches!(s.state, StationState::Done | StationState::Skipped));
+                let done = line.stations.iter().rposition(|s| {
+                    matches!(
+                        s.state,
+                        StationState::Done | StationState::Skipped | StationState::Failed
+                    )
+                });
                 if let Some(at) = active.or(done) {
                     let cx =
                         x + 0.1 + at as f32 / (line.stations.len().max(2) - 1) as f32 * (len - 0.5);
@@ -2262,6 +2264,7 @@ const fn state_name(state: StationState) -> &'static str {
         StationState::Active => "active",
         StationState::Done => "done",
         StationState::Skipped => "skipped",
+        StationState::Failed => "failed",
     }
 }
 
@@ -2335,6 +2338,7 @@ fn lines_room(snap: &Snapshot) -> Scene {
             let mark = match st.state {
                 StationState::Done => "✓ ",
                 StationState::Skipped => "– ",
+                StationState::Failed => "✗ ",
                 StationState::Idle | StationState::Active => "",
             };
             if st.kind == Kind::Scanner {

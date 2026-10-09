@@ -11,9 +11,10 @@ use harness_core::domain::Issue;
 use harness_workflows::common::{branching, labels};
 
 use crate::domain::blueprint::{self, Line};
+use crate::domain::gates::{self, Told};
 use crate::domain::observe::{Observed, ObservedLine, ObservedRun};
 use crate::domain::snapshot::{
-    BoardView, Chimney, Employee, Factory, IssueStatus, IssueView, LastRun, LineView,
+    BoardView, Chimney, Employee, Factory, GateView, IssueStatus, IssueView, LastRun, LineView,
     MilestoneView, Project, RecentRun, Snapshot, StationState, StationView, Tokens, Version,
     Versions, WorksOn,
 };
@@ -48,6 +49,8 @@ pub struct Inputs<'a> {
     pub now: i64,
     /// Show the most recent run live even if it is over.
     pub demo: bool,
+    /// What the runs told of their gates and their stops.
+    pub told: &'a Told,
 }
 
 /// `#62 Asset folder rule…` — how an issue is written on a badge.
@@ -101,29 +104,43 @@ fn stations(
     line: &Line,
     run: Option<&ObservedRun>,
     at_work: bool,
+    told: &Told,
 ) -> (Vec<StationView>, Option<String>) {
     let passed = run.map(passed).unwrap_or_default();
     let skipped = run.map(|r| r.log.skipped.clone()).unwrap_or_default();
+    let run_id = run.map(|r| r.run_id.as_str());
     let last_passed = line
         .stations
         .iter()
         .rposition(|s| s.stage.as_ref().is_some_and(|stage| passed.contains(stage)));
-    let current = at_work
-        .then(|| {
-            line.stations
-                .iter()
-                .enumerate()
-                .filter(|(i, s)| s.stage.is_some() && last_passed.is_none_or(|last| *i > last))
-                .map(|(_, s)| s.id.clone())
-                .next()
-                .or_else(|| line.stations.last().map(|s| s.id.clone()))
-        })
-        .flatten();
+    // The first stage past the last one that reported: where the product is
+    // when the run is at work, and where it stopped when the run halted.
+    let next_stage = line
+        .stations
+        .iter()
+        .enumerate()
+        .filter(|(i, s)| s.stage.is_some() && last_passed.is_none_or(|last| *i > last))
+        .map(|(_, s)| s.id.clone())
+        .next()
+        .or_else(|| line.stations.last().map(|s| s.id.clone()));
+    let current = at_work.then(|| next_stage.clone()).flatten();
+    // A stop the run told is the stage's to show, unless a gate halted the
+    // round — then the arch carries it, and the stage behind never opened.
+    let stopped_at = run_id
+        .filter(|run| told.halt_of(&line.id, run).is_some() && !told.a_gate_halted(&line.id, run))
+        .and(next_stage);
     let views = line
         .stations
         .iter()
         .map(|station| {
+            let gates: Vec<GateView> = station
+                .gates
+                .iter()
+                .map(|spec| told.gate_view(spec, &line.id, run_id))
+                .collect();
             let state = match &station.stage {
+                _ if !gates.is_empty() => gates::arch_state(&gates),
+                _ if stopped_at.as_deref() == Some(station.id.as_str()) => StationState::Failed,
                 Some(stage) if skipped.contains(stage) => StationState::Skipped,
                 Some(stage) if passed.contains(stage) => StationState::Done,
                 _ if current.as_deref() == Some(station.id.as_str()) => StationState::Active,
@@ -137,10 +154,23 @@ fn stations(
                 model: station.model.clone(),
                 purpose: station.purpose.clone(),
                 state,
+                gates,
             }
         })
         .collect();
     (views, current)
+}
+
+/// The stations of `line` as one run left them — what an agent's pane draws
+/// as its process graph, for a run that is no longer the line's latest.
+#[must_use]
+pub fn run_stations(
+    line: &Line,
+    run: &ObservedRun,
+    at_work: bool,
+    told: &Told,
+) -> Vec<StationView> {
+    stations(line, Some(run), at_work, told).0
 }
 
 /// The model a live run is on: what its last prompt header says, else what
@@ -256,6 +286,7 @@ fn recent_work(
     observed: Option<&ObservedLine>,
     ledger: &[LedgerRow],
     employees: &[Employee],
+    told: &Told,
 ) -> Vec<RecentRun> {
     let Some(observed) = observed else {
         return Vec::new();
@@ -286,6 +317,7 @@ fn recent_work(
                 active: employees
                     .iter()
                     .any(|e| e.workflow == line.id && &e.run_id == run_id),
+                gates: told.verdicts_of_run(&line.id, run_id),
             }
         })
         .collect()
@@ -352,7 +384,7 @@ fn lines_and_employees(inputs: &Inputs<'_>) -> (Vec<LineView>, Vec<Employee>) {
         let run = observed.and_then(|l| l.latest.as_ref());
         let demo_pick = demo_line == Some(line.id.as_str());
         let live = run.is_some_and(|run| is_live(watch, &line.id, run, demo_pick));
-        let (views, current) = stations(line, run, live);
+        let (views, current) = stations(line, run, live, inputs.told);
         // One employee per run at work: a parallel watch runs a line on
         // several lanes, and each lane is somebody standing at a station.
         let subject = watch
@@ -381,7 +413,7 @@ fn lines_and_employees(inputs: &Inputs<'_>) -> (Vec<LineView>, Vec<Employee>) {
             let at = if run.run_id == current_run_id(observed) {
                 current.clone()
             } else {
-                stations(line, Some(run), true).1
+                stations(line, Some(run), true, inputs.told).1
             };
             employees.push(employee(
                 line,
@@ -393,7 +425,13 @@ fn lines_and_employees(inputs: &Inputs<'_>) -> (Vec<LineView>, Vec<Employee>) {
                 inputs.project,
             ));
         }
-        let recent_work = recent_work(line, observed, &inputs.observed.ledger, &employees);
+        let recent_work = recent_work(
+            line,
+            observed,
+            &inputs.observed.ledger,
+            &employees,
+            inputs.told,
+        );
         lines.push(LineView {
             recent_work,
             id: line.id.clone(),
@@ -754,6 +792,10 @@ mod tests {
 ";
 
     fn assemble(observed: &Observed, demo: bool) -> Snapshot {
+        assemble_told(observed, demo, &Told::default())
+    }
+
+    fn assemble_told(observed: &Observed, demo: bool, told: &Told) -> Snapshot {
         let lines = blueprint::lines();
         snapshot(&Inputs {
             observed,
@@ -762,7 +804,85 @@ mod tests {
             lines: &lines,
             now: traces::unix("2026-10-06T20:30:00Z").expect("clock"),
             demo,
+            told,
         })
+    }
+
+    const ARCH: &str = "technical-refinement-must-achieve+code-requires";
+
+    #[test]
+    fn an_arch_shows_what_its_gates_last_said_and_a_halted_gate_is_red() {
+        use crate::domain::gates::fake::{checked, halted};
+        let run = "agent-loop/20261006-202608";
+        let events = [
+            checked(
+                "2026-10-06T20:28:33Z",
+                run,
+                "technical-refinement must achieve",
+                "IssueBodyIsNotEmpty",
+                "pass",
+                "",
+            ),
+            checked(
+                "2026-10-06T20:28:34Z",
+                run,
+                "code requires",
+                "InThisRun",
+                "pass",
+                "",
+            ),
+            checked(
+                "2026-10-06T20:28:34Z",
+                run,
+                "code requires",
+                "CodeHasASpec",
+                "halt",
+                "no SPEC",
+            ),
+            halted("2026-10-06T20:28:35Z", run, "STOP", "no SPEC"),
+        ];
+        let told = gates::told(&events);
+        let observed = observed_with("agent-loop", dev_run(MID_RUN, 40), Watch::default());
+        let snap = assemble_told(&observed, false, &told);
+        let dev = snap
+            .lines
+            .iter()
+            .find(|l| l.id == "agent-loop")
+            .expect("line");
+        let station = |id: &str| dev.stations.iter().find(|s| s.id == id).expect(id);
+        let arch = station(ARCH);
+        assert_eq!(arch.state, StationState::Failed);
+        assert_eq!(arch.gates[0].state, StationState::Done);
+        assert_eq!(arch.gates[1].state, StationState::Failed);
+        assert_eq!(arch.gates[1].reason.as_deref(), Some("no SPEC"));
+        assert_eq!(arch.gates[1].checks.len(), 2);
+        // The gate carries the stop: the stage behind it never opened.
+        assert_ne!(station("code").state, StationState::Failed);
+        assert_eq!(station("dev_loop-preflight").state, StationState::Idle);
+        let recent = &dev.recent_work;
+        assert!(recent.is_empty(), "no run ids were listed in this fixture");
+    }
+
+    #[test]
+    fn a_run_that_stopped_in_a_stage_shows_that_stage_red() {
+        use crate::domain::gates::fake::halted;
+        let told = gates::told(&[halted(
+            "2026-10-06T20:29:00Z",
+            "agent-loop/20261006-202608",
+            "FAILED",
+            "the session broke",
+        )]);
+        let observed = observed_with("agent-loop", dev_run(MID_RUN, 40), Watch::default());
+        let snap = assemble_told(&observed, false, &told);
+        let dev = snap
+            .lines
+            .iter()
+            .find(|l| l.id == "agent-loop")
+            .expect("line");
+        let state = |id: &str| dev.stations.iter().find(|s| s.id == id).expect(id).state;
+        assert_eq!(state("technical-refinement"), StationState::Done);
+        assert_eq!(state("code"), StationState::Failed);
+        assert_eq!(state("create-test"), StationState::Idle);
     }
 
     #[test]
@@ -798,7 +918,7 @@ mod tests {
         assert_eq!(state("technical-refinement"), StationState::Done);
         assert_eq!(state("code"), StationState::Active);
         assert_eq!(state("create-test"), StationState::Idle);
-        assert_eq!(state("code.pre"), StationState::Idle);
+        assert_eq!(state(ARCH), StationState::Idle);
         assert!(!snap.factory.idle);
         assert!(snap.factory.watching);
     }
@@ -969,6 +1089,7 @@ mod tests {
             lines: &lines,
             now: 0,
             demo: false,
+            told: &Told::default(),
         });
         let board = snap.board.expect("board");
         assert_eq!(board.roadmap[0].kind, "roadmap");
@@ -1016,6 +1137,7 @@ mod tests {
             lines: &lines,
             now: 0,
             demo: false,
+            told: &Told::default(),
         });
         assert_eq!(snap.versions.main.url, "");
         assert!(snap.board.is_none());

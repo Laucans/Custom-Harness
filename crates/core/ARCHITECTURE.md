@@ -57,6 +57,16 @@ A line carries its level at its head: none, `warning: ` (`Logbook::warn`) or
 error; a `STOP` or a `QUOTA` is a warning — the same split as `Halt::severity`,
 held by a test since the leaf cannot import it. The view colours by that head.
 
+A gate tells every verdict. `Gate::verify` records one `Event::GateChecked`
+per check it runs — a pass included — naming the gate (`code requires`), the
+check (its type name, `Verification::name`), what it verifies
+(`Verification::purpose`, one sentence each check writes for itself), the
+verdict (`pass`, `skip`, `halt`) and the reason. The journal line is short
+(`gate "code requires" · CodeHasASpec: halt`); the reason is the skip or
+`STOP` line that follows it, and the event keeps it for the view. A gate
+nobody can see passing cannot be told from one that never ran — that is what
+the pass event is for.
+
 ## `ports/` — what the inside needs from the outside
 
 One module per external component, traits only (plus the few values those
@@ -124,7 +134,7 @@ paths to one type would be two ways to import it.
 ```
 data/           Context<S>, Settings            what a run carries
 action/         Action, SessionAction, Open, Unpaid, ask_and_record
-checks/         Gate, InThisRun, StageAlreadyDone, MarkDone
+checks/         Gate (tells each check's verdict), InThisRun, StageAlreadyDone, MarkDone
 orchestration/  Stage, StageBody, Round, Tolerance, Workflow, Lock
 traits.rs       Verification, Executable, Guarded
 provisioning.rs Provisioner, Mount, Run

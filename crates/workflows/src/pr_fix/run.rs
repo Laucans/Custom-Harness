@@ -54,7 +54,7 @@ mod tests {
             &Request {
                 pr_ref: "32".to_string(),
             },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         );
         assert_eq!(built.pr_ref, "32");
         assert_eq!(built.remaining.get(), 1, "one attempt per run");

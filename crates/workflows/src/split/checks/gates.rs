@@ -20,6 +20,10 @@ pub struct SliceParses {
 
 #[async_trait(?Send)]
 impl Verification<SplitState> for SliceParses {
+    fn purpose(&self) -> String {
+        "the slice stage's reply parses as a JSON array of task slices".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<SplitState>) -> Outcome<Verdict> {
         if ctx.settings.dry_run {
             return Ok(Verdict::Continue);

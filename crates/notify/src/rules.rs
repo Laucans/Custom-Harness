@@ -123,7 +123,12 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
             kind,
             reason,
         } => halted(board, workflow, kind, reason, at),
-        Event::SessionEnded { .. } | Event::PreparationTaken { .. } | Event::LaneTaken { .. } => {}
+        // A gate's verdict is the line's business, not a sign: a halt that matters
+        // arrives as the `Halted` event that follows it.
+        Event::SessionEnded { .. }
+        | Event::PreparationTaken { .. }
+        | Event::LaneTaken { .. }
+        | Event::GateChecked { .. } => {}
     }
 }
 

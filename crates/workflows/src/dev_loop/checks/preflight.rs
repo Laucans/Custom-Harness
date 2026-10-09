@@ -33,6 +33,10 @@ pub struct LabelsExist {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for LabelsExist {
+    fn purpose(&self) -> String {
+        "the harness:* labels exist on the repository".to_string()
+    }
+
     async fn verify(&self, _ctx: &Context<Loop>) -> Outcome<Verdict> {
         let known = self.gh.labels().await?;
         let missing: Vec<&str> = labels::LOOP
@@ -66,6 +70,10 @@ pub struct MilestoneIsReachable {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for MilestoneIsReachable {
+    fn purpose(&self) -> String {
+        "GitHub answers, and an open milestone is there to work".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         let here = board::read(self.gh.as_ref()).await?;
         ctx.traces.debug(&format!(
@@ -93,6 +101,10 @@ pub struct SkillsExist {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for SkillsExist {
+    fn purpose(&self) -> String {
+        "every skill the pipeline names exists under .claude/skills".to_string()
+    }
+
     async fn verify(&self, _ctx: &Context<Loop>) -> Outcome<Verdict> {
         for skill in &self.named {
             let path = self.skills.join(skill).join("SKILL.md");
@@ -134,6 +146,11 @@ pub struct DependenciesAreInstalled {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for DependenciesAreInstalled {
+    fn purpose(&self) -> String {
+        "the tools the workspace needs — gh, claude, the repository's own — are installed"
+            .to_string()
+    }
+
     async fn verify(&self, _ctx: &Context<Loop>) -> Outcome<Verdict> {
         let missing: Vec<&(String, String)> = self
             .needed
@@ -360,6 +377,10 @@ pub struct QuotaHasRoom {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for QuotaHasRoom {
+    fn purpose(&self) -> String {
+        "the subscription's rate-limit window has room left to pay for a round".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if self.ignored {
             // `Continue`, **not** `Verdict::Skip`. `Skip` means "skip what this

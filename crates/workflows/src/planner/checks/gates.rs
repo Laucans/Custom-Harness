@@ -20,6 +20,10 @@ pub struct PlanParses {
 
 #[async_trait(?Send)]
 impl Verification<PlannerState> for PlanParses {
+    fn purpose(&self) -> String {
+        "the plan stage's reply parses as a JSON array of milestones".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<PlannerState>) -> Outcome<Verdict> {
         if ctx.settings.dry_run {
             return Ok(Verdict::Continue);

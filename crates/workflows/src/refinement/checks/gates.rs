@@ -24,6 +24,11 @@ pub struct SectionIsWanted {
 
 #[async_trait(?Send)]
 impl Verification<RefinementState> for SectionIsWanted {
+    fn purpose(&self) -> String {
+        "this round writes the section: the router named it, or the first round writes them all"
+            .to_string()
+    }
+
     async fn verify(&self, ctx: &Context<RefinementState>) -> Outcome<Verdict> {
         if ctx.state.wanted.contains(&self.key) {
             return Ok(Verdict::Continue);
@@ -42,6 +47,11 @@ pub struct RouterIsOff {
 
 #[async_trait(?Send)]
 impl Verification<RefinementState> for RouterIsOff {
+    fn purpose(&self) -> String {
+        "the router runs from the second round on, with a --context — the first round skips it"
+            .to_string()
+    }
+
     async fn verify(&self, ctx: &Context<RefinementState>) -> Outcome<Verdict> {
         if rounds::routed(ctx.state.round_no, self.has_context) {
             return Ok(Verdict::Continue);
@@ -68,6 +78,10 @@ pub struct RouterNamedSections {
 
 #[async_trait(?Send)]
 impl Verification<RefinementState> for RouterNamedSections {
+    fn purpose(&self) -> String {
+        "the router's reply names known sections".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<RefinementState>) -> Outcome<Verdict> {
         // A dry-run runs no one: `state.wanted` stays what the preflight set
         // (empty, for a routed round), and that's not an error.
@@ -106,6 +120,10 @@ pub struct SectionSitsInTheLayout {
 
 #[async_trait(?Send)]
 impl Verification<RefinementState> for SectionSitsInTheLayout {
+    fn purpose(&self) -> String {
+        "the section's design and plan place the unit in the repository layout (crates/<something>) rather than waiving it".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<RefinementState>) -> Outcome<Verdict> {
         if ctx.settings.dry_run {
             return Ok(Verdict::Continue);
@@ -209,6 +227,10 @@ pub struct NothingIsWritten;
 
 #[async_trait(?Send)]
 impl Verification<RefinementState> for NothingIsWritten {
+    fn purpose(&self) -> String {
+        "nothing is written back under --dry-run".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<RefinementState>) -> Outcome<Verdict> {
         if !ctx.settings.dry_run {
             return Ok(Verdict::Continue);
@@ -223,6 +245,10 @@ pub struct IssueIsATask;
 
 #[async_trait(?Send)]
 impl Verification<RefinementState> for IssueIsATask {
+    fn purpose(&self) -> String {
+        "the issue is a task, not a milestone — only a task gets the human advice".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<RefinementState>) -> Outcome<Verdict> {
         let milestone = ctx
             .state

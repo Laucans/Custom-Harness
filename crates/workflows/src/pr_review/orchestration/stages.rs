@@ -106,7 +106,7 @@ pub fn inline(ports: &Ports, config: &Config) -> Stage<ReviewState> {
     Stage {
         name: INLINE.to_string(),
         pre: Some(Gate {
-            name: "inline requiert",
+            name: "inline requires",
             checks: vec![Box::new(InlinePassIsOff {
                 no_inline: config.no_inline,
             })],
@@ -151,7 +151,7 @@ pub fn publish(ports: &Ports, config: &Config) -> Stage<ReviewState> {
     Stage {
         name: PUBLISH.to_string(),
         pre: Some(Gate {
-            name: "publish requiert",
+            name: "publish requires",
             checks: vec![Box::new(NothingIsPosted)],
         }),
         post: None,

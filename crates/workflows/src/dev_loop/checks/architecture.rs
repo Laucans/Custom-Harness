@@ -473,6 +473,10 @@ pub struct ArchitectureHolds {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for ArchitectureHolds {
+    fn purpose(&self) -> String {
+        "static read of the checkout: every Capability stays isolated, every manifest names its system, every Micro-UI needs Capabilities of its own system, and the unit the task declared is there on the side it said".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if ctx.settings.dry_run {
             return Ok(Verdict::Continue);
@@ -512,6 +516,10 @@ pub struct ConceptsDocumented {
 
 #[async_trait(?Send)]
 impl Verification<Loop> for ConceptsDocumented {
+    fn purpose(&self) -> String {
+        "static read of the checkout: every Concept a Capability implements has its concepts/<Name>/v<n>/concept.json".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if ctx.settings.dry_run {
             return Ok(Verdict::Continue);

@@ -155,7 +155,7 @@ mod tests {
             &explore::fake::ports(),
             &explore_config,
             &run::Request { roadmap: 4 },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         )
     }
 

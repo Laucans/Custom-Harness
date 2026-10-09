@@ -66,7 +66,7 @@ mod tests {
                 base: "main_agent".to_string(),
                 force: true,
             },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         );
         assert_eq!(built.pr_ref, "32");
         assert_eq!(built.base, "main_agent");

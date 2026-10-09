@@ -112,7 +112,7 @@ pub async fn run(
         &run::Request {
             pr_ref: pr_ref.to_string(),
         },
-        Gate::empty("outillage"),
+        Gate::empty("tooling"),
     );
     let mut ctx = Context::new(
         Settings {

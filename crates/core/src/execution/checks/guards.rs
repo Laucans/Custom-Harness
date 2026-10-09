@@ -37,6 +37,13 @@ impl<S> Verification<S> for InThisRun {
             self.stage, ctx.settings.stages
         )))
     }
+
+    fn purpose(&self) -> String {
+        format!(
+            "`{}` is among the stages this run was asked for (--stages)",
+            self.stage
+        )
+    }
 }
 
 /// Has this stage already run for this task, across all runs?
@@ -60,6 +67,13 @@ impl<S: Resumable> Verification<S> for StageAlreadyDone {
              force)",
             self.stage
         )))
+    }
+
+    fn purpose(&self) -> String {
+        format!(
+            "`{}` has not already been completed for this task in an earlier run",
+            self.stage
+        )
     }
 }
 

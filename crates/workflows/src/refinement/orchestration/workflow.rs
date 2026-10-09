@@ -251,7 +251,7 @@ mod tests {
                 context: context.to_string(),
                 force,
             },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         )
     }
 

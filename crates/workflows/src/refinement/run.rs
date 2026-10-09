@@ -86,7 +86,7 @@ mod tests {
                 context: String::new(),
                 force: false,
             },
-            Gate::empty("outillage"),
+            Gate::empty("tooling"),
         );
         assert_eq!(built.issue_key, "25");
         assert_eq!(built.remaining.get(), 1, "a run is one round");

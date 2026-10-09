@@ -17,6 +17,10 @@ pub struct SomethingIsRed;
 
 #[async_trait(?Send)]
 impl Verification<FixState> for SomethingIsRed {
+    fn purpose(&self) -> String {
+        "something is actually broken on the pull request: a red check, a blocking review, or a branch that no longer merges".to_string()
+    }
+
     async fn verify(&self, ctx: &Context<FixState>) -> Outcome<Verdict> {
         if !ctx.state.asks_for_a_repair() {
             return Ok(Verdict::Skip(

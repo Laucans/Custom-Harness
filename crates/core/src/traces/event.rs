@@ -121,6 +121,22 @@ pub enum Event {
         /// How many times in a row the same prompt failed.
         failures: u32,
     },
+    /// A gate ran one of its checks and got its verdict. Told as one line
+    /// per check, so the journal says which check let the product through,
+    /// skipped the stage, or stopped the round; the reason is the skip or
+    /// halt line that follows, and is kept here for the view.
+    GateChecked {
+        /// The gate, as the workflow names it (`code requires`).
+        gate: String,
+        /// The check, by its type name (`CodeHasASpec`).
+        check: String,
+        /// What the check verifies, in a sentence.
+        purpose: String,
+        /// `pass`, `skip` or `halt`.
+        verdict: String,
+        /// Why, for a skip or a halt; empty for a pass.
+        reason: String,
+    },
     /// A workflow stopped. Told in the run's own log as `STOP: …` — the line
     /// a reader of that log jumps to — and kept.
     Halted {
@@ -194,6 +210,12 @@ impl Event {
                  again until its issue changes"
             ),
             Self::Halted { kind, reason, .. } => format!("{kind}: {reason}"),
+            Self::GateChecked {
+                gate,
+                check,
+                verdict,
+                ..
+            } => format!("gate \"{gate}\" · {check}: {verdict}"),
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
@@ -223,6 +245,24 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gate_s_verdict_names_the_gate_and_the_check() {
+        let checked = Event::GateChecked {
+            gate: "code requires".to_string(),
+            check: "CodeHasASpec".to_string(),
+            purpose: "the issue body is not empty".to_string(),
+            verdict: "halt".to_string(),
+            reason: "no SPEC".to_string(),
+        };
+        assert_eq!(
+            checked.line().as_deref(),
+            Some("gate \"code requires\" · CodeHasASpec: halt")
+        );
+        assert_eq!(checked.level(), Level::Info);
+        let json = serde_json::to_string(&checked).expect("json");
+        assert!(json.contains("\"event\":\"gate_checked\""), "{json}");
+    }
 
     #[test]
     fn the_lines_are_the_journal_s_own() {

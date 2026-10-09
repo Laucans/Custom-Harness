@@ -27,6 +27,19 @@ pub enum Kind {
     Arm,
 }
 
+/// One gate a scanner stands for, named as the workflow names it — the
+/// name every `gate_checked` event of a run carries, which is what lets the
+/// view pair a verdict with its arch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GateSpec {
+    /// Unique within its line; the name, dashed.
+    pub id: String,
+    /// `code requires` — the `Gate::name` in `harness-workflows`.
+    pub name: String,
+    /// What the gate checks, in a sentence.
+    pub purpose: String,
+}
+
 /// One station along a line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Station {
@@ -43,6 +56,10 @@ pub struct Station {
     pub model: Option<String>,
     /// What it is for, in a sentence — what the pane's `?` says.
     pub purpose: String,
+    /// The gates a scanner stands for: one, or several when gates follow
+    /// each other on the belt (a stage's `post` and the next one's `pre`)
+    /// and are shown as one arch. Empty for every other kind.
+    pub gates: Vec<GateSpec>,
 }
 
 /// One production line: a workflow, as the plant shows it.
@@ -149,45 +166,107 @@ fn free(stage: &str, label: &str, kind: Kind, purpose: &str) -> Station {
         stage: Some(stage.to_string()),
         model: None,
         purpose: purpose.to_string(),
+        gates: Vec::new(),
     }
 }
 
-/// A paid stage as the belt shows it: the gate before, the robot, the gate
-/// after. Every `Stage` in core carries a `pre` and a `post` gate, so the
-/// shape is the same for all of them.
-fn paid(stage: &str, label: &str, kind: Kind, model: &str, purpose: &str) -> Vec<Station> {
-    vec![
-        Station {
-            id: format!("{stage}.pre"),
-            label: format!("{label} requires"),
-            kind: Kind::Scanner,
-            stage: None,
-            model: None,
-            purpose: format!(
-                "A gate before \"{label}\": it checks what the stage needs before a session \
-                 is paid for, and skips the stage or halts the round when it is missing."
-            ),
-        },
-        Station {
-            id: stage.to_string(),
-            label: label.to_string(),
-            kind,
-            stage: Some(stage.to_string()),
-            model: Some(model.to_string()),
-            purpose: purpose.to_string(),
-        },
-        Station {
-            id: format!("{stage}.post"),
-            label: format!("{label} must achieve"),
-            kind: Kind::Scanner,
-            stage: None,
-            model: None,
-            purpose: format!(
-                "A gate after \"{label}\": it checks the stage delivered what it promised, \
-                 and halts the round here when it did not."
-            ),
-        },
-    ]
+/// A gate, as the workflow names it.
+fn gate(name: &str, purpose: &str) -> GateSpec {
+    GateSpec {
+        id: name.replace(' ', "-"),
+        name: name.to_string(),
+        purpose: purpose.to_string(),
+    }
+}
+
+/// The arch one gate stands for.
+fn scanner(gate: GateSpec) -> Station {
+    Station {
+        id: gate.id.clone(),
+        label: gate.name.clone(),
+        kind: Kind::Scanner,
+        stage: None,
+        model: None,
+        purpose: gate.purpose.clone(),
+        gates: vec![gate],
+    }
+}
+
+/// A paid stage as the belt shows it: the gate before it when the stage
+/// declares one, the robot, the gate after it when it declares one. Only
+/// the gates `harness-workflows` really builds are drawn: an arch nobody
+/// walks through would show idle forever.
+fn paid(
+    stage: &str,
+    label: &str,
+    kind: Kind,
+    model: &str,
+    purpose: &str,
+    pre: Option<GateSpec>,
+    post: Option<GateSpec>,
+) -> Vec<Station> {
+    let mut stations = Vec::new();
+    if let Some(pre) = pre {
+        stations.push(scanner(pre));
+    }
+    stations.push(Station {
+        id: stage.to_string(),
+        label: label.to_string(),
+        kind,
+        stage: Some(stage.to_string()),
+        model: Some(model.to_string()),
+        purpose: purpose.to_string(),
+        gates: Vec::new(),
+    });
+    if let Some(post) = post {
+        stations.push(scanner(post));
+    }
+    stations
+}
+
+/// Two gates that follow each other on the belt — a stage's `post`, the next
+/// stage's `pre` — are one arch: the product walks through both before it
+/// moves on, and two arches a hand apart said nothing more than one.
+fn merge_adjacent_gates(flat: Vec<Station>) -> Vec<Station> {
+    let mut stations: Vec<Station> = Vec::new();
+    for station in flat {
+        let gated = !station.gates.is_empty();
+        if gated && let Some(last) = stations.last_mut().filter(|last| !last.gates.is_empty()) {
+            last.id = format!("{}+{}", last.id, station.id);
+            last.gates.extend(station.gates);
+            continue;
+        }
+        stations.push(station);
+    }
+    // A merged arch is named by its neighbours, and its purpose lists its
+    // gates: a reader of the sign knows what stands between the two stages.
+    for i in 0..stations.len() {
+        if stations[i].gates.len() < 2 {
+            continue;
+        }
+        let before = stations[..i]
+            .iter()
+            .rev()
+            .find(|s| s.gates.is_empty())
+            .map(|s| s.label.clone());
+        let after = stations[i + 1..]
+            .iter()
+            .find(|s| s.gates.is_empty())
+            .map(|s| s.label.clone());
+        stations[i].label = match (before, after) {
+            (Some(b), Some(a)) => format!("{b} → {a}"),
+            (None, Some(a)) => format!("before {a}"),
+            (Some(b), None) => format!("after {b}"),
+            (None, None) => "gates".to_string(),
+        };
+        let names: Vec<&str> = stations[i].gates.iter().map(|g| g.name.as_str()).collect();
+        stations[i].purpose = format!(
+            "{} gates in a row — {}. The product walks through all of them before it moves on.",
+            names.len(),
+            names.join(", ")
+        );
+    }
+    stations
 }
 
 fn line(id: &str, title: &str, trigger: &str, purpose: &str, parts: Vec<Vec<Station>>) -> Line {
@@ -195,7 +274,7 @@ fn line(id: &str, title: &str, trigger: &str, purpose: &str, parts: Vec<Vec<Stat
         id: id.to_string(),
         title: title.to_string(),
         trigger: trigger.to_string(),
-        stations: parts.into_iter().flatten().collect(),
+        stations: merge_adjacent_gates(parts.into_iter().flatten().collect()),
         purpose: purpose.to_string(),
     }
 }
@@ -262,6 +341,11 @@ fn agent_loop_line() -> Line {
         "Builds one task end to end: plans it against the code, writes it, tests it, and \
          delivers it as a pull request on its milestone's branch.",
         vec![
+            vec![scanner(gate(
+                "dev_loop preflight",
+                "Before anything is paid for: the quota window has room, the labels and an \
+                 open milestone are on GitHub, the skills and the tools are installed.",
+            ))],
             vec![free(
                 PICK,
                 "pick the task",
@@ -276,6 +360,15 @@ fn agent_loop_line() -> Line {
                 "opus",
                 "Reads the code the task touches and writes its Technical section and its \
                  implementation plan into the issue.",
+                Some(gate(
+                    "technical-refinement requires",
+                    "The stage is in this run and not already done, the issue has no technical \
+                     sections yet, and it carries its business sections.",
+                )),
+                Some(gate(
+                    "technical-refinement must achieve",
+                    "The issue body, re-read from GitHub, is not empty.",
+                )),
             ),
             paid(
                 "code",
@@ -284,6 +377,16 @@ fn agent_loop_line() -> Line {
                 "sonnet",
                 "Builds the plan on the task's branch, runs the checks, and opens the pull \
                  request.",
+                Some(gate(
+                    "code requires",
+                    "The stage is in this run, not already done or delivered, and the issue \
+                     has a SPEC to build.",
+                )),
+                Some(gate(
+                    "code must keep the architecture",
+                    "Static analysis of the checkout: the agent-native architecture still \
+                     holds, and every Concept a Capability implements is documented.",
+                )),
             ),
             paid(
                 "create-test",
@@ -291,7 +394,16 @@ fn agent_loop_line() -> Line {
                 Kind::Builder,
                 "sonnet",
                 "Adds the tests the change actually warrants, each proven red then green.",
+                Some(gate(
+                    "create-test requires",
+                    "The stage is in this run and not already done.",
+                )),
+                None,
             ),
+            vec![scanner(gate(
+                "the round must deliver",
+                "A merged pull request on the integration branch closes the task.",
+            ))],
             vec![free(
                 DELIVER,
                 "mark delivered",
@@ -323,6 +435,8 @@ fn refinement_line() -> Line {
                 Kind::Inspector,
                 "sonnet",
                 "Reads the repository so the sections rest on facts, not guesses.",
+                None,
+                None,
             ),
             paid(
                 "router",
@@ -330,6 +444,15 @@ fn refinement_line() -> Line {
                 Kind::Inspector,
                 "sonnet",
                 "From the second round on, picks which sections this round rewrites.",
+                Some(gate(
+                    "router requires",
+                    "A second round or later, with a context to route on — the first round \
+                     writes every section and skips the router.",
+                )),
+                Some(gate(
+                    "router must achieve",
+                    "The router's reply names known sections.",
+                )),
             ),
             paid(
                 "sections",
@@ -338,6 +461,16 @@ fn refinement_line() -> Line {
                 "sonnet",
                 "Writes each section of the phase: Business Goal, Acceptance Criteria, \
                  Business Rules — or Technical and its plan.",
+                Some(gate(
+                    "section requires",
+                    "This round writes the section: the router named it, or the first round \
+                     writes them all.",
+                )),
+                Some(gate(
+                    "section must sit in the layout",
+                    "The section's design and plan place their unit in the repository layout \
+                     rather than waiving it.",
+                )),
             ),
             paid(
                 "coherence",
@@ -345,6 +478,8 @@ fn refinement_line() -> Line {
                 Kind::Inspector,
                 "sonnet",
                 "Reads the round's sections together and fixes what contradicts.",
+                None,
+                None,
             ),
             paid(
                 "human-advice",
@@ -352,7 +487,16 @@ fn refinement_line() -> Line {
                 Kind::Inspector,
                 "sonnet",
                 "Says whether the technical half of a task needs a human decision first.",
+                Some(gate(
+                    "advice requires",
+                    "The issue is a task, not a milestone — only a task gets the advice.",
+                )),
+                None,
             ),
+            vec![scanner(gate(
+                "publish requires",
+                "Not a dry run: the body is really written back.",
+            ))],
             vec![free(
                 "publish",
                 "publish the body",
@@ -382,6 +526,8 @@ fn planner_line() -> Line {
                 Kind::Inspector,
                 "sonnet",
                 "Reads the repository to see what already exists.",
+                None,
+                None,
             ),
             vec![free(
                 "context",
@@ -396,6 +542,11 @@ fn planner_line() -> Line {
                 "sonnet",
                 "Draws the milestones, write side before the readers that need it, in \
                  delivery order.",
+                None,
+                Some(gate(
+                    "plan must parse",
+                    "The reply parses as a JSON array of milestones.",
+                )),
             ),
             vec![free(
                 "publish",
@@ -429,6 +580,11 @@ fn split_line() -> Line {
                 "sonnet",
                 "Cuts the milestone into tasks, one unit of the architecture each, chained \
                  where one builds on another.",
+                None,
+                Some(gate(
+                    "slice must parse",
+                    "The reply parses as a JSON array of task slices.",
+                )),
             ),
             vec![free(
                 "publish",
@@ -454,6 +610,11 @@ fn pr_review_line() -> Line {
                 Kind::Inspector,
                 "sonnet",
                 "Reads the diff and comments where the code is wrong or risky.",
+                Some(gate(
+                    "inline requires",
+                    "The inline pass is not switched off (--no-inline).",
+                )),
+                None,
             ),
             paid(
                 "brief",
@@ -462,7 +623,13 @@ fn pr_review_line() -> Line {
                 "sonnet",
                 "Writes the review's summary, and its last line: VERDICT blocking (a correctness \
                  or security defect, a bypassable gate) or clean.",
+                None,
+                None,
             ),
+            vec![scanner(gate(
+                "publish requires",
+                "Not a dry run: the review is really posted.",
+            ))],
             vec![free(
                 "publish",
                 "post the review",
@@ -494,6 +661,12 @@ fn pr_fix_line() -> Line {
                 Kind::Builder,
                 "sonnet",
                 "Repairs the branch and pushes once — no second attempt without a human.",
+                Some(gate(
+                    "fix requires",
+                    "Something is really broken on the pull request: a red check, a blocking \
+                     review, or a branch that no longer merges.",
+                )),
+                None,
             ),
         ],
     )
@@ -617,12 +790,84 @@ mod tests {
     }
 
     #[test]
-    fn a_paid_stage_is_a_gate_a_robot_and_a_gate() {
-        let stations = paid("code", "code", Kind::Builder, "sonnet", "builds");
-        let kinds: Vec<Kind> = stations.iter().map(|s| s.kind).collect();
+    fn a_paid_stage_draws_only_the_gates_it_declares() {
+        let both = paid(
+            "code",
+            "code",
+            Kind::Builder,
+            "sonnet",
+            "builds",
+            Some(gate("code requires", "a spec")),
+            Some(gate("code must keep the architecture", "holds")),
+        );
+        let kinds: Vec<Kind> = both.iter().map(|s| s.kind).collect();
         assert_eq!(kinds, [Kind::Scanner, Kind::Builder, Kind::Scanner]);
-        assert_eq!(stations[1].stage.as_deref(), Some("code"));
-        assert!(stations[0].stage.is_none() && stations[2].stage.is_none());
+        assert_eq!(both[1].stage.as_deref(), Some("code"));
+        assert!(both[0].stage.is_none() && both[2].stage.is_none());
+        assert_eq!(both[0].id, "code-requires");
+        assert_eq!(both[0].gates[0].name, "code requires");
+        let none = paid(
+            "brief",
+            "brief",
+            Kind::Inspector,
+            "sonnet",
+            "writes",
+            None,
+            None,
+        );
+        assert_eq!(none.len(), 1);
+        assert!(none[0].gates.is_empty());
+    }
+
+    #[test]
+    fn two_gates_in_a_row_are_one_arch_named_by_its_neighbours() {
+        let dev = lines()
+            .into_iter()
+            .find(|l| l.id == "agent-loop")
+            .expect("agent-loop");
+        let arch = dev
+            .stations
+            .iter()
+            .find(|s| s.id == "technical-refinement-must-achieve+code-requires")
+            .expect("the merged arch");
+        assert_eq!(arch.kind, Kind::Scanner);
+        assert_eq!(arch.label, "technical refinement → code");
+        let names: Vec<&str> = arch.gates.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["technical-refinement must achieve", "code requires"]
+        );
+        assert!(arch.purpose.contains("2 gates"));
+        // A lone gate keeps its own name on the sign.
+        let lone = dev
+            .stations
+            .iter()
+            .find(|s| s.id == "dev_loop-preflight")
+            .expect("the preflight arch");
+        assert_eq!(lone.label, "dev_loop preflight");
+        assert_eq!(lone.gates.len(), 1);
+        // Two free scanners that are stages of their own are never merged.
+        let merge = lines()
+            .into_iter()
+            .find(|l| l.id == "main-agent-merge")
+            .expect("main-agent-merge");
+        assert!(merge.stations.iter().any(|s| s.id == "tasks-delivered"));
+        assert!(merge.stations.iter().any(|s| s.id == "ci-green"));
+    }
+
+    #[test]
+    fn every_gate_name_is_unique_within_its_line() {
+        for line in lines() {
+            let mut names: Vec<&str> = line
+                .stations
+                .iter()
+                .flat_map(|s| s.gates.iter().map(|g| g.name.as_str()))
+                .collect();
+            let before = names.len();
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(names.len(), before, "duplicate gate name in {}", line.id);
+        }
     }
 
     #[test]

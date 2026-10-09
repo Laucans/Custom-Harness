@@ -90,7 +90,9 @@ pub struct Observed {
     pub watch_process: Option<bool>,
 }
 
-fn observe_run(traces: &dyn Traces, line: &Line, run: &str) -> ObservedRun {
+/// Reads one run of `line` — what the picture needs of it, no more.
+#[must_use]
+pub fn observe_run(traces: &dyn Traces, line: &Line, run: &str) -> ObservedRun {
     let known: Vec<String> = line
         .stations
         .iter()
