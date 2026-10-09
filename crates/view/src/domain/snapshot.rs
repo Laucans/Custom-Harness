@@ -188,6 +188,17 @@ pub struct Employee {
     /// What the run has consumed so far — its finished stages, as the cost
     /// ledger records them. `None` until its first stage ends.
     pub tokens: Option<Tokens>,
+    /// What it works on, on GitHub: the issue, the pull request, the branch.
+    pub works_on: Option<WorksOn>,
+}
+
+/// An agent's subject, as a link: `PR #31` to its pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorksOn {
+    /// `#24`, `PR #31`, `milestone/3-campaign`.
+    pub label: String,
+    /// Its page on GitHub; empty when the project has no URL.
+    pub url: String,
 }
 
 /// The tokens a run consumed, summed over the ledger rows it wrote.

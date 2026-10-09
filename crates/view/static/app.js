@@ -168,11 +168,12 @@
       if (agents.length === 1) {
         const open = esc(JSON.stringify({ kind: 'employee', id: e.id }));
         const tip = esc(`${e.name}${e.stage ? ' — ' + e.stage : ''}`);
-        return `<button class="crew-bubble" data-crew='${open}' title="${tip}"><span class="face${ring}">${faceOf(e.id)}</span><span class="who"><b>${esc(e.name)}</b><small>${esc(e.stage || 'starting')}</small></span></button>`;
+        return `<div class="crew-item"><button class="crew-bubble" data-crew='${open}' title="${tip}"><span class="face${ring}">${faceOf(e.id)}</span><span class="who"><b>${esc(e.name)}</b><small>${esc(e.stage || 'starting')}</small></span></button>${worksOn(e, 'crew-link')}</div>`;
       }
       const title = `#${n} - ${issueTitle(n) || agents.map((a) => a.name.replace(/^#\d+ · /, '')).join(', ')}`;
       const open = esc(JSON.stringify({ kind: 'agents', number: n }));
-      return `<button class="crew-bubble" data-crew='${open}' title="${esc(title)}"><span class="face${ring}">${faceOf(e.id)}<span class="count">${agents.length}</span></span><span class="who"><b>${esc(title)}</b><small>${agents.length} agents · ${esc(agents.map((a) => a.stage || 'starting').join(', '))}</small></span></button>`;
+      return `<button class="crew-bubble" data-crew='${open}' title="${esc(title)}"><span class="face${ring}">${faceOf(e.id)}<span class="count">${agents.length}</span></span><span class="who"><b>${esc(title)}</b><small>${agents.length} agents · ${esc(agents.map((a) => a.stage || 'starting').join(', '))}</small></span></button>`
+        + (S.snap.project.url ? `<a class="crew-link" href="${esc(S.snap.project.url)}/issues/${n}" target="_blank" rel="noopener" title="open #${n} on GitHub">#${n} ↗</a>` : '');
     }).join('');
     if (html !== S.crewHtml) { bar.innerHTML = html; S.crewHtml = html; }
   }
@@ -249,6 +250,11 @@
   const sessionTag = (r, workflow) => runTag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '', { run: r.run, workflow, stage: r.stage, task: r.task, failed: !!r.outcome && r.outcome !== 'ok' });
   // A running status: the agent at work, its session followed live.
   const liveTag = (id, label = 'running') => `<button class="tag-link" data-pane='${esc(JSON.stringify({ kind: 'employee', id }))}' title="open its session, followed live">${tag(label, 'acc')}</button>`;
+  // What an agent works on — the issue refined, the pull request reviewed,
+  // the branch a dev loop builds — one click away on GitHub.
+  const worksOn = (e, cls = 'ext') => (e && e.works_on && e.works_on.url
+    ? `<a class="${cls}" href="${esc(e.works_on.url)}" target="_blank" rel="noopener" title="open ${esc(e.works_on.label)} on GitHub">${esc(e.works_on.label)} ↗</a>`
+    : '');
 
   // A line that says why a run stopped: its halt, a warning, a session that
   // broke, the breaker's refusal.
@@ -985,6 +991,7 @@
       p.last = e;
       const head = kv([
         ['line', esc(e.workflow)], ['run', esc(e.run_id)],
+        ['works on', worksOn(e) || null],
         ['tokens', fmtTokens(e.tokens)],
         ['stage', `${esc(e.stage || '—')} ${e.model ? tag(e.model, e.model) : ''}`],
         ['task', esc(e.task || '—')], ['milestone', esc(e.milestone || '—')], ['round', esc(e.round || '—')],
@@ -1107,7 +1114,7 @@
       if (bucket) h += '<h3>What this stage cost, all runs</h3>' + tiles([[usd(bucket.usd), 'total'], [bucket.count, 'sessions'], [usd(bucket.usd / Math.max(1, bucket.count)), 'per session']]);
       if (rows.length) {
         h += `<h3>${now.length ? 'Sessions on it — now, then the last ones' : 'Last sessions on it'}</h3>` + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => (r.live
-          ? `<tr><td>now${r.live.since ? ' · since ' + esc(hhmm(r.live.since)) : ''}</td><td>${(String(r.live.task || '').match(/\d+/) || [])[0] ? '#' + String(r.live.task).match(/\d+/)[0] : '—'}</td><td>${esc(r.live.round || '—')}</td><td class="num">—</td><td class="num">—</td><td>${liveTag(r.live.id)}</td></tr>`
+          ? `<tr><td>now${r.live.since ? ' · since ' + esc(hhmm(r.live.since)) : ''}</td><td>${worksOn(r.live) || ((String(r.live.task || '').match(/\d+/) || [])[0] ? '#' + String(r.live.task).match(/\d+/)[0] : '—')}</td><td>${esc(r.live.round || '—')}</td><td class="num">—</td><td class="num">—</td><td>${liveTag(r.live.id)}</td></tr>`
           : `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
@@ -1160,11 +1167,11 @@
             let text;
             if (current) {
               text = current.text || '(empty)';
-              if (where) where.textContent = `${e.name} — machine: ${current.stage}`;
+              if (where) where.innerHTML = `${esc(e.name)} — machine: ${esc(current.stage)} ${worksOn(e)}`;
             } else {
               const f = await fetch(`/api/runs/${e.workflow}/${e.run_id}/run.log?bytes=14000`);
               text = f.ok ? (await f.text()) || '(empty)' : '(no log yet)';
-              if (where) where.textContent = `${e.name} — no machine reached yet, its run.log`;
+              if (where) where.innerHTML = `${esc(e.name)} — no machine reached yet, its run.log ${worksOn(e)}`;
             }
             const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
             if (pre.textContent !== text) {
