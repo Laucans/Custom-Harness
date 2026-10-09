@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::adapters::shell::process;
 use crate::domain::{Halt, Issue, Outcome, Pr};
-use crate::ports::shell::github::GitHub;
+use crate::ports::shell::github::{Activity, GitHub};
 use crate::ports::shell::process::Ran;
 
 /// The called binary.
@@ -573,6 +573,34 @@ impl GitHub for GhCli {
         Ok(out)
     }
 
+    async fn activity(&self, etag: Option<&str>) -> Outcome<Activity> {
+        let repo = self.repo().await?;
+        // `-i` puts the status line and the headers before the body: the
+        // status is what says `304`, and the `Etag` header is what the next
+        // read hands back. One page of one item: the newest is all we ask.
+        let mut args = vec![
+            "api".to_string(),
+            "-i".to_string(),
+            format!("repos/{repo}/issues"),
+            "-X".to_string(),
+            "GET".to_string(),
+        ];
+        for (key, value) in [
+            ("state", "all"),
+            ("sort", "updated"),
+            ("direction", "desc"),
+            ("per_page", "1"),
+        ] {
+            args.push("-f".to_string());
+            args.push(format!("{key}={value}"));
+        }
+        if let Some(etag) = etag {
+            args.push("-H".to_string());
+            args.push(format!("If-None-Match: {etag}"));
+        }
+        activity_from(&self.gh(&args).await?)
+    }
+
     async fn merged_prs(&self, base: &str) -> Outcome<Vec<Issue>> {
         let what = format!("merged pull requests on {base}");
         let payload = self
@@ -1077,8 +1105,112 @@ impl GitHub for GhCli {
     }
 }
 
+/// Reads `gh api -i` output as an [`Activity`].
+///
+/// `gh` exits non-zero on a `304`, as it does on any status outside `2xx`,
+/// so the status line is read before the exit code: a `304` is the answer
+/// we asked for, anything else non-zero is a failed read.
+fn activity_from(ran: &Ran) -> Outcome<Activity> {
+    const WHAT: &str = "the board's activity";
+    let status = ran
+        .stdout
+        .lines()
+        .chain(ran.stderr.lines())
+        .find_map(|line| {
+            let rest = line.strip_prefix("HTTP/")?;
+            rest.split_whitespace().nth(1)
+        });
+    if status == Some("304") {
+        return Ok(Activity::Unchanged);
+    }
+    if !ran.ok() {
+        return Err(unreadable(WHAT, &ran.why()));
+    }
+    // Headers, a blank line, then the body.
+    let (headers, body) = ran
+        .stdout
+        .split_once("\n\n")
+        .or_else(|| ran.stdout.split_once("\r\n\r\n"))
+        .unwrap_or((ran.stdout.as_str(), ""));
+    let etag = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("etag")
+            .then(|| value.trim().to_string())
+    });
+    let moved_at = if body.trim().is_empty() {
+        None
+    } else {
+        let payload: Value =
+            serde_json::from_str(body.trim()).map_err(|e| unreadable(WHAT, &e.to_string()))?;
+        payload
+            .get(0)
+            .and_then(|first| first.get("updated_at"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    };
+    Ok(Activity::Changed { etag, moved_at })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_304_is_unchanged_even_though_gh_exits_one() {
+        let ran = super::Ran {
+            code: Some(1),
+            stdout: "HTTP/2.0 304 Not Modified\nEtag: W/\"abc\"\n\n".to_string(),
+            stderr: "gh: HTTP 304".to_string(),
+        };
+        assert_eq!(
+            super::activity_from(&ran).expect("read"),
+            super::Activity::Unchanged
+        );
+    }
+
+    #[test]
+    fn a_200_carries_the_tag_and_the_newest_stamp() {
+        let ran = super::Ran {
+            code: Some(0),
+            stdout: "HTTP/2.0 200 OK\nX-Ratelimit-Remaining: 4919\nEtag: W/\"abc\"\n\n[{\"number\": 14, \"updated_at\": \"2026-10-08T20:52:00Z\"}]".to_string(),
+            stderr: String::new(),
+        };
+        assert_eq!(
+            super::activity_from(&ran).expect("read"),
+            super::Activity::Changed {
+                etag: Some("W/\"abc\"".to_string()),
+                moved_at: Some("2026-10-08T20:52:00Z".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn an_empty_repository_has_moved_nowhere_but_is_not_unchanged() {
+        let ran = super::Ran {
+            code: Some(0),
+            stdout: "HTTP/2.0 200 OK\n\n[]".to_string(),
+            stderr: String::new(),
+        };
+        assert_eq!(
+            super::activity_from(&ran).expect("read"),
+            super::Activity::Changed {
+                etag: None,
+                moved_at: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_read_is_never_quiet() {
+        let ran = super::Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "gh: HTTP 401 Bad credentials".to_string(),
+        };
+        assert!(matches!(
+            super::activity_from(&ran),
+            Err(super::Halt::Unreadable(_))
+        ));
+    }
+
     use super::*;
     use serde_json::json;
 

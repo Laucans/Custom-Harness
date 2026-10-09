@@ -14,6 +14,13 @@
 //! deliberately paid here rather than inside the workflows: a PR that would
 //! skip must not cost a mounted checkout every thirty seconds.
 //!
+//! **A quiet tick costs no quota.** Every tick starts with one conditional
+//! read of the board's activity (`GitHub::activity`): a `304` is free, and
+//! when nothing moved — and no pull request is waiting on its checks, and no
+//! lane just freed — the snapshot is not read at all (`routing::may_skip`).
+//! The forty-odd reads a snapshot costs are paid only when something changed,
+//! or every `routing::FULL_READ_EVERY` ticks as a valve.
+//!
 //! **A failed routing read stops the loop** — a persistent problem (bad
 //! credentials, an unreadable repo) should not retry silently forever.
 //! **A failed dispatch does not** — one workflow's own failure (a quota
@@ -35,9 +42,9 @@ use harness_core::adapters::shell::github::GhCli;
 use harness_core::domain::doctor::Repair;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug, Verdict};
-use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::shell::github::{Activity, GitHub};
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
-use harness_workflows::common::routing::{self, Route, Snapshot};
+use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
 use harness_workflows::common::{branching, hierarchy, labels, review};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
@@ -88,8 +95,9 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
         flag.store(true, Ordering::SeqCst);
     });
     let mut lanes = Lanes::new(args.parallel).closed_by(draining);
+    let mut pulse = Pulse::default();
     loop {
-        let went = tick(args, here, &log, &mut lanes).await;
+        let went = tick(args, here, &log, &mut lanes, &mut pulse).await;
         if args.once {
             // One pass was asked for, and its exit code is the answer — once
             // the lanes it may have opened are done, so the pass is whole.
@@ -132,10 +140,32 @@ async fn drain(lanes: &mut Lanes, log: &Logbook) -> Outcome<()> {
 }
 
 /// One pass: read the snapshot, decide, dispatch.
-async fn tick(args: &WatchArgs, here: &Path, log: &Logbook, lanes: &mut Lanes) -> Outcome<()> {
+async fn tick(
+    args: &WatchArgs,
+    here: &Path,
+    log: &Logbook,
+    lanes: &mut Lanes,
+    pulse: &mut Pulse,
+) -> Outcome<()> {
     let gh = resolve_gh(args, here)?;
-    lanes.reap(log);
-    let (found, idle) = snapshot(gh.as_ref()).await?;
+    let freed = lanes.reap(log);
+    let activity = gh.activity(pulse.etag.as_deref()).await?;
+    if routing::may_skip(pulse, &activity, freed) {
+        pulse.stayed_quiet();
+        log.debug("quiet: nothing moved on the board — no snapshot read");
+        return Ok(());
+    }
+    let etag = match &activity {
+        Activity::Changed { etag, moved_at } => {
+            if let Some(at) = moved_at {
+                log.debug(&format!("board moved at {at}"));
+            }
+            etag.clone()
+        }
+        Activity::Unchanged => pulse.etag.clone(),
+    };
+    let (found, idle, watching_ci) = snapshot(gh.as_ref()).await?;
+    pulse.read_in_full(etag, watching_ci);
     // What the decision was made from, for a tick whose choice later looks
     // wrong: the counts are the whole input to `routing::decide`.
     log.debug(&format!(
@@ -162,7 +192,7 @@ async fn tick(args: &WatchArgs, here: &Path, log: &Logbook, lanes: &mut Lanes) -
         // A soft stop arrived during the read: nothing new is dispatched.
         return Ok(());
     }
-    dispatch(args, here, gh.as_ref(), route, log, lanes).await;
+    dispatch(args, here, gh.as_ref(), &found, route, log, lanes).await;
     Ok(())
 }
 
@@ -184,7 +214,10 @@ fn resolve_gh(args: &WatchArgs, here: &Path) -> Outcome<Rc<dyn GitHub>> {
 
 /// Reads everything [`routing::decide`] needs, and the one line that says
 /// why the current milestone offers no task when it does not.
-async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
+/// The snapshot, the idle reason if the board has nothing runnable, and
+/// whether a pull request the board waits on is open — what tells the next
+/// tick it cannot trust a quiet activity read.
+async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>, bool)> {
     let roadmap = gh.issues_labelled(labels::ROADMAP, "open").await?;
     let lowest_roadmap_has_milestone = match roadmap
         .iter()
@@ -196,8 +229,12 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
     };
     let milestones =
         with_split_blockers(gh, gh.issues_labelled(labels::MILESTONE, "open").await?).await?;
-    let pr_to_fix = lowest_red_pr(gh).await?;
-    let pr_to_review = lowest_pr_worth_reviewing(gh).await?;
+    // The two labelled lists once, for the three reads that need them.
+    let to_fix = by_number(gh.open_prs_labelled(labels::PR_FIX).await?);
+    let to_review = by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?);
+    let watching_ci = !to_fix.is_empty() || !to_review.is_empty();
+    let pr_to_fix = lowest_red_pr(gh, &to_fix, &to_review).await?;
+    let pr_to_review = lowest_pr_worth_reviewing(gh, &to_review).await?;
     let ready_to_merge = lowest_ready_to_merge(gh, &milestones).await?;
     let refining = gh.issues_labelled(labels::REFINEMENT, "open").await?;
     let tech_refining = gh.issues_labelled(labels::TECH_REFINEMENT, "open").await?;
@@ -214,7 +251,7 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
         .filter(|b| b.next().is_none())
         .map(|b| tasks::idle_reason(b.milestone.number, &b.tasks));
     let task_to_merge = match &board {
-        Some(board) => green_task_pr(gh, &board.tasks).await?,
+        Some(board) => green_task_pr(gh, &board.tasks, &to_review).await?,
         None => None,
     };
     let snapshot = Snapshot {
@@ -229,7 +266,7 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
         tech_refining,
         dev_loop_milestone,
     };
-    Ok((snapshot, idle))
+    Ok((snapshot, idle, watching_ci))
 }
 
 /// The lowest-numbered open PR that carries `harness:pr-fix` **and** has a
@@ -238,11 +275,11 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>)> {
 ///
 /// The pairing is the point: the label alone would send a paid session at a
 /// PR that is merely still building.
-async fn lowest_red_pr(gh: &dyn GitHub) -> Outcome<Option<Pr>> {
+async fn lowest_red_pr(gh: &dyn GitHub, to_fix: &[Pr], to_review: &[Pr]) -> Outcome<Option<Pr>> {
     let mut found: Vec<Pr> = Vec::new();
-    for candidate in by_number(gh.open_prs_labelled(labels::PR_FIX).await?) {
+    for candidate in to_fix {
         if !gh.pr_failing_checks(&candidate.num).await?.is_empty() {
-            found.push(candidate);
+            found.push(candidate.clone());
             break;
         }
     }
@@ -250,13 +287,13 @@ async fn lowest_red_pr(gh: &dyn GitHub) -> Outcome<Option<Pr>> {
     // base, asks for a repair as a red check does — the label is posed for
     // it at dispatch, the same request a human makes. Bounded like the
     // rest: past `MAX_FIXES` repairs, the PR is a human's.
-    for candidate in by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?) {
+    for candidate in to_review {
         let comments = gh.pr_comments(&candidate.num).await?;
         let blocked = review::status(&comments).wants_a_fix();
         let conflicting = review::repairs(&comments) < review::MAX_FIXES
             && gh.pr_mergeable(&candidate.num).await? == Some(false);
         if blocked || conflicting {
-            found.push(candidate);
+            found.push(candidate.clone());
             break;
         }
     }
@@ -272,14 +309,14 @@ async fn lowest_red_pr(gh: &dyn GitHub) -> Outcome<Option<Pr>> {
 /// an optimization — a PR that would skip (a draft, a test PR, one already
 /// carrying a review) must not cost a mounted checkout on every poll, and
 /// its label can be left in place harmlessly because of this filter.
-async fn lowest_pr_worth_reviewing(gh: &dyn GitHub) -> Outcome<Option<Pr>> {
-    for candidate in by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?) {
+async fn lowest_pr_worth_reviewing(gh: &dyn GitHub, to_review: &[Pr]) -> Outcome<Option<Pr>> {
+    for candidate in to_review {
         let comments = gh.pr_comments(&candidate.num).await?;
         // `candidate.base` as the expected base: the label is the
         // authorization, and a task PR legitimately targets its milestone's
         // branch. What stays live are the other three rules.
-        if skip_rules::skip_reason(false, &candidate.base, &candidate, &comments).is_none() {
-            return Ok(Some(candidate));
+        if skip_rules::skip_reason(false, &candidate.base, candidate, &comments).is_none() {
+            return Ok(Some(candidate.clone()));
         }
     }
     Ok(None)
@@ -320,6 +357,7 @@ async fn dispatch(
     args: &WatchArgs,
     here: &Path,
     gh: &dyn GitHub,
+    found: &Snapshot,
     route: Route,
     log: &Logbook,
     lanes: &mut Lanes,
@@ -327,7 +365,12 @@ async fn dispatch(
     // The route with its parameters, before anything runs: it is the one line
     // that says what this tick decided and on what.
     log.say(&format!("tick: {route:?}"));
-    let failed = dispatched(args, here, gh, route, log, lanes).await;
+    let filled = if args.parallel > 1 {
+        fill_lanes(args, here, gh, found, log, lanes).await
+    } else {
+        None
+    };
+    let failed = filled.or(dispatched(args, here, gh, route, log).await);
     // Recorded before anything is repaired: the record is what the repair
     // reads, and what says — next tick — that it has already been treated.
     if let Some((workflow, halt)) = failed {
@@ -343,6 +386,34 @@ async fn dispatch(
     }
 }
 
+/// Gives every free lane work, whatever the route: the runnable tasks of the
+/// current milestone first, then milestones to split and issues waiting on
+/// their business refinement in the lanes left
+/// ([`routing::lane_work`]).
+async fn fill_lanes(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    found: &Snapshot,
+    log: &Logbook,
+    lanes: &mut Lanes,
+) -> Option<(&'static str, Halt)> {
+    let work = routing::lane_work(found);
+    if let Some(milestone) = work.tasks_of
+        && lanes.free_slot().is_some()
+        && let Some(halt) = run_lanes(args, here, gh, milestone, lanes, log).await
+    {
+        return Some(("dev_loop", halt));
+    }
+    if work.preparation
+        && lanes.free_slot().is_some()
+        && let Some(halt) = run_router_lanes(args, here, gh, lanes, log).await
+    {
+        return Some(("router_lanes", halt));
+    }
+    None
+}
+
 /// Runs the route, and says which workflow failed, if one did.
 async fn dispatched(
     args: &WatchArgs,
@@ -350,14 +421,15 @@ async fn dispatched(
     gh: &dyn GitHub,
     route: Route,
     log: &Logbook,
-    lanes: &mut Lanes,
 ) -> Option<(&'static str, Halt)> {
     match route {
         Route::Nothing => None,
-        Route::DevLoop { milestone } if args.parallel > 1 => {
-            run_lanes(args, here, gh, milestone, lanes, log)
-                .await
-                .map(|halt| ("dev_loop", halt))
+        // Under `--parallel`, the lanes were filled before the route was
+        // dispatched — see [`fill_lanes`].
+        Route::DevLoop { .. } | Route::Split { .. } | Route::Refinement { .. }
+            if args.parallel > 1 =>
+        {
+            None
         }
         Route::DevLoop { milestone } => run_dev_loop(here, gh, milestone, args.force_reset, log)
             .await
@@ -375,11 +447,6 @@ async fn dispatched(
             .await,
             log,
         ),
-        Route::Split { .. } | Route::Refinement { .. } if args.parallel > 1 => {
-            run_router_lanes(args, here, gh, lanes, log)
-                .await
-                .map(|halt| ("router_lanes", halt))
-        }
         Route::Split { milestone } => report_failure(
             "split",
             crate::dispatch::split::run(
@@ -511,15 +578,18 @@ fn shared_checkout(args: &WatchArgs) -> crate::dispatch::shared::Checkout<'_> {
 /// The task whose PR is open on its milestone, reviewed and green, with that
 /// PR — what `milestone_merge` merges. A PR still owed its review is left to
 /// the review route, which outranks this one.
-async fn green_task_pr(gh: &dyn GitHub, tasks: &[Issue]) -> Outcome<Option<(u64, Pr)>> {
+async fn green_task_pr(
+    gh: &dyn GitHub,
+    tasks: &[Issue],
+    to_review: &[Pr],
+) -> Outcome<Option<(u64, Pr)>> {
     if !tasks
         .iter()
         .any(harness_workflows::dev_loop::data::tasks::review_pending)
     {
         return Ok(None);
     }
-    let open = gh.open_prs_labelled(labels::TO_REVIEW).await?;
-    let Some((task, pr)) = harness_workflows::milestone_merge::candidate(tasks, &open) else {
+    let Some((task, pr)) = harness_workflows::milestone_merge::candidate(tasks, to_review) else {
         return Ok(None);
     };
     // Its last review must let it through: a blocking one is the repair

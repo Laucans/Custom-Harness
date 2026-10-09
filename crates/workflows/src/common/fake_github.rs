@@ -11,7 +11,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use harness_core::domain::{Halt, Issue, Outcome, Pr};
-use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::shell::github::{Activity, GitHub};
 
 /// What the fake recorded as a write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +109,9 @@ pub struct FakeGitHub {
     /// caller that must survive one label failing still needs every other
     /// write to work.
     pub refused_labels: RefCell<Vec<String>>,
+    /// What `activity` answers. Absent, the board has always just moved —
+    /// the answer that keeps every full read in a test happening.
+    pub activity: Option<Activity>,
 }
 
 impl FakeGitHub {
@@ -174,6 +177,14 @@ impl GitHub for FakeGitHub {
             .filter(|issue| issue.has(label))
             .cloned()
             .collect())
+    }
+
+    async fn activity(&self, _etag: Option<&str>) -> Outcome<Activity> {
+        self.ok()?;
+        Ok(self.activity.clone().unwrap_or(Activity::Changed {
+            etag: None,
+            moved_at: None,
+        }))
     }
 
     async fn sub_issues(&self, number: u64) -> Outcome<Vec<Issue>> {
