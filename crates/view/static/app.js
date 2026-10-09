@@ -1120,6 +1120,7 @@
     }
     S.paneHtml = html;
     if (after) after(refresh);
+    applySorts();
     tickClocks();
   }
 
@@ -1139,8 +1140,11 @@
   function pagedTable(p, key, cls, head, rows, row) {
     const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
     const page = Math.min((p.pages || {})[key] || 0, pages - 1);
-    const shown = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-    let h = `<table class="rows ${cls}"><tr>${head}</tr>` + shown.map(row).join('') + '</table>';
+    // Sorted by a click on its header: every row is drawn, then ordered, then cut.
+    const order = (p.sorts || {})[key];
+    const drawn = order ? sortedRows(rows.map(row), order) : rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(row);
+    const shown = order ? drawn.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) : drawn;
+    let h = `<table class="rows ${cls}" data-paged="${esc(key)}"><tr>${head}</tr>` + shown.join('') + '</table>';
     if (pages > 1) {
       const go = (to, label, off) => `<button class="mini" data-page="${to}"${off ? ' disabled' : ''}>${label}</button>`;
       h += `<div class="pager" data-pager="${esc(key)}">${go(0, '«', page === 0)}${go(page - 1, '‹', page === 0)}`
@@ -1149,6 +1153,82 @@
     }
     return h;
   }
+  // ---- Every table sorts on a click of its header: ascending, then descending ----
+  // A cell sorts by its `data-sort` when it has one (a date's raw value), else
+  // by its text; numbers as numbers, empty cells last either way.
+  const sortValue = (cell) => (cell ? (cell.dataset.sort ?? cell.textContent.trim()) : '');
+  const asNumber = (text) => {
+    const t = String(text).replace(/[$,%\s]/g, '').replace(/(tok|ms|min|s|k)$/i, '');
+    return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : null;
+  };
+  function compareCells(a, b) {
+    const empty = (v) => v === '' || v === '—';
+    if (empty(a) || empty(b)) return empty(a) - empty(b);
+    const x = asNumber(a);
+    const y = asNumber(b);
+    if (x !== null && y !== null) return x - y;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  }
+  function orderRows(rows, cellOf, order) {
+    const keyed = rows.map((r, i) => ({ r, i, v: sortValue(cellOf(r)) }));
+    keyed.sort((x, y) => {
+      const empty = (v) => v === '' || v === '—';
+      if (empty(x.v) !== empty(y.v)) return empty(x.v) - empty(y.v);
+      return (order.desc ? -1 : 1) * compareCells(x.v, y.v) || x.i - y.i;
+    });
+    return keyed.map((k) => k.r);
+  }
+  // A paged table's rows, as HTML, read back to sort them.
+  function sortedRows(html, order) {
+    const t = document.createElement('template');
+    t.innerHTML = '<table><tbody>' + html.join('') + '</tbody></table>';
+    const trs = [...t.content.querySelectorAll('tbody > tr')];
+    if (trs.length !== html.length) return html;
+    const index = new Map(trs.map((tr, i) => [tr, i]));
+    return orderRows(trs, (tr) => tr.cells[order.col], order).map((tr) => html[index.get(tr)]);
+  }
+  // Every table of the pane: its header marked, and — not paged — its rows
+  // put in the order asked, again after each redraw.
+  let sortObserver = null;
+  function applySorts() {
+    const body = $('pane-body');
+    if (!S.pane || !body) return;
+    const sorts = S.pane.sorts || {};
+    if (sortObserver) sortObserver.disconnect();
+    body.querySelectorAll('table.rows').forEach((t, i) => {
+      const key = t.dataset.paged || 'table-' + i;
+      t.dataset.sortKey = key;
+      const head = t.rows[0];
+      if (!head || !head.querySelector('th')) return;
+      const order = sorts[key];
+      [...head.cells].forEach((th, c) => {
+        th.classList.toggle('sortable', th.textContent.trim() !== '');
+        th.classList.toggle('asc', !!order && order.col === c && !order.desc);
+        th.classList.toggle('desc', !!order && order.col === c && !!order.desc);
+      });
+      if (order && !t.dataset.paged) {
+        const rows = [...t.rows].slice(1).filter((r) => r.querySelector('td'));
+        const parent = rows.length && rows[0].parentNode;
+        if (parent) orderRows(rows, (r) => r.cells[order.col], order).forEach((r) => parent.appendChild(r));
+      }
+    });
+    if (!sortObserver) sortObserver = new MutationObserver(() => applySorts());
+    sortObserver.observe(body, { childList: true, subtree: true });
+  }
+  $('pane-body').addEventListener('click', (e) => {
+    const th = e.target.closest('table.rows th.sortable');
+    if (!th || !S.pane) return;
+    const table = th.closest('table');
+    const key = table.dataset.sortKey;
+    const col = th.cellIndex;
+    S.pane.sorts = S.pane.sorts || {};
+    const was = S.pane.sorts[key];
+    S.pane.sorts[key] = { col, desc: !!was && was.col === col && !was.desc };
+    if (table.dataset.paged) {
+      S.pane.pages = { ...(S.pane.pages || {}), [key]: 0 };
+      renderPane(S.pane, false);
+    } else applySorts();
+  });
   // A pane's two tabs — what the element is, and who recently worked on it —
   // and its `?`, which says in a sentence what the element is for.
   const paneTabs = (p, purpose, extra = []) => '<div class="tabs">' + [['details', 'Details'], ['recent', 'Recent work'], ...extra].map(([k, label]) => `<button data-tab="${k}" class="${(p.tab || 'details') === k ? 'on' : ''}">${label}</button>`).join('')
@@ -1325,7 +1405,7 @@
       h += section(p, 'costs.stage', 'By stage') + bars(c.by_stage);
       h += section(p, 'costs.task', 'By task') + bars(c.by_task);
       h += section(p, 'costs.outcome', 'By outcome') + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
-      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td>${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${sessionTag(r)}</td></tr>`);
+      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td data-sort="${esc(r.when)}">${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${sessionTag(r)}</td></tr>`);
       return h;
     },
     quota(p) {
@@ -1366,7 +1446,7 @@
           : runTag(e.kind, cls, { run: e.run, failed: true, name: `${e.workflow} · ${e.kind} · ${e.run}` });
       };
       const rows = period() ? period().errors : S.snap.errors;
-      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td>${esc(when(e.when))}</td><td>${esc(e.workflow)}</td><td>${stopTag(e)}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
+      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td data-sort="${esc(e.when)}">${esc(when(e.when))}</td><td>${esc(e.workflow)}</td><td>${stopTag(e)}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
     },
     journal(p) {
       if (S.range && !period()) return '';
@@ -1405,7 +1485,7 @@
             const state = t.workflow
               ? `<button class="tag-link" data-trigger-log='${esc(JSON.stringify({ workflow: t.workflow, issue: t.issue, at: t.at, state: t.state, what: t.what }))}' title="${t.state === 'failed' || t.state === 'killed' || t.state === 'unknown' ? 'open its logs at the error' : 'open its logs at the end'}">${tag(label, cls)}</button>`
               : tag(label, cls);
-            return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${state}</td><td class="num">${t.ended_at ? esc(lasted(t.at, t.ended_at)) : t.state === 'running' ? clockHtml(t.at, null, true) : '—'}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
+            return `<tr><td data-sort="${esc(t.at)}">${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${state}</td><td class="num">${t.ended_at ? esc(lasted(t.at, t.ended_at)) : t.state === 'running' ? clockHtml(t.at, null, true) : '—'}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
           })
         : `<div class="muted">${P ? 'nothing triggered during the period' : 'nothing triggered since the start of the journal read'}</div>`;
       const logs = P ? P.logs : S.snap.recent;
@@ -1890,7 +1970,7 @@
         + (p.fusion ? `<td><input type="checkbox" data-cap-pick="${esc(e.id)}" ${picked.has(e.id) ? 'checked' : ''} aria-label="pick ${esc(e.name)} for the fusion"></td>` : '')
         + `<td>${capDot(e.status)}</td><td><b>${esc(e.name)}</b><div class="muted">${esc(e.id)}</div></td>`
         + `<td>${esc(capKind(e.kind))}</td><td>${esc(e.system || '—')}</td><td>${capTag(e.status)}</td>`
-        + `<td>${esc(capDay(e.created))}</td><td>${esc(capDay(e.modified))}</td></tr>`)
+        + `<td data-sort="${esc(e.created || '')}">${esc(capDay(e.created))}</td><td data-sort="${esc(e.modified || '')}">${esc(capDay(e.modified))}</td></tr>`)
       : `<div class="muted">${(p.q || '').trim() ? `nothing named “${esc(p.q.trim())}”` : 'no unit here'}</div>`;
     const count = S.caps.entries.reduce((n, e) => ({ ...n, [e.status]: (n[e.status] || 0) + 1 }), {});
     const legend = '<div class="cap-legend">' + Object.keys(CAP_STATUS).map((s) => `<button class="mini ${(p.hidden || []).includes(s) ? 'off' : ''}" data-cap-status="${s}" title="${esc(CAP_STATUS[s][1])} — click to hide or show">${capDot(s)}${esc(CAP_STATUS[s][0])} · ${count[s] || 0}</button>`).join('') + '</div>';
@@ -2039,7 +2119,7 @@
   });
   $('pane-body').addEventListener('change', (e) => {
     if (!S.pane || S.pane.kind !== 'capabilities') return;
-    if (e.target.matches('[data-cap-sort]')) { S.pane.sort = e.target.value; S.pane.pages = {}; renderPane(S.pane, false); }
+    if (e.target.matches('[data-cap-sort]')) { S.pane.sort = e.target.value; S.pane.pages = {}; if (S.pane.sorts) delete S.pane.sorts.caps; renderPane(S.pane, false); }
     if (e.target.matches('[data-cap-kind]')) { S.pane.unit = e.target.value; S.pane.pages = {}; renderPane(S.pane, false); }
   });
   // Clicks on the list: filters, fusion, a row's detail. Runs before the
@@ -2263,7 +2343,7 @@
       if (rows.length) {
         h += `<h3>${now.length ? 'Sessions on it — now, then the last ones' : 'Last sessions on it'}</h3>` + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">time</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => (r.live
           ? `<tr><td>now${r.live.since ? ' · since ' + esc(hhmm(r.live.since)) : ''}</td><td>${worksOn(r.live) || ((String(r.live.task || '').match(/\d+/) || [])[0] ? '#' + String(r.live.task).match(/\d+/)[0] : '—')}</td><td>${esc(r.live.round || '—')}</td><td class="num">${sessionClock(r.live)}</td><td class="num">—</td><td class="num">—</td><td>${liveTag(r.live.id)}</td></tr>`
-          : `<tr><td>${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
+          : `<tr><td data-sort="${esc(r.when)}">${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${took(r)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
       return [st.label, paneTabs(p, st.purpose, extra) + h];
@@ -2443,7 +2523,7 @@
           return `<tr class="note ${level} ${unread ? 'unread' : 'read'} ${keep ? 'locked' : ''}" data-note-lock="${esc(n.key)}" title="${keep ? 'kept unread when you leave — click to release' : 'click to keep it unread when you leave'}">`
             + `<td class="sign-cell">${SIGN[level]}</td>`
             + `<td><b>${esc(n.title)}</b>${keep ? ' <span class="tag acc">kept unread</span>' : unread ? ' <span class="tag">new</span>' : ''}${n.resolved ? ' <span class="tag ok">resolved</span>' : ''}<div class="muted">${esc(n.detail)}</div></td>`
-            + `<td class="num">${n.count}</td><td>${n.at ? esc(when(n.at)) : '—'}</td>`
+            + `<td class="num">${n.count}</td><td data-sort="${esc(n.at || '')}">${n.at ? esc(when(n.at)) : '—'}</td>`
             + `<td>${n.link ? `<button class="mini" data-note-open="${esc(n.key)}">open →</button>` : ''}</td></tr>`;
         })
         : `<div class="muted">${p.unreadOnly ? 'nothing unread here' : 'nothing to tell'}</div>`;
