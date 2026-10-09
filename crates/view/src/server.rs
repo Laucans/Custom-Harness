@@ -47,6 +47,7 @@ use crate::domain::fusion;
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
+use crate::domain::mockup;
 use crate::domain::observe::observe_run;
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::prompts::{self, Deactivate, Edit, OnShelf, Refused, Restore};
@@ -55,9 +56,10 @@ use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::janitor::Janitor;
-use crate::note_desks::NoteDesks;
+use crate::note_desks::{NoteDesks, Opening};
 use crate::ports::{
-    BoardReading, Builds, Limits, NoteStore, Plant, Prompts, Traces, TrialAsk, Trials,
+    BoardReading, Builds, Limits, MockState, Mockups, NoteStore, Plant, Prompts, Traces, TrialAsk,
+    Trials,
 };
 use crate::units_desk::UnitsDesk;
 use harness_architecture::model::DataModel;
@@ -116,6 +118,9 @@ pub struct AppState {
     pub pins: Arc<dyn NoteStore>,
     /// The pins' AI sessions — `None` when the view runs no terminal.
     pub note_desks: Option<NoteDesks>,
+    /// The product's mock-up on every branch — `None` when nothing can read
+    /// the product.
+    pub mockups: Option<Arc<dyn Mockups>>,
     /// The prompt book, read only, and the drafts the human leaves for the
     /// next start.
     pub prompts: Arc<dyn Prompts>,
@@ -145,6 +150,7 @@ const CLOCK_JS: &str = include_str!("../static/clock.js");
 const BOARD_JS: &str = include_str!("../static/board.js");
 const ACTIONS_JS: &str = include_str!("../static/actions.js");
 const DATA_MODEL_JS: &str = include_str!("../static/data-model.js");
+const MOCKUP_JS: &str = include_str!("../static/mockup.js");
 
 /// The run files a browser may tail.
 const TAILABLE: [&str; 4] = ["run.log", "session.log", "prompts.md", "stream.jsonl"];
@@ -168,6 +174,8 @@ pub fn router(state: AppState) -> Router {
         .route("/board.js", get(board_js))
         .route("/actions.js", get(actions_js))
         .route("/data-model.js", get(data_model_js))
+        .route("/mockup.js", get(mockup_js))
+        .route("/mock/{slug}/{*path}", get(mock_file))
         .route("/render/{file}", get(render_asset))
         .route("/vendor/xterm.js", get(xterm_js))
         .route("/vendor/xterm.css", get(xterm_css))
@@ -202,6 +210,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model/builds", get(data_builds))
         .route("/api/data-model/builds/{id}/log", get(data_build_log))
         .route("/api/data-model/issue", post(data_issue))
+        .route("/api/mockup", get(mockup_state))
+        .route("/api/mockup/save", post(mockup_save))
+        .route("/api/mockup/discard", post(mockup_discard))
         .route("/api/capabilities", get(capability_list))
         .route("/api/capabilities/fusion", post(capability_fusion))
         .route("/api/notes/{board}", get(notes))
@@ -286,6 +297,141 @@ async fn board_js(State(state): State<AppState>) -> Response {
 
 async fn data_model_js(State(state): State<AppState>) -> Response {
     asset(&state, "data-model.js", DATA_MODEL_JS, JS)
+}
+
+async fn mockup_js(State(state): State<AppState>) -> Response {
+    asset(&state, "mockup.js", MOCKUP_JS, JS)
+}
+
+/// Why the easel is empty.
+const NO_MOCKUPS: &str =
+    "nothing reads the product's mock-up: the view runs with --no-board and no --data-dir";
+
+/// A file of a branch's mock-up, under `/mock/<branch slug>/`: served so a
+/// page's relative links resolve beside it.
+async fn mock_file(
+    State(state): State<AppState>,
+    Path((slug, path)): Path<(String, String)>,
+) -> Response {
+    let Some(mockups) = state.mockups.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let Some(branch) = mockup::branch_of(&slug) else {
+        return not_found("no such branch");
+    };
+    if !mockup::is_safe_path(&path) {
+        return not_found("no such file");
+    }
+    let wanted = path.clone();
+    let read = tokio::task::spawn_blocking(move || mockups.file(&branch, &wanted)).await;
+    match read {
+        Ok(Ok(Some(bytes))) => (
+            [
+                (header::CONTENT_TYPE, mockup::content_type(&path)),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Ok(None)) => not_found("no such file in the mock-up"),
+        Ok(Err(why)) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the read was dropped").into_response(),
+    }
+}
+
+/// `?branch=`: which branch's mock-up; empty, the integration branch.
+#[derive(Debug, Default, Deserialize)]
+struct MockupQuery {
+    branch: Option<String>,
+}
+
+/// The mock-up of a branch, as the page asks for it.
+#[derive(Serialize)]
+struct MockupReply {
+    enabled: bool,
+    #[serde(flatten)]
+    state: MockState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn branch_or_integration(state: &AppState, branch: Option<String>) -> String {
+    branch
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| state.integration_branch.clone())
+}
+
+async fn mockup_state(State(state): State<AppState>, Query(query): Query<MockupQuery>) -> Response {
+    let branch = branch_or_integration(&state, query.branch);
+    let Some(mockups) = state.mockups.clone() else {
+        return json(&MockupReply {
+            enabled: false,
+            state: MockState {
+                branch,
+                ..MockState::default()
+            },
+            error: Some(NO_MOCKUPS.to_string()),
+        });
+    };
+    let asked = branch.clone();
+    let read = tokio::task::spawn_blocking(move || mockups.state(&asked)).await;
+    match read {
+        Ok(Ok(found)) => json(&MockupReply {
+            enabled: true,
+            state: found,
+            error: None,
+        }),
+        Ok(Err(why)) => json(&MockupReply {
+            enabled: true,
+            state: MockState {
+                branch,
+                ..MockState::default()
+            },
+            error: Some(why),
+        }),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the read was dropped").into_response(),
+    }
+}
+
+/// What the page sends to save or discard a branch's mock-up.
+#[derive(Debug, Default, Deserialize)]
+struct MockupAsk {
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// Saves what the sessions changed under `mock/` on a `mockup/<name>`
+/// branch, and says which.
+async fn mockup_save(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(mockups) = state.mockups.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let ask: MockupAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let branch = branch_or_integration(&state, Some(ask.branch));
+    let name: String = ask.name.chars().take(120).collect();
+    let saved = tokio::task::spawn_blocking(move || mockups.save(&branch, &name)).await;
+    match saved {
+        Ok(Ok(target)) => json(&serde_json::json!({ "branch": target })),
+        Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the save was dropped").into_response(),
+    }
+}
+
+/// Drops what the sessions changed: the branch's mock-up as committed.
+async fn mockup_discard(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(mockups) = state.mockups.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let ask: MockupAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let branch = branch_or_integration(&state, Some(ask.branch));
+    let done = tokio::task::spawn_blocking(move || mockups.discard(&branch)).await;
+    match done {
+        Ok(Ok(())) => json(&serde_json::json!({ "discarded": true })),
+        Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the discard was dropped").into_response(),
+    }
 }
 
 /// The renderer bundle, from disk: the two files wasm-bindgen writes, and
@@ -1276,6 +1422,12 @@ async fn undo_note(State(state): State<AppState>, Path(board): Path<String>) -> 
 struct SessionAsk {
     #[serde(default)]
     context: String,
+    /// On the mock-up: the branch shown, whose workspace the session edits.
+    #[serde(default)]
+    branch: String,
+    /// On the mock-up: the page the pin sits on.
+    #[serde(default)]
+    page: String,
 }
 
 /// Why a pin has no session here.
@@ -1293,7 +1445,32 @@ async fn open_session(
     let ask: SessionAsk = serde_json::from_slice(&body).unwrap_or_default();
     // The page's context is a description, never a megabyte.
     let context: String = ask.context.chars().take(20_000).collect();
-    match desks.open(&board, &id, context).await {
+    let mut opening = Opening::talk(context);
+    // A pin on the mock-up: its session runs in the branch's workspace,
+    // made now if it is the first.
+    if board.starts_with("mockup--") {
+        let Some(mockups) = state.mockups.clone() else {
+            return not_found(NO_MOCKUPS);
+        };
+        let branch = branch_or_integration(&state, Some(ask.branch));
+        let wanted = branch.clone();
+        let made = tokio::task::spawn_blocking(move || mockups.workspace(&wanted)).await;
+        let cwd = match made {
+            Ok(Ok(cwd)) => cwd,
+            Ok(Err(why)) => return (StatusCode::BAD_REQUEST, why).into_response(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "the checkout was dropped",
+                )
+                    .into_response();
+            }
+        };
+        opening.cwd = Some(cwd);
+        opening.branch = branch;
+        opening.page = ask.page.chars().take(200).collect();
+    }
+    match desks.open(&board, &id, opening).await {
         Ok(command) => json(&serde_json::json!({ "available": true, "command": command })),
         Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }
@@ -2026,6 +2203,7 @@ mod tests {
             data: None,
             pins: Arc::new(Pins::default()),
             note_desks: None,
+            mockups: None,
             builds: None,
             integration_branch: "main_agent".to_string(),
             prompts: Arc::new(Book::default()),

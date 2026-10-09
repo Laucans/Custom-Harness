@@ -11,7 +11,9 @@
 //! system and invokes nothing; a Micro-UI needs Capabilities that exist, in its
 //! own system, and triggers `DataCapabilities` that exist; a `DataCapability`
 //! belongs to the `DataGuard` and declares its effect; and the unit a task
-//! declared under `## Architecture` is actually there, on the side it said.
+//! declared under `## Architecture` is actually there, on the side it said;
+//! and the mock-up keeps up with the screens — every page `mock/pages.json`
+//! lists is there, every frozen screen under `apps/screens/` has a page.
 //! [`undocumented_concepts`] names every Concept a Capability implements
 //! (`implements: Risk@3`) that `concepts/Risk/v3/concept.json` does not
 //! document. Both are pure over an in-memory [`Tree`].
@@ -68,6 +70,12 @@ pub struct Tree {
     pub has_query_registry: bool,
     /// The folders under `crates/`: the systems that have Rust code.
     pub systems: Vec<String>,
+    /// Every frozen screen under `apps/screens/`, by its `screen` name.
+    pub screens: Vec<String>,
+    /// `mock/pages.json`, if present (contract N).
+    pub mock_pages: Option<Manifest>,
+    /// The pages listed in `mock/pages.json` whose file is under `mock/`.
+    pub mocked: Vec<String>,
 }
 
 impl Tree {
@@ -120,6 +128,22 @@ impl Tree {
                 tree.aggregates.push(found);
             }
         }
+        for file in disk.file_names(&root.join("apps/screens")) {
+            let Some(stem) = file.strip_suffix(".json") else {
+                continue;
+            };
+            let name = text(&format!("apps/screens/{file}"))
+                .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+                .and_then(|json| str_of(&json, "screen").map(str::to_string))
+                .unwrap_or_else(|| stem.to_string());
+            tree.screens.push(name);
+        }
+        tree.mock_pages = manifest("mock/pages.json");
+        for page in tree.mock_pages.as_ref().map_or_else(Vec::new, pages_of) {
+            if disk.exists(&root.join("mock").join(&page)) {
+                tree.mocked.push(page);
+            }
+        }
         for concept in disk.dir_names(&root.join("concepts")) {
             for version in disk.dir_names(&root.join("concepts").join(&concept)) {
                 let Some(number) = version
@@ -142,6 +166,36 @@ impl Tree {
         }
         tree
     }
+}
+
+/// The `path` of every page a `mock/pages.json` lists.
+fn pages_of(manifest: &Manifest) -> Vec<String> {
+    manifest
+        .json
+        .as_ref()
+        .and_then(|json| json.get("pages")?.as_array())
+        .map(|pages| {
+            pages
+                .iter()
+                .filter_map(|page| str_of(page, "path").map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `screen` each page of a `mock/pages.json` mocks, when it names one.
+fn mocked_screens(manifest: &Manifest) -> Vec<String> {
+    manifest
+        .json
+        .as_ref()
+        .and_then(|json| json.get("pages")?.as_array())
+        .map(|pages| {
+            pages
+                .iter()
+                .filter_map(|page| str_of(page, "screen").map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn str_of<'a>(json: &'a Value, key: &str) -> Option<&'a str> {
@@ -308,8 +362,52 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
         }
     }
 
+    found.extend(mockup_kept(tree));
+
     if let Some(task) = task {
         found.extend(unit_present(tree, task));
+    }
+    found
+}
+
+/// The mock-up keeps up with the screens: every page listed is there, every
+/// frozen screen has a page that names it. A repository with no screens and
+/// no `mock/pages.json` yet is fine — the mock-up begins with the first page.
+fn mockup_kept(tree: &Tree) -> Vec<String> {
+    let mut found = Vec::new();
+    match &tree.mock_pages {
+        None => {
+            if !tree.screens.is_empty() {
+                found.push(format!(
+                    "mock/pages.json is missing (contract N), and {} frozen screen(s) wait to be mocked",
+                    tree.screens.len()
+                ));
+            }
+            return found;
+        }
+        Some(Manifest { json: None, path }) => {
+            found.push(format!("{path} is not JSON"));
+            return found;
+        }
+        Some(manifest) => {
+            for page in pages_of(manifest) {
+                if !tree.mocked.contains(&page) {
+                    found.push(format!(
+                        "{}: lists {page}, which is not under mock/",
+                        manifest.path
+                    ));
+                }
+            }
+            let mocked = mocked_screens(manifest);
+            for screen in &tree.screens {
+                if !mocked.contains(screen) {
+                    found.push(format!(
+                        "apps/screens/{screen}.json: no page in {} mocks this screen — mock it first",
+                        manifest.path
+                    ));
+                }
+            }
+        }
     }
     found
 }
@@ -353,11 +451,12 @@ fn unit_present(tree: &Tree, task: &Declaration) -> Vec<String> {
                 .iter()
                 .any(|(s, _)| system.is_empty() || s == system);
             if found {
-                Vec::new()
+                unmocked(tree, "a Micro-UI")
             } else {
                 missing(&format!("Micro-UI of system `{system}`"))
             }
         }
+        Unit::Composition => unmocked(tree, "a screen composition"),
         Unit::DataCapability => {
             let declared = task.side();
             let found = tree
@@ -408,10 +507,22 @@ fn unit_present(tree: &Tree, task: &Declaration) -> Vec<String> {
         }
         Unit::Invariant
         | Unit::PersistedQuery
-        | Unit::Composition
         | Unit::Migration
         | Unit::Infrastructure
         | Unit::Tooling => Vec::new(),
+    }
+}
+
+/// A UI unit is shown somewhere: the mock-up has a page under `mock/` for
+/// it, or the task is told to mock the screen first (contract N).
+fn unmocked(tree: &Tree, what: &str) -> Vec<String> {
+    if tree.mocked.is_empty() {
+        vec![format!(
+            "the task built {what} and mock/pages.json lists no page under mock/ that shows it — \
+             mock the screen first (contract N)"
+        )]
+    } else {
+        Vec::new()
     }
 }
 
@@ -494,6 +605,51 @@ mod tests {
             aggregates: Vec::new(),
             concepts: vec![("Risk".to_string(), 3)],
             has_query_registry: true,
+            screens: vec!["credit-review".to_string()],
+            mock_pages: Some(manifest(
+                "mock/pages.json",
+                r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"Credit review","objective":"o","screen":"credit-review"}]}"#,
+            )),
+            mocked: vec!["pages/credit-review.html".to_string()],
+        }
+    }
+
+    #[test]
+    fn the_mockup_keeps_up_with_the_screens() {
+        // A screen with no page, and a listed page that is not there.
+        let mut tree = sound();
+        tree.screens.push("limit-review".to_string());
+        tree.mocked.clear();
+        let found = violations(&tree, None);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].contains("not under mock/"));
+        assert!(found[1].contains("limit-review"));
+        // No mock-up at all while screens exist.
+        let mut bare = sound();
+        bare.mock_pages = None;
+        bare.mocked.clear();
+        let found = violations(&bare, None);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("pages.json is missing"));
+        // Nothing to mock yet: nothing to say.
+        bare.screens.clear();
+        assert!(violations(&bare, None).is_empty());
+        // A Micro-UI or a composition task needs a mocked page.
+        let mut unmocked = sound();
+        unmocked.mocked.clear();
+        unmocked.mock_pages = Some(manifest("mock/pages.json", r#"{"version":1,"pages":[]}"#));
+        unmocked.screens.clear();
+        for unit in [Unit::MicroUi, Unit::Composition] {
+            let task = Declaration {
+                unit,
+                system: "credit".to_string(),
+                concept: None,
+                effect: None,
+                touches: Vec::new(),
+            };
+            let found = violations(&unmocked, Some(&task));
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert!(found[0].contains("contract N"));
         }
     }
 
@@ -660,15 +816,31 @@ mod tests {
             "not json".to_string(),
         );
         existing.insert(root.join("queries/registry.json"), "{}".to_string());
+        existing.insert(
+            root.join("apps/screens/credit-review.json"),
+            r#"{"screen":"credit-review"}"#.to_string(),
+        );
+        existing.insert(
+            root.join("mock/pages.json"),
+            r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"t","objective":"o","screen":"credit-review"},{"path":"pages/gone.html","title":"t","objective":"o"}]}"#.to_string(),
+        );
+        existing.insert(
+            root.join("mock/pages/credit-review.html"),
+            "<html>".to_string(),
+        );
         let disk = FakeDisk { existing };
         let tree = Tree::read(&disk, &root);
+        assert_eq!(tree.screens, ["credit-review"]);
+        assert_eq!(tree.mocked, ["pages/credit-review.html"]);
         assert!(tree.under_architecture);
         assert_eq!(tree.capabilities.len(), 1);
         assert_eq!(tree.capabilities[0].system, "credit");
         assert_eq!(tree.systems, ["credit"]);
         assert_eq!(tree.concepts, [("Risk".to_string(), 3)]);
         assert!(tree.has_query_registry);
-        assert_eq!(violations(&tree, None), [] as [std::string::String; 0]);
+        let found = violations(&tree, None);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("pages/gone.html"));
         assert!(!Tree::read(&FakeDisk::default(), &root).under_architecture);
     }
 }

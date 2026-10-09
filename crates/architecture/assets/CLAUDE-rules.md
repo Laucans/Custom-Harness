@@ -44,8 +44,10 @@ crates/dataguard/data-capabilities/<name>/  one DataCapability + data-capability
 crates/dataguard/aggregates/<Aggregate>/aggregate.json   criticality, invariants, relations (contract I)
 concepts/<Concept>/v<n>/concept.json + fixtures.json      a versioned Concept (contract A)
 data/model.json                    the data model: what every table and field is for (contract M)
+mock/pages.json                    the mock-up's pages, one per screen (contract N)
+mock/pages/<screen>.html           one mocked page: static HTML/JS on mock/fixtures/*.json, no backend
 scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)
-contracts/*.schema.json            the thirteen contracts, JSON Schema 2020-12
+contracts/*.schema.json            the fourteen contracts, JSON Schema 2020-12
 ```
 
 ### Rules
@@ -99,12 +101,27 @@ contracts/*.schema.json            the thirteen contracts, JSON Schema 2020-12
     `harness/data-model`, and compares the two — a divergence sends an agent
     to find out which side is wrong. Keep `scripts/dump-schema.sh` printing
     the schema the migrations build when the stack changes.
+14. **Every screen is mocked before it is built, and stays mocked.** The
+    mock-up under `mock/` is the product's frontend without a backend: one
+    static HTML page per screen under `mock/pages/`, plain HTML/JS, reading
+    its data from JSON fixtures under `mock/fixtures/` — never a build step,
+    never a server. `mock/pages.json` (contract N) lists every page with its
+    objective. A task that builds a Micro-UI updates the pages that show it
+    (the Micro-UI's root element carries `data-component="<MicroUi>"`); a task
+    that builds a screen composition ships the screen's page and lists it
+    with `screen: <screen>`. A screen under `apps/screens/` with no page in
+    `mock/pages.json` fails the gates. The human annotates the mock-up in
+    the factory view and may push a `mockup/*` branch with the pages as
+    they want them: read it before building the screen it names.
 
 ### What a session does before writing code
 
 - Read `docs/ARCHITECTURE.md` and the `## Architecture` section of the issue.
 - Find the unit's place in the layout above; create its manifest from the
   matching `contracts/*.schema.json` first, the code second.
+- For a Micro-UI or a screen: open the mock-up page under `mock/pages/`
+  first — it is the specification of what the screen looks like — and
+  keep it true to what gets built.
 - Run the gates locally where they exist (`npx ajv-cli validate` on the
   manifest, the isolation check), then the project's own tests.
 <!-- /harness:architecture -->

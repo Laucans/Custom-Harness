@@ -13,6 +13,7 @@ pub mod gh_board;
 pub mod git_units;
 pub mod harness_builds;
 pub mod limits_cli;
+pub mod mockups;
 pub mod product;
 pub mod prompt_files;
 pub mod pty;

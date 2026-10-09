@@ -45,6 +45,7 @@ jobs:
           validate i-aggregate.schema.json crates/**/aggregate.json
           validate c-persisted-query.schema.json queries/registry.json
           validate m-data-model.schema.json data/model.json
+          validate n-mock-pages.schema.json mock/pages.json
 
   # Contract B — no Capability depends on another Capability or on the write
   # side. Read in the one place Rust declares dependencies: Cargo.toml.
@@ -359,5 +360,43 @@ jobs:
                 failed=1
               fi
             done
+          done
+          exit $failed
+
+  # Contracts E, N — the mock-up keeps up with the screens: every page
+  # `mock/pages.json` lists is there, and every frozen screen under
+  # `apps/screens/` has a page that names it. The mock-up is where a screen
+  # is designed and annotated before it is built; a screen without one was
+  # built blind.
+  pages-mocked:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every listed page exists, and every frozen screen is mocked
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          manifest=mock/pages.json
+          if [ ! -f "$manifest" ]; then
+            if compgen -G "apps/screens/*.json" > /dev/null; then
+              echo "::error file=$manifest::the mock-up has no pages.json, and there are screens to mock"
+              exit 1
+            fi
+            exit 0
+          fi
+          for page in $(jq -r '.pages[].path' "$manifest"); do
+            if [ ! -f "mock/$page" ]; then
+              echo "::error file=$manifest::lists $page, which is not under mock/"
+              failed=1
+            fi
+          done
+          for screen in apps/screens/*.json; do
+            name=$(jq -r '.screen' "$screen")
+            if ! jq -e --arg s "$name" '.pages[] | select(.screen == $s)' "$manifest" > /dev/null; then
+              echo "::error file=$screen::screen $name has no page in $manifest — mock it first"
+              failed=1
+            fi
           done
           exit $failed

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Campagnes</title><link rel="stylesheet" href="../style.css"></head>
+<body>
+<header><h1>D&amp;D helper</h1><nav><a href="../index.html">Pages</a><a href="campagnes.html">Campagnes</a></nav></header>
+<main>
+  <section class="card" data-component="Campagnes" id="campagnes">
+    <h2>Mes campagnes</h2>
+    <table>
+      <thead><tr><th>Nom</th><th>Niveau du groupe</th><th>PJs</th><th>Statut</th><th></th></tr></thead>
+      <tbody id="campagnes-rows"></tbody>
+    </table>
+    <p><button id="creer-campagne">Créer une campagne</button></p>
+  </section>
+</main>
+<script>
+  fetch('../fixtures/campagnes.json').then((r) => r.json()).then((rows) => {
+    document.getElementById('campagnes-rows').innerHTML = rows.map((c) =>
+      `<tr id="campagne-${c.id}"><td>${c.nom}</td><td>${c.niveau}</td><td>${c.pjs}</td><td><span class="badge ${c.statut === 'archivée' ? 'archived' : ''}">${c.statut}</span></td><td><button>Ouvrir</button></td></tr>`).join('');
+  });
+</script>
+</body>
+</html>

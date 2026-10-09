@@ -264,7 +264,7 @@ pub fn turns_of(jsonl: &str) -> Vec<Turn> {
 }
 
 /// What a session is about: the pin and what it sits on.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct About {
     /// The board: `data-model`.
     pub board: String,
@@ -275,37 +275,25 @@ pub struct About {
     pub context: String,
     /// The pin's own text.
     pub note: String,
-    /// `brainstorm` or `asking`.
+    /// `brainstorm`, `asking`, `simulate` or `link`.
     pub kind: String,
+    /// On the mock-up: the page the pin sits on (`pages/home.html`), and
+    /// for a link, the page it leads to or creates.
+    #[serde(default)]
+    pub page: String,
+    /// On the mock-up: the branch shown.
+    #[serde(default)]
+    pub branch: String,
 }
 
 /// The system prompt a pin's session opens with.
 #[must_use]
 pub fn briefing(about: &About, handback: &Handback) -> String {
-    let mut text = format!(
-        "You are brainstorming with the human about one part of their product, from a pin they \
-         dropped on the factory view's {board} board. Read freely — the product's repository is \
-         in this folder (when it is the data snapshot clone, the archive branch `harness/data-model` \
-         is checked out: read code with `git show <branch>:<path>`). Do not edit any file, do not \
-         commit, do not post anything: this is a conversation, and what comes out of it is decided \
-         by the human.\n\n\
-         The pin sits on: {target}\n\
-         It is {kind_words}.\n",
-        board = about.board,
-        target = if about.target.is_empty() {
-            "a spot of the canvas"
-        } else {
-            &about.target
-        },
-        kind_words = if about.kind == "asking" {
-            "an *asking*: a change the human wants considered when the next roadmap is built — help them make it precise"
-        } else {
-            "a *brainstorm*: explore options, trade-offs and consequences with the human"
-        },
-    );
-    if !about.note.trim().is_empty() {
-        let _ = writeln!(text, "The pin's note says:\n{}", about.note.trim());
-    }
+    let mut text = match about.kind.as_str() {
+        "simulate" => simulate_briefing(about),
+        "link" => page_briefing(about),
+        _ => talk_briefing(about),
+    };
     if !about.context.trim().is_empty() {
         let _ = writeln!(
             text,
@@ -332,6 +320,121 @@ pub fn briefing(about: &About, handback: &Handback) -> String {
         }
     }
     text
+}
+
+/// What the mock-up's sessions share: where the pages are and what must
+/// stay true of them.
+fn mockup_rules(about: &About) -> String {
+    format!(
+        "You are working on the product's mock-up: a static frontend with no backend under \
+         `mock/` in this folder — one HTML page per screen under `mock/pages/`, plain HTML and \
+         JavaScript, data read from JSON fixtures under `mock/fixtures/`, every page listed in \
+         `mock/pages.json` (contract N: path, title, objective, optional screen and components). \
+         This folder is a checkout of the branch `{branch}` made for you; the factory view serves \
+         `mock/` from it and reloads the page as you save files. Rules: edit only under `mock/`; \
+         keep `mock/pages.json` valid JSON and listing every page; keep each Micro-UI's root \
+         element marked `data-component=\"<MicroUi>\"` and give the parts a human may point at a \
+         stable `id`; relative links only, so a page works from any file server; no build step, no \
+         framework that must compile, no network call. Do not commit, do not push, do not branch: \
+         the human saves the mock-up from the view when they are satisfied. Say in one line what \
+         you changed when you are done.\n",
+        branch = if about.branch.is_empty() {
+            "shown"
+        } else {
+            &about.branch
+        },
+    )
+}
+
+/// A simulate: the pin is a request, the page must show its result.
+fn simulate_briefing(about: &About) -> String {
+    let mut text = mockup_rules(about);
+    let _ = write!(
+        text,
+        "\nThe human dropped a *simulate* pin on {target} of the page `{page}`. Their request is \
+         below: make the page show what the product would show after that request — the state, \
+         the data, the messages — by editing the page and its fixtures, as faithfully to the \
+         product's rules as the repository lets you read them. Keep the change small and obvious: \
+         the human compares the page before and after.\n",
+        target = if about.target.is_empty() {
+            "a spot"
+        } else {
+            &about.target
+        },
+        page = about.page,
+    );
+    if !about.note.trim().is_empty() {
+        let _ = writeln!(text, "The request:\n{}", about.note.trim());
+    }
+    text
+}
+
+/// A link that creates a page: the pin carries the page's objective.
+fn page_briefing(about: &About) -> String {
+    let mut text = mockup_rules(about);
+    let _ = write!(
+        text,
+        "\nThe human asks for a new page of the mock-up: `{page}`. Create it — if `mock/` has no \
+         page yet, start the mock-up: `mock/pages.json`, a `mock/index.html` that lists the pages \
+         and a small shared `mock/style.css` — register it in `mock/pages.json` with its title and \
+         its objective, and draw it from the objective and from what the repository already says \
+         (the data model in `data/`, the Micro-UI manifests under `apps/`, the other pages): real \
+         sections and components with example data in fixtures, not a lorem ipsum. Link it from \
+         `mock/index.html`. When the page exists, ask the human what to adjust.\n",
+        page = about.page,
+    );
+    if !about.note.trim().is_empty() {
+        let _ = writeln!(text, "The page's objective:\n{}", about.note.trim());
+    }
+    text
+}
+
+/// A brainstorm or an asking: a conversation, nothing edited.
+fn talk_briefing(about: &About) -> String {
+    let mut text = format!(
+        "You are brainstorming with the human about one part of their product, from a pin they \
+         dropped on the factory view's {board} board. Read freely — the product's repository is \
+         in this folder (when it is the data snapshot clone, the archive branch `harness/data-model` \
+         is checked out: read code with `git show <branch>:<path>`). Do not edit any file, do not \
+         commit, do not post anything: this is a conversation, and what comes out of it is decided \
+         by the human.\n\n\
+         The pin sits on: {target}\n\
+         It is {kind_words}.\n",
+        board = about.board,
+        target = if about.target.is_empty() {
+            "a spot of the canvas"
+        } else {
+            &about.target
+        },
+        kind_words = if about.kind == "asking" {
+            "an *asking*: a change the human wants considered when the next roadmap is built — help them make it precise"
+        } else {
+            "a *brainstorm*: explore options, trade-offs and consequences with the human"
+        },
+    );
+    if !about.note.trim().is_empty() {
+        let _ = writeln!(text, "The pin's note says:\n{}", about.note.trim());
+    }
+    text
+}
+
+/// The first prompt a session opens on, when there is one: the note for a
+/// brainstorm, an asking or a simulate; the page to make for a link.
+#[must_use]
+pub fn first_prompt(about: &About) -> Option<String> {
+    let note = about.note.trim();
+    match about.kind.as_str() {
+        "link" => Some(if note.is_empty() {
+            format!("Create the page `{}` of the mock-up.", about.page)
+        } else {
+            format!(
+                "Create the page `{}` of the mock-up. Its objective: {note}",
+                about.page
+            )
+        }),
+        _ if note.is_empty() => None,
+        _ => Some(note.to_string()),
+    }
 }
 
 /// What the summary is asked of.
@@ -460,6 +563,46 @@ not json
     }
 
     #[test]
+    fn a_mockup_session_is_briefed_to_edit_and_a_talk_to_read() {
+        let about = About {
+            board: "mockup--main--home".into(),
+            target: "component RiskBadge".into(),
+            context: String::new(),
+            note: "show a late customer".into(),
+            kind: "simulate".into(),
+            page: "pages/home.html".into(),
+            branch: "main".into(),
+        };
+        let text = briefing(&about, &Handback::Nothing);
+        assert!(text.contains("edit only under `mock/`"));
+        assert!(text.contains("`pages/home.html`") && text.contains("show a late customer"));
+        assert!(text.contains("branch `main`"));
+        assert_eq!(
+            first_prompt(&about).as_deref(),
+            Some("show a late customer")
+        );
+        let link = About {
+            kind: "link".into(),
+            page: "pages/credit-review.html".into(),
+            note: "assess a limit".into(),
+            ..about.clone()
+        };
+        assert!(briefing(&link, &Handback::Nothing).contains("new page"));
+        assert!(
+            first_prompt(&link)
+                .expect("a page to make")
+                .contains("`pages/credit-review.html`")
+        );
+        let talk = About {
+            kind: "brainstorm".into(),
+            ..about
+        };
+        let text = briefing(&talk, &Handback::Nothing);
+        assert!(text.contains("Do not edit any file"));
+        assert!(!text.contains("edit only under"));
+    }
+
+    #[test]
     fn a_light_conversation_comes_back_whole() {
         let c = Conversation {
             turns: vec![turn("human", "a"), turn("claude", "b")],
@@ -508,6 +651,8 @@ not json
             context: "type: varchar(40)".into(),
             note: "unique?".into(),
             kind: "brainstorm".into(),
+            page: String::new(),
+            branch: String::new(),
         };
         let first = briefing(&about, &Handback::Nothing);
         assert!(first.contains("field character.name"));

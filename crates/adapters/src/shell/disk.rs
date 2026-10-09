@@ -47,6 +47,19 @@ impl Disk for RealDisk {
         names
     }
 
+    fn file_names(&self, path: &Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
     fn read_to_string(&self, path: &Path) -> Option<String> {
         std::fs::read_to_string(path).ok()
     }

@@ -49,9 +49,10 @@ use crate::adapters::claude_cli::{ClaudeOneshot, ClaudeTranscripts};
 use crate::adapters::fs_traces::FsTraces;
 use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
-use crate::adapters::git_units::{DirUnits, GitUnits};
+use crate::adapters::git_units::{DirUnits, GitUnits, Mirror};
 use crate::adapters::harness_builds::HarnessBuilds;
 use crate::adapters::limits_cli::CliLimits;
+use crate::adapters::mockups::{DirMockups, GitMockups};
 use crate::adapters::product::{DirProduct, GhProduct};
 use crate::adapters::prompt_files::PromptFiles;
 use crate::adapters::pty::Pty;
@@ -75,8 +76,8 @@ use crate::domain::steward;
 use crate::janitor::Janitor;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    Board, BoardReading, Builds, Limits, NoteStore, Oneshot, Plant, Product, TerminalFactory,
-    Traces, Trials, Units, Yard,
+    Board, BoardReading, Builds, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
+    TerminalFactory, Traces, Trials, Units, Yard,
 };
 use crate::server::{AppState, router};
 use crate::units_desk::UnitsDesk;
@@ -120,11 +121,9 @@ async fn main() -> anyhow::Result<()> {
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
     let (data, data_task) = data_for(product);
+    let (units, mockups) = product_readers(&cli, &root, &project);
 
-    // One per process: what tells a page the server it talks to was rebuilt.
-    let build = jiff::Timestamp::now().to_string();
-    let first = first_picture(&project, cli.demo, &build);
-    let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first));
+    let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
     let (board_tx, board_rx) = watch::channel(None);
     let state = AppState {
         snapshot: snapshot_rx,
@@ -152,7 +151,8 @@ async fn main() -> anyhow::Result<()> {
         trials: trials(&cli, &workspace),
         restart: Arc::default(),
         restart_poll: Duration::from_secs(3),
-        units: units_for(&cli, &root, &project),
+        units,
+        mockups,
         zone: TimeZone::system(),
     };
 
@@ -331,6 +331,7 @@ fn note_desks_for(
         transcripts: Arc::new(ClaudeTranscripts::new(projects)),
         model: cli.steward_model.clone(),
         cwd,
+        permission_mode: cli.permission_mode.clone(),
     }))
 }
 
@@ -396,7 +397,10 @@ fn doctor_for(cli: &Cli, root: &Path, project: &Project, program: &str) -> Optio
 
 /// The picture before the first read: an empty plant with the right name and
 /// the process's `build`.
-fn first_picture(project: &Project, demo: bool, build: &str) -> Snapshot {
+fn first_picture(project: &Project, demo: bool) -> Snapshot {
+    // One per process: what tells a page the server it talks to was rebuilt.
+    let build = jiff::Timestamp::now().to_string();
+    let build = build.as_str();
     let observed = Observed::default();
     let mut first = assemble::snapshot(&Inputs {
         observed: &observed,
@@ -663,23 +667,11 @@ const SAMPLE_UNITS: &str = "crates/view/sample/units";
 /// Where the capabilities list is read: the folder the human named, the
 /// sample under `--demo`, else a mirror of the product on GitHub — nothing
 /// under `--no-board` without a folder.
-fn units_for(cli: &Cli, root: &Path, project: &Project) -> Option<UnitsDesk> {
-    let units: Arc<dyn Units> = if let Some(dir) = &cli.data_dir {
-        Arc::new(GitUnits::local(dir))
-    } else if cli.demo {
+fn units_for(cli: &Cli, root: &Path, mirror: Option<Arc<Mirror>>) -> Option<UnitsDesk> {
+    let units: Arc<dyn Units> = if cli.demo && cli.data_dir.is_none() {
         Arc::new(DirUnits::new(&root.join(SAMPLE_UNITS)))
-    } else if cli.no_board || project.slug.is_empty() {
-        return None;
     } else {
-        let mirror = root
-            .join(".llocal")
-            .join(cleanup::VIEW_MIRROR)
-            .join(format!("{}.git", project.slug.replace('/', "-")));
-        Arc::new(GitUnits::mirror(
-            &format!("https://github.com/{}.git", project.slug),
-            &mirror,
-            Duration::from_secs(60),
-        ))
+        Arc::new(GitUnits::new(mirror?))
     };
     let claude = claude_bin::newest().map(|(path, _)| path);
     let oneshot = claude.map(|path| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
@@ -690,6 +682,53 @@ fn units_for(cli: &Cli, root: &Path, project: &Project) -> Option<UnitsDesk> {
         oneshot,
         &cli.fusion_model,
     ))
+}
+
+/// What reads the product with `git`: the capabilities list and the
+/// mock-up, over one mirror.
+fn product_readers(
+    cli: &Cli,
+    root: &Path,
+    project: &Project,
+) -> (Option<UnitsDesk>, Option<Arc<dyn Mockups>>) {
+    let mirror = mirror_for(cli, root, project);
+    (
+        units_for(cli, root, mirror.clone()),
+        mockups_for(cli, root, mirror),
+    )
+}
+
+/// The product's repository as `git` reads it: the folder the human named,
+/// else a bare mirror of the product on GitHub, kept under
+/// `.llocal/view-mirror/` — nothing under `--no-board` or `--demo` without
+/// a folder.
+fn mirror_for(cli: &Cli, root: &Path, project: &Project) -> Option<Arc<Mirror>> {
+    if let Some(dir) = &cli.data_dir {
+        return Some(Arc::new(Mirror::local(dir)));
+    }
+    if cli.demo || cli.no_board || project.slug.is_empty() {
+        return None;
+    }
+    let dir = root
+        .join(".llocal")
+        .join(cleanup::VIEW_MIRROR)
+        .join(format!("{}.git", project.slug.replace('/', "-")));
+    Some(Arc::new(Mirror::bare(
+        &format!("https://github.com/{}.git", project.slug),
+        &dir,
+        Duration::from_secs(60),
+    )))
+}
+
+/// Where the product's mock-up is read and edited: the sample's folders
+/// under `--demo`, else the mirror's branches with a worktree per edited
+/// branch under `.llocal/view-mockups/`.
+fn mockups_for(cli: &Cli, root: &Path, mirror: Option<Arc<Mirror>>) -> Option<Arc<dyn Mockups>> {
+    if cli.demo && cli.data_dir.is_none() {
+        return Some(Arc::new(DirMockups::new(&root.join(SAMPLE_UNITS))));
+    }
+    let workspaces = root.join(".llocal").join(cleanup::VIEW_MOCKUPS);
+    mirror.map(|mirror| Arc::new(GitMockups::new(mirror, &workspaces)) as Arc<dyn Mockups>)
 }
 
 /// Reads the board on a slower cadence; a failed read keeps the last one.

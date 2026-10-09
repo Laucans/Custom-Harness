@@ -1,0 +1,5 @@
+[
+  { "id": "c1", "nom": "La Couronne brisée", "niveau": 4, "pjs": 5, "statut": "active" },
+  { "id": "c2", "nom": "Les Marais de Sel", "niveau": 2, "pjs": 3, "statut": "active" },
+  { "id": "c3", "nom": "Le Dernier Phare", "niveau": 9, "pjs": 4, "statut": "archivée" }
+]

@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::ports::{FileDates, RefUnits, UnitFile, Units, UnitsReading};
@@ -45,17 +45,19 @@ enum Repo {
     Local(PathBuf),
 }
 
-/// `git`, on the product's repository.
-pub struct GitUnits {
+/// The product's repository as the view reads it with `git`: a bare mirror
+/// it keeps and fetches, or a checkout the human named. Shared by what reads
+/// the manifests and what reads the mock-up, so one fetch serves both.
+pub struct Mirror {
     repo: Repo,
     fresh: Duration,
     fetched: Mutex<Option<Instant>>,
 }
 
-impl GitUnits {
-    /// A mirror of `url` kept at `dir`, fetched when older than `fresh`.
+impl Mirror {
+    /// A bare mirror of `url` kept at `dir`, fetched when older than `fresh`.
     #[must_use]
-    pub fn mirror(url: &str, dir: &Path, fresh: Duration) -> Self {
+    pub fn bare(url: &str, dir: &Path, fresh: Duration) -> Self {
         Self {
             repo: Repo::Mirror {
                 url: url.to_string(),
@@ -66,7 +68,7 @@ impl GitUnits {
         }
     }
 
-    /// The branches of the checkout at `dir`, as they are.
+    /// The checkout at `dir`, as it is — never fetched.
     #[must_use]
     pub fn local(dir: &Path) -> Self {
         Self {
@@ -76,7 +78,12 @@ impl GitUnits {
         }
     }
 
-    fn git(&self, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    /// `git <args>` on the repository, its stdout.
+    ///
+    /// # Errors
+    ///
+    /// `git` failed, with what it said.
+    pub fn git(&self, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
         let mut command = Command::new("git");
         match &self.repo {
             Repo::Mirror { dir, .. } => command.arg("--git-dir").arg(dir),
@@ -85,8 +92,47 @@ impl GitUnits {
         run(command.args(args), input)
     }
 
+    /// The text of `path` on `branch`, `None` when the file is not there.
+    ///
+    /// # Errors
+    ///
+    /// `git` failed for another reason than absence.
+    pub fn show(&self, branch: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+        let spec = format!("refs/heads/{branch}:{path}");
+        match self.git(&["cat-file", "-p", &spec], None) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(why)
+                if why.contains("does not exist")
+                    || why.contains("ot a valid object name")
+                    || why.contains("nvalid object name")
+                    || why.contains("exists on disk, but not in") =>
+            {
+                Ok(None)
+            }
+            Err(why) => Err(why),
+        }
+    }
+
+    /// The commit `branch` points at, `None` for a branch that is not there.
+    ///
+    /// # Errors
+    ///
+    /// `git` failed for another reason than absence.
+    pub fn head_of(&self, branch: &str) -> Result<Option<String>, String> {
+        if !self.branches()?.iter().any(|b| b == branch) {
+            return Ok(None);
+        }
+        let reference = format!("refs/heads/{branch}");
+        let out = self.git(&["rev-parse", "--verify", "--quiet", &reference], None)?;
+        Ok(Some(String::from_utf8_lossy(&out).trim().to_string()))
+    }
+
     /// Clones the mirror the first time, fetches it when stale.
-    fn refresh(&self) -> Result<(), String> {
+    ///
+    /// # Errors
+    ///
+    /// The clone or the fetch failed.
+    pub fn refresh(&self) -> Result<(), String> {
         let Repo::Mirror { url, dir } = &self.repo else {
             return Ok(());
         };
@@ -120,7 +166,12 @@ impl GitUnits {
         Ok(())
     }
 
-    fn branches(&self) -> Result<Vec<String>, String> {
+    /// Every branch but the data archive's.
+    ///
+    /// # Errors
+    ///
+    /// `git` failed.
+    pub fn branches(&self) -> Result<Vec<String>, String> {
         let out = self.git(
             &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
             None,
@@ -131,6 +182,23 @@ impl GitUnits {
             .filter(|b| !b.is_empty() && *b != ARCHIVE)
             .map(str::to_string)
             .collect())
+    }
+}
+
+/// `git`, on the product's repository: the manifests on every branch.
+pub struct GitUnits {
+    mirror: Arc<Mirror>,
+}
+
+impl GitUnits {
+    /// Reads the manifests through `mirror`.
+    #[must_use]
+    pub const fn new(mirror: Arc<Mirror>) -> Self {
+        Self { mirror }
+    }
+
+    fn git(&self, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+        self.mirror.git(args, input)
     }
 
     /// `(path, blob)` of every manifest on `branch`.
@@ -180,9 +248,9 @@ impl GitUnits {
 
 impl Units for GitUnits {
     fn read(&self) -> Result<UnitsReading, String> {
-        self.refresh()?;
+        self.mirror.refresh()?;
         let mut listed = Vec::new();
-        for branch in self.branches()? {
+        for branch in self.mirror.branches()? {
             listed.push((branch.clone(), self.manifests(&branch)?));
         }
         let blobs: BTreeSet<String> = listed
@@ -212,7 +280,13 @@ impl Units for GitUnits {
     }
 }
 
-fn run(command: &mut Command, input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+/// Runs `command` to its end, `input` on its stdin, and answers its stdout —
+/// or what it said on stderr when it failed.
+///
+/// # Errors
+///
+/// The command could not start, or exited with a failure.
+pub fn run(command: &mut Command, input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let shown = format!("{command:?}");
     let mut child = command
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -455,7 +529,9 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-q", "-m", "y"]);
 
-        let reading = GitUnits::local(&dir).read().expect("read");
+        let reading = GitUnits::new(Arc::new(Mirror::local(&dir)))
+            .read()
+            .expect("read");
         let _ = fs::remove_dir_all(&dir);
         let main = reading
             .refs

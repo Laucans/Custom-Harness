@@ -1,0 +1,13 @@
+:root { font-family: system-ui, sans-serif; color: #1d2430; background: #f6f3ec; }
+body { margin: 0; }
+header { display: flex; align-items: center; gap: 16px; padding: 14px 28px; background: #2b2118; color: #f3e7c9; }
+header h1 { margin: 0; font-size: 18px; }
+header nav a { color: #e2b240; margin-left: 14px; text-decoration: none; }
+main { padding: 24px 28px; display: grid; gap: 20px; max-width: 1100px; }
+.card { background: #fff; border: 1px solid #ddd3c2; border-radius: 10px; padding: 16px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #eee5d6; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #7a6a52; }
+button { background: #e2b240; border: 0; border-radius: 7px; padding: 8px 14px; font: inherit; cursor: pointer; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #e8f3ea; color: #1f6b3a; }
+.badge.archived { background: #f1e8e8; color: #7a2e2e; }

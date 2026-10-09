@@ -2574,7 +2574,7 @@ fn office_room(snap: &Snapshot) -> Scene {
 /// mock-up on its easel, the capabilities list on a screen, the data floppy.
 fn product_corner(b: &mut Builder) {
     let mock = pane(
-        serde_json::json!({"kind": "placeholder", "title": "The mock-up", "text": "The interface, drawn as micro-frontends: click a part, read the feature behind it. Nothing to show yet — the product's mock-up has no source the view can read."}),
+        serde_json::json!({"kind": "mockup", "title": "The mock-up"}),
         "The mock-up of the interface",
     );
     let m = b.mark();
@@ -2585,7 +2585,7 @@ fn product_corner(b: &mut Builder) {
     let head = b.label(2.2, 2.0, 6.35, "MOCK-UP", 12.0, INK);
     head.bold = true;
     head.backing = Backing::Slate;
-    b.label(2.2, 1.6, 6.35, "micro-frontends · coming", 10.0, SCRIPT)
+    b.label(2.2, 1.6, 6.35, "the frontend, mocked", 10.0, SCRIPT)
         .backing = Backing::Slate;
     let capabilities = pane(
         serde_json::json!({"kind": "capabilities"}),
