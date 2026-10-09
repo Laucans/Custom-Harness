@@ -758,6 +758,17 @@ mod tests {
         // still parse as part of a fresh `.env.local`.
         ("HARNESS_VIEW_PORT", "7878"),
         ("STEWARD_MODEL", "claude-sonnet-5-5"),
+        // Read by the product's runs and tests, and by `scripts/postgres.sh`
+        // (docs/PERSISTENCE.md) — never by this binary's flags.
+        (
+            "DATABASE_URL",
+            "postgres://app:CHANGE_ME@127.0.0.1:5432/app",
+        ),
+        (
+            "DATABASE_URL_READONLY",
+            "postgres://app_readonly:CHANGE_ME@127.0.0.1:5432/app",
+        ),
+        ("DATABASE_READONLY_ROLE", ""),
     ];
 
     #[test]
