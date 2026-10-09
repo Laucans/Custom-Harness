@@ -9,6 +9,7 @@ use super::capture::Captured;
 use super::said;
 use crate::data_snapshot::config::Config;
 use crate::data_snapshot::data::index::{self, Head, Index, Snapshot};
+use crate::data_snapshot::data::model;
 use crate::data_snapshot::data::report::Snapped;
 use crate::data_snapshot::ports::Ports;
 
@@ -20,6 +21,17 @@ pub const SCHEMA_FILE: &str = "schema.sql";
 
 /// The model, in a version's folder.
 pub const MODEL_FILE: &str = "model.json";
+
+/// Where the two sides of a captured head disagree — nothing to say when one
+/// side is missing.
+fn divergences(c: &Captured) -> Vec<String> {
+    match (&c.schema, &c.model) {
+        (Some(schema), Some(declared)) => {
+            model::build("", &Ok(Some(schema.clone())), &Ok(Some(declared.clone()))).divergences
+        }
+        _ => Vec::new(),
+    }
+}
 
 /// Commits what was captured on the archive branch and pushes it.
 ///
@@ -93,6 +105,8 @@ pub async fn archive(
                 branch: c.branch.clone(),
                 sha: c.sha.clone(),
                 dir,
+                compared: c.schema.is_some() && c.model.is_some(),
+                divergences: divergences(c),
             });
         }
         kept.heads.insert(c.branch.clone(), c.sha.clone());

@@ -19,6 +19,7 @@
 //! its own `mod.rs`.
 
 pub mod common;
+pub mod data_diagnosis;
 pub mod data_snapshot;
 pub mod dev_loop;
 pub mod init_repo;

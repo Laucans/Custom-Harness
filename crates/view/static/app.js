@@ -356,6 +356,7 @@
   function followNote(n) {
     if (!n.link) return;
     if (n.link.to === 'issue') { openPane({ kind: 'issue', number: n.link.number }); return; }
+    if (n.link.to === 'data_model') { openPane({ kind: 'data_divergence', branch: n.link.branch, dir: n.link.dir, at: n.link.at }); return; }
     if (n.link.to === 'agent') {
       const id = `${n.link.workflow}/${n.link.run}`;
       const last = { id, name: `${n.link.workflow} · ${n.link.run}`, workflow: n.link.workflow, run_id: n.link.run, active: false };
@@ -560,7 +561,9 @@
     if (e.target.closest && e.target.closest('#term')) return;
     // An open switch menu takes Escape for itself, and the page stays put.
     if (e.key === 'Escape' && !$('plant-menu').hidden) { plantClose(); $('status').focus(); return; }
-    if (e.key === 'Escape' || e.key === 'Backspace') { if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'CANVAS') back(); else if (e.key === 'Escape') back(); }
+    // Typing in a field is typing: Backspace erases, Escape leaves the field's pane.
+    const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable;
+    if (e.key === 'Escape' || e.key === 'Backspace') { if (!typing && e.target.tagName !== 'CANVAS') back(); else if (e.key === 'Escape') back(); }
   });
   for (const who of ['steward', 'doctor']) {
     $('hud-' + who).addEventListener('click', () => {
@@ -579,7 +582,7 @@
 
   // The panes drawn on a board: what mounts each.
   const CANVASES = {
-    data_model: (el) => (window.DataModelPane ? window.DataModelPane.mount(el) : null),
+    data_model: (el, p) => (window.DataModelPane ? window.DataModelPane.mount(el, { branch: p.branch, dir: p.dir }) : null),
   };
 
   // ---- D · the pane ------------------------------------------------------------
@@ -739,6 +742,52 @@
       S.diagnoses[r.id] = await res.json();
     } catch (err) { button.classList.remove('running'); button.title = 'cannot reach the server'; return; }
     pullDiagnoses();
+  }
+
+  // ---- The data model's divergence: the diagnosis, and the issue -------------------
+  // A little markdown: paragraphs, line breaks, **bold**, `code`.
+  const md = (text) => String(text || '').split(/\n{2,}/).map((para) => '<p>' + esc(para)
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\n/g, '<br>') + '</p>').join('');
+  async function divergenceLoad(p) {
+    let d = null;
+    try {
+      const res = await fetch('/api/data-model/divergence?' + new URLSearchParams({ branch: p.branch || '', dir: p.dir || '' }));
+      d = res.ok ? await res.json() : null;
+    } catch (e) { d = null; }
+    const host = $('dv');
+    if (!host || !S.pane || S.pane.kind !== 'data_divergence') return;
+    if (!d) { host.innerHTML = '<div class="callout">No diagnosis recorded for this version: the events were swept, or the view reads no event store.</div>'; return; }
+    const list = (items) => (items.length ? '<ul class="dm-rules">' + items.map((i) => `<li>${esc(i)}</li>`).join('') + '</ul>' : '<p class="muted">None.</p>');
+    const proposed = d.actions.map((a) => '- ' + a).join('\n');
+    host.innerHTML = `<div class="dv-head"><span class="tag bad">diverges</span><b>${esc(d.branch)}</b><code>${esc(d.sha.slice(0, 7))}</code><span class="muted">diagnosed ${esc(d.at.replace('T', ' ').replace('Z', ''))}</span></div>`
+      + '<h4>State of affairs</h4>'
+      + (d.diagnosis ? `<div class="dv-diagnosis">${md(d.diagnosis)}</div>` : `<div class="callout">Not diagnosed: ${esc(d.failure || 'the session gave no answer')}. The divergences below are the static comparison's.</div>`)
+      + `<h4>The divergences <span class="muted">· ${d.divergences.length}</span></h4>${list(d.divergences)}`
+      + `<h4>Proposed actions</h4>${list(d.actions)}`
+      + '<h4>How to resolve it</h4>'
+      + `<textarea id="dv-resolution" class="dv-resolution" rows="7" maxlength="8000" placeholder="What should be done: fix the migration, or describe the field in data/model.json…">${esc(proposed)}</textarea>`
+      + '<div class="dv-actions"><button type="button" class="act primary" id="dv-open">Open the issue</button>'
+      + '<button type="button" class="act" id="dv-see">See this version</button><span id="dv-said" class="muted"></span></div>'
+      + '<p class="muted">The issue carries <code>harness:roadmap</code> and <code>harness:ready</code>: the planner, the split and the loop take it from there, and a write-side change still waits for your merge.</p>';
+    $('dv-see').addEventListener('click', () => openPane({ kind: 'data_model', branch: d.branch, dir: d.dir }));
+    $('dv-open').addEventListener('click', async () => {
+      const said = $('dv-said');
+      const button = $('dv-open');
+      button.disabled = true;
+      said.textContent = 'opening…';
+      try {
+        const res = await fetch('/api/data-model/issue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: d.branch, dir: d.dir, resolution: $('dv-resolution').value }) });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text);
+        const url = JSON.parse(text).url;
+        said.innerHTML = /^https?:/.test(url) ? `opened <a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>` : `opened ${esc(url)}`;
+      } catch (e) {
+        said.textContent = 'not opened: ' + (e.message || e);
+        button.disabled = false;
+      }
+    });
   }
 
   // ---- The janitor: what the yard weighs, and a sweep ------------------------------
@@ -1907,8 +1956,15 @@
       return ['Data model · ' + (S.snap && S.snap.project ? S.snap.project.name : 'the product'), html, (again) => {
         if (again && S.canvas) return;
         teardownCanvas();
-        S.canvas = CANVASES.data_model($('dm-host'));
+        S.canvas = CANVASES.data_model($('dm-host'), p);
       }, true];
+    },
+
+    // A diverging data model, diagnosed: the state of affairs, the actions
+    // proposed, and the issue the human may open from it.
+    data_divergence(p, refresh) {
+      const html = '<div id="dv" class="dv"><div class="muted">Reading the diagnosis…</div></div>';
+      return ['Data model diverges · ' + (p.branch || ''), html, (again) => { if (!again) divergenceLoad(p); }, true];
     },
 
     placeholder(p) {

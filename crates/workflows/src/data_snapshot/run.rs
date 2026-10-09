@@ -216,6 +216,8 @@ mod tests {
                 branch: "main".into(),
                 sha: "abcdef0123".into(),
                 dir: dir.into(),
+                compared: true,
+                divergences: vec!["table t is in the database, not in the model".into()],
             }]
         );
         // The default script, run from the clone.

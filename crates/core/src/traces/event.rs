@@ -158,6 +158,34 @@ pub enum Event {
         /// Why, in the script's or `git`'s words.
         reason: String,
     },
+    /// A version of the data model whose two sides disagree, diagnosed: the
+    /// schema the migrations build and the agents' `data/model.json`. What
+    /// the human reads before deciding to open an issue.
+    DataModelDiverged {
+        /// The branch: `main` or the integration branch.
+        branch: String,
+        /// The commit read.
+        sha: String,
+        /// The version's folder on the archive branch.
+        dir: String,
+        /// What the static comparison found, a sentence each.
+        divergences: Vec<String>,
+        /// The diagnosis, markdown: the state of affairs, then which side
+        /// is wrong for each divergence and why. Empty when it failed.
+        diagnosis: String,
+        /// What a human can decide, a sentence each.
+        actions: Vec<String>,
+        /// Why there is no diagnosis; empty when there is one.
+        failure: String,
+    },
+    /// A version of the data model whose two sides agree: what clears the
+    /// branch's divergence.
+    DataModelAgreed {
+        /// The branch.
+        branch: String,
+        /// The commit read.
+        sha: String,
+    },
     /// A workflow stopped. Told in the run's own log as `STOP: …` — the line
     /// a reader of that log jumps to — and kept.
     Halted {
@@ -242,6 +270,26 @@ impl Event {
                 sha,
                 reason,
             } => format!("watch: data snapshot -> {branch} @ {sha} failed: {reason}"),
+            Self::DataModelDiverged {
+                branch,
+                sha,
+                divergences,
+                failure,
+                ..
+            } => format!(
+                "watch: data model -> {branch} @ {} diverges ({} divergence(s)){}",
+                sha.chars().take(7).collect::<String>(),
+                divergences.len(),
+                if failure.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — not diagnosed: {failure}")
+                }
+            ),
+            Self::DataModelAgreed { branch, sha } => format!(
+                "watch: data model -> {branch} @ {}: the database and the model agree",
+                sha.chars().take(7).collect::<String>()
+            ),
             Self::GateChecked {
                 gate,
                 check,
@@ -269,7 +317,9 @@ impl Event {
             | Self::LaneEnded {
                 code: Some(1 | 3), ..
             } => Level::Warning,
-            Self::LaneNotStarted { .. } | Self::LaneEnded { .. } => Level::Error,
+            Self::LaneNotStarted { .. }
+            | Self::LaneEnded { .. }
+            | Self::DataModelDiverged { .. } => Level::Error,
             _ => Level::Info,
         }
     }

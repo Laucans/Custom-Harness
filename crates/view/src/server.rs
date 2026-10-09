@@ -32,14 +32,14 @@ use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
-use crate::data_desk::{DataDesk, Wanted};
+use crate::data_desk::{DataDesk, Issue, Wanted};
 use crate::desk::Desk;
 use crate::domain::annotations::{self, Note};
 use crate::domain::assemble;
 use crate::domain::blueprint;
 use crate::domain::cleanup::Settings;
-use crate::domain::data_model::DataModel;
 use crate::domain::data_versions::Versions;
+use crate::domain::divergence;
 use crate::domain::doctor::{self, Diagnosis};
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
@@ -56,6 +56,7 @@ use crate::ports::{BoardReading, Limits, Notebook, Plant, Traces};
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
 use harness_core::ports::store::prompts::PromptStore;
+use harness_workflows::data_snapshot::data::model::DataModel;
 
 /// The diagnoses asked of the doctor, by `workflow/run`, shared with the
 /// listeners that hear them end.
@@ -168,6 +169,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/janitor/settings", post(janitor_settings))
         .route("/api/data-model", get(data_model))
         .route("/api/data-model/versions", get(data_versions))
+        .route("/api/data-model/divergence", get(data_divergence))
+        .route("/api/data-model/issue", post(data_issue))
         .route("/api/notes/{board}", get(notes).put(put_notes))
         .route("/api/prompts/edit", post(edit_prompt))
         .route("/api/prompts/restore", post(restore_prompt))
@@ -871,6 +874,82 @@ async fn data_versions(State(state): State<AppState>) -> Response {
             versions: &versions,
         }),
         Err(why) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
+    }
+}
+
+/// `?branch=…&dir=…`: which diagnosed divergence.
+#[derive(Debug, Default, Deserialize)]
+struct DivergenceQuery {
+    branch: String,
+    dir: Option<String>,
+}
+
+/// The diagnosis the watch recorded for a branch's diverging version.
+fn divergence_of(
+    state: &AppState,
+    branch: &str,
+    dir: Option<&str>,
+) -> Option<divergence::Divergence> {
+    let events = state
+        .events
+        .as_ref()?
+        .between(None, None, crate::EVENTS_READ)
+        .ok()?;
+    divergence::find(&events, branch, dir.filter(|d| !d.is_empty()))
+}
+
+async fn data_divergence(
+    State(state): State<AppState>,
+    Query(query): Query<DivergenceQuery>,
+) -> Response {
+    divergence_of(&state, &query.branch, query.dir.as_deref()).map_or_else(
+        || not_found("no diagnosed divergence for this branch"),
+        |d| json(&d),
+    )
+}
+
+/// What the human sends to open an issue from a divergence.
+#[derive(Debug, Deserialize)]
+struct IssueAsk {
+    branch: String,
+    dir: String,
+    resolution: String,
+}
+
+/// Opens the issue a human decided on: their resolution first, the state of
+/// affairs after. Its labels start the pipeline.
+async fn data_issue(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(desk) = state.data.clone() else {
+        return (StatusCode::NOT_FOUND, "nothing reads the product here").into_response();
+    };
+    let ask = match serde_json::from_slice::<IssueAsk>(&body) {
+        Ok(ask) => ask,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("not an issue request: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let Some(found) = divergence_of(&state, &ask.branch, Some(&ask.dir)) else {
+        return not_found("no diagnosed divergence for this version");
+    };
+    let (title, body) = match divergence::issue(&found, &ask.resolution) {
+        Ok(composed) => composed,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    let issue = Issue {
+        title,
+        body,
+        labels: divergence::ISSUE_LABELS
+            .iter()
+            .map(|l| (*l).to_string())
+            .collect(),
+    };
+    match desk.open_issue(issue).await {
+        Ok(url) => json(&serde_json::json!({ "url": url })),
+        Err(why) => (StatusCode::BAD_GATEWAY, why).into_response(),
     }
 }
 

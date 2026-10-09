@@ -46,6 +46,7 @@ use harness_core::ports::shell::github::{Activity, GitHub};
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
 use harness_workflows::common::{branching, hierarchy, labels, review};
+use harness_workflows::data_diagnosis::run::Request as DiagnosisRequest;
 use harness_workflows::data_snapshot::data::report::Snapped;
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
@@ -212,46 +213,112 @@ async fn snapshot_data(
     milestones: &[Issue],
     log: &Logbook,
 ) {
+    // A dry run writes nothing, and a snapshot pushes the archive.
+    if args.dry_run {
+        return;
+    }
     let Some(slug) = Slug::parse(&args.target_repo_url) else {
         return;
     };
-    let mut branches = vec!["main".to_string(), args.branch.clone()];
+    let mut branches = vec![RELEASE_BRANCH.to_string(), args.branch.clone()];
     branches.extend(
         milestones
             .iter()
             .map(|m| branching::milestone_branch(m.number, &m.title)),
     );
     branches.dedup();
-    match crate::dispatch::data_snapshot::run(Rc::clone(gh), &slug, here, branches).await {
-        Ok(report) => {
-            for snapped in report.snapped {
-                log.event(&match snapped {
-                    Snapped::Archived { branch, sha, dir } => {
-                        Event::DataSnapshotTaken { branch, sha, dir }
-                    }
-                    Snapped::Unchanged { branch, sha } => Event::DataSnapshotTaken {
-                        branch,
-                        sha,
-                        dir: String::new(),
-                    },
-                    Snapped::Failed {
-                        branch,
-                        sha,
-                        reason,
-                    } => Event::DataSnapshotFailed {
-                        branch,
-                        sha,
-                        reason,
-                    },
+    let report =
+        match crate::dispatch::data_snapshot::run(Rc::clone(gh), &slug, here, branches).await {
+            Ok(report) => report,
+            Err(halt) => {
+                log.event(&Event::DataSnapshotFailed {
+                    branch: "every branch".to_string(),
+                    sha: String::new(),
+                    reason: halt.reason().to_string(),
                 });
+                return;
             }
+        };
+    for snapped in report.snapped {
+        match snapped {
+            Snapped::Archived {
+                branch,
+                sha,
+                dir,
+                compared,
+                divergences,
+            } => {
+                log.event(&Event::DataSnapshotTaken {
+                    branch: branch.clone(),
+                    sha: sha.clone(),
+                    dir: dir.clone(),
+                });
+                // Only what a human released or the agents integrated is
+                // checked: a milestone's branch is work in progress.
+                if compared && (branch == RELEASE_BRANCH || branch == args.branch) {
+                    check_data(args, here, &slug, (branch, sha), dir, divergences, log).await;
+                }
+            }
+            Snapped::Unchanged { branch, sha } => log.event(&Event::DataSnapshotTaken {
+                branch,
+                sha,
+                dir: String::new(),
+            }),
+            Snapped::Failed {
+                branch,
+                sha,
+                reason,
+            } => log.event(&Event::DataSnapshotFailed {
+                branch,
+                sha,
+                reason,
+            }),
         }
-        Err(halt) => log.event(&Event::DataSnapshotFailed {
-            branch: "every branch".to_string(),
-            sha: String::new(),
-            reason: halt.reason().to_string(),
-        }),
     }
+}
+
+/// The release branch: what a human merges `main_agent` into.
+const RELEASE_BRANCH: &str = "main";
+
+/// A version whose two sides were compared: agreeing clears the branch's
+/// alert, diverging sends Opus to say why — and either way the human hears
+/// of it as an error notification.
+async fn check_data(
+    args: &WatchArgs,
+    here: &Path,
+    slug: &Slug,
+    head: (String, String),
+    dir: String,
+    divergences: Vec<String>,
+    log: &Logbook,
+) {
+    let (branch, sha) = head.clone();
+    if divergences.is_empty() {
+        log.event(&Event::DataModelAgreed { branch, sha });
+        return;
+    }
+    let clone = crate::dispatch::data_snapshot::clone_dir(here, slug);
+    let request = DiagnosisRequest {
+        head,
+        dir: dir.clone(),
+        divergences: divergences.clone(),
+    };
+    let (diagnosis, actions, failure) =
+        match crate::dispatch::data_diagnosis::run(here, &clone, request, &args.permission_mode)
+            .await
+        {
+            Ok(d) => (d.markdown(), d.actions, String::new()),
+            Err(halt) => (String::new(), Vec::new(), halt.reason().to_string()),
+        };
+    log.event(&Event::DataModelDiverged {
+        branch,
+        sha,
+        dir,
+        divergences,
+        diagnosis,
+        actions,
+        failure,
+    });
 }
 
 /// The `GitHub` used for the routing decision alone — no checkout: a named

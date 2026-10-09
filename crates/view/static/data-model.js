@@ -33,7 +33,7 @@
     try { localStorage.setItem(KEPT, JSON.stringify([...set])); } catch (e) { /* a private window keeps nothing */ }
   }
 
-  function mount(host) {
+  function mount(host, opts) {
     host.innerHTML = '<div class="dm">'
       + '<div class="dm-switch" hidden><div class="dm-branches" role="group" aria-label="branch"></div>'
       + '<div class="dm-features" hidden role="menu" aria-label="feature branches"></div>'
@@ -48,7 +48,7 @@
     const search = q('.dm-search');
     const st = { model: null, body: '', open: remembered(), sel: null, boxes: new Map(), bounds: null, timer: null, fitted: false, gone: false,
       // Which version is shown: a branch and a folder of the archive; empty, the server's default.
-      versions: null, branch: '', dir: '', newest: true };
+      versions: null, branch: (opts && opts.branch) || '', dir: (opts && opts.dir) || '', newest: !(opts && opts.dir) };
 
     const describe = (target) => {
       if (!target) return 'the canvas';

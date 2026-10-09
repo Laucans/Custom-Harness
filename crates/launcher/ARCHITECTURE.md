@@ -28,6 +28,9 @@ src/dispatch/     one module per thing that can be run, plus what they share
   refinement.rs     an issue body into its five canonical sections
   pr_review.rs      an advisory review on a PR
   pr_fix.rs         one repair attempt on a red PR — the only writable checkout here
+  data_diagnosis.rs  a version of main or main_agent whose two sides disagree, right after
+                     its snapshot: one Opus session in the snapshot clone says why; its
+                     answer is the `DataModelDiverged` event, an error in the view
   data_snapshot.rs  every tick that read the board: the data model of each branch whose head
                     moved (main, main_agent, open milestones), dumped and archived on the
                     target's `harness/data-model` branch; a failure is an event, never a failed tick

@@ -50,6 +50,15 @@ impl Product for GhProduct {
     async fn file(&self, path: &str, git_ref: &str) -> Outcome<Option<String>> {
         self.gh.file_text(path, git_ref).await
     }
+
+    async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String> {
+        let number = self.gh.create_issue(title, body, labels).await?;
+        Ok(if self.slug.is_empty() {
+            format!("#{number}")
+        } else {
+            format!("https://github.com/{}/issues/{number}", self.slug)
+        })
+    }
 }
 
 /// The product's files in a folder — `<dir>/data/schema.sql` and its
@@ -105,6 +114,12 @@ impl Product for DirProduct {
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
             Err(e) => Err(Halt::Unreadable(format!("{}: {e}", full.display()))),
         }
+    }
+
+    async fn open_issue(&self, _title: &str, _body: &str, _labels: &[&str]) -> Outcome<String> {
+        Err(Halt::Failed(
+            "no board here: the view reads a folder, not a GitHub repository".to_string(),
+        ))
     }
 }
 

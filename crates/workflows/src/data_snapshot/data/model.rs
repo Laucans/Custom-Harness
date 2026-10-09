@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::schema_sql::{self, Rule, Schema, SqlColumn, SqlTable};
+use crate::data_snapshot::data::schema_sql::{self, Rule, Schema, SqlColumn, SqlTable};
 
 /// Where the database's side lies in the product's repository.
 pub const SCHEMA_PATH: &str = "data/schema.sql";

@@ -17,9 +17,11 @@ use harness_workflows::data_snapshot::config::ARCHIVE_BRANCH;
 use harness_workflows::data_snapshot::data::index::Index;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::domain::data_model::{self, DataModel, MODEL_PATH, SCHEMA_PATH};
 use crate::domain::data_versions::{self, Versions};
 use crate::ports::Product;
+use harness_workflows::data_snapshot::data::model::{
+    self as data_model, DataModel, MODEL_PATH, SCHEMA_PATH,
+};
 
 /// How long the archive's index is trusted before it is read again.
 const INDEX_FRESH: Duration = Duration::from_secs(20);
@@ -47,6 +49,18 @@ pub struct Shown {
 enum Ask {
     Versions(oneshot::Sender<Arc<Versions>>),
     Model(Wanted, oneshot::Sender<Result<Shown, String>>),
+    Issue(Issue, oneshot::Sender<Result<String, String>>),
+}
+
+/// An issue to open on the product's board.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Issue {
+    /// Its title.
+    pub title: String,
+    /// Its body, markdown.
+    pub body: String,
+    /// Its labels.
+    pub labels: Vec<String>,
 }
 
 /// The handle the HTTP side keeps: `Send`, cheap to clone.
@@ -70,6 +84,22 @@ impl DataDesk {
         answer
             .await
             .map_err(|_| "the data desk is closed".to_string())
+    }
+
+    /// Opens an issue on the product's board, and says where it is.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or the desk is gone.
+    pub async fn open_issue(&self, issue: Issue) -> Result<String, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Ask::Issue(issue, reply))
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?;
+        answer
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?
     }
 
     /// One version, merged.
@@ -122,6 +152,14 @@ async fn serve(product: Rc<dyn Product>, mut rx: mpsc::Receiver<Ask>, live_every
             Ask::Model(wanted, reply) => {
                 let shown = model(&*product, &mut kept, &wanted, live_every).await;
                 let _ = reply.send(shown);
+            }
+            Ask::Issue(issue, reply) => {
+                let labels: Vec<&str> = issue.labels.iter().map(String::as_str).collect();
+                let opened = product
+                    .open_issue(&issue.title, &issue.body, &labels)
+                    .await
+                    .map_err(|h| h.to_string());
+                let _ = reply.send(opened);
             }
         }
     }
@@ -265,6 +303,9 @@ mod tests {
                 .get(&(path.to_string(), git_ref.to_string()))
                 .cloned())
         }
+        async fn open_issue(&self, title: &str, _body: &str, labels: &[&str]) -> Outcome<String> {
+            Ok(format!("{title} [{}]", labels.join(",")))
+        }
     }
 
     fn put(shelf: &mut Shelf, path: &str, git_ref: &str, text: &str) {
@@ -293,6 +334,15 @@ mod tests {
                 let task = tokio::task::spawn_local(task);
                 let versions = desk.versions().await.expect("answered");
                 assert!(!versions.archive);
+                let opened = desk
+                    .open_issue(Issue {
+                        title: "t".into(),
+                        body: "b".into(),
+                        labels: vec!["harness:roadmap".into()],
+                    })
+                    .await
+                    .expect("opened");
+                assert_eq!(opened, "t [harness:roadmap]");
                 let shown = desk.model(Wanted::default()).await.expect("answered");
                 assert!(shown.dir.is_empty());
                 assert_eq!(shown.model.tables[0].name, "live");

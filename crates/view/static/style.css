@@ -637,3 +637,13 @@ ul.prompt-history li { display: flex; gap: 10px; align-items: flex-start; paddin
 ul.prompt-history details { flex: 1; min-width: 0; }
 ul.prompt-history summary { cursor: pointer; font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 ul.prompt-history pre.md { font: 12px/1.45 var(--mono); max-height: 300px; overflow: auto; }
+
+/* ---- A diverging data model: the diagnosis and the issue ---- */
+.dv { max-width: 880px; }
+.dv-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.dv h4 { margin: 18px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); font-weight: 600; }
+.dv-diagnosis { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--bad); border-radius: 8px; padding: 4px 14px; line-height: 1.5; }
+.dv-diagnosis p { margin: 10px 0; overflow-wrap: anywhere; }
+.dv-resolution { display: block; width: 100%; box-sizing: border-box; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; font: 13px/1.5 var(--sans); }
+.dv-resolution:focus { outline: none; border-color: var(--accent); }
+.dv-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0; }

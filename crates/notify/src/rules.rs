@@ -123,13 +123,10 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
             kind,
             reason,
         } => halted(board, workflow, kind, reason, at),
-        Event::DataSnapshotFailed {
-            branch,
-            sha,
-            reason,
-        } => snapshot_failed(board, branch, sha, reason, at),
-        // A later snapshot of the branch clears its failure.
-        Event::DataSnapshotTaken { branch, .. } => board.clear(&format!("data-snapshot:{branch}")),
+        Event::DataSnapshotFailed { .. }
+        | Event::DataSnapshotTaken { .. }
+        | Event::DataModelDiverged { .. }
+        | Event::DataModelAgreed { .. } => data(board, event, at),
         // A gate's verdict is the line's business, not a sign: a halt that matters
         // arrives as the `Halted` event that follows it.
         Event::SessionEnded { .. }
@@ -137,6 +134,54 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::LaneTaken { .. }
         | Event::GateChecked { .. } => {}
     }
+}
+
+/// What the data model's watch tells: an archive that failed, a version
+/// that diverges, and what clears each.
+fn data(board: &mut Board, event: &Event, at: &str) {
+    match event {
+        Event::DataSnapshotFailed {
+            branch,
+            sha,
+            reason,
+        } => snapshot_failed(board, branch, sha, reason, at),
+        Event::DataModelDiverged {
+            branch,
+            dir,
+            divergences,
+            diagnosis,
+            ..
+        } => diverged(board, branch, dir, divergences.len(), diagnosis, at),
+        Event::DataModelAgreed { branch, .. } => board.clear(&format!("data-diverged:{branch}")),
+        // A later snapshot of the branch clears its failure.
+        Event::DataSnapshotTaken { branch, .. } => board.clear(&format!("data-snapshot:{branch}")),
+        _ => {}
+    }
+}
+
+/// A branch whose database and model disagree: one error per branch, its
+/// diagnosis's first paragraph, cleared when the two agree again.
+fn diverged(board: &mut Board, branch: &str, dir: &str, count: usize, diagnosis: &str, at: &str) {
+    let detail = diagnosis
+        .split("\n\n")
+        .next()
+        .filter(|first| !first.trim().is_empty())
+        .map_or_else(
+            || format!("{count} divergence(s) between the database and the model"),
+            str::to_string,
+        );
+    board.add(Notification::once(
+        format!("data-diverged:{branch}"),
+        Level::Error,
+        format!("The data model of {branch} diverges"),
+        detail,
+        at,
+        Some(Link::DataModel {
+            branch: branch.to_string(),
+            dir: dir.to_string(),
+            at: at.to_string(),
+        }),
+    ));
 }
 
 /// A branch's data model not archived: one warning per branch, cleared by
@@ -263,6 +308,54 @@ mod tests {
                 code,
             },
         )
+    }
+
+    fn diverged(minute: u32, branch: &str, diagnosis: &str) -> Stored {
+        stored(
+            minute,
+            Event::DataModelDiverged {
+                branch: branch.to_string(),
+                sha: "abcdef0".to_string(),
+                dir: format!("{branch}/v1"),
+                divergences: vec!["a".to_string(), "b".to_string()],
+                diagnosis: diagnosis.to_string(),
+                actions: vec![],
+                failure: String::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn a_diverging_model_is_an_error_until_the_two_sides_agree() {
+        let board = from_events(&[
+            diverged(
+                1,
+                "main_agent",
+                "The model is behind.\n\n**x** — wrong: model",
+            ),
+            diverged(2, "main", ""),
+        ]);
+        let agent = board.get("data-diverged:main_agent").expect("told");
+        assert_eq!(agent.level, Level::Error);
+        assert_eq!(agent.detail, "The model is behind.");
+        assert!(matches!(&agent.link, Some(Link::DataModel { dir, .. }) if dir == "main_agent/v1"));
+        let main = board.get("data-diverged:main").expect("told");
+        assert_eq!(
+            main.detail,
+            "2 divergence(s) between the database and the model"
+        );
+
+        let board = from_events(&[
+            diverged(1, "main_agent", "x"),
+            stored(
+                2,
+                Event::DataModelAgreed {
+                    branch: "main_agent".to_string(),
+                    sha: "f".to_string(),
+                },
+            ),
+        ]);
+        assert!(board.get("data-diverged:main_agent").is_none());
     }
 
     #[test]

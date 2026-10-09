@@ -11,6 +11,11 @@ pub enum Snapped {
         sha: String,
         /// The folder on the archive branch.
         dir: String,
+        /// Both sides were there to compare.
+        compared: bool,
+        /// Where the dump and the agents' model disagree; empty when they
+        /// agree, or when one side is missing.
+        divergences: Vec<String>,
     },
     /// The same dump and model as the branch's last version: only the head
     /// moved in the index.

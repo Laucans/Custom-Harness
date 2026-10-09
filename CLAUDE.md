@@ -39,12 +39,14 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   `.llocal/logs` and the GitHub board, and writes one thing a run reads —
   the prompt book (`.llocal/prompts.json`, core's `PromptStore` port), where
   the human edits a robot's prompt; the launcher reads it once per run.
-  Its other hands on the plant are three, all the human's: the steward — an
+  Its other hands on the plant are four, all the human's: the steward — an
   interactive Claude Code in a pseudo-terminal the human drives from the
   page — the status button's switch, which starts the watch or stops it
-  softly (`SIGTERM`, the watch drains) or hard (`SIGKILL`), and the
+  softly (`SIGTERM`, the watch drains) or hard (`SIGKILL`), the
   janitor, who sweeps `.llocal/` of caches and old traces no run needs, by
-  static rules (`crates/view/ARCHITECTURE.md`).
+  static rules, and the data pane's "Open the issue", which turns a
+  diagnosed data-model divergence into a `harness:roadmap` issue on the
+  human's click (`crates/view/ARCHITECTURE.md`).
   The drawing is `harness-view-render`, a Bevy scene compiled to WebAssembly
   by `scripts/build-render.sh`; it depends on none of the other crates
   (`crates/view-render/ARCHITECTURE.md`).

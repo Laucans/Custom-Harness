@@ -387,6 +387,14 @@ pub trait Product {
     ///
     /// The read failed for another reason than absence.
     async fn file(&self, path: &str, git_ref: &str) -> Outcome<Option<String>>;
+
+    /// Opens an issue on the product's board — the one write the data pane
+    /// makes, on a human's click — and says where it is.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or there is no GitHub behind this product.
+    async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String>;
 }
 
 /// Where the human's pins are kept between visits.

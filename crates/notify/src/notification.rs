@@ -30,6 +30,15 @@ pub enum Link {
         /// The instant the screen should be read around.
         at: Option<String>,
     },
+    /// The data model pane's diagnosis of a diverging version.
+    DataModel {
+        /// The branch.
+        branch: String,
+        /// The version's folder on the archive branch.
+        dir: String,
+        /// When it was diagnosed: what finds the diagnosis in the events.
+        at: String,
+    },
     /// An agent's pane: the run on its line, opened on its logs.
     Agent {
         /// The line: `split`.

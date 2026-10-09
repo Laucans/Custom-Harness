@@ -192,8 +192,8 @@ once read (a version never changes), and reads the index and the live files
 again after a while. Routes `GET /api/data-model?branch=&dir=` and
 `GET /api/data-model/versions`.
 
-`domain::schema_sql` reads the DDL (a tokenizer and five statement shapes,
-never a panic: what it does not understand it skips), `domain::data_model`
+`harness_workflows::data_snapshot::data::schema_sql` reads the DDL (a tokenizer and five statement shapes,
+never a panic: what it does not understand it skips), `…::data::model`
 merges the two field by field and lists every **divergence** — a table, a
 field or a key only one side has, a type or a nullability they disagree on.
 Either file alone draws the diagram. `model.json`:
@@ -209,6 +209,20 @@ Either file alone draws the diagram. `model.json`:
 
 `--demo` without `--data-dir` reads the sample under `crates/view/sample/`,
 its archive under `sample/archive/` laid out as the branch is.
+
+**Divergences.** When a version of `main` or the integration branch is
+archived and its two sides disagree, the watch sends Opus to say why
+(`data_diagnosis`): which side is wrong for each divergence, from the
+history, and what to do. Its answer is an event (`DataModelDiverged`), so an
+**error** notification; opening it shows the `data_divergence` pane — the
+state of affairs, the divergences, the proposed actions — and a field where
+the human writes how to resolve it. **Open the issue** (`POST
+/api/data-model/issue`) composes the issue (`domain::divergence`: the human's
+words first, the diagnosis after) and opens it through the data desk with
+`harness:roadmap` + `harness:ready`: the planner, the split and the loop
+take it from there. A later version whose sides agree (`DataModelAgreed`)
+clears the alert. Route `GET /api/data-model/divergence?branch=&dir=` reads
+the diagnosis back from the event store.
 
 The diagram is drawn on **the board** (`static/board.js`), a component any
 pane can mount: a canvas to pan (drag) and zoom (wheel, the toolbar), and a
@@ -250,9 +264,8 @@ src/domain/            the inside — no disk, no subprocess, no clock
   doctor.rs            the doctor's standing orders, the check-up asked when they sit down, the question about one run and how its answer is heard
   plant.rs             the switch: which watch is this checkout's, what start / soft / hard send to whom
   cleanup.rs           the janitor's rules: what in the yard is no longer useful, the pie, the limit and the threshold
-  schema_sql.rs        a Postgres schema out of its DDL: tables, columns, constraints, indexes, enums, comments
-  data_model.rs        the product's data model: the database's DDL and the agents' model merged, and where they diverge
   data_versions.rs     the archive's versions in the page's order: main, the integration branch, the features
+  divergence.rs        a diagnosed divergence found in the events, and the issue a human opens from it
   annotations.rs       the human's pins: what a note is, and the checks before a board's list is kept
   prompts.rs           a station's prompts for the pane: the catalog and the prompt book together, an edit, a restore
 src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), Notebook (the pins)
@@ -265,7 +278,7 @@ src/adapters/
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   fs_notes.rs          .llocal/annotations.json, written aside then renamed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore}
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore}
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions)
 ```
@@ -293,10 +306,11 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
   because `observe` already reads through a port. The one thing it writes
   that a run reads is the prompt book — the human's edits, read by the
   launcher at the start of the next run. Its other hands on the plant are
-  three, all the human's: the steward's
-  terminal, the status button's switch (`Plant` port), and the janitor's
+  four, all the human's: the steward's
+  terminal, the status button's switch (`Plant` port), the janitor's
   broom (`Yard` port), which removes only caches and old traces no run
-  needs, on a click or under the threshold the human set. The switch does
+  needs, on a click or under the threshold the human set, and the data
+  pane's "Open the issue" (`Product::open_issue`), one issue per click. The switch does
   three things only — start the watch (`HARNESS_WATCH_COMMAND`, detached in
   a process group of its own, output to `watch.out`), soft stop (`SIGTERM`
   to the watch, which drains), hard stop (`SIGKILL` to the watch's tree, and
