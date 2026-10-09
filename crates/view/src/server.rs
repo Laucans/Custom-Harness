@@ -38,7 +38,7 @@ use crate::domain::limits::{self, Read, Report};
 use crate::domain::plant::{self, Action, Gesture};
 use crate::domain::snapshot::Snapshot;
 use crate::domain::steward::Status;
-use crate::domain::traces::{is_run_id, line_of_run, run_of, stage_logs};
+use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::ports::{BoardReading, Limits, Plant, Traces};
 use harness_core::domain::quota::Reading;
 
@@ -331,7 +331,8 @@ async fn run_file(
 }
 
 /// A run's sessions, one per machine it went through, each named after its
-/// stage — what an agent's pane lists, and what a click on one shows.
+/// stage and timed — what an agent's pane lists, and what a click on one
+/// shows — with the run's own first and last clocks.
 async fn run_stages(
     State(state): State<AppState>,
     Path((workflow, run)): Path<(String, String)>,
@@ -355,7 +356,12 @@ async fn run_stages(
     rows.sort_by(|a, b| a.when.cmp(&b.when));
     let ledger_stages: Vec<String> = rows.into_iter().map(|row| row.stage).collect();
     let tail = usize::try_from(TAIL_DEFAULT).unwrap_or(usize::MAX);
-    json(&stage_logs(&run_log, &session_log, &ledger_stages, tail))
+    let (started_at, last_at) = clock_span(&run_log);
+    json(&RunStages {
+        started_at,
+        last_at,
+        stages: stage_logs(&run_log, &session_log, &ledger_stages, tail),
+    })
 }
 
 /// An issue with its body, as the office shows it.
@@ -1032,7 +1038,7 @@ mod tests {
             "agent-loop",
             "20261008-152126-64",
             "run.log",
-            "[2026-10-08T15:21:29Z] [code] session opens\n",
+            "[2026-10-08T15:21:28Z] run 1\n[2026-10-08T15:21:29Z] [code] session opens\n",
         );
         shelf.put(
             "agent-loop",
@@ -1048,6 +1054,15 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("\"stage\":\"code\""), "{body}");
         assert!(body.contains("built it"), "{body}");
+        assert!(
+            body.contains("\"started_at\":\"2026-10-08T15:21:28Z\""),
+            "{body}"
+        );
+        assert!(
+            body.contains("\"opened_at\":\"2026-10-08T15:21:29Z\""),
+            "{body}"
+        );
+        assert!(body.contains("\"closed_at\":null"), "{body}");
         let (status, _) = get(
             state(Shelf::default(), None),
             "/api/runs/agent-loop/..%2Fx/stages",

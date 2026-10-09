@@ -411,3 +411,6 @@ nav.screens .help-btn.on { color: var(--accent); border-color: var(--accent); }
   position: absolute; right: -4px; bottom: -4px; min-width: 16px; height: 16px; padding: 0 4px;
   border-radius: 8px; background: var(--accent); color: #1b1b1b; font: 700 10px/16px var(--sans);
 }
+
+/* A clock that ticks while something runs: digits that do not jitter. */
+.elapsed { font-variant-numeric: tabular-nums; }
