@@ -46,11 +46,12 @@ container:
 | `DATABASE_READONLY_ROLE` | the role that login reads through — created `NOLOGIN` if the migrations have not yet, and granted to the login (`app_lecture` for `dnd_helper`) |
 | `POSTGRES_PORT` | the host port, `5432` by default |
 | `POSTGRES_SUPERUSER_PASSWORD` | the `postgres` superuser's, `postgres` by default — local only |
-| `POSTGRES_IMAGE` | the image, `public.ecr.aws/docker/library/postgres:16` by default |
+| `POSTGRES_IMAGE` | the image, `postgres:16` from Docker Hub by default |
 
-The image comes from AWS's public mirror of Docker Hub's official library:
-the same image, pulled without a Docker Hub login and without its rate limit
-(this machine's stored Hub credentials are refused).
+The image is pulled anonymously from Docker Hub. A stale Hub login stored in
+the keychain makes every pull fail, anonymous ones included (OrbStack sends
+it): `docker logout` clears it. Behind a Hub rate limit, AWS's mirror serves
+the same official image — `POSTGRES_IMAGE=public.ecr.aws/docker/library/postgres:16`.
 
 ## Who connects
 

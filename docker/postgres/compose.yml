@@ -8,9 +8,10 @@ name: harness-postgres
 
 services:
   postgres:
-    # The official image, pulled from AWS's public mirror of Docker Hub's
-    # library: no Docker Hub login needed, and no Hub rate limit.
-    image: ${POSTGRES_IMAGE:-public.ecr.aws/docker/library/postgres:16}
+    # The official image, pulled anonymously from Docker Hub. Behind a Hub
+    # rate limit, AWS's mirror serves the same one:
+    # POSTGRES_IMAGE=public.ecr.aws/docker/library/postgres:16
+    image: ${POSTGRES_IMAGE:-postgres:16}
     container_name: harness-postgres
     restart: unless-stopped
     ports:
