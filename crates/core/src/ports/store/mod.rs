@@ -6,7 +6,7 @@
 //! [`spending`] is the one port `harness-core` declares and does **not**
 //! implement: writing a row needs a clock, a run id and a machine name, all
 //! facts of the launcher. The others are implemented in
-//! [`adapters::store`](crate::adapters::store).
+//! `harness_adapters::store`.
 
 pub mod checkpoint;
 pub mod events;

@@ -2,7 +2,7 @@
 //!
 //! One module per external component, and `process` for the value they all
 //! hand back. The implementations live in
-//! [`adapters::shell`](crate::adapters::shell) — a port never spawns anything
+//! `harness_adapters::shell` — a port never spawns anything
 //! itself.
 
 pub mod disk;

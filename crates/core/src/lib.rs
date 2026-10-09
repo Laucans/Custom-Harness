@@ -18,7 +18,6 @@
 //! users" is thus maintained by the crate graph at compile time,
 //! rather than by a test that walks ASTs.
 
-pub mod adapters;
 pub mod domain;
 pub mod execution;
 pub mod ports;

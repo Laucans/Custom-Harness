@@ -6,17 +6,17 @@
 //!
 //! Nothing here decides: what the port promises, and why reads and setup
 //! verbs return different things, is documented with it in
-//! [`ports::shell::git`](crate::ports::shell::git).
+//! [`ports::shell::git`](harness_core::ports::shell::git).
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use async_trait::async_trait;
 
-use crate::adapters::shell::process;
-use crate::domain::Outcome;
-use crate::ports::shell::git::{Repo, Repos};
-use crate::ports::shell::process::Ran;
+use crate::shell::process;
+use harness_core::domain::Outcome;
+use harness_core::ports::shell::git::{Repo, Repos};
+use harness_core::ports::shell::process::Ran;
 
 /// The binary to call.
 const BINARY: &str = "git";

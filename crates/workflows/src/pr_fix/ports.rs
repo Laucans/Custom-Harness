@@ -32,7 +32,7 @@ pub(crate) mod fake {
 
     use std::rc::Rc;
 
-    use harness_core::adapters::agent::rehearsal::Rehearsal;
+    use harness_adapters::agent::rehearsal::Rehearsal;
     use harness_core::domain::{Halt, Outcome};
     use harness_core::ports::store::spending::{Entry, Spending};
     use harness_core::traces::Logbook;

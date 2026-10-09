@@ -12,7 +12,7 @@
 //!
 //! Nothing here decides, and no read that fails answers `[]` — what the port
 //! promises, and what that invariant costs when broken, is documented with it
-//! in [`ports::shell::github`](crate::ports::shell::github).
+//! in [`ports::shell::github`](harness_core::ports::shell::github).
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -20,10 +20,10 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::adapters::shell::process;
-use crate::domain::{Halt, Issue, Outcome, Pr};
-use crate::ports::shell::github::GitHub;
-use crate::ports::shell::process::Ran;
+use crate::shell::process;
+use harness_core::domain::{Halt, Issue, Outcome, Pr};
+use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::shell::process::Ran;
 
 /// The called binary.
 const BINARY: &str = "gh";
@@ -273,7 +273,7 @@ impl GhCli {
     /// call below is fully qualified by `repos/{slug}/…` and reads nothing
     /// from `cwd`.
     #[must_use]
-    pub fn for_slug(slug: &crate::domain::Slug) -> Self {
+    pub fn for_slug(slug: &harness_core::domain::Slug) -> Self {
         Self {
             root: PathBuf::from("."),
             name: OnceLock::from(slug.to_string()),

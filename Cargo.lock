@@ -2769,12 +2769,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-adapters"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "harness-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "harness-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "proptest",
- "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2788,6 +2799,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "harness-adapters",
  "harness-core",
  "harness-workflows",
  "jiff",
@@ -2814,6 +2826,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "harness-adapters",
  "harness-core",
  "harness-notify",
  "harness-workflows",
@@ -2849,6 +2862,7 @@ name = "harness-workflows"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "harness-adapters",
  "harness-core",
  "serde",
  "serde_json",

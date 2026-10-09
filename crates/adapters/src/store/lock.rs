@@ -17,8 +17,8 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use crate::domain::{Halt, Outcome};
-use crate::ports::store::lock::Locks;
+use harness_core::domain::{Halt, Outcome};
+use harness_core::ports::store::lock::Locks;
 
 /// A lock that is actually a directory on disk.
 pub struct DirLocks;

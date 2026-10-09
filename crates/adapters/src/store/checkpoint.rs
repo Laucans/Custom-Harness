@@ -16,15 +16,15 @@
 //!
 //! What the port promises, and why an unreadable store is never "nothing ran
 //! yet", is documented with it in
-//! [`ports::store::checkpoint`](crate::ports::store::checkpoint).
+//! [`ports::store::checkpoint`](harness_core::ports::store::checkpoint).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::domain::{Halt, Outcome};
-use crate::ports::store::checkpoint::{Checkpoints, Pointer};
+use harness_core::domain::{Halt, Outcome};
+use harness_core::ports::store::checkpoint::{Checkpoints, Pointer};
 
 /// The pointer, as it's written: two lines, readable with `cat`.
 #[must_use]

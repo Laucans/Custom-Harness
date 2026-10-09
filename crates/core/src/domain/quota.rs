@@ -54,7 +54,7 @@ pub const RESERVE_PERCENT: u32 = 10;
 
 /// What to call a window the stream does not name.
 ///
-/// Shared with the reader in `adapters::agent::stream_log`, so the name a
+/// Shared with the reader in `harness_adapters::agent::stream_log`, so the name a
 /// reading carries and the name a log line shows cannot drift apart.
 pub const UNNAMED: &str = "window";
 

@@ -9,8 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
-use harness_core::adapters::shell::process;
-use harness_core::adapters::store::ledger::{Ledger, Row};
+use harness_adapters::shell::process;
+use harness_adapters::store::ledger::{Ledger, Row};
 use harness_core::domain::{Halt, Outcome, quota};
 use harness_core::ports::store::spending::{Entry, Spending};
 
@@ -133,7 +133,7 @@ pub async fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::adapters::store::ledger::{self, HEADER};
+    use harness_adapters::store::ledger::{self, HEADER};
     use harness_core::domain::{Spend, Tokens};
 
     struct Dir(std::path::PathBuf);

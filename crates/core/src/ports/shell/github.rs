@@ -14,7 +14,7 @@
 //!
 //! The implementation — `gh api` for everything, so a reader never has to
 //! guess which half goes through the raw API — lives in
-//! [`adapters::shell::github`](crate::adapters::shell::github).
+//! `harness_adapters::shell::github`.
 
 use std::path::Path;
 

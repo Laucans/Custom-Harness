@@ -7,8 +7,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::domain::{Halt, Outcome};
-use crate::ports::shell::process::Ran;
+use harness_core::domain::{Halt, Outcome};
+use harness_core::ports::shell::process::Ran;
 
 /// How long a `git`/`gh` call may run before it's treated as hung.
 ///

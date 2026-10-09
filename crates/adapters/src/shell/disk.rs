@@ -1,14 +1,14 @@
 //! The real disk, behind the [`Disk`] port.
 //!
 //! The port and the reason it exists live in
-//! [`ports::shell::disk`](crate::ports::shell::disk); this file is only the
+//! [`ports::shell::disk`](harness_core::ports::shell::disk); this file is only the
 //! implementation that calls `std::fs`, plus the proof that "already gone is
 //! not a failure" holds.
 
 use std::path::Path;
 
-use crate::domain::{Halt, Outcome};
-use crate::ports::shell::disk::Disk;
+use harness_core::domain::{Halt, Outcome};
+use harness_core::ports::shell::disk::Disk;
 
 /** The real disk. */
 pub struct RealDisk;

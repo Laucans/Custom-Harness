@@ -3,7 +3,7 @@
 //! Prevents `pr_review` and `refinement` from double-running — two hooks on
 //! the same PR, or two refinement rounds on the same issue, would each post
 //! twice. The implementation and why it is a `mkdir` live in
-//! [`adapters::store::lock`](crate::adapters::store::lock).
+//! `harness_adapters::store::lock`.
 
 use std::path::Path;
 

@@ -1,34 +1,36 @@
 # `harness-core` — architecture
 
-The framework: vocabulary, traces, execution shapes, ports, adapters. It names
-no workflow, and Cargo refuses the reverse dependency — see
+The framework: vocabulary, traces, execution shapes, ports. It names no
+workflow, and Cargo refuses the reverse dependency — see
 [ARCHITECTURE_OVERVIEW.md](../../ARCHITECTURE_OVERVIEW.md) for the crate graph.
 
-The shape is **hexagonal**: `domain` + `execution` + `ports` are the inside,
-`adapters` is the only outside. A port is declared in `ports/` and implemented
-in `adapters/` — never the other way round, and never in the same module.
+The shape is **hexagonal**: `domain` + `execution` + `ports` are the inside.
+The outside is a separate crate, `harness-adapters`
+([crates/adapters/ARCHITECTURE.md](../adapters/ARCHITECTURE.md)): a port is
+declared in `ports/` here and implemented there — never the other way round.
+`core` does not depend on it, so the inside naming an adapter is a compile
+error, not a review finding.
 
 This file describes the **current** state. Rust rules (lints, errors, `?Send`,
 docs on every `pub`) live in `../../CLAUDE.md`.
 
-## The five top-level modules
+## The four top-level modules
 
 ```
 src/lib.rs            re-exports only — no public item lives here
   domain/             pure vocabulary: no disk, no subprocess, no library
   traces/             the run journal (leaf: imports nothing else from core)
   ports/              what the inside needs from the outside, as traits
-  adapters/           one implementation per port — the only outside
   execution/          what runs: data, action, checks, orchestration
 ```
 
 `domain` names no workflow even in comments; that is what makes the reverse
 dependency inconceivable rather than merely forbidden.
 
-`domain`, `execution` and `ports` never name a type from `adapters` — a
-dependency that way round is the hexagon leaking, and it is reviewable with
-`grep -rn 'crate::adapters' src/domain src/execution src/ports`, which must
-answer nothing outside a `#[cfg(test)]` block.
+No module here can name an adapter: `harness-adapters` is not a dependency,
+not even a dev one. A test that needs a port's behaviour writes a fake in its
+own `#[cfg(test)]` block (`Held`, the in-memory `Locks` of
+`orchestration/workflow.rs`).
 
 ## `domain/` — the vocabulary
 
@@ -92,39 +94,6 @@ Two of these are declared here and **not** implemented here: `Spending`, which
 needs a clock, a run id and a machine name — all facts of the launcher — and
 `Sink`. That inversion is what leaves `harness-core` with no dependency on
 time.
-
-## `adapters/` — the outside, wrapped
-
-One implementation per port, one submodule per external component. Nothing
-outside the launcher names a type from this module.
-
-```
-agent/    claude_cli   one process per turn, stitched with `--resume`
-          rehearsal    the `--dry-run` carrier: returns the prompt, opens nothing
-          stream_log   the JSON stream, read into `Reply`
-shell/    process      the only place in the crate that spawns a subprocess
-          git          GitCli, GitRepos — every call names the repo with `-C <root>`
-          github       GhCli — issues go through `gh api`, not `gh issue`
-          disk         RealDisk
-store/    checkpoint   Checkpoint: a two-line pointer + one JSONL per flow
-          ledger       the cost ledger, frozen header, new columns appended
-          review_ledger  ReviewLedger: a review charges per PR, not per round
-          lock         DirLocks — an atomic `mkdir`
-```
-
-`ledger` and `error_ledger` carry no port: the launcher writes them and the
-hexagon never reads them, so a trait would be a seam with one side.
-
-Three invariants here are the expensive ones:
-
-- **A failed read never returns an empty list.** `[]` reads as "this milestone
-  has no open task left", which is the input that triggers a `/planner`: an
-  expired token would buy an opus run. A failed read returns
-  `Halt::Unreadable`.
-- **An unreadable store is never "nothing ran yet"** — the two answers are a
-  `/code` session apart.
-- **A dry-run is a wiring choice**, not a framework branch: the stage opens a
-  session without knowing `Rehearsal` is behind it.
 
 ## `execution/` — what runs
 
@@ -205,8 +174,9 @@ exit), nothing is deleted silently, and **a dry-run doesn't clone**.
 ## Where to add what
 
 - a new word with no I/O → `domain/`
-- a new external binary, file or API → a trait in `ports/<family>/`, its
-  implementation in `adapters/<family>/`, and only `shell/process.rs` spawns
+- a new external binary, file or API → a trait in `ports/<family>/` here, its
+  implementation in `harness-adapters`, `src/<family>/`, where only
+  `shell/process.rs` spawns
 - a new shape shared by more than one workflow → `execution/`, in the category
   that answers *does it carry, write, judge, or sequence?*
 - anything that needs a clock, a run id, or a machine name → declare a port

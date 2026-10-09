@@ -185,8 +185,8 @@ fn rate_limit(event: &Value) -> Option<String> {
     if status == "allowed" {
         return None;
     }
-    let window =
-        scalar(info, "rateLimitType").unwrap_or_else(|| crate::domain::quota::UNNAMED.to_string());
+    let window = scalar(info, "rateLimitType")
+        .unwrap_or_else(|| harness_core::domain::quota::UNNAMED.to_string());
     let used = info
         .get("utilization")
         .and_then(Value::as_f64)
@@ -219,7 +219,7 @@ fn rate_limit(event: &Value) -> Option<String> {
 /// this keeps `allowed` readings too: a window at 3% is exactly what a preflight
 /// wants to be told, and staying quiet about it is a choice about logs, not facts.
 #[must_use]
-pub fn last_rate_limit(stdout: &str, at: u64) -> Option<crate::domain::quota::Reading> {
+pub fn last_rate_limit(stdout: &str, at: u64) -> Option<harness_core::domain::quota::Reading> {
     let mut found = None;
     for line in stdout.lines() {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
@@ -235,15 +235,15 @@ pub fn last_rate_limit(stdout: &str, at: u64) -> Option<crate::domain::quota::Re
         // An event naming no measurable window says nothing. Skipped rather than
         // recorded as empty, which `decide` would read as "all windows reset".
         if !windows.is_empty() {
-            found = Some(crate::domain::quota::Reading { windows, at });
+            found = Some(harness_core::domain::quota::Reading { windows, at });
         }
     }
     found
 }
 
 /// Every window a `rate_limit_info` describes, nested form first.
-fn windows_in(info: &Value) -> Vec<crate::domain::quota::Window> {
-    use crate::domain::quota::{UNNAMED, Window};
+fn windows_in(info: &Value) -> Vec<harness_core::domain::quota::Window> {
+    use harness_core::domain::quota::{UNNAMED, Window};
 
     let resets = |at: &Value| at.get("resetsAt").and_then(Value::as_u64).unwrap_or(0);
     if let Some(nested) = info.get("unifiedWindows").and_then(Value::as_object) {

@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::Parser as _;
-use harness_core::adapters::shell::github::GhCli;
+use harness_adapters::shell::github::GhCli;
 use harness_core::domain::doctor::Repair;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug, Verdict};

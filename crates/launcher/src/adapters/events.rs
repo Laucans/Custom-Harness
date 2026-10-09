@@ -8,7 +8,7 @@
 use std::cell::Cell;
 use std::path::Path;
 
-use harness_core::adapters::store::events::SqliteEvents;
+use harness_adapters::store::events::SqliteEvents;
 use harness_core::domain::workspace::{LOGS, Workspace};
 use harness_core::ports::store::events::EventLog;
 use harness_core::traces::Event;

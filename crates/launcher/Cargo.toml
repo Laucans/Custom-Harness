@@ -17,6 +17,7 @@ serial_test.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
+harness-adapters.workspace = true
 harness-core.workspace = true
 harness-workflows.workspace = true
 jiff.workspace = true

@@ -33,7 +33,7 @@ pub struct Spend {
     ///
     /// Beware the cumulation semantics: on a resumed session, Claude Code
     /// returns the total of **the entire** conversation since v2.1.277, and
-    /// only that of the previous call. See `adapters::agent::claude_cli`.
+    /// only that of the previous call. See `harness_adapters::agent::claude_cli`.
     pub cost_usd: Option<f64>,
     /// How many round-trips with the model this turn requested.
     pub turns: Option<u32>,

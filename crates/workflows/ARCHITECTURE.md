@@ -150,11 +150,12 @@ does.
 **`run.rs` builds no concrete adapter — and neither does an action or a gate.**
 Naming a `GhCli`, a `GitCli`, a `ClaudeCliFactory`, a `Checkpoint` or a
 `ReviewLedger` is the launcher's job, and its alone: that is what leaves each
-port a single test seam. A workflow imports from `harness_core::ports`, never
-from `harness_core::adapters`, and it carries no `std::fs` call and no clock of
+port a single test seam. A workflow imports from `harness_core::ports`, and
+`harness-adapters` is only a dev-dependency of this crate, so shipped code
+cannot name an adapter at all. It carries no `std::fs` call and no clock of
 its own — if what it needs has no port yet, the port is what gets added
 (`Checkpoints` and `ReviewCosts` were added exactly that way). The rule and its
-two test-only exceptions are in `../../CLAUDE.md`.
+test-only exception (`Rehearsal`) are in `../../CLAUDE.md`.
 
 ## 8. One design surface, and only one
 

@@ -5,9 +5,9 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use harness_core::adapters::shell::disk::RealDisk;
-use harness_core::adapters::shell::git::GitRepos;
-use harness_core::adapters::shell::github::GhCli;
+use harness_adapters::shell::disk::RealDisk;
+use harness_adapters::shell::git::GitRepos;
+use harness_adapters::shell::github::GhCli;
 use harness_core::domain::Slug;
 use harness_workflows::init_repo::config::Config;
 use harness_workflows::init_repo::data::report::Verdict;

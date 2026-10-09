@@ -20,7 +20,7 @@
 //! own, and you had to sum.
 //!
 //! This adapter does not decide: it reports faithfully what the turn said, in
-//! [`Spend::cost_usd`](crate::domain::Spend). It is up to the spending ledger
+//! [`Spend::cost_usd`](harness_core::domain::Spend). It is up to the spending ledger
 //! — which does not yet exist —
 //! to accumulate, and **it must verify the version** rather than assume. A
 //! preflight gate on `claude --version` costs one local call; false cost data
@@ -36,7 +36,7 @@
 //! runs for tens of minutes, so the harness had nothing to show for all that
 //! time and no way to tell work from a hang. `stream-json` emits one event per
 //! action; each is rendered by
-//! [`stream_log`](crate::adapters::agent::stream_log) and appended to
+//! [`stream_log`] and appended to
 //! the run's own folder as it arrives, so `tail -f` follows a live session.
 //!
 //! # What a session leaves behind
@@ -63,11 +63,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::adapters::agent::stream_log;
-use crate::adapters::shell::process::{self, Limits};
-use crate::domain::{Halt, Outcome, Spend, Tokens, markers};
-use crate::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
-use crate::ports::shell::process::{Ran, last_line};
+use crate::agent::stream_log;
+use crate::shell::process::{self, Limits};
+use harness_core::domain::{Halt, Outcome, Spend, Tokens, markers};
+use harness_core::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
+use harness_core::ports::shell::process::{Ran, last_line};
 
 /// The called binary. Named here so a test can read it.
 const BINARY: &str = "claude";
@@ -97,7 +97,7 @@ const LIMITS: Limits = Limits {
 /// matched, and the turn was filed as a failure. A quota read as a failure is
 /// not cosmetic — it is a session that never ran being counted against the
 /// prompt it never sent (see
-/// [`breaker`](crate::domain::breaker)).
+/// [`breaker`](harness_core::domain::breaker)).
 const QUOTA_PHRASES: [&str; 5] = [
     "usage limit",
     "session limit",

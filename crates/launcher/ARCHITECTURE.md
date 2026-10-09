@@ -1,7 +1,7 @@
 # `harness-launcher` — architecture
 
 The entry points: the `harness` binary, the CLI, and **the only place in the
-workspace that builds a concrete adapter**. That is the outer ring of the
+workspace that builds a concrete adapter** from `harness-adapters`. That is the outer ring of the
 hexagon: every `Rc<dyn Trait>` a workflow receives is chosen here, and nowhere
 else. The crate graph is in
 [ARCHITECTURE_OVERVIEW.md](../../ARCHITECTURE_OVERVIEW.md); the rules the

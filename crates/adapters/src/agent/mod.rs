@@ -1,6 +1,6 @@
 //! The carriers that open an agent session.
 //!
-//! The port those implement is [`ports::agent`](crate::ports::agent): nothing
+//! The port those implement is [`ports::agent`](harness_core::ports::agent): nothing
 //! here is named by a workflow, and nothing here decides — a carrier
 //! translates, it does not choose when to pay.
 

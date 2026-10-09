@@ -15,12 +15,12 @@
 use std::path::Path;
 use std::rc::Rc;
 
-use harness_core::adapters::agent::claude_cli::ClaudeCliFactory;
-use harness_core::adapters::agent::rehearsal::Rehearsal;
-use harness_core::adapters::shell::disk::RealDisk;
-use harness_core::adapters::shell::git::GitRepos;
-use harness_core::adapters::shell::github::GhCli;
-use harness_core::adapters::store::lock::DirLocks;
+use harness_adapters::agent::claude_cli::ClaudeCliFactory;
+use harness_adapters::agent::rehearsal::Rehearsal;
+use harness_adapters::shell::disk::RealDisk;
+use harness_adapters::shell::git::GitRepos;
+use harness_adapters::shell::github::GhCli;
+use harness_adapters::store::lock::DirLocks;
 use harness_core::domain::Outcome;
 use harness_core::domain::workspace::{Strategy, Wanted, Workspace};
 use harness_core::execution::provisioning::{Mount, Provisioner, Run};

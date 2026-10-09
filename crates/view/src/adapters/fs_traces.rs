@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use harness_core::adapters::store::{error_ledger, ledger};
+use harness_adapters::store::{error_ledger, ledger};
 use harness_core::domain::quota::Reading;
 use harness_core::domain::workspace::Workspace;
 

@@ -7,7 +7,7 @@
 //! **The vocabulary, not the definition.** What makes an issue a "task ready
 //! to run" — which labels matter, which to pick next — is the definition of
 //! a workflow and lives with it. This separation is what allows
-//! `adapters::shell::github` to yield `Issue`s: an adapter deserializes, it
+//! `harness_adapters::shell::github` to yield `Issue`s: an adapter deserializes, it
 //! does not decide what a label *means*.
 
 /// A GitHub issue, as the harness sees it.

@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{Halt, Outcome, Spend, breaker};
+use harness_core::domain::{Halt, Outcome, Spend, breaker};
 
 /// The header, frozen character for character.
 ///
@@ -228,7 +228,7 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::Tokens;
+    use harness_core::domain::Tokens;
 
     fn row() -> Row {
         Row {

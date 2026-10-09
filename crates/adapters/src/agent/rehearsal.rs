@@ -11,9 +11,9 @@
 
 use async_trait::async_trait;
 
-use crate::domain::{Outcome, Spend};
-use crate::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
-use crate::traces::Logbook;
+use harness_core::domain::{Outcome, Spend};
+use harness_core::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
+use harness_core::traces::Logbook;
 
 /// Opens sessions that are not really sessions.
 pub struct Rehearsal {
@@ -67,7 +67,7 @@ impl Session for Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traces::{Sink, Verbosity};
+    use harness_core::traces::{Sink, Verbosity};
     use std::cell::RefCell;
     use std::rc::Rc;
 

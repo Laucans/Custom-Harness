@@ -15,7 +15,7 @@
 use std::path::Path;
 use std::rc::Rc;
 
-use harness_core::adapters::shell::github::GhCli;
+use harness_adapters::shell::github::GhCli;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Outcome, Slug, Verdict};
 use harness_core::execution::{Context, Gate, Guarded, Settings};

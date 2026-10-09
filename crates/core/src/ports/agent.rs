@@ -5,7 +5,7 @@
 //! carrier decided behind it later. Nothing here chooses a carrier — tmux, a
 //! `claude -p --input-format stream-json` process, or something else: that is
 //! an implementation decision, and it lives in
-//! [`adapters::agent`](crate::adapters::agent).
+//! `harness_adapters::agent`.
 
 use async_trait::async_trait;
 

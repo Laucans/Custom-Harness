@@ -13,14 +13,14 @@
 //! enough while a human reads the console, and useless the moment the loop is
 //! meant to recover on its own: nothing can ask "what went wrong last time"
 //! without a record. The repair in
-//! [`doctor`](crate::domain::doctor) reads this file, and the rows it appends
+//! [`doctor`](harness_core::domain::doctor) reads this file, and the rows it appends
 //! for itself are what keeps a repair from being tried forever.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{Halt, Outcome};
+use harness_core::domain::{Halt, Outcome};
 
 /// The header, frozen.
 pub const HEADER: &str = "when\trun\tworkflow\tkind\treason";

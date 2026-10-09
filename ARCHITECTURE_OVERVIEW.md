@@ -1,12 +1,13 @@
 # Architecture overview
 
-Six crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
+Seven crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
 detail; this file is only the split and why the dependencies form the way they
 do.
 
 ```
 harness-launcher (bin)  →  harness-workflows (lib)  →  harness-core (lib)
 harness-view     (bin)  →  harness-workflows (lib)  →  harness-core (lib)
+harness-launcher, harness-view  →  harness-adapters (lib)  →  harness-core (lib)
 harness-view     (bin)  →  harness-notify    (lib)  →  harness-workflows, harness-core
 harness-view-render (cdylib → wasm)   depends on none of them: it draws what harness-view serves
 ```
@@ -15,7 +16,8 @@ harness-view-render (cdylib → wasm)   depends on none of them: it draws what h
 
 | crate | role | detail |
 | --- | --- | --- |
-| `harness-core` | **the framework**: vocabulary, traces, execution shapes, ports, adapters. Names no workflow. | [crates/core/ARCHITECTURE.md](crates/core/ARCHITECTURE.md) |
+| `harness-core` | **the framework**: vocabulary, traces, execution shapes, ports. Names no workflow, no adapter. | [crates/core/ARCHITECTURE.md](crates/core/ARCHITECTURE.md) |
+| `harness-adapters` | **the outside**: one implementation per port — `git`, `gh`, the `claude` CLI, the disk, the ledgers, SQLite. Only the two outer rings depend on it. | [crates/adapters/ARCHITECTURE.md](crates/adapters/ARCHITECTURE.md) |
 | `harness-workflows` | **the instances**: the workflows declared against that framework — `dev_loop`, `refinement`, `planner`, `split`, `pr_review`, `pr_fix`, plus two deterministic commands. | [crates/workflows/ARCHITECTURE.md](crates/workflows/ARCHITECTURE.md) |
 | `harness-launcher` | **the entry points**: the `harness` binary, the CLI, the router, and the place that builds the adapters a run needs. | [crates/launcher/ARCHITECTURE.md](crates/launcher/ARCHITECTURE.md) |
 | `harness-view` | **the plant**: a local web page that shows the harness as an isometric factory, read from the traces a run leaves behind. A second outer ring; it writes nothing the harness reads. | [crates/view/ARCHITECTURE.md](crates/view/ARCHITECTURE.md) |
@@ -39,7 +41,7 @@ expected to keep it that way:
    └──────────────────────────────────────┘
                       ▲
                       │  adapters -> ports, never the reverse
-   adapters/ (git, gh, claude, the disk, the ledgers)
+   harness-adapters (git, gh, claude, the disk, the ledgers)
                       ▲
                       │  builds one concrete adapter per port
             launcher · view
@@ -58,8 +60,10 @@ Four rules, in the order they are most often broken:
    binary along with the seam.
 2. **The inside never names a type from `adapters`.** `domain`, `execution`,
    `ports` and every workflow take `Rc<dyn Trait>`; the launcher builds
-   `GhCli`, `GitCli`, `ClaudeCliFactory`, `Checkpoint`, the ledgers. A
-   `use ...::adapters::` in a workflow is the review finding, not a detail.
+   `GhCli`, `GitCli`, `ClaudeCliFactory`, `Checkpoint`, the ledgers. Cargo
+   holds this one: neither `core` nor `workflows` depends on
+   `harness-adapters` (a workflow test may, as a dev-dependency, for
+   `Rehearsal`).
 3. **Anything that leaves the process goes through a port.** A `std::fs` call
    or a spawned binary in a workflow, an action or a gate is the violation even
    when it is three lines: it is also what makes that code untestable without
@@ -90,11 +94,13 @@ workflow family that reuses `harness-core` without inheriting `gh`.
 - **A workflow never names a concrete adapter.** It receives `Rc<dyn Trait>`
   ports; the launcher builds `GhCli`, `GitCli`, `ClaudeCliFactory`, the ledgers.
   One test seam per port, and `--dry-run` is a wiring choice (a `Rehearsal`
-  session factory) rather than a branch in the framework. The two exceptions are
+  session factory) rather than a branch in the framework. The one exception is
   test-only and listed in `CLAUDE.md`.
 - **Reusability is the point.** A different workflow family — a consulting
   report, say — depends on `harness-core` only and declares its own states,
-  stages and ports. Nothing in `core` has to change to accept it.
+  stages and ports. Nothing in `core` has to change to accept it, and it
+  compiles none of `gh`, `git`, the `claude` CLI or SQLite: those live in
+  `harness-adapters`, which it may take or leave.
 
 Per-crate rules that aren't visible in the code: `CLAUDE.md`. Migration
 decisions the shapes refer to by number (#1 judge ≠ write, #3 `?Send`, #6

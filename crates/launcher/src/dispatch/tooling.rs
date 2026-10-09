@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::adapters::shell::process;
+use harness_adapters::shell::process;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 use harness_core::ports::shell::disk::Disk;

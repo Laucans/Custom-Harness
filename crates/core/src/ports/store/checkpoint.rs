@@ -19,7 +19,7 @@
 //! [`Halt::Unreadable`](crate::domain::Halt::Unreadable).
 //!
 //! The implementation — a hand-readable pointer and one JSONL file per flow —
-//! lives in [`adapters::store::checkpoint`](crate::adapters::store::checkpoint).
+//! lives in `harness_adapters::store::checkpoint`.
 
 use serde_json::Value;
 

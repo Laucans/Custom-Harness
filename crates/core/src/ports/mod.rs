@@ -3,7 +3,7 @@
 //! The inside of the hexagon. Everything here is a trait (plus the few values
 //! those traits exchange), declared by `harness-core` and named by the
 //! workflows; nothing here spawns a process, touches the disk or knows a
-//! binary. The implementations live in [`adapters`](crate::adapters), and the
+//! binary. The implementations live in the `harness-adapters` crate, and the
 //! launcher is what picks one — which is why a workflow is testable against a
 //! fake without mocking a call site, and why `--dry-run` is a wiring choice
 //! rather than a branch in the framework.

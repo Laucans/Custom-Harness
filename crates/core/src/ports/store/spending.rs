@@ -1,6 +1,6 @@
 //! Where spending is recorded — the port, not the file.
 //!
-//! [`Ledger`](crate::adapters::store::ledger::Ledger) knows how to write a row, but not what
+//! `harness_adapters::store::ledger::Ledger` knows how to write a row, but not what
 //! time it is, what this run is called, or what machine it runs on. Those
 //! three are facts of the launcher, not the execution: an action that just
 //! paid a session knows what it spent and for which task, and nothing more.

@@ -30,10 +30,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use harness_core::adapters::shell::disk::RealDisk;
-use harness_core::adapters::shell::git::GitCli;
-use harness_core::adapters::shell::process;
-use harness_core::adapters::store::error_ledger::{self, ErrorLedger};
+use harness_adapters::shell::disk::RealDisk;
+use harness_adapters::shell::git::GitCli;
+use harness_adapters::shell::process;
+use harness_adapters::store::error_ledger::{self, ErrorLedger};
 use harness_core::domain::doctor::{Repair, is_failure, repair_for};
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Outcome};

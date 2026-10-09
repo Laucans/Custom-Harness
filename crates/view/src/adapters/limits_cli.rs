@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use harness_core::adapters::agent::stream_log;
+use harness_adapters::agent::stream_log;
 use harness_core::domain::quota::Reading;
 
 use crate::domain::limits;

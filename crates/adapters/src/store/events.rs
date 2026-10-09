@@ -1,5 +1,5 @@
 //! The event store: one SQLite database per checkout, at
-//! [`Workspace::events`](crate::domain::workspace::Workspace::events).
+//! [`Workspace::events`](harness_core::domain::workspace::Workspace::events).
 //!
 //! SQLite rather than a file of lines because several processes write at
 //! once: each insert is a transaction, so no line is ever half written or
@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use rusqlite::{Connection, params};
 
-use crate::domain::{Halt, Outcome};
-use crate::ports::store::events::{EventLog, Stored};
-use crate::traces::Event;
+use harness_core::domain::{Halt, Outcome};
+use harness_core::ports::store::events::{EventLog, Stored};
+use harness_core::traces::Event;
 
 /// How long a writer waits for another one before giving up.
 const BUSY: Duration = Duration::from_secs(5);

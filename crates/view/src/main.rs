@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::Parser as _;
-use harness_core::adapters::shell::github::GhCli;
+use harness_adapters::shell::github::GhCli;
 use harness_core::domain::Slug;
 use harness_core::domain::workspace::Workspace;
 use harness_core::ports::shell::github::GitHub;
@@ -58,7 +58,7 @@ use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
 use crate::ports::{Board, BoardReading, Limits, Plant, TerminalFactory, Traces};
 use crate::server::{AppState, router};
-use harness_core::adapters::store::events::SqliteEvents;
+use harness_adapters::store::events::SqliteEvents;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
 

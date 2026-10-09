@@ -195,7 +195,6 @@ pub trait Workflow<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::store::lock::DirLocks;
     use crate::domain::Halt;
     use crate::execution::action::kinds::Action;
     use crate::execution::checks::gate::Gate;
@@ -203,24 +202,31 @@ mod tests {
     use crate::execution::orchestration::round::Round;
     use crate::execution::orchestration::stage::{Stage, StageBody};
     use crate::execution::traits::Verification;
+    use crate::ports::store::lock::Locks;
     use crate::traces::Logbook;
     use std::cell::RefCell;
-    use std::path::PathBuf;
+    use std::collections::HashSet;
 
-    struct Dir(PathBuf);
+    /// Where the fixtures' locks live: a name only, the fake keeps no disk.
+    const LOCKS: &str = "locks";
 
-    impl Dir {
-        fn new(name: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("harness-workflow-{}-{name}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&path);
-            Self(path)
+    /// Locks held in memory: what the core acquires and releases, readable
+    /// back by the test.
+    #[derive(Default)]
+    struct Held(RefCell<HashSet<String>>);
+
+    impl Locks for Held {
+        fn acquire(&self, dir: &Path, name: &str) -> Outcome<bool> {
+            Ok(self
+                .0
+                .borrow_mut()
+                .insert(format!("{}/{name}", dir.display())))
         }
-    }
 
-    impl Drop for Dir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+        fn release(&self, dir: &Path, name: &str) {
+            self.0
+                .borrow_mut()
+                .remove(&format!("{}/{name}", dir.display()));
         }
     }
 
@@ -286,7 +292,8 @@ mod tests {
     struct Fixture {
         remaining: Cell<u32>,
         round: Round<Trail>,
-        lock: Option<(PathBuf, String)>,
+        lock: Option<String>,
+        locks: Held,
         exhausted_at: Option<u32>,
         betweens: Cell<u32>,
         remembered: Cell<u32>,
@@ -299,6 +306,7 @@ mod tests {
                 remaining: Cell::new(remaining),
                 round: Round::plain(stages),
                 lock: None,
+                locks: Held::default(),
                 exhausted_at: None,
                 betweens: Cell::new(0),
                 remembered: Cell::new(0),
@@ -306,8 +314,8 @@ mod tests {
             }
         }
 
-        fn locking(mut self, dir: PathBuf, name: &str) -> Self {
-            self.lock = Some((dir, name.to_string()));
+        fn locking(mut self, name: &str) -> Self {
+            self.lock = Some(name.to_string());
             self
         }
     }
@@ -319,9 +327,9 @@ mod tests {
         }
 
         fn lock(&self) -> Option<Lock<'_>> {
-            self.lock.as_ref().map(|(dir, name)| Lock {
-                locks: &DirLocks,
-                dir,
+            self.lock.as_ref().map(|name| Lock {
+                locks: &self.locks,
+                dir: Path::new(LOCKS),
                 name,
             })
         }
@@ -423,7 +431,7 @@ mod tests {
     async fn a_precheck_that_has_nothing_to_do_never_touches_the_lock() {
         struct NothingToDo {
             remaining: Cell<u32>,
-            dir: PathBuf,
+            locks: Held,
         }
 
         #[async_trait(?Send)]
@@ -438,8 +446,8 @@ mod tests {
 
             fn lock(&self) -> Option<Lock<'_>> {
                 Some(Lock {
-                    locks: &DirLocks,
-                    dir: &self.dir,
+                    locks: &self.locks,
+                    dir: Path::new(LOCKS),
                     name: "32",
                 })
             }
@@ -449,44 +457,52 @@ mod tests {
             }
         }
 
-        let dir = Dir::new("precheck");
         let flow = NothingToDo {
             remaining: Cell::new(1),
-            dir: dir.0.clone(),
+            locks: Held::default(),
         };
         let mut context = ctx();
         flow.execute(&mut context).await.expect("a success");
         assert_eq!(flow.remaining.get(), 1, "no round was started");
-        assert!(DirLocks.acquire(&dir.0, "32").expect("still free"));
+        assert!(
+            flow.locks
+                .acquire(Path::new(LOCKS), "32")
+                .expect("still free")
+        );
     }
 
     #[tokio::test]
     async fn the_lock_is_released_after_the_rounds() {
-        let dir = Dir::new("released");
-        let flow = Fixture::new(1, vec![local_stage("a")]).locking(dir.0.clone(), "32");
+        let flow = Fixture::new(1, vec![local_stage("a")]).locking("32");
         let mut context = ctx();
         flow.execute(&mut context).await.expect("a success");
-        assert!(DirLocks.acquire(&dir.0, "32").expect("re-acquired"));
+        assert!(
+            flow.locks
+                .acquire(Path::new(LOCKS), "32")
+                .expect("re-acquired")
+        );
     }
 
     #[tokio::test]
     async fn a_failure_still_releases_the_lock() {
-        let dir = Dir::new("failed");
-        let flow = Fixture::new(1, vec![failing_stage()]).locking(dir.0.clone(), "32");
+        let flow = Fixture::new(1, vec![failing_stage()]).locking("32");
         let mut context = ctx();
         flow.execute(&mut context).await.expect_err("must stop");
-        assert!(DirLocks.acquire(&dir.0, "32").expect("released anyway"));
+        assert!(
+            flow.locks
+                .acquire(Path::new(LOCKS), "32")
+                .expect("released anyway")
+        );
     }
 
     #[tokio::test]
     async fn a_lock_already_held_skips_the_rounds_without_erroring() {
-        let dir = Dir::new("held");
+        let flow = Fixture::new(1, vec![local_stage("never")]).locking("32");
         assert!(
-            DirLocks
-                .acquire(&dir.0, "32")
+            flow.locks
+                .acquire(Path::new(LOCKS), "32")
                 .expect("held by someone else")
         );
-        let flow = Fixture::new(1, vec![local_stage("never")]).locking(dir.0.clone(), "32");
         let mut context = ctx();
         flow.execute(&mut context)
             .await

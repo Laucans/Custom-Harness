@@ -22,15 +22,17 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   and how the dependencies form. Current detail per crate in
   `crates/<crate>/ARCHITECTURE.md`; read the one for the crate you are touching
   before moving a file or adding a module.
-- Cargo workspace, six crates, one direction only:
+- Cargo workspace, seven crates, one direction only:
   `harness-launcher` (bin) → `harness-workflows` (lib) → `harness-core`
   (lib), and `harness-view` (bin) beside the launcher on the same arrow.
+  `harness-adapters` (lib) is the outside: it depends on `core`, and only
+  `launcher` and `view` depend on it (`crates/adapters/ARCHITECTURE.md`).
   `harness-notify` (lib) decides what to tell a human from the harness's
   events and a few observed facts; `view` uses it, it depends on
   `workflows` and `core` only, and does no I/O (`crates/notify/ARCHITECTURE.md`).
   Events are recorded once, where they happen, with `Logbook::event` — the
   journal line is written from the event — into `.llocal/harness.db`
-  (core's `EventLog` port, SQLite adapter).
+  (core's `EventLog` port, SQLite adapter in `harness-adapters`).
   `core` never depends on `workflows`, `launcher` or `view` — enforced by
   Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
   a warning. `view` is read-only: it shows the traces the harness leaves in
@@ -71,21 +73,23 @@ the rules a diff is checked against:
   the same module as an implementation of it: the dependency runs
   `adapters -> ports`, and a trait sitting in `adapters/` makes the next
   workflow family inherit `gh` along with the seam.
-- **An adapter is an implementation in `harness-core/src/adapters/`**, and it
-  is the only layer allowed to spawn a process, touch the disk, or call a
-  library. `shell/process.rs` is the only place that spawns.
+- **An adapter is an implementation in the `harness-adapters` crate**
+  (`crates/adapters/src/`), and it is the only layer allowed to spawn a
+  process, touch the disk, or call a library. `shell/process.rs` is the only
+  place that spawns. `core` and `workflows` do not depend on it, so the inside
+  naming an adapter is a compile error.
 - **The inside never names a type from `adapters`.** `domain/`, `execution/`,
   `ports/` and every workflow take `Rc<dyn Trait>`; only the two outer rings
   build a concrete adapter — `harness-launcher` builds `GhCli`, `GitCli`,
   `ClaudeCliFactory`, `Checkpoint`, `ReviewLedger`, `DirLocks`, in its
   composition root (`dispatch/*.rs` and `router.rs`, never in the inside rings);
   `harness-view` builds `GhCli` and its own read-only `FsTraces`, in its
-  `main.rs` and nowhere else. Two exceptions, both test-only: a fixture may wire `Rehearsal`
-  as its session factory (core's own stand-in carrier, the one `--dry-run`
-  wires), and a test may name a concrete adapter when that adapter's real
-  behaviour is what is under test — `DirLocks` in core's workflow test, which
-  proves the lock is really released. Everywhere else, inject a fake from
-  `workflows/src/common/fake_*.rs`.
+  `main.rs` and nowhere else. One exception, test-only: a `workflows`
+  fixture may wire `Rehearsal` as its session factory (the stand-in carrier
+  `--dry-run` wires), which is why `harness-adapters` is a dev-dependency of
+  `workflows` and never a normal one. `core` takes it as neither: its tests
+  write their own fake (`Held` in `orchestration/workflow.rs`). Everywhere
+  else, inject a fake from `workflows/src/common/fake_*.rs`.
 - **No `std::fs`, no `Command`, no clock in a workflow, an action or a gate** —
   not even three lines of it. If a store the inside reads has no port yet,
   declare one (`Checkpoints`, `ReviewCosts` exist for exactly that reason)
@@ -93,12 +97,11 @@ the rules a diff is checked against:
 - **Where `core` needs a fact of the process** — the time, a run id, a machine
   name, a console — it declares a port and the launcher implements it
   (`Spending`, `Sink`). Never the reverse.
-- Reviewable in two commands:
-  `grep -rn 'adapters::' crates/core/src/domain crates/core/src/execution crates/core/src/ports crates/workflows/src`
-  Its only legitimate hits are doc links and the two test exceptions above —
-  anything in shipped code is the review finding, not a detail. And for the
-  I/O that reaches the disk without naming an adapter:
-  `grep -rn 'std::fs\|std::process\|std::env\|tokio::fs\|tokio::process' crates/core/src/domain crates/core/src/execution crates/core/src/ports crates/workflows/src`
+- Reviewable in two places. Cargo answers the first: `harness-adapters` must
+  never appear under `[dependencies]` of `crates/core` or `crates/workflows`
+  (only under `[dev-dependencies]` of `workflows`). And for the I/O that
+  reaches the disk without naming an adapter:
+  `grep -rn 'std::fs\|std::process\|std::env\|tokio::fs\|tokio::process' crates/core/src crates/workflows/src`
   whose only legitimate hits sit inside a `#[cfg(test)]` block. The port for
   a file a workflow keeps is `Disk`; the port for a process is `Process`.
 

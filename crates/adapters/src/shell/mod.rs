@@ -1,6 +1,6 @@
 //! The binaries, wrapped: `git`, `gh`, the disk, and the launcher they share.
 //!
-//! The implementations behind [`ports::shell`](crate::ports::shell).
+//! The implementations behind [`ports::shell`](harness_core::ports::shell).
 //! `process` is the only one that talks to the system; the others translate
 //! arguments and read outputs.
 

@@ -6,7 +6,7 @@
 //! a write port — does not answer; hence this one, small on purpose.
 //!
 //! The implementation, a ledger with its own frozen columns, lives in
-//! [`adapters::store::review_ledger`](crate::adapters::store::review_ledger).
+//! `harness_adapters::store::review_ledger`.
 
 use crate::domain::Outcome;
 

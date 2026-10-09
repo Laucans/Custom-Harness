@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::rc::Rc;
 
-use harness_core::adapters::shell::git::GitCli;
+use harness_adapters::shell::git::GitCli;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Context, Gate, Guarded, Settings};

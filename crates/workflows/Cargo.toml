@@ -13,4 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Tests only: a fixture wires `Rehearsal`, the `--dry-run` carrier, as its
+# session factory. Shipped code never sees this crate.
+harness-adapters.workspace = true
 tokio.workspace = true

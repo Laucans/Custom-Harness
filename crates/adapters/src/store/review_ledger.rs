@@ -12,8 +12,8 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{Halt, Outcome, Spend};
-use crate::ports::store::review::ReviewCosts;
+use harness_core::domain::{Halt, Outcome, Spend};
+use harness_core::ports::store::review::ReviewCosts;
 
 /// The header, frozen.
 pub const HEADER: &str =
@@ -153,7 +153,7 @@ impl ReviewCosts for ReviewLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::Tokens;
+    use harness_core::domain::Tokens;
 
     struct Dir(PathBuf);
 

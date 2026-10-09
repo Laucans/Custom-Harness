@@ -11,7 +11,7 @@
 //! Translating them to `Outcome<()>` would lose exactly that.
 //!
 //! The implementation — one `git -C <root>` call per method — lives in
-//! [`adapters::shell::git`](crate::adapters::shell::git).
+//! `harness_adapters::shell::git`.
 
 use std::path::Path;
 use std::rc::Rc;

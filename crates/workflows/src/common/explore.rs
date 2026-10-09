@@ -586,7 +586,7 @@ pub(crate) mod fake {
     use std::rc::Rc;
 
     use async_trait::async_trait;
-    use harness_core::adapters::agent::rehearsal::Rehearsal;
+    use harness_adapters::agent::rehearsal::Rehearsal;
     use harness_core::domain::{Halt, Outcome};
     use harness_core::ports::agent::SessionSpec;
     use harness_core::ports::shell::disk::Disk;
