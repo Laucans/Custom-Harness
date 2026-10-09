@@ -12,6 +12,7 @@
 
 use serde::Serialize;
 
+use crate::domain::journal::{self, Journal};
 use crate::ports::LedgerRow;
 
 /// A journal line split at its clock: `[2026-10-07T12:50:44Z] rest`.
@@ -143,6 +144,8 @@ pub struct Watch {
     pub draining: bool,
     /// The watch said it stopped, after its last start.
     pub stopped: bool,
+    /// What the loop triggered, and its tick counts.
+    pub journal: Journal,
 }
 
 /// Reads `watch.log`, keeping the last `keep` non-empty lines.
@@ -181,6 +184,7 @@ pub fn parse_watch(text: &str, keep: usize) -> Watch {
             watch.in_flight = None;
         }
     }
+    watch.journal = journal::read(text);
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     watch.recent = lines
         .iter()

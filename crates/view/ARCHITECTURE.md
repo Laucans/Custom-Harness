@@ -72,6 +72,7 @@ src/desk.rs            the steward's desk: one terminal kept alive between visit
 src/domain/            the inside — no disk, no subprocess, no clock
   blueprint.rs         the rooms, the models, one line per workflow, station by station
   traces.rs            parsers: watch.log, run.log, prompts.md headers, the stream's first event, the ledger sums
+  journal.rs           the watch loop out of watch.log: what it triggered and how each ended, empty and failed ticks
   observe.rs           what one tick reads through the Traces port
   assemble.rs          Observed + board → Snapshot (who is live, where the product is, what smokes)
   snapshot.rs          the serializable picture the page receives

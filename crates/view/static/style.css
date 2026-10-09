@@ -247,6 +247,14 @@ table.rows { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
 table.rows th, table.rows td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
 table.rows th { color: var(--dim); font-weight: 500; }
 table.rows td.num { text-align: right; }
+nav.screens { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+nav.screens button { background: transparent; color: var(--dim); font: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+nav.screens button:hover { border-color: var(--accent); color: var(--text); }
+nav.screens button.here { background: var(--panel-2); border-color: var(--accent); color: var(--accent); cursor: default; }
+.tile .v small { font-size: 12px; color: var(--dim); }
+.loop-line { margin: 4px 0 2px; }
+table.triggers td { white-space: nowrap; }
+table.triggers td:last-child, table.triggers td:nth-child(3) { white-space: normal; }
 
 .tabs { display: flex; gap: 6px; margin: 8px 0; }
 .tabs button { background: var(--panel-2); border: 1px solid var(--line); color: var(--dim); border-radius: 6px; padding: 4px 10px; font: 12px var(--mono); cursor: pointer; }

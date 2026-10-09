@@ -9,6 +9,7 @@ use harness_core::domain::quota::Reading;
 use serde::Serialize;
 
 use crate::domain::blueprint::{Kind, Room};
+use crate::domain::journal::Journal;
 use crate::domain::traces::{Costs, InFlight};
 use crate::ports::ErrorRow;
 
@@ -322,6 +323,8 @@ pub struct Snapshot {
     pub errors: Vec<ErrorRow>,
     /// The watch journal's last lines.
     pub recent: Vec<String>,
+    /// The loop: what it triggered, and how many ticks found nothing to do.
+    pub journal: Journal,
     /// The latest run is shown live even though it is over.
     pub demo: bool,
 }

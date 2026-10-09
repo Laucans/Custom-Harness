@@ -636,6 +636,7 @@ pub fn snapshot(inputs: &Inputs<'_>) -> Snapshot {
             .cloned()
             .collect(),
         recent: watch.recent.clone(),
+        journal: watch.journal.clone(),
         demo: inputs.demo,
     }
 }

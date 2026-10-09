@@ -12,9 +12,9 @@ use crate::domain::traces::{
 };
 use crate::ports::{ErrorRow, LedgerRow, Traces};
 
-/// How much of `watch.log` is read back: enough for the last tick and its
-/// warnings, not the whole night.
-const WATCH_TAIL_BYTES: u64 = 64 * 1024;
+/// How much of `watch.log` is read back: enough for the triggers and tick
+/// counts of a day's run, not the whole week.
+const WATCH_TAIL_BYTES: u64 = 256 * 1024;
 
 /// How many journal lines the picture carries.
 const RECENT_LINES: usize = 40;

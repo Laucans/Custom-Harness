@@ -525,6 +525,75 @@
     return '<div class="bars">' + buckets.map((b) => `<div class="k" title="${esc(b.key)}">${esc(b.key)}</div><div class="bar ${cls}"><span style="width:${Math.max(1, Math.round(100 * b.usd / max))}%"></span></div><div class="v">${fmt(b)}</div>`).join('') + '</div>';
   }
   const tiles = (items) => '<div class="tiles">' + items.map(([v, l]) => `<div class="tile"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`).join('') + '</div>';
+
+  // ---- the control room's screens -------------------------------------------
+  // `14:03:22`, with the day when it is not today — local time.
+  function when(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return d.toDateString() === new Date().toDateString() ? t : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t;
+  }
+  function lasted(from, to) {
+    const ms = (to ? Date.parse(to) : Date.now()) - Date.parse(from);
+    if (!(ms >= 0)) return '—';
+    const m = Math.floor(ms / 60000);
+    return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : m >= 1 ? `${m} min` : `${Math.round(ms / 1000)} s`;
+  }
+  const STATE_TAG = { running: ['running', 'acc'], ok: ['ok', 'ok'], failed: ['failed', 'bad'], killed: ['killed', 'bad'], unknown: ['unknown', 'warn'] };
+  const DASH = {
+    costs() {
+      const c = S.snap.costs;
+      let h = tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
+      // The data layer runs on the strongest model: what it costs against the rest.
+      const dl = (c.by_side || []).find((b) => b.key === 'data-layer');
+      if (dl) h += tiles([[usd(dl.usd), 'data layer (strongest model)'], [c.total_usd > 0 ? Math.round(100 * dl.usd / c.total_usd) + '%' : '—', 'of all spending'], [dl.count, 'sessions']]);
+      if ((c.by_side || []).length) h += '<h3>By side of the architecture</h3>' + bars(c.by_side);
+      h += '<h3>By day</h3>' + bars(c.by_day.slice(-14));
+      h += '<h3>By stage</h3>' + bars(c.by_stage);
+      h += '<h3>By task</h3>' + bars(c.by_task);
+      h += '<h3>By outcome</h3>' + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
+      h += '<h3>Last paid sessions</h3><table class="rows"><tr><th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th></tr>' + c.last.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
+      return h;
+    },
+    quota() {
+      const q = S.snap.quota;
+      if (!q) return '<div class="muted">no reading yet</div>';
+      return '<div class="gauges">' + q.windows.map((w) => { const pct = Math.round(w.utilization * 100); const reset = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString() : 'unknown'; return `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(w.name)} · ${pct}% used</div><div class="bar"><span style="width:${pct}%"></span></div><div class="muted">resets ${esc(reset)}</div></div>`; }).join('') + '</div>' + `<div class="muted" style="margin-top:6px;font:11px var(--mono)">read ${new Date(q.at * 1000).toLocaleString()}</div>`;
+    },
+    errors() {
+      return S.snap.errors.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + S.snap.errors.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>';
+    },
+    journal() {
+      const j = S.snap.journal, f = S.snap.factory;
+      const atWork = S.snap.employees.filter((e) => e.active).length;
+      const lanes = j.triggers.filter((t) => t.state === 'running' && t.lane != null).length;
+      const pct = j.ticks ? Math.round(100 * j.empty_ticks / j.ticks) : 0;
+      let h = tiles([
+        [atWork, 'agents at work'],
+        [lanes, 'lanes open'],
+        [j.ticks, 'ticks' + (j.since ? '' : ' (at least)')],
+        [`${j.empty_ticks} <small>${pct}%</small>`, 'empty ticks'],
+        [j.failed_ticks, 'failed board reads'],
+      ]);
+      h += `<div class="muted loop-line">${f.draining ? tag('stopping', 'warn') : f.watching ? tag('polling', 'ok') : tag('off')} `
+        + (j.since ? `since ${esc(when(j.since))}` : 'its start is older than the journal read')
+        + (j.last_empty_at ? ` · last empty tick ${esc(when(j.last_empty_at))}` : '') + '</div>';
+      h += '<h3>Triggers</h3>';
+      h += j.triggers.length
+        ? '<table class="rows triggers"><tr><th>when</th><th>what</th><th>on</th><th class="num">lane</th><th>state</th><th class="num">lasted</th><th>detail</th></tr>'
+          + j.triggers.map((t) => {
+            const on = t.issue != null
+              ? `<button class="link" data-issue="${t.issue}">#${t.issue}</button> <span class="muted">${esc(issueTitle(t.issue).slice(0, 60))}</span>`
+              : esc(t.subject || '');
+            const [label, cls] = STATE_TAG[t.state] || [t.state, ''];
+            return `<tr><td>${esc(when(t.at))}</td><td>${esc(t.what)}</td><td>${on}</td><td class="num">${t.lane ?? '—'}</td><td>${tag(label, cls)}</td><td class="num">${esc(lasted(t.at, t.ended_at))}</td><td class="muted">${esc((t.detail || '').slice(0, 160))}</td></tr>`;
+          }).join('') + '</table>'
+        : '<div class="muted">nothing triggered since the start of the journal read</div>';
+      h += '<h3>Logs</h3><pre class="log">' + esc(S.snap.recent.join('\n') || '(empty)') + '</pre>';
+      return h;
+    },
+  };
   const KIND_TIP = {
     scanner: 'gate · a deterministic check',
     builder: 'LLM that writes',
@@ -773,27 +842,13 @@
       return ['Features · ' + S.snap.project.name, h];
     },
 
+    // The control room's four computers: one screen each.
     dashboards(p) {
-      const c = S.snap.costs, q = S.snap.quota;
-      let h = tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
-      // The data layer runs on the strongest model: what it costs against the rest.
-      const dl = (c.by_side || []).find((b) => b.key === 'data-layer');
-      if (dl) h += tiles([[usd(dl.usd), 'data layer (strongest model)'], [c.total_usd > 0 ? Math.round(100 * dl.usd / c.total_usd) + '%' : '—', 'of all spending'], [dl.count, 'sessions']]);
-      if ((c.by_side || []).length) h += '<h3>By side of the architecture</h3>' + bars(c.by_side);
-      h += '<h3 id="dash-costs">By day</h3>' + bars(c.by_day.slice(-14));
-      h += '<h3>By stage</h3>' + bars(c.by_stage);
-      h += '<h3>By task</h3>' + bars(c.by_task);
-      h += '<h3>By outcome</h3>' + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
-      h += '<h3 id="dash-quota">Rate-limit windows</h3>';
-      if (q) {
-        h += '<div class="gauges">' + q.windows.map((w) => { const pct = Math.round(w.utilization * 100); const reset = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString() : 'unknown'; return `<div class="gauge ${pct > 90 ? 'bad' : pct > 70 ? 'warn' : ''}"><div>${esc(w.name)} · ${pct}% used</div><div class="bar"><span style="width:${pct}%"></span></div><div class="muted">resets ${esc(reset)}</div></div>`; }).join('') + '</div>' + `<div class="muted" style="margin-top:6px;font:11px var(--mono)">read ${new Date(q.at * 1000).toLocaleString()}</div>`;
-      } else h += '<div class="muted">no reading yet</div>';
-      h += '<h3 id="dash-errors">Last stops</h3>';
-      h += S.snap.errors.length ? '<table class="rows"><tr><th>when</th><th>workflow</th><th>kind</th><th>reason</th></tr>' + S.snap.errors.map((e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`).join('') + '</table>' : '<div class="muted">none recorded</div>';
-      h += '<h3 id="dash-journal">Watch journal</h3><pre class="log">' + esc(S.snap.recent.join('\n') || '(empty)') + '</pre>';
-      h += '<h3>Last paid sessions</h3><table class="rows"><tr><th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th></tr>' + c.last.map((r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`).join('') + '</table>';
-      const after = (refresh) => { if (!refresh && p.focus) { const el = $('dash-' + p.focus); if (el) el.scrollIntoView({ block: 'start' }); } };
-      return ['Control room', h, after];
+      const screens = { costs: 'Spending', quota: 'Rate limits', errors: 'Stops', journal: 'Watch loop' };
+      const focus = screens[p.focus] ? p.focus : 'costs';
+      const nav = '<nav class="screens">' + Object.entries(screens).map(([k, name]) => `<button class="${k === focus ? 'here' : ''}" data-pane='${esc(JSON.stringify({ kind: 'dashboards', focus: k }))}'>${esc(name)}</button>`).join('') + '</nav>';
+      const h = nav + DASH[focus]();
+      return ['Control room · ' + screens[focus], h];
     },
 
     versions() {
