@@ -220,6 +220,36 @@
     const name = `${t.issue != null ? '#' + t.issue + ' · ' : ''}${t.what} · ${run}`;
     openPane({ kind: 'employee', id, last: { id, name, workflow: t.workflow, run_id: run, active: false }, file: 'run.log', jumpTo: failed ? 'error' : 'end' });
   }
+  // A status known by its run id — a paid session, a stop — leads to that
+  // run's logs: at the stop when it ended badly, on its stage's session
+  // otherwise, and to the agent followed live while the run is at work. The
+  // server says which line's logs hold the run.
+  async function openRunLog(r, button) {
+    let workflow = r.workflow || null;
+    if (!workflow) {
+      try {
+        const q = r.stage ? '?' + new URLSearchParams({ stage: r.stage }) : '';
+        const res = await fetch(`/api/run-of/${encodeURIComponent(r.run)}${q}`);
+        if (res.ok) workflow = (await res.json()).workflow;
+      } catch (e) { /* said below */ }
+    }
+    if (!workflow) { button.title = 'no log of this run was found'; button.classList.add('missing'); return; }
+    const id = `${workflow}/${r.run}`;
+    if (S.snap.employees.some((e) => e.id === id && e.active)) { openPane({ kind: 'employee', id }); return; }
+    const last = { id, name: r.name || `${r.task ? '#' + String(r.task).replace(/^#/, '') + ' · ' : ''}${r.stage || workflow} · ${r.run}`, workflow, run_id: r.run, active: false };
+    openPane(r.failed
+      ? { kind: 'employee', id, last, file: 'run.log', jumpTo: 'error' }
+      : { kind: 'employee', id, last, stage: r.stage || null });
+  }
+  // A process status that opens the logs it is the status of.
+  const runTag = (label, cls, r) => (r.run
+    ? `<button class="tag-link" data-run-log='${esc(JSON.stringify(r))}' title="${r.failed ? 'open its logs at the error' : 'open its logs'}">${tag(label, cls)}</button>`
+    : tag(label, cls));
+  // A paid session's outcome, leading to its run's logs.
+  const sessionTag = (r, workflow) => runTag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '', { run: r.run, workflow, stage: r.stage, task: r.task, failed: !!r.outcome && r.outcome !== 'ok' });
+  // A running status: the agent at work, its session followed live.
+  const liveTag = (id, label = 'running') => `<button class="tag-link" data-pane='${esc(JSON.stringify({ kind: 'employee', id }))}' title="open its session, followed live">${tag(label, 'acc')}</button>`;
+
   // A line that says why a run stopped: its halt, a warning, a session that
   // broke, the breaker's refusal.
   const ERROR_LINE = /(^|\] )(warning: |STOP: |FAILED: |QUOTA: |! )|refusing to pay|timed out|printed nothing|ran past its/;
@@ -559,6 +589,8 @@
     }
     const toLog = e.target.closest('[data-trigger-log]');
     if (toLog) { openTriggerLog(JSON.parse(toLog.dataset.triggerLog), toLog); return undefined; }
+    const toRun = e.target.closest('[data-run-log]');
+    if (toRun) { openRunLog(JSON.parse(toRun.dataset.runLog), toRun); return undefined; }
     const help = e.target.closest('[data-help]');
     if (help && S.pane) {
       const key = help.dataset.help;
@@ -698,7 +730,7 @@
       const last = { id: `${line.id}/${r.run_id}`, name: r.name, workflow: line.id, run_id: r.run_id, tokens: r.tokens, active: r.active };
       const open = { kind: 'employee', id: last.id, last, stage: stage || null };
       const when = r.run_id.slice(9, 11) + ':' + r.run_id.slice(11, 13) + ' · ' + r.run_id.slice(4, 6) + '/' + r.run_id.slice(6, 8);
-      return `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify(open))}'>${esc(r.name)}</button></span><span class="muted">${esc(when)} · ${esc(r.stages.join(' → ') || 'no stage finished')}${r.tokens ? ' · ' + kfmt(r.tokens.total) + ' tok' : ''}</span>${r.active ? tag('at work', 'ok') : ''}</li>`;
+      return `<li><span class="t"><button class="link" data-pane='${esc(JSON.stringify(open))}'>${esc(r.name)}</button></span><span class="muted">${esc(when)} · ${esc(r.stages.join(' → ') || 'no stage finished')}${r.tokens ? ' · ' + kfmt(r.tokens.total) + ' tok' : ''}</span>${r.active ? liveTag(last.id) : ''}</li>`;
     }).join('') + '</ul>';
   }
   const ext = (url, text = 'GitHub ↗') => (url ? `<a class="ext" href="${esc(url)}" target="_blank" rel="noopener">${esc(text)}</a>` : '');
@@ -831,7 +863,7 @@
       h += section(p, 'costs.stage', 'By stage') + bars(c.by_stage);
       h += section(p, 'costs.task', 'By task') + bars(c.by_task);
       h += section(p, 'costs.outcome', 'By outcome') + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
-      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`);
+      h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${sessionTag(r)}</td></tr>`);
       return h;
     },
     quota(p) {
@@ -863,8 +895,16 @@
     },
     errors(p) {
       if (S.range && !period()) return '';
+      // A stop of the watch itself has no run folder: its logs are the
+      // journal, on the Watch loop screen.
+      const stopTag = (e) => {
+        const cls = e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '';
+        return e.workflow === 'watch'
+          ? `<button class="tag-link" data-pane='${esc(JSON.stringify({ kind: 'dashboards', focus: 'journal' }))}' title="open the watch's journal">${tag(e.kind, cls)}</button>`
+          : runTag(e.kind, cls, { run: e.run, failed: true, name: `${e.workflow} · ${e.kind} · ${e.run}` });
+      };
       const rows = period() ? period().errors : S.snap.errors;
-      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${tag(e.kind, e.kind === 'QUOTA' ? 'warn' : e.kind === 'FAILED' ? 'bad' : '')}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
+      return section(p, 'errors.list', period() ? 'Stops of the period' : 'Last stops') + (rows.length ? pagedTable(p, 'stops', '', '<th>when</th><th>workflow</th><th>kind</th><th>reason</th>', rows, (e) => `<tr><td>${esc(e.when)}</td><td>${esc(e.workflow)}</td><td>${stopTag(e)}</td><td>${esc(e.reason.slice(0, 240))}${e.reason.length > 240 ? '…' : ''}</td></tr>`) : '<div class="muted">none recorded</div>');
     },
     journal(p) {
       if (S.range && !period()) return '';
@@ -1055,16 +1095,20 @@
         return [st.label, paneTabs(p, st.purpose) + recentWork(line, here, st.stage)];
       }
       const bucket = st.stage ? S.snap.costs.by_stage.find((b) => b.key === st.stage) : null;
-      const rows = st.stage ? S.snap.costs.last.filter((r) => r.stage === st.stage) : [];
+      // The sessions at work on it now, first, then the finished ones.
+      const now = S.snap.employees.filter((e) => e.workflow === line.id && e.station === st.id && e.active);
+      const rows = [...now.map((e) => ({ live: e })), ...(st.stage ? S.snap.costs.last.filter((r) => r.stage === st.stage) : [])];
       let h = kv([
         ['line', esc(line.title)], ['kind', `${esc(st.kind)} — ${esc(KIND_TIP[st.kind])}`],
         ['stage', st.stage ? esc(st.stage) : '<span class="muted">a gate of the stage beside it</span>'],
         ['model', st.model ? tag(st.model, st.model) : null],
-        ['state', tag(st.state, st.state === 'active' ? 'acc' : st.state === 'done' ? 'ok' : '')],
+        ['state', now.length ? liveTag(now[0].id, st.state) : tag(st.state, st.state === 'active' ? 'acc' : st.state === 'done' ? 'ok' : '')],
       ]);
       if (bucket) h += '<h3>What this stage cost, all runs</h3>' + tiles([[usd(bucket.usd), 'total'], [bucket.count, 'sessions'], [usd(bucket.usd / Math.max(1, bucket.count)), 'per session']]);
       if (rows.length) {
-        h += '<h3>Last sessions on it</h3>' + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${tag(r.outcome || '?', r.outcome === 'ok' ? 'ok' : r.outcome ? 'bad' : '')}</td></tr>`);
+        h += `<h3>${now.length ? 'Sessions on it — now, then the last ones' : 'Last sessions on it'}</h3>` + pagedTable(p, 'station', '', '<th>when</th><th>task</th><th>round</th><th class="num">cost</th><th class="num">turns</th><th>outcome</th>', rows, (r) => (r.live
+          ? `<tr><td>now${r.live.since ? ' · since ' + esc(hhmm(r.live.since)) : ''}</td><td>${(String(r.live.task || '').match(/\d+/) || [])[0] ? '#' + String(r.live.task).match(/\d+/)[0] : '—'}</td><td>${esc(r.live.round || '—')}</td><td class="num">—</td><td class="num">—</td><td>${liveTag(r.live.id)}</td></tr>`
+          : `<tr><td>${esc(r.when)}</td><td>#${esc(r.task)}</td><td>${esc(r.round)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td>${sessionTag(r, line.id)}</td></tr>`));
       }
       if (st.kind === 'scanner') h += '<div class="callout">A gate judges and never writes: it reads the issue, the labels or the ledger, and either lets the product through, skips the stage, or halts the round.</div>';
       return [st.label, paneTabs(p, st.purpose) + h];
@@ -1083,7 +1127,7 @@
       if (!live.some((e) => e.id === p.liveRun)) p.liveRun = live.length ? live[0].id : null;
       const liveBar = live.map((e) => `<button data-live-run="${esc(e.id)}" class="${e.id === p.liveRun ? 'on' : ''}">${esc(e.name)}${e.stage ? ' · ' + esc(e.stage) : ''}</button>`).join('');
       const lr = line.last_run;
-      let h = kv([['trigger', esc(line.trigger)], ['log folder', `<code>.llocal/logs/${esc(line.id)}/</code>`], ['runs', line.runs], ['status', line.active ? tag('at work', 'ok') : tag('idle')]]);
+      let h = kv([['trigger', esc(line.trigger)], ['log folder', `<code>.llocal/logs/${esc(line.id)}/</code>`], ['runs', line.runs], ['status', line.active ? (live.length ? liveTag(live[0].id, 'at work') : tag('at work', 'ok')) : tag('idle')]]);
       if (lr) {
         h += '<h3>Latest run</h3>' + kv([['run', esc(lr.run_id)], ['started', hhmm(lr.started_at)], ['last line at', `${hhmm(lr.last_at)} · ${fmtAge(lr.age_secs)} ago`], ['task', esc(lr.task || '—')], ['round', esc(lr.round || '—')], ['last line', `<code>${esc(lr.last_line)}</code>`], ['warning', lr.warning ? `<span class="tag warn">${esc(lr.warning)}</span>` : null]]);
         const emp = S.snap.employees.find((e) => e.workflow === line.id);
