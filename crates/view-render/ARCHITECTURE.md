@@ -61,8 +61,9 @@ the dusk-teal sky behind the plant, so everything in front of it reads as
 lit. The props wear that palette in *Fallout*'s retro-futurism: chrome
 rings, rivets and skirts, portholes, radar dishes and red beacons, a vault's
 gear door for the entrance, CRT terminals for printers and screens, a
-Protectron for a robot, a Vault Boy for the steward, a lobster-faced
-physician out of *Futurama* for the doctor. The plant itself is
+*Futurama*'s Bender and Hedonismbot for the robots, a Vault Boy for the
+steward, a lobster-faced physician out of the same show for the doctor. The
+plant itself is
 *Futurama*'s Planet Express — a brick hangar under dark barrel vaults
 framed by red arches, beside a tall tapering brick tower with a balcony, a
 red ribbed dome and a gold spire, the project's name on a gantry over the
@@ -96,9 +97,11 @@ that moves. In 3D that becomes:
   but painted, the way the game and *Don't Starve* stand paper characters in
   a world. `sprites.rs` draws each one with vector paths (a vault jumpsuit
   in the model's colour with gold belt and trim, a big head with bead eyes
-  and pink cheeks under a domed gold hard hat; a Protectron robot — domed
-  head, a visor whose slits glow green while it works, a riveted chest
-  plate, a wrench or a clipboard in its chrome hand; the steward as the
+  and pink cheeks under a domed gold hard hat; on the line, Bender in
+  steel grey builds — black visor, yellow eyes that light up while he
+  works, a grin, a cigar, a wrench raised — and Hedonismbot in gold
+  inspects, sprawled on his chaise with his laurels, his belly and a
+  clipboard held up, eyes that open while he works; the steward as the
   Vault Boy — blue jumpsuit, blond quiff, a wink and a thumbs-up; the
   doctor as Zoidberg — coral shell, four mouth tentacles, head mirror, a
   white coat over scrubs, a blue book under the claw) and
@@ -111,7 +114,7 @@ that moves. In 3D that becomes:
   so it sorts against the props like any solid thing and needs no outline:
   the ink is in the painting. Since the painting is pure Rust, the figures
   are tested natively — a transparent margin, thick ink, a suit per model,
-  green visor slits on a working robot.
+  yellow eyes on a working Bender, gold on Hedonismbot.
 
 ## Rendering choices
 
