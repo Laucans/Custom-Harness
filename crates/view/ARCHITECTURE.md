@@ -278,7 +278,9 @@ A pin is one of three kinds (`domain::annotations::Kind`):
 | brainstorm | green | an **AI session** about the part, opened from the pin |
 | asking | orange | a change to consider when the next roadmap is built — its session kept too; how it reaches the planner is parked (`docs/PARKED.md`) |
 
-A pin's session is an interactive Claude Code (the steward's model, plan
+A brainstorm or an asking starts from the note's text — it cannot be one
+while the note is empty — and that text is the **first prompt** of its first
+session. A pin's session is an interactive Claude Code (the steward's model, plan
 mode, in the product's snapshot clone when there is one) in the
 `note_session` pane, run by `note_desks.rs`. It opens with a fixed
 `--session-id` and the pin's **conversation handed back** in its system
@@ -288,7 +290,8 @@ again only once the conversation grew 20k more, so a handback stays
 identical for the prompt cache. Leaving the pane closes the session: its
 turns are read from Claude Code's transcript (`~/.claude/projects/…/<id>.jsonl`,
 `adapters::claude_cli::ClaudeTranscripts`) and appended to the conversation —
-always kept whole. Turning a brainstorm into a note has Claude (`claude -p`,
+always kept whole — and a **compact** of the discussion (`claude -p`, at most
+150 words: what is decided, what is open) becomes the pin's text. Turning a brainstorm into a note has Claude (`claude -p`,
 `ClaudeOneshot`) write its **conclusion** into the note; into an asking, the
 **request**; the conversation stays with the pin.
 

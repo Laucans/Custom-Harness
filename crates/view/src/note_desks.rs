@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::desk::Desk;
-use crate::domain::annotations::{Kind, Note};
+use crate::domain::annotations::{Kind, MAX_TEXT, Note};
 use crate::domain::note_session::{self, About, Conversation, Handback};
 use crate::ports::{NoteStore, Oneshot, TerminalMaker, Transcripts};
 
@@ -51,6 +51,13 @@ pub struct NoteDesks {
 
 fn key(board: &str, id: &str) -> String {
     format!("{board}/{id}")
+}
+
+/// The clock, as the traces write it.
+fn now() -> String {
+    jiff::Timestamp::now()
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
 }
 
 /// A fresh UUID (v4 shaped) from the process's random hasher keys.
@@ -166,20 +173,22 @@ impl NoteDesks {
         }
         let briefing = note_session::briefing(&about, &conversation.handback());
         let session = uuid();
-        let desk = Desk::new(self.setup.maker.make(
-            &self.setup.cwd,
-            vec![
-                "--model".to_string(),
-                self.setup.model.clone(),
-                // A conversation, not a change: Claude reads, it does not edit.
-                "--permission-mode".to_string(),
-                "plan".to_string(),
-                "--session-id".to_string(),
-                session.clone(),
-                "--append-system-prompt".to_string(),
-                briefing,
-            ],
-        ));
+        let mut args = vec![
+            "--model".to_string(),
+            self.setup.model.clone(),
+            // A conversation, not a change: Claude reads, it does not edit.
+            "--permission-mode".to_string(),
+            "plan".to_string(),
+            "--session-id".to_string(),
+            session.clone(),
+            "--append-system-prompt".to_string(),
+            briefing,
+        ];
+        // A first session opens on what the note says: its first prompt.
+        if conversation.turns.is_empty() && !note.text.trim().is_empty() {
+            args.push(note.text.trim().to_string());
+        }
+        let desk = Desk::new(self.setup.maker.make(&self.setup.cwd, args));
         let command = desk.command();
         {
             let mut open = lock(&self.open);
@@ -193,12 +202,14 @@ impl NoteDesks {
     }
 
     /// Closes a pin's session, if one is open: its program stops and its
-    /// turns join the pin's conversation. Answers the conversation's length.
+    /// turns join the pin's conversation. With `compact`, when the session
+    /// said something, a compact of the discussion becomes the pin's text —
+    /// what the human reads on the pin. Answers the conversation's length.
     ///
     /// # Errors
     ///
-    /// The store could not be read or written.
-    pub async fn close(&self, board: &str, id: &str) -> Result<usize, String> {
+    /// The store could not be read or written, or the compact failed.
+    pub async fn close(&self, board: &str, id: &str, compact: bool) -> Result<usize, String> {
         let Some(open) = lock(&self.open).remove(&key(board, id)) else {
             return Ok(self.conversation(board, id)?.turns.len());
         };
@@ -211,11 +222,37 @@ impl NoteDesks {
             .flatten()
             .unwrap_or_default();
         let mut conversation = self.conversation(board, id)?;
-        conversation
-            .turns
-            .extend(note_session::turns_of(&transcript));
+        let said = note_session::turns_of(&transcript);
+        let grew = !said.is_empty();
+        conversation.turns.extend(said);
         self.save(board, id, &conversation)?;
+        if compact && grew {
+            let mut note = self.note(board, id)?;
+            let about = Self::about(board, &note);
+            let text = self
+                .ask(note_session::compact_prompt(&about, &conversation.digest()))
+                .await?;
+            note.text = text.chars().take(MAX_TEXT).collect();
+            note.at = now();
+            self.setup.store.put(board, &note)?;
+        }
         Ok(conversation.turns.len())
+    }
+
+    /// What a one-shot question is told of a pin.
+    fn about(board: &str, note: &Note) -> About {
+        About {
+            board: board.to_string(),
+            target: described(&note.target),
+            context: String::new(),
+            note: note.text.clone(),
+            kind: if note.kind == Kind::Asking {
+                "asking"
+            } else {
+                "brainstorm"
+            }
+            .to_string(),
+        }
     }
 
     /// Turns a brainstorm into a plain note — the AI draws the conclusion,
@@ -226,41 +263,22 @@ impl NoteDesks {
     ///
     /// No such pin, nothing said yet, or Claude failed.
     pub async fn turn_into(&self, board: &str, id: &str, kind: Kind) -> Result<Note, String> {
-        self.close(board, id).await?;
+        self.close(board, id, false).await?;
         let mut note = self.note(board, id)?;
         let conversation = self.conversation(board, id)?;
         if conversation.turns.is_empty() {
             return Err("nothing was said yet: open the session first".to_string());
         }
-        let about = About {
-            board: board.to_string(),
-            target: described(&note.target),
-            context: String::new(),
-            note: note.text.clone(),
-            kind: "brainstorm".to_string(),
-        };
-        let said = match conversation.handback() {
-            Handback::Whole(whole) => whole,
-            Handback::Compacted { summary, recent } => {
-                format!("(summary of the start)\n{summary}\n\n{recent}")
-            }
-            Handback::Summarize { .. } | Handback::Nothing => {
-                note_session::render(&conversation.turns)
-            }
-        };
+        let about = Self::about(board, &note);
+        let said = conversation.digest();
         let prompt = match kind {
             Kind::Asking => note_session::request_prompt(&about, &said),
             Kind::Note | Kind::Brainstorm => note_session::conclusion_prompt(&about, &said),
         };
         let answer = self.ask(prompt).await?;
-        note.text = answer
-            .chars()
-            .take(crate::domain::annotations::MAX_TEXT)
-            .collect();
+        note.text = answer.chars().take(MAX_TEXT).collect();
         note.kind = kind;
-        note.at = jiff::Timestamp::now()
-            .strftime("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        note.at = now();
         self.setup.store.put(board, &note)?;
         note.turns = conversation.turns.len();
         Ok(note)
@@ -442,23 +460,50 @@ mod tests {
                 .windows(2)
                 .any(|w| w[0] == "--session-id" && w[1].len() == 36)
         );
-        let briefing = first.last().expect("the briefing").clone();
+        let briefing_of = |args: &[String]| {
+            args.windows(2)
+                .find(|w| w[0] == "--append-system-prompt")
+                .map(|w| w[1].clone())
+                .expect("a briefing")
+        };
+        let briefing = briefing_of(&first);
         assert!(
             briefing.contains("field character.name") && briefing.contains("type: varchar(40)")
         );
         assert!(!briefing.contains("<conversation>"));
+        assert_eq!(
+            first.last().map(String::as_str),
+            Some("unique?"),
+            "the note is the first prompt"
+        );
 
-        assert_eq!(desks.close("data-model", "n1").await.expect("closed"), 2);
+        // Leaving the session: its turns are kept, and a compact becomes the note.
+        assert_eq!(
+            desks.close("data-model", "n1", true).await.expect("closed"),
+            2
+        );
         assert!(desks.desk("data-model", "n1").is_none());
+        assert!(lock(&oneshot.asked)[0].contains("where the discussion stands"));
+        let compacted = store.notes("data-model").expect("read")[0].note.clone();
+        assert!(
+            compacted
+                .text
+                .starts_with("answer to: This is a discussion")
+        );
+        assert_eq!(compacted.kind, Kind::Brainstorm, "a compact keeps the kind");
+
         desks
             .open("data-model", "n1", String::new())
             .await
             .expect("opened again");
-        let again = lock(&maker.args)[1].last().expect("the briefing").clone();
-        assert!(again.contains("Human: Is name unique?\n\nClaude: Per campaign, yes."));
+        let again = lock(&maker.args)[1].clone();
         assert!(
-            lock(&oneshot.asked).is_empty(),
-            "a light conversation needs no summary"
+            briefing_of(&again).contains("Human: Is name unique?\n\nClaude: Per campaign, yes.")
+        );
+        assert_ne!(
+            again.last(),
+            Some(&compacted.text),
+            "a second session has no first prompt"
         );
 
         let asking = desks
@@ -471,7 +516,11 @@ mod tests {
             asking.turns, 4,
             "the second session's turns joined the first's"
         );
-        assert!(lock(&oneshot.asked)[0].contains("next roadmap"));
+        assert_eq!(
+            lock(&oneshot.asked).len(),
+            2,
+            "turning it compacts nothing more"
+        );
     }
 
     #[test]
