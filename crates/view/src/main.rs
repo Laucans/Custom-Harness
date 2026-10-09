@@ -80,7 +80,11 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(WatchProcess::new(workspace.clone(), &cli.watch_command)) as Arc<dyn Plant>
     });
 
-    let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
+    // One per process: what tells a page the server it talks to was rebuilt.
+    let build = jiff::Timestamp::now().to_string();
+    let mut first = first_picture(&project, cli.demo);
+    first.build.clone_from(&build);
+    let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first));
     let (board_tx, board_rx) = watch::channel(None);
     let state = AppState {
         snapshot: snapshot_rx,
@@ -207,6 +211,8 @@ async fn poll_traces(
     demo: bool,
 ) {
     let lines = blueprint::lines();
+    // The first picture carries this process's build; every later one too.
+    let build = tx.borrow().build.clone();
     let mut last_body = String::new();
     loop {
         let mut observed = observe(&*traces, &lines);
@@ -223,6 +229,7 @@ async fn poll_traces(
             now: now.as_second(),
             demo,
         });
+        snap.build.clone_from(&build);
         // Compared before it is stamped: a picture that only differs by its
         // clock is the same picture, and pushing it would wake every page for
         // nothing.

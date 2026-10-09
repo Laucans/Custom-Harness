@@ -301,6 +301,10 @@ pub struct Versions {
 pub struct Snapshot {
     /// When it was assembled, ISO-8601 UTC.
     pub at: String,
+    /// Which server process drew it: a page that sees it change after a
+    /// reconnection reloads, so a rebuilt view is never shown with a stale
+    /// script.
+    pub build: String,
     /// The project.
     pub project: Project,
     /// Seen from outside.

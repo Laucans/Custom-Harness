@@ -96,15 +96,23 @@
   async function load() {
     try {
       const r = await fetch('/api/snapshot');
-      S.snap = await r.json();
+      if (reloadIfRebuilt(S.snap = await r.json())) return;
       onSnapshot();
     } catch (e) {
       $('watch-text').textContent = 'cannot reach the server';
     }
   }
+  // The server was rebuilt and restarted (watchexec): reload, so the page
+  // runs the scripts and styles that go with it. The URL hash keeps the place.
+  function reloadIfRebuilt(snap) {
+    if (!snap.build) return false;
+    if (S.build && snap.build !== S.build) { location.reload(); return true; }
+    S.build = snap.build;
+    return false;
+  }
   function subscribe() {
     const es = new EventSource('/api/events');
-    es.addEventListener('snapshot', (e) => { S.snap = JSON.parse(e.data); onSnapshot(); });
+    es.addEventListener('snapshot', (e) => { S.snap = JSON.parse(e.data); if (!reloadIfRebuilt(S.snap)) onSnapshot(); });
     es.onerror = () => { $('watch-dot').className = 'dot warn'; $('watch-text').textContent = 'reconnecting…'; };
   }
   function onSnapshot() {

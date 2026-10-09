@@ -610,6 +610,7 @@ pub fn snapshot(inputs: &Inputs<'_>) -> Snapshot {
     });
     Snapshot {
         at: String::new(),
+        build: String::new(),
         project: inputs.project.clone(),
         factory: Factory {
             chimneys: chimneys(inputs, &employees),
