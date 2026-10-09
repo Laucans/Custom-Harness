@@ -48,7 +48,9 @@ use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
 use crate::adapters::limits_cli::CliLimits;
 use crate::adapters::product::{DirProduct, GhProduct};
+use crate::adapters::prompt_files::PromptFiles;
 use crate::adapters::pty::Pty;
+use crate::adapters::trial_proc::TrialProcess;
 use crate::adapters::watch_proc::WatchProcess;
 use crate::cli::Cli;
 use crate::desk::Desk;
@@ -63,12 +65,28 @@ use crate::domain::plant;
 use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
 use crate::janitor::Janitor;
-use crate::ports::{Board, BoardReading, Limits, Plant, Product, TerminalFactory, Traces, Yard};
+use crate::ports::{
+    Board, BoardReading, Limits, Plant, Product, TerminalFactory, Traces, Trials, Yard,
+};
 use crate::server::{AppState, router};
 use harness_adapters::store::events::SqliteEvents;
-use harness_adapters::store::prompt_book::PromptFile;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
+
+/// The watch switch — none under `--demo`: a demo replays a finished run,
+/// there is no plant to switch.
+fn plant_for(cli: &Cli, workspace: &Workspace) -> Option<Arc<dyn Plant>> {
+    (!cli.demo).then(|| {
+        Arc::new(WatchProcess::new(workspace.clone(), &cli.watch_command)) as Arc<dyn Plant>
+    })
+}
+
+/// The prompts' dry-runs — none under `--demo`, where no run is real.
+fn trials(cli: &Cli, workspace: &Workspace) -> Option<Arc<dyn Trials>> {
+    (!cli.demo).then(|| {
+        Arc::new(TrialProcess::new(workspace.clone(), &cli.trial_command)) as Arc<dyn Trials>
+    })
+}
 
 /// `current_thread`, like the harness: the board port is `?Send`, and one
 /// human watching one plant needs no second thread.
@@ -84,10 +102,7 @@ async fn main() -> anyhow::Result<()> {
     let program = program_for(&cli);
     let desk = desk_for(&cli, &root, &project, &program);
     let doctor = doctor_for(&cli, &root, &project, &program);
-    // A demo replays a finished run: there is no plant to switch.
-    let plant: Option<Arc<dyn Plant>> = (!cli.demo).then(|| {
-        Arc::new(WatchProcess::new(workspace.clone(), &cli.watch_command)) as Arc<dyn Plant>
-    });
+    let plant = plant_for(&cli, &workspace);
     let events = event_store(&workspace);
     let janitor = (!cli.no_janitor)
         .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>));
@@ -124,8 +139,11 @@ async fn main() -> anyhow::Result<()> {
         data,
         notebook: Arc::new(FsNotebook::new(workspace.state_root())),
         notes_lock: Arc::default(),
-        prompts: Arc::new(PromptFile::new(workspace.state_root())),
+        prompts: Arc::new(PromptFiles::new(workspace.state_root())),
         prompts_lock: Arc::default(),
+        trials: trials(&cli, &workspace),
+        restart: Arc::default(),
+        restart_poll: Duration::from_secs(3),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))

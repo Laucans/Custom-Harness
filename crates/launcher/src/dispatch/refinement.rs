@@ -79,7 +79,7 @@ pub async fn run(
     )
     .await;
 
-    let prompts = shared::prompts(workspace, &log)?;
+    let prompts = shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?;
     let refinement_dir = workspace.refinement_dir();
     let artifacts_dir = refinement_dir.join(issue.to_string());
 

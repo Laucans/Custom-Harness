@@ -77,7 +77,7 @@ pub async fn run(
             effort: "high".to_string(),
         },
         root: workspace.root().to_path_buf(),
-        prompts: shared::prompts(workspace, &log)?,
+        prompts: shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?,
     };
 
     let workflow = run::build(

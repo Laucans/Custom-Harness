@@ -331,9 +331,14 @@
       const unread = ofLevel(level).filter(isUnread).length;
       return `<button class="sign ${level} ${unread ? 'lit' : ''}" data-notes="${level}" title="${label}${unread ? ` — ${unread} unread` : ''}" aria-label="${label}, ${unread} unread">${SIGN[level]}${unread ? `<span class="badge">${unread > 99 ? '99+' : unread}</span>` : ''}</button>`;
     }).join('');
-    if (html !== S.dockHtml) { $('dock').innerHTML = html; S.dockHtml = html; }
+    // Above the signs: the wrench, blue while a change waits for a restart.
+    const waiting = S.waiting || 0;
+    const wrench = `<button class="sign changes ${waiting ? 'lit' : ''}" data-changes title="${waiting ? `${waiting} change(s) wait for a restart` : 'No change waits for a restart'}" aria-label="changes waiting, ${waiting}">${wrenchIcon()}${waiting ? `<span class="badge">${waiting}</span>` : ''}</button>`;
+    const all = wrench + html;
+    if (all !== S.dockHtml) { $('dock').innerHTML = all; S.dockHtml = all; }
   }
   $('dock').addEventListener('click', (e) => {
+    if (e.target.closest('[data-changes]')) { openPane({ kind: 'changes' }); return; }
     const sign = e.target.closest('[data-notes]');
     if (sign) openPane({ kind: 'notifications', level: sign.dataset.notes });
   });
@@ -1460,13 +1465,22 @@
   };
 
   // ---- a robot's prompts -----------------------------------------------------
-  // What a paid station sends, shown on its pane and edited there. The edit is
-  // kept in the prompt book (`.llocal/prompts.json`) with its last five
-  // versions, and reaches the stage from the next run on.
-  const PR = { byStation: {}, loading: {} };
+  // What a paid station sends, shown on its pane and edited there. A save is a
+  // draft: nothing runs it until the factory starts again — the harness then
+  // applies every draft itself. The wrench in the dock says something waits;
+  // a dry-run replays a past run with any version, in a session that cannot act.
+  const PR = { byStation: {}, loading: {}, pending: { changes: [], restart: null }, trials: {}, reverted: {}, picks: {} };
   const isRobot = (st) => st.kind === 'builder' || st.kind === 'inspector';
   const PLACEHOLDER = /\{([a-z_][a-z0-9_]*)\}/g;
   const placeholdersOf = (text) => new Set([...String(text).matchAll(PLACEHOLDER)].map((m) => m[1]));
+  const savedWhen = (secs) => (secs ? new Date(secs * 1000).toLocaleString() : '—');
+  const firstLine = (text) => { const l = String(text).split('\n').find((x) => x.trim()) || ''; return l.length > 70 ? l.slice(0, 70) + '…' : l; };
+  // A declaration, not a constant: the dock draws it before this part of the
+  // script has run.
+  function wrenchIcon() {
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="shape" d="M21.4 6.2a5.6 5.6 0 0 1-7.3 6.7L6.6 20.4a2.1 2.1 0 0 1-3-3l7.5-7.5a5.6 5.6 0 0 1 6.7-7.3l-3.3 3.3.5 2.6 2.6.5z"/></svg>';
+  }
+
   function loadPrompts(lineId, stId, then) {
     const at = lineId + '/' + stId;
     if (PR.loading[at]) return;
@@ -1476,6 +1490,19 @@
       .catch(() => { PR.byStation[at] = { error: 'cannot reach the server' }; })
       .finally(() => { PR.loading[at] = false; if (then) then(); });
   }
+  // What waits for the next start, and the restart under way: the wrench.
+  async function loadPending() {
+    try {
+      const r = await fetch('/api/pending');
+      if (r.ok) PR.pending = await r.json();
+    } catch (e) { /* the next poll will say */ }
+    S.waiting = PR.pending.changes.length;
+    dock();
+    if (S.pane && S.pane.kind === 'changes') renderPane(S.pane, true);
+  }
+  setInterval(loadPending, 5000);
+  loadPending();
+
   // The details tab: the prompt, read-only, and the way to the editor.
   function promptPeek(line, st) {
     const list = PR.byStation[line.id + '/' + st.id];
@@ -1484,10 +1511,8 @@
       return '<h3>Prompt</h3><div class="muted">loading…</div>';
     }
     if (list.error) return `<h3>Prompt</h3><div class="callout">${esc(list.error)}</div>`;
-    return '<h3>Prompt <button class="mini" data-tab="prompt">edit</button></h3>' + list.map((v) => `<div class="prompt-peek-title">${esc(v.title)} ${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}</div><pre class="md prompt-peek">${esc(v.text)}</pre>`).join('');
+    return '<h3>Prompt <button class="mini" data-tab="prompt">edit · dry-run</button></h3>' + list.map((v) => `<div class="prompt-peek-title">${esc(v.title)} ${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}${v.draft ? ' ' + tag('waiting for a restart', 'wrench') : ''}</div><pre class="md prompt-peek">${esc(v.running)}</pre>`).join('');
   }
-  const savedWhen = (secs) => new Date(secs * 1000).toLocaleString();
-  const firstLine = (text) => { const l = String(text).split('\n').find((x) => x.trim()) || ''; return l.length > 70 ? l.slice(0, 70) + '…' : l; };
   function promptDrift(v, text) {
     const wanted = placeholdersOf(v.default);
     const named = placeholdersOf(text);
@@ -1497,35 +1522,96 @@
     return (missing.length ? `<div class="callout soon">dropped ${code(missing)} — the stage will no longer pass ${missing.length > 1 ? 'these values' : 'this value'} to the session</div>` : '')
       + (unknown.length ? `<div class="callout soon">${code(unknown)} — nothing fills ${unknown.length > 1 ? 'these' : 'this'}: the session reads ${unknown.length > 1 ? 'them' : 'it'} as written</div>` : '');
   }
-  function promptCard(v) {
-    const restore = (i, current) => `<button class="mini" data-prompt-restore="${i}"${current ? ' disabled' : ''}>${current ? 'current' : 'restore'}</button>`;
+  // The past runs a dry-run can replay: the ones that went through this
+  // station, else every finished run of the line.
+  function replayable(line, st) {
+    const done = (line.recent_work || []).filter((r) => !r.active);
+    const here = st.stage ? done.filter((r) => r.stages.includes(st.stage)) : [];
+    return here.length ? here : done;
+  }
+  // Every version a dry-run can try, by value: `editor`, `running`, `draft`,
+  // `default`, `history:i`, `reverted:i`.
+  function versionText(v, card, which) {
+    if (which === 'editor') return card.querySelector('.prompt-text').value;
+    if (which === 'running') return v.running;
+    if (which === 'draft') return v.draft ? v.draft.text : v.running;
+    if (which === 'default') return v.default;
+    const [list, i] = which.split(':');
+    const kept = (list === 'history' ? v.history : v.reverted)[Number(i)];
+    return kept ? kept.text : null;
+  }
+  const versionName = (which) => (which.includes(':') ? `${which.split(':')[0] === 'history' ? 'edit' : 'reverted'} ${Number(which.split(':')[1]) + 1}` : which);
+  function trialList(key) {
+    const list = PR.trials[key];
+    if (!list) return '<div class="muted">loading…</div>';
+    if (!list.length) return '<div class="muted">No dry-run yet.</div>';
+    return '<ul class="prompt-history trials">' + list.map((t) => {
+      const head = `${tag(t.state, t.state === 'done' ? 'ok' : t.state === 'failed' ? 'bad' : 'wrench')} <b>${esc(versionName(t.version || '?'))}</b> on ${esc(t.run || '?')} <span class="muted">· ${esc(savedWhen(t.started_at))}</span>`;
+      const numbers = t.state === 'done' ? ` <span class="muted">· ${t.duration_ms == null ? '—' : esc(fmtDur(t.duration_ms))} · ${t.cost_usd == null ? '—' : usd(t.cost_usd)} · ${t.turns ?? '—'} turns</span>` : '';
+      const body = t.state === 'done' ? `<pre class="md">${esc(t.output || '(empty)')}</pre>` : t.state === 'failed' ? `<div class="callout">${esc(t.reason || 'failed')}</div>` : '<div class="muted">the session is answering…</div>';
+      return `<li><details${t.state !== 'running' && t === list[0] ? ' open' : ''}><summary>${head}${numbers}</summary>${body}</details></li>`;
+    }).join('') + '</ul>';
+  }
+  async function loadTrials(key) {
+    try {
+      const r = await fetch('/api/prompts/trials?key=' + encodeURIComponent(key));
+      if (r.ok) PR.trials[key] = await r.json();
+    } catch (e) { /* the next poll will say */ }
+    const el = document.querySelector(`[data-prompt-key="${CSS.escape(key)}"] .trial-list`);
+    if (el) el.innerHTML = trialList(key);
+    // While one answers, look again.
+    if ((PR.trials[key] || []).some((t) => t.state === 'running')) setTimeout(() => { if (document.querySelector(`[data-prompt-key="${CSS.escape(key)}"]`)) loadTrials(key); }, 4000);
+  }
+  function promptCard(v, line, st) {
+    const next = v.draft ? v.draft.text : v.running;
+    const reverted = !!PR.reverted[v.key];
+    const runs = replayable(line, st);
+    const pick = PR.picks[v.key] || {};
+    const option = (value, label) => `<option value="${esc(value)}"${pick.version === value ? ' selected' : ''}>${esc(label)}</option>`;
+    const versions = option('editor', "the editor's text") + option('running', 'what runs now') + (v.draft ? option('draft', 'the draft waiting') : '') + option('default', 'the default')
+      + v.history.map((h, i) => option('history:' + i, `edit ${i + 1} · ${savedWhen(h.saved_at)}`)).join('')
+      + v.reverted.map((h, i) => option('reverted:' + i, `reverted ${i + 1} · ${savedWhen(h.saved_at)}`)).join('');
+    const runOptions = runs.map((r) => `<option value="${esc(r.run_id)}"${pick.run === r.run_id ? ' selected' : ''}>${esc(r.name)} · ${esc(r.run_id)}</option>`).join('');
+    const item = (list, i, h) => `<li><details><summary>${esc(savedWhen(h.saved_at))}${h.running ? ' ' + tag('runs now', 'ok') : ''}${h.is_default ? ' ' + tag('default') : ''} <span class="muted">${esc(firstLine(h.text))}</span></summary><pre class="md">${esc(h.text)}</pre></details>`
+      + `<button class="mini" data-prompt-try="${list}:${i}" title="dry-run this version on the run picked above"${runs.length ? '' : ' disabled'}>dry-run</button>`
+      + `<button class="mini" data-prompt-restore="${list}:${i}"${h.running ? ' disabled' : ''}>revert to it</button></li>`;
+    const kept = reverted
+      ? (v.reverted.length ? v.reverted.map((h, i) => item('reverted', i, h)).join('') : '<li class="muted">Nothing reverted yet.</li>')
+      : `<li><details><summary>default <span class="muted">— the workflow's own text</span>${!v.edited ? ' ' + tag('runs now', 'ok') : ''}</summary><pre class="md">${esc(v.default)}</pre></details><button class="mini" data-prompt-try="default"${runs.length ? '' : ' disabled'}>dry-run</button><button class="mini" data-prompt-restore="default"${!v.edited ? ' disabled' : ''}>revert to it</button></li>`
+        + v.history.map((h, i) => item('history', i, h)).join('');
     return `<section class="prompt-card" data-prompt-key="${esc(v.key)}">`
-      + `<h3>${esc(v.title)} ${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}</h3>`
-      + (v.stations.length > 1 ? `<div class="muted">shared by ${v.stations.map(esc).join(', ')} — an edit changes every one of them</div>` : '')
+      + `<h3>${esc(v.title)} ${tag(v.edited ? 'edited' : 'default', v.edited ? 'warn' : '')}${v.draft ? ' ' + tag('waiting for a restart', 'wrench') : ''}</h3>`
+      + (v.stations.length > 1 ? `<div class="muted">shared by ${v.stations.map(esc).join(', ')} — a change reaches every one of them</div>` : '')
       + (v.placeholders.length ? `<div class="muted">filled in by the stage: ${v.placeholders.map((x) => `<code>{${esc(x)}}</code>`).join(' ')}</div>` : '')
-      + `<textarea class="prompt-text" spellcheck="false">${esc(v.text)}</textarea>`
-      + `<div class="prompt-warn">${promptDrift(v, v.text)}</div>`
-      + '<div class="prompt-bar"><button class="mini" data-prompt-save>save</button><button class="mini" data-prompt-discard>discard changes</button><span class="muted prompt-status"></span></div>'
-      + `<h4>History — the default and the last ${v.history.length} edit${v.history.length === 1 ? '' : 's'} (5 kept)</h4><ul class="prompt-history">`
-      + `<li><details><summary>default <span class="muted">— the workflow's own text</span></summary><pre class="md">${esc(v.default)}</pre></details>${restore('default', !v.edited)}</li>`
-      + v.history.map((h, i) => `<li><details><summary>${esc(savedWhen(h.saved_at))} <span class="muted">${esc(firstLine(h.text))}</span></summary><pre class="md">${esc(h.text)}</pre></details>${restore(i, h.current)}</li>`).join('')
-      + '</ul></section>';
+      + (v.draft ? `<div class="callout wrench">${v.draft.to_default ? 'Back to the default' : v.draft.revert ? 'A revert' : 'An edit'}, saved ${esc(savedWhen(v.draft.at))}, waits for the factory to start again — until then it runs <details><summary>the current text</summary><pre class="md">${esc(v.running)}</pre></details><button class="mini" data-prompt-withdraw>withdraw it</button></div>` : '')
+      + `<textarea class="prompt-text" spellcheck="false">${esc(next)}</textarea>`
+      + `<div class="prompt-warn">${promptDrift(v, next)}</div>`
+      + '<div class="prompt-bar"><button class="mini" data-prompt-save>save for the next start</button><button class="mini" data-prompt-discard>discard changes</button><span class="muted prompt-status"></span></div>'
+      + '<h4>Dry-run — replays a past run with a version, in a session that cannot act</h4>'
+      + (runs.length
+        ? `<div class="prompt-bar"><select class="trial-version">${versions}</select><select class="trial-run">${runOptions}</select><button class="mini" data-prompt-try="">dry-run</button></div>`
+        : '<div class="muted">No finished run of this line to replay yet.</div>')
+      + `<div class="trial-list">${trialList(v.key)}</div>`
+      + `<h4 class="kept-head">History <label class="switch" title="show the last 3 texts a revert replaced"><input type="checkbox" data-prompt-reverted${reverted ? ' checked' : ''}><span class="track"></span> recently reverted</label></h4>`
+      + `<ul class="prompt-history">${kept}</ul>`
+      + '</section>';
   }
   // The prompt tab: one editor per prompt the station sends. The body is kept
   // on a refresh, so a snapshot never wipes what is being typed.
   function promptPane(p, line, st, head) {
-    const html = head + '<div class="callout">The harness wraps this text in its own blocks — EXECUTION CONTEXT, SCOPE, the repository configuration — which are not edited here. A save applies from the next run of this stage.</div><div id="prompt-editor"><div class="muted">loading…</div></div>';
+    const html = head + '<div class="callout">The harness wraps this text in its own blocks — EXECUTION CONTEXT, SCOPE, the repository configuration — which are not edited here. A save is a draft: it runs once the factory starts again (the wrench, bottom right).</div><div id="prompt-editor"><div class="muted">loading…</div></div>';
     const after = (refresh) => {
       if (refresh) return;
-      const fill = () => {
-        const el = $('prompt-editor');
-        const list = PR.byStation[line.id + '/' + st.id];
-        if (!el || !list) return;
-        el.innerHTML = list.error ? `<div class="callout">${esc(list.error)}</div>` : list.map(promptCard).join('');
-      };
-      loadPrompts(line.id, st.id, fill);
+      loadPrompts(line.id, st.id, () => fillEditor(line, st));
     };
     return [st.label, html, after, true];
+  }
+  function fillEditor(line, st) {
+    const el = $('prompt-editor');
+    const list = PR.byStation[line.id + '/' + st.id];
+    if (!el || !list) return;
+    el.innerHTML = list.error ? `<div class="callout">${esc(list.error)}</div>` : list.map((v) => promptCard(v, line, st)).join('');
+    if (!list.error) list.forEach((v) => loadTrials(v.key));
   }
   function shownPrompt(key) {
     for (const list of Object.values(PR.byStation)) {
@@ -1533,7 +1619,21 @@
     }
     return null;
   }
-  async function sendPrompt(path, body, card) {
+  const paneStation = () => {
+    if (!S.pane || S.pane.kind !== 'station') return null;
+    const line = S.snap.lines.find((l) => l.id === S.pane.line);
+    const st = line && line.stations.find((s) => s.id === S.pane.id);
+    return st ? [line, st] : null;
+  };
+  function redrawCard(v, status) {
+    const here = paneStation();
+    const card = document.querySelector(`[data-prompt-key="${CSS.escape(v.key)}"]`);
+    if (!here || !card) return;
+    card.outerHTML = promptCard(v, here[0], here[1]);
+    const fresh = document.querySelector(`[data-prompt-key="${CSS.escape(v.key)}"] .prompt-status`);
+    if (fresh && status) fresh.textContent = status;
+  }
+  async function sendPrompt(path, body, card, said) {
     const status = card.querySelector('.prompt-status');
     status.textContent = 'saving…';
     try {
@@ -1544,34 +1644,101 @@
       for (const list of Object.values(PR.byStation)) {
         if (Array.isArray(list)) { const i = list.findIndex((x) => x.key === v.key); if (i >= 0) list[i] = v; }
       }
-      card.outerHTML = promptCard(v);
-      const fresh = document.querySelector(`[data-prompt-key="${CSS.escape(v.key)}"] .prompt-status`);
-      if (fresh) fresh.textContent = path === 'edit' ? 'saved — the next run sends it' : 'restored — the next run sends it';
+      redrawCard(v, said);
+      loadPending();
     } catch (err) { status.textContent = 'cannot reach the server'; }
+  }
+  async function tryPrompt(card, which) {
+    const key = card.dataset.promptKey;
+    const v = shownPrompt(key);
+    const here = paneStation();
+    const status = card.querySelector('.prompt-status');
+    const runEl = card.querySelector('.trial-run');
+    if (!v || !here || !runEl) return;
+    const version = which || card.querySelector('.trial-version').value;
+    const text = versionText(v, card, version);
+    if (!text) { status.textContent = 'nothing kept there'; return; }
+    PR.picks[key] = { version, run: runEl.value };
+    status.textContent = 'starting the dry-run…';
+    try {
+      const r = await fetch('/api/prompts/trial', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key, version, text, workflow: here[0].id, run: runEl.value }) });
+      status.textContent = r.ok ? 'dry-run started — its answer lands below' : await r.text();
+    } catch (err) { status.textContent = 'cannot reach the server'; }
+    loadTrials(key);
   }
   $('pane-body').addEventListener('click', (e) => {
     const card = e.target.closest('[data-prompt-key]');
     if (!card) return;
     const key = card.dataset.promptKey;
-    if (e.target.closest('[data-prompt-save]')) { sendPrompt('edit', { key, text: card.querySelector('.prompt-text').value }, card); return; }
+    if (e.target.closest('[data-prompt-save]')) { sendPrompt('edit', { key, text: card.querySelector('.prompt-text').value }, card, 'saved — it runs once the factory starts again'); return; }
+    if (e.target.closest('[data-prompt-withdraw]')) { sendPrompt('withdraw', { key }, card, 'withdrawn — the factory keeps what runs'); return; }
     if (e.target.closest('[data-prompt-discard]')) {
       const v = shownPrompt(key);
-      if (v) { card.querySelector('.prompt-text').value = v.text; card.querySelector('.prompt-warn').innerHTML = promptDrift(v, v.text); card.querySelector('.prompt-status').textContent = ''; }
+      if (v) { const next = v.draft ? v.draft.text : v.running; card.querySelector('.prompt-text').value = next; card.querySelector('.prompt-warn').innerHTML = promptDrift(v, next); card.querySelector('.prompt-status').textContent = ''; }
       return;
     }
+    const attempt = e.target.closest('[data-prompt-try]');
+    if (attempt) { tryPrompt(card, attempt.dataset.promptTry); return; }
     const back = e.target.closest('[data-prompt-restore]');
-    if (back) { const at = back.dataset.promptRestore; sendPrompt('restore', { key, version: at === 'default' ? null : Number(at) }, card); }
+    if (back) {
+      const at = back.dataset.promptRestore;
+      const [from, index] = at === 'default' ? ['default', 0] : at.split(':');
+      sendPrompt('restore', { key, from, index: Number(index) }, card, 'revert saved — it runs once the factory starts again');
+    }
+  });
+  $('pane-body').addEventListener('change', (e) => {
+    const card = e.target.closest('[data-prompt-key]');
+    if (!card) return;
+    if (e.target.matches('[data-prompt-reverted]')) {
+      PR.reverted[card.dataset.promptKey] = e.target.checked;
+      const v = shownPrompt(card.dataset.promptKey);
+      if (v) redrawCard(v);
+    } else if (e.target.matches('.trial-version, .trial-run')) {
+      PR.picks[card.dataset.promptKey] = { version: card.querySelector('.trial-version').value, run: card.querySelector('.trial-run').value };
+    }
   });
   $('pane-body').addEventListener('input', (e) => {
     if (!e.target.matches('.prompt-text')) return;
     const card = e.target.closest('[data-prompt-key]');
     const v = card && shownPrompt(card.dataset.promptKey);
     if (!v) return;
+    const next = v.draft ? v.draft.text : v.running;
     card.querySelector('.prompt-warn').innerHTML = promptDrift(v, e.target.value);
-    card.querySelector('.prompt-status').textContent = e.target.value === v.text ? '' : 'unsaved changes';
+    card.querySelector('.prompt-status').textContent = e.target.value === next ? '' : 'unsaved changes';
+  });
+  // The wrench's pane: every change waiting, each leading to its machine, and
+  // the restart that applies them.
+  function changesPane() {
+    const { changes, restart } = PR.pending;
+    const running = !!(P.status && P.status.running);
+    let h = '<div class="callout">A change made in the view runs only once the factory starts again: the harness applies the waiting changes itself when the watch starts.</div>';
+    h += changes.length
+      ? '<ul class="issues">' + changes.map((c) => {
+        const at = c.stations.map(([line, station]) => `<button class="link" data-pane='${esc(JSON.stringify({ kind: 'station', line, id: station, tab: 'prompt' }))}'>${esc(line)} · ${esc(station)}</button>`).join(', ');
+        return `<li><span class="n">${esc(c.kind)}</span><span class="t">${esc(c.title)} <span class="muted">on</span> ${at}</span><span class="muted">${esc(savedWhen(c.at))}</span></li>`;
+      }).join('') + '</ul>'
+      : '<div class="muted">Nothing waits: the factory runs every change made so far.</div>';
+    if (restart) h += `<div class="callout ${restart.state === 'failed' ? '' : 'wrench'}">${esc(restart.state)} · ${esc(restart.message)} <span class="muted">(${esc(savedWhen(restart.since))})</span></div>`;
+    const draining = restart && restart.state === 'draining';
+    h += `<div class="prompt-bar"><button class="mini" data-restart${draining || !changes.length ? ' disabled' : ''}>${running ? 'restart the factory' : 'start the factory'}</button><span class="muted">${running ? 'a soft stop — the running tasks finish — then a start as soon as the watch is gone' : 'the watch is off: a start applies the changes'} · ${P.lanes} lane${P.lanes > 1 ? 's' : ''}</span><span class="muted restart-status"></span></div>`;
+    return h;
+  }
+  $('pane-body').addEventListener('click', async (e) => {
+    const button = e.target.closest('[data-restart]');
+    if (!button) return;
+    button.disabled = true;
+    const status = document.querySelector('.restart-status');
+    try {
+      const r = await fetch('/api/restart?lanes=' + P.lanes, { method: 'POST' });
+      const said = r.ok ? (await r.json()).message : await r.text();
+      if (status) status.textContent = said;
+    } catch (err) { if (status) status.textContent = 'cannot reach the server'; }
+    loadPending();
   });
 
   const PANES = {
+    changes() { return ['Changes waiting for a restart', changesPane()]; },
+
     board() {
       const b = S.snap.board;
       if (!b) return ['Board', '<div class="callout">No GitHub board yet: the view runs with <code>--no-board</code>, or <code>gh</code> has not answered.</div>'];

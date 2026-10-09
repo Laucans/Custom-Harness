@@ -106,6 +106,15 @@ pub struct Cli {
     )]
     pub watch_command: String,
 
+    /// What the prompt tab starts to dry-run a prompt; the trial's own
+    /// arguments are added after it.
+    #[arg(
+        long,
+        env = "HARNESS_TRIAL_COMMAND",
+        default_value = "target/release/harness trial"
+    )]
+    pub trial_command: String,
+
     /// Show the most recent run as live even though it is over — to see the
     /// plant move when nothing runs.
     #[arg(long)]
@@ -150,6 +159,7 @@ mod tests {
             "DOCTOR_MODEL",
             "DOCTOR_EFFORT",
             "HARNESS_WATCH_COMMAND",
+            "HARNESS_TRIAL_COMMAND",
         ] {
             assert!(help.contains(variable), "{variable} missing from --help");
         }

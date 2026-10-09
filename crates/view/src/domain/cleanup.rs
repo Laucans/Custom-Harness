@@ -80,7 +80,7 @@ pub const INIT: &str = "init";
 /// Every folder the harness itself writes under the yard — the launcher's
 /// own list, mirrored: a store added there without its name here shows up
 /// as a stray, which is the reminder to add it.
-const KNOWN: [&str; 9] = [
+const KNOWN: [&str; 10] = [
     WORKSPACES,
     LOGS,
     "grill",
@@ -90,6 +90,7 @@ const KNOWN: [&str; 9] = [
     "planner-locks",
     "split-locks",
     "pr-fix-locks",
+    "trials",
 ];
 
 /// What a human allowed: how heavy the yard may be, and whether the janitor

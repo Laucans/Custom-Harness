@@ -198,6 +198,23 @@ pub fn find(key: &str) -> Option<Prompt> {
     catalog().iter().find(|prompt| prompt.key == key).copied()
 }
 
+/// The default of one prompt, by its key — what the harness needs to apply a
+/// draft.
+#[must_use]
+pub fn default_of(key: &str) -> Option<String> {
+    find(key).map(|prompt| prompt.default.to_string())
+}
+
+/// The prompts a line's stations send, in catalog order.
+#[must_use]
+pub fn of_line(line: &str) -> Vec<Prompt> {
+    catalog()
+        .iter()
+        .filter(|prompt| prompt.stations.iter().any(|(at, _)| *at == line))
+        .copied()
+        .collect()
+}
+
 /// The prompts one station sends, in catalog order.
 #[must_use]
 pub fn of_station(line: &str, station: &str) -> Vec<Prompt> {
@@ -225,6 +242,24 @@ mod tests {
     }
 
     #[test]
+    fn every_default_can_be_replayed_with_another_text() {
+        // A dry-run reads a past prompt's values back from between the prose
+        // of the text it was sent with: a default starting or ending with a
+        // placeholder, or carrying two in a row, would hide where one ends.
+        use harness_core::domain::prompt_book::{placeholders, replay};
+        for prompt in catalog() {
+            let names = placeholders(prompt.default);
+            let values: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "V")).collect();
+            let filled = harness_core::domain::prompts::splice(prompt.default, &values);
+            assert!(
+                replay(&filled, prompt.default, prompt.default).is_ok(),
+                "{} cannot be replayed",
+                prompt.key
+            );
+        }
+    }
+
+    #[test]
     fn a_station_lists_its_prompts_and_a_shared_one_is_on_both() {
         let code: Vec<&str> = of_station("agent-loop", "code")
             .iter()
@@ -233,5 +268,11 @@ mod tests {
         assert_eq!(code, [CODE, CODE_WRITE_SIDE, TEST_SCOPE]);
         assert_eq!(of_station("planner", "explore")[0].key, EXPLORE);
         assert!(find("nope").is_none());
+        let planner: Vec<&str> = of_line("planner").iter().map(|p| p.key).collect();
+        assert_eq!(planner, [EXPLORE, PLAN]);
+        assert_eq!(default_of(FIX).as_deref(), Some(pr_fix::FIX_PROMPT));
+        let planner: Vec<&str> = of_line("planner").iter().map(|p| p.key).collect();
+        assert_eq!(planner, [EXPLORE, PLAN]);
+        assert_eq!(default_of(FIX).as_deref(), Some(pr_fix::FIX_PROMPT));
     }
 }

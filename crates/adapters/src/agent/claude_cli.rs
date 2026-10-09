@@ -460,6 +460,36 @@ fn append(path: Option<&Path>, lines: &[String]) {
     let _ = file.write_all(b"\n");
 }
 
+/// Every prompt a `prompts.md` records, in the order they were sent.
+///
+/// The reading of what [`ClaudeCli`] writes there: a `## turn …` header, a
+/// blank line, the prompt inside a fence. Read up to the next header rather
+/// than to the next fence, since a prompt may carry fences of its own.
+#[must_use]
+pub fn sent_prompts(text: &str) -> Vec<String> {
+    const OPEN: &str = "\n\n```\n";
+    let mut starts: Vec<usize> = text
+        .match_indices("## turn ")
+        .map(|(at, _)| at)
+        .filter(|at| *at == 0 || text[..*at].ends_with('\n'))
+        .collect();
+    starts.push(text.len());
+    starts
+        .windows(2)
+        .filter_map(|pair| {
+            let block = &text[pair[0]..pair[1]];
+            let body = &block[block.find(OPEN)? + OPEN.len()..];
+            let body = body.trim_end();
+            Some(
+                body.strip_suffix("```")?
+                    .strip_suffix('\n')
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
 #[async_trait(?Send)]
 impl Session for ClaudeCli {
     async fn ask(&mut self, prompt: &str) -> Outcome<Reply> {
@@ -572,6 +602,27 @@ impl SessionFactory for ClaudeCliFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_prompts_it_records_read_back_fences_and_all() {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for (turn, prompt) in ["/code\nfirst", "second\n```rust\nfn f() {}\n```\nend"]
+            .iter()
+            .enumerate()
+        {
+            let _ = write!(
+                text,
+                "## turn {} — /code (opus/high)\n\n```\n{prompt}\n```\n\n",
+                turn + 1
+            );
+        }
+        assert_eq!(
+            sent_prompts(&text),
+            ["/code\nfirst", "second\n```rust\nfn f() {}\n```\nend"]
+        );
+        assert!(sent_prompts("").is_empty());
+    }
 
     fn cli() -> ClaudeCli {
         ClaudeCli::new(

@@ -55,6 +55,7 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
             "every lane finished; start it again from the status button".to_string(),
             at,
         ),
+        Event::ChangesApplied { prompts } => changes_applied(board, prompts, at),
         Event::TickFailed { reason } => board.add(Notification::once(
             "tick-failed",
             Level::Error,
@@ -198,6 +199,22 @@ fn snapshot_failed(board: &mut Board, branch: &str, sha: &str, reason: &str, at:
 }
 
 /// The watch's life is one line, telling its last state.
+/// The watch started on changes the human left waiting.
+fn changes_applied(board: &mut Board, prompts: &[String], at: &str) {
+    board.add(Notification::once(
+        format!("changes-applied:{at}"),
+        Level::Info,
+        "The factory's changes are applied",
+        format!(
+            "{} prompt(s) now run as edited: {}",
+            prompts.len(),
+            prompts.join(", ")
+        ),
+        at,
+        None,
+    ));
+}
+
 fn watch_said(board: &mut Board, title: &str, detail: String, at: &str) {
     board.add(Notification::once(
         "watch",

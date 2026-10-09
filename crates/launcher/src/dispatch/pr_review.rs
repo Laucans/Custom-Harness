@@ -89,7 +89,7 @@ pub async fn run(
         now: spending::now,
     };
     let config = Config {
-        prompts: shared::prompts(workspace, &log)?,
+        prompts: shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?,
         review_dir: workspace.review_dir(),
         level: "medium".to_string(),
         no_inline: false,

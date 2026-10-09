@@ -475,7 +475,7 @@ async fn typescript_index(
 /// Zero when the clock is before the epoch, which no reading can then be stale
 /// against — the safe direction: a reading judged fresh is believed, and a
 /// believed reading is what stops a run, never what starts one wrongly.
-fn now_seconds() -> u64 {
+pub fn now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
@@ -559,7 +559,11 @@ async fn turns(
         stack: configuration_digest(workspace, disk.as_ref(), log).await,
         signatures,
         root: workspace.root().to_path_buf(),
-        prompts: crate::dispatch::shared::prompts(workspace, log)?,
+        prompts: crate::dispatch::shared::prompts(
+            workspace,
+            log,
+            &crate::dispatch::shared::trace_dir(run_log),
+        )?,
     };
     announce(args, &ports, &config, run_id, log);
 

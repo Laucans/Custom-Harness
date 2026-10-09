@@ -18,7 +18,7 @@ run something** versus **what running it takes**:
 ```
 src/main.rs       entry point: parse, find the repo, dispatch, map the exit code
 src/cli.rs        what a human types: the arguments and their environment variables
-src/router.rs     what decides on its own: `harness watch`, the polling loop
+src/router.rs     what decides on its own: `harness watch`, the polling loop — which, starting, applies the prompt drafts (`shared::apply_drafts`)
 src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`; a lane that stops (exit 1) parks its task until the issue's body or labels change
 
 src/dispatch/     one module per thing that can be run, plus what they share
@@ -40,6 +40,8 @@ src/dispatch/     one module per thing that can be run, plus what they share
   init_repo.rs      `harness init-repo`: the only place that builds `GhCli::for_slug`
   shared.rs         the checkouts and adapters the dispatch modules share
   tooling.rs        the gates that belong to no workflow
+  trial.rs          `harness trial`: a prompt's dry-run — a past run's prompt replayed with
+                    another text (stdin), asked once in plan mode in the `prompt-trial` clone
 
 src/adapters/     the ports only the launcher can fill — written here, not wired
   sink.rs           where log lines go: console + file

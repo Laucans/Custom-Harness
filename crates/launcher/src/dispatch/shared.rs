@@ -12,6 +12,7 @@
 //! rather than leaving commits in a checkout the read-only four would then
 //! refuse to reuse.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -21,7 +22,7 @@ use harness_adapters::shell::disk::RealDisk;
 use harness_adapters::shell::git::GitRepos;
 use harness_adapters::shell::github::GhCli;
 use harness_adapters::store::lock::DirLocks;
-use harness_adapters::store::prompt_book::PromptFile;
+use harness_adapters::store::prompt_book::{DraftFile, PromptFile, record_used};
 use harness_core::domain::Outcome;
 use harness_core::domain::prompt_book::PromptBook;
 use harness_core::domain::workspace::{Strategy, Wanted, Workspace};
@@ -31,7 +32,7 @@ use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::git::Repos;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
-use harness_core::ports::store::prompts::PromptStore;
+use harness_core::ports::store::prompts::{DraftStore, PromptStore};
 use harness_core::ports::store::spending::Spending;
 use harness_core::traces::Logbook;
 
@@ -264,33 +265,84 @@ pub async fn adapters(
     }
 }
 
-/// The human's prompt edits, read once for this run — what every stage's
+/// The prompt book, read once for this run — what every stage's
 /// `prompts.text(KEY, DEFAULT)` answers from.
 ///
-/// Read per run, not per watch: an edit made in the view reaches the next
-/// run without restarting anything. The edited prompts are named in the
-/// journal, so a run that behaves differently says why.
+/// The book changes only when the watch starts and applies the drafts (see
+/// [`apply_drafts`]), so every run between two starts sends the same texts.
+/// The edited prompts are named in the journal, so a run that behaves
+/// differently says why; and the text of every prompt this run's line could
+/// send is recorded in `run_dir`, which is what a dry-run replays.
 ///
 /// # Errors
 ///
 /// [`Halt::Unreadable`](harness_core::domain::Halt::Unreadable) when the book
 /// exists and cannot be read: sending the defaults while a human believes
 /// their edit runs is the failure this refuses.
-pub fn prompts(workspace: &Workspace, log: &Logbook) -> Outcome<Rc<PromptBook>> {
+pub fn prompts(workspace: &Workspace, log: &Logbook, run_dir: &Path) -> Outcome<Rc<PromptBook>> {
     let book = PromptFile::new(workspace.state_root()).load()?;
-    let edited: Vec<&str> = harness_workflows::prompts::catalog()
-        .iter()
-        .filter(|prompt| {
-            book.entry(prompt.key)
-                .is_some_and(|entry| entry.current.is_some())
-        })
-        .map(|prompt| prompt.key)
-        .collect();
+    let edited: Vec<&str> = book.edited().collect();
     if !edited.is_empty() {
         log.say(&format!(
             "prompts edited from the view: {}",
             edited.join(", ")
         ));
     }
+    let line = run_dir
+        .parent()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let texts: BTreeMap<String, String> = harness_workflows::prompts::of_line(&line)
+        .iter()
+        .map(|prompt| {
+            (
+                prompt.key.to_string(),
+                book.text(prompt.key, prompt.default),
+            )
+        })
+        .collect();
+    if !texts.is_empty() {
+        // A record lost is a dry-run that falls back on the defaults, never
+        // a run that stops.
+        if let Err(halt) = record_used(run_dir, &texts) {
+            log.debug(halt.reason());
+        }
+    }
     Ok(Rc::new(book))
+}
+
+/// Applies the drafts the human left in the view: called once, when the
+/// watch starts, so a change reaches the runs only at a start — and only the
+/// harness ever writes the book a run reads.
+///
+/// Answers the keys it changed.
+///
+/// # Errors
+///
+/// [`Halt::Unreadable`](harness_core::domain::Halt::Unreadable) when the
+/// drafts or the book cannot be read; [`Halt::Failed`](harness_core::domain::Halt::Failed)
+/// when the book cannot be written — the drafts are then put back, to wait
+/// for the next start.
+pub fn apply_drafts(here: &Path, now: u64) -> Outcome<Vec<String>> {
+    let workspace = Workspace::new(here);
+    let drafts_store = DraftFile::new(workspace.state_root());
+    let book_store = PromptFile::new(workspace.state_root());
+    let drafts = drafts_store.take()?;
+    if drafts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut book = match book_store.load() {
+        Ok(book) => book,
+        Err(halt) => {
+            let _ = drafts_store.save(&drafts);
+            return Err(halt);
+        }
+    };
+    let applied = book.apply(&drafts, harness_workflows::prompts::default_of, now);
+    if let Err(halt) = book_store.save(&book) {
+        let _ = drafts_store.save(&drafts);
+        return Err(halt);
+    }
+    Ok(applied)
 }

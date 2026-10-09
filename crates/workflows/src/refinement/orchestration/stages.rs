@@ -270,9 +270,20 @@ mod tests {
 
     #[test]
     fn a_human_s_edit_is_the_template_and_a_neighbour_keeps_its_default() {
-        let mut book = harness_core::domain::prompt_book::PromptBook::default();
-        book.edit(prompts::ROUTER, "Route #{num}", text::ROUTER_PROMPT, 1)
-            .expect("edited");
+        use harness_core::domain::prompt_book::{Drafts, PromptBook};
+        let mut book = PromptBook::default();
+        let mut drafts = Drafts::default();
+        drafts
+            .propose(
+                &book,
+                prompts::ROUTER,
+                text::ROUTER_PROMPT,
+                Some("Route #{num}"),
+                false,
+                1,
+            )
+            .expect("proposed");
+        book.apply(&drafts, crate::prompts::default_of, 1);
         let mut config = config_fake::config();
         config.prompts = std::rc::Rc::new(book);
         assert_eq!(template_of(&config, ROUTER), "Route #{num}");

@@ -82,6 +82,10 @@ async fn main() -> ExitCode {
             .await;
             lane_exit(&here, "split", sub.milestone, ran)
         }
+        Some(cli::Command::Trial(sub)) => match dispatch::trial::run(sub, &here).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(halt) => halt_to_code(&halt),
+        },
         None => match dispatch::dev_loop::run(&args.run, &here).await {
             Ok(ran) => {
                 if let Verdict::NothingLeft(why) = &ran.verdict {

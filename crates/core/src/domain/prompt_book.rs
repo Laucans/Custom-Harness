@@ -1,14 +1,23 @@
-//! The human's edits to the prompts a stage sends, and the last few kept.
+//! The human's edits to the prompts a stage sends: what runs now, what waits
+//! for the next start, and the last few kept.
 //!
 //! A workflow declares each stage's prompt as a constant: the *default*. A
-//! human may replace it; the replacement is what the stage sends from the next
-//! run on, until it is reset. Each prompt keeps its last [`KEPT`] edits,
-//! newest first, so one can be put back. The default is never in that list:
-//! it is always there to go back to.
+//! human may replace it, in two steps:
 //!
-//! Pure: what a version is, and what an edit, a restore and a reset do. Where
-//! the book is kept is the
-//! [`PromptStore`](crate::ports::store::prompts::PromptStore) port's.
+//! - a **draft** ([`Drafts`]) is what the human proposed and nothing runs yet.
+//!   Proposing replaces the draft of that prompt; a draft equal to what runs
+//!   is no draft at all.
+//! - the **book** ([`PromptBook`]) is what runs. Drafts reach it only through
+//!   [`PromptBook::apply`], which the harness calls itself when the factory
+//!   starts — so whatever proposes a change never writes what a run reads.
+//!
+//! Each prompt of the book keeps its last [`KEPT`] edits, newest first, and
+//! its last [`REVERTS_KEPT`] reverted texts — what a revert replaced — so
+//! either can be put back. The default is never in a list: it is always there
+//! to go back to.
+//!
+//! Pure: the stores are the
+//! [`prompts`](crate::ports::store::prompts) ports'.
 //!
 //! **This module knows no workflow.** A prompt is a key and a default text,
 //! both passed in by the caller.
@@ -21,18 +30,21 @@ use thiserror::Error;
 /// How many edits of one prompt are kept.
 pub const KEPT: usize = 5;
 
+/// How many reverted texts of one prompt are kept.
+pub const REVERTS_KEPT: usize = 3;
+
 /// The longest prompt a human may save, in characters.
 ///
 /// The longest default is a few thousand; this leaves room to write, and
 /// keeps a pasted log from becoming every session's first turn.
 pub const MAX_CHARS: usize = 64 * 1024;
 
-/// One edit, as it was saved.
+/// One text, as it was kept.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     /// The prompt's text.
     pub text: String,
-    /// When it was saved, in seconds since the Unix epoch.
+    /// When it was kept, in seconds since the Unix epoch.
     pub saved_at: u64,
 }
 
@@ -45,27 +57,99 @@ pub struct Entry {
     /// The last [`KEPT`] edits, newest first, no two alike.
     #[serde(default)]
     pub history: Vec<Version>,
+    /// The last [`REVERTS_KEPT`] texts a revert replaced, newest first.
+    #[serde(default)]
+    pub reverted: Vec<Version>,
 }
 
-/// Every prompt a human edited, by key.
+/// What runs: every prompt a human edited, by key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptBook {
     #[serde(default)]
     prompts: BTreeMap<String, Entry>,
 }
 
-/// Why an edit was refused.
+/// One change a human proposed, waiting for the factory to start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Draft {
+    /// The text proposed — `None`: back to the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Whether it puts back a text kept earlier (a version, a reverted text,
+    /// the default) rather than a new one: what it replaces is then kept
+    /// among the reverted.
+    #[serde(default)]
+    pub revert: bool,
+    /// When it was proposed, in seconds since the Unix epoch.
+    pub at: u64,
+}
+
+/// What waits for the next start: one draft per prompt at most.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Drafts {
+    #[serde(default)]
+    prompts: BTreeMap<String, Draft>,
+}
+
+/// Where a prompt's dry-run stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrialState {
+    /// The session is open, or about to be.
+    #[default]
+    Running,
+    /// It answered.
+    Done,
+    /// It could not run, or the session failed.
+    Failed,
+}
+
+/// A prompt's dry-run: what it was asked, and what it answered. Written by
+/// the trial itself, read by whoever asked for it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrialReport {
+    /// Where it stands.
+    pub state: TrialState,
+    /// The prompt tried.
+    pub key: String,
+    /// Which version of it, as the human named it (`draft`, `edit 2`, …).
+    pub version: String,
+    /// The line of the run replayed.
+    pub workflow: String,
+    /// The run replayed.
+    pub run: String,
+    /// The model it ran on.
+    pub model: String,
+    /// Its effort.
+    pub effort: String,
+    /// When it started, Unix seconds.
+    pub started_at: u64,
+    /// When it ended, Unix seconds.
+    pub finished_at: Option<u64>,
+    /// Why it failed.
+    pub reason: Option<String>,
+    /// What the session answered.
+    pub output: Option<String>,
+    /// What it cost, in dollars — the carrier's estimate.
+    pub cost_usd: Option<f64>,
+    /// How long the turn took, end to end.
+    pub duration_ms: Option<u64>,
+    /// How many round-trips with the model it took.
+    pub turns: Option<u32>,
+    /// The prompt's length, in characters.
+    pub prompt_chars: Option<usize>,
+}
+
+/// Why a change was refused.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BookError {
     /// A blank prompt: a stage sending nothing is never what a human meant.
-    #[error("a prompt cannot be empty — reset it to go back to the default")]
+    #[error("a prompt cannot be empty — restore the default to go back to it")]
     Empty,
     /// Past [`MAX_CHARS`].
     #[error("a prompt is at most {MAX_CHARS} characters, this one is {0}")]
     TooLong(usize),
-    /// A restore named a version the history does not hold.
-    #[error("no version {0} in this prompt's history")]
-    NoSuchVersion(usize),
 }
 
 impl PromptBook {
@@ -84,98 +168,171 @@ impl PromptBook {
         self.prompts.get(key)
     }
 
-    /// Saves `text` as what the stage sends, and keeps it in the history.
+    /// The keys whose stage sends a human's edit rather than its default.
+    pub fn edited(&self) -> impl Iterator<Item = &str> {
+        self.prompts
+            .iter()
+            .filter(|(_, entry)| entry.current.is_some())
+            .map(|(key, _)| key.as_str())
+    }
+
+    /// Makes every draft what runs, and answers the keys it changed.
     ///
-    /// A text equal to `default` is a reset: nothing to keep, the default is
-    /// always there. A text already in the history moves to its head rather
-    /// than appearing twice.
+    /// `default_of` names each prompt's default; a draft for a key it does not
+    /// know — a prompt removed since — is dropped. A new text goes to the head
+    /// of the history; a revert keeps what it replaced among the reverted.
+    pub fn apply(
+        &mut self,
+        drafts: &Drafts,
+        default_of: impl Fn(&str) -> Option<String>,
+        at: u64,
+    ) -> Vec<String> {
+        let mut applied = Vec::new();
+        for (key, draft) in &drafts.prompts {
+            let Some(default) = default_of(key) else {
+                continue;
+            };
+            let replaced = self.text(key, &default);
+            let target = draft.text.clone().unwrap_or_else(|| default.clone());
+            if target == replaced {
+                continue;
+            }
+            if target == default {
+                if let Some(entry) = self.prompts.get_mut(key) {
+                    entry.current = None;
+                }
+            } else {
+                let entry = self.prompts.entry(key.clone()).or_default();
+                entry.current = Some(target.clone());
+                keep(&mut entry.history, &target, at, KEPT);
+            }
+            if draft.revert {
+                let entry = self.prompts.entry(key.clone()).or_default();
+                keep(&mut entry.reverted, &replaced, at, REVERTS_KEPT);
+            }
+            applied.push(key.clone());
+        }
+        applied
+    }
+}
+
+/// Puts `text` at the head of `list`, once, and keeps `most` of them.
+fn keep(list: &mut Vec<Version>, text: &str, at: u64, most: usize) {
+    list.retain(|version| version.text != text);
+    list.insert(
+        0,
+        Version {
+            text: text.to_string(),
+            saved_at: at,
+        },
+    );
+    list.truncate(most);
+}
+
+impl Drafts {
+    /// The draft waiting for this prompt.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&Draft> {
+        self.prompts.get(key)
+    }
+
+    /// Every draft, by key.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Draft)> {
+        self.prompts
+            .iter()
+            .map(|(key, draft)| (key.as_str(), draft))
+    }
+
+    /// Whether nothing waits.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.prompts.is_empty()
+    }
+
+    /// Proposes `text` (`None`: the default) for `key`, replacing its draft.
+    ///
+    /// A proposal equal to what `book` runs withdraws the draft instead: there
+    /// is nothing left to wait for.
     ///
     /// # Errors
     ///
     /// [`BookError::Empty`] for a blank text, [`BookError::TooLong`] past
-    /// [`MAX_CHARS`]. The book is unchanged.
-    pub fn edit(
+    /// [`MAX_CHARS`]. The drafts are unchanged.
+    pub fn propose(
         &mut self,
+        book: &PromptBook,
         key: &str,
-        text: &str,
         default: &str,
-        saved_at: u64,
+        text: Option<&str>,
+        revert: bool,
+        at: u64,
     ) -> Result<(), BookError> {
-        if text.trim().is_empty() {
-            return Err(BookError::Empty);
+        if let Some(text) = text {
+            if text.trim().is_empty() {
+                return Err(BookError::Empty);
+            }
+            let chars = text.chars().count();
+            if chars > MAX_CHARS {
+                return Err(BookError::TooLong(chars));
+            }
         }
-        let chars = text.chars().count();
-        if chars > MAX_CHARS {
-            return Err(BookError::TooLong(chars));
-        }
-        if text == default {
-            self.reset(key);
+        if text.unwrap_or(default) == book.text(key, default) {
+            self.prompts.remove(key);
             return Ok(());
         }
-        let entry = self.prompts.entry(key.to_string()).or_default();
-        entry.current = Some(text.to_string());
-        entry.history.retain(|version| version.text != text);
-        entry.history.insert(
-            0,
-            Version {
-                text: text.to_string(),
-                saved_at,
+        self.prompts.insert(
+            key.to_string(),
+            Draft {
+                text: text.map(str::to_string),
+                revert,
+                at,
             },
         );
-        entry.history.truncate(KEPT);
         Ok(())
     }
 
-    /// Puts back the history's `index`-th version (0 is the newest).
-    ///
-    /// # Errors
-    ///
-    /// [`BookError::NoSuchVersion`] when the history is shorter.
-    pub fn restore(
-        &mut self,
-        key: &str,
-        index: usize,
-        default: &str,
-        saved_at: u64,
-    ) -> Result<(), BookError> {
-        let text = self
-            .entry(key)
-            .and_then(|entry| entry.history.get(index))
-            .map(|version| version.text.clone())
-            .ok_or(BookError::NoSuchVersion(index))?;
-        self.edit(key, &text, default, saved_at)
-    }
-
-    /// The stage sends its default again; the history stays.
-    pub fn reset(&mut self, key: &str) {
-        if let Some(entry) = self.prompts.get_mut(key) {
-            entry.current = None;
-        }
+    /// Withdraws the draft of `key`, if there is one.
+    pub fn withdraw(&mut self, key: &str) {
+        self.prompts.remove(key);
     }
 }
 
-/// The `{name}` placeholders a prompt carries — what the stage fills in.
-///
-/// The same reading as [`splice`](crate::domain::prompts::splice): a name is
-/// what lies between a `{` and the next `}`, kept only when it looks like an
+/// One piece of a template: prose, or a `{name}` the stage fills in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Piece<'a> {
+    Literal(&'a str),
+    Placeholder(&'a str),
+}
+
+/// A template cut into prose and placeholders, the way
+/// [`splice`](crate::domain::prompts::splice) reads it: a name is what lies
+/// between a `{` and the next `}`, kept only when it looks like an
 /// identifier, since prompts carry braces that are not placeholders (a JSON
 /// example, a `{ }` in prose).
-#[must_use]
-pub fn placeholders(text: &str) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    let mut rest = text;
-    while let Some(start) = rest.find('{') {
-        let after = &rest[start + 1..];
-        let Some(end) = after.find('}') else { break };
-        let name = &after[..end];
+fn pieces(text: &str) -> Vec<Piece<'_>> {
+    let mut out = Vec::new();
+    let mut literal_from = 0;
+    let mut at = 0;
+    while let Some(open) = text[at..].find('{').map(|i| at + i) {
+        let Some(close) = text[open + 1..].find('}').map(|i| open + 1 + i) else {
+            break;
+        };
+        let name = &text[open + 1..close];
         if is_identifier(name) {
-            found.insert(name.to_string());
-            rest = &after[end + 1..];
+            if open > literal_from {
+                out.push(Piece::Literal(&text[literal_from..open]));
+            }
+            out.push(Piece::Placeholder(name));
+            literal_from = close + 1;
+            at = close + 1;
         } else {
-            rest = after;
+            at = open + 1;
         }
     }
-    found
+    if literal_from < text.len() {
+        out.push(Piece::Literal(&text[literal_from..]));
+    }
+    out
 }
 
 fn is_identifier(name: &str) -> bool {
@@ -184,6 +341,18 @@ fn is_identifier(name: &str) -> bool {
         .next()
         .is_some_and(|first| first.is_ascii_lowercase() || first == '_')
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// The `{name}` placeholders a prompt carries — what the stage fills in.
+#[must_use]
+pub fn placeholders(text: &str) -> BTreeSet<String> {
+    pieces(text)
+        .into_iter()
+        .filter_map(|piece| match piece {
+            Piece::Placeholder(name) => Some(name.to_string()),
+            Piece::Literal(_) => None,
+        })
+        .collect()
 }
 
 /// What an edit loses and what it adds against the default's placeholders.
@@ -201,12 +370,116 @@ pub fn drift(default: &str, text: &str) -> (Vec<String>, Vec<String>) {
     )
 }
 
+/// Why a past prompt could not be replayed with another text.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ReplayError {
+    /// The text the stage sent then is not in the prompt.
+    #[error(
+        "the prompt sent then does not carry this text — the run used another version, or none"
+    )]
+    NotFound,
+    /// The text sent then starts or ends with a placeholder, or carries two in
+    /// a row: where one value ends is unknowable.
+    #[error(
+        "the text sent then has a placeholder at an edge or two in a row — its values cannot be told apart"
+    )]
+    Ambiguous,
+}
+
+/// The prompt `sent` once carried, with `new` in place of `old`, filled with
+/// the values `old` was filled with then.
+///
+/// `old` is the template the stage used, `sent` the whole prompt it sent —
+/// the framework's blocks around it included. The values are read back from
+/// between `old`'s prose pieces; `new` is filled with them (a placeholder it
+/// drops loses its value, one it invents stays as written), and the blocks
+/// around are kept as they were.
+///
+/// # Errors
+///
+/// [`ReplayError::NotFound`] when `sent` does not carry `old`,
+/// [`ReplayError::Ambiguous`] when `old`'s shape hides where a value ends.
+pub fn replay(sent: &str, old: &str, new: &str) -> Result<String, ReplayError> {
+    let cut = pieces(old);
+    let edges_are_prose = matches!(cut.first(), Some(Piece::Literal(_)))
+        && matches!(cut.last(), Some(Piece::Literal(_)));
+    let in_a_row = cut
+        .windows(2)
+        .any(|pair| matches!(pair, [Piece::Placeholder(_), Piece::Placeholder(_)]));
+    if !edges_are_prose || in_a_row {
+        return Err(ReplayError::Ambiguous);
+    }
+    let Some(Piece::Literal(head)) = cut.first() else {
+        return Err(ReplayError::Ambiguous);
+    };
+    for (start, _) in sent.match_indices(head) {
+        if let Some((end, values)) = read_values(sent, start + head.len(), &cut[1..]) {
+            let pairs: Vec<(&str, &str)> = values
+                .iter()
+                .map(|(name, value)| (*name, value.as_str()))
+                .collect();
+            return Ok(format!(
+                "{}{}{}",
+                &sent[..start],
+                crate::domain::prompts::splice(new, &pairs),
+                &sent[end..]
+            ));
+        }
+    }
+    Err(ReplayError::NotFound)
+}
+
+/// Walks `rest` of a template from `at` in `sent`: each placeholder's value
+/// runs to the next prose piece. Answers where the template ends, and the
+/// values — `None` when a piece is missing or a name got two values.
+fn read_values<'a>(
+    sent: &str,
+    mut at: usize,
+    rest: &[Piece<'a>],
+) -> Option<(usize, BTreeMap<&'a str, String>)> {
+    let mut values: BTreeMap<&str, String> = BTreeMap::new();
+    let mut pending: Option<&str> = None;
+    for piece in rest {
+        match piece {
+            Piece::Placeholder(name) => pending = Some(name),
+            Piece::Literal(text) => {
+                let found = at + sent.get(at..)?.find(text)?;
+                if let Some(name) = pending.take() {
+                    let value = sent[at..found].to_string();
+                    if values.get(name).is_some_and(|seen| *seen != value) {
+                        return None;
+                    }
+                    values.insert(name, value);
+                } else if found != at {
+                    return None;
+                }
+                at = found + text.len();
+            }
+        }
+    }
+    Some((at, values))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    const DEFAULT: &str = "Issue #{num} — {title}";
+    const DEFAULT: &str = "Issue #{num} — {title}.";
+
+    // The shape `PromptBook::apply` asks for, though every key is known here.
+    #[allow(clippy::unnecessary_wraps)]
+    fn default_of(_: &str) -> Option<String> {
+        Some(DEFAULT.to_string())
+    }
+
+    fn applied(book: &mut PromptBook, key: &str, text: Option<&str>, revert: bool, at: u64) {
+        let mut drafts = Drafts::default();
+        drafts
+            .propose(book, key, DEFAULT, text, revert, at)
+            .expect("proposed");
+        book.apply(&drafts, default_of, at);
+    }
 
     #[test]
     fn an_untouched_prompt_is_its_default() {
@@ -215,20 +488,38 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_is_what_the_stage_sends_and_the_history_s_head() {
+    fn a_draft_runs_nothing_until_applied() {
+        let book = PromptBook::default();
+        let mut drafts = Drafts::default();
+        drafts
+            .propose(&book, "k", DEFAULT, Some("Fix #{num}."), false, 3)
+            .expect("proposed");
+        assert_eq!(book.text("k", DEFAULT), DEFAULT);
+        let mut book = book;
+        assert_eq!(book.apply(&drafts, default_of, 4), ["k"]);
+        assert_eq!(book.text("k", DEFAULT), "Fix #{num}.");
+        assert_eq!(book.entry("k").expect("kept").history[0].saved_at, 4);
+    }
+
+    #[test]
+    fn proposing_what_runs_withdraws_the_draft() {
         let mut book = PromptBook::default();
-        book.edit("a/b", "Fix #{num}", DEFAULT, 10).expect("saved");
-        assert_eq!(book.text("a/b", DEFAULT), "Fix #{num}");
-        let entry = book.entry("a/b").expect("kept");
-        assert_eq!(entry.history[0].text, "Fix #{num}");
-        assert_eq!(entry.history[0].saved_at, 10);
+        applied(&mut book, "k", Some("mine"), false, 1);
+        let mut drafts = Drafts::default();
+        drafts
+            .propose(&book, "k", DEFAULT, Some("other"), false, 2)
+            .expect("proposed");
+        drafts
+            .propose(&book, "k", DEFAULT, Some("mine"), false, 3)
+            .expect("proposed");
+        assert!(drafts.is_empty());
     }
 
     #[test]
     fn only_the_last_five_edits_are_kept_newest_first() {
         let mut book = PromptBook::default();
         for n in 0..8 {
-            book.edit("k", &format!("v{n}"), DEFAULT, n).expect("saved");
+            applied(&mut book, "k", Some(&format!("v{n}")), false, n);
         }
         let texts: Vec<&str> = book
             .entry("k")
@@ -241,56 +532,51 @@ mod tests {
     }
 
     #[test]
-    fn restoring_moves_a_version_to_the_head_without_a_duplicate() {
+    fn a_revert_keeps_what_it_replaced_and_only_the_last_three() {
         let mut book = PromptBook::default();
-        for n in 0..3 {
-            book.edit("k", &format!("v{n}"), DEFAULT, n).expect("saved");
+        for n in 0..5 {
+            applied(&mut book, "k", Some(&format!("v{n}")), false, n);
+            applied(&mut book, "k", None, true, n);
         }
-        book.restore("k", 2, DEFAULT, 9).expect("restored");
-        assert_eq!(book.text("k", DEFAULT), "v0");
-        let texts: Vec<&str> = book
-            .entry("k")
-            .expect("kept")
-            .history
-            .iter()
-            .map(|v| v.text.as_str())
-            .collect();
-        assert_eq!(texts, ["v0", "v2", "v1"]);
-        assert_eq!(
-            book.restore("k", 3, DEFAULT, 9),
-            Err(BookError::NoSuchVersion(3))
-        );
-    }
-
-    #[test]
-    fn a_reset_sends_the_default_and_keeps_the_history() {
-        let mut book = PromptBook::default();
-        book.edit("k", "mine", DEFAULT, 1).expect("saved");
-        book.reset("k");
-        assert_eq!(book.text("k", DEFAULT), DEFAULT);
-        assert_eq!(book.entry("k").expect("kept").history.len(), 1);
-    }
-
-    #[test]
-    fn saving_the_default_text_is_a_reset_not_an_edit() {
-        let mut book = PromptBook::default();
-        book.edit("k", "mine", DEFAULT, 1).expect("saved");
-        book.edit("k", DEFAULT, DEFAULT, 2).expect("saved");
         let entry = book.entry("k").expect("kept");
         assert_eq!(entry.current, None);
-        assert_eq!(entry.history.len(), 1);
+        let reverted: Vec<&str> = entry.reverted.iter().map(|v| v.text.as_str()).collect();
+        assert_eq!(reverted, ["v4", "v3", "v2"]);
+    }
+
+    #[test]
+    fn a_new_text_is_not_a_revert() {
+        let mut book = PromptBook::default();
+        applied(&mut book, "k", Some("a"), false, 1);
+        applied(&mut book, "k", Some("b"), false, 2);
+        assert!(book.entry("k").expect("kept").reverted.is_empty());
+    }
+
+    #[test]
+    fn a_draft_for_a_prompt_gone_since_is_dropped() {
+        let mut book = PromptBook::default();
+        let mut drafts = Drafts::default();
+        drafts
+            .propose(&book, "gone", DEFAULT, Some("x"), false, 1)
+            .expect("proposed");
+        assert!(book.apply(&drafts, |_| None, 2).is_empty());
+        assert_eq!(book, PromptBook::default());
     }
 
     #[test]
     fn a_blank_or_huge_prompt_is_refused_and_changes_nothing() {
-        let mut book = PromptBook::default();
-        assert_eq!(book.edit("k", "  \n", DEFAULT, 1), Err(BookError::Empty));
+        let book = PromptBook::default();
+        let mut drafts = Drafts::default();
+        assert_eq!(
+            drafts.propose(&book, "k", DEFAULT, Some("  \n"), false, 1),
+            Err(BookError::Empty)
+        );
         let huge = "x".repeat(MAX_CHARS + 1);
         assert_eq!(
-            book.edit("k", &huge, DEFAULT, 1),
+            drafts.propose(&book, "k", DEFAULT, Some(&huge), false, 1),
             Err(BookError::TooLong(MAX_CHARS + 1))
         );
-        assert_eq!(book, PromptBook::default());
+        assert!(drafts.is_empty());
     }
 
     #[test]
@@ -307,14 +593,37 @@ mod tests {
         assert_eq!(unknown, ["nmu"]);
     }
 
+    #[test]
+    fn a_replay_swaps_the_stage_s_text_and_keeps_the_blocks_around() {
+        let sent = "/code\n--- CONTEXT ---\nIssue #42 — Add a login. Then {x}.\n--- SCOPE ---";
+        let old = "Issue #{num} — {title}. Then {x}.";
+        let new = "Fix #{num} ({title}), {nope}.";
+        assert_eq!(
+            replay(sent, old, new),
+            Ok("/code\n--- CONTEXT ---\nFix #42 (Add a login), {nope}.\n--- SCOPE ---".to_string())
+        );
+    }
+
+    #[test]
+    fn a_replay_refuses_a_prompt_that_never_carried_the_text() {
+        assert_eq!(
+            replay("something else", DEFAULT, "x"),
+            Err(ReplayError::NotFound)
+        );
+        assert_eq!(
+            replay("Issue #1 — t.", "{num} — {title}.", "x"),
+            Err(ReplayError::Ambiguous)
+        );
+    }
+
     proptest! {
         #[test]
-        fn edits_keep_the_history_short_unique_and_headed_by_what_is_sent(
+        fn edits_keep_the_history_short_unique_and_headed_by_what_runs(
             texts in proptest::collection::vec("[a-c]{1,2}", 1..20),
         ) {
             let mut book = PromptBook::default();
             for (at, text) in texts.iter().enumerate() {
-                book.edit("k", text, DEFAULT, at as u64).expect("saved");
+                applied(&mut book, "k", Some(text), false, at as u64);
             }
             let entry = book.entry("k").expect("kept");
             prop_assert!(entry.history.len() <= KEPT);
@@ -326,16 +635,39 @@ mod tests {
         }
 
         #[test]
-        fn a_book_survives_its_own_json(
+        fn a_book_and_its_drafts_survive_their_own_json(
             texts in proptest::collection::vec("\\PC{1,40}", 1..8),
         ) {
             let mut book = PromptBook::default();
+            let mut drafts = Drafts::default();
             for (at, text) in texts.iter().enumerate() {
-                let _ = book.edit(&format!("k{}", at % 3), text, DEFAULT, at as u64);
+                let key = format!("k{}", at % 3);
+                applied(&mut book, &key, Some(text), at % 2 == 0, at as u64);
+                let _ = drafts.propose(&book, &key, DEFAULT, Some("draft"), true, at as u64);
             }
             let json = serde_json::to_string(&book).expect("encoded");
-            let back: PromptBook = serde_json::from_str(&json).expect("decoded");
-            prop_assert_eq!(back, book);
+            prop_assert_eq!(serde_json::from_str::<PromptBook>(&json).expect("decoded"), book);
+            let json = serde_json::to_string(&drafts).expect("encoded");
+            prop_assert_eq!(serde_json::from_str::<Drafts>(&json).expect("decoded"), drafts);
+        }
+
+        #[test]
+        fn a_replay_of_the_same_text_gives_the_prompt_back(
+            num in "[0-9]{1,4}",
+            title in "[0-9 ]{0,12}",
+            before in "[x-z\n]{0,10}",
+            after in "[x-z\n]{0,10}",
+        ) {
+            // Templates, not format strings: the braces are the placeholders
+            // under test.
+            const OLD: &str = "Issue #{num} — {title}.";
+            const NEW: &str = "N={num} T={title}";
+            let old = OLD;
+            let filled = crate::domain::prompts::splice(old, &[("num", &num), ("title", &title)]);
+            let sent = format!("{before}{filled}{after}");
+            prop_assert_eq!(replay(&sent, old, old), Ok(sent.clone()));
+            let swapped = replay(&sent, old, NEW).expect("replayed");
+            prop_assert_eq!(swapped, format!("{before}N={num} T={title}{after}"));
         }
     }
 }

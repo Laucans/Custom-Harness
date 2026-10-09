@@ -96,7 +96,7 @@ pub async fn run(
         locks: Rc::clone(&built.locks),
     };
     let config = Config {
-        prompts: shared::prompts(workspace, &log)?,
+        prompts: shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?,
         fix_dir: workspace.state_root().join(".llocal/pr-fix-locks"),
         // Diagnosing why CI broke from logs and a diff is the kind of work
         // the better model earns its cost on — a wrong fix pushed to a PR is

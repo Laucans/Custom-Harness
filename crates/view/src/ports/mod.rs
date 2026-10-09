@@ -412,3 +412,67 @@ pub trait Notebook: Send + Sync {
     /// The OS refused the write.
     fn write(&self, json: &str) -> Result<(), String>;
 }
+
+/// The prompt book and its drafts, as the view may touch them: the book read
+/// only — the harness alone writes what runs — the drafts read and written.
+///
+/// `Send + Sync` because the HTTP handlers share it.
+pub trait Prompts: Send + Sync {
+    /// What runs.
+    ///
+    /// # Errors
+    ///
+    /// The book exists and cannot be read.
+    fn book(&self) -> Result<harness_core::domain::prompt_book::PromptBook, String>;
+
+    /// What waits for the next start.
+    ///
+    /// # Errors
+    ///
+    /// The drafts exist and cannot be read.
+    fn drafts(&self) -> Result<harness_core::domain::prompt_book::Drafts, String>;
+
+    /// Keeps every draft.
+    ///
+    /// # Errors
+    ///
+    /// The OS refused the write.
+    fn keep_drafts(&self, drafts: &harness_core::domain::prompt_book::Drafts)
+    -> Result<(), String>;
+}
+
+/// What the human asks of a prompt's dry-run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrialAsk {
+    /// The trial's own name, a folder under `.llocal/trials/`.
+    pub id: String,
+    /// The prompt tried.
+    pub key: String,
+    /// How the human names the version tried.
+    pub version: String,
+    /// The text tried — handed to the trial, never written where a run reads.
+    pub text: String,
+    /// The line of the run replayed.
+    pub workflow: String,
+    /// The run replayed.
+    pub run: String,
+    /// The model the session opens on.
+    pub model: String,
+    /// Its effort.
+    pub effort: String,
+}
+
+/// The prompts' dry-runs: started as `harness trial`, read back from their
+/// reports.
+pub trait Trials: Send + Sync {
+    /// Starts one.
+    ///
+    /// # Errors
+    ///
+    /// Why it could not start, as a sentence the page can show.
+    fn start(&self, ask: &TrialAsk) -> Result<(), String>;
+
+    /// Every trial with a report, by id — one whose process died before
+    /// reporting reads as failed.
+    fn reports(&self) -> Vec<(String, harness_core::domain::prompt_book::TrialReport)>;
+}

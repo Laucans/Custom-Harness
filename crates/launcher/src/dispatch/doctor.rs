@@ -153,7 +153,7 @@ pub fn stray_folders(source: &Workspace) -> Vec<String> {
 ///
 /// Kept in one place on purpose: a new store added without its name here
 /// shows up in `harness doctor` as a stray, which is the reminder to add it.
-const KNOWN_LLOCAL: [&str; 8] = [
+const KNOWN_LLOCAL: [&str; 9] = [
     "agentic_workspaces",
     "logs",
     "grill",
@@ -162,6 +162,7 @@ const KNOWN_LLOCAL: [&str; 8] = [
     "planner-locks",
     "split-locks",
     "pr-fix-locks",
+    "trials",
 ];
 
 /// The bytes under a folder, following nothing: a leftover is measured,

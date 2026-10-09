@@ -12,6 +12,7 @@
   --bad: #ff6b6b;
   --opus: #c084fc;
   --sonnet: #60a5fa;
+  --wrench: #4aa3ff;
   --haiku: #4ade80;
   --mono: ui-monospace, Menlo, "SF Mono", Consolas, monospace;
   --sans: -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
@@ -647,3 +648,22 @@ ul.prompt-history pre.md { font: 12px/1.45 var(--mono); max-height: 300px; overf
 .dv-resolution { display: block; width: 100%; box-sizing: border-box; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; font: 13px/1.5 var(--sans); }
 .dv-resolution:focus { outline: none; border-color: var(--accent); }
 .dv-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+
+/* The wrench: a change waits for the factory to start again. */
+#dock .sign.changes .shape { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+#dock .sign.changes { color: var(--dim); }
+#dock .sign.changes.lit { color: var(--wrench); border-color: var(--wrench); }
+.tag.wrench { color: var(--wrench); border-color: var(--wrench); }
+.callout.wrench { border-color: var(--wrench); }
+.callout.wrench details { margin: 6px 0; }
+.prompt-bar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: 12px var(--mono); max-width: 46%; }
+ul.prompt-history li button.mini { flex: none; }
+ul.prompt-history.trials li { display: block; }
+.kept-head { display: flex; align-items: center; gap: 12px; }
+label.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font: 12px var(--mono); color: var(--dim); }
+label.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+label.switch .track { position: relative; width: 28px; height: 16px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); transition: background .15s; }
+label.switch .track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); transition: transform .15s; }
+label.switch input:checked + .track { background: color-mix(in srgb, var(--wrench) 35%, transparent); border-color: var(--wrench); }
+label.switch input:checked + .track::after { transform: translateX(12px); background: var(--wrench); }
+label.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }

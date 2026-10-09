@@ -32,7 +32,8 @@ store/    checkpoint   Checkpoint: a two-line pointer + one JSONL per flow
           lock         DirLocks — an atomic `mkdir`
           events       the `EventLog` over SQLite, `.llocal/harness.db`
           error_ledger what stopped a run, and what was done about it
-          prompt_book  PromptFile: `.llocal/prompts.json`, the human's prompt edits, written aside then renamed
+          prompt_book  PromptFile (`.llocal/prompts.json`), DraftFile (`.llocal/prompts.drafts.json`, taken by a rename), a run's `prompt-texts.json`
+          trial        a dry-run's report, `.llocal/trials/<id>/trial.json`
 ```
 
 `ledger` and `error_ledger` carry no port: the launcher writes them and the

@@ -75,7 +75,7 @@ pub async fn run(
         locks: Rc::clone(&built.locks),
         disk: Rc::clone(&built.disk),
     };
-    let prompts = shared::prompts(workspace, &log)?;
+    let prompts = shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?;
     let config = Config {
         prompts: Rc::clone(&prompts),
         planner_dir,

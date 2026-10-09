@@ -88,6 +88,15 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
         },
         journal: Workspace::new(here).rel(&journal),
     });
+    // The changes the human left in the view reach the runs here, and only
+    // here: a start is the one moment no run is reading the book.
+    match crate::dispatch::shared::apply_drafts(here, crate::dispatch::dev_loop::now_seconds()) {
+        Ok(prompts) if prompts.is_empty() => {}
+        Ok(prompts) => log.event(&Event::ChangesApplied { prompts }),
+        Err(halt) => log.event(&Event::TickFailed {
+            reason: format!("changes left waiting: {}", halt.reason()),
+        }),
+    }
     let draining = Arc::new(AtomicBool::new(false));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| Halt::Failed(format!("SIGTERM cannot be listened to: {e}")))?;

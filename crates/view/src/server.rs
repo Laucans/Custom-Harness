@@ -46,16 +46,15 @@ use crate::domain::history::{self, Range};
 use crate::domain::limits::{self, Read, Report};
 use crate::domain::observe::observe_run;
 use crate::domain::plant::{self, Action, Gesture};
-use crate::domain::prompts::{self, Edit, Refused, Restore};
+use crate::domain::prompts::{self, Edit, Refused, Restore, Withdraw};
 use crate::domain::snapshot::Snapshot;
 use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::janitor::Janitor;
-use crate::ports::{BoardReading, Limits, Notebook, Plant, Traces};
+use crate::ports::{BoardReading, Limits, Notebook, Plant, Prompts, Traces, TrialAsk, Trials};
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
-use harness_core::ports::store::prompts::PromptStore;
 use harness_workflows::data_snapshot::data::model::DataModel;
 
 /// The diagnoses asked of the doctor, by `workflow/run`, shared with the
@@ -105,11 +104,17 @@ pub struct AppState {
     pub notebook: Arc<dyn Notebook>,
     /// Held across a pin list's read-modify-write.
     pub notes_lock: Arc<std::sync::Mutex<()>>,
-    /// Where the human's prompt edits are kept — the one store a run reads
-    /// that the view writes.
-    pub prompts: Arc<dyn PromptStore + Send + Sync>,
-    /// Held across the prompt book's read-modify-write.
+    /// The prompt book, read only, and the drafts the human leaves for the
+    /// next start.
+    pub prompts: Arc<dyn Prompts>,
+    /// Held across the drafts' read-modify-write.
     pub prompts_lock: Arc<std::sync::Mutex<()>>,
+    /// The prompts' dry-runs — `None` when nothing can start one.
+    pub trials: Option<Arc<dyn Trials>>,
+    /// The restart the human asked for, while it is under way.
+    pub restart: Arc<std::sync::Mutex<Option<Restart>>>,
+    /// How often a restart looks whether the watch has drained.
+    pub restart_poll: Duration,
 }
 
 const INDEX: &str = include_str!("../static/index.html");
@@ -174,7 +179,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/notes/{board}", get(notes).put(put_notes))
         .route("/api/prompts/edit", post(edit_prompt))
         .route("/api/prompts/restore", post(restore_prompt))
+        .route("/api/prompts/withdraw", post(withdraw_prompt))
+        .route("/api/prompts/trial", post(start_trial))
+        .route("/api/prompts/trials", get(trials))
         .route("/api/prompts/{line}/{station}", get(station_prompts))
+        .route("/api/pending", get(pending))
+        .route("/api/restart", post(restart))
         .with_state(state)
 }
 
@@ -1258,65 +1268,308 @@ async fn attend(mut socket: WebSocket, desk: Desk, mut cols: u16, mut rows: u16)
     }
 }
 
-/// The prompts a station sends: what it sends now, the default, the last edits.
+/// The prompts a station sends: what runs, what waits, what was kept.
 async fn station_prompts(
     State(state): State<AppState>,
     Path((line, station)): Path<(String, String)>,
 ) -> Response {
-    match state.prompts.load() {
-        Ok(book) => json(&prompts::of_station(&book, &line, &station)),
-        Err(halt) => (StatusCode::INTERNAL_SERVER_ERROR, halt.reason().to_string()).into_response(),
+    match state
+        .prompts
+        .book()
+        .and_then(|book| Ok((book, state.prompts.drafts()?)))
+    {
+        Ok((book, drafts)) => json(&prompts::of_station(&book, &drafts, &line, &station)),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }
 }
 
-/// Saves a prompt the human edited.
+/// Proposes a new text for the next start.
 async fn edit_prompt(State(state): State<AppState>, body: Bytes) -> Response {
     match serde_json::from_slice::<Edit>(&body) {
-        Ok(edit) => change_prompts(&state, |book| prompts::edit(book, &edit, unix_now())),
+        Ok(edit) => change_drafts(&state, |book, drafts| {
+            prompts::propose(book, drafts, &edit, unix_now())
+        }),
         Err(e) => (StatusCode::BAD_REQUEST, format!("not an edit: {e}")).into_response(),
     }
 }
 
-/// Puts back a prompt's earlier version, or its default.
+/// Proposes, for the next start, a text kept earlier.
 async fn restore_prompt(State(state): State<AppState>, body: Bytes) -> Response {
     match serde_json::from_slice::<Restore>(&body) {
-        Ok(restore) => change_prompts(&state, |book| prompts::restore(book, &restore, unix_now())),
+        Ok(restore) => change_drafts(&state, |book, drafts| {
+            prompts::restore(book, drafts, &restore, unix_now())
+        }),
         Err(e) => (StatusCode::BAD_REQUEST, format!("not a restore: {e}")).into_response(),
     }
 }
 
-/// Read, change, write the prompt book, one page at a time; answers the
-/// prompt as it now stands.
-fn change_prompts(
+/// Withdraws a draft.
+async fn withdraw_prompt(State(state): State<AppState>, body: Bytes) -> Response {
+    match serde_json::from_slice::<Withdraw>(&body) {
+        Ok(withdraw) => change_drafts(&state, |book, drafts| {
+            prompts::withdraw(book, drafts, &withdraw)
+        }),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("not a withdrawal: {e}")).into_response(),
+    }
+}
+
+/// Read, change, write the drafts, one page at a time; answers the prompt as
+/// it now stands. The book is only read.
+fn change_drafts(
     state: &AppState,
     change: impl FnOnce(
-        &mut harness_core::domain::prompt_book::PromptBook,
+        &harness_core::domain::prompt_book::PromptBook,
+        &mut harness_core::domain::prompt_book::Drafts,
     ) -> Result<prompts::PromptView, Refused>,
 ) -> Response {
     // No await between read and write: the lock only keeps two pages apart.
     let Ok(_guard) = state.prompts_lock.lock() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "prompt book lock poisoned",
-        )
-            .into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, "drafts lock poisoned").into_response();
     };
-    let mut book = match state.prompts.load() {
-        Ok(book) => book,
-        Err(halt) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, halt.reason().to_string()).into_response();
-        }
+    let read = state
+        .prompts
+        .book()
+        .and_then(|book| Ok((book, state.prompts.drafts()?)));
+    let (book, mut drafts) = match read {
+        Ok(both) => both,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     };
-    let shown = match change(&mut book) {
+    let shown = match change(&book, &mut drafts) {
         Ok(shown) => shown,
         Err(why @ Refused::Unknown(_)) => {
             return (StatusCode::NOT_FOUND, why.to_string()).into_response();
         }
         Err(why) => return (StatusCode::BAD_REQUEST, why.to_string()).into_response(),
     };
-    match state.prompts.save(&book) {
+    match state.prompts.keep_drafts(&drafts) {
         Ok(()) => json(&shown),
-        Err(halt) => (StatusCode::INTERNAL_SERVER_ERROR, halt.reason().to_string()).into_response(),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// What the page sends to dry-run a prompt.
+#[derive(Debug, Deserialize)]
+struct TrialRequest {
+    key: String,
+    version: String,
+    text: String,
+    workflow: String,
+    run: String,
+}
+
+/// Starts a dry-run: one at a time, on a run of the line the prompt is sent on.
+async fn start_trial(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(trials) = state.trials.as_ref() else {
+        return (StatusCode::NOT_FOUND, "this view cannot start a dry-run").into_response();
+    };
+    let ask = match serde_json::from_slice::<TrialRequest>(&body) {
+        Ok(ask) => ask,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("not a dry-run: {e}")).into_response(),
+    };
+    let Some(prompt) = harness_workflows::prompts::find(&ask.key) else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("no prompt named {}", ask.key),
+        )
+            .into_response();
+    };
+    let Some((_, station)) = prompt
+        .stations
+        .iter()
+        .find(|(line, _)| *line == ask.workflow)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("{} is not sent on the {} line", ask.key, ask.workflow),
+        )
+            .into_response();
+    };
+    if ask.text.trim().is_empty()
+        || ask.text.chars().count() > harness_core::domain::prompt_book::MAX_CHARS
+        || !is_run_id(&ask.run)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "an empty or oversized text, or not a run",
+        )
+            .into_response();
+    }
+    if trials
+        .reports()
+        .iter()
+        .any(|(_, report)| report.state == harness_core::domain::prompt_book::TrialState::Running)
+    {
+        return (
+            StatusCode::CONFLICT,
+            "a dry-run is already running — one at a time",
+        )
+            .into_response();
+    }
+    let model = blueprint::lines()
+        .into_iter()
+        .find(|line| line.id == ask.workflow)
+        .and_then(|line| line.stations.into_iter().find(|s| s.id == *station))
+        .and_then(|s| s.model)
+        .unwrap_or_else(|| "sonnet".to_string());
+    let id = format!("{}-{}", unix_now(), ask.key.replace('/', "-"));
+    let started = trials.start(&TrialAsk {
+        id: id.clone(),
+        key: ask.key,
+        version: ask.version,
+        text: ask.text,
+        workflow: ask.workflow,
+        run: ask.run,
+        model,
+        effort: "high".to_string(),
+    });
+    match started {
+        Ok(()) => json(&serde_json::json!({ "id": id })),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// `?key=`: one prompt's dry-runs.
+#[derive(Debug, Deserialize)]
+struct TrialsQuery {
+    key: String,
+}
+
+/// One prompt's last dry-runs, newest first.
+async fn trials(State(state): State<AppState>, Query(query): Query<TrialsQuery>) -> Response {
+    let mut list: Vec<serde_json::Value> = state
+        .trials
+        .as_ref()
+        .map(|trials| trials.reports())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, report)| report.key == query.key)
+        .map(|(id, report)| {
+            let mut value = serde_json::to_value(&report).unwrap_or_default();
+            value["id"] = serde_json::Value::String(id);
+            value
+        })
+        .collect();
+    list.sort_by_key(|value| std::cmp::Reverse(value["started_at"].as_u64().unwrap_or(0)));
+    list.truncate(10);
+    json(&list)
+}
+
+/// Where a restart the human asked for stands.
+#[derive(Debug, Clone, Serialize)]
+pub struct Restart {
+    /// When it was asked, Unix seconds.
+    pub since: u64,
+    /// `draining`, `started` or `failed`.
+    pub state: &'static str,
+    /// What happened, in a sentence.
+    pub message: String,
+}
+
+/// What waits for the next start, and the restart under way.
+async fn pending(State(state): State<AppState>) -> Response {
+    let changes = state
+        .prompts
+        .drafts()
+        .map(|drafts| prompts::pending(&drafts))
+        .unwrap_or_default();
+    let restart = state.restart.lock().ok().and_then(|r| r.clone());
+    json(&serde_json::json!({ "changes": changes, "restart": restart }))
+}
+
+/// Restarts the factory so the changes waiting apply: a soft stop, then a
+/// start as soon as the watch has drained — at once when none runs.
+async fn restart(State(state): State<AppState>, Query(query): Query<StartQuery>) -> Response {
+    let Some(plant) = state.plant.clone() else {
+        return (StatusCode::NOT_FOUND, "this view has no hand on the plant").into_response();
+    };
+    let lanes = match plant::lanes(query.lanes) {
+        Ok(lanes) => lanes,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    let Ok(mut under_way) = state.restart.lock() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "restart lock poisoned").into_response();
+    };
+    if under_way.as_ref().is_some_and(|r| r.state == "draining") {
+        return (
+            StatusCode::CONFLICT,
+            "a restart is already waiting for the watch to drain",
+        )
+            .into_response();
+    }
+    let since = unix_now();
+    let running = plant::running(plant.as_ref());
+    if running.is_some() {
+        let processes = plant.processes();
+        if let Ok(actions) = plant::decide(Gesture::Soft, running, &processes) {
+            for action in actions {
+                if let Action::Send(signal, target) = action
+                    && let Err(why) = plant.send(signal, target)
+                {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+                }
+            }
+        }
+        *under_way = Some(Restart {
+            since,
+            state: "draining",
+            message: "soft stop sent — the factory starts again once the running tasks finish"
+                .to_string(),
+        });
+        drop(under_way);
+        let shared = Arc::clone(&state.restart);
+        let poll = state.restart_poll;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(poll).await;
+                if plant::running(plant.as_ref()).is_none() {
+                    break;
+                }
+            }
+            let started = plant.start(lanes);
+            if let Ok(mut slot) = shared.lock() {
+                *slot = Some(match started {
+                    Ok(pid) => Restart {
+                        since,
+                        state: "started",
+                        message: format!("restarted (pid {pid}) — the changes apply now"),
+                    },
+                    Err(why) => Restart {
+                        since,
+                        state: "failed",
+                        message: why,
+                    },
+                });
+            }
+        });
+        return json(&Done {
+            message: "soft stop sent — the factory restarts once the running tasks finish"
+                .to_string(),
+        });
+    }
+    let started = plant.start(lanes);
+    let (said, outcome) = match started {
+        Ok(pid) => (
+            Restart {
+                since,
+                state: "started",
+                message: format!("started (pid {pid}) — the changes apply now"),
+            },
+            Ok(()),
+        ),
+        Err(why) => (
+            Restart {
+                since,
+                state: "failed",
+                message: why.clone(),
+            },
+            Err(why),
+        ),
+    };
+    let message = said.message.clone();
+    *under_way = Some(said);
+    match outcome {
+        Ok(()) => json(&Done { message }),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }
 }
 
@@ -1377,62 +1630,123 @@ mod tests {
             notes_lock: Arc::default(),
             prompts: Arc::new(Book::default()),
             prompts_lock: Arc::default(),
+            trials: Some(Arc::new(Bench::default())),
+            restart: Arc::default(),
+            restart_poll: Duration::from_millis(5),
         }
     }
 
-    /// A prompt book in memory.
+    /// A prompt book and its drafts, in memory.
     #[derive(Default)]
-    struct Book(std::sync::Mutex<harness_core::domain::prompt_book::PromptBook>);
+    struct Book(
+        std::sync::Mutex<(
+            harness_core::domain::prompt_book::PromptBook,
+            harness_core::domain::prompt_book::Drafts,
+        )>,
+    );
 
-    impl PromptStore for Book {
-        fn load(
-            &self,
-        ) -> harness_core::domain::Outcome<harness_core::domain::prompt_book::PromptBook> {
-            Ok(self.0.lock().expect("book").clone())
+    impl Book {
+        /// The factory starts: the drafts become what runs.
+        fn start(&self) {
+            let mut both = self.0.lock().expect("book");
+            let drafts = std::mem::take(&mut both.1);
+            both.0
+                .apply(&drafts, harness_workflows::prompts::default_of, 9);
+        }
+    }
+
+    impl Prompts for Book {
+        fn book(&self) -> Result<harness_core::domain::prompt_book::PromptBook, String> {
+            Ok(self.0.lock().expect("book").0.clone())
         }
 
-        fn save(
+        fn drafts(&self) -> Result<harness_core::domain::prompt_book::Drafts, String> {
+            Ok(self.0.lock().expect("book").1.clone())
+        }
+
+        fn keep_drafts(
             &self,
-            book: &harness_core::domain::prompt_book::PromptBook,
-        ) -> harness_core::domain::Outcome<()> {
-            *self.0.lock().expect("book") = book.clone();
+            drafts: &harness_core::domain::prompt_book::Drafts,
+        ) -> Result<(), String> {
+            self.0.lock().expect("book").1 = drafts.clone();
             Ok(())
         }
     }
 
+    /// Trials that never run: what was asked is kept, and reported running.
+    #[derive(Default)]
+    struct Bench(std::sync::Mutex<Vec<TrialAsk>>);
+
+    impl Trials for Bench {
+        fn start(&self, ask: &TrialAsk) -> Result<(), String> {
+            self.0.lock().expect("bench").push(ask.clone());
+            Ok(())
+        }
+
+        fn reports(&self) -> Vec<(String, harness_core::domain::prompt_book::TrialReport)> {
+            self.0
+                .lock()
+                .expect("bench")
+                .iter()
+                .map(|ask| {
+                    (
+                        ask.id.clone(),
+                        harness_core::domain::prompt_book::TrialReport {
+                            key: ask.key.clone(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect()
+        }
+    }
+
     #[tokio::test]
-    async fn a_robot_s_prompt_is_shown_edited_kept_and_restored() {
-        let state = state(Shelf::default(), None);
+    async fn an_edit_waits_for_the_start_and_a_revert_is_kept_once_it_ran() {
+        let book = Arc::new(Book::default());
+        let mut state = state(Shelf::default(), None);
+        state.prompts = Arc::clone(&book) as Arc<dyn Prompts>;
         let (status, shown) = send(state.clone(), "GET", "/api/prompts/split/slice", "").await;
         assert_eq!(status, StatusCode::OK);
         assert!(
-            shown.contains("\"key\":\"split/slice\"") && shown.contains("\"edited\":false"),
+            shown.contains("\"edited\":false") && shown.contains("\"draft\":null"),
             "{shown}"
         );
 
         let edit = r#"{"key":"split/slice","text":"Slice #{num}"}"#;
         let (status, saved) = send(state.clone(), "POST", "/api/prompts/edit", edit).await;
         assert_eq!(status, StatusCode::OK, "{saved}");
+        assert!(
+            saved.contains("\"edited\":false"),
+            "nothing runs it before a start: {saved}"
+        );
+        let (_, waiting) = send(state.clone(), "GET", "/api/pending", "").await;
+        assert!(
+            waiting.contains("\"key\":\"split/slice\"") && waiting.contains("\"kind\":\"edit\""),
+            "{waiting}"
+        );
+
+        book.start();
         let (_, shown) = send(state.clone(), "GET", "/api/prompts/split/slice", "").await;
         assert!(
-            shown.contains("\"text\":\"Slice #{num}\"") && shown.contains("\"edited\":true"),
+            shown.contains("\"running\":\"Slice #{num}\"") && shown.contains("\"edited\":true"),
+            "{shown}"
+        );
+        let (_, waiting) = send(state.clone(), "GET", "/api/pending", "").await;
+        assert!(waiting.contains("\"changes\":[]"), "{waiting}");
+
+        let back = r#"{"key":"split/slice","from":"default"}"#;
+        let (status, _) = send(state.clone(), "POST", "/api/prompts/restore", back).await;
+        assert_eq!(status, StatusCode::OK);
+        book.start();
+        let (_, shown) = send(state.clone(), "GET", "/api/prompts/split/slice", "").await;
+        assert!(
+            shown.contains("\"reverted\":[{\"text\":\"Slice #{num}\""),
             "{shown}"
         );
 
-        let reset = r#"{"key":"split/slice","version":null}"#;
-        let (status, _) = send(state.clone(), "POST", "/api/prompts/restore", reset).await;
-        assert_eq!(status, StatusCode::OK);
-        let again = r#"{"key":"split/slice","version":0}"#;
-        let (_, back) = send(state.clone(), "POST", "/api/prompts/restore", again).await;
-        assert!(back.contains("\"text\":\"Slice #{num}\""), "{back}");
-
-        let (status, _) = send(
-            state.clone(),
-            "POST",
-            "/api/prompts/restore",
-            r#"{"key":"split/slice","version":4}"#,
-        )
-        .await;
+        let far = r#"{"key":"split/slice","from":"history","index":4}"#;
+        let (status, _) = send(state.clone(), "POST", "/api/prompts/restore", far).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) = send(
             state.clone(),
@@ -1444,6 +1758,67 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (_, none) = send(state, "GET", "/api/prompts/split/publish", "").await;
         assert_eq!(none, "[]");
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_starts_once_on_its_own_line_with_the_station_s_model() {
+        let state = state(Shelf::default(), None);
+        let ask = |run: &str, line: &str| {
+            format!(
+                r#"{{"key":"split/slice","version":"draft","text":"Slice #{{num}}","workflow":"{line}","run":"{run}"}}"#
+            )
+        };
+        let (status, why) = send(
+            state.clone(),
+            "POST",
+            "/api/prompts/trial",
+            &ask("20261009-120000-12", "planner"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}");
+        let (status, started) = send(
+            state.clone(),
+            "POST",
+            "/api/prompts/trial",
+            &ask("20261009-120000-12", "split"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{started}");
+        let (status, _) = send(
+            state.clone(),
+            "POST",
+            "/api/prompts/trial",
+            &ask("20261009-120000-12", "split"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "one at a time");
+        let (_, listed) = send(state, "GET", "/api/prompts/trials?key=split/slice", "").await;
+        assert!(
+            listed.contains("\"key\":\"split/slice\"") && listed.contains("\"state\":\"running\""),
+            "{listed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restart_drains_then_starts_and_says_so() {
+        let mut state = state(Shelf::default(), None);
+        let switch = Arc::new(Switch::default());
+        switch.start(None).expect("running");
+        state.plant = Some(Arc::clone(&switch) as Arc<dyn Plant>);
+        let (status, said) = send(state.clone(), "POST", "/api/restart", "").await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(said.contains("soft stop"), "{said}");
+        let (status, _) = send(state.clone(), "POST", "/api/restart", "").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        *switch.started.lock().expect("table") = None;
+        for _ in 0..100 {
+            let (_, waiting) = send(state.clone(), "GET", "/api/pending", "").await;
+            if waiting.contains("\"state\":\"started\"") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the factory never started again");
     }
 
     /// A notebook in memory.

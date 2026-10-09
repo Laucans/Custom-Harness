@@ -44,3 +44,4 @@ pub mod shared;
 pub mod skills;
 pub mod split;
 pub mod tooling;
+pub mod trial;

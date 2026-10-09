@@ -57,6 +57,9 @@ pub enum Command {
     /// What a parallel `watch` gives each of its split lanes; by hand, it
     /// splits one `harness:ready` milestone without the router.
     Split(SplitArgs),
+    /// Dry-runs one prompt: replays a past run's prompt with another text,
+    /// in a session that cannot act (the view's prompt tab asks for it).
+    Trial(TrialArgs),
 }
 
 /// `harness refine`'s own arguments.
@@ -80,6 +83,38 @@ pub struct SplitArgs {
     /// Where it reads the repository from.
     #[command(flatten)]
     pub lane: LaneArgs,
+}
+
+/// `harness trial`: the text tried comes on stdin.
+#[derive(Debug, Args)]
+pub struct TrialArgs {
+    /// The line of the run replayed, as its logs folder names it.
+    #[arg(long)]
+    pub workflow: String,
+    /// The run replayed.
+    #[arg(long)]
+    pub run: String,
+    /// The prompt tried, by key (`agent-loop/code`).
+    #[arg(long)]
+    pub key: String,
+    /// How the human names the version tried.
+    #[arg(long, default_value = "draft")]
+    pub version: String,
+    /// The model the session opens on.
+    #[arg(long, default_value = "sonnet")]
+    pub model: String,
+    /// Its effort.
+    #[arg(long, default_value = "high")]
+    pub effort: String,
+    /// The trial's folder under `.llocal/trials/`.
+    #[arg(long)]
+    pub id: String,
+    /// The repository the trial's clone is taken from.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
+    /// The branch it reads.
+    #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
+    pub branch: String,
 }
 
 /// What a workflow a parallel `watch` gives a lane needs to know: which

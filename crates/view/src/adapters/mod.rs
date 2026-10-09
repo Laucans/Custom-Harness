@@ -12,5 +12,7 @@ pub mod fs_yard;
 pub mod gh_board;
 pub mod limits_cli;
 pub mod product;
+pub mod prompt_files;
 pub mod pty;
+pub mod trial_proc;
 pub mod watch_proc;

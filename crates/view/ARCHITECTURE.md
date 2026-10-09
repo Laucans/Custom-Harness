@@ -3,8 +3,9 @@
 The factory view: a local web server that draws the harness as an isometric
 plant, read from the traces the harness leaves behind. A **second outer ring**
 beside `harness-launcher` — the only other crate allowed to build a concrete
-adapter — and it **writes nothing the harness reads but the prompt book**
-(see *The robots' prompts*). The crate graph is in
+adapter — and it **writes nothing the harness reads** (a prompt edited
+here is a draft the watch applies itself, see *The robots' prompts*). The
+crate graph is in
 [ARCHITECTURE_OVERVIEW.md](../../ARCHITECTURE_OVERVIEW.md); the Rust rules in
 [../../CLAUDE.md](../../CLAUDE.md).
 
@@ -93,32 +94,59 @@ agent's pane — so the human hears of it with the pane closed.
 
 ## The robots' prompts
 
-A paid station — a robot, builder or inspector — carries a **Prompt** tab,
-and its details tab shows the prompt read-only. What a station sends is
+A paid station — a robot, builder or inspector — shows its prompt on its
+details tab and carries a **Prompt** tab. What a station sends is
 `harness_workflows::prompts`' catalog: a key (`agent-loop/code`), the
 stations that send it (a shared text, like the repository map or how the
 tests are run, stands on several), and the default — the constant beside
 the stage. The tab edits the stage's own text only; the EXECUTION CONTEXT
 and SCOPE blocks stay the framework's.
 
-A save goes into the **prompt book**, `.llocal/prompts.json`
-(`harness_core::domain::prompt_book`, `PromptStore` port, `PromptFile` in
-`harness-adapters`, written aside then renamed): what the stage sends now,
-and its last five edits, newest first, no two alike. The default is never
-in that list — it is always there to restore. A restore puts a version
-back at the head; restoring the default sends it again and keeps the
-history. The launcher reads the book once per run (`dispatch::shared::prompts`)
-and names the edited prompts in `run.log`; an unreadable book halts the
-run rather than send the defaults behind the human's back.
+**An edit is a draft, and only a start applies it.** Two stores, two
+writers (`harness_core::domain::prompt_book`, `ports::store::prompts`,
+JSON files in `harness-adapters`, written aside then renamed):
+
+| store | written by | read by |
+| --- | --- | --- |
+| `.llocal/prompts.drafts.json` — one draft per prompt: a new text, or a revert | the view | the view; `harness watch`, once, when it starts |
+| `.llocal/prompts.json` — the book: what runs, the last 5 edits, the last 3 reverted texts | `harness watch` alone, when it starts | every run, once (`dispatch::shared::prompts`) |
+
+The view reads the book through its own `Prompts` port, which has no way
+to write it. `harness watch`, starting, takes the drafts (renamed out of
+the way, so one saved meanwhile waits for the next start), applies them
+(`PromptBook::apply`) and journals `ChangesApplied` — an Info notification.
+A revert — putting back an edit, a reverted text or the default — keeps
+what it replaced among the **recently reverted** (3), the history's second
+list behind a switch. Each run records in its own folder the text of every
+prompt its line could send (`prompt-texts.json`).
+
+**The wrench**, above the notification signs, turns blue while a change
+waits (`GET /api/pending`). Its pane lists each change — a click opens the
+machine's prompt tab — and a **restart** button (`POST /api/restart`):
+a soft stop, then a start as soon as the watch has drained (polled every
+3 s), or a start at once when none runs.
+
+**A dry-run** replays a past run of the line with any version — the
+editor's text, what runs, the draft, the default, an edit, a reverted
+text — and shows the answer, the time and the cost. The view starts
+`harness trial` (`ports::Trials`, `adapters::trial_proc`,
+`HARNESS_TRIAL_COMMAND`), the text on its stdin so a draft is never
+written where a run reads; the trial reads the run's `prompts.md` and
+`prompt-texts.json`, reads back the values the old text was filled with
+(`prompt_book::replay`), fills the version tried with them, keeps the
+framework's blocks around, and asks once — `--permission-mode plan`, in a
+clone of its own (`prompt-trial`), on the station's model. Its report,
+`.llocal/trials/<id>/trial.json`, is what the tab lists. One at a time. A
+run older than its `prompt-texts.json` is replayed against today's
+default, and refused if that text changed since.
 
 The pane warns, as the human types, of a `{placeholder}` the default
-carries and the edit dropped (the stage no longer passes that value) and of
-one nothing fills (it reaches the session as written). Routes
-`GET /api/prompts/{line}/{station}`, `POST /api/prompts/edit`
-(`{key, text}`), `POST /api/prompts/restore` (`{key, version}`, `null` for
-the default); `domain::prompts` puts the catalog and the book together, and
-a test holds that every robot of the blueprint shows a prompt and every
-prompt stands on a station the plant draws.
+carries and the edit dropped, and of one nothing fills. Routes
+`GET /api/prompts/{line}/{station}`, `POST /api/prompts/{edit,restore,withdraw}`,
+`POST /api/prompts/trial`, `GET /api/prompts/trials?key=`; `domain::prompts`
+puts the catalog, the book and the drafts together, and a test holds that
+every robot of the blueprint shows a prompt and every prompt stands on a
+station the plant draws.
 
 ## The janitor
 
@@ -267,8 +295,8 @@ src/domain/            the inside — no disk, no subprocess, no clock
   data_versions.rs     the archive's versions in the page's order: main, the integration branch, the features
   divergence.rs        a diagnosed divergence found in the events, and the issue a human opens from it
   annotations.rs       the human's pins: what a note is, and the checks before a board's list is kept
-  prompts.rs           a station's prompts for the pane: the catalog and the prompt book together, an edit, a restore
-src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), Notebook (the pins)
+  prompts.rs           a station's prompts for the pane: the catalog, the book and the drafts together; an edit, a revert, a withdrawal; what waits
+src/ports/mod.rs       Traces (the disk), Board (GitHub), TerminalFactory/TerminalIo (a desk's program), Plant (the watch process), Limits (Claude's windows and GitHub's buckets, read now), Yard (.llocal, weighed and swept), Product (the product's files), Notebook (the pins), Prompts (the book read only, the drafts), Trials (the dry-runs)
 src/adapters/
   fs_traces.rs         .llocal/logs, read through core's own ledger readers
   gh_board.rs          core's GitHub port, read the way the router reads it
@@ -277,8 +305,10 @@ src/adapters/
   fs_yard.rs           .llocal walked and swept with std::fs, symlinks never followed, every path kept inside
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   fs_notes.rs          .llocal/annotations.json, written aside then renamed
+  prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
+  trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore}
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
 static/                index.html, style.css, app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins), data-model.js (the UML diagram on it), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions)
 ```
@@ -303,9 +333,9 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
   `harness watch` and the runs already write, and never asks the harness to
   emit anything for it. A structured event port in `harness-core` would be
   more precise; it can be added later without touching this crate's inside,
-  because `observe` already reads through a port. The one thing it writes
-  that a run reads is the prompt book — the human's edits, read by the
-  launcher at the start of the next run. Its other hands on the plant are
+  because `observe` already reads through a port. It writes nothing a run
+  reads: a prompt edited here is a draft the watch applies itself when it
+  starts. Its hands on the plant are
   four, all the human's: the steward's
   terminal, the status button's switch (`Plant` port), the janitor's
   broom (`Yard` port), which removes only caches and old traces no run

@@ -40,6 +40,12 @@ pub enum Event {
         /// Its journal, relative to the checkout.
         journal: String,
     },
+    /// The watch, starting, applied the changes a human left waiting: from
+    /// now on every run sends these prompts as edited.
+    ChangesApplied {
+        /// The prompts whose text changed, by key.
+        prompts: Vec<String>,
+    },
     /// A soft stop was asked: no new task, the running lanes are waited for.
     WatchDraining {
         /// The tasks still on a lane.
@@ -225,6 +231,11 @@ impl Event {
                 }
             ),
             Self::WatchStopped => "watch: stopped — soft stop, every lane done".to_string(),
+            Self::ChangesApplied { prompts } => format!(
+                "watch: changes applied — {} prompt(s) now run as edited: {}",
+                prompts.len(),
+                prompts.join(", ")
+            ),
             Self::TickFailed { reason } => format!("watch: tick -> {reason}"),
             Self::LaneTaken {
                 lane,
