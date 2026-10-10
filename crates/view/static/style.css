@@ -1218,3 +1218,9 @@ body.full-pane > #stage, body.full-pane > #hud { visibility: hidden; }
 #pin-ghost span { font: 600 11px var(--sans); color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1px 6px; margin-bottom: 4px; }
 #pin-ghost[hidden] { display: none; }
 body.picking, body.picking * { user-select: none; }
+
+/* A pin an AI is applying: its dashed outline turns until the work is done. */
+.hb-pin.applying::after { content: ''; position: absolute; inset: -8px; border: 2px dashed var(--pin-request); border-radius: 50%; pointer-events: none; animation: hb-applying 1.4s linear infinite; }
+.hb-pin.applying { cursor: progress; }
+@keyframes hb-applying { to { transform: rotate(360deg); } }
+.hb-note.applying textarea { opacity: 0.75; cursor: default; }

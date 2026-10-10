@@ -608,7 +608,10 @@
         say(`not applied: ${esc(String(e.message || e).split('\n')[0])}`);
       }
     }
-    const applyAll = () => applyRequests((st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && (n.state || 'pending') !== 'simulated'));
+    const applyAll = () => {
+      const pins = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim());
+      if (st.board && st.board.track) st.board.track(pins.map((n) => n.id), applyRequests(pins)); else applyRequests(pins);
+    };
 
     // ---- the draft's versions ---------------------------------------------------------------
     async function draftCall(path, body) {

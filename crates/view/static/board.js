@@ -125,6 +125,21 @@
     let saveTimer = null;
     let pending = null; // the pin whose text waits to be saved
     let busy = false; // an AI is writing the open pin
+    // The pins an AI is applying right now: their outline turns, their text is read only.
+    const applying = new Set();
+    // Follows an application: the pins turn until it settles.
+    function track(ids, work) {
+      ids.forEach((x) => applying.add(x));
+      drawPins();
+      const n = notes.find((x) => x.id === openId);
+      if (n && applying.has(n.id)) drawEditor(n);
+      return Promise.resolve(work).finally(() => {
+        ids.forEach((x) => applying.delete(x));
+        drawPins();
+        const open = notes.find((x) => x.id === openId);
+        if (open) drawEditor(open);
+      });
+    }
     let press = null; // a press on the canvas, until it is a pan or a click
     let carry = null; // a pin being dragged: new, or one already placed
     let tool = null; // the zone tool armed: rect, circle, path
@@ -286,8 +301,8 @@
         const s = toScreen(p.x, p.y);
         if (s.x < -30 || s.y < -30 || s.x > r.width + 30 || s.y > r.height + 60) return;
         const kind = kindOf(n);
-        const cls = ['hb-pin', kind, p.orphan ? 'orphan' : '', n.shape ? 'zone' : '', n.text || kind !== 'note' ? '' : 'empty', openId === n.id ? 'open' : '', kind === 'request' ? 'state-' + (n.state || 'pending') : ''].join(' ');
-        const tip = `${kind}${n.shape ? ' (zone)' : ''}: ${n.text || (kind === 'link' && n.page ? '→ ' + n.page : 'empty')}${p.orphan ? ' — what it was on is gone' : ''}`;
+        const cls = ['hb-pin', kind, p.orphan ? 'orphan' : '', n.shape ? 'zone' : '', n.text || kind !== 'note' ? '' : 'empty', openId === n.id ? 'open' : '', kind === 'request' ? 'state-' + (n.state || 'pending') : '', applying.has(n.id) ? 'applying' : ''].join(' ');
+        const tip = `${applying.has(n.id) ? 'being applied — ' : ''}${kind}${n.shape ? ' (zone)' : ''}: ${n.text || (kind === 'link' && n.page ? '→ ' + n.page : 'empty')}${p.orphan ? ' — what it was on is gone' : ''}`;
         h += `<button type="button" class="${cls}" data-note-id="${esc(n.id)}" style="left:${s.x}px;top:${s.y}px" title="${esc(tip)}"><span>${i + 1}</span></button>`;
       });
       pinLayer.innerHTML = h;
@@ -314,11 +329,14 @@
       const kind = kindOf(n);
       n.kind = kind;
       editor.dataset.kind = kind;
+      // A pin being applied is read, not written: its words are what the AI works from.
+      const locked = busy || applying.has(n.id);
+      editor.classList.toggle('applying', applying.has(n.id));
       editor.querySelectorAll('.hb-kind').forEach((b) => {
         b.classList.toggle('on', b.dataset.kind === kind);
         b.setAttribute('aria-checked', b.dataset.kind === kind);
         // Not `disabled`: a log button inside must stay clickable.
-        if (busy) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
+        if (locked) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
       });
       const session = editor.querySelector('.hb-session');
       session.hidden = kind === 'note' || kind === 'link' || !opts.onSession;
@@ -329,8 +347,8 @@
       if (!apply.hidden) {
         const state = n.state || 'pending';
         apply.querySelector('button').textContent = state === 'simulated' ? 'Apply again' : state === 'stale' ? 'Apply again (the page moved)' : 'Apply to the draft';
-        apply.querySelector('button').disabled = busy;
-        apply.querySelector('.hb-apply-state').textContent = { pending: 'not applied yet', simulated: 'applied to the draft', stale: 'applied once; the page moved since' }[state] || '';
+        apply.querySelector('button').disabled = locked;
+        apply.querySelector('.hb-apply-state').textContent = applying.has(n.id) ? 'the AI is applying it…' : { pending: 'not applied yet', simulated: 'applied to the draft', stale: 'applied once; the page moved since' }[state] || '';
       }
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
       // A request, a link or a design goes on the product's backlog as an issue.
@@ -338,12 +356,14 @@
       backlog.hidden = opts.backlog === false || !(kind === 'request' || kind === 'link' || kind === 'design');
       if (!backlog.hidden) {
         backlog.querySelector('button').hidden = !!n.issue;
-        backlog.querySelector('button').disabled = busy;
+        backlog.querySelector('button').disabled = locked;
         const a = backlog.querySelector('.hb-issue');
         a.hidden = !n.issue;
         if (n.issue) { a.href = n.issue; a.textContent = 'on the backlog ' + (/\/(\d+)$/.exec(n.issue) ? '#' + /\/(\d+)$/.exec(n.issue)[1] : '') + ' ↗'; }
       }
       textarea.disabled = busy;
+      textarea.readOnly = applying.has(n.id);
+      editor.querySelector('[data-note="delete"]').disabled = locked;
       textarea.placeholder = {
         note: 'Write a note…',
         link: 'The objective of the page this leads to — what a new page is drawn from',
@@ -582,7 +602,7 @@
     // the conclusion for a note, the intention for a request.
     async function rekind(n, kind) {
       const from = n.kind || 'note';
-      if (kind === from || busy) return;
+      if (kind === from || busy || applying.has(n.id)) return;
       if (from === 'brainstorm' && kind !== 'brainstorm') {
         if (n.fresh || !n.turns) {
           setState('nothing said yet: open the AI session first');
@@ -615,8 +635,8 @@
         }
         return;
       }
-      // A brainstorm or a request opens its session on what the note says.
-      if (kind !== 'note' && kind !== 'link' && kind !== 'design' && !(n.text || '').trim()) {
+      // A brainstorm opens its session on what the note says; a request may wait for its words.
+      if (kind === 'brainstorm' && !(n.text || '').trim()) {
         setState(kind === 'request' ? 'write the intention first: it is what the AI applies' : 'write the first prompt first: the note is what the AI is asked');
         textarea.focus();
         return;
@@ -699,6 +719,7 @@
       const pinTool = e.target.closest('.hb-pin-tool');
       if (pinTool) return startCarry(e, null);
       const pin = e.target.closest('.hb-pin[data-note-id]');
+      if (pin && applying.has(pin.dataset.noteId)) { e.preventDefault(); e.stopPropagation(); const n = notes.find((x) => x.id === pin.dataset.noteId); if (n) openNote(n); return undefined; }
       if (pin) return startCarry(e, notes.find((n) => n.id === pin.dataset.noteId));
       if (e.target.closest('.hb-tools, .hb-note, .hb-list')) return undefined;
       const zone = e.target.closest('[data-zone-id]');
@@ -786,7 +807,13 @@
       if (act.dataset.note === 'close') closeNote();
       if (act.dataset.note === 'delete' && n) remove(n);
       if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
-      if (act.dataset.note === 'apply' && n && opts.apply) { flush(); if (n.fresh) put(n).then(() => opts.apply(n)).catch(() => setState('not saved')); else opts.apply(n); }
+      if (act.dataset.note === 'apply' && n && opts.apply && !applying.has(n.id)) {
+        if (!(n.text || '').trim()) { setState('write the request first: it is what the AI applies'); textarea.focus(); return; }
+        flush();
+        // The window closes; the pin's outline turns until the AI is done.
+        closeNote();
+        track([n.id], (n.fresh ? put(n) : Promise.resolve()).then(() => opts.apply(n)).catch((err) => { if (opts.onApplyError) opts.onApplyError(err); }));
+      }
       if (act.dataset.note === 'backlog' && n) toBacklog(n);
       if (act.dataset.note === 'go' && n && n.page && opts.goto) { flush(); opts.goto(n.page); }
       if (act.dataset.note === 'create' && n && n.page && opts.onSession) openSession(n);
@@ -826,7 +853,7 @@
     };
     const onInput = () => {
       const n = notes.find((x) => x.id === openId);
-      if (!n || busy) return;
+      if (!n || busy || applying.has(n.id)) return;
       n.text = textarea.value;
       n.at = new Date().toISOString();
       setState('…');
@@ -921,6 +948,10 @@
       },
       notesOn: (target) => notes.filter((n) => n.target === target),
       open: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n) openNote(n); },
+      // Pins being applied by the pane itself — a card's "apply" — turn the same way.
+      track: (ids, work) => track(ids, work),
+      // A pin whose work is done goes, as a delete does: ctrl+z brings it back.
+      drop: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n) remove(n); },
       goTo,
       destroy() {
         // A note being typed is not lost to a closed pane.

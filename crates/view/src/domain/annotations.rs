@@ -74,11 +74,12 @@ impl Kind {
         }
     }
 
-    /// A kind whose session needs the note written first: it is the first
-    /// prompt (a brainstorm), or the intention (a request).
+    /// A kind whose session needs the note written first: its first prompt
+    /// (a brainstorm). A request may be left empty — a pin turned into one
+    /// before its words are found; nothing applies an empty one.
     #[must_use]
     pub const fn speaks_first(self) -> bool {
-        matches!(self, Self::Brainstorm | Self::Request)
+        matches!(self, Self::Brainstorm)
     }
 
     /// A kind whose session edits the mock-up rather than talks about it.
@@ -471,7 +472,10 @@ mod tests {
         let mut request = note("s");
         request.kind = Kind::Request;
         request.text = " ".to_string();
-        assert!(checked(request).is_err(), "a request is an intention");
+        assert!(
+            checked(request).is_ok(),
+            "a request may be made before its words are found"
+        );
         let old: Note = serde_json::from_str(r#"{"id":"n1","kind":"simulate","text":"t"}"#)
             .expect("an old simulate reads");
         assert_eq!(old.kind, Kind::Request);
@@ -517,7 +521,10 @@ mod tests {
                 .contains("write it first")
         );
         silent.kind = Kind::Request;
-        assert!(checked(silent.clone()).is_err());
+        assert!(
+            checked(silent.clone()).is_ok(),
+            "a request may wait for its words"
+        );
         silent.kind = Kind::Note;
         assert!(checked(silent).is_ok(), "an empty note is still a note");
     }

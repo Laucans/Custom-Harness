@@ -372,6 +372,8 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       } catch (e) { st.usages = {}; }
       if (!st.gone && st.tab === 'canvas') drawCards();
     }
+    // Applies requests to a component: its draft is rewritten, the pins
+    // applied go (ctrl+z on the board brings one back), the skipped stay.
     async function applyRequests(name, notes) {
       if (!name || !st.board) return;
       const asked = notes.filter((n) => (n.text || '').trim()).map((n) => ({ id: n.id, text: n.text, target: '' }));
@@ -381,7 +383,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       try {
         const got = await said(await post(`/api/kit/${encodeURIComponent(name)}/apply`, { requests: asked }));
         const skipped = got.skipped || [];
-        asked.forEach((a) => { if (!skipped.some(([id]) => id === a.id)) st.board.patch(a.id, { state: 'simulated' }); });
+        asked.forEach((a) => { if (!skipped.some(([id]) => id === a.id)) st.board.drop(a.id); });
         skipped.forEach(([id, why]) => toast(`request ${esc(id)}: ${esc(why)}`));
         if (action) action.ok(`${asked.length - skipped.length} applied`);
         say('');
@@ -426,7 +428,11 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         }
         case 'sketch-toggle': { const pad = host.querySelector('.kt-sketch'); pad.hidden = !pad.hidden; if (!pad.hidden && !st.sketch) armSketch(pad.querySelector('canvas')); break; }
         case 'sketch-clear': if (st.sketch) st.sketch.clear(); break;
-        case 'apply': applyRequests(name, st.board.all().filter((n) => n.target === 'kit:' + name && n.kind === 'request' && (n.state || 'pending') !== 'simulated')); break;
+        case 'apply': {
+          const pins = st.board.all().filter((n) => n.target === 'kit:' + name && n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim());
+          st.board.track(pins.map((n) => n.id), applyRequests(name, pins));
+          break;
+        }
         case 'save': { const c = card(name); if (c) { const box = c.card.querySelector('.kt-save'); box.hidden = !box.hidden; layoutCards(); } break; }
         case 'save-replace': act(`replacing ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'replace' }), () => { toast(`${esc(name)} replaced: every page that uses it shows the new one`); st.usages = null; }); break;
         case 'save-fork': { const c = card(name); const forkName = c ? c.card.querySelector('.kt-fork-name').value.trim() : ''; act(`forking ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'fork', name: forkName }), (entries) => { const made = (entries || []).find((x) => x.variant_of === name && x.name !== name && (!forkName || x.name === forkName)); toast(`forked as <b>${esc(made ? made.name : forkName || name + '2')}</b>; ${esc(name)} is as it was`); st.usages = null; }); break; }
