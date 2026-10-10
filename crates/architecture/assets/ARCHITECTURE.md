@@ -435,6 +435,7 @@ writing: they are the first to stabilise.
 | L. Message | Integrity DataGuard ↔ users and infrastructure components | Integrity DataGuard |
 | M. Data model | Data ↔ the agents' understanding of it | Read agents, migrations |
 | N. Mock pages | Mock-up ↔ screens | Human, UI agents |
+| O. Design system and kit | Tokens and visual components ↔ every screen | Human, UI agents |
 
 ### A. Concept
 
@@ -633,6 +634,49 @@ components:
     needs: [credit.calculateRisk]
     actions: [credit.requestLimitReview]
     props: { customerId: ID }
+```
+
+### O. Design system and kit
+
+On the `design-system` branch, one for the product. `mock/design/tokens.json`
+holds the design tokens (W3C design tokens format); `mock/design/tokens.css`
+is derived from it, one CSS variable per token (`--color-primary`), and every
+screen, Micro-UI and kit component reads its colours, fonts, spacings, radii
+and shadows through those variables, never through a literal. `mock/kit/`
+holds the **kit**: visual primitives below the Micro-UI (a button, a menu, a
+carousel), each a fragment `kit/<Name>.html` a page or a micro-frontend
+injects with `<div data-kit="<Name>">`, with no data of its own and no
+network — what loads from a server is a micro-frontend. A kit component is
+reused as it is by the real frontend when it passes the kit's static check
+(no network, no external script or style, colours only through `var(--…)`);
+otherwise it is recoded for real and the fragment rewritten to match, with
+one line under `recoded`.
+
+```yaml
+# mock/design/design.json
+version: 1
+state: validated                   # none | candidate | validated
+source: generated                  # injected | generated (from a moodboard and a logo)
+brief: "warm, artisanal, speaks to game masters"
+moodboard: [moodboard/table.png, moodboard/ink.jpg]
+logo: logo.svg
+candidate: false                   # a candidate.json waits beside the validated tokens
+validatedAt: 2026-10-10T18:00:00Z
+issue: https://github.com/…/issues/42   # the roadmap task that installs it
+# mock/kit/kit.json
+version: 1
+checked: [button, input, menu, card]   # the harness's bases ticked
+components:
+  - name: Menu
+    base: menu
+    title: Navigation menu
+    what: "A horizontal navigation bar with a brand, links and the current one marked."
+    state: generated               # pending | running | generated | failed
+  - name: HeroBanner
+    prompt: "A full-width banner with the campaign's title over its map"
+    reference: HeroBanner.reference.png
+    state: generated
+    recoded: "the banner reads its map from the shell's image service"
 ```
 
 ## CI gates

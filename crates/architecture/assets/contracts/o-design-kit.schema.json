@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.agent-native.dev/o-design-kit.schema.json",
+  "title": "O. Design system and kit",
+  "description": "The product's design system and its kit of visual components, on the `design-system` branch. `mock/design/design.json` (the `design` shape below) records where the tokens of `mock/design/tokens.json` (W3C design tokens, derived into `mock/design/tokens.css` by the harness) came from and whether a human validated them. `mock/kit/kit.json` (the `kit` shape) lists the kit's components, each a fragment `mock/kit/<Name>.html` a page or a micro-frontend injects with `<div data-kit=\"<Name>\">`: a visual primitive below the Micro-UI, consuming the tokens through `var(--…)`, reaching no network, holding no data of its own.",
+  "oneOf": [
+    { "$ref": "#/$defs/design" },
+    { "$ref": "#/$defs/kit" }
+  ],
+  "$defs": {
+    "design": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "state": { "type": "string", "enum": ["none", "candidate", "validated"], "description": "Nothing yet; tokens waiting for the human's validation; validated — the kit may be generated and the code stage installs the tokens." },
+        "source": { "type": "string", "enum": ["none", "injected", "generated"], "description": "A tokens file handed over, or tokens drawn by an AI from the moodboard and the logo." },
+        "brief": { "type": "string", "description": "What the human wrote for the generation: the brand, the mood." },
+        "moodboard": { "type": "array", "items": { "type": "string", "pattern": "^moodboard/[A-Za-z0-9._-]+$" }, "description": "The moodboard's images, relative to `mock/design/`." },
+        "logo": { "type": "string", "description": "The logo, relative to `mock/design/`, or empty." },
+        "candidate": { "type": "boolean", "description": "A candidate waits in `mock/design/candidate.json` beside the validated tokens." },
+        "validatedAt": { "type": "string" },
+        "issue": { "type": "string", "description": "The roadmap issue that installs the design system in the product's frontend, once validated." }
+      },
+      "required": ["version", "state"],
+      "additionalProperties": false
+    },
+    "kit": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "checked": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }, "description": "The harness's bases the human ticked, by id (`button`, `carousel`…)." },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$", "description": "The fragment is `mock/kit/<name>.html`." },
+              "base": { "type": "string", "description": "The harness base it is styled from, or empty for a custom component." },
+              "title": { "type": "string" },
+              "what": { "type": "string", "description": "What it shows and does, visually." },
+              "prompt": { "type": "string", "description": "The human's prompt for a custom component." },
+              "reference": { "type": "string", "description": "A reference image, relative to `mock/kit/`, or empty." },
+              "state": { "type": "string", "enum": ["pending", "running", "generated", "failed"] },
+              "why": { "type": "string" },
+              "variantOf": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$", "description": "The component this one was forked from on the kit's canvas." },
+              "recoded": { "type": "string", "description": "Written by the code stage when it recoded the fragment for real: what changed, one line. The factory view shows it as a pin on the component." },
+              "generatedAt": { "type": "string" }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["version", "components"],
+      "additionalProperties": false
+    }
+  }
+}

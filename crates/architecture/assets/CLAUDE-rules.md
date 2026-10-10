@@ -48,13 +48,15 @@ mock/pages.json                    the mock-up's pages, one per screen, and its 
 mock/pages/<screen>.html           one mocked page: static HTML, the rest injected as micro-frontends
 mock/components/<MicroUi>.html     one micro-frontend: the real Micro-UI bundled on the mock server, or a hand-written fragment before it is built
 mock/drafts/<page>.json            on a mockup/* branch: the operations, forks and requests behind the page as the human rewrote it
+mock/design/tokens.json + tokens.css   on the design-system branch: the design system's tokens (W3C), derived into one CSS variable each (contract O)
+mock/kit/kit.json + kit/<Name>.html    on the design-system branch: the kit of visual components a page injects with data-kit (contract O)
 mock/src/server.js, screen.js      installed: the mock server (the shell's wire protocol from mock/fixtures/) and the screen host ($ctx.<name>)
 mock/src/reads.js, commands.js     what the product teaches the server: a read per Capability, a judgement per DataCapability
 mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI (`source` in pages.json), bundled into mock/components/<MicroUi>.js, committed with its builtFrom
 mock/fixtures/*.json               what the Capabilities would answer
 mock/mock.js                       the loader: fills every data-component element from components/
 scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)
-contracts/*.schema.json            the fourteen contracts, JSON Schema 2020-12
+contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
 ```
 
 ### Rules

@@ -1,0 +1,16 @@
+<!-- Menu: a horizontal navigation bar, the brand at the left, the current link marked. -->
+<style>
+.kit-menu { display: flex; align-items: center; gap: var(--space-4, 24px); padding: var(--space-2, 8px) var(--space-4, 24px); background: var(--color-surface, #ffffff); border-bottom: var(--border-width, 1px) solid var(--color-border, #d1d5db); font-family: var(--font-family, system-ui, sans-serif); box-shadow: var(--shadow-low, 0 1px 3px rgba(0, 0, 0, 0.12)); }
+.kit-menu .brand { font-family: var(--font-family-heading, system-ui, sans-serif); font-weight: var(--font-weight-heading, 700); font-size: var(--font-size-large, 20px); color: var(--color-primary, #2b6cb0); text-decoration: none; }
+.kit-menu nav { display: flex; gap: var(--space-1, 4px); margin-left: var(--space-2, 8px); }
+.kit-menu nav a { color: var(--color-text, #111827); text-decoration: none; padding: var(--space-2, 8px) var(--space-3, 16px); border-radius: var(--radius-medium, 8px); font-size: var(--font-size-base, 15px); }
+.kit-menu nav a:hover { background: var(--color-surface-2, #f3f4f6); }
+.kit-menu nav a[aria-current="page"] { color: var(--color-primary, #2b6cb0); background: var(--color-surface-2, #f3f4f6); font-weight: 600; }
+.kit-menu .end { margin-left: auto; display: flex; gap: var(--space-2, 8px); }
+.kit-menu .end button { font: inherit; font-size: var(--font-size-base, 15px); padding: var(--space-2, 8px) var(--space-3, 16px); border-radius: var(--radius-medium, 8px); border: var(--border-width, 1px) solid var(--color-primary, #2b6cb0); background: var(--color-primary, #2b6cb0); color: var(--color-primary-contrast, #ffffff); cursor: pointer; }
+</style>
+<header class="kit-menu">
+  <a class="brand" href="#">Brand</a>
+  <nav><a href="#" aria-current="page">Home</a><a href="#">Catalogue</a><a href="#">Orders</a><a href="#">Help</a></nav>
+  <div class="end"><button type="button">Sign in</button></div>
+</header>

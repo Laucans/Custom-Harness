@@ -1,0 +1,15 @@
+<!-- Pagination: previous, numbered pages and next, the current one marked. -->
+<style>
+.kit-pagination { display: flex; align-items: center; gap: var(--space-1, 4px); font-family: var(--font-family, system-ui, sans-serif); font-size: var(--font-size-base, 15px); }
+.kit-pagination a, .kit-pagination span { min-width: 36px; height: 36px; display: inline-grid; place-items: center; padding: 0 var(--space-2, 8px); border-radius: var(--radius-medium, 8px); color: var(--color-text, #111827); text-decoration: none; border: var(--border-width, 1px) solid transparent; }
+.kit-pagination a:hover { background: var(--color-surface-2, #f3f4f6); }
+.kit-pagination a[aria-current="page"] { background: var(--color-primary, #2b6cb0); color: var(--color-primary-contrast, #ffffff); }
+.kit-pagination .gap { color: var(--color-text-muted, #6b7280); }
+.kit-pagination .edge { border-color: var(--color-border, #d1d5db); }
+.kit-pagination .edge[aria-disabled="true"] { color: var(--color-text-muted, #6b7280); pointer-events: none; }
+</style>
+<nav class="kit-pagination" aria-label="pages">
+  <a class="edge" href="#" aria-disabled="true">‹ Prev</a>
+  <a href="#" aria-current="page">1</a><a href="#">2</a><a href="#">3</a><span class="gap">…</span><a href="#">12</a>
+  <a class="edge" href="#">Next ›</a>
+</nav>

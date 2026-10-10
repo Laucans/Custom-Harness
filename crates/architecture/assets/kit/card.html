@@ -1,0 +1,16 @@
+<!-- Card: a surface with a title, a body and actions. -->
+<style>
+.kit-card { max-width: 360px; background: var(--color-surface, #ffffff); border: var(--border-width, 1px) solid var(--color-border, #d1d5db); border-radius: var(--radius-large, 16px); box-shadow: var(--shadow-low, 0 1px 3px rgba(0, 0, 0, 0.12)); overflow: hidden; font-family: var(--font-family, system-ui, sans-serif); color: var(--color-text, #111827); }
+.kit-card .media { height: 120px; background: var(--color-surface-2, #f3f4f6); display: grid; place-items: center; color: var(--color-text-muted, #6b7280); font-size: var(--font-size-small, 12px); }
+.kit-card .body { padding: var(--space-3, 16px) var(--space-4, 24px); display: grid; gap: var(--space-2, 8px); }
+.kit-card h3 { margin: 0; font-family: var(--font-family-heading, system-ui, sans-serif); font-size: var(--font-size-large, 20px); font-weight: var(--font-weight-heading, 700); }
+.kit-card p { margin: 0; color: var(--color-text-muted, #6b7280); font-size: var(--font-size-base, 15px); }
+.kit-card .actions { display: flex; gap: var(--space-2, 8px); padding: 0 var(--space-4, 24px) var(--space-4, 24px); }
+.kit-card button { font: inherit; font-size: var(--font-size-base, 15px); padding: var(--space-2, 8px) var(--space-3, 16px); border-radius: var(--radius-medium, 8px); border: var(--border-width, 1px) solid var(--color-primary, #2b6cb0); cursor: pointer; background: var(--color-primary, #2b6cb0); color: var(--color-primary-contrast, #ffffff); }
+.kit-card button.secondary { background: transparent; color: var(--color-primary, #2b6cb0); }
+</style>
+<article class="kit-card">
+  <div class="media">image</div>
+  <div class="body"><h3>Card title</h3><p>A sentence that says what this card is about, short enough to read at a glance.</p></div>
+  <div class="actions"><button type="button">Open</button><button type="button" class="secondary">Later</button></div>
+</article>

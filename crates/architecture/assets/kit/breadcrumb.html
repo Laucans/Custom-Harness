@@ -1,0 +1,11 @@
+<!-- Breadcrumb: the path to the current page, each step a link. -->
+<style>
+.kit-breadcrumb ol { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2, 8px); margin: 0; padding: 0; list-style: none; font-family: var(--font-family, system-ui, sans-serif); font-size: var(--font-size-small, 12px); }
+.kit-breadcrumb a { color: var(--color-text-muted, #6b7280); text-decoration: none; }
+.kit-breadcrumb a:hover { color: var(--color-primary, #2b6cb0); text-decoration: underline; }
+.kit-breadcrumb li + li::before { content: '/'; color: var(--color-border, #d1d5db); margin-right: var(--space-2, 8px); }
+.kit-breadcrumb [aria-current="page"] { color: var(--color-text, #111827); font-weight: 600; }
+</style>
+<nav class="kit-breadcrumb" aria-label="where you are">
+  <ol><li><a href="#">Home</a></li><li><a href="#">Orders</a></li><li><a href="#">2024</a></li><li><span aria-current="page">#2041</span></li></ol>
+</nav>

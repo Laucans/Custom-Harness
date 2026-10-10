@@ -1,0 +1,37 @@
+<!-- Select: a labelled drop list, opened by a click, one option picked. -->
+<style>
+.kit-select { position: relative; max-width: 300px; font-family: var(--font-family, system-ui, sans-serif); color: var(--color-text, #111827); }
+.kit-select > span { display: block; font-size: var(--font-size-small, 12px); color: var(--color-text-muted, #6b7280); text-transform: uppercase; letter-spacing: .06em; margin-bottom: var(--space-1, 4px); }
+.kit-select button { width: 100%; display: flex; justify-content: space-between; align-items: center; font: inherit; font-size: var(--font-size-base, 15px); color: inherit; padding: var(--space-2, 8px) var(--space-3, 16px); border: var(--border-width, 1px) solid var(--color-border, #d1d5db); border-radius: var(--radius-medium, 8px); background: var(--color-surface, #ffffff); cursor: pointer; }
+.kit-select button:focus { outline: 2px solid var(--color-primary, #2b6cb0); outline-offset: 1px; }
+.kit-select ul { position: absolute; left: 0; right: 0; margin: var(--space-1, 4px) 0 0; padding: var(--space-1, 4px); list-style: none; background: var(--color-surface, #ffffff); border: var(--border-width, 1px) solid var(--color-border, #d1d5db); border-radius: var(--radius-medium, 8px); box-shadow: var(--shadow-high, 0 8px 24px rgba(0, 0, 0, 0.18)); z-index: 5; }
+.kit-select ul[hidden] { display: none; }
+.kit-select li { padding: var(--space-2, 8px) var(--space-3, 16px); border-radius: var(--radius-small, 4px); cursor: pointer; }
+.kit-select li:hover, .kit-select li[aria-selected="true"] { background: var(--color-surface-2, #f3f4f6); color: var(--color-primary, #2b6cb0); }
+</style>
+<div class="kit-select">
+  <span>Currency</span>
+  <button type="button" aria-haspopup="listbox" aria-expanded="false"><b data-value>Euro (EUR)</b><i aria-hidden="true">▾</i></button>
+  <ul role="listbox" hidden>
+    <li role="option" aria-selected="true">Euro (EUR)</li>
+    <li role="option">US dollar (USD)</li>
+    <li role="option">Canadian dollar (CAD)</li>
+    <li role="option">Pound sterling (GBP)</li>
+  </ul>
+</div>
+<script>
+(() => {
+  const root = document.currentScript.closest('[data-kit]') || document.currentScript.parentElement;
+  const button = root.querySelector('button');
+  const list = root.querySelector('ul');
+  button.addEventListener('click', () => { list.hidden = !list.hidden; button.setAttribute('aria-expanded', String(!list.hidden)); });
+  list.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (!li) return;
+    list.querySelectorAll('li').forEach((x) => x.setAttribute('aria-selected', String(x === li)));
+    root.querySelector('[data-value]').textContent = li.textContent;
+    list.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+  });
+})();
+</script>

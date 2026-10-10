@@ -1,0 +1,18 @@
+<!-- Radio group: options to pick one from. -->
+<style>
+.kit-radio { font-family: var(--font-family, system-ui, sans-serif); color: var(--color-text, #111827); font-size: var(--font-size-base, 15px); }
+.kit-radio fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: var(--space-2, 8px); }
+.kit-radio legend { font-size: var(--font-size-small, 12px); color: var(--color-text-muted, #6b7280); text-transform: uppercase; letter-spacing: .06em; padding: 0; margin-bottom: var(--space-1, 4px); }
+.kit-radio label { display: flex; align-items: center; gap: var(--space-2, 8px); padding: var(--space-2, 8px) var(--space-3, 16px); border: var(--border-width, 1px) solid var(--color-border, #d1d5db); border-radius: var(--radius-medium, 8px); cursor: pointer; }
+.kit-radio label:has(input:checked) { border-color: var(--color-primary, #2b6cb0); background: var(--color-surface-2, #f3f4f6); }
+.kit-radio input { margin: 0; accent-color: var(--color-primary, #2b6cb0); }
+.kit-radio small { color: var(--color-text-muted, #6b7280); margin-left: auto; font-size: var(--font-size-small, 12px); }
+</style>
+<div class="kit-radio">
+  <fieldset>
+    <legend>Shipping</legend>
+    <label><input type="radio" name="kit-ship" checked><span>Standard</span><small>3–5 days</small></label>
+    <label><input type="radio" name="kit-ship"><span>Express</span><small>tomorrow</small></label>
+    <label><input type="radio" name="kit-ship"><span>Pick up</span><small>free</small></label>
+  </fieldset>
+</div>

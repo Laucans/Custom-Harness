@@ -1,0 +1,10 @@
+<!-- Badge: small labels — neutral, success, danger, accent, primary. -->
+<style>
+.kit-badge { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); font-family: var(--font-family, system-ui, sans-serif); }
+.kit-badge span { display: inline-block; font-size: var(--font-size-small, 12px); line-height: 1; padding: var(--space-1, 4px) var(--space-2, 8px); border-radius: var(--radius-pill, 999px); border: var(--border-width, 1px) solid var(--color-border, #d1d5db); color: var(--color-text-muted, #6b7280); background: var(--color-surface, #ffffff); font-weight: 600; }
+.kit-badge .success { color: var(--color-success, #15803d); border-color: var(--color-success, #15803d); }
+.kit-badge .danger { color: var(--color-danger, #b91c1c); border-color: var(--color-danger, #b91c1c); }
+.kit-badge .accent { color: var(--color-accent, #d97706); border-color: var(--color-accent, #d97706); }
+.kit-badge .primary { color: var(--color-primary-contrast, #ffffff); background: var(--color-primary, #2b6cb0); border-color: var(--color-primary, #2b6cb0); }
+</style>
+<div class="kit-badge"><span>Draft</span><span class="success">Paid</span><span class="danger">Overdue</span><span class="accent">New</span><span class="primary">3</span></div>

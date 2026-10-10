@@ -1,0 +1,21 @@
+<!-- Toggle: an on/off switch with its label. -->
+<style>
+.kit-toggle { display: grid; gap: var(--space-2, 8px); font-family: var(--font-family, system-ui, sans-serif); color: var(--color-text, #111827); font-size: var(--font-size-base, 15px); }
+.kit-toggle label { display: flex; align-items: center; gap: var(--space-3, 16px); cursor: pointer; }
+.kit-toggle button { width: 44px; height: 24px; border-radius: var(--radius-pill, 999px); border: 0; padding: 2px; background: var(--color-border, #d1d5db); cursor: pointer; transition: background .15s; }
+.kit-toggle button i { display: block; width: 20px; height: 20px; border-radius: 50%; background: var(--color-surface, #ffffff); box-shadow: var(--shadow-low, 0 1px 3px rgba(0, 0, 0, 0.12)); transition: transform .15s; }
+.kit-toggle button[aria-checked="true"] { background: var(--color-primary, #2b6cb0); }
+.kit-toggle button[aria-checked="true"] i { transform: translateX(20px); }
+.kit-toggle button:disabled { opacity: .5; cursor: default; }
+</style>
+<div class="kit-toggle">
+  <label><button type="button" role="switch" aria-checked="true"><i></i></button><span>Email me a weekly digest</span></label>
+  <label><button type="button" role="switch" aria-checked="false"><i></i></button><span>Show prices with tax</span></label>
+  <label><button type="button" role="switch" aria-checked="false" disabled><i></i></button><span>Beta features</span></label>
+</div>
+<script>
+(() => {
+  const root = document.currentScript.closest('[data-kit]') || document.currentScript.parentElement;
+  root.querySelectorAll('[role="switch"]').forEach((b) => b.addEventListener('click', () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true'))));
+})();
+</script>

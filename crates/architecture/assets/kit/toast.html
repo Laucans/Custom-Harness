@@ -1,0 +1,30 @@
+<!-- Toast: a short message that slides in at a corner and leaves on its own. -->
+<style>
+.kit-toast { font-family: var(--font-family, system-ui, sans-serif); color: var(--color-text, #111827); }
+.kit-toast > button { font: inherit; font-size: var(--font-size-base, 15px); padding: var(--space-2, 8px) var(--space-3, 16px); border-radius: var(--radius-medium, 8px); border: var(--border-width, 1px) solid var(--color-border, #d1d5db); background: var(--color-surface, #ffffff); color: var(--color-text, #111827); cursor: pointer; }
+.kit-toast .stack { position: fixed; right: var(--space-4, 24px); bottom: var(--space-4, 24px); display: grid; gap: var(--space-2, 8px); z-index: 30; }
+.kit-toast .item { display: flex; align-items: center; gap: var(--space-3, 16px); padding: var(--space-3, 16px) var(--space-4, 24px); background: var(--color-text, #111827); color: var(--color-surface, #ffffff); border-radius: var(--radius-medium, 8px); box-shadow: var(--shadow-high, 0 8px 24px rgba(0, 0, 0, 0.18)); font-size: var(--font-size-base, 15px); animation: kit-toast-in .25s ease; border-left: 4px solid var(--color-success, #15803d); }
+.kit-toast .item.danger { border-left-color: var(--color-danger, #b91c1c); }
+.kit-toast .item button { margin-left: auto; background: transparent; border: 0; color: inherit; cursor: pointer; font-size: var(--font-size-large, 20px); line-height: 1; }
+@keyframes kit-toast-in { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+</style>
+<div class="kit-toast">
+  <button type="button" data-toast="Saved.">Show a toast</button>
+  <div class="stack" aria-live="polite"></div>
+</div>
+<script>
+(() => {
+  const root = document.currentScript.closest('[data-kit]') || document.currentScript.parentElement;
+  const stack = root.querySelector('.stack');
+  const show = (text, danger) => {
+    const item = document.createElement('div');
+    item.className = 'item' + (danger ? ' danger' : '');
+    item.innerHTML = '<span></span><button type="button" aria-label="close">×</button>';
+    item.querySelector('span').textContent = text;
+    item.querySelector('button').addEventListener('click', () => item.remove());
+    stack.appendChild(item);
+    setTimeout(() => item.remove(), 4000);
+  };
+  root.querySelector('[data-toast]').addEventListener('click', (e) => show(e.currentTarget.dataset.toast, false));
+})();
+</script>

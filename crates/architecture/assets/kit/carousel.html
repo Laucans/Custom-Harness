@@ -1,0 +1,40 @@
+<!-- Carousel: slides that turn by arrows and dots, and on their own every few seconds. Visual only: the slides are its own markup. -->
+<style>
+.kit-carousel { position: relative; max-width: 640px; border-radius: var(--radius-large, 16px); overflow: hidden; background: var(--color-surface-2, #f3f4f6); font-family: var(--font-family, system-ui, sans-serif); color: var(--color-text, #111827); box-shadow: var(--shadow-low, 0 1px 3px rgba(0, 0, 0, 0.12)); }
+.kit-carousel .track { display: flex; transition: transform .4s ease; }
+.kit-carousel .slide { flex: 0 0 100%; min-height: 220px; display: grid; place-items: center; padding: var(--space-4, 24px); box-sizing: border-box; text-align: center; }
+.kit-carousel .slide:nth-child(2) { background: var(--color-primary, #2b6cb0); color: var(--color-primary-contrast, #ffffff); }
+.kit-carousel .slide:nth-child(3) { background: var(--color-accent, #d97706); color: var(--color-primary-contrast, #ffffff); }
+.kit-carousel h3 { margin: 0 0 var(--space-2, 8px); font-family: var(--font-family-heading, system-ui, sans-serif); font-size: var(--font-size-heading, 28px); font-weight: var(--font-weight-heading, 700); }
+.kit-carousel p { margin: 0; font-size: var(--font-size-base, 15px); opacity: .85; }
+.kit-carousel .arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--color-surface, #ffffff); color: var(--color-text, #111827); box-shadow: var(--shadow-low, 0 1px 3px rgba(0, 0, 0, 0.12)); cursor: pointer; font-size: var(--font-size-large, 20px); }
+.kit-carousel .prev { left: var(--space-3, 16px); }
+.kit-carousel .next { right: var(--space-3, 16px); }
+.kit-carousel .dots { position: absolute; bottom: var(--space-3, 16px); left: 0; right: 0; display: flex; justify-content: center; gap: var(--space-2, 8px); }
+.kit-carousel .dots button { width: 10px; height: 10px; border-radius: 50%; border: 0; background: var(--color-surface, #ffffff); opacity: .5; cursor: pointer; padding: 0; }
+.kit-carousel .dots button[aria-current="true"] { opacity: 1; }
+</style>
+<div class="kit-carousel" aria-roledescription="carousel">
+  <div class="track">
+    <div class="slide"><div><h3>First slide</h3><p>A headline and a line under it.</p></div></div>
+    <div class="slide"><div><h3>Second slide</h3><p>On the primary colour.</p></div></div>
+    <div class="slide"><div><h3>Third slide</h3><p>On the accent colour.</p></div></div>
+  </div>
+  <button type="button" class="arrow prev" aria-label="previous">‹</button>
+  <button type="button" class="arrow next" aria-label="next">›</button>
+  <div class="dots"><button type="button" aria-current="true" aria-label="slide 1"></button><button type="button" aria-label="slide 2"></button><button type="button" aria-label="slide 3"></button></div>
+</div>
+<script>
+(() => {
+  const root = document.currentScript.closest('[data-kit]') || document.currentScript.parentElement;
+  const track = root.querySelector('.track');
+  const dots = [...root.querySelectorAll('.dots button')];
+  let at = 0; let timer = 0;
+  const go = (i) => { at = (i + dots.length) % dots.length; track.style.transform = `translateX(-${at * 100}%)`; dots.forEach((d, j) => d.setAttribute('aria-current', String(j === at))); };
+  const arm = () => { clearInterval(timer); timer = setInterval(() => go(at + 1), 5000); };
+  root.querySelector('.prev').addEventListener('click', () => { go(at - 1); arm(); });
+  root.querySelector('.next').addEventListener('click', () => { go(at + 1); arm(); });
+  dots.forEach((d, i) => d.addEventListener('click', () => { go(i); arm(); }));
+  arm();
+})();
+</script>

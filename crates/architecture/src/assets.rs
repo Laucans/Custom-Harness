@@ -2,10 +2,12 @@
 //!
 //! Compiled in, so every repository the plant works on carries the same
 //! architecture from the same source: the architecture document, the rules
-//! section of `CLAUDE.md`, the fourteen contracts, the CI gates, the project's
+//! section of `CLAUDE.md`, the fifteen contracts, the CI gates, the project's
 //! CI for its stack, the script that scopes its tests, the one that dumps its
 //! schema, an empty data model to grow, an empty list of mock pages and the
-//! mock-up's loader, screen host, mock server and build. What to write of them in a given
+//! mock-up's loader, screen host, mock server and build. The kit's base
+//! fragments are not installed: the harness keeps them and writes the styled
+//! ones (`kit`). What to write of them in a given
 //! checkout, and what to keep, is `init-repo`'s decision, not this module's.
 
 /// One file of the architecture: where it goes in the repository, what it says.
@@ -31,8 +33,8 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 
 /// The files installed as they are: the document, the gates, the CI, the
 /// test scope, the schema dump, the data model, the mock-up's files, the
-/// contracts.
-pub const FILES: [Asset; 30] = [
+/// contracts A–O.
+pub const FILES: [Asset; 31] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -152,6 +154,10 @@ pub const FILES: [Asset; 30] = [
     Asset {
         path: "contracts/n-mock-pages.schema.json",
         content: include_str!("../assets/contracts/n-mock-pages.schema.json"),
+    },
+    Asset {
+        path: "contracts/o-design-kit.schema.json",
+        content: include_str!("../assets/contracts/o-design-kit.schema.json"),
     },
 ];
 

@@ -1,0 +1,19 @@
+<!-- Button: primary, secondary, ghost, disabled. Every colour, radius and spacing comes from the design system's tokens. -->
+<style>
+.kit-button { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); align-items: center; font-family: var(--font-family, system-ui, sans-serif); }
+.kit-button button { font: inherit; font-size: var(--font-size-base, 15px); padding: var(--space-2, 8px) var(--space-3, 16px); border-radius: var(--radius-medium, 8px); border: var(--border-width, 1px) solid transparent; cursor: pointer; transition: filter .15s; }
+.kit-button button:hover { filter: brightness(0.94); }
+.kit-button .primary { background: var(--color-primary, #2b6cb0); color: var(--color-primary-contrast, #ffffff); }
+.kit-button .secondary { background: var(--color-surface, #ffffff); color: var(--color-primary, #2b6cb0); border-color: var(--color-primary, #2b6cb0); }
+.kit-button .ghost { background: transparent; color: var(--color-text, #111827); }
+.kit-button .ghost:hover { background: var(--color-surface-2, #f3f4f6); }
+.kit-button .danger { background: var(--color-danger, #b91c1c); color: var(--color-primary-contrast, #ffffff); }
+.kit-button button:disabled { opacity: .5; cursor: default; filter: none; }
+</style>
+<div class="kit-button">
+  <button type="button" class="primary">Primary</button>
+  <button type="button" class="secondary">Secondary</button>
+  <button type="button" class="ghost">Ghost</button>
+  <button type="button" class="danger">Delete</button>
+  <button type="button" class="primary" disabled>Disabled</button>
+</div>

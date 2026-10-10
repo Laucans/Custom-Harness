@@ -1,0 +1,26 @@
+<!-- Tabs: a row of tabs switching the panel below. -->
+<style>
+.kit-tabs { font-family: var(--font-family, system-ui, sans-serif); color: var(--color-text, #111827); }
+.kit-tabs [role="tablist"] { display: flex; gap: var(--space-1, 4px); border-bottom: var(--border-width, 1px) solid var(--color-border, #d1d5db); }
+.kit-tabs [role="tab"] { font: inherit; font-size: var(--font-size-base, 15px); color: var(--color-text-muted, #6b7280); background: transparent; border: 0; border-bottom: 2px solid transparent; padding: var(--space-2, 8px) var(--space-3, 16px); margin-bottom: -1px; cursor: pointer; }
+.kit-tabs [role="tab"][aria-selected="true"] { color: var(--color-primary, #2b6cb0); border-bottom-color: var(--color-primary, #2b6cb0); font-weight: 600; }
+.kit-tabs [role="tabpanel"] { padding: var(--space-3, 16px) 0; font-size: var(--font-size-base, 15px); }
+.kit-tabs [role="tabpanel"][hidden] { display: none; }
+</style>
+<div class="kit-tabs">
+  <div role="tablist"><button type="button" role="tab" aria-selected="true">Overview</button><button type="button" role="tab" aria-selected="false">Details</button><button type="button" role="tab" aria-selected="false">History</button></div>
+  <div role="tabpanel">The overview: what this thing is, in a sentence or two.</div>
+  <div role="tabpanel" hidden>The details, field by field.</div>
+  <div role="tabpanel" hidden>What happened to it, newest first.</div>
+</div>
+<script>
+(() => {
+  const root = document.currentScript.closest('[data-kit]') || document.currentScript.parentElement;
+  const tabs = [...root.querySelectorAll('[role="tab"]')];
+  const panels = [...root.querySelectorAll('[role="tabpanel"]')];
+  tabs.forEach((tab, i) => tab.addEventListener('click', () => {
+    tabs.forEach((t, j) => t.setAttribute('aria-selected', String(i === j)));
+    panels.forEach((p, j) => { p.hidden = i !== j; });
+  }));
+})();
+</script>
