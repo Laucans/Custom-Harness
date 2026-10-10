@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -50,6 +50,7 @@ use tokio_stream::{Stream, StreamExt as _};
 
 use crate::data_desk::DataDesk;
 use crate::desk::Desk;
+use crate::domain::design::MAX_ASSET_BYTES;
 use crate::domain::doctor::Diagnosis;
 use crate::domain::limits::Read;
 use crate::domain::snapshot::Snapshot;
@@ -265,7 +266,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/design/generate", post(design_generate))
         .route("/api/design/validate", post(design_validate))
         .route("/api/design/candidate/drop", post(design_drop_candidate))
-        .route("/api/design/asset", post(design_asset))
+        // An image is read whole: axum's two megabytes would cut the upload
+        // of any photo before the desk could say how heavy one may be.
+        .route(
+            "/api/design/asset",
+            post(design_asset).layer(DefaultBodyLimit::max(
+                MAX_ASSET_BYTES.saturating_add(64 * 1024),
+            )),
+        )
         .route("/api/design/asset/remove", post(design_asset_remove))
         .route("/api/design/publish", post(design_publish))
         .route("/api/design/discard", post(design_discard))

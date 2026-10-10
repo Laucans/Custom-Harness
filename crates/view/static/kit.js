@@ -19,6 +19,7 @@
   const CARD_MAX = 640;
   const WIDTH = 1320;
   const MIN_HEIGHT = 480;
+  const MAX_IMAGE = 8 * 1024 * 1024;
   const POLL_MS = 4000;
   const BUSY_MS = 1500;
   const TAB = 'harness.kit.tab';
@@ -223,6 +224,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       return JSON.stringify(root, null, 2);
     }
     async function upload(kind, file, component) {
+      if (file.size > MAX_IMAGE) throw new Error(`${file.name || 'this image'} weighs ${(file.size / 1048576).toFixed(1)} MB: an image may weigh up to 8 MB`);
       const res = await fetch(`/api/design/asset?kind=${kind}&name=${encodeURIComponent(file.name || 'sketch.png')}${component ? '&component=' + encodeURIComponent(component) : ''}`, { method: 'POST', body: file });
       return said(res);
     }
