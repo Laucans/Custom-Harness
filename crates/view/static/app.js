@@ -1327,6 +1327,25 @@
     }
     return '';
   }
+  // A stable name for an element of a mock-up page: the kit component or
+  // micro-frontend it sits in, an id, else a path — the edit mode's own
+  // targets (`kit:Table>table:nth-child(2)>tr:nth-child(1)`), so a session
+  // finds it in the file without being handed the markup. Empty when the
+  // element has no stable anchor.
+  function refOf(el) {
+    if (!el || !el.closest) return '';
+    const kit = el.closest('[data-kit]');
+    if (kit && kit.dataset.kit) {
+      const steps = [];
+      for (let at = el; at && at !== kit; at = at.parentElement) {
+        steps.unshift(`${at.tagName.toLowerCase()}:nth-child(${Array.prototype.indexOf.call(at.parentElement.children, at) + 1})`);
+      }
+      return ['kit:' + kit.dataset.kit, ...steps].join('>');
+    }
+    const E = window.MockEdit;
+    const target = E && E.targetOf ? E.targetOf(el) : '';
+    return /^(component|id|data):/.test(target) ? target : '';
+  }
   function contextOf(hit, x, y) {
     const lines = [`The human points at a part of the factory view (harness-view, ${location.origin}) and hands it to you. What follows is what is under their pointer; their question comes after it.`];
     lines.push('Where: ' + (S.pane && $('pane-body').contains(hit.el)
@@ -1352,7 +1371,9 @@
     if (target.tagName === 'CANVAS' && target.id === 'scene') lines.push('It is the plant drawn by the renderer (crates/view-render, a Bevy scene in WebAssembly); the picture it draws is /api/snapshot.');
     const text = String(target.innerText || target.textContent || '').replace(/\s+/g, ' ').trim();
     if (text) lines.push('Its text: ' + clip(text, 800));
-    if (target.outerHTML) lines.push('Its markup:\n```html\n' + clip(target.outerHTML, 5000) + '\n```');
+    const ref = hit.inner ? refOf(hit.inner) : '';
+    if (ref) lines.push(`Its ref: ${ref} (kit:/component: is the fragment mock/kit/<Name>.html or mock/components/<Name>.html; each \`>\` step is a child of the one before; id:/data: is the element's id or data-id) — read the file, the markup below is only its head.`);
+    if (target.outerHTML) lines.push('Its markup:\n```html\n' + clip(target.outerHTML, ref ? 600 : 5000) + '\n```');
     return lines.join('\n') + '\n\n';
   }
   // Hands a context to the session in the dock once it is quiet: a fresh
