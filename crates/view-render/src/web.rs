@@ -1,13 +1,14 @@
 //! What the browser calls, and what it is called back with.
 //!
-//! Three exports — start, push a picture, move the viewer — and one callback:
+//! Four exports — start, push a picture, move the viewer, set the pace — and one callback:
 //! `window.harnessRender.onEvent(json)`, looked up at call time through
 //! `js_sys::Reflect` rather than declared as an import, so that no `extern`
 //! block and no `unsafe` enter the crate.
 
 use wasm_bindgen::prelude::*;
 
-use crate::bridge::{self, View};
+use crate::bridge::{self, Pace, View};
+use crate::waker;
 
 /// Starts the scene in the canvas named by `selector`, e.g. `#scene`.
 #[wasm_bindgen]
@@ -20,14 +21,32 @@ pub fn start(selector: &str) {
 #[wasm_bindgen(js_name = setSnapshot)]
 pub fn set_snapshot(json: &str) {
     bridge::push_snapshot(json);
+    waker::wake();
 }
 
 /// The page moves the viewer: `{"level":"A"}`, `{"level":"C","room":"lines"}`.
 #[wasm_bindgen(js_name = setView)]
 pub fn set_view(json: &str) {
     match serde_json::from_str::<View>(json) {
-        Ok(view) => bridge::push_view(view),
+        Ok(view) => {
+            bridge::push_view(view);
+            waker::wake();
+        }
         Err(e) => web_log(&format!("harness-render: not a view: {json} ({e})")),
+    }
+}
+
+/// The page says how much of the scene is seen: `full`, `dim` (a pane is
+/// open beside it) or `paused` (nothing of it is seen). The scene redraws
+/// at that pace from its next frame.
+#[wasm_bindgen(js_name = setPace)]
+pub fn set_pace(name: &str) {
+    match Pace::parse(name) {
+        Some(pace) => {
+            bridge::push_pace(pace);
+            waker::wake();
+        }
+        None => web_log(&format!("harness-render: not a pace: {name}")),
     }
 }
 

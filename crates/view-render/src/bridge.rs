@@ -49,6 +49,36 @@ pub struct Hot {
     pub tip: Option<String>,
 }
 
+/// How often the scene redraws, from what the page knows covers it.
+///
+/// The whole window is the scene (`full`), a strip beside an open pane
+/// (`dim`), or nothing at all — the mock-up over the whole window, a tab in
+/// the background (`paused`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pace {
+    /// Every frame the browser offers: the plant is what the human looks at.
+    #[default]
+    Full,
+    /// A few frames a second, and at once on the pointer: a pane is open.
+    Dim,
+    /// Nothing until the page asks again: nothing of the plant is seen.
+    Paused,
+}
+
+impl Pace {
+    /// The pace a page names; `None` for a name it has not.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "full" => Some(Self::Full),
+            "dim" => Some(Self::Dim),
+            "paused" => Some(Self::Paused),
+            _ => None,
+        }
+    }
+}
+
 /// What the page last pushed.
 #[derive(Debug, Default)]
 pub struct Inbox {
@@ -56,11 +86,14 @@ pub struct Inbox {
     pub snapshot: Option<String>,
     /// The viewpoint, when it changed since the last take.
     pub view: Option<View>,
+    /// The pace, when it changed since the last take.
+    pub pace: Option<Pace>,
 }
 
 static INBOX: Mutex<Inbox> = Mutex::new(Inbox {
     snapshot: None,
     view: None,
+    pace: None,
 });
 
 fn inbox() -> MutexGuard<'static, Inbox> {
@@ -75,6 +108,11 @@ pub fn push_snapshot(json: &str) {
 /// The page moved the viewer.
 pub fn push_view(view: View) {
     inbox().view = Some(view);
+}
+
+/// The page said how much of the scene is seen.
+pub fn push_pace(pace: Pace) {
+    inbox().pace = Some(pace);
 }
 
 /// Everything pushed since the last take, and the inbox emptied.
@@ -123,6 +161,15 @@ pub fn emit(out: &Outbound) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pace_is_named_by_the_page() {
+        assert_eq!(Pace::parse("full"), Some(Pace::Full));
+        assert_eq!(Pace::parse("dim"), Some(Pace::Dim));
+        assert_eq!(Pace::parse("paused"), Some(Pace::Paused));
+        assert_eq!(Pace::parse("fast"), None);
+        assert_eq!(Pace::default(), Pace::Full);
+    }
 
     #[test]
     fn the_inbox_keeps_only_the_last_push_and_empties_on_take() {

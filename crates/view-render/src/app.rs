@@ -37,6 +37,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::PI;
+use std::time::Duration;
 
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::camera::ScalingMode;
@@ -48,8 +49,9 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Extent3d, Face, TextureDimension, TextureFormat};
 use bevy::shader::ShaderRef;
 use bevy::text::Justify;
+use bevy::winit::{UpdateMode, WinitSettings};
 
-use crate::bridge::{self, Hot, Outbound, View};
+use crate::bridge::{self, Hot, Outbound, Pace, View};
 use crate::model::Snapshot;
 use crate::scene::{self, Anim, Backing, Label, Prop, Rgba, Scene, Shape};
 use crate::sprites::{self, Figure};
@@ -260,6 +262,8 @@ impl Plugin for PlantPlugin {
                 )
                     .chain(),
             )
+            // The page wakes a waiting scene through the event loop's proxy.
+            .add_systems(Startup, crate::waker::keep)
             .add_observer(on_click)
             .add_observer(on_press)
             .add_observer(on_over)
@@ -339,8 +343,29 @@ fn setup(
 }
 
 /// Reads what the page pushed since the last frame.
-fn take_inbox(mut picture: ResMut<'_, Picture>, mut rig: ResMut<'_, Rig>) {
+/// How often the engine runs a frame at a pace: every frame the browser
+/// offers; ten a second, and at once on a pointer over the canvas; or not at
+/// all until the page wakes it.
+fn update_mode(pace: Pace) -> UpdateMode {
+    match pace {
+        Pace::Full => UpdateMode::Continuous,
+        Pace::Dim => UpdateMode::reactive_low_power(Duration::from_millis(100)),
+        Pace::Paused => UpdateMode::reactive_low_power(Duration::MAX),
+    }
+}
+
+fn take_inbox(
+    mut picture: ResMut<'_, Picture>,
+    mut rig: ResMut<'_, Rig>,
+    mut winit: ResMut<'_, WinitSettings>,
+) {
     let inbox = bridge::take();
+    // The same whether the canvas has the focus or not: on the web the
+    // focus is the canvas's, and the human mostly clicks the page around it.
+    if let Some(pace) = inbox.pace {
+        winit.focused_mode = update_mode(pace);
+        winit.unfocused_mode = update_mode(pace);
+    }
     if let Some(json) = inbox.snapshot {
         match Snapshot::parse(&json) {
             Ok(snapshot) => {

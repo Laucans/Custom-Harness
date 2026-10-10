@@ -83,6 +83,8 @@
       await mod.default();
       S.render = mod;
       mod.start('#scene');
+      S.pace = '';
+      setPace();
       if (notice) notice.hidden = true;
     } catch (e) {
       if (notice) {
@@ -91,6 +93,21 @@
       }
     }
   }
+
+  // How often the scene redraws, from what covers it: every frame alone, a
+  // few a second beside an open pane, not at all under the mock-up's full
+  // window or in a tab in the background. The scene runs its animations by
+  // the clock, so a slower pace only makes them coarser.
+  function setPace() {
+    if (!S.render || !S.render.setPace) return;
+    const pace = document.hidden || document.body.classList.contains('full-pane') ? 'paused'
+      : document.body.classList.contains('split') ? 'dim' : 'full';
+    if (pace === S.pace) return;
+    S.pace = pace;
+    try { S.render.setPace(pace); } catch (e) { /* an older bundle: it keeps its pace */ }
+  }
+  document.addEventListener('visibilitychange', setPace);
+  new MutationObserver(setPace).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
   // ---- tooltip ---------------------------------------------------------------
   function showTip(text, x, y) {

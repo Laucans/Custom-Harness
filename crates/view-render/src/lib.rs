@@ -25,6 +25,7 @@ pub mod bridge;
 pub mod model;
 pub mod scene;
 pub mod sprites;
+pub mod waker;
 
 #[cfg(target_arch = "wasm32")]
 pub mod web;

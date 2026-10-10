@@ -321,7 +321,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           <div class="mk-card-head"><b>${esc(e.name)}</b><span class="mk-card-sys">${esc(e.title)}</span><span class="mk-card-tags">${e.variant_of ? `<i title="forked from ${esc(e.variant_of)}">fork of ${esc(e.variant_of)}</i>` : ''}${e.draft ? '<i class="bad">draft</i>' : ''}${e.checks.length ? `<i class="bad" title="${esc(e.checks.join('\n'))}">fails the check</i>` : '<i class="ok" title="reusable as it is by the real code">passes the check</i>'}${e.recoded ? `<i class="bad" title="${esc(e.recoded)}">recoded</i>` : ''}</span></div>
           <div class="mk-card-desc">${esc(e.what || e.prompt)}</div>
           <div class="mk-card-meta">${used.length ? `used by ${used.length}: ` + used.slice(0, 4).map((u) => esc(`${u.kind === 'page' ? (u.title || u.what) : u.what} (${u.branch})`)).join(', ') + (used.length > 4 ? '…' : '') : st.usages ? 'used nowhere yet' : 'reading who uses it…'}</div>
-          <div class="mk-card-body"><iframe class="mk-preview" title="${esc(e.name)}" src="${esc(previewSrc(e.name, e.draft, versionOf(e)))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>
+          <div class="mk-card-body"><iframe class="mk-preview" title="${esc(e.name)}" data-src="${esc(previewSrc(e.name, e.draft, versionOf(e)))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>
           <div class="kt-card-actions">
             ${working ? `<span class="kt-working"><span class="spin"></span> the AI rewrites it${working > 1 ? ` · ${working} in a row` : ''}</span>` : ''}
             ${pending ? `<button type="button" class="mini on" data-kt="apply" data-name="${esc(e.name)}" title="Apply the pending requests of this card to the fragment, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : working ? '' : '<span class="muted">drop a request pin on the card, then apply it</span>'}
@@ -365,20 +365,42 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           if (card) { const height = card.querySelector('.mk-preview') && card.querySelector('.mk-preview').style.height; card.replaceWith(fresh); if (height) fresh.querySelector('.mk-preview').style.height = height; } else content.insertBefore(fresh, before ? before.nextSibling : content.firstChild);
           card = fresh;
           const frame = card.querySelector('.mk-preview');
-          if (frame) frame.addEventListener('load', measureCards);
+          if (frame) { frame.addEventListener('load', measureCards); watchFrame(frame); }
         }
         before = card;
         return { name: e.name, card, frame: card.querySelector('.mk-preview') };
       });
-      have.forEach((card) => card.remove());
+      have.forEach((card) => { const frame = card.querySelector('.mk-preview'); if (frame && st.seen) st.seen.unobserve(frame); card.remove(); });
       st.cards = cards;
       layoutCards();
       if (!st.fitted) { st.board.fit(); st.fitted = true; }
     }
+    // A preview is a whole document, its scripts running: only the cards on
+    // the screen, and a little around it, hold one. A card scrolled or
+    // zoomed away lets its document go and keeps its height; it loads again
+    // when it comes back.
+    function watchFrame(frame) {
+      if (!window.IntersectionObserver) { frame.src = frame.dataset.src; return; }
+      if (!st.seen) {
+        st.seen = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            const f = entry.target;
+            if (entry.isIntersecting) {
+              if (f.dataset.loaded !== f.dataset.src) { f.dataset.loaded = f.dataset.src; f.src = f.dataset.src; }
+            } else if (f.dataset.loaded) {
+              delete f.dataset.loaded;
+              f.src = 'about:blank';
+            }
+          });
+        }, { root: q('.kt-board'), rootMargin: '300px' });
+      }
+      st.seen.observe(frame);
+    }
     function measureCards() {
       let changed = false;
       st.cards.forEach((c) => {
-        if (!c.frame) return;
+        // A frame let go keeps the height it had: its card does not move.
+        if (!c.frame || !c.frame.dataset.loaded) return;
         let doc = null;
         try { doc = c.frame.contentDocument; } catch (e) { doc = null; }
         if (!doc || !doc.body) return;
@@ -548,6 +570,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       destroy() {
         st.gone = true;
         clearTimeout(st.timer); clearTimeout(st.editTimer); clearTimeout(st.toastTimer);
+        if (st.seen) st.seen.disconnect();
         if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
         host.innerHTML = '';
       },
