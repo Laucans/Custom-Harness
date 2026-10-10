@@ -1152,6 +1152,13 @@
 
     return {
       get id() { return st.board ? st.board.id : ''; },
+      // What a desk is told of the part under the pointer: a part of the page, or a card.
+      contextAt(clientX, clientY, el) {
+        let target = '';
+        if (st.view === 'page') { const part = under(clientX, clientY); target = part ? part.getAttribute('data-pin') || '' : ''; }
+        else { const card = el && el.closest ? el.closest('[data-pin]') : null; target = card ? card.getAttribute('data-pin') || '' : ''; }
+        return { what: describe(target), text: context(target) };
+      },
       reload() { st.state = null; return load(); },
       destroy() {
         leavePage();

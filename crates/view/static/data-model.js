@@ -734,6 +734,12 @@
     }).catch(() => {});
     return {
       reload: () => board.reload(),
+      // What a desk is told of the part under the pointer: a table, a field.
+      contextAt(clientX, clientY, el) {
+        const part = el && el.closest ? el.closest('[data-pin]') : null;
+        const target = part ? part.getAttribute('data-pin') || '' : '';
+        return { what: describe(target), text: context(target) };
+      },
       destroy() {
         st.gone = true;
         clearTimeout(st.buildTimer);

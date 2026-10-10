@@ -582,10 +582,35 @@
     const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable;
     if (e.key === 'Escape' || e.key === 'Backspace') { if (!typing && e.target.tagName !== 'CANVAS') back(); else if (e.key === 'Escape') back(); }
   });
+  // The two desks of the header: a click opens (or closes) the desk in the
+  // dock at the bottom left; a hold — or a drag — lifts a pin off the button
+  // that is dropped on a part of the page, and the desk opens with it.
+  const LONG_PRESS = 380;
   for (const who of ['steward', 'doctor']) {
-    $('hud-' + who).addEventListener('click', () => {
-      if (S.pane && S.pane.kind === who) closePane(); else openPane({ kind: who });
+    const button = $('hud-' + who);
+    let press = null;
+    const lift = () => { if (press && !press.long) { press.long = true; clearTimeout(press.timer); carryStart(who, press.x, press.y); } };
+    button.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      press = { x: e.clientX, y: e.clientY, long: false };
+      button.setPointerCapture(e.pointerId);
+      press.timer = setTimeout(lift, LONG_PRESS);
     });
+    button.addEventListener('pointermove', (e) => {
+      if (!press) return;
+      if (!press.long && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) lift();
+      if (press.long) carryMove(e.clientX, e.clientY);
+    });
+    button.addEventListener('pointerup', (e) => {
+      if (!press) return;
+      clearTimeout(press.timer);
+      const long = press.long;
+      press = null;
+      if (long) carryDrop(who, e.clientX, e.clientY); else toggleDesk(who);
+    });
+    button.addEventListener('pointercancel', () => { if (press) { clearTimeout(press.timer); if (press.long) carryEnd(); press = null; } });
+    // The keyboard's Enter or Space: a click with no pointer behind it.
+    button.addEventListener('click', (e) => { if (e.detail === 0) toggleDesk(who); });
   }
   $('hud-janitor').addEventListener('click', () => {
     if (S.pane && S.pane.kind === 'janitor') closePane(); else openPane({ kind: 'janitor' });
@@ -627,8 +652,9 @@
   const PANE_HISTORY = 50;
   S.paneHistory = [];
   function openPane(p, goingBack = false) {
-    // A pin's session sits in the dock, not in the pane.
+    // A pin's session sits in the dock, not in the pane; so do the steward and the doctor.
     if (p.kind === 'note_session') { openTalk(p); return; }
+    if (p.kind === 'steward' || p.kind === 'doctor') { openDesk(p.kind); return; }
     // The office's screen was the feature list before it was renamed.
     if (p.kind === 'features') p = { ...p, kind: 'capabilities' };
     acknowledge(S.pane);
@@ -1152,11 +1178,30 @@
     unavailable: (html) => { $('talk-term').innerHTML = html; $('talk-status').textContent = 'no session'; },
     chips: () => $('talk'),
     restart: () => $('talk-restart'),
-    set: (handle) => { if (S.talk) Object.assign(S.talk, handle); },
+    set: (handle) => {
+      if (!S.talk) return;
+      Object.assign(S.talk, handle);
+      // When the desk last spoke: a context is handed over once it is quiet.
+      const t = S.talk;
+      if (handle.ws) handle.ws.addEventListener('message', () => { t.lastOut = Date.now(); });
+      deliver();
+    },
   };
-  function openTalk(p) {
+  // The steward or the doctor, in the dock: the one open stays, another replaces it.
+  function openDesk(who) {
+    if (S.talk && S.talk.who === who) { $('talk').hidden = false; return; }
+    openTalk({ kind: who }, who);
+  }
+  function toggleDesk(who) {
+    if (S.talk && S.talk.who === who && !$('talk').hidden) closeTalk(true, false);
+    else openDesk(who);
+  }
+  function openTalk(p, who = 'note_session') {
     closeTalk();
-    const desk = TERMINALS.note_session;
+    const desk = TERMINALS[who];
+    $('talk').dataset.who = who;
+    $('talk-ok').hidden = who !== 'note_session';
+    $('talk-drop').hidden = who !== 'note_session';
     const talk = $('talk');
     $('talk-title').textContent = typeof desk.title === 'function' ? desk.title(p) : desk.title;
     $('talk-chips').innerHTML = desk.chips.map(([label, say]) => `<button data-type="${esc(say)}">${esc(label)}</button>`).join('');
@@ -1165,18 +1210,21 @@
     talk.style.setProperty('--talk-w', (size.w || 640) + 'px');
     talk.style.setProperty('--talk-h', (size.h || Math.round(window.innerHeight * 0.4)) + 'px');
     talk.hidden = false;
-    S.talk = { p, term: null, ws: null, ro: null, close: null };
-    mountTerminal('note_session', p, TALK_SLOT);
+    S.talk = { p, who, term: null, ws: null, ro: null, close: null, pending: '', pendingAt: 0, lastOut: 0, deliverTimer: null };
+    mountTerminal(who, p, TALK_SLOT);
   }
   // Validating keeps what the session said on the pin; quitting without
-  // validating drops it. Either way the program behind it stops.
-  function closeTalk(keep = true) {
+  // validating drops it. Either way the program behind it stops. The cross
+  // only closes the window (`end` false): the program keeps running, and the
+  // pin or the button sits down at it again.
+  function closeTalk(keep = true, end = true) {
     const t = S.talk;
     if (!t) return;
     S.talk = null;
+    clearTimeout(t.deliverTimer);
     $('talk').hidden = true;
     let closing = null;
-    if (t.close) { try { closing = t.close(keep); } catch (e) { /* the server keeps what it can */ } }
+    if (end && t.close) { try { closing = t.close(keep); } catch (e) { /* the server keeps what it can */ } }
     try { if (t.ro) t.ro.disconnect(); } catch (e) { /* already gone */ }
     try { if (t.ws) t.ws.close(); } catch (e) { /* already gone */ }
     try { if (t.term) t.term.dispose(); } catch (e) { /* already gone */ }
@@ -1184,6 +1232,8 @@
     if (closing) { const canvas = S.canvas; closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); }
   }
   $('talk-ok').addEventListener('click', () => closeTalk(true));
+  $('talk-x').addEventListener('click', () => closeTalk(true, false));
+  $('talk-pin').addEventListener('click', () => pickStart());
   $('talk-drop').addEventListener('click', () => { if (window.confirm('Quit without validating? What this session said is dropped.')) closeTalk(false); });
   $('talk-grip').addEventListener('pointerdown', (e) => {
     const talk = $('talk');
@@ -1206,6 +1256,207 @@
     $('talk-grip').addEventListener('pointermove', move);
     $('talk-grip').addEventListener('pointerup', up);
   });
+
+  // ---- pointing at the page: a part of it handed to a desk ---------------------------
+  // A pin carried off the steward's or the doctor's button, or the dock's own
+  // pin, points at anything the page shows — a card of the kit's canvas, a
+  // part of a mocked page, a table of the data model, a row of a pane — and
+  // what is under the pointer is written for the session: where it is, what
+  // the pane's canvas says of it, the frame it sits in and the file behind
+  // that frame, the element's text and markup. It is pasted in the session's
+  // input, not sent: the human's question comes after it.
+  const PANE_CODE = {
+    kit: 'crates/view/static/kit.js (the server side: crates/view/src/kit_desk.rs, crates/view/src/domain/design.rs)',
+    mockup: 'crates/view/static/mockup.js, with design.js (the edit mode\'s gestures) and edit.js (the draft\'s operations)',
+    data_model: 'crates/view/static/data-model.js',
+    pins: 'crates/view/static/app.js (the pin board)',
+  };
+  const clip = (text, n) => (text.length > n ? text.slice(0, n) + `… (${text.length - n} more characters)` : text);
+  const inside = (r, x, y) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  // What is under a point: the element, and through a shield or a frame, the element inside it.
+  function hitAt(x, y) {
+    const layers = ['pick-layer', 'pick-box', 'pin-ghost', 'pick-hint'].map($).filter(Boolean);
+    const was = layers.map((l) => l.style.display);
+    layers.forEach((l) => { l.style.display = 'none'; });
+    let el = document.elementFromPoint(x, y);
+    layers.forEach((l, i) => { l.style.display = was[i]; });
+    if (!el) return null;
+    let frame = null; let inner = null; let k = 1;
+    if (el.tagName === 'IFRAME') frame = el;
+    // A shield over a frame lets the board pan; what is meant is the frame under it.
+    else if (el.classList.contains('mk-shield') && el.parentElement) frame = [...el.parentElement.querySelectorAll('iframe')].find((f) => inside(f.getBoundingClientRect(), x, y)) || null;
+    let rect = el.getBoundingClientRect();
+    if (frame) {
+      const r = frame.getBoundingClientRect();
+      k = frame.clientWidth ? r.width / frame.clientWidth : 1;
+      try {
+        inner = frame.contentDocument ? frame.contentDocument.elementFromPoint((x - r.left) / k, (y - r.top) / k) : null;
+      } catch (e) { inner = null; }
+      if (inner) {
+        const ir = inner.getBoundingClientRect();
+        rect = { left: r.left + ir.left * k, top: r.top + ir.top * k, width: ir.width * k, height: ir.height * k };
+      } else rect = r;
+    }
+    return { el, frame, inner, rect };
+  }
+  function nameOf(el) {
+    if (!el || !el.tagName) return '?';
+    const cls = typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/).slice(0, 4).join('.') : '';
+    const attrs = ['data-pin', 'data-kit', 'data-component', 'data-card', 'aria-label', 'title'].filter((a) => el.getAttribute(a)).map((a) => ` ${a}="${clip(el.getAttribute(a), 80)}"`).join('');
+    return `<${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${cls}${attrs}>`;
+  }
+  // The file behind a frame, when the view knows it.
+  function sourceOf(frame, inner) {
+    const src = frame.getAttribute('src') || '';
+    const demo = S.snap && S.snap.demo;
+    const branchOf = (slug) => decodeURIComponent(slug).replace(/__/g, '/');
+    let m = /^\/mock\/([^/]+)\/__kit\/([A-Za-z0-9.]+)/.exec(src);
+    if (m) {
+      const name = m[2].replace(/\.draft$/, '');
+      const file = /[?&]draft=1/.test(src) ? `${name}.draft.html` : `${name}.html`;
+      return `This is the kit component ${name} of the design system: its fragment is mock/kit/${file} on the product's \`design-system\` branch — in the view's workspace .llocal/view-mockups/design-system/mock/kit/${file} once one was made${demo ? `, under --demo crates/view/sample/units/design-system/mock/kit/${file}` : ''}; the tokens it consumes are mock/design/tokens.css, its record mock/kit/kit.json.`;
+    }
+    m = /^\/mock\/([^/]+)\/__preview\/([A-Za-z0-9]+)/.exec(src);
+    if (m) return `This is the micro-frontend ${m[2]} alone: its fragment is mock/components/${m[2]}.html on the branch \`${branchOf(m[1])}\` (the view's workspace .llocal/view-mockups/${m[1]}/ when a session edited it, else \`git show ${branchOf(m[1])}:mock/components/${m[2]}.html\` on the product).`;
+    let base = '';
+    try { const b = frame.contentDocument && frame.contentDocument.querySelector('base'); base = b ? b.getAttribute('href') || '' : ''; } catch (e) { base = ''; }
+    m = /\/mock\/([^/]+)\//.exec(base);
+    if (m) {
+      const kit = inner && inner.closest ? inner.closest('[data-kit]') : null;
+      const mf = inner && inner.closest ? inner.closest('[data-component]') : null;
+      let text = `This is a page of the product's mock-up on the branch \`${branchOf(m[1])}\`, shown as its draft says: its files are under mock/ (the view's workspace .llocal/view-mockups/${m[1]}/ when a session edited it${demo ? `, under --demo crates/view/sample/units/${m[1]}/` : ''}).`;
+      if (mf) text += ` The element sits in the micro-frontend ${mf.dataset.component}: mock/components/${mf.dataset.component}.html.`;
+      if (kit) text += ` The element sits in the kit component ${kit.dataset.kit}: mock/kit/${kit.dataset.kit}.html on the \`design-system\` branch.`;
+      return text;
+    }
+    return '';
+  }
+  function contextOf(hit, x, y) {
+    const lines = [`The human points at a part of the factory view (harness-view, ${location.origin}) and hands it to you. What follows is what is under their pointer; their question comes after it.`];
+    lines.push('Where: ' + (S.pane && $('pane-body').contains(hit.el)
+      ? `the pane "${$('pane-title').textContent}" (kind ${S.pane.kind})`
+      : hit.el.closest('#hud') ? 'the header of the view'
+        : `the plant's scene, ${S.level === 'A' ? 'outside the factory' : S.level === 'B' ? 'inside, among the rooms' : 'in the room ' + (S.room || '?')}`));
+    if (S.pane && PANE_CODE[S.pane.kind] && $('pane-body').contains(hit.el)) lines.push(`The view's code for this pane: ${PANE_CODE[S.pane.kind]}; the routes are crates/view/src/server.rs.`);
+    if (S.canvas && S.canvas.contextAt && $('pane-body').contains(hit.el)) {
+      let said = null;
+      try { said = S.canvas.contextAt(x, y, hit.el); } catch (e) { said = null; }
+      if (said && said.what) lines.push(`The part, as the pane names it: ${said.what}`);
+      if (said && said.text) lines.push(said.text);
+    }
+    if (hit.frame) {
+      lines.push(`Inside the frame "${hit.frame.title || ''}"${hit.frame.getAttribute('src') ? ' (' + hit.frame.getAttribute('src').split('?')[0] + ')' : ''}.`);
+      const source = sourceOf(hit.frame, hit.inner);
+      if (source) lines.push(source);
+    }
+    const target = hit.inner || hit.el;
+    lines.push(`The element: ${nameOf(target)}${target !== hit.el ? ` (under the view's ${nameOf(hit.el)})` : ''}`);
+    const part = hit.el.closest && hit.el.closest('[data-pin]');
+    if (part && part !== hit.el) lines.push(`It belongs to the board's part ${nameOf(part)}.`);
+    if (target.tagName === 'CANVAS' && target.id === 'scene') lines.push('It is the plant drawn by the renderer (crates/view-render, a Bevy scene in WebAssembly); the picture it draws is /api/snapshot.');
+    const text = String(target.innerText || target.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text) lines.push('Its text: ' + clip(text, 800));
+    if (target.outerHTML) lines.push('Its markup:\n```html\n' + clip(target.outerHTML, 5000) + '\n```');
+    return lines.join('\n') + '\n\n';
+  }
+  // Hands a context to the session in the dock once it is quiet: a fresh
+  // Claude Code draws its screen first, and what is pasted before is lost.
+  function handTo(text) {
+    const t = S.talk;
+    if (!t) return;
+    t.pending = text;
+    t.pendingAt = Date.now();
+    $('talk-status').textContent = 'handing the part over…';
+    deliver();
+  }
+  function deliver() {
+    const t = S.talk;
+    if (!t || !t.pending) return;
+    clearTimeout(t.deliverTimer);
+    const open = t.term && t.ws && t.ws.readyState === 1;
+    const quiet = t.lastOut && Date.now() - t.lastOut > 700;
+    const waited = Date.now() - t.pendingAt > 15000;
+    if (open && (quiet || waited)) {
+      // A paste, bracketed when the program asked for it: one block, not a line per Enter.
+      t.term.paste(t.pending);
+      t.pending = '';
+      t.term.focus();
+      $('talk-status').textContent = 'the part is in the input — ask your question';
+      return;
+    }
+    if (Date.now() - t.pendingAt < 60000) t.deliverTimer = setTimeout(deliver, 300);
+  }
+  function showBox(rect) {
+    const box = $('pick-box');
+    if (!rect || !rect.width) { box.hidden = true; return; }
+    Object.assign(box.style, { left: rect.left + 'px', top: rect.top + 'px', width: rect.width + 'px', height: rect.height + 'px' });
+    box.hidden = false;
+  }
+  const outside = (hit) => !hit || hit.el.closest('#hud, #talk, #pick-hint');
+  // A pin carried off a header button.
+  function carryStart(who, x, y) {
+    const ghost = $('pin-ghost');
+    ghost.querySelector('span').textContent = who;
+    ghost.hidden = false;
+    document.body.classList.add('picking');
+    $('pick-hint').textContent = `Drop the pin on a part of the page: the ${who} opens with it`;
+    $('pick-hint').hidden = false;
+    carryMove(x, y);
+  }
+  function carryMove(x, y) {
+    const ghost = $('pin-ghost');
+    if (ghost.hidden) return;
+    ghost.style.left = x + 'px';
+    ghost.style.top = y + 'px';
+    const hit = hitAt(x, y);
+    showBox(outside(hit) ? null : hit.rect);
+  }
+  function carryEnd() {
+    $('pin-ghost').hidden = true;
+    $('pick-box').hidden = true;
+    $('pick-hint').hidden = true;
+    document.body.classList.remove('picking');
+  }
+  function carryDrop(who, x, y) {
+    const hit = hitAt(x, y);
+    carryEnd();
+    if (outside(hit)) return;
+    const text = contextOf(hit, x, y);
+    openDesk(who);
+    handTo(text);
+  }
+  // The dock's pin: the window steps aside, the next click on the page is the part.
+  function pickStart() {
+    if (!S.talk) return;
+    const who = S.talk.who === 'note_session' ? 'this session' : 'the ' + S.talk.who;
+    // Hidden by visibility, not display: the terminal keeps its size, the program its columns.
+    $('talk').classList.add('stepped-aside');
+    const layer = $('pick-layer');
+    layer.hidden = false;
+    $('pick-hint').textContent = `Click a part of the page: it is handed to ${who} · Esc cancels`;
+    $('pick-hint').hidden = false;
+    document.body.classList.add('picking');
+    const move = (e) => { const hit = hitAt(e.clientX, e.clientY); showBox(outside(hit) ? null : hit.rect); };
+    const end = () => {
+      layer.hidden = true;
+      layer.removeEventListener('pointermove', move);
+      layer.removeEventListener('click', click);
+      window.removeEventListener('keydown', key, true);
+      $('talk').classList.remove('stepped-aside');
+      carryEnd();
+    };
+    const click = (e) => {
+      e.preventDefault();
+      const hit = hitAt(e.clientX, e.clientY);
+      const text = outside(hit) ? '' : contextOf(hit, e.clientX, e.clientY);
+      end();
+      if (text) handTo(text);
+    };
+    const key = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); end(); } };
+    layer.addEventListener('pointermove', move);
+    layer.addEventListener('click', click);
+    window.addEventListener('keydown', key, true);
+  }
 
   function renderPane(p, refresh) {
     const fn = PANES[p.kind] || PANES.placeholder;

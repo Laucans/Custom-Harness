@@ -37,8 +37,9 @@ it lives in one function (`assemble::is_live`) with its two thresholds.
 ## The steward, and the doctor
 
 The grinning mascot in a blue jumpsuit giving a thumbs-up, on the forecourt and in the hall.
-Click them — or the `steward` button in the header — and the pane becomes a
-terminal: an **interactive Claude Code**, started in the harness checkout
+Click them — or the `steward` button in the header — and the conversation
+dock at the bottom left (below) becomes a terminal: an **interactive Claude
+Code**, started in the harness checkout
 with the plant's standing orders appended to its system prompt
 (`domain::steward::briefing`). The human types; the steward starts the
 watch, stops it, reads the ledgers, taps a label. Nothing in the view does
@@ -648,8 +649,31 @@ while the human walks the panes and pages. Two ways out, at its top
 right: **validate & quit** closes the session with what it said joining
 the pin (`POST …/session/close`, the pin's text compacted from it), **quit
 without validating** stops it and drops what it said (`?keep=false`,
-`NoteDesks::discard`); either way the canvas rereads its pins. The easel
-has a **full window** switch (`⛶`, Esc leaves) that puts the mock-up over
+`NoteDesks::discard`); either way the canvas rereads its pins. The **×**
+only closes the window: the program keeps running, and the pin or the button
+sits down at it again.
+
+The **steward** and the **doctor** sit in the same dock: a click on their
+header button opens (or closes) theirs, the pin's ways out hidden. Every
+session in the dock can be **pointed at a part of the page**, two ways.
+**Hold** the steward's or the doctor's button — or drag off it — and a pin
+comes away with the pointer: dropped on a part, the desk opens with that
+part handed over. Or the dock's own **📍** at its top left: the window steps
+aside (hidden by visibility, so the terminal keeps its columns), the cursor
+becomes a pin, the part under it is outlined, and a click hands it over (Esc
+cancels). What is handed over is written by `app.js` (`contextOf`): where
+the part is (the pane and its kind, or the plant's room), the view's own
+code for that pane (`kit.js`, `mockup.js`…, for "show me the code of this
+canvas"), what the pane's canvas says of the part (`contextAt` on the kit,
+the mock-up and the data model — the same words a pin's session gets), the
+frame it sits in and the file behind it (a kit component's
+`mock/kit/<Name>.html` on `design-system`, a micro-frontend's fragment, a
+page's branch and workspace), and the element's text and markup, the frames
+looked through. It is **pasted** in the session's input — bracketed, one
+block — once the program has been quiet for a moment, never sent: the
+human's question comes after it.
+
+The easel has a **full window** switch (`⛶`, Esc leaves) that puts the mock-up over
 the whole page, the dock still floating above it.
 
 ## The capabilities list

@@ -488,6 +488,19 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
     load(false);
     return {
       reload: () => load(false),
+      // What a desk is told of the part under the pointer: a card of the canvas, or the tab shown.
+      contextAt(clientX, clientY, el) {
+        if (st.tab === 'canvas') {
+          const part = el && el.closest ? el.closest('[data-pin]') : null;
+          const target = part ? part.getAttribute('data-pin') || '' : '';
+          return { what: describe(target), text: context(target) };
+        }
+        const d = design().design || {};
+        return {
+          what: `the ${st.tab} tab of the design system's easel`,
+          text: `The design system: ${d.state || 'none'}${d.source ? ', ' + d.source : ''}; ${design().tokens.length} token(s) in mock/design/tokens.json, derived into mock/design/tokens.css, on the product's design-system branch. The kit: ${catalog().filter((e) => e.state === 'generated').length} component(s) generated, listed in mock/kit/kit.json.`,
+        };
+      },
       destroy() {
         st.gone = true;
         clearTimeout(st.timer); clearTimeout(st.editTimer); clearTimeout(st.toastTimer);
