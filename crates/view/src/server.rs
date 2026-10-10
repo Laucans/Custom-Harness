@@ -158,6 +158,7 @@ const ACTIONS_JS: &str = include_str!("../static/actions.js");
 const DATA_MODEL_JS: &str = include_str!("../static/data-model.js");
 const MOCKUP_JS: &str = include_str!("../static/mockup.js");
 const EDIT_JS: &str = include_str!("../static/edit.js");
+const DESIGN_JS: &str = include_str!("../static/design.js");
 
 /// The run files a browser may tail.
 const TAILABLE: [&str; 4] = ["run.log", "session.log", "prompts.md", "stream.jsonl"];
@@ -183,6 +184,7 @@ pub fn router(state: AppState) -> Router {
         .route("/data-model.js", get(data_model_js))
         .route("/mockup.js", get(mockup_js))
         .route("/edit.js", get(edit_js))
+        .route("/design.js", get(design_js))
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
         .route("/mock/{slug}/{*path}", get(mock_file))
         .route("/render/{file}", get(render_asset))
@@ -327,6 +329,10 @@ async fn mockup_js(State(state): State<AppState>) -> Response {
 
 async fn edit_js(State(state): State<AppState>) -> Response {
     asset(&state, "edit.js", EDIT_JS, JS)
+}
+
+async fn design_js(State(state): State<AppState>) -> Response {
+    asset(&state, "design.js", DESIGN_JS, JS)
 }
 
 /// Why the easel is empty.
@@ -2163,13 +2169,27 @@ async fn session_term(
 }
 
 /// Closes a pin's session; its turns join the pin's conversation.
+/// `?keep=false` quits without validating: the session's turns are dropped
+/// instead of joining the pin's conversation.
+#[derive(Debug, Default, Deserialize)]
+struct CloseQuery {
+    keep: Option<bool>,
+}
+
 async fn close_session(
     State(state): State<AppState>,
     Path((board, id)): Path<(String, String)>,
+    Query(query): Query<CloseQuery>,
 ) -> Response {
     let Some(desks) = state.note_desks.clone() else {
         return not_found(NO_SESSIONS);
     };
+    if query.keep == Some(false) {
+        return match desks.discard(&board, &id) {
+            Ok(turns) => json(&serde_json::json!({ "turns": turns })),
+            Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+        };
+    }
     match desks.close(&board, &id, true).await {
         Ok(turns) => json(&serde_json::json!({ "turns": turns })),
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),

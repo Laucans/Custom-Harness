@@ -258,6 +258,21 @@ impl NoteDesks {
         Ok(conversation.turns.len())
     }
 
+    /// Quits a pin's session without validating it: its program stops and
+    /// what it said is dropped — the pin's conversation stays as it was.
+    /// Answers the conversation's length.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read.
+    pub fn discard(&self, board: &str, id: &str) -> Result<usize, String> {
+        let open = lock(&self.open).remove(&key(board, id));
+        if let Some(open) = open {
+            open.desk.shutdown();
+        }
+        Ok(self.conversation(board, id)?.turns.len())
+    }
+
     /// What a one-shot question is told of a pin.
     fn about(board: &str, note: &Note) -> About {
         About {

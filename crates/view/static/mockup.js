@@ -74,8 +74,9 @@
       + '<label class="mk-page" hidden>page <select class="mk-pages" aria-label="page"></select></label>'
       + '<button type="button" class="mini mk-only-page" data-mk="new" title="A new page of the mock-up, drawn by an AI session from its objective">+ page</button>'
       + '<button type="button" class="mini mk-only-page" data-mk="mf" aria-pressed="false" title="Outline every micro-frontend in its own colour; pins and edits then take hold of micro-frontends">micro-frontends ◧</button>'
-      + '<button type="button" class="mini mk-only-page" data-mk="edit" aria-pressed="false" title="Edit the page: drag parts before or after one another, resize, remove, clone, rewrite; every change a step of the page\'s draft">edit</button>'
+      + '<button type="button" class="mini mk-only-page" data-mk="edit" aria-pressed="false" title="Design the page: select, drag, resize, align, insert — every change a step of the page\'s draft">edit</button>'
       + '<button type="button" class="mini mk-only-page" data-mk="interact" aria-pressed="false" title="Click through to the page itself: its links, its buttons">interact</button>'
+      + '<button type="button" class="mini" data-mk="full" aria-pressed="false" title="The mock-up over the whole window (Esc leaves)">⛶</button>'
       + '<button type="button" class="mini mk-only-components" data-mk="design" hidden title="A new micro-frontend, made by an AI session from its spec">+ micro-frontend</button>'
       + '<span class="spacer"></span>'
       + '<span class="mk-state"></span>'
@@ -87,8 +88,14 @@
       + '<button type="button" class="mini" data-ed="undo" title="Undo the last step (ctrl+z)">↶ undo</button>'
       + '<button type="button" class="mini" data-ed="redo" title="Redo (ctrl+shift+z)">↷ redo</button>'
       + '<span class="mk-sep"></span>'
-      + '<button type="button" class="mini" data-ed="add-link" title="A link, placed after the selection or at the end">+ link</button>'
-      + '<button type="button" class="mini" data-ed="add-button" title="A button, placed after the selection or at the end">+ button</button>'
+      + '<span class="fg-tools" role="group" aria-label="tools">'
+      + '<button type="button" class="mini on" data-tool="move" title="Move · select (V)">↖</button>'
+      + '<button type="button" class="mini" data-tool="section" title="Section: click to drop one, drag to size it (F)">▭</button>'
+      + '<button type="button" class="mini" data-tool="text" title="Text (T)">T</button>'
+      + '<button type="button" class="mini" data-tool="button" title="Button (B)">⊡</button>'
+      + '<button type="button" class="mini" data-tool="link" title="Link to a page or a URL (L)">⇗</button>'
+      + '<button type="button" class="mini" data-tool="image" title="Image placeholder (I)">▨</button>'
+      + '</span>'
       + '<span class="mk-sep"></span>'
       + '<button type="button" class="mini" data-ed="apply-all" title="Apply every pending request of the page to the draft, in one go">simulate requests</button>'
       + '<span class="spacer"></span>'
@@ -100,7 +107,7 @@
       + '</div>'
       + '<div class="mk-frozen" hidden></div>'
       + '<div class="mk-form" hidden></div>'
-      + '<div class="dm-main"><div class="dm-board mk-board"></div><aside class="mk-strip" hidden></aside><aside class="mk-panel" hidden></aside><aside class="mk-history" hidden></aside></div>'
+      + '<div class="dm-main"><aside class="mk-layers" hidden></aside><div class="dm-board mk-board"></div><aside class="mk-strip" hidden></aside><aside class="mk-panel" hidden></aside><aside class="mk-history" hidden></aside></div>'
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
@@ -211,7 +218,7 @@
     // ---- the board: one per branch and page, one for the micro-frontends ------------
     function mountBoard() {
       if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
-      st.board = null; st.frame = null; st.doc = null; st.shield = null; st.fitted = false; st.proxies = new WeakMap(); st.cards = []; st.sel = ''; st.hover = null;
+      st.board = null; st.frame = null; st.doc = null; st.shield = null; st.fitted = false; st.proxies = new WeakMap(); st.cards = []; design.select([]);
       const onSession = opts && opts.onSession
         ? (note, ctx) => opts.onSession({ board: boardOf(), id: note.id, on: note.kind === 'link' ? 'page ' + (note.page || '?') : note.kind === 'design' ? 'micro-frontend ' + (note.component || '?') : describe(note.target), kind: note.kind, context: ctx, branch: st.branch, page: st.view === 'page' ? st.page : '' })
         : null;
@@ -229,7 +236,7 @@
         dataCapabilities,
         apply: st.view === 'page' ? (note) => applyRequests([note]) : null,
         goto: (path) => { setView('page'); show(path); },
-        onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; drawPanel(); },
+        onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; design.refresh(); },
         bounds: () => (st.view === 'page'
           ? { x: 0, y: 0, w: st.width, h: Math.max(MIN_HEIGHT, st.frame ? parseFloat(st.frame.style.height) || MIN_HEIGHT : MIN_HEIGHT) }
           : { x: 0, y: 0, w: Math.max(DEFAULT_WIDTH, st.board ? parseFloat(st.board.content.style.width) || DEFAULT_WIDTH : DEFAULT_WIDTH), h: Math.max(MIN_HEIGHT, st.board ? parseFloat(st.board.content.style.height) || MIN_HEIGHT : MIN_HEIGHT) }),
@@ -243,7 +250,7 @@
         st.board.fit();
         return;
       }
-      st.board.content.innerHTML = `<iframe class="mk-frame" title="${esc(page.title)}" style="width:${st.width}px;height:${MIN_HEIGHT}px"></iframe><div class="mk-shield"${st.interact ? ' hidden' : ''}></div><div class="mk-handles" hidden></div><div class="mk-vp-handle" title="drag to change the width"></div>`;
+      st.board.content.innerHTML = `<iframe class="mk-frame" title="${esc(page.title)}" style="width:${st.width}px;height:${MIN_HEIGHT}px"></iframe><div class="mk-shield"${st.interact ? ' hidden' : ''}></div><div class="mk-vp-handle" title="drag to change the width"></div>`;
       st.frame = q('.mk-frame');
       st.shield = q('.mk-shield');
       st.board.setSize(st.width, MIN_HEIGHT);
@@ -300,11 +307,10 @@
       }
       injectStyle(doc);
       outline();
-      markSelection();
       measure();
       if (!st.fitted) { st.fitted = true; st.board.fit(); }
       st.board.refresh();
-      drawHandles();
+      design.refresh();
     }
     function injectStyle(doc) {
       if (doc.getElementById('hb-style')) return;
@@ -313,12 +319,6 @@
       style.textContent = '.hb-target{outline:2px dashed #e2b240 !important;outline-offset:2px}'
         + '.mf-on[data-component]{outline:2px solid var(--mf,#4ea3f0) !important;outline-offset:4px;position:relative}'
         + '.mf-on[data-component]::before{content:attr(data-component);position:absolute;left:-2px;top:-22px;background:var(--mf,#4ea3f0);color:#101418;font:600 11px/1 ui-monospace,monospace;padding:4px 7px;border-radius:4px 4px 0 0;letter-spacing:.03em;z-index:2147483000}'
-        + '.mk-hover{outline:1px dashed #2bc0c8 !important;outline-offset:1px}'
-        + '.mk-sel{outline:2px solid #2bc0c8 !important;outline-offset:2px}'
-        + '.mk-drop-before{box-shadow:-4px 0 0 0 #2bc0c8,0 -4px 0 0 #2bc0c8 !important}'
-        + '.mk-drop-after{box-shadow:4px 0 0 0 #2bc0c8,0 4px 0 0 #2bc0c8 !important}'
-        + '.mk-drop-into{outline:2px dotted #2bc0c8 !important;outline-offset:-2px;background:rgba(43,192,200,.08)}'
-        + '.mk-dragging{opacity:.4}'
         + '[data-layout="static"]{outline:1px dashed rgba(43,192,200,.5)}'
         + '.mk-added{outline:1px dotted #2bc0c8}';
       (doc.head || doc.documentElement).appendChild(style);
@@ -339,7 +339,7 @@
       if (Math.abs(h - (parseFloat(st.frame.style.height) || 0)) > 2) {
         st.frame.style.height = h + 'px';
         st.board.setSize(st.width, h);
-        drawHandles();
+        design.refresh();
       }
     }
     function reloadFrame() {
@@ -348,37 +348,8 @@
       loadPage();
     }
 
-    // ---- edit mode: selection, gestures, operations -------------------------------------
-    const editing = () => st.edit && st.view === 'page' && st.engine && !st.viewing;
-    function markSelection() {
-      if (!st.doc) return;
-      st.doc.querySelectorAll('.mk-sel').forEach((el) => el.classList.remove('mk-sel'));
-      const el = st.sel ? E.elementOf(st.doc, st.sel) : null;
-      if (el) el.classList.add('mk-sel');
-    }
-    function select(target) {
-      st.sel = target || '';
-      markSelection();
-      drawHandles();
-      drawPanel();
-    }
-    // The handles beside the selection: the right edge resizes the width.
-    function drawHandles() {
-      const handles = q('.mk-handles');
-      if (!handles) return;
-      const el = editing() && st.sel ? E.elementOf(st.doc, st.sel) : null;
-      if (!el || el.tagName === 'TH' || el.tagName === 'TD') { handles.hidden = true; return; }
-      const fr = st.frame.getBoundingClientRect();
-      const r = el.getBoundingClientRect();
-      const k = st.board.zoom();
-      // In board units: the iframe sits at the content's origin.
-      handles.hidden = false;
-      handles.style.left = r.left + 'px'; handles.style.top = r.top + 'px';
-      handles.style.width = r.width + 'px'; handles.style.height = r.height + 'px';
-      handles.innerHTML = '<div class="mk-h mk-h-e" data-handle="e" title="drag: width in twelfths of the row"></div>' + (staticParent(el) ? '<div class="mk-h mk-h-s" data-handle="s" title="drag: height"></div><div class="mk-h mk-h-se" data-handle="se"></div>' : '');
-      void fr; void k;
-    }
-    const staticParent = (el) => (el && el.parentElement && el.parentElement.dataset && el.parentElement.dataset.layout === 'static' ? el.parentElement : null);
+    // ---- edit mode: the designer's hands (design.js), the draft's steps --------------
+    const editing = () => !!(st.edit && st.view === 'page' && st.engine && !st.viewing);
     // The micro-frontend an element belongs to, when it is one the page must
     // fork before editing inside: a real or hand-written fragment not inlined.
     function forkNeeded(el) {
@@ -393,21 +364,29 @@
       const page = currentPage();
       const as = (from + (page ? page.title.replace(/[^A-Za-z0-9]+/g, '') : 'Copy')).replace(/^[a-z]/, (c) => c.toUpperCase());
       const copy = root.cloneNode(true);
-      copy.querySelectorAll('script').forEach((s) => s.remove());
-      copy.querySelectorAll('.mk-sel, .mk-hover, .mk-drop-before, .mk-drop-after, .mk-drop-into').forEach((x) => x.classList.remove('mk-sel', 'mk-hover', 'mk-drop-before', 'mk-drop-after', 'mk-drop-into'));
+      copy.querySelectorAll('script').forEach((x) => x.remove());
       const op = { kind: 'fork', by: 'human', target: 'component:' + from, as, from, html: copy.innerHTML };
       const r = st.engine.push(op);
       if (!r.ok) { say('the fork failed'); return target; }
+      if (st.doc) E.applyOps(st.doc, [op]);
       toast(`fork <b>${esc(from)}</b> to <b>${esc(as)}</b> — click to rename`, () => renameFork(as));
+      drawStrip();
       return target.replace(new RegExp('^component:' + from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'component:' + as);
     }
     function renameFork(as) {
-      const name = window.prompt ? null : null; // no dialog: the panel asks
-      void name;
       const panel = q('.mk-panel');
       panel.hidden = false;
-      panel.innerHTML = `<div class="mk-panel-head"><b>rename the fork</b></div><input class="mk-fork-name" value="${esc(as)}" maxlength="80"><button type="button" class="mini on" data-ed="rename-fork" data-from="${esc(as)}">rename</button>`;
+      panel.innerHTML = `<div class="mk-panel-head"><b>rename the fork</b></div><input class="mk-fork-name" value="${esc(as)}" data-from="${esc(as)}" maxlength="80"><button type="button" class="mini on" data-ed="rename-fork" data-from="${esc(as)}">rename</button>`;
       panel.querySelector('input').focus();
+    }
+    function renameForkTo(from, to) {
+      if (!/^[A-Z][A-Za-z0-9]*$/.test(to) || to === from) return;
+      st.engine.ops.forEach((op) => {
+        if (op.kind === 'fork' && op.as === from) op.as = to;
+        ['target', 'before', 'after', 'into'].forEach((k) => { if (typeof op[k] === 'string') op[k] = op[k].replace('component:' + from, 'component:' + to); });
+      });
+      afterChange();
+      q('.mk-panel').hidden = true;
     }
     function toast(html, onClick) {
       const t = q('.mk-toast');
@@ -417,17 +396,23 @@
       clearTimeout(st.toastTimer);
       st.toastTimer = setTimeout(() => { t.hidden = true; }, 7000);
     }
-    // One step of the draft: applied, shown, kept.
+    // One step of the draft: applied to the page as shown — without reloading
+    // it, when every operation finds its part there — and kept.
     function step(ops) {
-      const r = st.engine.push(ops);
+      const list = Array.isArray(ops) ? ops : [ops];
+      const r = st.engine.push(list);
       if (!r.ok) { say(`not applied: ${r.failed} operation(s) found no target`); return false; }
-      afterChange();
+      const failed = st.doc ? E.applyOps(st.doc, list) : [{ why: 'no page' }];
+      if (failed.length) render();
+      else { measure(); st.board.refresh(); design.refresh(); drawEditBar(); drawFrozen(); }
+      persist();
+      drawStrip();
       return true;
     }
+    // After an undo, a redo or a version change: the page is shown again from scratch.
     function afterChange() {
       render();
       persist();
-      drawPanel();
       drawStrip();
     }
     function persist() {
@@ -444,145 +429,56 @@
         } catch (e) { say(`draft not kept: ${esc(e.message || e)}`); }
       }, SAVE_DELAY);
     }
-    // A target as an operation names it, forking first when it lies inside a micro-frontend.
-    function opTarget(el) {
+    // A target as an operation names it, forking first when it lies inside a
+    // micro-frontend; `force` forks the micro-frontend itself.
+    function opTarget(el, force) {
       const target = E.targetOf(el);
+      if (force) { const root = el.closest('[data-component]'); return root && !root.dataset.inline ? fork(root, target) : target; }
       if (st.mf) return target;
       const root = forkNeeded(el);
       return root ? fork(root, target) : target;
     }
-    // Where a dragged part lands beside the part under the pointer.
-    function placement(target, clientX, clientY) {
-      const r = target.getBoundingClientRect();
-      const k = st.board.zoom();
-      const fr = st.frame.getBoundingClientRect();
-      const x = (clientX - fr.left) / k; const y = (clientY - fr.top) / k;
-      const style = st.doc.defaultView.getComputedStyle(target.parentElement || target);
-      const horizontal = /flex|grid/.test(style.display) ? !/column/.test(style.flexDirection || '') && style.display !== 'grid' : /^inline/.test(st.doc.defaultView.getComputedStyle(target).display);
-      if (!target.children.length && /^(DIV|SECTION|MAIN|ARTICLE|NAV|HEADER|FOOTER|UL|OL|FORM)$/.test(target.tagName)) return 'into';
-      return horizontal ? (x < r.left + r.width / 2 ? 'before' : 'after') : (y < r.top + r.height / 2 ? 'before' : 'after');
+    const requestsOn = (target) => (st.board ? st.board.all() : []).filter((n) => (n.kind === 'request' || n.kind === 'asking' || n.kind === 'simulate') && n.target === target);
+    function requestsHtml(target) {
+      const list = requestsOn(target);
+      return list.length ? '<ul>' + list.map((n) => `<li data-open-note="${esc(n.id)}"><i class="pin-dot request state-${esc(n.state || 'pending')}"></i>${esc((n.text || '').split('\n')[0] || '(empty)')}<small>${esc(n.state || 'pending')}</small></li>`).join('') + '</ul>' : '<div class="muted">none on this part</div>';
     }
-    const clearDrop = () => { if (st.doc) st.doc.querySelectorAll('.mk-drop-before, .mk-drop-after, .mk-drop-into, .mk-dragging, .mk-hover').forEach((x) => x.classList.remove('mk-drop-before', 'mk-drop-after', 'mk-drop-into', 'mk-dragging', 'mk-hover')); };
-    const grabSelector = () => (st.mf ? '[data-component]' : EDITABLE);
-    const onEditDown = (e) => {
-      if (!editing() || e.button !== 0 || st.space) return;
-      if (!e.target.classList.contains('mk-shield') && !e.target.closest('.mk-handles')) return;
-      const handle = e.target.closest('[data-handle]');
-      if (handle) {
-        const el = E.elementOf(st.doc, st.sel);
-        if (!el) return;
-        e.stopPropagation(); e.preventDefault();
-        const r = el.getBoundingClientRect();
-        const row = (el.parentElement || el).getBoundingClientRect();
-        st.resize = { el, handle: handle.dataset.handle, startX: e.clientX, startY: e.clientY, w0: r.width, h0: r.height, row: row.width || st.width, pointer: e.pointerId };
-        q('.mk-board').setPointerCapture(e.pointerId);
-        return;
-      }
-      const el = elementAt(e.clientX, e.clientY, grabSelector());
-      e.stopPropagation();
-      if (!el) { select(''); return; }
-      st.drag = { el, startX: e.clientX, startY: e.clientY, moved: false, over: null, where: '', pointer: e.pointerId, column: el.tagName === 'TH' || el.tagName === 'TD' };
-      q('.mk-board').setPointerCapture(e.pointerId);
-    };
-    const onEditMove = (e) => {
-      if (st.resize) { e.stopPropagation(); moveResize(e); return; }
-      if (!st.drag) {
-        if (editing() && e.target.classList.contains('mk-shield')) {
-          const el = elementAt(e.clientX, e.clientY, grabSelector());
-          if (st.hover !== el) { if (st.hover) st.hover.classList.remove('mk-hover'); st.hover = el; if (el && !el.classList.contains('mk-sel')) el.classList.add('mk-hover'); }
-        }
-        return;
-      }
-      e.stopPropagation();
-      const d = st.drag;
-      if (!d.moved && Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < SLOP) return;
-      if (!d.moved) { d.moved = true; d.el.classList.add('mk-dragging'); host.classList.add('mk-moving'); }
-      const parentStatic = staticParent(d.el);
-      if (parentStatic) return; // a free part moves on drop
-      let over = elementAt(e.clientX, e.clientY, d.column ? 'th,td' : grabSelector());
-      if (over && (over === d.el || d.el.contains(over))) over = null;
-      if (d.column && over && over.closest('table') !== d.el.closest('table')) over = null;
-      const where = over ? (d.column ? ((e.clientX - screenRect(over).left) / Math.max(1, screenRect(over).width) < 0.5 ? 'before' : 'after') : placement(over, e.clientX, e.clientY)) : '';
-      if (d.over !== over || d.where !== where) {
-        clearDrop();
-        d.el.classList.add('mk-dragging');
-        if (over) over.classList.add('mk-drop-' + where);
-        d.over = over; d.where = where;
-      }
-    };
-    const onEditUp = (e) => {
-      if (st.resize) { e.stopPropagation(); endResize(e); return; }
-      if (!st.drag) return;
-      e.stopPropagation();
-      const d = st.drag;
-      st.drag = null;
-      host.classList.remove('mk-moving');
-      clearDrop();
-      if (!d.moved) { select(E.targetOf(d.el)); return; }
-      const parentStatic = staticParent(d.el);
-      if (parentStatic) {
-        // Free layout: the part moves by the drag, snapped to the grid.
-        const k = st.board.zoom();
-        const dx = (e.clientX - d.startX) / k; const dy = (e.clientY - d.startY) / k;
-        const items = E.staticItems(parentStatic);
-        const mine = items.find((i) => i.target === E.targetOf(d.el));
-        if (mine) {
-          const pr = parentStatic.getBoundingClientRect();
-          mine.x = Math.max(0, Math.round((mine.x + dx / pr.width * 100) / (100 / E.COLS)) * (100 / E.COLS));
-          mine.y = Math.max(0, Math.round((mine.y + dy / pr.height * 100) * 2) / 2);
-        }
-        step({ kind: 'static', by: 'human', target: opTarget(parentStatic), layout: 'static', height: Math.round(parentStatic.getBoundingClientRect().height), items });
-        return;
-      }
-      if (!d.over || !d.where) return;
-      if (d.column) {
-        const table = d.el.closest('table');
-        const row = d.el.parentElement;
-        const from = Array.prototype.indexOf.call(row.children, d.el);
-        const overIndex = Array.prototype.indexOf.call(d.over.parentElement.children, d.over);
-        let to = d.where === 'before' ? overIndex : overIndex + 1;
-        if (from < to) to -= 1;
-        if (to === from) return;
-        step({ kind: 'move', by: 'human', target: `col:${opTarget(table)}#${from}`, to });
-        return;
-      }
-      const target = opTarget(d.el);
-      const dest = opTarget(d.over);
-      const op = { kind: 'move', by: 'human', target };
-      op[d.where] = dest;
-      st.sel = target;
-      step(op);
-    };
-    function moveResize(e) {
-      const r = st.resize;
-      const k = st.board.zoom();
-      if (r.handle === 'e' || r.handle === 'se') {
-        const w = Math.max(20, r.w0 + (e.clientX - r.startX) / k);
-        r.el.style.width = w + 'px'; r.el.style.boxSizing = 'border-box';
-      }
-      if (r.handle === 's' || r.handle === 'se') {
-        const h = Math.max(10, r.h0 + (e.clientY - r.startY) / k);
-        r.el.style.height = h + 'px';
-      }
-      drawHandles();
+    function newRequest(target) {
+      if (st.board) st.board.newNote({ kind: 'request', target, text: '' });
     }
-    function endResize(e) {
-      const r = st.resize;
-      st.resize = null;
-      const k = st.board.zoom();
-      const parentStatic = staticParent(r.el);
-      if (parentStatic) {
-        const items = E.staticItems(parentStatic);
-        step({ kind: 'static', by: 'human', target: opTarget(parentStatic), layout: 'static', height: Math.round(parentStatic.getBoundingClientRect().height), items });
-        return;
-      }
-      const w = Math.max(20, r.w0 + (e.clientX - r.startX) / k);
-      const cols = Math.max(1, Math.min(E.COLS, Math.round(w / (r.row / E.COLS))));
-      step({ kind: 'resize', by: 'human', target: opTarget(r.el), cols });
+    function designSession(name) {
+      const c = componentOf(name);
+      if (!c || !st.board) return;
+      const id = st.board.newNote({ kind: 'design', component: c.name, text: specOf(c), target: 'component:' + c.name });
+      st.board.session(id);
     }
-    // Keys: undo and redo in edit mode, space to pan.
+    const design = window.MockDesign.create({
+      host,
+      board: () => st.board,
+      boardHost: () => q('.mk-board'),
+      frame: () => st.frame,
+      doc: () => st.doc,
+      engine: () => st.engine,
+      editing,
+      mfOnly: () => st.mf,
+      space: () => st.space,
+      step,
+      opTarget,
+      proxy,
+      describe,
+      pages: () => (st.state && st.state.pages) || [],
+      componentOf,
+      requestsHtml,
+      newRequest,
+      mockComponent: designSession,
+      designSession,
+      onPanel: () => drawStrip(),
+    });
+
+    // Keys the pane keeps for itself: space pans, ctrl+z and ctrl+shift+z
+    // undo and redo; the designer has the rest.
     const onKey = (e) => {
-      if (e.target.closest('.mk-form') || e.target.classList.contains('mk-name') || e.target.closest('.mk-panel') || e.target.closest('.mk-history') || e.target.closest('.mk-editbar')) {
+      if (e.target.closest('.mk-form') || e.target.classList.contains('mk-name') || e.target.closest('.mk-panel') || e.target.closest('.mk-layers') || e.target.closest('.mk-history') || e.target.closest('.mk-editbar')) {
         e.stopPropagation();
         if (e.key === 'Enter' && e.target.classList.contains('mk-name')) save();
         if (e.key === 'Escape' && e.target.closest('.mk-form')) drawForm(false);
@@ -590,101 +486,12 @@
       }
       if (!editing() || !host.isConnected) return;
       if (e.key === ' ' && e.type === 'keydown') { st.space = true; host.classList.add('mk-space'); }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.target.matches('input,textarea')) {
         e.preventDefault(); e.stopPropagation();
         if (e.shiftKey ? st.engine.redo() : st.engine.undo()) afterChange();
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && st.sel && !e.target.matches('input,textarea')) { e.preventDefault(); e.stopPropagation(); removeSelected(); }
     };
     const onKeyUp = (e) => { if (e.key === ' ') { st.space = false; host.classList.remove('mk-space'); } };
-    function removeSelected() {
-      const el = E.elementOf(st.doc, st.sel);
-      if (!el) return;
-      const target = opTarget(el);
-      if (step({ kind: 'remove', by: 'human', target })) select('');
-    }
-    function addPart(what) {
-      const id = newId(what === 'link' ? 'l' : 'b');
-      const sel = st.sel ? E.elementOf(st.doc, st.sel) : null;
-      const op = { kind: 'add', by: 'human', what, label: what === 'link' ? 'new link' : 'new button', as: id };
-      if (sel) op.after = opTarget(sel); else op.into = st.doc.querySelector('main') ? E.targetOf(st.doc.querySelector('main')) : 'path:';
-      if (!op.into && !op.after) return;
-      if (op.into === 'path:') op.into = E.targetOf(st.doc.body.firstElementChild || st.doc.body);
-      if (step(op)) select('data:' + id);
-    }
-
-    // ---- the selection panel: what the part is, what to do with it --------------------
-    function drawPanel() {
-      const panel = q('.mk-panel');
-      const strip = q('.mk-strip');
-      if (!editing() || !st.sel || !st.doc) { panel.hidden = true; strip.hidden = st.view !== 'page' || !st.state; return; }
-      const el = E.elementOf(st.doc, st.sel);
-      if (!el) { panel.hidden = true; return; }
-      strip.hidden = true;
-      panel.hidden = false;
-      const requests = (st.board ? st.board.all() : []).filter((n) => (n.kind === 'request' || n.kind === 'asking' || n.kind === 'simulate') && n.target === st.sel);
-      const r = el.getBoundingClientRect();
-      const row = (el.parentElement || el).getBoundingClientRect();
-      const cols = row.width ? Math.max(1, Math.min(E.COLS, Math.round(r.width / (row.width / E.COLS)))) : E.COLS;
-      const container = /^(DIV|SECTION|MAIN|ARTICLE|NAV|HEADER|FOOTER|FORM|UL|OL)$/.test(el.tagName) && el.children.length > 0;
-      const text = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) || !el.children.length;
-      const comp = el.closest('[data-component]');
-      panel.innerHTML = `<div class="mk-panel-head"><b>${esc(describe(st.sel))}</b><small>${esc(el.tagName.toLowerCase())}${comp && comp !== el ? ' · in ' + esc(comp.dataset.component) + (comp.dataset.inline ? ' (this page’s copy)' : ' — editing forks it') : ''}</small></div>`
-        + `<div class="mk-panel-row"><span>size</span><span class="mono">${Math.round(r.width)}×${Math.round(r.height)} · ${cols}/12</span></div>`
-        + (text ? `<label class="mk-panel-field">text<input class="mk-text" value="${esc(el.children.length ? ([...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim()) || {}).textContent || '' : el.textContent)}" maxlength="500"></label>` : '')
-        + (el.tagName === 'A' ? `<label class="mk-panel-field">goes to<select class="mk-link-page"><option value="">a URL…</option>${((st.state && st.state.pages) || []).map((p) => `<option value="${esc(p.path)}"${el.getAttribute('href') === '../' + p.path ? ' selected' : ''}>${esc(p.title)}</option>`).join('')}</select><input class="mk-link-href" value="${esc(el.getAttribute('href') || '')}" placeholder="https://…"></label>` : '')
-        + (el.tagName === 'BUTTON' ? `<label class="mk-panel-field">intent<textarea class="mk-intent" rows="2" placeholder="what this button is for — written for the next roadmap">${esc(el.dataset.intent || '')}</textarea></label>` : '')
-        + '<div class="mk-panel-actions">'
-        + '<button type="button" class="mini" data-ed="clone">clone</button>'
-        + '<button type="button" class="mini" data-ed="remove">remove</button>'
-        + (container ? `<button type="button" class="mini" data-ed="static">${el.dataset.layout === 'static' ? 'back to flow' : 'static layout'}</button>` : '')
-        + '</div>'
-        + `<div class="mk-panel-requests"><b>requests</b> <button type="button" class="mini" data-ed="request">+ request</button>`
-        + (requests.length ? '<ul>' + requests.map((n) => `<li data-open-note="${esc(n.id)}"><i class="pin-dot request state-${esc(n.state || 'pending')}"></i>${esc((n.text || '').split('\n')[0] || '(empty)')}<small>${esc(n.state || 'pending')}</small></li>`).join('') + '</ul>' : '<div class="muted">none on this part</div>')
-        + '</div>';
-    }
-    const onPanelInput = (e) => {
-      const el = E.elementOf(st.doc, st.sel);
-      if (!el) return;
-      if (e.target.classList.contains('mk-text') && e.type === 'change') step({ kind: 'text', by: 'human', target: opTarget(el), text: e.target.value });
-      if (e.target.classList.contains('mk-link-page') && e.type === 'change') step({ kind: 'text', by: 'human', target: opTarget(el), text: el.textContent, href: e.target.value ? '../' + e.target.value : '' }) && setHref(el, e.target.value ? '../' + e.target.value : '');
-      if (e.target.classList.contains('mk-link-href') && e.type === 'change') setHref(el, e.target.value);
-      if (e.target.classList.contains('mk-intent') && e.type === 'change') step({ kind: 'add', by: 'human', what: 'button', label: el.textContent, intent: e.target.value, as: el.dataset.id || newId('b'), after: opTarget(el) }) && step({ kind: 'remove', by: 'human', target: opTarget(el) });
-      if (e.target.classList.contains('mk-fork-name') && e.key === 'Enter') renameForkTo(e.target.dataset.from, e.target.value);
-    };
-    function setHref(el, href) {
-      // A link's destination: the part is added again with it, the old one removed — one step.
-      const id = el.dataset.id || newId('l');
-      step([{ kind: 'add', by: 'human', what: 'link', label: el.textContent, href, as: id, after: opTarget(el) }, { kind: 'remove', by: 'human', target: opTarget(el) }]);
-      select('data:' + id);
-    }
-    function renameForkTo(from, to) {
-      if (!/^[A-Z][A-Za-z0-9]*$/.test(to) || to === from) return;
-      st.engine.ops.forEach((op) => {
-        if (op.kind === 'fork' && op.as === from) op.as = to;
-        ['target', 'before', 'after', 'into'].forEach((k) => { if (typeof op[k] === 'string') op[k] = op[k].replace('component:' + from, 'component:' + to); });
-      });
-      afterChange();
-      q('.mk-panel').hidden = true;
-    }
-    function toggleStatic() {
-      const el = E.elementOf(st.doc, st.sel);
-      if (!el) return;
-      if (el.dataset.layout === 'static') { step({ kind: 'static', by: 'human', target: opTarget(el), layout: 'flow' }); return; }
-      step({ kind: 'static', by: 'human', target: opTarget(el), layout: 'static', height: Math.round(el.getBoundingClientRect().height), items: E.staticItems(el) });
-    }
-    function cloneSelected() {
-      const el = E.elementOf(st.doc, st.sel);
-      if (!el) return;
-      const id = newId('c');
-      if (step({ kind: 'clone', by: 'human', target: opTarget(el), as: id })) select('data:' + id);
-    }
-    function newRequest() {
-      if (!st.board) return;
-      const el = E.elementOf(st.doc, st.sel);
-      const id = st.board.newNote({ kind: 'request', target: st.sel, text: '' });
-      void el; void id;
-    }
 
     // ---- requests applied to the draft, in one go ----------------------------------------
     async function applyRequests(notes) {
@@ -764,7 +571,7 @@
       const d = (st.history.kept || []).find((x) => x.version === version);
       if (!d) return;
       st.viewing = d;
-      select('');
+      design.select([]);
       render();
       drawHistory();
     }
@@ -790,6 +597,7 @@
       q('[data-mk="edit"]').classList.toggle('on', st.edit);
       q('[data-mk="edit"]').setAttribute('aria-pressed', st.edit);
       host.classList.toggle('mk-editing', editing());
+      if (editing() && !st.designOn) { st.designOn = true; design.attach(); } else if (!editing() && st.designOn) { st.designOn = false; design.detach(); }
       const slot = bar.hidden ? q('.dm-bar') : bar;
       if (q('.mk-name').parentElement !== slot) ['.mk-name', '[data-mk="save"]', '[data-mk="discard"]'].forEach((sel) => slot.appendChild(q(sel)));
       if (bar.hidden) return;
@@ -809,10 +617,8 @@
     }
     function setEdit(on) {
       st.edit = on;
-      if (!on) { select(''); clearDrop(); }
       drawEditBar();
-      drawPanel();
-      drawHandles();
+      drawStrip();
     }
     function setWidth(w) {
       st.width = Math.max(320, Math.min(3000, Math.round(w)));
@@ -930,7 +736,7 @@
     // ---- the strip: the micro-frontends to drop on the page ------------------------------
     function drawStrip() {
       const strip = q('.mk-strip');
-      strip.hidden = st.view !== 'page' || !st.state || (editing() && !!st.sel);
+      strip.hidden = st.view !== 'page' || !st.state || (editing() && !q('.mk-panel').hidden);
       if (strip.hidden) return;
       const list = components();
       strip.innerHTML = '<div class="mk-strip-head">micro-frontends <small>drag one onto the page</small></div>'
@@ -1129,6 +935,16 @@
         load();
       }
     }
+    function setFull(on) {
+      st.full = on;
+      document.body.classList.toggle('full-pane', on);
+      q('[data-mk="full"]').classList.toggle('on', on);
+      q('[data-mk="full"]').setAttribute('aria-pressed', on);
+      st.fitted = false;
+      setTimeout(() => { if (st.board) st.board.fit(); design.refresh(); }, 50);
+    }
+    // Esc leaves the full window before anything else hears it.
+    const onFullKey = (e) => { if (st.full && e.key === 'Escape' && !e.target.matches('input,textarea,select')) { e.stopPropagation(); e.preventDefault(); setFull(false); } };
     function setInteract(on) {
       st.interact = on;
       q('[data-mk="interact"]').setAttribute('aria-pressed', on);
@@ -1140,7 +956,7 @@
       keep(MF_ON, on);
       drawBar();
       outline();
-      select('');
+      design.select([]);
     }
 
     // ---- events --------------------------------------------------------------------------
@@ -1159,6 +975,7 @@
       if (mk.dataset.mk === 'mf') setOutlines(!st.mf);
       if (mk.dataset.mk === 'edit') setEdit(!st.edit);
       if (mk.dataset.mk === 'interact') setInteract(!st.interact);
+      if (mk.dataset.mk === 'full') setFull(!st.full);
       if (mk.dataset.mk === 'design') drawForm(q('.mk-form').hidden);
       if (mk.dataset.mk === 'form-cancel') drawForm(false);
       if (mk.dataset.mk === 'form-make') makeFromForm();
@@ -1170,8 +987,6 @@
       const version = Number(b.dataset.version);
       if (what === 'undo' && st.engine.undo()) afterChange();
       if (what === 'redo' && st.engine.redo()) afterChange();
-      if (what === 'add-link') addPart('link');
-      if (what === 'add-button') addPart('button');
       if (what === 'apply-all') applyAll();
       if (what === 'keep') keepVersion();
       if (what === 'validate') validateVersion();
@@ -1182,10 +997,6 @@
       if (what === 'unvalidate') draftCall(`unvalidate?version=${version}`);
       if (what === 'unfreeze' && st.history && st.history.current) { st.history.current.base = (currentPage() || {}).hash || ''; drawFrozen(); persist(); }
       if (what === 'reset') resetDraft();
-      if (what === 'clone') cloneSelected();
-      if (what === 'remove') removeSelected();
-      if (what === 'static') toggleStatic();
-      if (what === 'request') newRequest();
       if (what === 'rename-fork') renameForkTo(b.dataset.from, (q('.mk-fork-name') || {}).value || '');
       void e;
     }
@@ -1202,24 +1013,21 @@
       if (e.target.classList.contains('mk-presets')) { if (e.target.value !== '0') setWidth(Number(e.target.value)); else { q('.mk-width').hidden = false; q('.mk-width').focus(); } }
       if (e.target.classList.contains('mk-width')) setWidth(Number(e.target.value) || DEFAULT_WIDTH);
       if (e.target.classList.contains('mk-version-name') && st.history && st.history.current) { st.history.current.name = e.target.value.slice(0, 80); persist(); }
-      if (e.target.closest('.mk-panel')) onPanelInput(e);
+      if (e.target.classList.contains('mk-fork-name')) renameForkTo(e.target.dataset.from, e.target.value);
     };
     host.addEventListener('click', onClick);
     host.addEventListener('click', onCardMock);
     host.addEventListener('change', onChange);
     host.addEventListener('keydown', onKey);
     host.addEventListener('keyup', onKeyUp);
-    host.addEventListener('keydown', (e) => { if (e.target.closest('.mk-panel') && e.key === 'Enter') onPanelInput(e); });
     q('.mk-strip').addEventListener('pointerdown', onStripDown);
     const boardHost = q('.mk-board');
     boardHost.addEventListener('pointerdown', onViewportDown, true);
-    boardHost.addEventListener('pointerdown', onEditDown, true);
     boardHost.addEventListener('pointermove', onViewportMove, true);
-    boardHost.addEventListener('pointermove', onEditMove, true);
     boardHost.addEventListener('pointerup', onViewportUp, true);
-    boardHost.addEventListener('pointerup', onEditUp, true);
     document.addEventListener('keydown', onKey);
     document.addEventListener('keyup', onKeyUp);
+    window.addEventListener('keydown', onFullKey, true);
     const measured = setInterval(measure, 1000);
 
     load();
@@ -1229,6 +1037,7 @@
       reload() { st.state = null; return load(); },
       destroy() {
         leavePage();
+        design.detach();
         st.gone = true;
         clearTimeout(st.timer);
         clearTimeout(st.saveTimer);
@@ -1240,6 +1049,8 @@
         host.removeEventListener('keyup', onKeyUp);
         document.removeEventListener('keydown', onKey);
         document.removeEventListener('keyup', onKeyUp);
+        window.removeEventListener('keydown', onFullKey, true);
+        if (st.full) setFull(false);
         if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
         host.innerHTML = '';
       },

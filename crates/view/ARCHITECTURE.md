@@ -447,24 +447,40 @@ mock-up is shown as committed again. A product with no `mock/` yet shows an
 empty canvas and the one thing that can be done on it: the first page.
 
 **Edit mode, and the page's draft.** `edit` in the bar turns the page
-into a layout the human changes by hand (`edit.js`, `mockup.js`): a part
-clicked is selected (its identity, size in twelfths of its row, text,
-link target or button intent, and the requests on it, in the panel at the
-right); dragged, it lands before or after the part under the pointer, or
-into an empty container — a table cell drags its column; its right handle
-resizes it to twelfths; a container may be laid out **static** — its
-children placed freely in percent of it, snapped to the twelve columns;
-`remove`, `clone`, `+ link` (to a page of the mock or a URL) and
-`+ button` (its label, its intent written for the next roadmap) complete
-the gestures. With `micro-frontends ◧` on, only micro-frontends move, as
-blocks; off, a part *inside* a real micro-frontend edited from a page
+into a designer in the manner of Figma (`design.js` the hands, `edit.js`
+the engine, `mockup.js` lending both the page): a part hovered is
+outlined with its name, clicked is selected — eight handles, its size
+under it — shift-clicked joins the selection, a marquee on the empty page
+takes every outermost part it encloses. A container laid out in flow is
+an *auto-layout* frame: a part dragged through it shows the blue
+insertion bar where it will land (before, after, or into an empty
+container; a table cell drags its column), and several selected parts
+land in their document order. A container switched to **free placement**
+(shift+A, the panel or the menu; `layout: static` in the draft) is a plain
+frame: its parts drag anywhere in it, snapping to red smart guides on the
+siblings' edges and centres, resize from any handle (shift keeps the
+ratio), nudge by the arrows (a pixel, ten with shift), and align or
+distribute from the panel; a part dragged from flow onto a free container
+lands where it is dropped. The **layers** tree at the left is the page
+itself: click selects, drag reorders, the twist folds; the **properties**
+at the right are the selection's identity, X/Y/W/H (in twelfths of the
+row in flow), text, link target or button intent, the micro-frontend's
+spec when it is one, and the requests on it. The **tools** (V move, F
+section, T text, B button, L link, I image) drop a part where the page is
+clicked, sized by a drag in a free container; the right-click menu and
+the keys (⌘D duplicate, ⌫ delete, ⌘A select the siblings, ⇧1 fit, ⇧2
+zoom to the selection, Esc) do the rest. With `micro-frontends ◧` on,
+only micro-frontends move, as blocks; off, a part *inside* a real
+micro-frontend edited from a page
 **forks** it — a copy of the page's own, `<Name><Page>` (`variantOf`),
 inlined, the page's manifest entry switched to it, a toast of seven
 seconds to rename it. Every gesture is an **operation** on the page as
 committed (`move`, `resize`, `remove`, `clone`, `text`, `static`, `add`,
 `fork` — `by: human` or the request's id), never a rewrite of its HTML:
 the page is always shown as *source + operations* (`MockEdit.engine`,
-into the iframe's `srcdoc`, forty steps of undo in edit mode, ctrl+z),
+into the iframe's `srcdoc` — a step that finds every part on the page as
+shown is applied to it in place, without a reload; forty steps of undo in
+edit mode, ctrl+z),
 so a draft survives the page changing under it — a page whose fingerprint
 (`MockPage::hash`) no longer matches the draft's `base` shows the draft
 **frozen**, its lost operations counted: keep it on the page as it is, or
@@ -519,9 +535,13 @@ pending; a click opens the page in edit mode.
 design, on the data model or the mock-up — no longer takes the pane: it
 sits in a dock at the bottom left (`#talk`, `app.js`), floating over the
 page, resized from its corner and remembered, one session at a time, kept
-while the human walks the panes and pages; closing it closes the session
-(`POST …/session/close`, the pin's turns counted), and the canvas rereads
-its pins.
+while the human walks the panes and pages. Two ways out, at its top
+right: **validate & quit** closes the session with what it said joining
+the pin (`POST …/session/close`, the pin's text compacted from it), **quit
+without validating** stops it and drops what it said (`?keep=false`,
+`NoteDesks::discard`); either way the canvas rereads its pins. The easel
+has a **full window** switch (`⛶`, Esc leaves) that puts the mock-up over
+the whole page, the dock still floating above it.
 
 ## The capabilities list
 
@@ -626,7 +646,7 @@ src/adapters/
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
 src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
-static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, and their edit mode), edit.js (the draft engine: a page as source + operations, undo, materialization), vendor/ (xterm.js), render/ (built, not committed)
+static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, the draft, the requests, the forks), edit.js (the draft engine: a page as source + operations, undo, materialization), design.js (the designer's hands: selection, handles, guides, marquee, layers, properties, tools, menu, keys), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```
 

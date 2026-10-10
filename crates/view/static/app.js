@@ -570,8 +570,9 @@
     go(b.dataset.go, b.dataset.room || null);
   });
   window.addEventListener('keydown', (e) => {
-    // Inside the steward's terminal every key belongs to the terminal.
-    if (e.target.closest && e.target.closest('#term')) return;
+    // Inside a terminal every key belongs to the terminal; in the designer, to it.
+    if (e.target.closest && e.target.closest('#term, #talk')) return;
+    if (document.querySelector('.mk-host.mk-editing') && (e.key === 'Backspace' || e.key === 'Delete')) return;
     // An open switch menu takes Escape for itself, and the page stays put.
     if (e.key === 'Escape' && !$('plant-menu').hidden) { plantClose(); $('status').focus(); return; }
     // Typing in a field is typing: Backspace erases, Escape leaves the field's pane.
@@ -1026,7 +1027,7 @@
       status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', dir: p.dir || '', page: p.page || '' }) })
         .then(async (r) => (r.ok ? r.json() : { available: false, why: await r.text() })),
       socket: (p) => `/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/term`,
-      close: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/close`, { method: 'POST', keepalive: true }),
+      close: (p, keep = true) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/close${keep ? '' : '?keep=false'}`, { method: 'POST', keepalive: true }),
     },
     doctor: {
       title: 'The doctor · a check-up of the plant',
@@ -1110,7 +1111,7 @@
       try { fit.fit(); send(JSON.stringify({ t: 'size', cols: term.cols, rows: term.rows })); } catch (e) { /* mid-layout */ }
     });
     ro.observe(el);
-    slot.set({ term, ws, ro, close: desk.close ? () => desk.close(p) : null });
+    slot.set({ term, ws, ro, close: desk.close ? (keep) => desk.close(p, keep) : null });
     const restart = slot.restart();
     if (restart) restart.onclick = () => {
       if (ws.readyState === 1 && window.confirm(`Kill the ${who}'s Claude Code and start a fresh one?`)) {
@@ -1158,20 +1159,23 @@
     S.talk = { p, term: null, ws: null, ro: null, close: null };
     mountTerminal('note_session', p, TALK_SLOT);
   }
-  function closeTalk() {
+  // Validating keeps what the session said on the pin; quitting without
+  // validating drops it. Either way the program behind it stops.
+  function closeTalk(keep = true) {
     const t = S.talk;
     if (!t) return;
     S.talk = null;
     $('talk').hidden = true;
     let closing = null;
-    if (t.close) { try { closing = t.close(); } catch (e) { /* the server keeps what it can */ } }
+    if (t.close) { try { closing = t.close(keep); } catch (e) { /* the server keeps what it can */ } }
     try { if (t.ro) t.ro.disconnect(); } catch (e) { /* already gone */ }
     try { if (t.ws) t.ws.close(); } catch (e) { /* already gone */ }
     try { if (t.term) t.term.dispose(); } catch (e) { /* already gone */ }
     // The pin's turns are counted once the session is closed: the canvas rereads them.
     if (closing) { const canvas = S.canvas; closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); }
   }
-  $('talk-close').addEventListener('click', closeTalk);
+  $('talk-ok').addEventListener('click', () => closeTalk(true));
+  $('talk-drop').addEventListener('click', () => { if (window.confirm('Quit without validating? What this session said is dropped.')) closeTalk(false); });
   $('talk-grip').addEventListener('pointerdown', (e) => {
     const talk = $('talk');
     const r = talk.getBoundingClientRect();

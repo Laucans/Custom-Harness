@@ -51,6 +51,7 @@
       if (head.startsWith('component:')) root = doc.querySelector(`[data-component="${CSS.escape(head.slice(10))}"]`);
       else if (head.startsWith('id:')) root = doc.getElementById(head.slice(3));
       else if (head.startsWith('data:')) root = doc.querySelector(`[data-id="${CSS.escape(head.slice(5))}"]`);
+      else if (head === 'path:') return doc.body;
       else if (head.startsWith('path:')) return doc.body ? doc.body.querySelector(':scope>' + head.slice(5)) : null;
       if (!root || !rest) return root;
       return root.querySelector(':scope>' + rest);
@@ -71,6 +72,14 @@
     if (op.after) { const t = elementOf(doc, op.after); if (!t || !t.parentNode) return 'no such target after'; t.parentNode.insertBefore(el, t.nextSibling); return ''; }
     if (op.into) { const t = elementOf(doc, op.into); if (!t) return 'no such container'; t.appendChild(el); return ''; }
     return 'nowhere to place it';
+  }
+  function placeFree(el, op) {
+    el.style.position = 'absolute';
+    el.style.left = `${op.x}%`; el.style.top = `${op.y}%`;
+    if (op.w != null) el.style.width = `${op.w}%`;
+    if (op.h != null) el.style.height = `${op.h}%`;
+    el.style.margin = '0';
+    el.style.boxSizing = 'border-box';
   }
   function moveColumn(table, from, to) {
     const rows = table.querySelectorAll('tr');
@@ -94,7 +103,12 @@
       }
       const el = elementOf(doc, op.target);
       if (!el) return 'no such part';
-      return place(doc, el, op);
+      if (op.as && !el.id && !(el.dataset && el.dataset.component)) el.dataset.id = op.as;
+      const why = place(doc, el, op);
+      if (why) return why;
+      // A free item moved into a flow container flows again; a free container keeps its own footing.
+      if (op.x != null) placeFree(el, op); else if (el.style.position === 'absolute' && el.parentElement && el.parentElement.dataset.layout !== 'static') { el.style.position = ''; el.style.left = ''; el.style.top = ''; el.style.width = ''; el.style.height = ''; el.style.margin = ''; }
+      return '';
     },
     resize(doc, op) {
       const el = elementOf(doc, op.target);
@@ -161,6 +175,22 @@
         el = doc.createElement('a');
         el.textContent = op.label || 'link';
         el.setAttribute('href', op.page ? `../${op.page}` : (op.href || '#'));
+      } else if (op.what === 'text') {
+        el = doc.createElement(op.tag && /^(p|h1|h2|h3|h4|span)$/.test(op.tag) ? op.tag : 'p');
+        el.textContent = op.label || 'Text';
+      } else if (op.what === 'section') {
+        el = doc.createElement('section');
+        el.style.minHeight = `${op.height || 120}px`;
+        el.style.border = '1px dashed rgba(43,192,200,.6)';
+        el.style.borderRadius = '6px';
+        if (op.label) el.setAttribute('aria-label', op.label);
+      } else if (op.what === 'image') {
+        el = doc.createElement('img');
+        el.setAttribute('alt', op.label || 'image');
+        el.setAttribute('src', 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120"><rect width="200" height="120" fill="#dfe5ec"/><path d="M30 90 L75 50 L105 75 L125 60 L170 90 Z" fill="#aab4c0"/><circle cx="140" cy="38" r="12" fill="#aab4c0"/></svg>'));
+        el.style.width = `${op.width || 200}px`;
+        el.style.height = 'auto';
+        el.style.display = 'block';
       } else {
         el = doc.createElement('button');
         el.textContent = op.label || 'button';
@@ -170,7 +200,10 @@
       }
       el.classList.add('mk-added');
       if (op.as) el.dataset.id = op.as;
-      return place(doc, el, op);
+      const why = place(doc, el, op);
+      if (why) return why;
+      if (op.x != null) placeFree(el, op);
+      return '';
     },
     fork(doc, op) {
       const el = elementOf(doc, op.target);
