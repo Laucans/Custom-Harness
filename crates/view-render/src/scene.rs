@@ -2596,6 +2596,21 @@ fn product_corner(b: &mut Builder) {
     b.rounded(12.5, 0.0, 4.0, 2.6, 0.8, 1.2, 0.14, Rgba::hex(WOOD));
     b.hot_since(m, &capabilities);
     screen(b, 13.3, 4.05, 0.8, "#a78bfa", &capabilities);
+    // The pin board, on the wall between the easel and the data: every pin
+    // of every board, by branch.
+    let pins = pane(
+        serde_json::json!({"kind": "pins", "title": "The pins"}),
+        "Every pin, by branch — a click opens it where it was dropped",
+    );
+    let m = b.mark();
+    b.rounded(5.4, 1.1, 6.3, 2.2, 1.5, 0.1, 0.1, Rgba::hex(WOOD));
+    b.rounded(5.4, 1.15, 6.33, 2.0, 1.3, 0.06, 0.06, Rgba::hex(CREAM));
+    b.hot_since(m, &pins);
+    let head = b.label(5.4, 2.0, 6.4, "PINS", 12.0, INK);
+    head.bold = true;
+    head.backing = Backing::Slate;
+    b.label(5.4, 1.6, 6.4, "every note, by branch", 10.0, SCRIPT)
+        .backing = Backing::Slate;
     let data = pane(
         serde_json::json!({"kind": "data_model"}),
         "The data model: its tables, fields and links",
@@ -3655,6 +3670,7 @@ mod tests {
             .filter_map(|h| h.pane.as_ref()?.get("title")?.as_str())
             .collect();
         assert!(titles.contains(&"The mock-up"), "{titles:?}");
+        assert!(titles.contains(&"The pins"), "{titles:?}");
         assert!(
             panes(&office, "data_model") > 0,
             "the data model opens from the office"

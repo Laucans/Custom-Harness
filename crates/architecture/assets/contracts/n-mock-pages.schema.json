@@ -103,6 +103,16 @@
               "type": "string"
             },
             "description": "The props it takes, `name: type`."
+          },
+          "source": {
+            "type": "string",
+            "pattern": "^apps/[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$",
+            "description": "The Micro-UI's folder this micro-frontend is built from (`apps/<system>/<micro-ui>`): the bundle is the real code on the mock server. Absent for a hand-written fragment."
+          },
+          "builtFrom": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$",
+            "description": "Written by `mock/build.mjs`: a digest (FNV-1a 64) of the entry, the shared files under `mock/src/` and every file under `<source>/src/`, so the gates know the bundle is stale."
           }
         },
         "required": [

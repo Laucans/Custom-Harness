@@ -85,7 +85,7 @@
       + '</div>'
       + '<div class="hb-link" hidden>'
       + '<label>leads to <select class="hb-link-pages" aria-label="page"></select></label>'
-      + '<div class="hb-link-new" hidden><input class="hb-link-title" maxlength="80" placeholder="Title of the new page"></div>'
+      + '<div class="hb-link-new" hidden><input class="hb-link-title" maxlength="80" placeholder="Title of the new page"><input class="hb-link-source" maxlength="500" placeholder="Drawn from: a Figma frame link (optional)"></div>'
       + '</div>'
       + '<div class="hb-design" hidden>'
       + '<div class="hb-design-row"><input class="hb-design-name" maxlength="80" placeholder="Name, like RiskBadge" aria-label="name"><input class="hb-design-system" maxlength="40" placeholder="system" aria-label="system"></div>'
@@ -111,6 +111,7 @@
     const linkBox = editor.querySelector('.hb-link');
     const linkPages = editor.querySelector('.hb-link-pages');
     const linkTitle = editor.querySelector('.hb-link-title');
+    const linkSource = editor.querySelector('.hb-link-source');
     const designBox = editor.querySelector('.hb-design');
 
     const view = { x: 40, y: 40, k: 1 };
@@ -403,6 +404,7 @@
         + `<option value="__new"${fresh ? ' selected' : ''}>+ a new page…</option>`;
       editor.querySelector('.hb-link-new').hidden = !fresh && linkPages.value !== '__new';
       if (fresh && !linkTitle.value) linkTitle.value = n.page.replace(/^pages\//, '').replace(/\.html$/, '').replace(/-/g, ' ');
+      linkSource.value = n.source || '';
       editor.querySelector('[data-note="go"]').hidden = !known;
       editor.querySelector('[data-note="create"]').hidden = !fresh || !opts.onSession;
       editor.querySelector('[data-note="create"]').textContent = n.turns ? 'Continue the page\'s session' : 'Create it with an AI session';
@@ -499,6 +501,19 @@
         notes = read;
       } catch (e) { notes = []; }
       drawPins();
+      if (opts.onLoaded) opts.onLoaded(id);
+    }
+    // Centres a pin and opens it — the list's click, and a pin opened from elsewhere.
+    function goTo(noteId) {
+      const n = notes.find((x) => x.id === noteId);
+      if (!n) return false;
+      const r = host.getBoundingClientRect();
+      placeOf(n);
+      view.x = r.width / 2 - n.x * view.k;
+      view.y = r.height / 2 - n.y * view.k;
+      apply();
+      openNote(n);
+      return true;
     }
     // Another board on the same canvas: what is typed is saved where it was
     // written, then the other board's pins are read.
@@ -620,7 +635,7 @@
       const at = toBoard(e.clientX, e.clientY);
       const target = c.over ? c.over.getAttribute('data-pin') : '';
       const b = c.over ? boxOf(c.over) : { x: 0, y: 0 };
-      const n = c.note || Object.assign({ id: newId(), text: '', at: '', kind: 'note', turns: 0, fresh: true }, c.preset || {});
+      const n = c.note || Object.assign({ id: newId(), text: '', at: c.preset ? new Date().toISOString() : '', kind: 'note', turns: 0, fresh: true }, c.preset || {});
       // A zone moved is a zone translated: its outline follows.
       if (n.shape) {
         const ddx = at.x - n.x; const ddy = at.y - n.y;
@@ -718,14 +733,7 @@
       const go = e.target.closest('[data-goto-note]');
       if (go) {
         list.hidden = true;
-        const n = notes.find((x) => x.id === go.dataset.gotoNote);
-        if (!n) return;
-        const r = host.getBoundingClientRect();
-        placeOf(n);
-        view.x = r.width / 2 - n.x * view.k;
-        view.y = r.height / 2 - n.y * view.k;
-        apply();
-        openNote(n);
+        goTo(go.dataset.gotoNote);
         return;
       }
       const n = notes.find((x) => x.id === openId);
@@ -762,6 +770,16 @@
       save(n, false);
       editor.querySelector('[data-note="create"]').hidden = !opts.onSession;
     };
+    // The reference a page is drawn from: kept only as a link.
+    const onLinkSource = () => {
+      const n = notes.find((x) => x.id === openId);
+      if (!n) return;
+      const value = linkSource.value.trim();
+      if (value && !/^https?:\/\//.test(value)) { setState('a reference is a link (https://…)'); return; }
+      n.source = value;
+      n.at = new Date().toISOString();
+      save(n, false);
+    };
     const onInput = () => {
       const n = notes.find((x) => x.id === openId);
       if (!n || busy) return;
@@ -797,6 +815,7 @@
     designBox.addEventListener('change', onDesignInput);
     linkPages.addEventListener('change', onLinkChange);
     linkTitle.addEventListener('input', onLinkTitle);
+    linkSource.addEventListener('input', onLinkSource);
     editor.addEventListener('keydown', onKey);
     document.addEventListener('keydown', onUndoKey);
     const resized = new ResizeObserver(() => drawPins());
@@ -824,7 +843,7 @@
       newNote(preset) {
         const r = host.getBoundingClientRect();
         const at = toBoard(r.left + 70, r.top + 90 + 40 * notes.filter((x) => x.fresh).length);
-        const n = Object.assign({ id: newId(), text: '', at: '', kind: 'note', turns: 0, fresh: true, target: '', dx: 0, dy: 0, x: at.x, y: at.y }, preset || {});
+        const n = Object.assign({ id: newId(), text: '', at: new Date().toISOString(), kind: 'note', turns: 0, fresh: true, target: '', dx: 0, dy: 0, x: at.x, y: at.y }, preset || {});
         notes.push(n);
         if (n.kind === 'design' && n.component) save(n, true);
         openNote(n);
@@ -843,10 +862,12 @@
         linkPages.value = '__new';
         editor.querySelector('.hb-link-new').hidden = false;
         linkTitle.value = '';
+        linkSource.value = '';
         setTimeout(() => linkTitle.focus(), 0);
       },
       notesOn: (target) => notes.filter((n) => n.target === target),
       open: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n) openNote(n); },
+      goTo,
       destroy() {
         // A note being typed is not lost to a closed pane.
         flush();

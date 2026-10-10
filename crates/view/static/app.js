@@ -598,11 +598,14 @@
     data_model: (el, p) => (window.DataModelPane ? window.DataModelPane.mount(el, {
       branch: p.branch,
       dir: p.dir,
+      pin: p.pin,
       onSession: (s) => openPane({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, dir: s.dir }),
     }) : null),
     mockup: (el, p) => (window.MockupPane ? window.MockupPane.mount(el, {
       branch: p.branch,
       page: p.page,
+      pageSlug: p.pageSlug,
+      pin: p.pin,
       onSession: (s) => {
         // Back from the session, the pane reopens on the page the pin was on.
         S.pane = Object.assign({}, S.pane, { branch: s.branch, page: s.page });
@@ -2565,6 +2568,13 @@
       }, true];
     },
 
+    // The office's pin board: every pin of every board, by branch; a click
+    // opens the pin where it was dropped — the data model or the mock-up.
+    pins(p, refresh) {
+      const html = '<div id="pins" class="pins"><div class="muted">Reading the pins…</div></div>';
+      return ['Pins · ' + (S.snap && S.snap.project ? S.snap.project.name : 'the product'), html, (again) => { if (!again) pinsLoad(p); }, true];
+    },
+
     // A diverging data model, diagnosed: the state of affairs, the actions
     // proposed, and the issue the human may open from it.
     data_divergence(p, refresh) {
@@ -2576,6 +2586,72 @@
       return [p.title || 'Coming', `<div class="callout soon">${esc(p.text || 'Not built yet.')}</div>`];
     },
   };
+
+  // ---- the pin board ------------------------------------------------------------
+  // Boards are named after their branch: `data-model--<slug>` and
+  // `mockup--<slug>--<page>`; the slugs are matched against the product's
+  // branches, so a click opens the pin on the right branch and page.
+  const PIN_FILTER = { kind: 'all' };
+  const plainSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  function dataSlug(branch) {
+    const m = /^milestone\/(\d+)/.exec(branch);
+    return m ? `milestone-${m[1]}` : plainSlug(branch);
+  }
+  function homeOf(board, branches) {
+    let m = /^data-model--(.+)$/.exec(board);
+    if (m) {
+      const b = branches.find((x) => dataSlug(x.branch) === m[1]);
+      return { view: 'data_model', branch: b ? b.branch : '', kind: b ? b.kind : 'other', label: b ? b.label : m[1], where: 'data model' };
+    }
+    m = /^mockup--(.+)--([^-].*)$/.exec(board);
+    if (m) {
+      const b = branches.find((x) => plainSlug(x.branch) === m[1]) || (m[1] === 'integration' ? branches.find((x) => x.kind === 'integration') : null);
+      return { view: 'mockup', branch: b ? b.branch : '', kind: b ? b.kind : 'other', label: b ? b.label : m[1], where: m[2] === 'micro-frontends' ? 'micro-frontends' : 'page ' + m[2], pageSlug: m[2] };
+    }
+    return { view: '', branch: '', kind: 'other', label: board, where: board };
+  }
+  async function pinsLoad(p) {
+    const host = $('pins');
+    if (!host) return;
+    let boards = []; let versions = null;
+    try {
+      [boards, versions] = await Promise.all([
+        fetch('/api/notes').then((r) => (r.ok ? r.json() : [])),
+        fetch('/api/data-model/versions').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ]);
+    } catch (e) { boards = []; }
+    if (!$('pins')) return;
+    const branches = (versions && versions.branches) || [];
+    const rows = [];
+    boards.forEach((b) => {
+      const home = homeOf(b.board, branches);
+      b.notes.forEach((n) => rows.push({ home, note: n, board: b.board }));
+    });
+    const kinds = [['all', 'all'], ['release', 'main'], ['integration', 'main_agent'], ['feature', 'feature'], ['other', 'other']];
+    const counts = Object.fromEntries(kinds.map(([k]) => [k, rows.filter((r) => k === 'all' || r.home.kind === k).length]));
+    const shown = rows.filter((r) => PIN_FILTER.kind === 'all' || r.home.kind === PIN_FILTER.kind).sort((a, b) => (b.note.at || '').localeCompare(a.note.at || ''));
+    const chips = kinds.filter(([k]) => k === 'all' || counts[k]).map(([k, label]) => `<button type="button" class="chip ${PIN_FILTER.kind === k ? 'on' : ''}" data-pin-kind="${k}">${esc(label)} <small>${counts[k]}</small></button>`).join('');
+    const table = shown.length
+      ? '<table class="pins-table"><thead><tr><th></th><th>what</th><th>on</th><th>branch</th><th>when</th></tr></thead><tbody>'
+        + shown.map((r) => {
+          const n = r.note;
+          const what = (n.text || '').split('\n')[0] || (n.kind === 'link' ? '→ ' + (n.page || '?') : n.kind === 'design' ? n.component || 'design' : '(empty)');
+          const open = r.home.view ? esc(JSON.stringify({ kind: r.home.view, branch: r.home.branch, pageSlug: r.home.pageSlug, pin: n.id })) : '';
+          return `<tr class="pin-row" ${open ? `data-open-pin="${open}"` : ''} title="${esc(n.text || '')}">`
+            + `<td><span class="pin-dot ${esc(n.kind || 'note')}" title="${esc(n.kind || 'note')}"></span></td>`
+            + `<td><b>${esc(what)}</b>${n.shape ? ' <span class="tag">zone</span>' : ''}${n.turns ? ` <span class="tag">${n.turns} turn${n.turns > 1 ? 's' : ''}</span>` : ''}</td>`
+            + `<td class="muted">${esc(r.home.where)}${n.target ? ' · ' + esc(n.target.replace(/^(component|id|table|field):/, '')) : ''}</td>`
+            + `<td class="mono">${esc(r.home.label)}</td><td class="muted">${n.at ? esc(when(n.at)) : '—'}</td></tr>`;
+        }).join('') + '</tbody></table>'
+      : '<div class="muted">No pin yet. Drop one on the data model or the mock-up.</div>';
+    host.innerHTML = `<div class="chips pins-chips">${chips}</div>${table}`;
+  }
+  $('pane-body').addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-pin-kind]');
+    if (chip && S.pane && S.pane.kind === 'pins') { PIN_FILTER.kind = chip.dataset.pinKind; pinsLoad(S.pane); return; }
+    const row = e.target.closest('[data-open-pin]');
+    if (row) openPane(JSON.parse(row.dataset.openPin));
+  });
 
   // The panes, for the components beside this file (actions.js opens the doctor).
   window.HarnessPanes = { open: (p) => openPane(p) };

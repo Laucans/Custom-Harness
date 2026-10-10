@@ -82,6 +82,16 @@ impl SqliteNotes {
 }
 
 impl NoteStore for SqliteNotes {
+    fn boards(&self) -> Result<Vec<String>, String> {
+        self.with(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT DISTINCT board FROM notes WHERE deleted_at IS NULL ORDER BY board",
+            )?;
+            let mapped = statement.query_map([], |row| row.get(0))?;
+            mapped.collect()
+        })
+    }
+
     fn notes(&self, board: &str) -> Result<Vec<KeptNote>, String> {
         let rows: Vec<(String, Option<String>, i64)> = self.with(|conn| {
             let mut statement = conn.prepare(
@@ -183,6 +193,7 @@ mod tests {
             kind: Kind::Brainstorm,
             page: String::new(),
             component: String::new(),
+            source: String::new(),
             shape: None,
             turns: 0,
         }

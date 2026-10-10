@@ -221,6 +221,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mockup/discard", post(mockup_discard))
         .route("/api/capabilities", get(capability_list))
         .route("/api/capabilities/fusion", post(capability_fusion))
+        .route("/api/notes", get(all_notes))
         .route("/api/notes/{board}", get(notes))
         .route("/api/notes/{board}/undo", post(undo_note))
         .route("/api/notes/{board}/{id}", put(put_note).delete(delete_note))
@@ -1518,6 +1519,36 @@ async fn notes(State(state): State<AppState>, Path(board): Path<String>) -> Resp
     }
 }
 
+/// One board and the pins on it, for the office's pin board.
+#[derive(Serialize)]
+struct BoardNotes {
+    board: String,
+    notes: Vec<annotations::Note>,
+}
+
+/// Every pin on every board — what the office's pin board lists.
+async fn all_notes(State(state): State<AppState>) -> Response {
+    let boards = match state.pins.boards() {
+        Ok(boards) => boards,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let mut all = Vec::new();
+    for board in boards {
+        match state.pins.notes(&board) {
+            Ok(kept) => all.push(BoardNotes {
+                board,
+                notes: kept
+                    .into_iter()
+                    .filter(|k| k.deleted_at.is_none())
+                    .map(|k| k.note)
+                    .collect(),
+            }),
+            Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+        }
+    }
+    json(&all)
+}
+
 /// The clock, as the traces write it.
 fn stamp() -> String {
     jiff::Timestamp::now()
@@ -2637,12 +2668,130 @@ mod tests {
     }
 
     /// A pins' store in memory.
+    /// A product with one mocked page on every branch.
+    struct FakeMockups;
+
+    impl crate::ports::Mockups for FakeMockups {
+        fn state(&self, branch: &str) -> Result<crate::ports::MockState, String> {
+            Ok(crate::ports::MockState {
+                branch: branch.to_string(),
+                present: true,
+                pages: vec![crate::ports::MockPage {
+                    path: "pages/home.html".into(),
+                    title: "Home".into(),
+                    ..crate::ports::MockPage::default()
+                }],
+                components: Vec::new(),
+                edited: false,
+                saved: String::new(),
+                stamp: "s1".into(),
+            })
+        }
+        fn file(&self, _branch: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok((path == "pages/home.html").then(|| b"<h1>hi</h1>".to_vec()))
+        }
+        fn workspace(&self, _branch: &str) -> Result<PathBuf, String> {
+            Err("no workspace in a test".into())
+        }
+        fn save(&self, _branch: &str, name: &str) -> Result<String, String> {
+            if name.is_empty() {
+                Err("nothing to save".into())
+            } else {
+                Ok(format!("mockup/{name}"))
+            }
+        }
+        fn discard(&self, _branch: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    async fn post(state: AppState, uri: &str, body: &str) -> (StatusCode, String) {
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[tokio::test]
+    async fn the_easel_is_empty_without_a_product() {
+        let (status, body) = get(state(Shelf::default(), None), "/api/mockup").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"enabled\":false"), "{body}");
+        let (status, _) = get(state(Shelf::default(), None), "/mock/main/pages/home.html").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_easel_serves_the_branch_s_pages_previews_and_saves() {
+        let with = || {
+            let mut st = state(Shelf::default(), None);
+            st.mockups = Some(Arc::new(FakeMockups));
+            st
+        };
+        let (status, body) = get(with(), "/api/mockup?branch=main").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("\"present\":true") && body.contains("pages/home.html"),
+            "{body}"
+        );
+        assert!(body.contains("\"units\""), "{body}");
+        let (status, body) = get(with(), "/mock/main/pages/home.html").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "<h1>hi</h1>");
+        let (status, _) = get(with(), "/mock/main/pages/none.html").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = get(with(), "/mock/a..b/pages/home.html").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "no branch is named with ..");
+        let (status, body) = get(with(), "/mock/milestone__3-x/__preview/RiskBadge").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(r#"data-component="RiskBadge""#) && body.contains("../mock.js"));
+        let (status, _) = get(with(), "/mock/main/__preview/risk-badge").await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "a micro-frontend is named like a Micro-UI"
+        );
+        let (status, body) = post(
+            with(),
+            "/api/mockup/save",
+            r#"{"branch":"main","name":"home"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("mockup/home"), "{body}");
+        let (status, _) = post(with(), "/api/mockup/discard", r#"{"branch":"main"}"#).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
     #[derive(Default)]
     struct Pins(std::sync::Mutex<Vec<(String, crate::ports::KeptNote)>>);
 
     // A test fake: each method holds its lock for the whole of its few lines.
     #[allow(clippy::significant_drop_tightening)]
     impl NoteStore for Pins {
+        fn boards(&self) -> Result<Vec<String>, String> {
+            let kept = self.0.lock().map_err(|e| e.to_string())?;
+            let mut boards: Vec<String> = kept
+                .iter()
+                .filter(|(_, k)| k.deleted_at.is_none())
+                .map(|(b, _)| b.clone())
+                .collect();
+            boards.sort();
+            boards.dedup();
+            Ok(boards)
+        }
         fn notes(&self, board: &str) -> Result<Vec<crate::ports::KeptNote>, String> {
             let kept = self.0.lock().map_err(|e| e.to_string())?;
             Ok(kept

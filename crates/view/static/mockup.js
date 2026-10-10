@@ -74,7 +74,7 @@
       + '<div class="dm-main"><div class="dm-board mk-board"></div><aside class="mk-strip" hidden></aside></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { branch: (opts && opts.branch) || '', page: (opts && opts.page) || '', view: (opts && opts.view) || 'page', versions: null, state: null, stamp: '',
+    const st = { branch: (opts && opts.branch) || '', page: (opts && opts.page) || '', view: (opts && opts.view) || 'page', versions: null, state: null, stamp: '', pinned: false,
       timer: null, gone: false, interact: false, mf: !!kept(MF_ON, false), board: null, frame: null, shield: null, doc: null, armed: null, proxies: new WeakMap(), fitted: false, saving: false,
       // The micro-frontends view: one iframe per card, measured as they load.
       cards: [] };
@@ -214,6 +214,8 @@
         capabilities,
         dataCapabilities,
         goto: (path) => { setView('page'); show(path); },
+        // A pin asked for from elsewhere (the office's pin board) is opened once its board is read.
+        onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; },
         bounds: () => (st.view === 'page'
           ? { x: 0, y: 0, w: WIDTH, h: Math.max(MIN_HEIGHT, st.frame ? parseFloat(st.frame.style.height) || MIN_HEIGHT : MIN_HEIGHT) }
           : { x: 0, y: 0, w: Math.max(WIDTH, st.board ? parseFloat(st.board.content.style.width) || WIDTH : WIDTH), h: Math.max(MIN_HEIGHT, st.board ? parseFloat(st.board.content.style.height) || MIN_HEIGHT : MIN_HEIGHT) }),
@@ -304,9 +306,9 @@
         const y = Math.floor(i / per) * (CARD_MIN + 70 + CARD_GAP);
         return `<div class="mk-card" data-pin="component:${esc(c.name)}" data-card="${esc(c.name)}" style="left:${x}px;top:${y}px;width:${CARD_W}px;--mf:${c.colour}">`
           + `<div class="mk-card-head"><b>${esc(c.name)}</b><span class="mk-card-sys">${esc(c.system || '')}</span>`
-          + `<span class="mk-card-tags">${c.mocked ? '<i class="ok">mocked</i>' : '<i class="bad">not mocked</i>'}${c.built ? '<i class="ok">built</i>' : '<i>to build</i>'}</span></div>`
+          + `<span class="mk-card-tags">${c.mocked ? (c.source ? '<i class="ok" title="the real code, bundled on the mock server">real code</i>' : '<i class="ok">mocked</i>') : '<i class="bad">not mocked</i>'}${c.built ? '<i class="ok">built</i>' : '<i>to build</i>'}</span></div>`
           + `<div class="mk-card-desc">${esc(c.description || '')}</div>`
-          + `<div class="mk-card-meta">${c.needs.length ? 'needs ' + c.needs.map(esc).join(', ') : 'needs nothing'}${c.actions.length ? ' · triggers ' + c.actions.map(esc).join(', ') : ''}${c.pages.length ? ' · on ' + c.pages.map(esc).join(', ') : ' · on no page'}</div>`
+          + `<div class="mk-card-meta">${c.needs.length ? 'needs ' + c.needs.map(esc).join(', ') : 'needs nothing'}${c.actions.length ? ' · triggers ' + c.actions.map(esc).join(', ') : ''}${c.pages.length ? ' · on ' + c.pages.map(esc).join(', ') : ' · on no page'}${c.source ? ` · from ${esc(c.source)}` : ''}</div>`
           + (c.mocked
             ? `<div class="mk-card-body"><iframe class="mk-preview" title="${esc(c.name)}" src="${esc(previewSrc(c.name))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>`
             : `<div class="mk-card-body mk-card-none">no fragment yet${c.built ? ' — the Micro-UI exists under apps/, its mock does not' : ''}<br><button type="button" class="mini on" data-mock-card="${esc(c.name)}">mock it with an AI session</button></div>`)
@@ -416,6 +418,11 @@
       const before = st.state;
       st.state = reply;
       const pages = reply.pages || [];
+      // Asked for a page by its board's slug (the office's pin board): that page.
+      if (opts && opts.pageSlug && !st.page) {
+        if (opts.pageSlug === 'micro-frontends') st.view = 'components';
+        else { const found = pages.find((p) => pageSlug(p.path) === opts.pageSlug); if (found) st.page = found.path; }
+      }
       if (!st.page || !pages.some((p) => p.path === st.page)) {
         const last = remembered(st.branch);
         st.page = pages.some((p) => p.path === last) ? last : (pages[0] ? pages[0].path : '');

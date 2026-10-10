@@ -768,10 +768,26 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .hb-link label { display: flex; align-items: center; gap: 6px; }
 .hb-link select, .hb-link input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: 12px var(--sans); }
 .hb-link-new[hidden], .hb-link-go[hidden], .hb-link-go button[hidden] { display: none; }
+.hb-link-new { display: flex; flex-direction: column; gap: 6px; }
 .hb-link-new input { width: 100%; box-sizing: border-box; }
 .hb-link-go { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; }
 .hb-link-go button { background: var(--panel-2); color: var(--text); border: 1px solid var(--pin-link); border-radius: 6px; padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
 .hb-link-go button:hover { background: var(--bg); }
+
+/* ---- The office's pin board (app.js) ---- */
+.pins { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+.pins-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.pins-chips button.on { border-color: var(--accent); color: var(--accent); }
+.pins-chips small { opacity: 0.7; }
+.pins-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pins-table th { text-align: left; font: 600 11px var(--mono); color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.pins-table td { padding: 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.pins-table tr.pin-row { cursor: pointer; }
+.pins-table tr.pin-row:hover td { background: var(--panel-2); }
+.pins-table .mono { font: 12px var(--mono); }
+.pin-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); background: var(--pin-note); border: 1px solid #3a2a00; }
+.pin-dot.brainstorm { background: var(--pin-brainstorm); } .pin-dot.asking { background: var(--pin-asking); }
+.pin-dot.link { background: var(--pin-link); } .pin-dot.simulate { background: var(--pin-simulate); } .pin-dot.design { background: var(--pin-design); }
 
 /* ---- The mock-up on its easel (mockup.js) ---- */
 .mk-host { flex: 1; min-height: 0; display: flex; }

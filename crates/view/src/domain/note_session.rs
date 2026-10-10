@@ -284,6 +284,9 @@ pub struct About {
     /// For a design: the micro-frontend's name.
     #[serde(default)]
     pub component: String,
+    /// A reference the session draws from — a Figma frame's link — or empty.
+    #[serde(default)]
+    pub source: String,
     /// The branch the pin belongs to: `main_agent`, `milestone/3-…`; on
     /// the mock-up, the branch shown.
     #[serde(default)]
@@ -471,6 +474,17 @@ fn page_briefing(about: &About) -> String {
     );
     if !about.note.trim().is_empty() {
         let _ = writeln!(text, "The page's objective:\n{}", about.note.trim());
+    }
+    if !about.source.trim().is_empty() {
+        let _ = writeln!(
+            text,
+            "The human gave a reference to draw the page from: {}. When it is a Figma frame and a Figma \
+             tool is available to you (an MCP server such as `get_code`, `get_image` or `get_design_context`), \
+             fetch that frame and reproduce its layout, texts and components in the page; without such a \
+             tool, say so in one line and ask the human for an export (an image or the frame's code), then \
+             draw from the objective meanwhile.",
+            about.source.trim()
+        );
     }
     text
 }
@@ -732,9 +746,17 @@ not json
             schema: String::new(),
             milestone: String::new(),
             component: String::new(),
+            source: String::new(),
         };
         let text = briefing(&about, &Handback::Nothing);
         assert!(text.contains("edit only under `mock/`"));
+        let drawn = About {
+            kind: "link".into(),
+            page: "pages/home.html".into(),
+            source: "https://www.figma.com/design/abc/Home?node-id=1-2".into(),
+            ..about.clone()
+        };
+        assert!(briefing(&drawn, &Handback::Nothing).contains("Figma frame"));
         let design = About {
             kind: "design".into(),
             component: "RiskBadge".into(),
@@ -831,6 +853,7 @@ not json
             kind: "brainstorm".into(),
             page: String::new(),
             component: String::new(),
+            source: String::new(),
             branch: "milestone/3-campaigns".into(),
             schema: "CREATE TABLE character (name varchar(40));".into(),
             milestone: milestone_words(&crate::ports::Milestone {

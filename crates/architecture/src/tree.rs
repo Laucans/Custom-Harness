@@ -81,6 +81,89 @@ pub struct Tree {
     /// The micro-frontends listed in `mock/pages.json` whose fragment is
     /// under `mock/`, by name.
     pub mocked_components: Vec<String>,
+    /// The micro-frontends built from a Micro-UI's code (`source`), with
+    /// what the bundle was built from and what the code is now.
+    pub bundles: Vec<Bundle>,
+}
+
+/// A micro-frontend bundled from a Micro-UI's code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bundle {
+    /// The micro-frontend's name.
+    pub name: String,
+    /// The Micro-UI's folder, `apps/<system>/<micro-ui>`.
+    pub source: String,
+    /// The digest `mock/build.mjs` recorded, if it ran.
+    pub built_from: Option<String>,
+    /// The digest of the inputs as they are now.
+    pub digest: String,
+}
+
+/// The files of `mock/src/` every bundle embeds.
+const SHARED_SOURCES: [&str; 4] = ["server.js", "screen.js", "reads.js", "commands.js"];
+
+/// Folders a digest never walks into.
+const SKIPPED_FOLDERS: [&str; 2] = ["node_modules", "dist"];
+
+/// Every file under `rel` (relative to `root`), recursively, as `(path, text)`.
+fn files_under(disk: &dyn Disk, root: &Path, rel: &str, out: &mut Vec<(String, String)>) {
+    let dir = root.join(rel);
+    for name in disk.file_names(&dir) {
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = format!("{rel}/{name}");
+        if let Some(text) = disk.read_to_string(&root.join(&path)) {
+            out.push((path, text));
+        }
+    }
+    for name in disk.dir_names(&dir) {
+        if name.starts_with('.') || SKIPPED_FOLDERS.contains(&name.as_str()) {
+            continue;
+        }
+        files_under(disk, root, &format!("{rel}/{name}"), out);
+    }
+}
+
+/// What a micro-frontend's bundle is built from: its entry, the shared
+/// files of `mock/src/`, every file under `<source>/src/`.
+fn bundle_inputs(disk: &dyn Disk, root: &Path, name: &str, source: &str) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    let mut add = |rel: String| {
+        if let Some(text) = disk.read_to_string(&root.join(&rel)) {
+            files.push((rel, text));
+        }
+    };
+    add(format!("mock/src/{name}.js"));
+    for shared in SHARED_SOURCES {
+        add(format!("mock/src/{shared}"));
+    }
+    files_under(disk, root, &format!("{source}/src"), &mut files);
+    files
+}
+
+/// The digest `mock/build.mjs` records: FNV-1a 64 over `path\0content\0`
+/// for every input sorted by path, as sixteen hex digits.
+#[must_use]
+pub fn digest(files: &[(String, String)]) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut sorted: Vec<&(String, String)> = files.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hash = OFFSET;
+    let mut feed = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    };
+    for (path, content) in sorted {
+        feed(path.as_bytes());
+        feed(&[0]);
+        feed(content.as_bytes());
+        feed(&[0]);
+    }
+    format!("{hash:016x}")
 }
 
 impl Tree {
@@ -133,31 +216,7 @@ impl Tree {
                 tree.aggregates.push(found);
             }
         }
-        for file in disk.file_names(&root.join("apps/screens")) {
-            let Some(stem) = file.strip_suffix(".json") else {
-                continue;
-            };
-            let name = text(&format!("apps/screens/{file}"))
-                .and_then(|content| serde_json::from_str::<Value>(&content).ok())
-                .and_then(|json| str_of(&json, "screen").map(str::to_string))
-                .unwrap_or_else(|| stem.to_string());
-            tree.screens.push(name);
-        }
-        tree.mock_pages = manifest("mock/pages.json");
-        for page in tree.mock_pages.as_ref().map_or_else(Vec::new, pages_of) {
-            if disk.exists(&root.join("mock").join(&page)) {
-                tree.mocked.push(page);
-            }
-        }
-        for (name, fragment) in tree
-            .mock_pages
-            .as_ref()
-            .map_or_else(Vec::new, components_of)
-        {
-            if disk.exists(&root.join("mock").join(&fragment)) {
-                tree.mocked_components.push(name);
-            }
-        }
+        read_mockup(disk, root, &mut tree);
         for concept in disk.dir_names(&root.join("concepts")) {
             for version in disk.dir_names(&root.join("concepts").join(&concept)) {
                 let Some(number) = version
@@ -197,6 +256,50 @@ fn pages_of(manifest: &Manifest) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What the mock-up adds to the tree: the frozen screens, `mock/pages.json`,
+/// the pages and micro-frontends it lists that are under `mock/`, and the
+/// bundles with what they were built from.
+fn read_mockup(disk: &dyn Disk, root: &Path, tree: &mut Tree) {
+    let text = |rel: &str| disk.read_to_string(&root.join(rel));
+    for file in disk.file_names(&root.join("apps/screens")) {
+        let Some(stem) = file.strip_suffix(".json") else {
+            continue;
+        };
+        let name = text(&format!("apps/screens/{file}"))
+            .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+            .and_then(|json| str_of(&json, "screen").map(str::to_string))
+            .unwrap_or_else(|| stem.to_string());
+        tree.screens.push(name);
+    }
+    tree.mock_pages = text("mock/pages.json").map(|content| Manifest {
+        path: "mock/pages.json".to_string(),
+        json: serde_json::from_str(&content).ok(),
+    });
+    for page in tree.mock_pages.as_ref().map_or_else(Vec::new, pages_of) {
+        if disk.exists(&root.join("mock").join(&page)) {
+            tree.mocked.push(page);
+        }
+    }
+    for (name, fragment) in tree
+        .mock_pages
+        .as_ref()
+        .map_or_else(Vec::new, components_of)
+    {
+        if disk.exists(&root.join("mock").join(&fragment)) {
+            tree.mocked_components.push(name);
+        }
+    }
+    for (name, source, built_from) in tree.mock_pages.as_ref().map_or_else(Vec::new, sources_of) {
+        let digest = digest(&bundle_inputs(disk, root, &name, &source));
+        tree.bundles.push(Bundle {
+            name,
+            source,
+            built_from,
+            digest,
+        });
+    }
+}
+
 /// The micro-frontends a `mock/pages.json` lists: `(name, fragment)`.
 fn components_of(manifest: &Manifest) -> Vec<(String, String)> {
     manifest
@@ -210,6 +313,28 @@ fn components_of(manifest: &Manifest) -> Vec<(String, String)> {
                     Some((
                         str_of(c, "name")?.to_string(),
                         str_of(c, "fragment")?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The micro-frontends a `mock/pages.json` builds from a Micro-UI's code:
+/// `(name, source, builtFrom)`.
+fn sources_of(manifest: &Manifest) -> Vec<(String, String, Option<String>)> {
+    manifest
+        .json
+        .as_ref()
+        .and_then(|json| json.get("components")?.as_array())
+        .map(|components| {
+            components
+                .iter()
+                .filter_map(|c| {
+                    Some((
+                        str_of(c, "name")?.to_string(),
+                        str_of(c, "source")?.to_string(),
+                        str_of(c, "builtFrom").map(str::to_string),
                     ))
                 })
                 .collect()
@@ -534,6 +659,21 @@ fn mockup_kept(tree: &Tree) -> Vec<String> {
                     }
                 }
             }
+            // A bundle is the Micro-UI's code as it is: built, and built
+            // from what the code is now.
+            for bundle in &tree.bundles {
+                match &bundle.built_from {
+                    None => found.push(format!(
+                        "{}: the micro-frontend {} names its source but was never built — run mock/build.sh and commit",
+                        manifest.path, bundle.name
+                    )),
+                    Some(built) if built != &bundle.digest => found.push(format!(
+                        "{}: the bundle of {} is stale — {} changed since mock/build.sh last ran; run it and commit",
+                        manifest.path, bundle.name, bundle.source
+                    )),
+                    Some(_) => {}
+                }
+            }
             let mocked = mocked_screens(manifest);
             for screen in &tree.screens {
                 if !mocked.contains(screen) {
@@ -748,7 +888,43 @@ mod tests {
             )),
             mocked: vec!["pages/credit-review.html".to_string()],
             mocked_components: vec!["RiskBadge".to_string()],
+            bundles: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_digest_is_the_one_build_mjs_writes() {
+        assert_eq!(digest(&[]), "cbf29ce484222325");
+        let files = vec![
+            (
+                "apps/credit/risk-badge/src/index.ts".to_string(),
+                "export {}".to_string(),
+            ),
+            ("mock/src/RiskBadge.js".to_string(), "mount();".to_string()),
+        ];
+        assert_eq!(digest(&files), "c14e3564be9bd6b2");
+        let mut reversed = files.clone();
+        reversed.reverse();
+        assert_eq!(digest(&reversed), digest(&files), "order does not matter");
+    }
+
+    #[test]
+    fn a_bundle_is_built_from_the_code_as_it_is() {
+        let mut tree = sound();
+        tree.bundles.push(Bundle {
+            name: "RiskBadge".into(),
+            source: "apps/credit/risk-badge".into(),
+            built_from: None,
+            digest: "c14e3564be9bd6b2".into(),
+        });
+        let found = violations(&tree, None);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("never built"));
+        tree.bundles[0].built_from = Some("0000000000000000".into());
+        let found = violations(&tree, None);
+        assert!(found[0].contains("is stale"), "{found:?}");
+        tree.bundles[0].built_from = Some("c14e3564be9bd6b2".into());
+        assert!(violations(&tree, None).is_empty());
     }
 
     #[test]
@@ -1013,7 +1189,7 @@ mod tests {
         );
         existing.insert(
             root.join("mock/pages.json"),
-            r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"t","objective":"o","screen":"credit-review"},{"path":"pages/gone.html","title":"t","objective":"o"}],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html"}]}"#.to_string(),
+            r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"t","objective":"o","screen":"credit-review"},{"path":"pages/gone.html","title":"t","objective":"o"}],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html","source":"apps/credit/risk-badge","builtFrom":"c14e3564be9bd6b2"}]}"#.to_string(),
         );
         existing.insert(
             root.join("mock/pages/credit-review.html"),
@@ -1023,11 +1199,26 @@ mod tests {
             root.join("mock/components/RiskBadge.html"),
             "<div>".to_string(),
         );
+        existing.insert(root.join("mock/src/RiskBadge.js"), "mount();".to_string());
+        existing.insert(
+            root.join("apps/credit/risk-badge/src/index.ts"),
+            "export {}".to_string(),
+        );
+        existing.insert(
+            root.join("apps/credit/risk-badge/src/node_modules/x.js"),
+            "skipped".to_string(),
+        );
         let disk = FakeDisk { existing };
         let tree = Tree::read(&disk, &root);
         assert_eq!(tree.screens, ["credit-review"]);
         assert_eq!(tree.mocked, ["pages/credit-review.html"]);
         assert_eq!(tree.mocked_components, ["RiskBadge"]);
+        assert_eq!(tree.bundles.len(), 1);
+        assert_eq!(tree.bundles[0].digest, "c14e3564be9bd6b2");
+        assert_eq!(
+            tree.bundles[0].built_from.as_deref(),
+            Some("c14e3564be9bd6b2")
+        );
         assert!(tree.under_architecture);
         assert_eq!(tree.capabilities.len(), 1);
         assert_eq!(tree.capabilities[0].system, "credit");

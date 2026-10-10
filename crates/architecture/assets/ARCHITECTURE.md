@@ -105,12 +105,15 @@ A **micro-frontend** is a Micro-UI as the mock shows it, declared in
 `mock/pages.json` with the `needs`, `actions` and `props` its manifest
 (contract D) carries. Once the Micro-UI is built, the micro-frontend is
 **its real code**: an entry `mock/src/<MicroUi>.js` mounts it on the shell
-client over a **mock server** (`mock/src/server.js`), which answers the
-shell's wire protocol in memory from `mock/fixtures/` — reads from the
-fixtures, commands judged as the DataGuard would, applied, `dataVersion`
-bumped so every micro-frontend on the page refetches — and `mock/build.sh`
-bundles it into `mock/components/<MicroUi>.js`, committed, loaded by
-`mock/components/<MicroUi>.html`. Before it is built, the micro-frontend is
+client over the **mock server** `harness init-repo` installs
+(`mock/src/server.js`), which answers the shell's wire protocol in memory —
+reads from `mock/fixtures/` or the product's `mock/src/reads.js`, commands
+judged as the DataGuard would by `mock/src/commands.js`, applied,
+`dataVersion` bumped so every micro-frontend on the page refetches — with
+the installed **screen host** (`mock/src/screen.js`: the `$ctx.<name>`
+context a frozen screen composes with, contract E); `mock/build.sh` bundles
+it into `mock/components/<MicroUi>.js`, committed with a `builtFrom` digest
+of the code it came from, which the gates recompute. Before it is built, the micro-frontend is
 a hand-written fragment, drawn from its spec. A page is static HTML plus the
 micro-frontends it injects, each a
 `<div data-component="<MicroUi>" data-props='{…}'></div>` that `mock/mock.js`

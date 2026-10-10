@@ -126,6 +126,8 @@ pub fn units_of(files: &[UnitFile]) -> Units {
                         fixture: String::new(),
                         needs: list("needs"),
                         actions: list("actions"),
+                        source: String::new(),
+                        built_from: String::new(),
                         props: json
                             .get("props")
                             .and_then(|v| v.as_object())

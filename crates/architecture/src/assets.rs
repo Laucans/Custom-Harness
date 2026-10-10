@@ -4,7 +4,8 @@
 //! architecture from the same source: the architecture document, the rules
 //! section of `CLAUDE.md`, the fourteen contracts, the CI gates, the project's
 //! CI for its stack, the script that scopes its tests, the one that dumps its
-//! schema, an empty data model to grow and an empty list of mock pages. What to write of them in a given
+//! schema, an empty data model to grow, an empty list of mock pages and the
+//! mock-up's loader, screen host, mock server and build. What to write of them in a given
 //! checkout, and what to keep, is `init-repo`'s decision, not this module's.
 
 /// One file of the architecture: where it goes in the repository, what it says.
@@ -29,8 +30,9 @@ pub const CLAUDE_RULES: &str = include_str!("../assets/CLAUDE-rules.md");
 pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 
 /// The files installed as they are: the document, the gates, the CI, the
-/// test scope, the schema dump, the data model, the mock pages, the contracts.
-pub const FILES: [Asset; 22] = [
+/// test scope, the schema dump, the data model, the mock-up's files, the
+/// contracts.
+pub const FILES: [Asset; 30] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -58,6 +60,38 @@ pub const FILES: [Asset; 22] = [
     Asset {
         path: "mock/pages.json",
         content: include_str!("../assets/mock-pages.json"),
+    },
+    Asset {
+        path: "mock/mock.js",
+        content: include_str!("../assets/mock/mock.js"),
+    },
+    Asset {
+        path: "mock/style.css",
+        content: include_str!("../assets/mock/style.css"),
+    },
+    Asset {
+        path: "mock/build.sh",
+        content: include_str!("../assets/mock/build.sh"),
+    },
+    Asset {
+        path: "mock/build.mjs",
+        content: include_str!("../assets/mock/build.mjs"),
+    },
+    Asset {
+        path: "mock/src/server.js",
+        content: include_str!("../assets/mock/src/server.js"),
+    },
+    Asset {
+        path: "mock/src/screen.js",
+        content: include_str!("../assets/mock/src/screen.js"),
+    },
+    Asset {
+        path: "mock/src/reads.js",
+        content: include_str!("../assets/mock/src/reads.js"),
+    },
+    Asset {
+        path: "mock/src/commands.js",
+        content: include_str!("../assets/mock/src/commands.js"),
     },
     Asset {
         path: "contracts/README.md",

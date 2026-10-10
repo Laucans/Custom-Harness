@@ -270,6 +270,7 @@ impl NoteDesks {
             .to_string(),
             page: note.page.clone(),
             component: note.component.clone(),
+            source: note.source.clone(),
         }
     }
 
@@ -331,6 +332,9 @@ mod tests {
     // A test fake: each method holds its lock for the whole of its few lines.
     #[allow(clippy::significant_drop_tightening)]
     impl NoteStore for Shelf {
+        fn boards(&self) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
         fn notes(&self, board: &str) -> Result<Vec<KeptNote>, String> {
             Ok(lock(&self.notes)
                 .iter()
@@ -443,6 +447,7 @@ mod tests {
             kind,
             page: String::new(),
             component: String::new(),
+            source: String::new(),
             shape: None,
             turns: 0,
         }

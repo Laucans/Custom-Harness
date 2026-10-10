@@ -421,6 +421,13 @@ pub struct KeptNote {
 /// Synchronous, like [`Yard`]: a small local database. `Send + Sync`
 /// because the HTTP handlers share it.
 pub trait NoteStore: Send + Sync {
+    /// Every board that holds a pin still on it, sorted.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read.
+    fn boards(&self) -> Result<Vec<String>, String>;
+
     /// A board's pins, deleted ones included, each with its conversation's
     /// turn count in `note.turns`.
     ///
@@ -697,6 +704,16 @@ pub struct MockComponent {
     /// The props it takes, `name: type`.
     #[serde(default)]
     pub props: std::collections::BTreeMap<String, String>,
+    /// The Micro-UI's folder it is bundled from, when it is the real code.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// What the bundle was built from, as `mock/build.mjs` wrote it.
+    #[serde(
+        default,
+        rename = "builtFrom",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub built_from: String,
 }
 
 /// The mock-up of one branch, as it is right now: what the committed branch

@@ -35,6 +35,9 @@ const MAX_PAGE: usize = 200;
 /// The most points a zone's outline may have.
 pub const MAX_POINTS: usize = 4_000;
 
+/// The longest reference link a pin carries.
+const MAX_SOURCE: usize = 500;
+
 /// What a pin is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -148,6 +151,10 @@ pub struct Note {
     /// For a design: the micro-frontend's name, `RiskBadge`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub component: String,
+    /// A reference the session draws from: a Figma frame's link, a page
+    /// elsewhere. A URL, or empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
     /// A zone's outline — `None` for a point.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<Shape>,
@@ -232,6 +239,15 @@ pub fn checked(note: Note) -> Result<Note, String> {
     if note.kind == Kind::Design && note.component.is_empty() {
         return Err(format!("pin {}: name the micro-frontend first", note.id));
     }
+    if !note.source.is_empty()
+        && (note.source.len() > MAX_SOURCE
+            || !(note.source.starts_with("https://") || note.source.starts_with("http://")))
+    {
+        return Err(format!(
+            "pin {}: a reference is a link (https://…)",
+            note.id
+        ));
+    }
     if let Some(shape) = &note.shape {
         let enough = match shape.kind {
             ShapeKind::Rect | ShapeKind::Circle => shape.points.len() == 2,
@@ -295,6 +311,7 @@ mod tests {
             kind: Kind::Note,
             page: String::new(),
             component: String::new(),
+            source: String::new(),
             shape: None,
             turns: 0,
         }
@@ -354,6 +371,14 @@ mod tests {
         assert!(checked(design.clone()).is_err(), "named like a Micro-UI");
         design.component = "RiskBadge".to_string();
         assert!(checked(design).is_ok());
+        let mut referenced = note("r");
+        referenced.source = "ftp://x".to_string();
+        assert!(
+            checked(referenced.clone()).is_err(),
+            "a reference is a link"
+        );
+        referenced.source = "https://www.figma.com/design/abc/Frame?node-id=1-2".to_string();
+        assert!(checked(referenced).is_ok());
     }
 
     #[test]

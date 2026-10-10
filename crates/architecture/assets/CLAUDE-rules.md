@@ -47,8 +47,9 @@ data/model.json                    the data model: what every table and field is
 mock/pages.json                    the mock-up's pages, one per screen, and its micro-frontends (contract N)
 mock/pages/<screen>.html           one mocked page: static HTML, the rest injected as micro-frontends
 mock/components/<MicroUi>.html     one micro-frontend: the real Micro-UI bundled on the mock server, or a hand-written fragment before it is built
-mock/src/server.js                 the mock server: the shell's wire protocol answered in memory from mock/fixtures/
-mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI, bundled (esbuild) into mock/components/<MicroUi>.js, committed
+mock/src/server.js, screen.js      installed: the mock server (the shell's wire protocol from mock/fixtures/) and the screen host ($ctx.<name>)
+mock/src/reads.js, commands.js     what the product teaches the server: a read per Capability, a judgement per DataCapability
+mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI (`source` in pages.json), bundled into mock/components/<MicroUi>.js, committed with its builtFrom
 mock/fixtures/*.json               what the Capabilities would answer
 mock/mock.js                       the loader: fills every data-component element from components/
 scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)

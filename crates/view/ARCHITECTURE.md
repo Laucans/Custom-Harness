@@ -389,11 +389,18 @@ session is told the page, its objective and the part's markup.
 **Micro-frontends.** A page is static HTML plus the micro-frontends it
 injects: a micro-frontend is a Micro-UI as the mock shows it — once built,
 **its real code** bundled (`mock/src/<Name>.js`, `mock/build.sh`) on the
-product's shell client over a mock server (`mock/src/server.js`) that
-answers the shell's protocol from `mock/fixtures/`; before, a hand-written
-fragment — `mock/components/<Name>.html`, listed under `components` of
-`mock/pages.json` with its `needs`, `actions` and `props`, injected as a
-`<div data-component="<Name>" data-props='…'>` that `mock/mock.js` fills.
+product's shell client over the mock server `harness init-repo` installs
+(`mock/src/server.js`: the shell's protocol answered from `mock/fixtures/`,
+taught by the product's `reads.js` and `commands.js`) with the installed
+screen host (`mock/src/screen.js`: the `$ctx.<name>` context a frozen
+screen composes with); before, a hand-written fragment —
+`mock/components/<Name>.html`, listed under `components` of
+`mock/pages.json` with its `needs`, `actions`, `props`, its `source` and
+the `builtFrom` digest `mock/build.mjs` records (the harness recomputes it,
+`harness_architecture::tree::digest`, and refuses a stale bundle), injected
+as a `<div data-component="<Name>" data-props='…'>` that `mock/mock.js`
+fills. A new page may carry a reference link — a Figma frame — that its
+session draws from when a Figma tool is at hand (`Note::source`).
 The easel has **two views**. In the *frontend* view, the `micro-frontends ◧`
 switch outlines every one on the page in its own colour with its name
 (a style the view injects in the page's document), and pins then land on
@@ -442,6 +449,19 @@ a board named `mockup--…`, and the server makes the workspace before the
 session opens. The product's rules on the mock-up — one page per screen,
 `data-component` on every Micro-UI, the gates that refuse a screen no page
 mocks — are `harness-architecture`'s (contract N, `tree::violations`).
+
+## The pin board
+
+The cork board on the office's wall opens **every pin of every board**, by
+branch — `main`, the integration branch, the milestones', and the boards no
+branch matches — read from `GET /api/notes` (`NoteStore::boards`, then
+each board's live pins). A board's name says where it belongs:
+`data-model--<slug>` and `mockup--<slug>--<page>`, and the page matches the
+slugs against the product's branches (the data pane's and the easel's own
+naming). A click opens the pin where it was dropped: the data model at that
+branch, or the easel at that branch and page (`pageSlug`), which centres
+and opens the pin once its board is read (`board.goTo`, the `onLoaded`
+hook).
 
 ## The capabilities list
 
@@ -544,7 +564,7 @@ src/adapters/
   prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
+src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
 static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```

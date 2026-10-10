@@ -110,7 +110,11 @@
     const onSession = opts && opts.onSession
       ? (note, ctx) => opts.onSession({ board: board.board(), id: note.id, on: describe(note.target), kind: note.kind, context: ctx, branch: st.branch, dir: st.newest ? '' : st.dir })
       : null;
-    const board = window.HarnessBoard.create(q('.dm-board'), { id: null, describe, resolve, context, onSession, bounds: () => st.bounds });
+    // A pin asked for from elsewhere (the office's pin board) is opened once its board is read.
+    const onLoaded = () => {
+      if (opts && opts.pin && !st.pinned && board.goTo(opts.pin)) st.pinned = true;
+    };
+    const board = window.HarnessBoard.create(q('.dm-board'), { id: null, describe, resolve, context, onSession, onLoaded, bounds: () => st.bounds });
 
     // ---- reading -------------------------------------------------------------------
     async function load() {
