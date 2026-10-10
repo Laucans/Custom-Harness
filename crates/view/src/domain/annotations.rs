@@ -18,6 +18,7 @@
 //! with ctrl+z, the older ones are destroyed with their conversation.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -129,7 +130,7 @@ pub struct Shape {
 }
 
 /// One pin.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Note {
     /// Chosen by the page; unique on its board.
     pub id: String,
@@ -171,6 +172,9 @@ pub struct Note {
     /// For a request on the mock-up: where it stands against the draft.
     #[serde(default, skip_serializing_if = "is_pending")]
     pub state: RequestState,
+    /// The backlog issue opened from this pin, if one was — its URL.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub issue: String,
     /// A zone's outline — `None` for a point.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<Shape>,
@@ -314,10 +318,95 @@ pub fn beyond_undo(deleted: &[(String, String)]) -> Vec<String> {
         .collect()
 }
 
+/// The longest context a page may add to a backlog issue, in characters.
+pub const MAX_ISSUE_CONTEXT: usize = 20_000;
+
+/// The issue a pin becomes on the product's backlog: its title is the
+/// pin's first line, its body the pin's text, where it sits (the board,
+/// the part), and what the page adds — the draft's summary, the page's
+/// objective. Answers `(title, body)`, or why there is nothing to open.
+///
+/// # Errors
+///
+/// The pin has no text, or is a plain note.
+pub fn backlog_issue(board: &str, note: &Note, context: &str) -> Result<(String, String), String> {
+    if note.kind == Kind::Note || note.kind == Kind::Brainstorm {
+        return Err(
+            "a note or a brainstorm is not a backlog item: turn it into a request first".into(),
+        );
+    }
+    let text = note.text.trim();
+    if text.is_empty() {
+        return Err("write the pin first: its first line becomes the issue's title".into());
+    }
+    let first = text.lines().next().unwrap_or_default().trim();
+    let title: String = first.chars().take(120).collect();
+    let mut body = String::new();
+    body.push_str(text);
+    body.push_str("\n\n---\n\n");
+    let _ = write!(
+        body,
+        "Opened from a **{}** pin on `{board}`",
+        note.kind.name()
+    );
+    if !note.target.is_empty() {
+        let _ = write!(body, ", on `{}`", note.target);
+    }
+    if !note.page.is_empty() {
+        let _ = write!(body, ", leading to the page `{}`", note.page);
+    }
+    if !note.component.is_empty() {
+        let _ = write!(body, ", about the micro-frontend `{}`", note.component);
+    }
+    body.push_str(".\n");
+    if !note.source.is_empty() {
+        let _ = writeln!(body, "Reference: {}", note.source);
+    }
+    let context = context.trim();
+    if !context.is_empty() {
+        body.push('\n');
+        body.push_str(&context.chars().take(MAX_ISSUE_CONTEXT).collect::<String>());
+        body.push('\n');
+    }
+    Ok((title, body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_request_becomes_an_issue_titled_by_its_first_line() {
+        let note = Note {
+            id: "n1".into(),
+            kind: Kind::Request,
+            text: "Put the total above the lines\nso the eye lands on it".into(),
+            target: "id:total".into(),
+            ..Note::default()
+        };
+        let (title, body) =
+            backlog_issue("mockup--main-agent--campagne", &note, "Draft v3: 4 ops").unwrap();
+        assert_eq!(title, "Put the total above the lines");
+        assert!(body.starts_with("Put the total above the lines\nso the eye lands on it"));
+        assert!(body.contains("**request** pin on `mockup--main-agent--campagne`, on `id:total`"));
+        assert!(body.ends_with("Draft v3: 4 ops\n"));
+    }
+
+    #[test]
+    fn a_note_or_an_empty_pin_opens_nothing() {
+        let empty = Note {
+            kind: Kind::Request,
+            ..Note::default()
+        };
+        assert!(backlog_issue("b", &empty, "").is_err());
+        let note = Note {
+            kind: Kind::Note,
+            text: "x".into(),
+            ..Note::default()
+        };
+        assert!(backlog_issue("b", &note, "").is_err());
+    }
 
     fn note(id: &str) -> Note {
         Note {
@@ -334,6 +423,7 @@ mod tests {
             component: String::new(),
             source: String::new(),
             state: RequestState::Pending,
+            issue: String::new(),
             shape: None,
             turns: 0,
         }

@@ -1,0 +1,29 @@
+{
+  "page": "pages/campagne.html",
+  "version": 3,
+  "name": "",
+  "viewport": 390,
+  "ops": [
+    {
+      "kind": "clone",
+      "by": "human",
+      "target": "id:pjs>ul:nth-child(1)>li:nth-child(4)",
+      "as": "cmv2pmpnmy484"
+    }
+  ],
+  "forks": [],
+  "requests": [
+    {
+      "id": "nmv2mhtyucduv4",
+      "target": "id:entete>h3:nth-child(2)",
+      "text": "Put the heading in a smaller font and move the add button below the list",
+      "state": "pending"
+    },
+    {
+      "id": "nmv2pljdv9z1vm",
+      "target": "",
+      "text": "Draft v1 of the page Une campagne validated (4 operations, branch main_agent)\n- moved: #pjs, #ajouter-pj\n- removed: inside micro-frontend NiveauDuGroupeUnecampagne\n- forked micro-frontends: NiveauDuGroupe → NiveauDuGroupeUnecampagne\n\nRequests on the page:\n- Put the heading in a smaller font and move the add button below the list [pending]\n\nThe page as drafted, its operations and its forks are in mock/drafts/campagne.json on the mockup/* branch saved from this mock-up.",
+      "state": "pending"
+    }
+  ]
+}

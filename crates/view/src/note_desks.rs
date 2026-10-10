@@ -469,6 +469,7 @@ mod tests {
             component: String::new(),
             source: String::new(),
             state: crate::domain::annotations::RequestState::Pending,
+            issue: String::new(),
             shape: None,
             turns: 0,
         }

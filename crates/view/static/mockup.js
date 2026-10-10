@@ -235,6 +235,13 @@
         capabilities,
         dataCapabilities,
         apply: st.view === 'page' ? (note) => applyRequests([note]) : null,
+        backlogContext: (note) => {
+          const page = currentPage();
+          let text = page ? `Page: ${page.title} (\`${page.path}\`) on \`${st.branch}\`${page.objective ? ' — ' + page.objective : ''}` : `Branch: ${st.branch}`;
+          if (note.target && note.target !== '') text += `\nPart: ${describe(note.target)}`;
+          if (note.kind !== 'request' || note.target !== '') { const summary = draftSummary(); if (summary) text += '\n\n' + summary; }
+          return text;
+        },
         goto: (path) => { setView('page'); show(path); },
         onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; design.refresh(); },
         bounds: () => (st.view === 'page'
@@ -549,9 +556,42 @@
     async function validateVersion() {
       clearTimeout(st.saveTimer);
       await fetch(`/api/drafts/${encodeURIComponent(boardOf())}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) }).catch(() => {});
+      const summary = draftSummary();
       await materialize();
       await draftCall('validate');
-      await draftCall('open', { base: (currentPage() || {}).hash || '' });
+      // The page now embodies the draft: the branch is read again, and the
+      // next version opens on the page as written, empty.
+      clearTimeout(st.timer);
+      st.stamp = '';
+      await load();
+      if (summary && st.board) st.board.newNote({ kind: 'request', target: '', text: summary, state: 'simulated' });
+    }
+    // The draft in words: what the human did to the page, for the pin that
+    // sums a validated version up and the issue it becomes.
+    function draftSummary() {
+      if (!st.engine || !st.engine.ops.length) return '';
+      const page = currentPage();
+      const current = st.history && st.history.current;
+      const ops = st.engine.ops;
+      const name = (t) => (t ? describe(String(t).replace(/^col:(.+)#\d+$/, '$1')) : '');
+      const lines = [];
+      const human = ops.filter((o) => o.by === 'human');
+      const byAi = ops.filter((o) => o.by !== 'human');
+      const count = (kind) => human.filter((o) => o.kind === kind);
+      if (count('move').length) lines.push(`moved: ${[...new Set(count('move').map((o) => name(o.target)))].slice(0, 8).join(', ')}`);
+      if (count('resize').length) lines.push(`resized: ${[...new Set(count('resize').map((o) => name(o.target)))].slice(0, 8).join(', ')}`);
+      if (count('remove').length) lines.push(`removed: ${[...new Set(count('remove').map((o) => name(o.target)))].slice(0, 8).join(', ')}`);
+      if (count('clone').length) lines.push(`duplicated: ${[...new Set(count('clone').map((o) => name(o.target)))].slice(0, 8).join(', ')}`);
+      if (count('text').length) lines.push(`rewritten: ${count('text').map((o) => `${name(o.target)} → “${String(o.text || '').slice(0, 40)}”`).slice(0, 6).join('; ')}`);
+      if (count('add').length) lines.push(`added: ${count('add').map((o) => `${o.what}${o.label ? ' “' + String(o.label).slice(0, 30) + '”' : ''}${o.intent ? ' (' + String(o.intent).slice(0, 60) + ')' : ''}`).join(', ')}`);
+      if (count('static').length) lines.push(`laid out freely: ${[...new Set(count('static').filter((o) => o.layout !== 'flow').map((o) => name(o.target)))].join(', ')}`);
+      const forked = ops.filter((o) => o.kind === 'fork');
+      if (forked.length) lines.push(`forked micro-frontends: ${forked.map((o) => `${o.from} → ${o.as}`).join(', ')}`);
+      const requests = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && (n.text || '').trim() && n.target !== '');
+      if (byAi.length) lines.push(`${byAi.length} operation(s) applied from ${new Set(byAi.map((o) => o.by)).size} request(s)`);
+      const head = `Draft v${current ? current.version : '?'} of the page ${page ? page.title : st.page} validated (${ops.length} operation${ops.length === 1 ? '' : 's'}, branch ${st.branch})`;
+      const tail = requests.length ? '\n\nRequests on the page:\n' + requests.map((n) => `- ${(n.text || '').split('\n')[0]} [${n.state || 'pending'}]`).join('\n') : '';
+      return `${head}\n${lines.map((l) => '- ' + l).join('\n')}${tail}\n\nThe page as drafted, its operations and its forks are in mock/drafts/${pageSlug(page ? page.path : st.page)}.json on the mockup/* branch saved from this mock-up.`;
     }
     function drawHistory() {
       const panel = q('.mk-history');

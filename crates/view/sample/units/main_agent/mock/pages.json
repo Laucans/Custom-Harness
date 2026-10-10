@@ -6,13 +6,17 @@
       "title": "Campagnes",
       "objective": "Voir ses campagnes et en ouvrir une",
       "screen": "campagnes",
-      "components": ["Campagnes"]
+      "components": [
+        "Campagnes"
+      ]
     },
     {
       "path": "pages/campagne.html",
       "title": "Une campagne",
       "objective": "Suivre une campagne : son groupe, ses PJs, son niveau",
-      "components": ["NiveauDuGroupe"]
+      "components": [
+        "NiveauDuGroupeUnecampagne"
+      ]
     }
   ],
   "components": [
@@ -22,17 +26,41 @@
       "description": "La liste des campagnes du MJ, à ouvrir ou à créer",
       "fragment": "components/Campagnes.html",
       "fixture": "fixtures/campagnes.json",
-      "needs": ["campagne.listerCampagnes"],
-      "actions": ["campagne.creerCampagne"],
-      "props": { "statut": "string?" }
+      "needs": [
+        "campagne.listerCampagnes"
+      ],
+      "actions": [
+        "campagne.creerCampagne"
+      ],
+      "props": {
+        "statut": "string?"
+      }
     },
     {
       "name": "NiveauDuGroupe",
       "system": "campagne",
       "description": "Le niveau du groupe d'une campagne",
       "fragment": "components/NiveauDuGroupe.html",
-      "needs": ["campagne.niveauDuGroupe"],
-      "props": { "campagne": "ID" }
+      "needs": [
+        "campagne.niveauDuGroupe"
+      ],
+      "props": {
+        "campagne": "ID"
+      }
+    },
+    {
+      "name": "NiveauDuGroupeUnecampagne",
+      "system": "campagne",
+      "description": "NiveauDuGroupe as the page Une campagne wants it",
+      "fragment": "components/NiveauDuGroupeUnecampagne.html",
+      "needs": [
+        "campagne.niveauDuGroupe"
+      ],
+      "actions": [],
+      "props": {
+        "campagne": "ID"
+      },
+      "variantOf": "NiveauDuGroupe"
     }
   ]
 }

@@ -433,6 +433,16 @@ they go. `simulate requests` in the edit bar applies every pending one in
 one call, each request's refusal reported with its reason. **Discuss it**
 opens the pin's session instead. The data pane's pins know the same
 kind; `asking` and `simulate` are read as `request` (`Kind`'s aliases).
+A request, a link or a design pin goes **on the backlog** from its
+editor (`→ backlog`, `POST /api/notes/{board}/{id}/backlog`,
+`annotations::backlog_issue`): an issue carrying `harness:roadmap` and
+`harness:ready` — the same labels the data pane's divergence issue
+carries, so the planner takes it from there — titled by the pin's first
+line, its body the pin's text, where it sits, and what the easel adds
+(the page and its objective, the part, the draft's summary); the pin
+remembers the issue's URL and shows it. **Validate** on a draft drops a
+request pin on the page that sums the version up — what moved, what was
+added or rewritten, the forks, the requests — ready for the same button.
 These sessions **edit**: they open in the launcher's permission
 mode (a brainstorm stays in plan mode), in a **workspace** of the branch
 the view makes on the first one — a detached `git worktree` of the mirror

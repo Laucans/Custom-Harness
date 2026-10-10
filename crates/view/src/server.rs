@@ -242,6 +242,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/notes/{board}", get(notes))
         .route("/api/notes/{board}/undo", post(undo_note))
         .route("/api/notes/{board}/{id}", put(put_note).delete(delete_note))
+        .route("/api/notes/{board}/{id}/backlog", post(backlog_note))
         .route("/api/notes/{board}/{id}/session", post(open_session))
         .route("/api/notes/{board}/{id}/session/term", get(session_term))
         .route("/api/notes/{board}/{id}/session/close", post(close_session))
@@ -2001,6 +2002,72 @@ async fn put_note(
         Ok(note) => note,
         Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
+    match state.pins.put(&board, &note) {
+        Ok(()) => json(&note),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// What a page adds to the issue a pin becomes: markdown, the draft's
+/// summary or the page's objective.
+#[derive(Debug, Default, Deserialize)]
+struct BacklogAsk {
+    #[serde(default)]
+    context: String,
+}
+
+/// Puts a pin on the product's backlog: an issue carrying `harness:roadmap`
+/// and `harness:ready`, titled by the pin's first line, that the planner
+/// takes from there; the pin remembers the issue's URL.
+async fn backlog_note(
+    State(state): State<AppState>,
+    Path((board, id)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if !annotations::is_board(&board) || !annotations::is_id(&id) {
+        return not_found("no such pin");
+    }
+    let Some(desk) = state.data.clone() else {
+        return (StatusCode::NOT_FOUND, "nothing reads the product here").into_response();
+    };
+    let ask: BacklogAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let kept = match state.pins.notes(&board) {
+        Ok(kept) => kept,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let Some(mut note) = kept
+        .into_iter()
+        .filter(|k| k.deleted_at.is_none())
+        .map(|k| k.note)
+        .find(|n| n.id == id)
+    else {
+        return not_found("no such pin");
+    };
+    if !note.issue.is_empty() {
+        return (
+            StatusCode::CONFLICT,
+            format!("already on the backlog: {}", note.issue),
+        )
+            .into_response();
+    }
+    let (title, text) = match annotations::backlog_issue(&board, &note, &ask.context) {
+        Ok(composed) => composed,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    let issue = Issue {
+        title,
+        body: text,
+        labels: divergence::ISSUE_LABELS
+            .iter()
+            .map(|l| (*l).to_string())
+            .collect(),
+    };
+    let url = match desk.open_issue(issue).await {
+        Ok(url) => url,
+        Err(why) => return (StatusCode::BAD_GATEWAY, why).into_response(),
+    };
+    note.issue = url;
+    note.at = stamp();
     match state.pins.put(&board, &note) {
         Ok(()) => json(&note),
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),

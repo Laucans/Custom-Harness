@@ -102,6 +102,7 @@
       + '<div class="hb-link-go" hidden><button type="button" data-note="go">Open the page →</button><button type="button" data-note="create">Create it with an AI session</button></div>'
       + '<div class="hb-apply" hidden><button type="button" data-note="apply">Apply to the draft</button><span class="hb-apply-state"></span></div>'
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
+      + '<div class="hb-backlog" hidden><button type="button" data-note="backlog" title="Open a harness:roadmap issue from this pin: the planner takes it from there">→ backlog</button><a class="hb-issue" target="_blank" rel="noopener" hidden>on the backlog ↗</a></div>'
       + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="delete">delete</button></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
@@ -334,6 +335,16 @@
         apply.querySelector('.hb-apply-state').textContent = { pending: 'not applied yet', simulated: 'applied to the draft', stale: 'applied once; the page moved since' }[state] || '';
       }
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
+      // A request, a link or a design goes on the product's backlog as an issue.
+      const backlog = editor.querySelector('.hb-backlog');
+      backlog.hidden = !(kind === 'request' || kind === 'link' || kind === 'design');
+      if (!backlog.hidden) {
+        backlog.querySelector('button').hidden = !!n.issue;
+        backlog.querySelector('button').disabled = busy;
+        const a = backlog.querySelector('.hb-issue');
+        a.hidden = !n.issue;
+        if (n.issue) { a.href = n.issue; a.textContent = 'on the backlog ' + (/\/(\d+)$/.exec(n.issue) ? '#' + /\/(\d+)$/.exec(n.issue)[1] : '') + ' ↗'; }
+      }
       textarea.disabled = busy;
       textarea.placeholder = {
         note: 'Write a note — or the first prompt of a brainstorm or a request…',
@@ -456,6 +467,24 @@
       drawPins();
     }
     function setState(text) { editor.querySelector('.hb-note-state').textContent = text; }
+    // The pin becomes an issue on the product's backlog; the pane may add
+    // what it knows (`opts.backlogContext(n)`: the draft, the objective).
+    async function toBacklog(n) {
+      flush();
+      setState('opening the issue…');
+      try {
+        if (n.fresh) await put(n);
+        const context = opts.backlogContext ? opts.backlogContext(n) : '';
+        const res = await fetch(`${base}/${encodeURIComponent(n.id)}/backlog`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context }) });
+        if (!res.ok) throw new Error(await res.text());
+        const got = await res.json();
+        n.issue = got.issue;
+        n.at = got.at;
+        setState('on the backlog');
+        drawEditor(n);
+        drawPins();
+      } catch (e) { setState(String(e.message || e).split('\n')[0].slice(0, 120)); }
+    }
     async function put(n) {
       const body = Object.assign({}, n);
       delete body.fresh;
@@ -760,6 +789,7 @@
       if (act.dataset.note === 'delete' && n) remove(n);
       if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
       if (act.dataset.note === 'apply' && n && opts.apply) { flush(); if (n.fresh) put(n).then(() => opts.apply(n)).catch(() => setState('not saved')); else opts.apply(n); }
+      if (act.dataset.note === 'backlog' && n) toBacklog(n);
       if (act.dataset.note === 'go' && n && n.page && opts.goto) { flush(); opts.goto(n.page); }
       if (act.dataset.note === 'create' && n && n.page && opts.onSession) openSession(n);
     };

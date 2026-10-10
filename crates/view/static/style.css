@@ -784,6 +784,11 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .hb-link label { display: flex; align-items: center; gap: 6px; }
 .hb-link select, .hb-link input { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: 12px var(--sans); }
 .hb-link-new[hidden], .hb-link-go[hidden], .hb-link-go button[hidden] { display: none; }
+.hb-backlog { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.hb-backlog[hidden], .hb-backlog button[hidden], .hb-issue[hidden] { display: none; }
+.hb-backlog button { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
+.hb-backlog button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.hb-issue { font: 12px var(--sans); color: var(--ok); }
 .hb-link-new { display: flex; flex-direction: column; gap: 6px; }
 .hb-link-new input { width: 100%; box-sizing: border-box; }
 .hb-link-go { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; }
