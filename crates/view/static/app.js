@@ -1387,6 +1387,7 @@
     'costs.day': 'Spending per day — a day on the harness machine, midnight to midnight — the last fourteen days the ledger holds.',
     'costs.stage': 'Spending per stage of the pipeline — technical refinement, code, create-test, review… — with how many sessions each took.',
     'costs.task': 'Spending per issue: what each task has cost so far, every round and stage together.',
+    'costs.milestone': 'Spending per milestone: every task of the milestone and the milestone\'s own refinement, from its first session to its last. <b>no milestone</b>: a roadmap item or a pull request. <b>unknown</b>: a task of a milestone the board no longer lists.',
     'costs.outcome': 'How the paid sessions ended: <b>ok</b>, <b>STOP</b> (the session stopped itself, or a question), <b>FAILED</b> (it rendered nothing usable, or was killed), <b>QUOTA</b> (the window was exhausted). Money spent on anything but ok bought nothing.',
     'costs.last': 'The newest sessions of the ledger: when, which task and stage, the estimate, the round-trips with the model, the minutes it took, and how it ended.',
     quota: 'How much of each rate limit is left, read when this screen opens — not remembered. <b>read again</b> reads them once more.',
@@ -1412,6 +1413,7 @@
       if ((c.by_side || []).length) h += section(p, 'costs.side', 'By side of the architecture') + bars(c.by_side);
       h += section(p, 'costs.day', 'By day') + bars(c.by_day.slice(-14));
       h += section(p, 'costs.stage', 'By stage') + bars(c.by_stage);
+      h += section(p, 'costs.milestone', 'By milestone') + bars(c.by_milestone || []);
       h += section(p, 'costs.task', 'By task') + bars(c.by_task);
       h += section(p, 'costs.outcome', 'By outcome') + bars(c.by_outcome.map((b) => ({ ...b })), '', (b) => `${usd(b.usd)} · ${b.count}`);
       h += section(p, 'costs.last', 'Last paid sessions') + pagedTable(p, 'sessions', '', '<th>when</th><th>task</th><th>stage</th><th class="num">cost</th><th class="num">turns</th><th class="num">min</th><th>outcome</th>', c.last, (r) => `<tr><td data-sort="${esc(r.when)}">${esc(when(r.when))}</td><td>#${esc(r.task)}</td><td>${esc(r.stage)}</td><td class="num">${r.cost_usd == null ? '—' : usd(r.cost_usd)}</td><td class="num">${r.turns ?? '—'}</td><td class="num">${r.duration_ms == null ? '—' : (r.duration_ms / 60000).toFixed(1)}</td><td>${sessionTag(r)}</td></tr>`);

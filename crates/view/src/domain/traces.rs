@@ -570,6 +570,11 @@ pub struct Costs {
     /// the strongest model), `other`, or `unknown` for a task the board no
     /// longer lists. Filled by [`attribute_sides`].
     pub by_side: Vec<Bucket>,
+    /// By milestone, most expensive first — what a milestone cost from its
+    /// refinement to its last task; `unknown` for a roadmap item, a pull
+    /// request, or a task of a milestone the board no longer lists.
+    /// Filled by [`attribute_milestones`].
+    pub by_milestone: Vec<Bucket>,
     /// Token totals.
     pub tokens: Tokens,
     /// The newest rows, newest first.
@@ -776,6 +781,21 @@ pub fn attribute_sides(
     }
 }
 
+/// Fills `by_milestone` from the ledger: `milestone_of(task)` names the
+/// milestone a task belongs to, `None` when the board does not know it.
+pub fn attribute_milestones(
+    costs: &mut Costs,
+    rows: &[LedgerRow],
+    milestone_of: impl Fn(&str) -> Option<String>,
+) {
+    costs.by_milestone.clear();
+    for row in rows {
+        let key = milestone_of(&row.task).unwrap_or_else(|| "unknown".to_string());
+        bump(&mut costs.by_milestone, &key, row.cost_usd.unwrap_or(0.0));
+    }
+    costs.by_milestone.sort_by(|a, b| b.usd.total_cmp(&a.usd));
+}
+
 /// The last `max` bytes of `text`, cut on a line boundary.
 fn tail_of(text: &str, max: usize) -> String {
     if text.len() <= max {
@@ -829,6 +849,26 @@ mod tests {
         assert_eq!(usd("data-layer"), Some(3.0));
         assert_eq!(usd("other"), Some(0.5));
         assert_eq!(usd("unknown"), Some(0.25));
+    }
+
+    #[test]
+    fn spending_is_attributed_to_the_milestone_of_the_task_heaviest_first() {
+        let rows = vec![
+            ledger_row("64", 2.0),
+            ledger_row("65", 0.5),
+            ledger_row("12", 1.0),
+            ledger_row("9", 0.25),
+        ];
+        let mut costs = Costs::default();
+        attribute_milestones(&mut costs, &rows, |task| match task {
+            "64" | "12" => Some("#12 Billing".to_string()),
+            "65" => Some("#13 Search".to_string()),
+            _ => None,
+        });
+        let keys: Vec<&str> = costs.by_milestone.iter().map(|b| b.key.as_str()).collect();
+        assert_eq!(keys, ["#12 Billing", "#13 Search", "unknown"]);
+        assert!((costs.by_milestone[0].usd - 3.0).abs() < 1e-9);
+        assert_eq!(costs.by_milestone[0].count, 2);
     }
 
     #[test]

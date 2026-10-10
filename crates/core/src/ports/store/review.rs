@@ -1,19 +1,19 @@
-//! What a review already cost — the port.
+//! What a pull request already cost — the port.
 //!
-//! A review charges per PR and per pass, never by round or task, and the
-//! comment it posts says the total. The stage that posts thus has to *read*
-//! spending, which [`Spending`](crate::ports::store::spending::Spending) —
-//! a write port — does not answer; hence this one, small on purpose.
+//! The comment a review posts says what it cost. The stage that posts thus
+//! has to *read* spending, which
+//! [`Spending`](crate::ports::store::spending::Spending) — a write port —
+//! does not answer; hence this one, small on purpose.
 //!
-//! The implementation, a ledger with its own frozen columns, lives in
-//! `harness_adapters::store::review_ledger`.
+//! The implementation, a read of the one cost ledger on the pull request's
+//! rows, lives in `harness_adapters::store::review_ledger`.
 
 use crate::domain::Outcome;
 
-/// What a review's passes have already cost.
+/// What a pull request has already cost.
 pub trait ReviewCosts {
-    /// The total spent on this PR, formatted for a comment, or empty when
-    /// nothing was recorded.
+    /// The total spent on this PR — its review passes and any repair —
+    /// formatted for a comment, or empty when nothing was recorded.
     ///
     /// Empty rather than `0`: a carrier that reports no usage bought a review
     /// all the same, and printing `$0` would claim it was free.

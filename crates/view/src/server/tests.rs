@@ -1,0 +1,927 @@
+//! The HTTP side, driven through the router with fakes behind the state.
+
+use super::desks::Control;
+use super::*;
+use crate::desk::fake::Echoing;
+use crate::domain::annotations;
+use crate::domain::assemble::{self, Inputs};
+use crate::domain::blueprint;
+use crate::domain::observe::Observed;
+use crate::domain::observe::fake::Shelf;
+use crate::domain::plant::fake::Switch;
+use crate::domain::snapshot::Project;
+use crate::ports::Process;
+use crate::ports::TrialAsk;
+use axum::body::{Body, to_bytes};
+use axum::http::Request;
+use tower::ServiceExt as _;
+
+fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
+    let lines = blueprint::lines();
+    let project = Project {
+        name: "p".to_string(),
+        slug: String::new(),
+        url: String::new(),
+        integration_branch: "main_agent".to_string(),
+    };
+    let observed = Observed::default();
+    let told = crate::domain::gates::Told::default();
+    let snap = assemble::snapshot(&Inputs {
+        observed: &observed,
+        board: None,
+        project: &project,
+        lines: &lines,
+        now: 0,
+        demo: false,
+        told: &told,
+        zone: &jiff::tz::TimeZone::UTC,
+    });
+    let (_, snapshot) = watch::channel(Arc::new(snap));
+    let (_, board) = watch::channel(None);
+    AppState {
+        snapshot,
+        board,
+        traces: Arc::new(shelf),
+        static_dir: None,
+        render_dir: PathBuf::from("/nonexistent/render"),
+        desk,
+        doctor: None,
+        diagnoses: Arc::default(),
+        asking: Arc::default(),
+        plant: None,
+        start_grace: Duration::ZERO,
+        limits: None,
+        claude_read: Arc::default(),
+        events: None,
+        janitor: None,
+        data: None,
+        pins: Arc::new(Pins::default()),
+        note_desks: None,
+        mockups: None,
+        builds: None,
+        integration_branch: "main_agent".to_string(),
+        prompts: Arc::new(Book::default()),
+        prompts_lock: Arc::default(),
+        trials: Some(Arc::new(Bench::default())),
+        restart: Arc::default(),
+        restart_poll: Duration::from_millis(5),
+        units: None,
+        zone: jiff::tz::TimeZone::UTC,
+    }
+}
+
+/// A prompt book and its drafts, in memory.
+#[derive(Default)]
+struct Book(
+    std::sync::Mutex<(
+        harness_core::domain::prompt_book::PromptBook,
+        harness_core::domain::prompt_book::Drafts,
+        harness_core::domain::prompt_book::Shelf,
+    )>,
+);
+
+impl Book {
+    /// The factory starts: the drafts become what runs.
+    fn start(&self) {
+        let mut both = self.0.lock().expect("book");
+        let drafts = std::mem::take(&mut both.1);
+        both.0
+            .apply(&drafts, harness_workflows::prompts::default_of, 9);
+    }
+}
+
+impl Prompts for Book {
+    fn book(&self) -> Result<harness_core::domain::prompt_book::PromptBook, String> {
+        Ok(self.0.lock().expect("book").0.clone())
+    }
+
+    fn drafts(&self) -> Result<harness_core::domain::prompt_book::Drafts, String> {
+        Ok(self.0.lock().expect("book").1.clone())
+    }
+
+    fn keep_drafts(
+        &self,
+        drafts: &harness_core::domain::prompt_book::Drafts,
+    ) -> Result<(), String> {
+        self.0.lock().expect("book").1 = drafts.clone();
+        Ok(())
+    }
+
+    fn shelf(&self) -> Result<harness_core::domain::prompt_book::Shelf, String> {
+        Ok(self.0.lock().expect("book").2.clone())
+    }
+
+    fn keep_shelf(
+        &self,
+        deactivated: &harness_core::domain::prompt_book::Shelf,
+    ) -> Result<(), String> {
+        self.0.lock().expect("book").2 = deactivated.clone();
+        Ok(())
+    }
+}
+
+/// Trials that never run: what was asked is kept, and reported running.
+#[derive(Default)]
+struct Bench(std::sync::Mutex<Vec<TrialAsk>>);
+
+impl Trials for Bench {
+    fn start(&self, ask: &TrialAsk) -> Result<(), String> {
+        self.0.lock().expect("bench").push(ask.clone());
+        Ok(())
+    }
+
+    fn reports(&self) -> Vec<(String, harness_core::domain::prompt_book::TrialReport)> {
+        self.0
+            .lock()
+            .expect("bench")
+            .iter()
+            .map(|ask| {
+                (
+                    ask.id.clone(),
+                    harness_core::domain::prompt_book::TrialReport {
+                        key: ask.key.clone(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn an_edit_waits_for_the_start_and_a_revert_is_kept_once_it_ran() {
+    let book = Arc::new(Book::default());
+    let mut state = state(Shelf::default(), None);
+    state.prompts = Arc::clone(&book) as Arc<dyn Prompts>;
+    let (status, shown) = send(state.clone(), "GET", "/api/prompts/split/slice", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        shown.contains("\"edited\":false") && shown.contains("\"draft\":null"),
+        "{shown}"
+    );
+
+    let edit = r#"{"key":"split/slice","text":"Slice #{num}"}"#;
+    let (status, saved) = send(state.clone(), "POST", "/api/prompts/edit", edit).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert!(
+        saved.contains("\"edited\":false"),
+        "nothing runs it before a start: {saved}"
+    );
+    let (_, waiting) = send(state.clone(), "GET", "/api/pending", "").await;
+    assert!(
+        waiting.contains("\"key\":\"split/slice\"") && waiting.contains("\"kind\":\"edit\""),
+        "{waiting}"
+    );
+
+    book.start();
+    let (_, shown) = send(state.clone(), "GET", "/api/prompts/split/slice", "").await;
+    assert!(
+        shown.contains("\"running\":\"Slice #{num}\"") && shown.contains("\"edited\":true"),
+        "{shown}"
+    );
+    let (_, waiting) = send(state.clone(), "GET", "/api/pending", "").await;
+    assert!(waiting.contains("\"changes\":[]"), "{waiting}");
+
+    let back = r#"{"key":"split/slice","from":"default"}"#;
+    let (status, _) = send(state.clone(), "POST", "/api/prompts/restore", back).await;
+    assert_eq!(status, StatusCode::OK);
+    book.start();
+    let (_, shown) = send(state.clone(), "GET", "/api/prompts/split/slice", "").await;
+    assert!(
+        shown.contains("\"reverted\":[{\"text\":\"Slice #{num}\""),
+        "{shown}"
+    );
+
+    let far = r#"{"key":"split/slice","from":"history","index":4}"#;
+    let (status, _) = send(state.clone(), "POST", "/api/prompts/restore", far).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = send(
+        state.clone(),
+        "POST",
+        "/api/prompts/edit",
+        r#"{"key":"nope","text":"x"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, none) = send(state, "GET", "/api/prompts/split/publish", "").await;
+    assert_eq!(none, "[]");
+}
+
+#[tokio::test]
+async fn a_dry_run_starts_once_on_its_own_line_with_the_station_s_model() {
+    let state = state(Shelf::default(), None);
+    let ask = |run: &str, line: &str| {
+        format!(
+            r#"{{"key":"split/slice","version":"draft","text":"Slice #{{num}}","workflow":"{line}","run":"{run}"}}"#
+        )
+    };
+    let (status, why) = send(
+        state.clone(),
+        "POST",
+        "/api/prompts/trial",
+        &ask("20261009-120000-12", "planner"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{why}");
+    let (status, started) = send(
+        state.clone(),
+        "POST",
+        "/api/prompts/trial",
+        &ask("20261009-120000-12", "split"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let (status, _) = send(
+        state.clone(),
+        "POST",
+        "/api/prompts/trial",
+        &ask("20261009-120000-12", "split"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "one at a time");
+    let (_, listed) = send(state, "GET", "/api/prompts/trials?key=split/slice", "").await;
+    assert!(
+        listed.contains("\"key\":\"split/slice\"") && listed.contains("\"state\":\"running\""),
+        "{listed}"
+    );
+}
+
+#[tokio::test]
+async fn a_restart_drains_then_starts_and_says_so() {
+    let mut state = state(Shelf::default(), None);
+    let switch = Arc::new(Switch::default());
+    switch.start(None).expect("running");
+    state.plant = Some(Arc::clone(&switch) as Arc<dyn Plant>);
+    let (status, said) = send(state.clone(), "POST", "/api/restart", "").await;
+    assert_eq!(status, StatusCode::OK, "{said}");
+    assert!(said.contains("soft stop"), "{said}");
+    let (status, _) = send(state.clone(), "POST", "/api/restart", "").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    *switch.started.lock().expect("table") = None;
+    for _ in 0..100 {
+        let (_, waiting) = send(state.clone(), "GET", "/api/pending", "").await;
+        if waiting.contains("\"state\":\"started\"") {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the factory never started again");
+}
+
+/// A pins' store in memory.
+#[derive(Default)]
+struct Pins(std::sync::Mutex<Vec<(String, crate::ports::KeptNote)>>);
+
+// A test fake: each method holds its lock for the whole of its few lines.
+#[allow(clippy::significant_drop_tightening)]
+impl NoteStore for Pins {
+    fn notes(&self, board: &str) -> Result<Vec<crate::ports::KeptNote>, String> {
+        let kept = self.0.lock().map_err(|e| e.to_string())?;
+        Ok(kept
+            .iter()
+            .filter(|(b, _)| b == board)
+            .map(|(_, k)| k.clone())
+            .collect())
+    }
+    fn put(&self, board: &str, note: &annotations::Note) -> Result<(), String> {
+        let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+        match kept
+            .iter_mut()
+            .find(|(b, k)| b == board && k.note.id == note.id)
+        {
+            Some((_, k)) => k.note = note.clone(),
+            None => kept.push((
+                board.to_string(),
+                crate::ports::KeptNote {
+                    note: note.clone(),
+                    deleted_at: None,
+                },
+            )),
+        }
+        Ok(())
+    }
+    fn mark_deleted(&self, board: &str, id: &str, at: Option<&str>) -> Result<(), String> {
+        let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+        if let Some((_, k)) = kept.iter_mut().find(|(b, k)| b == board && k.note.id == id) {
+            k.deleted_at = at.map(str::to_string);
+        }
+        Ok(())
+    }
+    fn destroy(&self, board: &str, id: &str) -> Result<(), String> {
+        let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+        kept.retain(|(b, k)| !(b == board && k.note.id == id));
+        Ok(())
+    }
+    fn conversation(&self, _board: &str, _id: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    fn save_conversation(
+        &self,
+        _board: &str,
+        _id: &str,
+        _json: &str,
+        _turns: usize,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+async fn send(state: AppState, method: &str, uri: &str, body: &str) -> (StatusCode, String) {
+    let response = router(state)
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn a_pin_is_kept_deleted_brought_back_and_destroyed_past_ten() {
+    let state = state(Shelf::default(), None);
+    let pin = |id: &str, kind: &str| {
+        format!(
+            r#"{{"id":"{id}","target":"table:campaign","dx":3,"dy":4,"x":0,"y":0,"text":"why uuid?","at":"t","kind":"{kind}"}}"#
+        )
+    };
+    let (status, _) = send(
+        state.clone(),
+        "PUT",
+        "/api/notes/data-model/p1",
+        &pin("p1", "brainstorm"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(
+        state.clone(),
+        "PUT",
+        "/api/notes/data-model/p2",
+        &pin("p1", "note"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "the path names the pin");
+    let (_, back) = send(state.clone(), "GET", "/api/notes/data-model", "").await;
+    assert!(back.contains(r#""kind":"brainstorm""#), "{back}");
+
+    let (status, _) = send(state.clone(), "DELETE", "/api/notes/data-model/p1", "").await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, back) = send(state.clone(), "GET", "/api/notes/data-model", "").await;
+    assert_eq!(back, "[]");
+    let (status, restored) = send(state.clone(), "POST", "/api/notes/data-model/undo", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(restored.contains("why uuid?"));
+    let (status, _) = send(state.clone(), "POST", "/api/notes/data-model/undo", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "nothing left to bring back");
+
+    for k in 0..12 {
+        let id = format!("q{k:02}");
+        send(
+            state.clone(),
+            "PUT",
+            &format!("/api/notes/data-model/{id}"),
+            &pin(&id, "note"),
+        )
+        .await;
+        send(
+            state.clone(),
+            "DELETE",
+            &format!("/api/notes/data-model/{id}"),
+            "",
+        )
+        .await;
+    }
+    let kept = state.pins.notes("data-model").expect("read");
+    assert_eq!(
+        kept.iter().filter(|k| k.deleted_at.is_some()).count(),
+        annotations::UNDO_DEPTH,
+        "only the last ten deleted pins can come back"
+    );
+    let (status, _) = send(
+        state.clone(),
+        "POST",
+        "/api/notes/data-model/p1/session",
+        "{}",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "no sessions without terminals"
+    );
+    let (status, _) = send(state, "GET", "/api/notes/..%2Fetc", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_data_model_says_when_nothing_reads_it() {
+    let (_, body) = send(state(Shelf::default(), None), "GET", "/api/data-model", "").await;
+    assert_eq!(
+        body,
+        r#"{"enabled":false,"model":null,"branch":"","dir":"","error":null}"#
+    );
+    let (_, body) = send(
+        state(Shelf::default(), None),
+        "GET",
+        "/api/data-model/versions",
+        "",
+    )
+    .await;
+    assert_eq!(body, r#"{"enabled":false,"archive":false,"branches":[]}"#);
+}
+
+async fn post_to(state: AppState, uri: &str) -> (StatusCode, String) {
+    post_body(state, uri, "").await
+}
+
+async fn post_body(state: AppState, uri: &str, body: &str) -> (StatusCode, String) {
+    let response = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .body(Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn watch(pid: u32) -> Vec<Process> {
+    vec![Process {
+        pid,
+        parent: 1,
+        group: pid,
+        command: "./target/debug/harness watch".to_string(),
+    }]
+}
+
+fn with_plant(processes: Vec<Process>) -> (AppState, Arc<Switch>) {
+    let switch = Arc::new(Switch {
+        processes,
+        ..Switch::default()
+    });
+    let mut state = state(Shelf::default(), None);
+    state.plant = Some(Arc::clone(&switch) as Arc<dyn Plant>);
+    (state, switch)
+}
+
+fn sent(switch: &Switch) -> Vec<String> {
+    switch.sent.lock().expect("sent").clone()
+}
+
+#[tokio::test]
+async fn the_switch_starts_an_empty_plant_and_stops_a_running_one() {
+    let (state, switch) = with_plant(Vec::new());
+    let (status, _) = post_to(state.clone(), "/api/plant/soft").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, body) = post_to(state.clone(), "/api/plant/start").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = post_to(state, "/api/plant/soft").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(sent(&switch), ["start", "Term Process(4242)"]);
+
+    let (state, switch) = with_plant(watch(7));
+    let (status, _) = post_to(state.clone(), "/api/plant/start").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        post_to(state.clone(), "/api/plant/soft").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        post_to(state.clone(), "/api/plant/hard").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        post_to(state, "/api/plant/explode").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        sent(&switch),
+        ["Term Process(7)", "Kill Process(7)", "Kill Group(7)"]
+    );
+}
+
+#[tokio::test]
+async fn a_start_carries_the_agents_asked_within_bounds() {
+    let (state, switch) = with_plant(Vec::new());
+    let (status, _) = post_to(state.clone(), "/api/plant/start?lanes=0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = post_to(state, "/api/plant/start?lanes=4").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("at most 4 agents"), "{body}");
+    assert_eq!(sent(&switch), ["start 4"]);
+}
+
+#[tokio::test]
+async fn a_watch_that_dies_at_start_is_a_failed_start_with_its_words() {
+    let switch = Arc::new(Switch {
+        dies_at_start: true,
+        ..Switch::default()
+    });
+    let mut state = state(Shelf::default(), None);
+    state.plant = Some(Arc::clone(&switch) as Arc<dyn Plant>);
+    let (status, body) = post_to(state, "/api/plant/start").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("exited as soon as it started"), "{body}");
+    assert!(body.contains("no git repository"), "{body}");
+}
+
+/// Counts what it was asked, and answers the same every time.
+#[derive(Default)]
+struct Gauges {
+    probes: std::sync::atomic::AtomicU32,
+}
+
+impl Limits for Gauges {
+    fn claude(&self) -> Result<Reading, String> {
+        self.probes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Reading {
+            windows: Vec::new(),
+            at: 1,
+        })
+    }
+
+    fn github(&self) -> Result<Vec<crate::ports::GithubWindow>, String> {
+        Err("gh: not logged in".to_string())
+    }
+}
+
+#[tokio::test]
+async fn an_opened_panel_reads_both_limits_and_pays_claude_once() {
+    let gauges = Arc::new(Gauges::default());
+    let mut state = state(Shelf::default(), None);
+    state.limits = Some(Arc::clone(&gauges) as Arc<dyn Limits>);
+    let (status, body) = get(state.clone(), "/api/limits").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"claude\":{\"value\":{"), "{body}");
+    assert!(body.contains("gh: not logged in"), "{body}");
+    let _ = get(state.clone(), "/api/limits").await;
+    let _ = get(state, "/api/limits?force=1").await;
+    assert_eq!(
+        gauges.probes.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a fresh reading is reused, even when asked again at once"
+    );
+}
+
+#[tokio::test]
+async fn a_period_is_read_from_the_traces_and_a_bad_one_refused() {
+    let state = state(Shelf::default(), None);
+    let (status, body) = get(
+        state.clone(),
+        "/api/history?from=2026-10-08T20:00:00Z&to=2026-10-08T21:00:00Z",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("\"from\":\"2026-10-08T20:00:00Z\""), "{body}");
+    let (status, _) = get(state.clone(), "/api/history?from=yesterday").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = get(
+        state,
+        "/api/history?from=2026-10-08T21:00:00Z&to=2026-10-08T20:00:00Z",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn the_page_reads_whether_a_watch_runs() {
+    let (state, _) = with_plant(watch(7));
+    let (status, body) = get(state, "/api/plant").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"available\":true"), "{body}");
+    assert!(body.contains("\"pid\":7"), "{body}");
+    assert!(body.contains("\"max_lanes\":16"), "{body}");
+    let (_, none) = get(state_without_plant(), "/api/plant").await;
+    assert!(none.contains("\"available\":false"), "{none}");
+}
+
+fn state_without_plant() -> AppState {
+    state(Shelf::default(), None)
+}
+
+async fn get(state: AppState, uri: &str) -> (StatusCode, String) {
+    let response = router(state)
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn the_page_and_the_picture_are_served() {
+    let (status, body) = get(state(Shelf::default(), None), "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<canvas"), "{body}");
+    assert!(body.contains("/vendor/xterm.js"), "{body}");
+    assert!(!body.contains("iso.js"), "the canvas engine is gone");
+    let (status, body) = get(state(Shelf::default(), None), "/render/render.js").await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "no bundle in the test checkout"
+    );
+    assert!(body.contains("build-render"), "{body}");
+    let (status, _) = get(state(Shelf::default(), None), "/render/..%2Fapp.js").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "only the two bundle files");
+    let (status, body) = get(state(Shelf::default(), None), "/api/snapshot").await;
+    assert_eq!(status, StatusCode::OK);
+    let snap: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(snap["rooms"].as_array().map(Vec::len), Some(6));
+    assert_eq!(snap["lines"][0]["id"], "agent-loop");
+    let (status, body) = get(state(Shelf::default(), None), "/vendor/xterm.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.len() > 100_000, "xterm.js is embedded whole");
+}
+
+#[tokio::test]
+async fn a_run_s_sessions_come_back_one_per_stage() {
+    let mut shelf = Shelf::default();
+    shelf.put(
+        "agent-loop",
+        "20261008-152126-64",
+        "run.log",
+        "[2026-10-08T15:21:28Z] run 1\n[2026-10-08T15:21:29Z] [code] session opens\n",
+    );
+    shelf.put(
+        "agent-loop",
+        "20261008-152126-64",
+        "session.log",
+        "── turn 1 /code ──\nbuilt it\n",
+    );
+    let (status, body) = get(
+        state(shelf, None),
+        "/api/runs/agent-loop/20261008-152126-64/stages",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"stage\":\"code\""), "{body}");
+    assert!(body.contains("built it"), "{body}");
+    assert!(
+        body.contains("\"started_at\":\"2026-10-08T15:21:28Z\""),
+        "{body}"
+    );
+    assert!(
+        body.contains("\"opened_at\":\"2026-10-08T15:21:29Z\""),
+        "{body}"
+    );
+    assert!(body.contains("\"closed_at\":null"), "{body}");
+    let (status, _) = get(
+        state(Shelf::default(), None),
+        "/api/runs/agent-loop/..%2Fx/stages",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_tail_is_bounded_to_the_run_files_and_nothing_above_them() {
+    let mut shelf = Shelf::default();
+    shelf.put(
+        "agent-loop",
+        "20261006-202608",
+        "session.log",
+        "line one\nline two\n",
+    );
+    let (status, body) = get(
+        state(shelf, None),
+        "/api/runs/agent-loop/20261006-202608/session.log?bytes=100",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "line one\nline two\n");
+    for bad in [
+        "/api/runs/agent-loop/20261006-202608/costs.tsv",
+        "/api/runs/agent-loop/..%2F..%2Fcosts.tsv/run.log",
+        "/api/runs/Agent/20261006-202608/run.log",
+        "/api/runs/agent-loop/20261006-999999/run.log",
+    ] {
+        let (status, _) = get(state(Shelf::default(), None), bad).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn an_issue_before_the_board_was_read_is_not_found_rather_than_empty() {
+    let (status, body) = get(state(Shelf::default(), None), "/api/issues/62").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("board"));
+}
+
+#[tokio::test]
+async fn the_steward_status_says_whether_there_is_one_and_whether_they_sit() {
+    let (status, body) = get(state(Shelf::default(), None), "/api/steward").await;
+    assert_eq!(status, StatusCode::OK);
+    let none: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(none["available"], false);
+
+    let desk = Desk::new(Arc::new(Echoing::default()));
+    let (status, body) = get(state(Shelf::default(), Some(desk.clone())), "/api/steward").await;
+    assert_eq!(status, StatusCode::OK);
+    let some: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(some["available"], true);
+    assert_eq!(some["live"], false, "nobody sits before the first visit");
+    assert_eq!(some["command"], "echo");
+
+    // A plain GET is not a WebSocket handshake: the route exists and
+    // refuses it before any desk is consulted.
+    let (status, _) = get(state(Shelf::default(), None), "/api/steward/term").await;
+    assert!(status.is_client_error(), "{status}");
+}
+
+#[tokio::test]
+async fn the_janitor_weighs_sweeps_and_takes_a_new_limit_from_the_page() {
+    use crate::domain::cleanup::fake::Lot;
+    use crate::ports::{Heap, Survey, Yard};
+    let (status, body) = get(state_without_plant(), "/api/janitor").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"available\":false"), "{body}");
+    let (status, _) = post_to(state_without_plant(), "/api/janitor/sweep").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let lot = Arc::new(Lot {
+        survey: Survey {
+            total: 300,
+            folders: vec![Heap {
+                rel: "init".to_string(),
+                bytes: 300,
+                idle_secs: 3 * 86_400,
+                dir: true,
+            }],
+            ..Survey::default()
+        },
+        ..Lot::default()
+    });
+    let mut state = state_without_plant();
+    state.janitor = Some(Janitor::new(Arc::clone(&lot) as Arc<dyn Yard>));
+    let (status, body) = post_to(state.clone(), "/api/janitor/diagnose").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"freeable\":300"), "{body}");
+    assert!(
+        lot.removed.lock().expect("lock").is_empty(),
+        "a diagnosis removes nothing"
+    );
+    let (status, body) = post_to(state.clone(), "/api/janitor/sweep").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"freed\":300"), "{body}");
+    assert_eq!(*lot.removed.lock().expect("lock"), ["init"]);
+
+    let (status, why) = post_body(
+        state.clone(),
+        "/api/janitor/settings",
+        r#"{"limit_bytes": 1000}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{why}");
+    let twenty = 20_u64 * 1024 * 1024 * 1024;
+    let (status, body) = post_body(
+        state,
+        "/api/janitor/settings",
+        &format!(r#"{{"limit_bytes": {twenty}, "auto_sweep": true, "threshold_percent": 90}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains(&format!("\"limit_bytes\":{twenty}")),
+        "{body}"
+    );
+    assert!(
+        lot.read_settings()
+            .is_some_and(|s| s.contains("\"auto_sweep\": true"))
+    );
+}
+
+#[tokio::test]
+async fn the_doctor_has_a_desk_of_their_own() {
+    let (status, body) = get(state(Shelf::default(), None), "/api/doctor").await;
+    assert_eq!(status, StatusCode::OK);
+    let none: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(none["available"], false);
+
+    let mut with = state(Shelf::default(), None);
+    with.doctor = Some(Desk::new(Arc::new(Echoing::default())));
+    let (_, body) = get(with.clone(), "/api/doctor").await;
+    let some: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(some["available"], true, "the doctor is in");
+    let (_, body) = get(with, "/api/steward").await;
+    let steward: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        steward["available"], false,
+        "but the steward's desk is another"
+    );
+
+    let (status, _) = get(state(Shelf::default(), None), "/api/doctor/term").await;
+    assert!(status.is_client_error(), "{status}");
+}
+
+#[tokio::test]
+async fn a_diagnosis_is_typed_to_the_doctor_and_heard_when_the_mark_comes_back() {
+    let mut shelf = Shelf::default();
+    shelf.put(
+        "agent-loop",
+        "20261007-142103",
+        "run.log",
+        "[12:00:01] FAILED: cargo test broke\n",
+    );
+    let mut with = state(shelf, None);
+    let desk = Desk::new(Arc::new(Echoing::default()));
+    with.doctor = Some(desk.clone());
+    // No doctor, no diagnosis.
+    let (status, _) = post_to(
+        state(Shelf::default(), None),
+        "/api/doctor/diagnose/agent-loop/20261007-142103",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // An unknown run is refused before anything is typed.
+    let (status, _) = post_to(
+        with.clone(),
+        "/api/doctor/diagnose/agent-loop/20261007-000000",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!desk.is_live(), "nothing summoned the doctor");
+
+    // The desk is sat at first, so the handler does not wait for a warm-up.
+    desk.summon(80, 24).expect("summoned");
+    let (status, body) = post_to(
+        with.clone(),
+        "/api/doctor/diagnose/agent-loop/20261007-142103",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let asked: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(asked["state"], "running");
+    let (_, body) = get(with.clone(), "/api/doctor/diagnoses").await;
+    assert!(
+        body.contains(r#""agent-loop/20261007-142103":{"state":"running""#),
+        "{body}"
+    );
+
+    // The echoing terminal repeats the question: that is not the answer.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (_, body) = get(with.clone(), "/api/doctor/diagnoses").await;
+    assert!(body.contains(r#""state":"running""#), "{body}");
+
+    // A reply that ends with the mark is.
+    desk.write(b"...\r\nDIAGNOSIS: 20261007-142103 \xc2\xb7 amber\r\n")
+        .expect("written");
+    let mut done = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let (_, body) = get(with.clone(), "/api/doctor/diagnoses").await;
+        if body.contains(r#""state":"done""#) {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "the mark was heard");
+    desk.shutdown();
+}
+
+#[test]
+fn a_workflow_segment_is_a_log_folder_name() {
+    assert!(is_workflow("agent-loop"));
+    assert!(is_workflow("pr-fix"));
+    assert!(!is_workflow(""));
+    assert!(!is_workflow("../logs"));
+    assert!(!is_workflow("Agent"));
+}
+
+#[test]
+fn the_page_controls_are_size_and_restart() {
+    let size: Control = serde_json::from_str(r#"{"t":"size","cols":100,"rows":40}"#).expect("size");
+    assert!(matches!(
+        size,
+        Control::Size {
+            cols: 100,
+            rows: 40
+        }
+    ));
+    let restart: Control = serde_json::from_str(r#"{"t":"restart"}"#).expect("restart");
+    assert!(matches!(restart, Control::Restart));
+    assert!(serde_json::from_str::<Control>(r#"{"t":"nuke"}"#).is_err());
+}

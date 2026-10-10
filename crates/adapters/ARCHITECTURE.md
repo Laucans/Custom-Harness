@@ -28,7 +28,7 @@ shell/    process      the only place in the crate that spawns a subprocess
           disk         RealDisk
 store/    checkpoint   Checkpoint: a two-line pointer + one JSONL per flow
           ledger       the cost ledger, frozen header, new columns appended
-          review_ledger  ReviewLedger: a review charges per PR, not per round
+          review_ledger  ReviewLedger: what a PR cost, read from the one ledger on its rows
           lock         DirLocks — an atomic `mkdir`
           events       the `EventLog` over SQLite, `.llocal/harness.db`
           error_ledger what stopped a run, and what was done about it

@@ -110,6 +110,42 @@ pub struct Milestone {
     pub tasks: Vec<Issue>,
 }
 
+impl BoardReading {
+    /// Which side each task is on, by number: `true` for the data layer.
+    /// A task the board does not list is absent, never guessed.
+    #[must_use]
+    pub fn task_sides(&self) -> std::collections::HashMap<String, bool> {
+        self.milestones
+            .iter()
+            .flat_map(|m| m.tasks.iter())
+            .map(|t| {
+                (
+                    t.number.to_string(),
+                    t.labels
+                        .iter()
+                        .any(|l| l == harness_workflows::common::labels::DATA_LAYER),
+                )
+            })
+            .collect()
+    }
+
+    /// The milestone each task — and each milestone itself, whose own
+    /// refinement is billed on its number — belongs to, by number, as
+    /// `#<n> <title>`.
+    #[must_use]
+    pub fn task_milestones(&self) -> std::collections::HashMap<String, String> {
+        self.milestones
+            .iter()
+            .flat_map(|m| {
+                let key = format!("#{} {}", m.issue.number, m.issue.title);
+                std::iter::once(m.issue.number.to_string())
+                    .chain(m.tasks.iter().map(|t| t.number.to_string()))
+                    .map(move |number| (number, key.clone()))
+            })
+            .collect()
+    }
+}
+
 /// The board, as GitHub has it right now.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoardReading {

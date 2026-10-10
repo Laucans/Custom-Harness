@@ -1,146 +1,51 @@
-//! The ledger of a PR review — the implementation of [`ReviewCosts`].
+//! What a pull request cost — the implementation of [`ReviewCosts`], read
+//! from the rounds ledger.
 //!
-//! Columns distinct from the rounds ledger.
+//! **One ledger for every workflow.** Every paid session lands in
+//! `costs.tsv` through the `Spending` port, a review's passes included,
+//! with the pull request's number in the `task` column. A review's cost is
+//! therefore a *read* of that ledger — the rows of that number — and no
+//! second file: an earlier shape wrote reviews to a ledger of their own
+//! that nothing filled, so every posted comment said nothing of its cost.
 //!
-//! **A separate ledger, by design.** A review charges per PR and per pass,
-//! never by round or task — mixing the two would make a review cost read as
-//! a delivery cost. Same discipline as [`super::ledger`]: frozen header,
-//! columns added at row end, `outcome` distinguishes money that bought
-//! something from what a cut pass burned.
+//! Issues and pull requests share one numbering on GitHub, so a `task` that
+//! names a pull request names nothing else: the sum is what the harness
+//! spent on that pull request, its review passes and any repair.
 
-use std::fmt::Write as _;
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use harness_core::domain::{Halt, Outcome, Spend};
+use harness_core::domain::Outcome;
 use harness_core::ports::store::review::ReviewCosts;
 
-/// The header, frozen.
-pub const HEADER: &str =
-    "when\tpr\tpass\tcost_usd\tturns\tduration_ms\tin\tout\tsession\tran_on\toutcome";
+use super::ledger::{Ledger, columns};
 
-/// The columns, derived from the header.
-#[must_use]
-pub fn columns() -> Vec<&'static str> {
-    HEADER.split('\t').collect()
-}
-
-/// What a review pass cost.
-#[derive(Debug, Clone)]
-pub struct Row {
-    /// The instant, in ISO-8601 to the second.
-    pub when: String,
-    /// The reviewed PR.
-    pub pr: String,
-    /// `inline` or `brief`.
-    pub pass: String,
-    /// What the session carrier observed.
-    pub spend: Spend,
-    /// The machine that ran it.
-    pub ran_on: String,
-    /// `ok`, or the reason for missing response. Empty = not recorded.
-    pub outcome: String,
-}
-
-fn seen<T: ToString>(value: Option<T>) -> String {
-    value.map(|v| v.to_string()).unwrap_or_default()
-}
-
-fn flat(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-impl Row {
-    /// The row, as it is written.
-    #[must_use]
-    pub fn render(&self) -> String {
-        let cost = self
-            .spend
-            .cost_usd
-            .map_or_else(String::new, |c| format!("{c:.6}"));
-        let values = [
-            self.when.clone(),
-            flat(&self.pr),
-            flat(&self.pass),
-            cost,
-            seen(self.spend.turns),
-            seen(self.spend.duration_ms),
-            seen(self.spend.tokens.input),
-            seen(self.spend.tokens.output),
-            flat(self.spend.session.as_deref().unwrap_or_default()),
-            flat(&self.ran_on),
-            flat(&self.outcome),
-        ];
-        debug_assert_eq!(values.len(), columns().len());
-        values.join("\t")
-    }
-}
-
-/// The review ledger, on disk.
+/// A pull request's spending, read from the rounds ledger.
 pub struct ReviewLedger {
-    path: PathBuf,
+    ledger: Ledger,
 }
 
 impl ReviewLedger {
-    /// The ledger at this path. Nothing is created before the first write.
+    /// Over the rounds ledger at this path — the one every workflow writes.
     #[must_use]
     pub fn new(path: &Path) -> Self {
         Self {
-            path: path.to_path_buf(),
+            ledger: Ledger::new(path),
         }
-    }
-
-    /// Add a row. Writes the header first if the file does not exist.
-    ///
-    /// # Errors
-    /// [`Halt::Failed`] if the ledger could not be written.
-    pub fn append(&self, row: &Row) -> Outcome<()> {
-        let fresh = !self.path.exists();
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| self.wrote_nothing(&e))?;
-        }
-        let mut text = String::new();
-        if fresh {
-            let _ = writeln!(text, "{HEADER}");
-        }
-        let _ = writeln!(text, "{}", row.render());
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|e| self.wrote_nothing(&e))?;
-        file.write_all(text.as_bytes())
-            .map_err(|e| self.wrote_nothing(&e))
-    }
-
-    fn wrote_nothing(&self, err: &std::io::Error) -> Halt {
-        Halt::Failed(format!(
-            "cannot write review ledger {} ({err})",
-            self.path.display()
-        ))
     }
 }
 
 impl ReviewCosts for ReviewLedger {
-    /// Both passes of a PR, summed, in dollars formatted to four decimals.
+    /// Every row of this pull request, summed, in dollars to four decimals.
     fn cost_of(&self, pr: &str) -> Outcome<String> {
-        if !self.path.exists() {
-            return Ok(String::new());
-        }
-        let text = std::fs::read_to_string(&self.path).map_err(|e| {
-            Halt::Unreadable(format!(
-                "review ledger unreadable at {} ({e})",
-                self.path.display()
-            ))
-        })?;
         let columns = columns();
-        let pr_at = columns.iter().position(|c| *c == "pr").unwrap_or(1);
-        let cost_at = columns.iter().position(|c| *c == "cost_usd").unwrap_or(3);
+        let task_at = columns.iter().position(|c| *c == "task").unwrap_or(3);
+        let cost_at = columns.iter().position(|c| *c == "cost_usd").unwrap_or(5);
         let mut total = 0.0;
-        for line in text.lines().skip(1) {
-            let cells: Vec<&str> = line.split('\t').collect();
-            if cells.len() > cost_at && cells.get(pr_at) == Some(&pr) {
-                total += cells[cost_at].parse::<f64>().unwrap_or(0.0);
+        for cells in self.ledger.rows()? {
+            if cells.get(task_at).map(String::as_str) == Some(pr)
+                && let Some(cost) = cells.get(cost_at)
+            {
+                total += cost.parse::<f64>().unwrap_or(0.0);
             }
         }
         if total == 0.0 {
@@ -153,7 +58,10 @@ impl ReviewCosts for ReviewLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_core::domain::Tokens;
+    use harness_core::domain::{Spend, Tokens};
+    use std::path::PathBuf;
+
+    use super::super::ledger::Row;
 
     struct Dir(PathBuf);
 
@@ -174,11 +82,13 @@ mod tests {
         }
     }
 
-    fn row(pr: &str, pass: &str, cost: f64) -> Row {
+    fn row(task: &str, stage: &str, cost: f64) -> Row {
         Row {
             when: "2026-10-02T15:00:00Z".to_string(),
-            pr: pr.to_string(),
-            pass: pass.to_string(),
+            run: "20261002-150000".to_string(),
+            round: 1,
+            task: task.to_string(),
+            stage: stage.to_string(),
             spend: Spend {
                 cost_usd: Some(cost),
                 turns: Some(3),
@@ -191,30 +101,23 @@ mod tests {
             },
             ran_on: "test-host".to_string(),
             outcome: "ok".to_string(),
+            fingerprint: String::new(),
         }
     }
 
     #[test]
-    fn a_fresh_ledger_writes_the_header_once() {
-        let dir = Dir::new("fresh");
-        let path = dir.0.join("costs.tsv");
-        let ledger = ReviewLedger::new(&path);
-        ledger.append(&row("32", "inline", 0.5)).expect("written");
-        ledger.append(&row("32", "brief", 0.2)).expect("written");
-        let text = std::fs::read_to_string(&path).expect("read");
-        assert_eq!(text.lines().next(), Some(HEADER));
-        assert_eq!(text.lines().count(), 3);
-    }
-
-    #[test]
-    fn the_cost_of_a_pr_sums_both_passes() {
+    fn the_cost_of_a_pr_sums_its_rows_and_nobody_else_s() {
         let dir = Dir::new("sum");
         let path = dir.0.join("costs.tsv");
-        let ledger = ReviewLedger::new(&path);
+        let ledger = Ledger::new(&path);
         ledger.append(&row("32", "inline", 0.5)).expect("written");
         ledger.append(&row("32", "brief", 0.25)).expect("written");
         ledger.append(&row("99", "inline", 9.0)).expect("written");
-        assert_eq!(ledger.cost_of("32").expect("read"), "0.7500");
+        ledger.append(&row("7", "code", 4.0)).expect("written");
+        assert_eq!(
+            ReviewLedger::new(&path).cost_of("32").expect("read"),
+            "0.7500"
+        );
     }
 
     #[test]
@@ -225,16 +128,13 @@ mod tests {
     }
 
     #[test]
-    fn a_blind_spend_renders_an_empty_cost_not_a_zero() {
+    fn a_blind_spend_reads_as_nothing_recorded_not_as_free() {
         let dir = Dir::new("blind");
         let path = dir.0.join("costs.tsv");
-        let ledger = ReviewLedger::new(&path);
         let mut blind = row("32", "inline", 0.0);
         blind.spend = Spend::default();
         blind.outcome = "quota".to_string();
-        ledger.append(&blind).expect("written");
-        let text = std::fs::read_to_string(&path).expect("read");
-        let data = text.lines().nth(1).expect("a row");
-        assert_eq!(data.split('\t').nth(3), Some(""));
+        Ledger::new(&path).append(&blind).expect("written");
+        assert_eq!(ReviewLedger::new(&path).cost_of("32").expect("read"), "");
     }
 }

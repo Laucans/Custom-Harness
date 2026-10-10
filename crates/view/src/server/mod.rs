@@ -1,0 +1,387 @@
+//! The HTTP side: the page, its scripts, a few small routes, and the
+//! steward's and the doctor's terminals over a WebSocket.
+//!
+//! The handlers never read the disk for the picture — they read the latest
+//! `Snapshot` the poller published, so a slow `gh` never slows a page. Two
+//! routes do touch the traces: the live tail of a run file, and an issue
+//! body, both on demand and both bounded. One route is a conversation: the
+//! WebSocket that carries keystrokes to the steward's desk and its screen back.
+//!
+//! The front-end is embedded at compile time; `--static-dir` serves it from
+//! disk instead, so a page can be redone without a rebuild. The renderer —
+//! a Bevy scene compiled to WebAssembly, several megabytes — is never
+//! embedded: it is served from `crates/view/static/render/`, where
+//! `scripts/build-render.sh` puts it, and the page says so when it is absent.
+//!
+//! One file per pane: the handlers of a route group live together, and
+//! this file keeps the state, the route table, the page's assets and the
+//! few helpers every group shares.
+
+mod capabilities;
+mod data_model;
+mod desks;
+mod janitor;
+mod mockup;
+mod notes;
+mod plant;
+mod prompts;
+mod runs;
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::Router;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
+use serde::Serialize;
+use tokio::sync::watch;
+use tokio_stream::wrappers::WatchStream;
+use tokio_stream::{Stream, StreamExt as _};
+
+use crate::data_desk::DataDesk;
+use crate::desk::Desk;
+use crate::domain::doctor::Diagnosis;
+use crate::domain::limits::Read;
+use crate::domain::snapshot::Snapshot;
+use crate::janitor::Janitor;
+use crate::note_desks::NoteDesks;
+use crate::ports::{
+    BoardReading, Builds, Limits, Mockups, NoteStore, Plant, Prompts, Traces, Trials,
+};
+use crate::units_desk::UnitsDesk;
+use harness_core::domain::quota::Reading;
+use harness_core::ports::store::events::EventLog;
+
+/// The diagnoses asked of the doctor, by `workflow/run`, shared with the
+/// listeners that hear them end.
+pub type Diagnoses = Arc<std::sync::Mutex<HashMap<String, Diagnosis>>>;
+
+use capabilities::{capability_fusion, capability_list};
+use data_model::{
+    data_build, data_build_log, data_builds, data_compare, data_divergence, data_issue, data_model,
+    data_used_by, data_versions,
+};
+use desks::{ask_doctor, diagnose, diagnoses, doctor, doctor_term, steward, steward_term};
+use janitor::{janitor, janitor_diagnose, janitor_settings, janitor_sweep};
+use mockup::{mock_file, mock_preview, mockup_discard, mockup_save, mockup_state};
+use notes::{
+    close_session, delete_note, notes, open_session, put_note, session_term, turn_note, undo_note,
+};
+use plant::{Restart, pending, period, plant_gesture, plant_status, rate_limits, restart};
+use prompts::{
+    deactivate_prompt, discard_prompt, edit_prompt, reactivate_prompt, restore_prompt, start_trial,
+    station_prompts, trials,
+};
+use runs::{issue, line_of, locate_run, run_file, run_graph, run_stages};
+
+/// What every handler can reach.
+#[derive(Clone)]
+pub struct AppState {
+    /// The latest picture.
+    pub snapshot: watch::Receiver<Arc<Snapshot>>,
+    /// The latest board, bodies included — `None` until GitHub answered.
+    pub board: watch::Receiver<Option<Arc<BoardReading>>>,
+    /// The traces, for the live tails.
+    pub traces: Arc<dyn Traces>,
+    /// Serve the front-end from here instead of the embedded copy.
+    pub static_dir: Option<PathBuf>,
+    /// Where the renderer bundle lies (`render.js`, `render_bg.wasm`).
+    pub render_dir: PathBuf,
+    /// The steward's desk — `None` under `--no-steward`.
+    pub desk: Option<Desk>,
+    /// The doctor's desk — `None` under `--no-doctor`.
+    pub doctor: Option<Desk>,
+    /// The diagnoses asked of the doctor, by `workflow/run`.
+    pub diagnoses: Diagnoses,
+    /// Held while a question is typed to the doctor: two questions at once
+    /// would land in one input line.
+    pub asking: Arc<tokio::sync::Mutex<()>>,
+    /// The watch process the page starts and stops — `None` under `--demo`.
+    pub plant: Option<Arc<dyn Plant>>,
+    /// How long a started watch must live before the start counts.
+    pub start_grace: Duration,
+    /// The rate limits, read on demand — `None` when nothing can read them.
+    pub limits: Option<Arc<dyn Limits>>,
+    /// The last Claude reading the page paid for, kept so a click is not a
+    /// session.
+    pub claude_read: Arc<std::sync::Mutex<Option<Read<Reading>>>>,
+    /// The harness's events, for a run's gate verdicts — `None` when the
+    /// store could not be opened.
+    pub events: Option<Arc<dyn EventLog + Send + Sync>>,
+    /// The janitor, who weighs and sweeps the yard — `None` under `--no-janitor`.
+    pub janitor: Option<Janitor>,
+    /// The product's data model, its versions — `None` when nothing can
+    /// read it (`--no-board` without `--data-dir`).
+    pub data: Option<DataDesk>,
+    /// The harness's commands the data pane starts — `None` under `--demo`.
+    pub builds: Option<Arc<dyn Builds>>,
+    /// The branch the agents integrate into: what a build names when the
+    /// page names none.
+    pub integration_branch: String,
+    /// Where the human's pins and their conversations are kept.
+    pub pins: Arc<dyn NoteStore>,
+    /// The pins' AI sessions — `None` when the view runs no terminal.
+    pub note_desks: Option<NoteDesks>,
+    /// The product's mock-up on every branch — `None` when nothing can read
+    /// the product.
+    pub mockups: Option<Arc<dyn Mockups>>,
+    /// The prompt book, read only, and the drafts the human leaves for the
+    /// next start.
+    pub prompts: Arc<dyn Prompts>,
+    /// Held across the drafts' read-modify-write.
+    pub prompts_lock: Arc<std::sync::Mutex<()>>,
+    /// The prompts' dry-runs — `None` when nothing can start one.
+    pub trials: Option<Arc<dyn Trials>>,
+    /// The restart the human asked for, while it is under way.
+    pub restart: Arc<std::sync::Mutex<Option<Restart>>>,
+    /// How often a restart looks whether the watch has drained.
+    pub restart_poll: Duration,
+    /// The product's Capabilities and `DataCapabilities` — `None` when
+    /// nothing can read the product.
+    pub units: Option<UnitsDesk>,
+    /// The harness machine's time zone, asked of the system (`TZ`, else
+    /// `/etc/localtime`): the control room counts its days in it.
+    pub zone: jiff::tz::TimeZone,
+}
+
+const INDEX: &str = include_str!("../../static/index.html");
+const STYLE: &str = include_str!("../../static/style.css");
+const APP: &str = include_str!("../../static/app.js");
+const XTERM_JS: &str = include_str!("../../static/vendor/xterm.js");
+const XTERM_CSS: &str = include_str!("../../static/vendor/xterm.css");
+const XTERM_FIT: &str = include_str!("../../static/vendor/addon-fit.js");
+const CLOCK_JS: &str = include_str!("../../static/clock.js");
+const BOARD_JS: &str = include_str!("../../static/board.js");
+const ACTIONS_JS: &str = include_str!("../../static/actions.js");
+const DATA_MODEL_JS: &str = include_str!("../../static/data-model.js");
+const MOCKUP_JS: &str = include_str!("../../static/mockup.js");
+
+/// The routes, with their state.
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/style.css", get(style))
+        .route("/app.js", get(app))
+        .route("/clock.js", get(clock_js))
+        .route("/board.js", get(board_js))
+        .route("/actions.js", get(actions_js))
+        .route("/data-model.js", get(data_model_js))
+        .route("/mockup.js", get(mockup_js))
+        .route("/mock/{slug}/__preview/{name}", get(mock_preview))
+        .route("/mock/{slug}/{*path}", get(mock_file))
+        .route("/render/{file}", get(render_asset))
+        .route("/vendor/xterm.js", get(xterm_js))
+        .route("/vendor/xterm.css", get(xterm_css))
+        .route("/vendor/addon-fit.js", get(xterm_fit))
+        .route("/api/snapshot", get(snapshot))
+        .route("/api/events", get(events))
+        .route("/api/runs/{workflow}/locate", get(locate_run))
+        .route("/api/run-of/{run}", get(line_of))
+        .route("/api/runs/{workflow}/{run}/stages", get(run_stages))
+        .route("/api/runs/{workflow}/{run}/graph", get(run_graph))
+        .route("/api/runs/{workflow}/{run}/{file}", get(run_file))
+        .route("/api/issues/{number}", get(issue))
+        .route("/api/history", get(period))
+        .route("/api/limits", get(rate_limits))
+        .route("/api/plant", get(plant_status))
+        .route("/api/plant/{gesture}", post(plant_gesture))
+        .route("/api/steward", get(steward))
+        .route("/api/steward/term", get(steward_term))
+        .route("/api/doctor", get(doctor))
+        .route("/api/doctor/term", get(doctor_term))
+        .route("/api/doctor/diagnoses", get(diagnoses))
+        .route("/api/doctor/ask", post(ask_doctor))
+        .route("/api/doctor/diagnose/{workflow}/{run}", post(diagnose))
+        .route("/api/janitor", get(janitor))
+        .route("/api/janitor/diagnose", post(janitor_diagnose))
+        .route("/api/janitor/sweep", post(janitor_sweep))
+        .route("/api/janitor/settings", post(janitor_settings))
+        .route("/api/data-model", get(data_model))
+        .route("/api/data-model/versions", get(data_versions))
+        .route("/api/data-model/used-by", get(data_used_by))
+        .route("/api/data-model/compare", get(data_compare))
+        .route("/api/data-model/divergence", get(data_divergence))
+        .route("/api/data-model/build", post(data_build))
+        .route("/api/data-model/builds", get(data_builds))
+        .route("/api/data-model/builds/{id}/log", get(data_build_log))
+        .route("/api/data-model/issue", post(data_issue))
+        .route("/api/mockup", get(mockup_state))
+        .route("/api/mockup/save", post(mockup_save))
+        .route("/api/mockup/discard", post(mockup_discard))
+        .route("/api/capabilities", get(capability_list))
+        .route("/api/capabilities/fusion", post(capability_fusion))
+        .route("/api/notes/{board}", get(notes))
+        .route("/api/notes/{board}/undo", post(undo_note))
+        .route("/api/notes/{board}/{id}", put(put_note).delete(delete_note))
+        .route("/api/notes/{board}/{id}/session", post(open_session))
+        .route("/api/notes/{board}/{id}/session/term", get(session_term))
+        .route("/api/notes/{board}/{id}/session/close", post(close_session))
+        .route("/api/notes/{board}/{id}/into/{kind}", post(turn_note))
+        .route("/api/prompts/edit", post(edit_prompt))
+        .route("/api/prompts/restore", post(restore_prompt))
+        .route("/api/prompts/deactivate", post(deactivate_prompt))
+        .route("/api/prompts/reactivate", post(reactivate_prompt))
+        .route("/api/prompts/discard", post(discard_prompt))
+        .route("/api/prompts/trial", post(start_trial))
+        .route("/api/prompts/trials", get(trials))
+        .route("/api/prompts/{line}/{station}", get(station_prompts))
+        .route("/api/pending", get(pending))
+        .route("/api/restart", post(restart))
+        .with_state(state)
+}
+
+/// A JSON body, without `axum::Json` — which would need `serde`'s `rc`
+/// feature to see through the `Arc` the channel hands over.
+fn json<T: Serialize>(value: &T) -> Response {
+    match serde_json::to_string(value) {
+        Ok(body) => (
+            [
+                (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+fn asset(state: &AppState, name: &str, embedded: &str, mime: &'static str) -> Response {
+    let body = state
+        .static_dir
+        .as_ref()
+        .and_then(|dir| std::fs::read_to_string(dir.join(name)).ok())
+        .unwrap_or_else(|| embedded.to_string());
+    (
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+const HTML: &str = "text/html; charset=utf-8";
+const CSS: &str = "text/css; charset=utf-8";
+const JS: &str = "application/javascript; charset=utf-8";
+
+async fn index(State(state): State<AppState>) -> Response {
+    asset(&state, "index.html", INDEX, HTML)
+}
+
+async fn style(State(state): State<AppState>) -> Response {
+    asset(&state, "style.css", STYLE, CSS)
+}
+
+async fn app(State(state): State<AppState>) -> Response {
+    asset(&state, "app.js", APP, JS)
+}
+
+async fn clock_js(State(state): State<AppState>) -> Response {
+    asset(&state, "clock.js", CLOCK_JS, JS)
+}
+
+async fn actions_js(State(state): State<AppState>) -> Response {
+    asset(&state, "actions.js", ACTIONS_JS, JS)
+}
+
+async fn board_js(State(state): State<AppState>) -> Response {
+    asset(&state, "board.js", BOARD_JS, JS)
+}
+
+async fn data_model_js(State(state): State<AppState>) -> Response {
+    asset(&state, "data-model.js", DATA_MODEL_JS, JS)
+}
+
+async fn mockup_js(State(state): State<AppState>) -> Response {
+    asset(&state, "mockup.js", MOCKUP_JS, JS)
+}
+
+/// The renderer bundle, from disk: the two files wasm-bindgen writes, and
+/// nothing else under that folder.
+async fn render_asset(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    let mime = match file.as_str() {
+        "render.js" => JS,
+        "render_bg.wasm" => "application/wasm",
+        _ => return not_found("no such renderer file"),
+    };
+    let path = state
+        .static_dir
+        .as_ref()
+        .map(|dir| dir.join("render").join(&file))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| state.render_dir.join(&file));
+    tokio::fs::read(&path).await.map_or_else(
+        |_| {
+            not_found(
+                "the renderer is not built: run scripts/build-render.sh (wasm-pack and the wasm32 target), then reload",
+            )
+        },
+        |bytes| {
+            (
+                [
+                    (header::CONTENT_TYPE, mime),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                bytes,
+            )
+                .into_response()
+        },
+    )
+}
+
+async fn xterm_js(State(state): State<AppState>) -> Response {
+    asset(&state, "vendor/xterm.js", XTERM_JS, JS)
+}
+
+async fn xterm_css(State(state): State<AppState>) -> Response {
+    asset(&state, "vendor/xterm.css", XTERM_CSS, CSS)
+}
+
+async fn xterm_fit(State(state): State<AppState>) -> Response {
+    asset(&state, "vendor/addon-fit.js", XTERM_FIT, JS)
+}
+
+async fn snapshot(State(state): State<AppState>) -> Response {
+    let current = state.snapshot.borrow().clone();
+    json(&*current)
+}
+
+/// One `snapshot` event per change, the current picture first.
+async fn events(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = WatchStream::new(state.snapshot).map(|snap| {
+        let body = serde_json::to_string(&*snap).unwrap_or_default();
+        Ok(Event::default().event("snapshot").data(body))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// A log folder name: lowercase words joined by dashes, nothing a path
+/// could be smuggled in.
+fn is_workflow(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn not_found(what: &str) -> Response {
+    (StatusCode::NOT_FOUND, what.to_string()).into_response()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
