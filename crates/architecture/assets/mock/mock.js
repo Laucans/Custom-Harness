@@ -20,6 +20,14 @@
   }
   const fill = async (el, name, folder, what, mark) => {
     if (!name || el.dataset.loaded || el.dataset.inline) return;
+    // A fragment that names itself again (its root carrying its own `data-kit`) would be filled endlessly.
+    const key = folder === 'kit' ? 'kit' : 'component';
+    for (let up = el.parentElement; up; up = up.parentElement) {
+      if ((up.dataset[key] || '').toLowerCase() === name.toLowerCase()) {
+        el.dataset.loaded = 'nested';
+        return;
+      }
+    }
     el.dataset.loaded = 'loading';
     try {
       const res = await fetch(new URL(`${folder}/${name}.html`, base));

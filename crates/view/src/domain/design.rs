@@ -288,6 +288,8 @@ pub fn component_prompt(component: &Component, base: Option<&Base>, tokens_css: 
          no `<script src>`, no `<link>`, no `@import`, no `<iframe>`;\n\
          - the root element carries the class `kit-{lower}`, and every selector of the style \
          block is scoped under it, so two components on one page never collide;\n\
+         - no `data-kit` attribute anywhere in the fragment: the page's host element carries \
+         it, and the loader fills every `data-kit` it meets;\n\
          - a script finds its root with `document.currentScript.closest('[data-kit]') || \
          document.currentScript.parentElement` and touches nothing outside it;\n\
          - example content is real and short (names, amounts, labels), never lorem ipsum;\n\
@@ -361,6 +363,7 @@ pub fn rewrite_prompt(name: &str, fragment: &str, tokens_css: &str, asked: &[Ask
          `EventSource`, a beacon, a dynamic `import`), no `<script src>`, no `<link>`, no \
          `@import`, no `<iframe>`; a script finds its root with \
          `document.currentScript.closest('[data-kit]') || document.currentScript.parentElement`; \
+         no `data-kit` attribute in the fragment (the host element carries it); \
          a visual dynamic only, no data of its own; under {max} characters. A request that asks \
          for data from a server, or for behaviour beyond the visual, is not a kit matter: \
          leave the fragment unchanged for it and say so in one line at the very end, after the \

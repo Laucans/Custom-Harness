@@ -806,7 +806,8 @@ pub fn base(id: &str) -> Option<&'static Base> {
 /// The rules: it weighs at most [`MAX_FRAGMENT`] characters; it reaches no
 /// network (`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`,
 /// `sendBeacon`, a dynamic `import`); it loads no external script or
-/// stylesheet; it consumes the design system — at least one `var(--…)` —
+/// stylesheet; it carries no `data-kit` of its own (the loader would fill it
+/// again, endlessly); it consumes the design system — at least one `var(--…)` —
 /// and names no colour literal outside a variable's fallback.
 #[must_use]
 pub fn check(fragment: &str) -> Vec<String> {
@@ -833,6 +834,12 @@ pub fn check(fragment: &str) -> Vec<String> {
         if lower.contains(needle) {
             found.push(what.to_string());
         }
+    }
+    if lower.contains("data-kit=") {
+        found.push(
+            "carries a `data-kit` itself: the host element does, and the loader would fill it again"
+                .to_string(),
+        );
     }
     if !lower.contains("var(--") {
         found.push("consumes no token: no `var(--…)`".to_string());
@@ -999,13 +1006,15 @@ pub fn used_in(html: &str) -> Vec<String> {
     names
 }
 
-/// The preview page of one kit component alone: the tokens, the mock-up's
-/// style, one `data-kit` element, the loader. Served beside the pages.
+/// The preview page of one kit component alone: the tokens, one `data-kit`
+/// element, the loader.
+///
+/// Served beside the pages. No mock-up style: a fragment styles itself, and
+/// the design system's branch has none.
 #[must_use]
 pub fn preview_page(name: &str) -> String {
     format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{name}</title>\
-         <link rel=\"stylesheet\" href=\"../style.css\">\
          <link rel=\"stylesheet\" href=\"../design/tokens.css\"></head>\n\
          <body style=\"margin:0;padding:16px;background:transparent\">\n\
          <div data-kit=\"{name}\"></div>\n\
@@ -1136,6 +1145,14 @@ mod tests {
             check("<svg fill=\"#abc\"><p style=\"color:var(--color-text)\">#fff</p></svg>")
                 .is_empty()
         );
+        // A fragment naming itself is filled again by the loader, endlessly.
+        assert!(
+            check(
+                "<div class=\"kit-hero\" data-kit=\"hero\" style=\"color:var(--color-text)\"></div>"
+            )
+            .iter()
+            .any(|f| f.contains("data-kit"))
+        );
     }
 
     #[test]
@@ -1166,6 +1183,7 @@ mod tests {
         assert!(uses(page, "Carousel") && uses(page, "Menu") && !uses(page, "Card"));
         assert_eq!(used_in(page), ["Carousel", "Menu"]);
         assert!(preview_page("Carousel").contains("data-kit=\"Carousel\""));
+        assert!(!preview_page("Carousel").contains("style.css"));
         let json = serde_json::to_string(&kit).expect("json");
         assert!(!json.contains("variantOf"), "an empty fork is not written");
         assert_eq!(Kit::parse(Some(&json)).expect("round trip"), kit);
