@@ -372,7 +372,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Every listed page and micro-frontend exists, and every frozen screen is mocked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Every listed page and micro-frontend exists, every frozen screen and every Micro-UI is mocked
         shell: bash
         run: |
           set -euo pipefail
@@ -411,4 +414,39 @@ jobs:
               failed=1
             fi
           done
+          for ui in apps/**/micro-ui.json; do
+            name=$(jq -r '.microUi' "$ui")
+            fragment=$(jq -r --arg n "$name" '.components[]? | select(.name == $n) | .fragment' "$manifest")
+            if [ -z "$fragment" ]; then
+              echo "::error file=$ui::the Micro-UI $name has no micro-frontend in $manifest — mock it: its real code on the mock server"
+              failed=1
+              continue
+            fi
+            if [ ! -f "mock/$fragment" ]; then
+              echo "::error file=$manifest::the micro-frontend $name has no fragment at mock/$fragment"
+              failed=1
+            fi
+            # The listing says the same needs and actions as the manifest.
+            for key in needs actions; do
+              ours=$(jq -c --arg k "$key" '[.[$k][]? | if type=="string" then . else (.capability // .dataCapability // .id // empty) end] | sort' "$ui")
+              theirs=$(jq -c --arg n "$name" --arg k "$key" '[.components[]? | select(.name == $n) | .[$k][]?] | sort' "$manifest")
+              if [ "$ours" != "$theirs" ]; then
+                echo "::error file=$manifest::the micro-frontend $name lists other $key than $ui — keep the listing in sync"
+                failed=1
+              fi
+            done
+          done
           exit $failed
+      # The bundles are the real Micro-UIs' code: a change under apps/ or
+      # mock/src/ without a rebuild would show stale code on the easel.
+      - name: The micro-frontends' bundles are rebuilt from the Micro-UIs' code
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f mock/build.sh ] || exit 0
+          [ -f package.json ] && npm ci --no-audit --no-fund --loglevel=error
+          sh mock/build.sh
+          if ! git diff --exit-code --stat -- mock/components; then
+            echo "::error file=mock/build.sh::the bundles under mock/components/ are stale — run mock/build.sh and commit them"
+            exit 1
+          fi

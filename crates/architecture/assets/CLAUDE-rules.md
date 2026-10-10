@@ -124,8 +124,10 @@ contracts/*.schema.json            the fourteen contracts, JSON Schema 2020-12
     the bundle; a task that adds a Capability or a DataCapability teaches the
     mock server its answer; a task that builds a screen composition ships the
     screen's page and lists it with `screen: <screen>`. A screen under
-    `apps/screens/` with no page in `mock/pages.json`, or a listed
-    micro-frontend with no fragment, fails the gates. The human annotates the mock-up in
+    `apps/screens/` with no page in `mock/pages.json`, a Micro-UI under
+    `apps/` with no micro-frontend there or one whose `needs`/`actions`
+    differ from its manifest, a listed micro-frontend with no fragment, or
+    a bundle not rebuilt by `mock/build.sh`, fails the gates. The human annotates the mock-up in
     the factory view and may push a `mockup/*` branch with the pages as
     they want them: read it before building the screen it names.
 

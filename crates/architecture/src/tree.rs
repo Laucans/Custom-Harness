@@ -12,8 +12,10 @@
 //! own system, and triggers `DataCapabilities` that exist; a `DataCapability`
 //! belongs to the `DataGuard` and declares its effect; and the unit a task
 //! declared under `## Architecture` is actually there, on the side it said;
-//! and the mock-up keeps up with the screens — every page `mock/pages.json`
-//! lists is there, every frozen screen under `apps/screens/` has a page.
+//! and the mock-up keeps up with the screens and the Micro-UIs — every page
+//! `mock/pages.json` lists is there, every frozen screen under `apps/screens/`
+//! has a page, every Micro-UI under `apps/` has a micro-frontend with its
+//! fragment.
 //! [`undocumented_concepts`] names every Concept a Capability implements
 //! (`implements: Risk@3`) that `concepts/Risk/v3/concept.json` does not
 //! document. Both are pure over an in-memory [`Tree`].
@@ -430,17 +432,50 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
     found
 }
 
-/// The mock-up keeps up with the screens: every page listed is there, every
-/// frozen screen has a page that names it. A repository with no screens and
-/// no `mock/pages.json` yet is fine — the mock-up begins with the first page.
+/// Every Micro-UI declared under `apps/`: its name and its manifest.
+fn micro_ui_manifests(tree: &Tree) -> Vec<(String, &Value)> {
+    tree.micro_uis
+        .iter()
+        .filter_map(|(_, m)| {
+            let json = m.json.as_ref()?;
+            Some((str_of(json, "microUi")?.to_string(), json))
+        })
+        .collect()
+}
+
+/// The entry of `name` under `components` of a `mock/pages.json`.
+fn component_entry<'a>(manifest: &'a Manifest, name: &str) -> Option<&'a Value> {
+    manifest
+        .json
+        .as_ref()?
+        .get("components")?
+        .as_array()?
+        .iter()
+        .find(|c| str_of(c, "name") == Some(name))
+}
+
+/// The ids under `key`, sorted — what two listings are compared on.
+fn sorted_ids(json: &Value, key: &str) -> Vec<String> {
+    let mut ids = strings_of(json, key);
+    ids.sort();
+    ids
+}
+
+/// The mock-up keeps up with the screens and the Micro-UIs: every page
+/// listed is there, every frozen screen has a page that names it, every
+/// Micro-UI built has a micro-frontend with its fragment. A repository with
+/// no screen, no Micro-UI and no `mock/pages.json` yet is fine — the mock-up
+/// begins with the first page.
 fn mockup_kept(tree: &Tree) -> Vec<String> {
     let mut found = Vec::new();
+    let micro_uis = micro_ui_manifests(tree);
     match &tree.mock_pages {
         None => {
-            if !tree.screens.is_empty() {
+            if !tree.screens.is_empty() || !micro_uis.is_empty() {
                 found.push(format!(
-                    "mock/pages.json is missing (contract N), and {} frozen screen(s) wait to be mocked",
-                    tree.screens.len()
+                    "mock/pages.json is missing (contract N), and {} frozen screen(s) and {} Micro-UI(s) wait to be mocked",
+                    tree.screens.len(),
+                    micro_uis.len()
                 ));
             }
             return found;
@@ -476,6 +511,27 @@ fn mockup_kept(tree: &Tree) -> Vec<String> {
                         "{}: {page} injects {name}, a micro-frontend `components` does not list",
                         manifest.path
                     ));
+                }
+            }
+            // A Micro-UI built is a micro-frontend mocked — its real code on
+            // the mock server — and the listing says the same needs and
+            // actions as its manifest: the easel and the gates read the
+            // listing, not the code.
+            for (name, ui) in &micro_uis {
+                let Some(entry) = component_entry(manifest, name) else {
+                    found.push(format!(
+                        "apps/: the Micro-UI {name} has no micro-frontend in {} — mock it (contract N)",
+                        manifest.path
+                    ));
+                    continue;
+                };
+                for key in ["needs", "actions"] {
+                    if sorted_ids(ui, key) != sorted_ids(entry, key) {
+                        found.push(format!(
+                            "{}: the micro-frontend {name} lists other `{key}` than its micro-ui.json — keep the listing in sync",
+                            manifest.path
+                        ));
+                    }
                 }
             }
             let mocked = mocked_screens(manifest);
@@ -688,11 +744,45 @@ mod tests {
             screens: vec!["credit-review".to_string()],
             mock_pages: Some(manifest(
                 "mock/pages.json",
-                r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"Credit review","objective":"o","screen":"credit-review","components":["RiskBadge"]}],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html"}]}"#,
+                r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"Credit review","objective":"o","screen":"credit-review","components":["RiskBadge"]}],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html","needs":["credit.calculateRisk"],"actions":["credit.requestLimitChange"]}]}"#,
             )),
             mocked: vec!["pages/credit-review.html".to_string()],
             mocked_components: vec!["RiskBadge".to_string()],
         }
+    }
+
+    #[test]
+    fn a_built_micro_ui_is_a_mocked_micro_frontend() {
+        // A second Micro-UI under apps/ with no micro-frontend at all.
+        let mut tree = sound();
+        tree.micro_uis.push((
+            "credit".to_string(),
+            manifest(
+                "apps/credit/late-payments/micro-ui.json",
+                r#"{"microUi":"LatePayments","system":"credit","description":"d","needs":["credit.calculateRisk"],"props":{}}"#,
+            ),
+        ));
+        let found = violations(&tree, None);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("LatePayments has no micro-frontend"));
+        // The listing drifted from the manifest.
+        let mut drifted = sound();
+        drifted.mock_pages = Some(manifest(
+            "mock/pages.json",
+            r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"t","objective":"o","screen":"credit-review","components":["RiskBadge"]}],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html","needs":[],"actions":["credit.requestLimitChange"]}]}"#,
+        ));
+        let found = violations(&drifted, None);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("other `needs`"));
+        // No mock-up at all while a Micro-UI exists.
+        let mut bare = sound();
+        bare.screens.clear();
+        bare.mock_pages = None;
+        bare.mocked.clear();
+        bare.mocked_components.clear();
+        let found = violations(&bare, None);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("1 Micro-UI(s) wait"));
     }
 
     #[test]
@@ -708,6 +798,7 @@ mod tests {
             r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"t","objective":"o","screen":"credit-review","components":["Ghost"]}],"components":[]}"#,
         ));
         stray.mocked_components.clear();
+        stray.micro_uis.clear();
         let found = violations(&stray, None);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("injects Ghost"));
@@ -730,12 +821,14 @@ mod tests {
         let found = violations(&bare, None);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("pages.json is missing"));
-        // Nothing to mock yet: nothing to say.
+        // Nothing to mock yet — no screen, no Micro-UI: nothing to say.
         bare.screens.clear();
+        bare.micro_uis.clear();
         assert!(violations(&bare, None).is_empty());
         // A Micro-UI or a composition task needs a mocked page.
         let mut unmocked = sound();
         unmocked.mocked.clear();
+        unmocked.mocked_components.clear();
         unmocked.mock_pages = Some(manifest("mock/pages.json", r#"{"version":1,"pages":[]}"#));
         unmocked.screens.clear();
         for unit in [Unit::MicroUi, Unit::Composition] {
@@ -747,8 +840,7 @@ mod tests {
                 touches: Vec::new(),
             };
             let found = violations(&unmocked, Some(&task));
-            assert_eq!(found.len(), 1, "{found:?}");
-            assert!(found[0].contains("contract N"));
+            assert!(found.iter().any(|f| f.contains("contract N")), "{found:?}");
         }
     }
 

@@ -654,7 +654,7 @@ off until an agent implements them.
 | Invariants | Every declared invariant has tests; every DataCapability lists the ones it may affect | F, I |
 | Relations | Every foreign key has a declared `onDelete` and `onUpdate` policy | I |
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
-| Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page | E, N |
+| Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page; every Micro-UI has a micro-frontend whose listing says its needs and actions; the bundles are rebuilt from the Micro-UIs' code | D, E, N |
 
 ## Organisation of the agents
 
