@@ -3,12 +3,10 @@
 // board units) and `board.edges` (an SVG in the same units), and names every
 // part a pin may sit on with `data-pin="<target>"`.
 //
-// A pin is a note (yellow), a brainstorm (green: an AI session behind it,
-// opened from the pin, remembered between visits) or a request (orange: an
-// intention on the part, applied to the page's draft by one AI call or
-// discussed in a session, kept for the next roadmap; the former asking and
-// simulate kinds read as this one). Turning a brainstorm into a note has
-// the AI write its conclusion; into a request, the intention. On the
+// A pin is a note (yellow) or a request (orange: an intention on the part,
+// applied to the page's draft by one AI call or discussed in a session
+// that is remembered between visits, kept for the next roadmap; the former
+// asking, simulate and brainstorm kinds read as this one). On the
 // mock-up two more kinds: a link (blue) leads to another page or creates
 // one, a design (teal) is a micro-frontend to make or inject. A pin may be
 // a zone — a rectangle, a circle or a
@@ -34,14 +32,14 @@
   const SAVE_DELAY = 600;
   const KINDS = {
     note: ['note', 'Your words'],
-    brainstorm: ['brainstorm', 'A conversation with an AI session about this part'],
     request: ['request', 'An intention for the next roadmap — a change, a behaviour; on the mock-up, applied to the draft by an AI'],
     link: ['link', 'Leads to another page of the mock-up — or creates one'],
     design: ['design', 'A micro-frontend: made by an AI session from its spec, or injected where the pin sits'],
   };
-  const DEFAULT_KINDS = ['note', 'brainstorm', 'request'];
-  // What an old pin's kind reads as now.
-  const RENAMED = { asking: 'request', simulate: 'request' };
+  const DEFAULT_KINDS = ['note', 'request'];
+  // What an old pin's kind reads as now: a brainstorm was a conversation
+  // about a part, which a request's "discuss it" now covers.
+  const RENAMED = { asking: 'request', simulate: 'request', brainstorm: 'request' };
   const kindOf = (n) => RENAMED[n.kind] || n.kind || 'note';
   // A zone smaller than this, in screen pixels, is a click that drew nothing.
   const MIN_ZONE = 8;
@@ -347,7 +345,7 @@
       }
       textarea.disabled = busy;
       textarea.placeholder = {
-        note: 'Write a note — or the first prompt of a brainstorm or a request…',
+        note: 'Write a note…',
         link: 'The objective of the page this leads to — what a new page is drawn from',
         request: 'The intention: what should change, what this part should do — applied to the draft, kept for the next roadmap',
       }[kind] || 'Where the discussion stands — rewritten when you leave the session';

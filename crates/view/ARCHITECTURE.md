@@ -313,13 +313,12 @@ table; a part gone leaves its pin grey where it was. A pin belongs to **one
 branch**: the data pane keeps a board per branch (`data-model--main-agent`,
 `data-model--milestone-3`), switched with the branch shown (`board.setBoard`).
 
-A pin is one of five kinds (`domain::annotations::Kind`):
+A pin is one of four kinds (`domain::annotations::Kind`; `Brainstorm` stays in the enum only to read the pins stored before it was dropped, shown as requests):
 
 | kind | colour | what it is |
 | --- | --- | --- |
 | note | yellow | the human's words |
-| brainstorm | green | an **AI session** about the part, opened from the pin |
-| request | orange | an intention on the part — applied to the page's draft by one AI call, or discussed in a session; kept for the next roadmap (how it reaches the planner is parked, `docs/PARKED.md`); `asking` and `simulate` read as this kind |
+| request | orange | an intention on the part — applied to the page's draft by one AI call, or discussed in a session; kept for the next roadmap (how it reaches the planner is parked, `docs/PARKED.md`); `asking`, `simulate` and the old `brainstorm` read as this kind |
 | link | blue | on the mock-up: leads to another page of the product, or creates one from an objective |
 | design | teal | on the mock-up: a micro-frontend — made by an AI session from the spec the pin carries, or injected in the page it sits on |
 

@@ -330,10 +330,8 @@ pub const MAX_ISSUE_CONTEXT: usize = 20_000;
 ///
 /// The pin has no text, or is a plain note.
 pub fn backlog_issue(board: &str, note: &Note, context: &str) -> Result<(String, String), String> {
-    if note.kind == Kind::Note || note.kind == Kind::Brainstorm {
-        return Err(
-            "a note or a brainstorm is not a backlog item: turn it into a request first".into(),
-        );
+    if note.kind == Kind::Note {
+        return Err("a note is not a backlog item: make it a request first".into());
     }
     let text = note.text.trim();
     if text.is_empty() {

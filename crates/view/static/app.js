@@ -1017,7 +1017,7 @@
     // A pin's AI session: opened by the server with the pin's conversation
     // handed back, closed when the pane is left — its turns are then kept.
     note_session: {
-      title: (p) => `${{ request: 'Request', asking: 'Request', simulate: 'Request', link: 'New page', design: 'Micro-frontend', note: 'Note' }[p.pin] || 'Brainstorm'} · ${p.on}`,
+      title: (p) => `${{ request: 'Request', asking: 'Request', simulate: 'Request', link: 'New page', design: 'Micro-frontend', note: 'Note' }[p.pin] || 'Session'} · ${p.on}`,
       flag: '--no-steward',
       chips: [
         ['Where are we?', 'Summarize where we are: what is decided, what is open.'],

@@ -229,7 +229,7 @@
         context,
         onSession,
         under,
-        kinds: st.view === 'page' ? ['note', 'brainstorm', 'request', 'link', 'design'] : ['note', 'brainstorm', 'request', 'design'],
+        kinds: st.view === 'page' ? ['note', 'request', 'link', 'design'] : ['note', 'request', 'design'],
         zones: st.view === 'page',
         pages: () => (st.state && st.state.pages) || [],
         capabilities,
