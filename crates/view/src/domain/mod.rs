@@ -11,6 +11,7 @@ pub mod data_usage;
 pub mod data_versions;
 pub mod divergence;
 pub mod doctor;
+pub mod drafts;
 pub mod fusion;
 pub mod gates;
 pub mod history;

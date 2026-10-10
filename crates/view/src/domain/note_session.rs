@@ -275,7 +275,7 @@ pub struct About {
     pub context: String,
     /// The pin's own text.
     pub note: String,
-    /// `brainstorm`, `asking`, `simulate` or `link`.
+    /// `brainstorm`, `request`, `link` or `design`.
     pub kind: String,
     /// On the mock-up: the page the pin sits on (`pages/home.html`), and
     /// for a link, the page it leads to or creates.
@@ -351,7 +351,6 @@ pub fn milestone_words(milestone: &crate::ports::Milestone) -> String {
 #[must_use]
 pub fn briefing(about: &About, handback: &Handback) -> String {
     let mut text = match about.kind.as_str() {
-        "simulate" => simulate_briefing(about),
         "link" => page_briefing(about),
         "design" => design_briefing(about),
         _ => talk_briefing(about),
@@ -433,29 +432,6 @@ fn mockup_rules(about: &About) -> String {
             &about.branch
         },
     )
-}
-
-/// A simulate: the pin is a request, the page must show its result.
-fn simulate_briefing(about: &About) -> String {
-    let mut text = mockup_rules(about);
-    let _ = write!(
-        text,
-        "\nThe human dropped a *simulate* pin on {target} of the page `{page}`. Their request is \
-         below: make the page show what the product would show after that request — the state, \
-         the data, the messages — by editing the page and its fixtures, as faithfully to the \
-         product's rules as the repository lets you read them. Keep the change small and obvious: \
-         the human compares the page before and after.\n",
-        target = if about.target.is_empty() {
-            "a spot"
-        } else {
-            &about.target
-        },
-        page = about.page,
-    );
-    if !about.note.trim().is_empty() {
-        let _ = writeln!(text, "The request:\n{}", about.note.trim());
-    }
-    text
 }
 
 /// A link that creates a page: the pin carries the page's objective.
@@ -550,8 +526,8 @@ fn talk_briefing(about: &About) -> String {
         } else {
             &about.target
         },
-        kind_words = if about.kind == "asking" {
-            "an *asking*: a change the human wants considered when the next roadmap is built — help them make it precise"
+        kind_words = if about.kind == "request" {
+            "a *request*: an intention for the next roadmap — a change, a behaviour the human wants — help them make it precise; on the mock-up its visible part is applied to the draft by another, one-shot call"
         } else {
             "a *brainstorm*: explore options, trade-offs and consequences with the human"
         },
@@ -740,7 +716,7 @@ not json
             target: "component RiskBadge".into(),
             context: String::new(),
             note: "show a late customer".into(),
-            kind: "simulate".into(),
+            kind: "request".into(),
             page: "pages/home.html".into(),
             branch: "main".into(),
             schema: String::new(),
@@ -749,7 +725,7 @@ not json
             source: String::new(),
         };
         let text = briefing(&about, &Handback::Nothing);
-        assert!(text.contains("edit only under `mock/`"));
+        assert!(text.contains("a *request*") && text.contains("Do not edit any file"));
         let drawn = About {
             kind: "link".into(),
             page: "pages/home.html".into(),
@@ -775,7 +751,7 @@ not json
             ..design
         };
         assert!(briefing(&alone, &Handback::Nothing).contains("Do not inject it in a page"));
-        assert!(text.contains("`pages/home.html`") && text.contains("show a late customer"));
+        assert!(text.contains("show a late customer"));
         assert!(text.contains("branch `main`"));
         assert_eq!(
             first_prompt(&about).as_deref(),

@@ -319,9 +319,8 @@ A pin is one of five kinds (`domain::annotations::Kind`):
 | --- | --- | --- |
 | note | yellow | the human's words |
 | brainstorm | green | an **AI session** about the part, opened from the pin |
-| asking | orange | a change to consider when the next roadmap is built — its session kept too; how it reaches the planner is parked (`docs/PARKED.md`) |
+| request | orange | an intention on the part — applied to the page's draft by one AI call, or discussed in a session; kept for the next roadmap (how it reaches the planner is parked, `docs/PARKED.md`); `asking` and `simulate` read as this kind |
 | link | blue | on the mock-up: leads to another page of the product, or creates one from an objective |
-| simulate | purple | on the mock-up: a request whose result an AI session shows by editing the page |
 | design | teal | on the mock-up: a micro-frontend — made by an AI session from the spec the pin carries, or injected in the page it sits on |
 
 A pin may be a **zone** instead of a point: the toolbar's rectangle, circle
@@ -423,9 +422,18 @@ session reads, never rewritten by a compact.
 Two kinds are the mock-up's own. A **link** leads to another page — chosen
 in its editor — or to a page that does not exist yet: named there, drawn by
 an AI session from the objective the human writes (`+ page` in the bar does
-the same from the bar). A **simulate** is a request — "the customer pays
-late" — and its session edits the page and its fixtures to show the
-result. These sessions **edit**: they open in the launcher's permission
+the same from the bar). A **request** is an intention on a part — "the
+customer pays late", "the total above the lines" — that the human writes
+once and the AI applies: **apply to the draft** is one `claude -p` call
+(`POST /api/notes/{board}/apply`, `NoteDesks::ask`, `drafts::apply_prompt`)
+answering operations of the page's draft (below), one undoable step, the
+pin marked *simulated* (`RequestState`; *stale* once its ops are dropped);
+applied again, its former operations go and the new ones come; deleted,
+they go. `simulate requests` in the edit bar applies every pending one in
+one call, each request's refusal reported with its reason. **Discuss it**
+opens the pin's session instead. The data pane's pins know the same
+kind; `asking` and `simulate` are read as `request` (`Kind`'s aliases).
+These sessions **edit**: they open in the launcher's permission
 mode (a brainstorm stays in plan mode), in a **workspace** of the branch
 the view makes on the first one — a detached `git worktree` of the mirror
 under `.llocal/view-mockups/<branch slug>/` — and from then on the easel
@@ -437,6 +445,48 @@ and pushes it (the code stage reads a `mockup/*` branch before building the
 screen it names); `discard` removes the workspace, and the branch's
 mock-up is shown as committed again. A product with no `mock/` yet shows an
 empty canvas and the one thing that can be done on it: the first page.
+
+**Edit mode, and the page's draft.** `edit` in the bar turns the page
+into a layout the human changes by hand (`edit.js`, `mockup.js`): a part
+clicked is selected (its identity, size in twelfths of its row, text,
+link target or button intent, and the requests on it, in the panel at the
+right); dragged, it lands before or after the part under the pointer, or
+into an empty container — a table cell drags its column; its right handle
+resizes it to twelfths; a container may be laid out **static** — its
+children placed freely in percent of it, snapped to the twelve columns;
+`remove`, `clone`, `+ link` (to a page of the mock or a URL) and
+`+ button` (its label, its intent written for the next roadmap) complete
+the gestures. With `micro-frontends ◧` on, only micro-frontends move, as
+blocks; off, a part *inside* a real micro-frontend edited from a page
+**forks** it — a copy of the page's own, `<Name><Page>` (`variantOf`),
+inlined, the page's manifest entry switched to it, a toast of seven
+seconds to rename it. Every gesture is an **operation** on the page as
+committed (`move`, `resize`, `remove`, `clone`, `text`, `static`, `add`,
+`fork` — `by: human` or the request's id), never a rewrite of its HTML:
+the page is always shown as *source + operations* (`MockEdit.engine`,
+into the iframe's `srcdoc`, forty steps of undo in edit mode, ctrl+z),
+so a draft survives the page changing under it — a page whose fingerprint
+(`MockPage::hash`) no longer matches the draft's `base` shows the draft
+**frozen**, its lost operations counted: keep it on the page as it is, or
+restart from the page as it is (requests back to pending, pins kept).
+
+The operations are the **draft**, kept by the view (`DraftStore`, the
+`drafts` table of the pins' SQLite file) per board — per branch and page —
+in **versions** (`domain::drafts`): one open version takes the operations
+as they come (`PUT /api/drafts/{board}`, debounced); leaving the pane or
+`keep` closes it, the next change opens the next (`POST …/open` with the
+page's hash); the last three kept stay beside the open one, viewed read
+only or **restored** as a copy in front, named if the human cares;
+**validate** closes it as the next round of development — kept whatever
+its age, and the page, its draft (`mock/drafts/<page>.json`: operations,
+forks, requests, version) and the forked fragments written to the
+workspace (`POST /api/mockup/write`) so `save the mock-up` commits them on
+the `mockup/*` branch. The width the page is shown at (Mobile 390, Tablet
+768, Laptop 1280, Large 1536, or dragged at its right edge) is the
+version's `viewport`; the operations do not depend on it. Routes:
+`GET /api/drafts` (every board's history, the pin board's *drafts* tab),
+`GET|PUT /api/drafts/{board}`, `POST …/{open,keep,validate,unvalidate,reset}`,
+`POST …/restore/{version}`.
 
 Everything goes through the `Mockups` port (`adapters::mockups`): on
 GitHub, `GitMockups` over the same `git_units::Mirror` the capabilities
@@ -461,7 +511,17 @@ slugs against the product's branches (the data pane's and the easel's own
 naming). A click opens the pin where it was dropped: the data model at that
 branch, or the easel at that branch and page (`pageSlug`), which centres
 and opens the pin once its board is read (`board.goTo`, the `onLoaded`
-hook).
+hook). Its **drafts** tab lists the pages with a draft (`GET /api/drafts`):
+the open version, the kept ones, the validated ones, the requests still
+pending; a click opens the page in edit mode.
+
+**The conversation dock.** A pin's session — brainstorm, request, link,
+design, on the data model or the mock-up — no longer takes the pane: it
+sits in a dock at the bottom left (`#talk`, `app.js`), floating over the
+page, resized from its corner and remembered, one session at a time, kept
+while the human walks the panes and pages; closing it closes the session
+(`POST …/session/close`, the pin's turns counted), and the canvas rereads
+its pins.
 
 ## The capabilities list
 
@@ -522,7 +582,7 @@ matter, and the merged unit. Route `GET /api/capabilities?fresh=`.
 ```
 src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
 src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
-src/note_desks.rs      the pins' sessions at work: one Claude Code per open pin, its turns read back when it closes; a simulate or a page to create edits the mock-up's workspace
+src/note_desks.rs      the pins' sessions at work: one Claude Code per open pin, its turns read back when it closes; a page to create edits the mock-up's workspace; `ask`, the one-shot a request is applied with
 src/units_desk.rs      the capabilities list's reading, kept a minute; the fusion's one question to the model
 src/data_desk.rs       the data desk: one task owning the Product port, versions cached, the handlers answered by channel
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
@@ -545,7 +605,8 @@ src/domain/            the inside — no disk, no subprocess, no clock
   divergence.rs        a diagnosed divergence found in the events, and the issue a human opens from it
   annotations.rs       the human's pins: their kinds, a zone's outline, the checks before one is kept, what ctrl+z can still bring back
   mockup.rs            the mock-up as the easel shows it: a branch as a URL slug, the pages of mock/pages.json, which paths may be served, the branch a save goes to
-  note_session.rs      a pin's AI session: what it is told (a talk, a simulate, a page to draw), what is kept of it, what is handed back (40k whole, else summary + 10k)
+  note_session.rs      a pin's AI session: what it is told (a talk, a request, a page to draw), what is kept of it, what is handed back (40k whole, else summary + 10k)
+  drafts.rs            a page's draft: its versions (open, kept, validated), what a new one opens on, the undo budget, the prompt a request is applied with and the operations read back
   capabilities.rs      the capabilities list: every unit on every branch, its status, contracts, callers, rules, dates
   fusion.rs            could two units be one: the deterministic comparison, and the small question the model words it from
   prompts.rs           a station's prompts for the pane: the catalog, the book and the drafts together; an edit, a revert, a withdrawal; what waits
@@ -565,7 +626,7 @@ src/adapters/
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
 src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
-static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it), vendor/ (xterm.js), render/ (built, not committed)
+static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, and their edit mode), edit.js (the draft engine: a page as source + operations, undo, materialization), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```
 

@@ -675,6 +675,10 @@ pub struct MockPage {
     /// The micro-frontends it injects, by name.
     #[serde(default)]
     pub components: Vec<String>,
+    /// The fingerprint of the page's file as it is — what a draft version
+    /// remembers to know the page moved under it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hash: String,
 }
 
 /// One micro-frontend of the mock-up, as `mock/pages.json` lists it: a
@@ -784,4 +788,46 @@ pub trait Mockups: Send + Sync {
     ///
     /// The workspace could not be removed.
     fn discard(&self, branch: &str) -> Result<(), String>;
+
+    /// Writes `mock/<path>` in the branch's workspace — made first if it is
+    /// not there — with `bytes`: a page as the draft shows it, a forked
+    /// fragment, the draft's own file.
+    ///
+    /// # Errors
+    ///
+    /// The workspace could not be made or written.
+    fn write(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String>;
+}
+
+/// Where a page's draft versions are kept (`domain::drafts`).
+///
+/// Synchronous, like [`NoteStore`]: the same small local database.
+pub trait DraftStore: Send + Sync {
+    /// Every board that holds a version, sorted.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read.
+    fn boards(&self) -> Result<Vec<String>, String>;
+
+    /// A board's versions, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read.
+    fn versions(&self, board: &str) -> Result<Vec<crate::domain::drafts::Draft>, String>;
+
+    /// Keeps a version — a new one, or a new state of one.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn put(&self, board: &str, draft: &crate::domain::drafts::Draft) -> Result<(), String>;
+
+    /// Destroys a version for good.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn destroy(&self, board: &str, version: u32) -> Result<(), String>;
 }

@@ -76,7 +76,7 @@ use crate::domain::steward;
 use crate::janitor::Janitor;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    Board, BoardReading, Builds, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
+    Board, BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
     TerminalFactory, Traces, Trials, Units, Yard,
 };
 use crate::server::{AppState, router};
@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
     let project = project_of(&cli, &root);
     let (board, product) = github_for(&cli, &root, &project);
     let program = program_for(&cli);
-    let (pins, note_desks) = notes_for(&cli, &root, &project, &program, &workspace)?;
+    let (pins, drafts, note_desks) = notes_for(&cli, &root, &project, &program, &workspace)?;
     let desk = desk_for(&cli, &root, &project, &program);
     let doctor = doctor_for(&cli, &root, &project, &program);
     let plant = plant_for(&cli, &workspace);
@@ -143,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
         janitor: janitor.clone(),
         data,
         pins: Arc::clone(&pins),
+        drafts,
         note_desks: note_desks.clone(),
         builds: builds_for(&cli, &root),
         integration_branch: cli.integration_branch.clone(),
@@ -278,15 +279,20 @@ fn janitor_for(cli: &Cli, workspace: &Workspace) -> Option<Janitor> {
         .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>))
 }
 
-/// The pins' store, and their AI sessions.
+/// The pins' store — the drafts' too, one database — and the pins' AI
+/// sessions.
+/// The pins' store, the drafts' store (one SQLite file behind both) and
+/// the desks a pin's session sits at, when the view may open one.
+type Notes = (Arc<dyn NoteStore>, Arc<dyn DraftStore>, Option<NoteDesks>);
+
 fn notes_for(
     cli: &Cli,
     root: &Path,
     project: &Project,
     program: &str,
     workspace: &Workspace,
-) -> anyhow::Result<(Arc<dyn NoteStore>, Option<NoteDesks>)> {
-    let pins: Arc<dyn NoteStore> = Arc::new(
+) -> anyhow::Result<Notes> {
+    let store = Arc::new(
         SqliteNotes::open(
             &workspace.events(),
             &workspace.state_root().join(".llocal/annotations.json"),
@@ -294,8 +300,10 @@ fn notes_for(
         .map_err(anyhow::Error::msg)
         .context("opening the pins' store")?,
     );
+    let pins: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
+    let drafts: Arc<dyn DraftStore> = store as Arc<dyn DraftStore>;
     let desks = note_desks_for(cli, root, project, program, &pins);
-    Ok((pins, desks))
+    Ok((pins, drafts, desks))
 }
 
 /// The pins' AI sessions, unless `--no-steward`: Claude Code on the

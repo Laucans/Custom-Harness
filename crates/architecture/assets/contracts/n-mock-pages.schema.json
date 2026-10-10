@@ -113,6 +113,11 @@
             "type": "string",
             "pattern": "^[0-9a-f]{16}$",
             "description": "Written by `mock/build.mjs`: a digest (FNV-1a 64) of the entry, the shared files under `mock/src/` and every file under `<source>/src/`, so the gates know the bundle is stale."
+          },
+          "variantOf": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Za-z0-9]*$",
+            "description": "The micro-frontend this one was forked from by a page's draft in the factory view: a copy the page edited, shown there instead of the origin. Build it as a variant of its origin, not a second Micro-UI."
           }
         },
         "required": [

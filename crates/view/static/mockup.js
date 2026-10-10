@@ -1,47 +1,59 @@
 // The mock-up on its easel: the product's frontend, mocked — the static pages
 // under `mock/` of the branch shown — run in an iframe on a board, so a
 // human pins notes on its parts, draws zones around several, links a page
-// to another (or creates one from an objective), asks for a simulation an
-// AI session answers by editing the page, and drops micro-frontends on it.
-// One board per branch and page: pins stay where they were left.
+// to another (or creates one from an objective), drops requests an AI
+// applies, and drops micro-frontends on it. One board per branch and page:
+// pins stay where they were left.
 //
 // Two views. **frontend**: the page, with a switch that outlines every
 // micro-frontend in its own colour (pins then land on micro-frontends, not
-// their parts), and a strip of the branch's micro-frontends to drag onto
-// the page. **micro-frontends**: each micro-frontend rendered alone from
-// its fragment and fixture, a card per one, pins on the cards, and a form
-// that makes a new one — a design pin whose AI session writes the fragment.
+// their parts), a strip of the branch's micro-frontends to drag onto the
+// page, and an **edit** mode: parts dragged before or after one another,
+// resized to twelfths of their row, removed, cloned, their text rewritten,
+// a container laid out freely, links and buttons added — every gesture an
+// operation of the page's **draft** (edit.js), kept in versions by the
+// server (`/api/drafts`), forty steps of undo deep. A part of a real
+// micro-frontend edited from a page forks that micro-frontend into a copy of
+// the page's own. **micro-frontends**: each micro-frontend rendered alone
+// from its fragment and fixture, a card per one, pins on the cards, and a
+// form that makes a new one.
 //
-// The pages come from `/mock/<branch slug>/<path>`, a micro-frontend alone
-// from `/mock/<branch slug>/__preview/<Name>`; the branch's state — pages,
-// micro-frontends, the manifests' Micro-UIs and Capabilities, whether a
-// session edited it, a stamp that changes with its files — from
+// The page is always shown as its draft says: the page's source is fetched,
+// the operations applied, and the result put in the iframe (`srcdoc`, with
+// a `<base>` so its links resolve beside the page). The pages come from
+// `/mock/<branch slug>/<path>`, a micro-frontend alone from
+// `/mock/<branch slug>/__preview/<Name>`; the branch's state from
 // `/api/mockup?branch=`. A branch edited by a session is shown as its
-// workspace holds it; `save the mock-up` commits it on a `mockup/<name>`
-// branch, `discard` drops it.
+// workspace holds it; `save the mock-up` writes the page as the draft shows
+// it, the draft's own file and the forked fragments, then commits it on a
+// `mockup/<name>` branch; `discard` drops it.
 (() => {
   'use strict';
 
-  // The width a page is laid out at, in board units.
-  const WIDTH = 1280;
+  const DEFAULT_WIDTH = 1280;
+  const PRESETS = [['Mobile', 390], ['Tablet', 768], ['Laptop', 1280], ['Large', 1536]];
   const MIN_HEIGHT = 480;
-  // A micro-frontend's card, in board units.
   const CARD_W = 400;
   const CARD_GAP = 28;
   const CARD_MIN = 160;
   const CARD_MAX = 640;
   const POLL_MS = 3000;
+  const SAVE_DELAY = 500;
+  const SLOP = 5;
   const LAST = 'harness.mockup.page';
   const MF_ON = 'harness.mockup.mf';
-  // One colour per micro-frontend, by its rank on the branch.
+  const WIDTHS = 'harness.mockup.widths';
   const COLOURS = ['#4ea3f0', '#f08a2c', '#4fbf72', '#b388f5', '#e2b240', '#ef6b8a', '#2bc0c8', '#c9a46b'];
+  // What a pin may sit on, nearest first; what edit mode may take hold of.
+  const PARTS = '[data-component],[id],[data-id],button,a,input,select,textarea,label,h1,h2,h3,h4,img,table,th,td,tr,li,form,section,article,aside,nav,header,footer,figure,p';
+  const EDITABLE = '[data-component],[data-id],button,a,input,select,textarea,label,h1,h2,h3,h4,h5,h6,img,table,th,td,tr,ul,ol,li,form,section,article,aside,nav,header,footer,figure,p,div,span';
+  const E = window.MockEdit;
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const plain = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   const slugOf = (branch) => String(branch || '').replace(/\//g, '__');
   const pageSlug = (path) => plain(String(path || '').replace(/^pages\//, '').replace(/\.html?$/, '')) || 'home';
-  // The parts of a page a pin may sit on, nearest first.
-  const PARTS = '[data-component],[id],button,a,input,select,textarea,label,h1,h2,h3,h4,img,table,tr,li,form,section,article,aside,nav,header,footer,figure,p';
+  const newId = (prefix) => prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   function kept(key, fallback) {
     try { const v = localStorage.getItem(key); return v == null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
@@ -61,7 +73,8 @@
       + '<span class="dm-origin mk-origin">reading the mock-up…</span>'
       + '<label class="mk-page" hidden>page <select class="mk-pages" aria-label="page"></select></label>'
       + '<button type="button" class="mini mk-only-page" data-mk="new" title="A new page of the mock-up, drawn by an AI session from its objective">+ page</button>'
-      + '<button type="button" class="mini mk-only-page" data-mk="mf" aria-pressed="false" title="Outline every micro-frontend in its own colour; pins then land on micro-frontends">micro-frontends ◧</button>'
+      + '<button type="button" class="mini mk-only-page" data-mk="mf" aria-pressed="false" title="Outline every micro-frontend in its own colour; pins and edits then take hold of micro-frontends">micro-frontends ◧</button>'
+      + '<button type="button" class="mini mk-only-page" data-mk="edit" aria-pressed="false" title="Edit the page: drag parts before or after one another, resize, remove, clone, rewrite; every change a step of the page\'s draft">edit</button>'
       + '<button type="button" class="mini mk-only-page" data-mk="interact" aria-pressed="false" title="Click through to the page itself: its links, its buttons">interact</button>'
       + '<button type="button" class="mini mk-only-components" data-mk="design" hidden title="A new micro-frontend, made by an AI session from its spec">+ micro-frontend</button>'
       + '<span class="spacer"></span>'
@@ -70,17 +83,34 @@
       + '<button type="button" class="mini" data-mk="save" hidden>save the mock-up</button>'
       + '<button type="button" class="mini" data-mk="discard" hidden>discard</button>'
       + '</div>'
+      + '<div class="mk-editbar" hidden>'
+      + '<button type="button" class="mini" data-ed="undo" title="Undo the last step (ctrl+z)">↶ undo</button>'
+      + '<button type="button" class="mini" data-ed="redo" title="Redo (ctrl+shift+z)">↷ redo</button>'
+      + '<span class="mk-sep"></span>'
+      + '<button type="button" class="mini" data-ed="add-link" title="A link, placed after the selection or at the end">+ link</button>'
+      + '<button type="button" class="mini" data-ed="add-button" title="A button, placed after the selection or at the end">+ button</button>'
+      + '<span class="mk-sep"></span>'
+      + '<button type="button" class="mini" data-ed="apply-all" title="Apply every pending request of the page to the draft, in one go">simulate requests</button>'
+      + '<span class="spacer"></span>'
+      + '<label class="mk-vp" title="the width the page is shown at"><select class="mk-presets" aria-label="viewport">' + PRESETS.map(([n, w]) => `<option value="${w}">${n} · ${w}</option>`).join('') + '<option value="0">custom</option></select><input class="mk-width" type="number" min="320" max="3000" step="10" aria-label="width in pixels" hidden></label>'
+      + '<span class="mk-draft-state"></span>'
+      + '<button type="button" class="mini" data-ed="keep" title="Close this version into the history; the next change opens a new one">keep</button>'
+      + '<button type="button" class="mini" data-ed="validate" title="Close this version as the next round of development">validate</button>'
+      + '<button type="button" class="mini" data-ed="history" title="The versions of this page\'s draft">history</button>'
+      + '</div>'
+      + '<div class="mk-frozen" hidden></div>'
       + '<div class="mk-form" hidden></div>'
-      + '<div class="dm-main"><div class="dm-board mk-board"></div><aside class="mk-strip" hidden></aside></div>'
+      + '<div class="dm-main"><div class="dm-board mk-board"></div><aside class="mk-strip" hidden></aside><aside class="mk-panel" hidden></aside><aside class="mk-history" hidden></aside></div>'
+      + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
     const st = { branch: (opts && opts.branch) || '', page: (opts && opts.page) || '', view: (opts && opts.view) || 'page', versions: null, state: null, stamp: '', pinned: false,
       timer: null, gone: false, interact: false, mf: !!kept(MF_ON, false), board: null, frame: null, shield: null, doc: null, armed: null, proxies: new WeakMap(), fitted: false, saving: false,
-      // The micro-frontends view: one iframe per card, measured as they load.
-      cards: [] };
+      cards: [],
+      // Edit mode: the page's source, its draft engine, the versions, the selection, a gesture under way.
+      edit: !!(opts && opts.edit), source: '', engine: null, history: null, sel: '', hover: null, drag: null, resize: null, space: false, saveTimer: null, viewing: null, width: DEFAULT_WIDTH, lastLoadedPage: '', toastTimer: null };
 
     // ---- what the branch knows of its micro-frontends ----------------------------------
-    // The registry's and the manifests' together, by name: mocked, built, or both.
     const components = () => {
       const s = st.state || {};
       const units = (s.units && s.units.micro_uis) || [];
@@ -91,6 +121,8 @@
         if (have) { have.built = true; if (!have.description) have.description = u.description; if (!have.needs.length) have.needs = u.needs; if (!have.actions.length) have.actions = u.actions; }
         else byName.set(u.name, Object.assign({ mocked: false, built: true }, u));
       });
+      // The forks the draft made: copies of the page's own.
+      forks().forEach((f) => { if (!byName.has(f.as)) byName.set(f.as, { name: f.as, system: (byName.get(f.from) || {}).system || '', description: `${f.from}, as this page wants it`, fragment: `components/${f.as}.html`, needs: (byName.get(f.from) || { needs: [] }).needs, actions: (byName.get(f.from) || { actions: [] }).actions, props: {}, mocked: true, built: false, variantOf: f.from }); });
       const list = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
       list.forEach((c, i) => { c.colour = COLOURS[i % COLOURS.length]; c.pages = (s.pages || []).filter((p) => (p.components || []).includes(c.name)).map((p) => p.title); });
       return list;
@@ -99,75 +131,55 @@
     const specOf = (c) => `name: ${c.name}\nsystem: ${c.system || ''}\ndescription: ${c.description || ''}\nneeds: ${(c.needs || []).join(', ')}\nactions: ${(c.actions || []).join(', ')}\nprops:\n${Object.entries(c.props || {}).map(([k, v]) => `  ${k}: ${v}`).join('\n')}`.trim();
     const capabilities = () => (st.state && st.state.units && st.state.units.capabilities) || [];
     const dataCapabilities = () => (st.state && st.state.units && st.state.units.data_capabilities) || [];
+    const forks = () => (st.engine ? st.engine.ops.filter((o) => o.kind === 'fork') : []);
 
     // ---- the parts of the page, reached through the iframe ------------------------------
-    const targetOf = (el) => {
-      if (el.dataset && el.dataset.component) return 'component:' + el.dataset.component;
-      if (el.id) return 'id:' + el.id;
-      const steps = [];
-      let at = el;
-      while (at && at !== st.doc.body && steps.length < 8) {
-        const parent = at.parentElement;
-        if (!parent) break;
-        const index = Array.prototype.indexOf.call(parent.children, at) + 1;
-        steps.unshift(`${at.tagName.toLowerCase()}:nth-child(${index})`);
-        at = parent;
-      }
-      return 'path:' + steps.join('>');
-    };
-    const elementOf = (target) => {
-      if (!st.doc || !target) return null;
-      try {
-        if (target.startsWith('component:')) return st.doc.querySelector(`[data-component="${CSS.escape(target.slice(10))}"]`);
-        if (target.startsWith('id:')) return st.doc.getElementById(target.slice(3));
-        if (target.startsWith('path:')) return st.doc.body.querySelector(':scope>' + target.slice(5));
-      } catch (e) { return null; }
-      return null;
-    };
-    // A stand-in the board can hold: its box in the page's coordinates,
-    // through the iframe's place and the board's zoom.
     const proxy = (el) => {
       let p = st.proxies.get(el);
       if (p) return p;
       p = {
         el,
-        getAttribute: (name) => (name === 'data-pin' ? targetOf(el) : el.getAttribute(name)),
+        getAttribute: (name) => (name === 'data-pin' ? E.targetOf(el) : el.getAttribute(name)),
         classList: { add: (c) => el.classList.add(c), remove: (c) => el.classList.remove(c) },
-        getBoundingClientRect() {
-          const fr = st.frame.getBoundingClientRect();
-          const r = el.getBoundingClientRect();
-          const k = st.board ? st.board.zoom() : 1;
-          return { left: fr.left + r.left * k, top: fr.top + r.top * k, width: r.width * k, height: r.height * k, right: fr.left + (r.left + r.width) * k, bottom: fr.top + (r.top + r.height) * k };
-        },
+        getBoundingClientRect() { return screenRect(el); },
       };
       st.proxies.set(el, p);
       return p;
     };
-    const resolve = (target) => {
-      if (st.view !== 'page') return null;
-      if (!target) return null;
-      const el = elementOf(target);
-      return el ? proxy(el) : null;
-    };
-    const under = (clientX, clientY) => {
-      if (st.view !== 'page' || !st.frame || !st.doc) return null;
+    // An element's box on the screen, through the iframe's place and the board's zoom.
+    function screenRect(el) {
+      const fr = st.frame.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const k = st.board ? st.board.zoom() : 1;
+      return { left: fr.left + r.left * k, top: fr.top + r.top * k, width: r.width * k, height: r.height * k, right: fr.left + (r.left + r.width) * k, bottom: fr.top + (r.top + r.height) * k };
+    }
+    const elementAt = (clientX, clientY, selector) => {
+      if (!st.frame || !st.doc) return null;
       const fr = st.frame.getBoundingClientRect();
       if (clientX < fr.left || clientX > fr.right || clientY < fr.top || clientY > fr.bottom) return null;
       const k = st.board ? st.board.zoom() : 1;
       let el = st.doc.elementFromPoint((clientX - fr.left) / k, (clientY - fr.top) / k);
-      // With the micro-frontends outlined, a pin lands on the micro-frontend itself.
-      el = el && el.closest(st.mf ? '[data-component]' : PARTS);
+      el = el && el.closest(selector);
       if (!el || el === st.doc.body || el === st.doc.documentElement) return null;
-      return proxy(el);
+      return el;
+    };
+    const resolve = (target) => {
+      if (st.view !== 'page' || !target) return null;
+      const el = E.elementOf(st.doc, target);
+      return el ? proxy(el) : null;
+    };
+    const under = (clientX, clientY) => {
+      if (st.view !== 'page') return null;
+      const el = elementAt(clientX, clientY, st.mf ? '[data-component]' : PARTS);
+      return el ? proxy(el) : null;
     };
     const describe = (target) => {
       if (!target) return st.view === 'page' ? 'the page' : 'the micro-frontends';
-      if (target.startsWith('component:')) return 'micro-frontend ' + target.slice(10);
-      if (target.startsWith('id:')) return '#' + target.slice(3);
+      if (target.startsWith('component:')) return (target.includes('>') ? 'inside micro-frontend ' : 'micro-frontend ') + target.slice(10).split('>')[0];
+      if (target.startsWith('id:')) return '#' + target.slice(3).split('>')[0];
+      if (target.startsWith('data:')) return target.slice(5).split('>')[0];
       return target.slice(5).split('>').map((s) => s.replace(/:nth-child\(\d+\)/, '')).slice(-3).join(' > ');
     };
-    // What a pin's session is told: the page, its objective, the part's markup;
-    // for a micro-frontend, its spec and where it is used.
     const context = (target) => {
       let text = '';
       if (st.view === 'page') {
@@ -175,14 +187,15 @@
         text = page ? `Page ${page.path} — ${page.title}: ${page.objective || '(no objective written)'}` : `Page ${st.page || '(none yet)'}`;
         if (page && page.screen) text += `\nMocks the screen ${page.screen}.`;
         if (page && page.components && page.components.length) text += `\nMicro-frontends injected: ${page.components.join(', ')}.`;
+        if (st.engine && st.engine.ops.length) text += `\nThe page's draft holds ${st.engine.ops.length} operation(s) the human made in edit mode; the page below shows them.`;
       } else {
         text = 'The micro-frontends view: each micro-frontend of the branch rendered alone from its fragment and fixture.';
       }
       if (target && target.startsWith('component:')) {
-        const c = componentOf(target.slice(10));
+        const c = componentOf(target.slice(10).split('>')[0]);
         if (c) text += `\nThe micro-frontend ${c.name} (${c.mocked ? 'mocked' : 'not mocked yet'}, ${c.built ? 'built under apps/' : 'not built yet'}):\n${specOf(c)}\nUsed by the pages: ${c.pages.join(', ') || 'none'}.`;
       }
-      const el = elementOf(target);
+      const el = E.elementOf(st.doc, target);
       if (el) {
         const html = el.outerHTML.replace(/\s+/g, ' ');
         text += `\nThe part the pin sits on (${describe(target)}):\n${html.length > 1500 ? html.slice(0, 1500) + '…' : html}`;
@@ -191,13 +204,14 @@
     };
     const currentPage = () => (st.state && st.state.pages || []).find((p) => p.path === st.page) || null;
     const boardOf = () => `mockup--${plain(st.branch) || 'integration'}--${st.view === 'components' ? 'micro-frontends' : st.page ? pageSlug(st.page) : 'home'}`;
-    const frameSrc = () => `/mock/${encodeURIComponent(slugOf(st.branch))}/${st.page}?v=${encodeURIComponent(st.stamp)}`;
+    const pageUrl = () => `/mock/${encodeURIComponent(slugOf(st.branch))}/${st.page}`;
+    const baseHref = () => `${location.origin}/mock/${encodeURIComponent(slugOf(st.branch))}/${st.page.replace(/[^/]*$/, '')}`;
     const previewSrc = (name) => `/mock/${encodeURIComponent(slugOf(st.branch))}/__preview/${encodeURIComponent(name)}?v=${encodeURIComponent(st.stamp)}`;
 
     // ---- the board: one per branch and page, one for the micro-frontends ------------
     function mountBoard() {
       if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
-      st.board = null; st.frame = null; st.doc = null; st.shield = null; st.fitted = false; st.proxies = new WeakMap(); st.cards = [];
+      st.board = null; st.frame = null; st.doc = null; st.shield = null; st.fitted = false; st.proxies = new WeakMap(); st.cards = []; st.sel = ''; st.hover = null;
       const onSession = opts && opts.onSession
         ? (note, ctx) => opts.onSession({ board: boardOf(), id: note.id, on: note.kind === 'link' ? 'page ' + (note.page || '?') : note.kind === 'design' ? 'micro-frontend ' + (note.component || '?') : describe(note.target), kind: note.kind, context: ctx, branch: st.branch, page: st.view === 'page' ? st.page : '' })
         : null;
@@ -208,41 +222,77 @@
         context,
         onSession,
         under,
-        kinds: st.view === 'page' ? ['note', 'brainstorm', 'asking', 'link', 'simulate', 'design'] : ['note', 'brainstorm', 'asking', 'design'],
+        kinds: st.view === 'page' ? ['note', 'brainstorm', 'request', 'link', 'design'] : ['note', 'brainstorm', 'request', 'design'],
         zones: st.view === 'page',
         pages: () => (st.state && st.state.pages) || [],
         capabilities,
         dataCapabilities,
+        apply: st.view === 'page' ? (note) => applyRequests([note]) : null,
         goto: (path) => { setView('page'); show(path); },
-        // A pin asked for from elsewhere (the office's pin board) is opened once its board is read.
-        onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; },
+        onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; drawPanel(); },
         bounds: () => (st.view === 'page'
-          ? { x: 0, y: 0, w: WIDTH, h: Math.max(MIN_HEIGHT, st.frame ? parseFloat(st.frame.style.height) || MIN_HEIGHT : MIN_HEIGHT) }
-          : { x: 0, y: 0, w: Math.max(WIDTH, st.board ? parseFloat(st.board.content.style.width) || WIDTH : WIDTH), h: Math.max(MIN_HEIGHT, st.board ? parseFloat(st.board.content.style.height) || MIN_HEIGHT : MIN_HEIGHT) }),
+          ? { x: 0, y: 0, w: st.width, h: Math.max(MIN_HEIGHT, st.frame ? parseFloat(st.frame.style.height) || MIN_HEIGHT : MIN_HEIGHT) }
+          : { x: 0, y: 0, w: Math.max(DEFAULT_WIDTH, st.board ? parseFloat(st.board.content.style.width) || DEFAULT_WIDTH : DEFAULT_WIDTH), h: Math.max(MIN_HEIGHT, st.board ? parseFloat(st.board.content.style.height) || MIN_HEIGHT : MIN_HEIGHT) }),
       });
       if (st.view === 'components') { mountCards(); return; }
       const page = currentPage();
       if (!page) {
         st.board.content.innerHTML = `<div class="mk-empty" data-pin="page:none"><h2>${st.state && st.state.present ? 'No page chosen' : 'No page yet'}</h2>`
           + `<p>${st.state && st.state.pages && st.state.pages.length ? 'Pick a page above.' : 'The mock-up starts with its first page: <b>+ page</b> above, or drop a pin here and make it a <b>link</b> to a new page — an AI session draws it from the objective you write.'}</p></div>`;
-        st.board.setSize(WIDTH, MIN_HEIGHT);
+        st.board.setSize(DEFAULT_WIDTH, MIN_HEIGHT);
         st.board.fit();
         return;
       }
-      st.board.content.innerHTML = `<iframe class="mk-frame" title="${esc(page.title)}" src="${esc(frameSrc())}" style="width:${WIDTH}px;height:${MIN_HEIGHT}px"></iframe><div class="mk-shield"${st.interact ? ' hidden' : ''}></div>`;
+      st.board.content.innerHTML = `<iframe class="mk-frame" title="${esc(page.title)}" style="width:${st.width}px;height:${MIN_HEIGHT}px"></iframe><div class="mk-shield"${st.interact ? ' hidden' : ''}></div><div class="mk-handles" hidden></div><div class="mk-vp-handle" title="drag to change the width"></div>`;
       st.frame = q('.mk-frame');
       st.shield = q('.mk-shield');
-      st.board.setSize(WIDTH, MIN_HEIGHT);
+      st.board.setSize(st.width, MIN_HEIGHT);
       st.frame.addEventListener('load', onFrameLoad);
+      loadPage();
+    }
+    // The page's source and its draft: fetched, then shown as the draft says.
+    async function loadPage() {
+      const page = currentPage();
+      if (!page) return;
+      const board = boardOf();
+      try {
+        const [source, history] = await Promise.all([
+          fetch(pageUrl() + '?v=' + encodeURIComponent(st.stamp)).then((r) => (r.ok ? r.text() : '')),
+          fetch(`/api/drafts/${encodeURIComponent(board)}/open`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base: page.hash || '' }) }).then((r) => (r.ok ? r.json() : null)),
+        ]);
+        if (st.gone || boardOf() !== board) return;
+        st.source = source;
+        st.history = history;
+        const current = history && history.current;
+        st.engine = E.engine({ source, ops: current ? current.ops : [] });
+        const widths = kept(WIDTHS, {}) || {};
+        st.width = (current && current.viewport) || widths[board] || DEFAULT_WIDTH;
+        st.viewing = null;
+        drawEditBar();
+        render();
+      } catch (e) {
+        say('the page could not be read');
+      }
+    }
+    // The page as the draft shows it, into the iframe.
+    function render() {
+      if (!st.frame || !st.engine) return;
+      const html = st.viewing ? E.engine({ source: st.source, ops: st.viewing.ops }).html(baseHref()) : st.engine.html(baseHref());
+      st.frame.style.width = st.width + 'px';
+      st.frame.srcdoc = html;
+      st.board.setSize(st.width, parseFloat(st.frame.style.height) || MIN_HEIGHT);
+      drawEditBar();
+      drawFrozen();
     }
     function onFrameLoad() {
       if (!st.frame) return;
       let doc = null;
       try { doc = st.frame.contentDocument; } catch (e) { doc = null; }
       st.doc = doc;
+      st.proxies = new WeakMap();
       if (!doc) return;
       // The page navigated itself (interact mode): follow it.
-      const path = (() => { try { return decodeURIComponent(st.frame.contentWindow.location.pathname); } catch (e) { return ''; } })();
+      const path = (() => { try { const u = st.frame.contentWindow.location; return u.protocol === 'about:' ? '' : decodeURIComponent(u.pathname); } catch (e) { return ''; } })();
       const prefix = `/mock/${slugOf(st.branch)}/`;
       if (path.startsWith(prefix) && path.slice(prefix.length) !== st.page) {
         const to = path.slice(prefix.length);
@@ -250,22 +300,29 @@
       }
       injectStyle(doc);
       outline();
+      markSelection();
       measure();
       if (!st.fitted) { st.fitted = true; st.board.fit(); }
       st.board.refresh();
+      drawHandles();
     }
-    // What the view adds to a page's document: the drop target's outline,
-    // and the micro-frontends' outlines and labels when switched on.
     function injectStyle(doc) {
       if (doc.getElementById('hb-style')) return;
       const style = doc.createElement('style');
       style.id = 'hb-style';
       style.textContent = '.hb-target{outline:2px dashed #e2b240 !important;outline-offset:2px}'
         + '.mf-on[data-component]{outline:2px solid var(--mf,#4ea3f0) !important;outline-offset:4px;position:relative}'
-        + '.mf-on[data-component]::before{content:attr(data-component);position:absolute;left:-2px;top:-22px;background:var(--mf,#4ea3f0);color:#101418;font:600 11px/1 ui-monospace,monospace;padding:4px 7px;border-radius:4px 4px 0 0;letter-spacing:.03em;z-index:2147483000}';
+        + '.mf-on[data-component]::before{content:attr(data-component);position:absolute;left:-2px;top:-22px;background:var(--mf,#4ea3f0);color:#101418;font:600 11px/1 ui-monospace,monospace;padding:4px 7px;border-radius:4px 4px 0 0;letter-spacing:.03em;z-index:2147483000}'
+        + '.mk-hover{outline:1px dashed #2bc0c8 !important;outline-offset:1px}'
+        + '.mk-sel{outline:2px solid #2bc0c8 !important;outline-offset:2px}'
+        + '.mk-drop-before{box-shadow:-4px 0 0 0 #2bc0c8,0 -4px 0 0 #2bc0c8 !important}'
+        + '.mk-drop-after{box-shadow:4px 0 0 0 #2bc0c8,0 4px 0 0 #2bc0c8 !important}'
+        + '.mk-drop-into{outline:2px dotted #2bc0c8 !important;outline-offset:-2px;background:rgba(43,192,200,.08)}'
+        + '.mk-dragging{opacity:.4}'
+        + '[data-layout="static"]{outline:1px dashed rgba(43,192,200,.5)}'
+        + '.mk-added{outline:1px dotted #2bc0c8}';
       (doc.head || doc.documentElement).appendChild(style);
     }
-    // Every micro-frontend of the page outlined in its colour, or not.
     function outline() {
       if (!st.doc) return;
       const list = components();
@@ -275,29 +332,552 @@
         if (st.mf) el.style.setProperty('--mf', c ? c.colour : '#4ea3f0'); else el.style.removeProperty('--mf');
       });
     }
-    // The page is as tall as its content: the whole page is on the board.
     function measure() {
       if (st.view === 'components') { measureCards(); return; }
       if (!st.doc || !st.frame) return;
       const h = Math.max(MIN_HEIGHT, st.doc.documentElement.scrollHeight, st.doc.body ? st.doc.body.scrollHeight : 0);
       if (Math.abs(h - (parseFloat(st.frame.style.height) || 0)) > 2) {
         st.frame.style.height = h + 'px';
-        st.board.setSize(WIDTH, h);
+        st.board.setSize(st.width, h);
+        drawHandles();
       }
     }
     function reloadFrame() {
       if (st.view === 'components') { st.cards.forEach((c) => { c.frame.src = previewSrc(c.name); }); return; }
       if (!st.frame) { mountBoard(); return; }
-      st.frame.src = frameSrc();
+      loadPage();
+    }
+
+    // ---- edit mode: selection, gestures, operations -------------------------------------
+    const editing = () => st.edit && st.view === 'page' && st.engine && !st.viewing;
+    function markSelection() {
+      if (!st.doc) return;
+      st.doc.querySelectorAll('.mk-sel').forEach((el) => el.classList.remove('mk-sel'));
+      const el = st.sel ? E.elementOf(st.doc, st.sel) : null;
+      if (el) el.classList.add('mk-sel');
+    }
+    function select(target) {
+      st.sel = target || '';
+      markSelection();
+      drawHandles();
+      drawPanel();
+    }
+    // The handles beside the selection: the right edge resizes the width.
+    function drawHandles() {
+      const handles = q('.mk-handles');
+      if (!handles) return;
+      const el = editing() && st.sel ? E.elementOf(st.doc, st.sel) : null;
+      if (!el || el.tagName === 'TH' || el.tagName === 'TD') { handles.hidden = true; return; }
+      const fr = st.frame.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const k = st.board.zoom();
+      // In board units: the iframe sits at the content's origin.
+      handles.hidden = false;
+      handles.style.left = r.left + 'px'; handles.style.top = r.top + 'px';
+      handles.style.width = r.width + 'px'; handles.style.height = r.height + 'px';
+      handles.innerHTML = '<div class="mk-h mk-h-e" data-handle="e" title="drag: width in twelfths of the row"></div>' + (staticParent(el) ? '<div class="mk-h mk-h-s" data-handle="s" title="drag: height"></div><div class="mk-h mk-h-se" data-handle="se"></div>' : '');
+      void fr; void k;
+    }
+    const staticParent = (el) => (el && el.parentElement && el.parentElement.dataset && el.parentElement.dataset.layout === 'static' ? el.parentElement : null);
+    // The micro-frontend an element belongs to, when it is one the page must
+    // fork before editing inside: a real or hand-written fragment not inlined.
+    function forkNeeded(el) {
+      const root = el && el.closest ? el.closest('[data-component]') : null;
+      if (!root || root === el || root.dataset.inline) return null;
+      return root;
+    }
+    // Forks a micro-frontend into a copy of the page's own, and answers the
+    // target as it reads after the fork.
+    function fork(root, target) {
+      const from = root.dataset.component;
+      const page = currentPage();
+      const as = (from + (page ? page.title.replace(/[^A-Za-z0-9]+/g, '') : 'Copy')).replace(/^[a-z]/, (c) => c.toUpperCase());
+      const copy = root.cloneNode(true);
+      copy.querySelectorAll('script').forEach((s) => s.remove());
+      copy.querySelectorAll('.mk-sel, .mk-hover, .mk-drop-before, .mk-drop-after, .mk-drop-into').forEach((x) => x.classList.remove('mk-sel', 'mk-hover', 'mk-drop-before', 'mk-drop-after', 'mk-drop-into'));
+      const op = { kind: 'fork', by: 'human', target: 'component:' + from, as, from, html: copy.innerHTML };
+      const r = st.engine.push(op);
+      if (!r.ok) { say('the fork failed'); return target; }
+      toast(`fork <b>${esc(from)}</b> to <b>${esc(as)}</b> — click to rename`, () => renameFork(as));
+      return target.replace(new RegExp('^component:' + from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'component:' + as);
+    }
+    function renameFork(as) {
+      const name = window.prompt ? null : null; // no dialog: the panel asks
+      void name;
+      const panel = q('.mk-panel');
+      panel.hidden = false;
+      panel.innerHTML = `<div class="mk-panel-head"><b>rename the fork</b></div><input class="mk-fork-name" value="${esc(as)}" maxlength="80"><button type="button" class="mini on" data-ed="rename-fork" data-from="${esc(as)}">rename</button>`;
+      panel.querySelector('input').focus();
+    }
+    function toast(html, onClick) {
+      const t = q('.mk-toast');
+      t.innerHTML = html;
+      t.hidden = false;
+      t.onclick = () => { t.hidden = true; if (onClick) onClick(); };
+      clearTimeout(st.toastTimer);
+      st.toastTimer = setTimeout(() => { t.hidden = true; }, 7000);
+    }
+    // One step of the draft: applied, shown, kept.
+    function step(ops) {
+      const r = st.engine.push(ops);
+      if (!r.ok) { say(`not applied: ${r.failed} operation(s) found no target`); return false; }
+      afterChange();
+      return true;
+    }
+    function afterChange() {
+      render();
+      persist();
+      drawPanel();
+      drawStrip();
+    }
+    function persist() {
+      clearTimeout(st.saveTimer);
+      const board = boardOf();
+      st.saveTimer = setTimeout(async () => {
+        if (!st.engine || boardOf() !== board) return;
+        try {
+          const res = await fetch(`/api/drafts/${encodeURIComponent(board)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) });
+          if (!res.ok) throw new Error(await res.text());
+          const current = await res.json();
+          if (st.history) st.history.current = current;
+          drawEditBar();
+        } catch (e) { say(`draft not kept: ${esc(e.message || e)}`); }
+      }, SAVE_DELAY);
+    }
+    // A target as an operation names it, forking first when it lies inside a micro-frontend.
+    function opTarget(el) {
+      const target = E.targetOf(el);
+      if (st.mf) return target;
+      const root = forkNeeded(el);
+      return root ? fork(root, target) : target;
+    }
+    // Where a dragged part lands beside the part under the pointer.
+    function placement(target, clientX, clientY) {
+      const r = target.getBoundingClientRect();
+      const k = st.board.zoom();
+      const fr = st.frame.getBoundingClientRect();
+      const x = (clientX - fr.left) / k; const y = (clientY - fr.top) / k;
+      const style = st.doc.defaultView.getComputedStyle(target.parentElement || target);
+      const horizontal = /flex|grid/.test(style.display) ? !/column/.test(style.flexDirection || '') && style.display !== 'grid' : /^inline/.test(st.doc.defaultView.getComputedStyle(target).display);
+      if (!target.children.length && /^(DIV|SECTION|MAIN|ARTICLE|NAV|HEADER|FOOTER|UL|OL|FORM)$/.test(target.tagName)) return 'into';
+      return horizontal ? (x < r.left + r.width / 2 ? 'before' : 'after') : (y < r.top + r.height / 2 ? 'before' : 'after');
+    }
+    const clearDrop = () => { if (st.doc) st.doc.querySelectorAll('.mk-drop-before, .mk-drop-after, .mk-drop-into, .mk-dragging, .mk-hover').forEach((x) => x.classList.remove('mk-drop-before', 'mk-drop-after', 'mk-drop-into', 'mk-dragging', 'mk-hover')); };
+    const grabSelector = () => (st.mf ? '[data-component]' : EDITABLE);
+    const onEditDown = (e) => {
+      if (!editing() || e.button !== 0 || st.space) return;
+      if (!e.target.classList.contains('mk-shield') && !e.target.closest('.mk-handles')) return;
+      const handle = e.target.closest('[data-handle]');
+      if (handle) {
+        const el = E.elementOf(st.doc, st.sel);
+        if (!el) return;
+        e.stopPropagation(); e.preventDefault();
+        const r = el.getBoundingClientRect();
+        const row = (el.parentElement || el).getBoundingClientRect();
+        st.resize = { el, handle: handle.dataset.handle, startX: e.clientX, startY: e.clientY, w0: r.width, h0: r.height, row: row.width || st.width, pointer: e.pointerId };
+        q('.mk-board').setPointerCapture(e.pointerId);
+        return;
+      }
+      const el = elementAt(e.clientX, e.clientY, grabSelector());
+      e.stopPropagation();
+      if (!el) { select(''); return; }
+      st.drag = { el, startX: e.clientX, startY: e.clientY, moved: false, over: null, where: '', pointer: e.pointerId, column: el.tagName === 'TH' || el.tagName === 'TD' };
+      q('.mk-board').setPointerCapture(e.pointerId);
+    };
+    const onEditMove = (e) => {
+      if (st.resize) { e.stopPropagation(); moveResize(e); return; }
+      if (!st.drag) {
+        if (editing() && e.target.classList.contains('mk-shield')) {
+          const el = elementAt(e.clientX, e.clientY, grabSelector());
+          if (st.hover !== el) { if (st.hover) st.hover.classList.remove('mk-hover'); st.hover = el; if (el && !el.classList.contains('mk-sel')) el.classList.add('mk-hover'); }
+        }
+        return;
+      }
+      e.stopPropagation();
+      const d = st.drag;
+      if (!d.moved && Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < SLOP) return;
+      if (!d.moved) { d.moved = true; d.el.classList.add('mk-dragging'); host.classList.add('mk-moving'); }
+      const parentStatic = staticParent(d.el);
+      if (parentStatic) return; // a free part moves on drop
+      let over = elementAt(e.clientX, e.clientY, d.column ? 'th,td' : grabSelector());
+      if (over && (over === d.el || d.el.contains(over))) over = null;
+      if (d.column && over && over.closest('table') !== d.el.closest('table')) over = null;
+      const where = over ? (d.column ? ((e.clientX - screenRect(over).left) / Math.max(1, screenRect(over).width) < 0.5 ? 'before' : 'after') : placement(over, e.clientX, e.clientY)) : '';
+      if (d.over !== over || d.where !== where) {
+        clearDrop();
+        d.el.classList.add('mk-dragging');
+        if (over) over.classList.add('mk-drop-' + where);
+        d.over = over; d.where = where;
+      }
+    };
+    const onEditUp = (e) => {
+      if (st.resize) { e.stopPropagation(); endResize(e); return; }
+      if (!st.drag) return;
+      e.stopPropagation();
+      const d = st.drag;
+      st.drag = null;
+      host.classList.remove('mk-moving');
+      clearDrop();
+      if (!d.moved) { select(E.targetOf(d.el)); return; }
+      const parentStatic = staticParent(d.el);
+      if (parentStatic) {
+        // Free layout: the part moves by the drag, snapped to the grid.
+        const k = st.board.zoom();
+        const dx = (e.clientX - d.startX) / k; const dy = (e.clientY - d.startY) / k;
+        const items = E.staticItems(parentStatic);
+        const mine = items.find((i) => i.target === E.targetOf(d.el));
+        if (mine) {
+          const pr = parentStatic.getBoundingClientRect();
+          mine.x = Math.max(0, Math.round((mine.x + dx / pr.width * 100) / (100 / E.COLS)) * (100 / E.COLS));
+          mine.y = Math.max(0, Math.round((mine.y + dy / pr.height * 100) * 2) / 2);
+        }
+        step({ kind: 'static', by: 'human', target: opTarget(parentStatic), layout: 'static', height: Math.round(parentStatic.getBoundingClientRect().height), items });
+        return;
+      }
+      if (!d.over || !d.where) return;
+      if (d.column) {
+        const table = d.el.closest('table');
+        const row = d.el.parentElement;
+        const from = Array.prototype.indexOf.call(row.children, d.el);
+        const overIndex = Array.prototype.indexOf.call(d.over.parentElement.children, d.over);
+        let to = d.where === 'before' ? overIndex : overIndex + 1;
+        if (from < to) to -= 1;
+        if (to === from) return;
+        step({ kind: 'move', by: 'human', target: `col:${opTarget(table)}#${from}`, to });
+        return;
+      }
+      const target = opTarget(d.el);
+      const dest = opTarget(d.over);
+      const op = { kind: 'move', by: 'human', target };
+      op[d.where] = dest;
+      st.sel = target;
+      step(op);
+    };
+    function moveResize(e) {
+      const r = st.resize;
+      const k = st.board.zoom();
+      if (r.handle === 'e' || r.handle === 'se') {
+        const w = Math.max(20, r.w0 + (e.clientX - r.startX) / k);
+        r.el.style.width = w + 'px'; r.el.style.boxSizing = 'border-box';
+      }
+      if (r.handle === 's' || r.handle === 'se') {
+        const h = Math.max(10, r.h0 + (e.clientY - r.startY) / k);
+        r.el.style.height = h + 'px';
+      }
+      drawHandles();
+    }
+    function endResize(e) {
+      const r = st.resize;
+      st.resize = null;
+      const k = st.board.zoom();
+      const parentStatic = staticParent(r.el);
+      if (parentStatic) {
+        const items = E.staticItems(parentStatic);
+        step({ kind: 'static', by: 'human', target: opTarget(parentStatic), layout: 'static', height: Math.round(parentStatic.getBoundingClientRect().height), items });
+        return;
+      }
+      const w = Math.max(20, r.w0 + (e.clientX - r.startX) / k);
+      const cols = Math.max(1, Math.min(E.COLS, Math.round(w / (r.row / E.COLS))));
+      step({ kind: 'resize', by: 'human', target: opTarget(r.el), cols });
+    }
+    // Keys: undo and redo in edit mode, space to pan.
+    const onKey = (e) => {
+      if (e.target.closest('.mk-form') || e.target.classList.contains('mk-name') || e.target.closest('.mk-panel') || e.target.closest('.mk-history') || e.target.closest('.mk-editbar')) {
+        e.stopPropagation();
+        if (e.key === 'Enter' && e.target.classList.contains('mk-name')) save();
+        if (e.key === 'Escape' && e.target.closest('.mk-form')) drawForm(false);
+        return;
+      }
+      if (!editing() || !host.isConnected) return;
+      if (e.key === ' ' && e.type === 'keydown') { st.space = true; host.classList.add('mk-space'); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault(); e.stopPropagation();
+        if (e.shiftKey ? st.engine.redo() : st.engine.undo()) afterChange();
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && st.sel && !e.target.matches('input,textarea')) { e.preventDefault(); e.stopPropagation(); removeSelected(); }
+    };
+    const onKeyUp = (e) => { if (e.key === ' ') { st.space = false; host.classList.remove('mk-space'); } };
+    function removeSelected() {
+      const el = E.elementOf(st.doc, st.sel);
+      if (!el) return;
+      const target = opTarget(el);
+      if (step({ kind: 'remove', by: 'human', target })) select('');
+    }
+    function addPart(what) {
+      const id = newId(what === 'link' ? 'l' : 'b');
+      const sel = st.sel ? E.elementOf(st.doc, st.sel) : null;
+      const op = { kind: 'add', by: 'human', what, label: what === 'link' ? 'new link' : 'new button', as: id };
+      if (sel) op.after = opTarget(sel); else op.into = st.doc.querySelector('main') ? E.targetOf(st.doc.querySelector('main')) : 'path:';
+      if (!op.into && !op.after) return;
+      if (op.into === 'path:') op.into = E.targetOf(st.doc.body.firstElementChild || st.doc.body);
+      if (step(op)) select('data:' + id);
+    }
+
+    // ---- the selection panel: what the part is, what to do with it --------------------
+    function drawPanel() {
+      const panel = q('.mk-panel');
+      const strip = q('.mk-strip');
+      if (!editing() || !st.sel || !st.doc) { panel.hidden = true; strip.hidden = st.view !== 'page' || !st.state; return; }
+      const el = E.elementOf(st.doc, st.sel);
+      if (!el) { panel.hidden = true; return; }
+      strip.hidden = true;
+      panel.hidden = false;
+      const requests = (st.board ? st.board.all() : []).filter((n) => (n.kind === 'request' || n.kind === 'asking' || n.kind === 'simulate') && n.target === st.sel);
+      const r = el.getBoundingClientRect();
+      const row = (el.parentElement || el).getBoundingClientRect();
+      const cols = row.width ? Math.max(1, Math.min(E.COLS, Math.round(r.width / (row.width / E.COLS)))) : E.COLS;
+      const container = /^(DIV|SECTION|MAIN|ARTICLE|NAV|HEADER|FOOTER|FORM|UL|OL)$/.test(el.tagName) && el.children.length > 0;
+      const text = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) || !el.children.length;
+      const comp = el.closest('[data-component]');
+      panel.innerHTML = `<div class="mk-panel-head"><b>${esc(describe(st.sel))}</b><small>${esc(el.tagName.toLowerCase())}${comp && comp !== el ? ' · in ' + esc(comp.dataset.component) + (comp.dataset.inline ? ' (this page’s copy)' : ' — editing forks it') : ''}</small></div>`
+        + `<div class="mk-panel-row"><span>size</span><span class="mono">${Math.round(r.width)}×${Math.round(r.height)} · ${cols}/12</span></div>`
+        + (text ? `<label class="mk-panel-field">text<input class="mk-text" value="${esc(el.children.length ? ([...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim()) || {}).textContent || '' : el.textContent)}" maxlength="500"></label>` : '')
+        + (el.tagName === 'A' ? `<label class="mk-panel-field">goes to<select class="mk-link-page"><option value="">a URL…</option>${((st.state && st.state.pages) || []).map((p) => `<option value="${esc(p.path)}"${el.getAttribute('href') === '../' + p.path ? ' selected' : ''}>${esc(p.title)}</option>`).join('')}</select><input class="mk-link-href" value="${esc(el.getAttribute('href') || '')}" placeholder="https://…"></label>` : '')
+        + (el.tagName === 'BUTTON' ? `<label class="mk-panel-field">intent<textarea class="mk-intent" rows="2" placeholder="what this button is for — written for the next roadmap">${esc(el.dataset.intent || '')}</textarea></label>` : '')
+        + '<div class="mk-panel-actions">'
+        + '<button type="button" class="mini" data-ed="clone">clone</button>'
+        + '<button type="button" class="mini" data-ed="remove">remove</button>'
+        + (container ? `<button type="button" class="mini" data-ed="static">${el.dataset.layout === 'static' ? 'back to flow' : 'static layout'}</button>` : '')
+        + '</div>'
+        + `<div class="mk-panel-requests"><b>requests</b> <button type="button" class="mini" data-ed="request">+ request</button>`
+        + (requests.length ? '<ul>' + requests.map((n) => `<li data-open-note="${esc(n.id)}"><i class="pin-dot request state-${esc(n.state || 'pending')}"></i>${esc((n.text || '').split('\n')[0] || '(empty)')}<small>${esc(n.state || 'pending')}</small></li>`).join('') + '</ul>' : '<div class="muted">none on this part</div>')
+        + '</div>';
+    }
+    const onPanelInput = (e) => {
+      const el = E.elementOf(st.doc, st.sel);
+      if (!el) return;
+      if (e.target.classList.contains('mk-text') && e.type === 'change') step({ kind: 'text', by: 'human', target: opTarget(el), text: e.target.value });
+      if (e.target.classList.contains('mk-link-page') && e.type === 'change') step({ kind: 'text', by: 'human', target: opTarget(el), text: el.textContent, href: e.target.value ? '../' + e.target.value : '' }) && setHref(el, e.target.value ? '../' + e.target.value : '');
+      if (e.target.classList.contains('mk-link-href') && e.type === 'change') setHref(el, e.target.value);
+      if (e.target.classList.contains('mk-intent') && e.type === 'change') step({ kind: 'add', by: 'human', what: 'button', label: el.textContent, intent: e.target.value, as: el.dataset.id || newId('b'), after: opTarget(el) }) && step({ kind: 'remove', by: 'human', target: opTarget(el) });
+      if (e.target.classList.contains('mk-fork-name') && e.key === 'Enter') renameForkTo(e.target.dataset.from, e.target.value);
+    };
+    function setHref(el, href) {
+      // A link's destination: the part is added again with it, the old one removed — one step.
+      const id = el.dataset.id || newId('l');
+      step([{ kind: 'add', by: 'human', what: 'link', label: el.textContent, href, as: id, after: opTarget(el) }, { kind: 'remove', by: 'human', target: opTarget(el) }]);
+      select('data:' + id);
+    }
+    function renameForkTo(from, to) {
+      if (!/^[A-Z][A-Za-z0-9]*$/.test(to) || to === from) return;
+      st.engine.ops.forEach((op) => {
+        if (op.kind === 'fork' && op.as === from) op.as = to;
+        ['target', 'before', 'after', 'into'].forEach((k) => { if (typeof op[k] === 'string') op[k] = op[k].replace('component:' + from, 'component:' + to); });
+      });
+      afterChange();
+      q('.mk-panel').hidden = true;
+    }
+    function toggleStatic() {
+      const el = E.elementOf(st.doc, st.sel);
+      if (!el) return;
+      if (el.dataset.layout === 'static') { step({ kind: 'static', by: 'human', target: opTarget(el), layout: 'flow' }); return; }
+      step({ kind: 'static', by: 'human', target: opTarget(el), layout: 'static', height: Math.round(el.getBoundingClientRect().height), items: E.staticItems(el) });
+    }
+    function cloneSelected() {
+      const el = E.elementOf(st.doc, st.sel);
+      if (!el) return;
+      const id = newId('c');
+      if (step({ kind: 'clone', by: 'human', target: opTarget(el), as: id })) select('data:' + id);
+    }
+    function newRequest() {
+      if (!st.board) return;
+      const el = E.elementOf(st.doc, st.sel);
+      const id = st.board.newNote({ kind: 'request', target: st.sel, text: '' });
+      void el; void id;
+    }
+
+    // ---- requests applied to the draft, in one go ----------------------------------------
+    async function applyRequests(notes) {
+      if (!st.engine || !st.frame) return;
+      const asked = notes.filter((n) => (n.text || '').trim()).map((n) => ({ id: n.id, text: n.text, target: n.target || '' }));
+      if (!asked.length) { say('nothing to apply: write the intention first'); return; }
+      const board = boardOf();
+      const action = window.HarnessActions && window.HarnessActions.start({ key: `apply:${board}`, label: `apply ${asked.length} request(s) to the draft of ${st.page}`, button: q('[data-ed="apply-all"]') });
+      say(`<span class="spin"></span> the AI applies ${asked.length} request(s)…`);
+      try {
+        const summary = components().map((c) => `- ${c.name} (${c.system || '?'}): ${c.description || ''}${c.needs.length ? ' · needs ' + c.needs.join(', ') : ''}${c.actions.length ? ' · triggers ' + c.actions.join(', ') : ''}`).join('\n');
+        const res = await fetch(`/api/notes/${encodeURIComponent(board)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page: st.page, html: st.engine.materialized(), components: summary, requests: asked }) });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text);
+        const got = JSON.parse(text);
+        const ops = (got.ops || []).filter((o) => !o.skip);
+        const skipped = (got.ops || []).filter((o) => o.skip);
+        // A request applied again: its former operations go, the new ones come.
+        const ids = new Set(asked.map((a) => a.id));
+        st.engine.setOps(st.engine.ops.filter((o) => !ids.has(o.by)));
+        if (ops.length && !st.engine.push(ops).ok) throw new Error('the operations found no target on the page');
+        afterChange();
+        asked.forEach((a) => { if (!skipped.some((s) => s.by === a.id)) st.board.patch(a.id, { state: 'simulated' }); });
+        skipped.forEach((s) => say(`request ${s.by}: ${esc(s.skip)}`));
+        if (action) action.ok(`${ops.length} operation(s)${skipped.length ? `, ${skipped.length} left to the human` : ''}`);
+        drawBar();
+      } catch (e) {
+        if (action) action.fail(e.message || e);
+        say(`not applied: ${esc(String(e.message || e).split('\n')[0])}`);
+      }
+    }
+    const applyAll = () => applyRequests((st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && (n.state || 'pending') !== 'simulated'));
+
+    // ---- the draft's versions ---------------------------------------------------------------
+    async function draftCall(path, body) {
+      const board = boardOf();
+      try {
+        const res = await fetch(`/api/drafts/${encodeURIComponent(board)}/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+        if (!res.ok) throw new Error(await res.text());
+        st.history = await res.json();
+        if (boardOf() !== board) return;
+        const current = st.history.current;
+        if (current) { st.engine.setOps(current.ops); if (current.viewport) st.width = current.viewport; }
+        st.viewing = null;
+        render();
+        drawHistory();
+      } catch (e) { say(`draft: ${esc(e.message || e)}`); }
+    }
+    async function keepVersion() {
+      clearTimeout(st.saveTimer);
+      await fetch(`/api/drafts/${encodeURIComponent(boardOf())}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) }).catch(() => {});
+      await draftCall('keep');
+      await draftCall('open', { base: (currentPage() || {}).hash || '' });
+    }
+    async function validateVersion() {
+      clearTimeout(st.saveTimer);
+      await fetch(`/api/drafts/${encodeURIComponent(boardOf())}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) }).catch(() => {});
+      await materialize();
+      await draftCall('validate');
+      await draftCall('open', { base: (currentPage() || {}).hash || '' });
+    }
+    function drawHistory() {
+      const panel = q('.mk-history');
+      if (panel.hidden || !st.history) return;
+      const when = (at) => (at ? window.HarnessClock.stamp(at).slice(0, 16) : '');
+      const row = (d, current) => `<li class="mk-version ${current ? 'current' : ''} ${d.state}" data-version="${d.version}">`
+        + `<b>v${d.version}${d.name ? ' · ' + esc(d.name) : ''}</b><small>${esc(d.state)}${current ? ' · now' : ''} · ${d.ops.length} op${d.ops.length === 1 ? '' : 's'} · ${esc(when(d.closed_at || d.created_at))}</small>`
+        + (current ? `<input class="mk-version-name" value="${esc(d.name)}" placeholder="a name for this version" maxlength="80">` : `<div class="mk-version-actions"><button type="button" class="mini" data-ed="view" data-version="${d.version}">${st.viewing && st.viewing.version === d.version ? 'back to now' : 'view'}</button><button type="button" class="mini" data-ed="restore" data-version="${d.version}">restore as latest</button><button type="button" class="mini" data-ed="${d.state === 'validated' ? 'unvalidate' : 'validate-kept'}" data-version="${d.version}">${d.state === 'validated' ? 'unvalidate' : 'validate'}</button></div>`)
+        + '</li>';
+      panel.innerHTML = '<div class="mk-panel-head"><b>versions</b><button type="button" class="mini" data-ed="history" aria-label="close">×</button></div><ul>'
+        + (st.history.current ? row(st.history.current, true) : '<li class="muted">no open version</li>')
+        + st.history.kept.map((d) => row(d, false)).join('')
+        + '</ul><div class="muted">the last 3 kept versions stay beside the open one; validated ones always</div>';
+    }
+    function viewVersion(version) {
+      if (st.viewing && st.viewing.version === version) { st.viewing = null; render(); drawHistory(); return; }
+      const d = (st.history.kept || []).find((x) => x.version === version);
+      if (!d) return;
+      st.viewing = d;
+      select('');
+      render();
+      drawHistory();
+    }
+    function drawFrozen() {
+      const bar = q('.mk-frozen');
+      const page = currentPage();
+      const current = st.history && st.history.current;
+      const frozen = current && current.base && page && page.hash && current.base !== page.hash;
+      bar.hidden = !frozen;
+      if (!frozen) return;
+      const failed = st.engine ? st.engine.failed.length : 0;
+      bar.innerHTML = `<span>⚠ this draft was made on an earlier version of the page${failed ? ` — ${failed} of its operations find no part any more` : ' — its operations still find their parts'}.</span>`
+        + '<button type="button" class="mini" data-ed="unfreeze">keep it on the page as it is</button>'
+        + '<button type="button" class="mini" data-ed="reset">restart from the page as it is</button>';
+    }
+    async function resetDraft() {
+      await draftCall('reset', { base: (currentPage() || {}).hash || '' });
+      (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && n.state && n.state !== 'pending').forEach((n) => st.board.patch(n.id, { state: 'pending' }));
+    }
+    function drawEditBar() {
+      const bar = q('.mk-editbar');
+      bar.hidden = !(st.edit && st.view === 'page' && st.engine);
+      q('[data-mk="edit"]').classList.toggle('on', st.edit);
+      q('[data-mk="edit"]').setAttribute('aria-pressed', st.edit);
+      host.classList.toggle('mk-editing', editing());
+      const slot = bar.hidden ? q('.dm-bar') : bar;
+      if (q('.mk-name').parentElement !== slot) ['.mk-name', '[data-mk="save"]', '[data-mk="discard"]'].forEach((sel) => slot.appendChild(q(sel)));
+      if (bar.hidden) return;
+      bar.querySelector('[data-ed="undo"]').disabled = !st.engine.canUndo() || !!st.viewing;
+      bar.querySelector('[data-ed="redo"]').disabled = !st.engine.canRedo() || !!st.viewing;
+      const presets = bar.querySelector('.mk-presets');
+      presets.value = PRESETS.some(([, w]) => w === st.width) ? String(st.width) : '0';
+      bar.querySelector('.mk-width').value = st.width;
+      const current = st.history && st.history.current;
+      const pending = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && (n.state || 'pending') !== 'simulated').length;
+      bar.querySelector('[data-ed="apply-all"]').textContent = `simulate requests${pending ? ` (${pending})` : ''}`;
+      bar.querySelector('.mk-width').hidden = presets.value !== '0';
+      bar.querySelector('[data-ed="apply-all"]').disabled = !pending || !!st.viewing;
+      bar.querySelector('.mk-draft-state').innerHTML = st.viewing
+        ? `<span class="dm-src">viewing v${st.viewing.version} · read only</span>`
+        : current ? `<span class="dm-src ${current.ops.length ? 'ok' : ''}">v${current.version} · ${st.engine.ops.length} op${st.engine.ops.length === 1 ? '' : 's'}${st.engine.failed.length ? ` · ${st.engine.failed.length} lost` : ''}</span>` : '<span class="dm-src bad">no version</span>';
+    }
+    function setEdit(on) {
+      st.edit = on;
+      if (!on) { select(''); clearDrop(); }
+      drawEditBar();
+      drawPanel();
+      drawHandles();
+    }
+    function setWidth(w) {
+      st.width = Math.max(320, Math.min(3000, Math.round(w)));
+      const widths = kept(WIDTHS, {}) || {};
+      widths[boardOf()] = st.width;
+      keep(WIDTHS, widths);
+      st.fitted = false;
+      render();
+      persist();
+    }
+    // The viewport handle: the page's right edge, dragged.
+    const onViewportDown = (e) => {
+      if (!e.target.classList.contains('mk-vp-handle') || e.button !== 0) return;
+      e.stopPropagation(); e.preventDefault();
+      st.vp = { startX: e.clientX, w0: st.width };
+      q('.mk-board').setPointerCapture(e.pointerId);
+    };
+    const onViewportMove = (e) => {
+      if (!st.vp) return;
+      e.stopPropagation();
+      const w = Math.max(320, Math.round((st.vp.w0 + (e.clientX - st.vp.startX) / st.board.zoom()) / 10) * 10);
+      st.frame.style.width = w + 'px';
+      q('.mk-width').value = w;
+    };
+    const onViewportUp = (e) => {
+      if (!st.vp) return;
+      e.stopPropagation();
+      const w = Math.max(320, Math.round((st.vp.w0 + (e.clientX - st.vp.startX) / st.board.zoom()) / 10) * 10);
+      st.vp = null;
+      setWidth(w);
+    };
+
+    // ---- saving: the page as the draft shows it, the draft's file, the forks -------------
+    async function materialize() {
+      if (!st.engine || !currentPage()) return;
+      const page = currentPage();
+      const slug = pageSlug(page.path);
+      const write = (path, text) => fetch('/api/mockup/write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, path, text }) }).then(async (r) => { if (!r.ok) throw new Error(await r.text()); });
+      const requests = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request').map((n) => ({ id: n.id, target: n.target, text: n.text, state: n.state || 'pending' }));
+      const forked = forks().map((f) => ({ from: f.from, as: f.as }));
+      const current = st.history && st.history.current;
+      await write(page.path, st.engine.materialized());
+      await write(`drafts/${slug}.json`, JSON.stringify({ page: page.path, version: current ? current.version : 0, name: current ? current.name : '', viewport: st.width, ops: st.engine.ops.map((o) => (o.kind === 'fork' ? Object.assign({}, o, { html: undefined }) : o)), forks: forked, requests }, null, 2) + '\n');
+      for (const f of forks()) await write(`components/${f.as}.html`, (f.html || '') + '\n');
+      if (forked.length) {
+        const manifest = await fetch(`/mock/${encodeURIComponent(slugOf(st.branch))}/pages.json?v=${Date.now()}`).then((r) => (r.ok ? r.json() : { version: 1, pages: [], components: [] }));
+        manifest.components = manifest.components || [];
+        forked.forEach((f) => {
+          if (manifest.components.some((c) => c.name === f.as)) return;
+          const origin = manifest.components.find((c) => c.name === f.from) || {};
+          manifest.components.push({ name: f.as, system: origin.system || 'page', description: `${f.from} as the page ${page.title} wants it`, fragment: `components/${f.as}.html`, needs: origin.needs || [], actions: origin.actions || [], props: origin.props || {}, variantOf: f.from });
+        });
+        const entry = (manifest.pages || []).find((p) => p.path === page.path);
+        if (entry) entry.components = [...new Set([...(entry.components || []).filter((n) => !forked.some((f) => f.from === n)), ...forked.map((f) => f.as)])];
+        await write('pages.json', JSON.stringify(manifest, null, 2) + '\n');
+      }
     }
 
     // ---- the micro-frontends view: one card per micro-frontend ------------------------
     function mountCards() {
       const list = components();
-      const per = Math.max(1, Math.floor((WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
+      const per = Math.max(1, Math.floor((DEFAULT_WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
       if (!list.length) {
         st.board.content.innerHTML = '<div class="mk-empty" data-pin="components:none"><h2>No micro-frontend yet</h2><p>A micro-frontend is a Micro-UI as the mock shows it: a fragment on a fixture shaped like what its Capabilities answer. <b>+ micro-frontend</b> above makes the first one from its spec.</p></div>';
-        st.board.setSize(WIDTH, MIN_HEIGHT);
+        st.board.setSize(DEFAULT_WIDTH, MIN_HEIGHT);
         st.board.fit();
         return;
       }
@@ -306,12 +886,13 @@
         const y = Math.floor(i / per) * (CARD_MIN + 70 + CARD_GAP);
         return `<div class="mk-card" data-pin="component:${esc(c.name)}" data-card="${esc(c.name)}" style="left:${x}px;top:${y}px;width:${CARD_W}px;--mf:${c.colour}">`
           + `<div class="mk-card-head"><b>${esc(c.name)}</b><span class="mk-card-sys">${esc(c.system || '')}</span>`
-          + `<span class="mk-card-tags">${c.mocked ? (c.source ? '<i class="ok" title="the real code, bundled on the mock server">real code</i>' : '<i class="ok">mocked</i>') : '<i class="bad">not mocked</i>'}${c.built ? '<i class="ok">built</i>' : '<i>to build</i>'}</span></div>`
+          + `<span class="mk-card-tags">${c.variantOf ? `<i title="forked from ${esc(c.variantOf)} by this page's draft">fork of ${esc(c.variantOf)}</i>` : ''}${c.mocked ? (c.source ? '<i class="ok" title="the real code, bundled on the mock server">real code</i>' : '<i class="ok">mocked</i>') : '<i class="bad">not mocked</i>'}${c.built ? '<i class="ok">built</i>' : '<i>to build</i>'}</span></div>`
           + `<div class="mk-card-desc">${esc(c.description || '')}</div>`
           + `<div class="mk-card-meta">${c.needs.length ? 'needs ' + c.needs.map(esc).join(', ') : 'needs nothing'}${c.actions.length ? ' · triggers ' + c.actions.map(esc).join(', ') : ''}${c.pages.length ? ' · on ' + c.pages.map(esc).join(', ') : ' · on no page'}${c.source ? ` · from ${esc(c.source)}` : ''}</div>`
-          + (c.mocked
+          + (c.mocked && !c.variantOf
             ? `<div class="mk-card-body"><iframe class="mk-preview" title="${esc(c.name)}" src="${esc(previewSrc(c.name))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>`
-            : `<div class="mk-card-body mk-card-none">no fragment yet${c.built ? ' — the Micro-UI exists under apps/, its mock does not' : ''}<br><button type="button" class="mini on" data-mock-card="${esc(c.name)}">mock it with an AI session</button></div>`)
+            : c.variantOf ? '<div class="mk-card-body mk-card-none">a copy made on a page: shown there, saved with the mock-up</div>'
+              : `<div class="mk-card-body mk-card-none">no fragment yet${c.built ? ' — the Micro-UI exists under apps/, its mock does not' : ''}<br><button type="button" class="mini on" data-mock-card="${esc(c.name)}">mock it with an AI session</button></div>`)
           + '</div>';
       }).join('');
       st.cards = [...st.board.content.querySelectorAll('.mk-card')].map((card) => ({ name: card.dataset.card, card, frame: card.querySelector('.mk-preview') }));
@@ -320,7 +901,6 @@
       st.board.fit();
       st.fitted = true;
     }
-    // Each preview as tall as its fragment; the cards re-laid in rows.
     function measureCards() {
       let changed = false;
       st.cards.forEach((c) => {
@@ -334,7 +914,7 @@
       if (changed) layoutCards();
     }
     function layoutCards() {
-      const per = Math.max(1, Math.floor((WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
+      const per = Math.max(1, Math.floor((DEFAULT_WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
       let y = 0; let rowH = 0; let maxX = 0;
       st.cards.forEach((c, i) => {
         if (i % per === 0 && i) { y += rowH + CARD_GAP; rowH = 0; }
@@ -343,21 +923,20 @@
         rowH = Math.max(rowH, c.card.offsetHeight);
         maxX = Math.max(maxX, x + CARD_W);
       });
-      st.board.setSize(Math.max(WIDTH, maxX), Math.max(MIN_HEIGHT, y + rowH + 20));
+      st.board.setSize(Math.max(DEFAULT_WIDTH, maxX), Math.max(MIN_HEIGHT, y + rowH + 20));
       st.board.refresh();
     }
 
     // ---- the strip: the micro-frontends to drop on the page ------------------------------
     function drawStrip() {
       const strip = q('.mk-strip');
-      strip.hidden = st.view !== 'page' || !st.state;
+      strip.hidden = st.view !== 'page' || !st.state || (editing() && !!st.sel);
       if (strip.hidden) return;
       const list = components();
       strip.innerHTML = '<div class="mk-strip-head">micro-frontends <small>drag one onto the page</small></div>'
         + (list.length ? list.map((c) => `<div class="mk-chip" data-chip="${esc(c.name)}" style="--mf:${c.colour}" title="${esc(c.description || c.name)}${c.mocked ? '' : ' — not mocked yet: its session makes the fragment first'}"><i></i><b>${esc(c.name)}</b><small>${esc(c.system || '')}${c.pages.length ? ' · ' + c.pages.length + ' page' + (c.pages.length > 1 ? 's' : '') : ''}</small></div>`).join('') : '<div class="hb-empty">none yet</div>')
         + '<button type="button" class="mini" data-mk="design">+ micro-frontend</button>';
     }
-    // A chip pressed: the board carries a design pin with the micro-frontend's spec.
     const onStripDown = (e) => {
       const chip = e.target.closest('[data-chip]');
       if (!chip || e.button !== 0 || !st.board) return;
@@ -418,7 +997,6 @@
       const before = st.state;
       st.state = reply;
       const pages = reply.pages || [];
-      // Asked for a page by its board's slug (the office's pin board): that page.
       if (opts && opts.pageSlug && !st.page) {
         if (opts.pageSlug === 'micro-frontends') st.view = 'components';
         else { const found = pages.find((p) => pageSlug(p.path) === opts.pageSlug); if (found) st.page = found.path; }
@@ -432,13 +1010,11 @@
       const listChanged = before && JSON.stringify(before.components) + JSON.stringify(before.units) !== JSON.stringify(reply.components) + JSON.stringify(reply.units);
       const pageChanged = !before || !st.board || st.board.id !== boardOf();
       if (pageChanged || (st.view === 'components' && listChanged)) { st.stamp = reply.stamp; mountBoard(); }
-      else if (reply.stamp !== st.stamp) { st.stamp = reply.stamp; reloadFrame(); }
+      else if (reply.stamp !== st.stamp && !st.drag && !st.resize) { st.stamp = reply.stamp; reloadFrame(); }
       else if (listChanged) outline();
       st.timer = setTimeout(load, POLL_MS);
     }
     function say(html) { q('.mk-origin').innerHTML = html; }
-    // The branches, as the data pane offers them: main, the integration
-    // branch, the milestones' in a menu.
     function drawSwitch() {
       const v = st.versions;
       const sw = q('.dm-switch');
@@ -471,13 +1047,27 @@
       q('[data-mk="mf"]').setAttribute('aria-pressed', st.mf);
       const state = q('.mk-state');
       state.innerHTML = s.edited ? '<span class="dm-src bad">edited, not saved</span>' : s.saved ? `<span class="dm-src ok">saved as ${esc(s.saved)}</span>` : '';
-      q('.mk-name').hidden = !s.edited;
-      q('[data-mk="save"]').hidden = !s.edited;
+      const dirty = s.edited || !!(st.engine && st.engine.ops.length);
+      const inEditBar = st.edit && st.view === 'page' && !!st.engine;
+      q('.mk-name').hidden = !(dirty || inEditBar);
+      q('[data-mk="save"]').hidden = !(dirty || inEditBar);
+      q('[data-mk="save"]').disabled = !dirty;
       q('[data-mk="discard"]').hidden = !(s.edited || s.saved);
       q('[data-mk="discard"]').textContent = st.armed === 'discard' ? 'discard — sure?' : 'discard';
+      drawEditBar();
+    }
+    function leavePage() {
+      // The open version closes with the page: the next change opens a new one.
+      if (!st.engine || !st.history || !st.history.current) return;
+      const board = boardOf();
+      clearTimeout(st.saveTimer);
+      const body = JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: st.history.current.name || '' });
+      fetch(`/api/drafts/${encodeURIComponent(board)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
+      if (st.engine.ops.length) fetch(`/api/drafts/${encodeURIComponent(board)}/keep`, { method: 'POST', keepalive: true }).catch(() => {});
     }
     function show(path) {
       if (path === st.page && st.board && st.view === 'page') return;
+      leavePage();
       st.page = path;
       remember(st.branch, path);
       st.stamp = st.state ? st.state.stamp : st.stamp;
@@ -486,20 +1076,21 @@
     }
     function setView(view) {
       if (view === st.view) return;
+      leavePage();
       st.view = view;
       drawForm(false);
+      q('.mk-history').hidden = true;
       if (st.state) { drawBar(); drawStrip(); mountBoard(); }
     }
     function showBranch(branch) {
       if (branch === st.branch) return;
+      leavePage();
       st.branch = branch;
       st.page = '';
       st.state = null;
       q('.dm-features').hidden = true;
       load();
     }
-    // A new page: a link pin on the canvas, opened on its "new page" form —
-    // a title, the objective, and an AI session that draws it.
     function newPage() {
       if (st.board && st.board.newLink) st.board.newLink();
     }
@@ -509,6 +1100,7 @@
       st.saving = true;
       const action = window.HarnessActions && window.HarnessActions.start({ key: `mockup:save:${st.branch}`, label: `save the mock-up of ${st.branch} as ${name}`, button: q('[data-mk="save"]') });
       try {
+        if (st.engine && st.engine.ops.length) await materialize();
         const res = await fetch('/api/mockup/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, name }) });
         const text = await res.text();
         if (!res.ok) throw new Error(text);
@@ -548,18 +1140,24 @@
       keep(MF_ON, on);
       drawBar();
       outline();
+      select('');
     }
 
     // ---- events --------------------------------------------------------------------------
     const onClick = (e) => {
       const branch = e.target.closest('[data-branch]');
       if (branch) { showBranch(branch.dataset.branch); return; }
+      const ed = e.target.closest('[data-ed]');
+      if (ed) { onEdit(ed, e); return; }
+      const open = e.target.closest('[data-open-note]');
+      if (open && st.board) { st.board.goTo(open.dataset.openNote); return; }
       const mk = e.target.closest('[data-mk]');
       if (!mk) return;
       if (mk.dataset.mk === 'features') { const m = q('.dm-features'); m.hidden = !m.hidden; }
       if (mk.dataset.mk === 'view') setView(mk.dataset.view);
       if (mk.dataset.mk === 'new') newPage();
       if (mk.dataset.mk === 'mf') setOutlines(!st.mf);
+      if (mk.dataset.mk === 'edit') setEdit(!st.edit);
       if (mk.dataset.mk === 'interact') setInteract(!st.interact);
       if (mk.dataset.mk === 'design') drawForm(q('.mk-form').hidden);
       if (mk.dataset.mk === 'form-cancel') drawForm(false);
@@ -567,7 +1165,30 @@
       if (mk.dataset.mk === 'save') save();
       if (mk.dataset.mk === 'discard') discard();
     };
-    // A card without a fragment: a design pin with the manifest's spec, and its session.
+    function onEdit(b, e) {
+      const what = b.dataset.ed;
+      const version = Number(b.dataset.version);
+      if (what === 'undo' && st.engine.undo()) afterChange();
+      if (what === 'redo' && st.engine.redo()) afterChange();
+      if (what === 'add-link') addPart('link');
+      if (what === 'add-button') addPart('button');
+      if (what === 'apply-all') applyAll();
+      if (what === 'keep') keepVersion();
+      if (what === 'validate') validateVersion();
+      if (what === 'history') { const h = q('.mk-history'); h.hidden = !h.hidden; drawHistory(); }
+      if (what === 'view') viewVersion(version);
+      if (what === 'restore') draftCall(`restore/${version}`);
+      if (what === 'validate-kept') draftCall(`validate?version=${version}`);
+      if (what === 'unvalidate') draftCall(`unvalidate?version=${version}`);
+      if (what === 'unfreeze' && st.history && st.history.current) { st.history.current.base = (currentPage() || {}).hash || ''; drawFrozen(); persist(); }
+      if (what === 'reset') resetDraft();
+      if (what === 'clone') cloneSelected();
+      if (what === 'remove') removeSelected();
+      if (what === 'static') toggleStatic();
+      if (what === 'request') newRequest();
+      if (what === 'rename-fork') renameForkTo(b.dataset.from, (q('.mk-fork-name') || {}).value || '');
+      void e;
+    }
     const onCardMock = (e) => {
       const b = e.target.closest('[data-mock-card]');
       if (!b || !st.board) return;
@@ -576,23 +1197,29 @@
       const id = st.board.newNote({ kind: 'design', component: c.name, text: specOf(c), target: 'component:' + c.name });
       st.board.session(id);
     };
-
     const onChange = (e) => {
       if (e.target.classList.contains('mk-pages')) show(e.target.value);
-    };
-    const onKey = (e) => {
-      // What is typed in the bar or the form belongs there, not to the page.
-      if (e.target.closest('.mk-form') || e.target.classList.contains('mk-name')) {
-        e.stopPropagation();
-        if (e.key === 'Enter' && e.target.classList.contains('mk-name')) save();
-        if (e.key === 'Escape' && e.target.closest('.mk-form')) drawForm(false);
-      }
+      if (e.target.classList.contains('mk-presets')) { if (e.target.value !== '0') setWidth(Number(e.target.value)); else { q('.mk-width').hidden = false; q('.mk-width').focus(); } }
+      if (e.target.classList.contains('mk-width')) setWidth(Number(e.target.value) || DEFAULT_WIDTH);
+      if (e.target.classList.contains('mk-version-name') && st.history && st.history.current) { st.history.current.name = e.target.value.slice(0, 80); persist(); }
+      if (e.target.closest('.mk-panel')) onPanelInput(e);
     };
     host.addEventListener('click', onClick);
     host.addEventListener('click', onCardMock);
     host.addEventListener('change', onChange);
     host.addEventListener('keydown', onKey);
+    host.addEventListener('keyup', onKeyUp);
+    host.addEventListener('keydown', (e) => { if (e.target.closest('.mk-panel') && e.key === 'Enter') onPanelInput(e); });
     q('.mk-strip').addEventListener('pointerdown', onStripDown);
+    const boardHost = q('.mk-board');
+    boardHost.addEventListener('pointerdown', onViewportDown, true);
+    boardHost.addEventListener('pointerdown', onEditDown, true);
+    boardHost.addEventListener('pointermove', onViewportMove, true);
+    boardHost.addEventListener('pointermove', onEditMove, true);
+    boardHost.addEventListener('pointerup', onViewportUp, true);
+    boardHost.addEventListener('pointerup', onEditUp, true);
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('keyup', onKeyUp);
     const measured = setInterval(measure, 1000);
 
     load();
@@ -601,13 +1228,18 @@
       get id() { return st.board ? st.board.id : ''; },
       reload() { st.state = null; return load(); },
       destroy() {
+        leavePage();
         st.gone = true;
         clearTimeout(st.timer);
+        clearTimeout(st.saveTimer);
         clearInterval(measured);
         host.removeEventListener('click', onClick);
         host.removeEventListener('click', onCardMock);
         host.removeEventListener('change', onChange);
         host.removeEventListener('keydown', onKey);
+        host.removeEventListener('keyup', onKeyUp);
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('keyup', onKeyUp);
         if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
         host.innerHTML = '';
       },

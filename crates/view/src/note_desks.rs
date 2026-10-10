@@ -126,7 +126,12 @@ impl NoteDesks {
             .save_conversation(board, id, &json, conversation.turns.len())
     }
 
-    async fn ask(&self, prompt: String) -> Result<String, String> {
+    /// One question to Claude, answered in one go, on the sessions' model.
+    ///
+    /// # Errors
+    ///
+    /// Claude could not be run, or answered nothing.
+    pub async fn ask(&self, prompt: String) -> Result<String, String> {
         let oneshot = Arc::clone(&self.setup.oneshot);
         let model = self.setup.model.clone();
         tokio::task::spawn_blocking(move || oneshot.ask(&model, &prompt))
@@ -291,8 +296,8 @@ impl NoteDesks {
         let about = Self::about(board, &note);
         let said = conversation.digest();
         let prompt = match kind {
-            Kind::Asking => note_session::request_prompt(&about, &said),
-            Kind::Note | Kind::Brainstorm | Kind::Link | Kind::Simulate | Kind::Design => {
+            Kind::Request => note_session::request_prompt(&about, &said),
+            Kind::Note | Kind::Brainstorm | Kind::Link | Kind::Design => {
                 note_session::conclusion_prompt(&about, &said)
             }
         };
@@ -448,6 +453,7 @@ mod tests {
             page: String::new(),
             component: String::new(),
             source: String::new(),
+            state: crate::domain::annotations::RequestState::Pending,
             shape: None,
             turns: 0,
         }
@@ -545,10 +551,10 @@ mod tests {
         );
 
         let asking = desks
-            .turn_into("data-model", "n1", Kind::Asking)
+            .turn_into("data-model", "n1", Kind::Request)
             .await
             .expect("formulated");
-        assert_eq!(asking.kind, Kind::Asking);
+        assert_eq!(asking.kind, Kind::Request);
         assert!(asking.text.starts_with("answer to: This is a brainstorm"));
         assert_eq!(
             asking.turns, 4,
@@ -564,7 +570,8 @@ mod tests {
     #[tokio::test]
     async fn a_simulate_opens_in_the_mockup_workspace_with_leave_to_edit() {
         let store = Arc::new(Shelf::default());
-        let mut simulate = pin(Kind::Simulate);
+        let mut simulate = pin(Kind::Design);
+        simulate.component = "RiskBadge".into();
         simulate.text = "show a late customer".into();
         store.put("mockup--main--home", &simulate).expect("kept");
         let maker = Arc::new(Maker::default());
@@ -602,9 +609,9 @@ mod tests {
             .expect("a briefing");
         assert!(briefing.contains("edit only under `mock/`"));
         assert!(briefing.contains("`pages/home.html`"));
-        assert_eq!(
-            args.last().map(String::as_str),
-            Some("show a late customer")
+        assert!(
+            args.last()
+                .is_some_and(|first| first.starts_with("Inject the micro-frontend `RiskBadge`"))
         );
         assert_eq!(
             lock(&maker.cwds).last().map(PathBuf::as_path),

@@ -4,12 +4,14 @@
 // part a pin may sit on with `data-pin="<target>"`.
 //
 // A pin is a note (yellow), a brainstorm (green: an AI session behind it,
-// opened from the pin, remembered between visits) or an asking (orange: a
-// change to consider when the next roadmap is built). Turning a brainstorm
-// into a note has the AI write its conclusion; into an asking, the request.
-// On the mock-up two more kinds: a link (blue) leads to another page or
-// creates one, a simulate (purple) is a request an AI session answers by
-// editing the page. A pin may be a zone — a rectangle, a circle or a
+// opened from the pin, remembered between visits) or a request (orange: an
+// intention on the part, applied to the page's draft by one AI call or
+// discussed in a session, kept for the next roadmap; the former asking and
+// simulate kinds read as this one). Turning a brainstorm into a note has
+// the AI write its conclusion; into a request, the intention. On the
+// mock-up two more kinds: a link (blue) leads to another page or creates
+// one, a design (teal) is a micro-frontend to make or inject. A pin may be
+// a zone — a rectangle, a circle or a
 // hand-drawn outline around several parts — drawn with the toolbar's tools.
 // Pins are kept by the server one by one (`/api/notes/<board>/<id>`); a
 // deleted one comes back with ctrl+z, the last ten of a board.
@@ -33,12 +35,14 @@
   const KINDS = {
     note: ['note', 'Your words'],
     brainstorm: ['brainstorm', 'A conversation with an AI session about this part'],
-    asking: ['asking', 'A change to consider when the next roadmap is built'],
+    request: ['request', 'An intention for the next roadmap — a change, a behaviour; on the mock-up, applied to the draft by an AI'],
     link: ['link', 'Leads to another page of the mock-up — or creates one'],
-    simulate: ['simulate', 'A request: an AI session edits the page to show its result'],
     design: ['design', 'A micro-frontend: made by an AI session from its spec, or injected where the pin sits'],
   };
-  const DEFAULT_KINDS = ['note', 'brainstorm', 'asking'];
+  const DEFAULT_KINDS = ['note', 'brainstorm', 'request'];
+  // What an old pin's kind reads as now.
+  const RENAMED = { asking: 'request', simulate: 'request' };
+  const kindOf = (n) => RENAMED[n.kind] || n.kind || 'note';
   // A zone smaller than this, in screen pixels, is a click that drew nothing.
   const MIN_ZONE = 8;
   // A hand-drawn outline keeps a point every so many board units.
@@ -96,6 +100,7 @@
       + '</div>'
       + '<textarea class="hb-text" maxlength="4000" placeholder="Write a note…"></textarea>'
       + '<div class="hb-link-go" hidden><button type="button" data-note="go">Open the page →</button><button type="button" data-note="create">Create it with an AI session</button></div>'
+      + '<div class="hb-apply" hidden><button type="button" data-note="apply">Apply to the draft</button><span class="hb-apply-state"></span></div>'
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
       + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="delete">delete</button></div>'
       + '</div>';
@@ -281,8 +286,8 @@
         if (n.shape) { n.x = p.x; n.y = p.y; }
         const s = toScreen(p.x, p.y);
         if (s.x < -30 || s.y < -30 || s.x > r.width + 30 || s.y > r.height + 60) return;
-        const kind = n.kind || 'note';
-        const cls = ['hb-pin', kind, p.orphan ? 'orphan' : '', n.shape ? 'zone' : '', n.text || kind !== 'note' ? '' : 'empty', openId === n.id ? 'open' : ''].join(' ');
+        const kind = kindOf(n);
+        const cls = ['hb-pin', kind, p.orphan ? 'orphan' : '', n.shape ? 'zone' : '', n.text || kind !== 'note' ? '' : 'empty', openId === n.id ? 'open' : '', kind === 'request' ? 'state-' + (n.state || 'pending') : ''].join(' ');
         const tip = `${kind}${n.shape ? ' (zone)' : ''}: ${n.text || (kind === 'link' && n.page ? '→ ' + n.page : 'empty')}${p.orphan ? ' — what it was on is gone' : ''}`;
         h += `<button type="button" class="${cls}" data-note-id="${esc(n.id)}" style="left:${s.x}px;top:${s.y}px" title="${esc(tip)}"><span>${i + 1}</span></button>`;
       });
@@ -305,9 +310,10 @@
       editor.style.top = clamp(s.y - 30, 8, Math.max(8, r.height - h - 8)) + 'px';
     }
     // The editor shows the pin's kind, its text, and — for a brainstorm or
-    // an asking — its AI session.
+    // a request — its AI session.
     function drawEditor(n) {
-      const kind = n.kind || 'note';
+      const kind = kindOf(n);
+      n.kind = kind;
       editor.dataset.kind = kind;
       editor.querySelectorAll('.hb-kind').forEach((b) => {
         b.classList.toggle('on', b.dataset.kind === kind);
@@ -317,13 +323,22 @@
       });
       const session = editor.querySelector('.hb-session');
       session.hidden = kind === 'note' || kind === 'link' || !opts.onSession;
-      session.querySelector('button').textContent = kind === 'design' ? (n.turns ? 'Continue the AI session' : 'Make / inject it with an AI session') : 'Open the AI session';
+      session.querySelector('button').textContent = kind === 'design' ? (n.turns ? 'Continue the AI session' : 'Make / inject it with an AI session') : kind === 'request' ? 'Discuss it (AI session)' : 'Open the AI session';
+      // A request on the mock-up: applied to the page's draft in one go.
+      const apply = editor.querySelector('.hb-apply');
+      apply.hidden = kind !== 'request' || !opts.apply;
+      if (!apply.hidden) {
+        const state = n.state || 'pending';
+        apply.querySelector('button').textContent = state === 'simulated' ? 'Apply again' : state === 'stale' ? 'Apply again (the page moved)' : 'Apply to the draft';
+        apply.querySelector('button').disabled = busy;
+        apply.querySelector('.hb-apply-state').textContent = { pending: 'not applied yet', simulated: 'applied to the draft', stale: 'applied once; the page moved since' }[state] || '';
+      }
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
       textarea.disabled = busy;
       textarea.placeholder = {
-        note: 'Write a note — or the first prompt of a brainstorm, an asking or a simulate…',
+        note: 'Write a note — or the first prompt of a brainstorm or a request…',
         link: 'The objective of the page this leads to — what a new page is drawn from',
-        simulate: 'The request: what happens, and the page shows the result',
+        request: 'The intention: what should change, what this part should do — applied to the draft, kept for the next roadmap',
       }[kind] || 'Where the discussion stands — rewritten when you leave the session';
       drawLink(n, kind);
       drawDesign(n, kind);
@@ -537,7 +552,7 @@
       list.hidden = false;
     }
     // A pin's kind changed. From a brainstorm, the AI writes what it becomes:
-    // the conclusion for a note, the request for an asking.
+    // the conclusion for a note, the intention for a request.
     async function rekind(n, kind) {
       const from = n.kind || 'note';
       if (kind === from || busy) return;
@@ -552,7 +567,7 @@
         setState(kind === 'note' ? 'the AI draws the conclusion…' : 'the AI formulates the request…');
         const action = window.HarnessActions && window.HarnessActions.start({
           key: `pin:${n.id}:${kind}`,
-          label: kind === 'note' ? 'conclude the brainstorm into a note' : 'turn the brainstorm into an asking',
+          label: kind === 'note' ? 'conclude the brainstorm into a note' : 'turn the brainstorm into a request',
           button: editor.querySelector(`.hb-kind.${kind}`),
         });
         try {
@@ -573,9 +588,9 @@
         }
         return;
       }
-      // A brainstorm, an asking or a simulate opens its session on what the note says.
+      // A brainstorm or a request opens its session on what the note says.
       if (kind !== 'note' && kind !== 'link' && kind !== 'design' && !(n.text || '').trim()) {
-        setState(kind === 'simulate' ? 'write the request first: it is what the AI simulates' : 'write the first prompt first: the note is what the AI is asked');
+        setState(kind === 'request' ? 'write the intention first: it is what the AI applies' : 'write the first prompt first: the note is what the AI is asked');
         textarea.focus();
         return;
       }
@@ -744,6 +759,7 @@
       if (act.dataset.note === 'close') closeNote();
       if (act.dataset.note === 'delete' && n) remove(n);
       if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
+      if (act.dataset.note === 'apply' && n && opts.apply) { flush(); if (n.fresh) put(n).then(() => opts.apply(n)).catch(() => setState('not saved')); else opts.apply(n); }
       if (act.dataset.note === 'go' && n && n.page && opts.goto) { flush(); opts.goto(n.page); }
       if (act.dataset.note === 'create' && n && n.page && opts.onSession) openSession(n);
     };
@@ -850,6 +866,16 @@
         return n.id;
       },
       session: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n && opts.onSession) openSession(n); },
+      // Every pin, and a pin's fields changed from outside — a request applied.
+      all: () => notes.map((n) => Object.assign({}, n)),
+      patch(noteId, fields) {
+        const n = notes.find((x) => x.id === noteId);
+        if (!n) return;
+        Object.assign(n, fields, { at: new Date().toISOString() });
+        if (openId === n.id) drawEditor(n);
+        drawPins();
+        if (!n.fresh) save(n, true);
+      },
       // A link to a page that does not exist yet, dropped near the top left
       // of what is shown and opened on its "new page" form.
       newLink() {

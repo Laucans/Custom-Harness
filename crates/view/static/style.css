@@ -704,7 +704,23 @@ label.switch input:checked + .track::after { transform: translateX(12px); backgr
 label.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---- The pins' kinds: note (yellow), brainstorm (green), asking (orange) ---- */
-:root { --pin-note: #e2b240; --pin-brainstorm: #4fbf72; --pin-asking: #f08a2c; --pin-link: #4ea3f0; --pin-simulate: #b388f5; --pin-design: #2bc0c8; }
+:root { --pin-note: #e2b240; --pin-brainstorm: #4fbf72; --pin-request: #f08a2c; --pin-asking: #f08a2c; --pin-link: #4ea3f0; --pin-simulate: #f08a2c; --pin-design: #2bc0c8; }
+.hb-pin.request { background: var(--pin-request); border-color: #3d1d00; }
+.hb-pin.request > span { color: #2e1500; }
+.hb-pin.request.state-pending { background: #f3e7c9; border-color: var(--pin-request); border-style: dashed; }
+.hb-pin.request.state-stale { background: repeating-linear-gradient(45deg, var(--pin-request), var(--pin-request) 3px, #f3e7c9 3px, #f3e7c9 6px); }
+.hb-kind.request.on { background: var(--pin-request); border-color: var(--pin-request); color: #2e1500; }
+.hb-note[data-kind="request"] { border-color: var(--pin-request); }
+.hb-note[data-kind="request"] .hb-session button { border-color: var(--pin-request); }
+.hb-apply { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.hb-apply[hidden] { display: none; }
+.hb-apply button { background: var(--pin-request); color: #2e1500; border: 1px solid var(--pin-request); border-radius: 6px; padding: 4px 10px; font: 600 12px var(--sans); cursor: pointer; }
+.hb-apply button:disabled { opacity: 0.5; cursor: progress; }
+.hb-apply-state { font: 11px var(--mono); color: var(--dim); }
+.hb-zone.request { fill: rgba(240, 138, 44, 0.12); stroke: var(--pin-request); }
+.hb-list button b.request { color: var(--pin-request); }
+.pin-dot.request { background: var(--pin-request); }
+.pin-dot.request.state-pending { background: #f3e7c9; border-style: dashed; border-color: var(--pin-request); }
 .hb-pin.note { background: var(--pin-note); }
 .hb-pin.brainstorm { background: var(--pin-brainstorm); border-color: #10351d; }
 .hb-pin.brainstorm > span { color: #0b2915; }
@@ -773,6 +789,66 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .hb-link-go { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; }
 .hb-link-go button { background: var(--panel-2); color: var(--text); border: 1px solid var(--pin-link); border-radius: 6px; padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
 .hb-link-go button:hover { background: var(--bg); }
+
+/* ---- Edit mode on the easel (mockup.js + edit.js) ---- */
+.mk-editbar { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; overflow: hidden; padding: 6px 12px; min-height: 42px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 12px; }
+.mk-editbar[hidden] { display: none; }
+.mk-editbar .spacer { flex: 1; }
+.mk-editbar .mini { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
+.mk-editbar .mini:hover:not(:disabled) { border-color: var(--pin-design); color: var(--pin-design); }
+.mk-editbar .mini:disabled { opacity: 0.45; cursor: default; }
+.mk-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.mk-vp { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); }
+.mk-vp select, .mk-vp input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: 12px var(--sans); }
+.mk-vp input { width: 70px; }
+.mk-draft-state { font: 12px var(--mono); }
+.mk-editbar .mk-name { flex: 0 1 130px; min-width: 60px; width: auto; }
+.mk-editbar .mini { white-space: nowrap; }
+.mk-editbar .mini:disabled { opacity: 0.45; }
+.mk .dm-bar .mini.on[data-mk="edit"] { border-color: var(--pin-design); color: var(--pin-design); }
+.mk-frozen { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: rgba(240, 138, 44, 0.12); border-bottom: 1px solid var(--warn); color: var(--text); font-size: 13px; }
+.mk-frozen[hidden] { display: none; }
+.mk-frozen .mini { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 3px 9px; font: 12px var(--sans); cursor: pointer; }
+.mk-editing .mk-shield { cursor: default; }
+.mk-editing.mk-space .mk-shield { cursor: grab; }
+.mk-moving .mk-shield { cursor: grabbing !important; }
+.mk-handles { position: absolute; pointer-events: none; }
+.mk-handles[hidden] { display: none; }
+.mk-h { position: absolute; width: 10px; height: 10px; background: var(--pin-design); border: 1px solid #06343a; border-radius: 2px; pointer-events: auto; }
+.mk-h-e { right: -6px; top: 50%; margin-top: -5px; cursor: ew-resize; }
+.mk-h-s { bottom: -6px; left: 50%; margin-left: -5px; cursor: ns-resize; }
+.mk-h-se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.mk-vp-handle { position: absolute; top: 0; right: -10px; width: 10px; height: 100%; cursor: ew-resize; background: transparent; }
+.mk-vp-handle:hover { background: rgba(43, 192, 200, 0.25); }
+.mk-toast { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 6; background: var(--panel); border: 1px solid var(--pin-design); border-radius: 10px; padding: 8px 14px; font: 13px var(--sans); color: var(--text); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4); cursor: pointer; }
+.mk-toast[hidden] { display: none; }
+.mk { position: relative; }
+/* The selection panel and the history, where the strip stands. */
+.mk-panel, .mk-history { width: 260px; flex: none; overflow: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 10px 12px 20px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
+.mk-panel[hidden], .mk-history[hidden] { display: none; }
+.mk-panel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mk-panel-head b { font: 600 13px var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.mk-panel-head small { color: var(--dim); }
+.mk-panel-head .mini { margin-left: auto; }
+.mk-panel-row { display: flex; justify-content: space-between; color: var(--dim); }
+.mk-panel-row .mono { font: 12px var(--mono); color: var(--text); }
+.mk-panel-field { display: flex; flex-direction: column; gap: 4px; color: var(--dim); }
+.mk-panel-field input, .mk-panel-field select, .mk-panel-field textarea, .mk-fork-name { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; font: 12px var(--sans); }
+.mk-panel-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.mk-panel .mini, .mk-history .mini { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font: 12px var(--sans); cursor: pointer; }
+.mk-panel .mini:hover, .mk-history .mini:hover { border-color: var(--pin-design); color: var(--pin-design); }
+.mk-panel .mini.on { border-color: var(--pin-design); color: var(--pin-design); }
+.mk-panel-requests ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.mk-panel-requests li { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-top: 1px solid var(--line); cursor: pointer; }
+.mk-panel-requests li small { margin-left: auto; color: var(--dim); font: 11px var(--mono); }
+.mk-history ul { list-style: none; margin: 0; padding: 0; }
+.mk-version { padding: 8px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.mk-version b { font: 600 13px var(--mono); }
+.mk-version small { color: var(--dim); }
+.mk-version.current { border-left: 3px solid var(--pin-design); padding-left: 8px; }
+.mk-version.validated b::after { content: ' ✓ validated'; color: var(--ok); font: 11px var(--mono); }
+.mk-version-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.mk-version-name { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: 12px var(--sans); }
 
 /* ---- The office's pin board (app.js) ---- */
 .pins { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
@@ -954,3 +1030,21 @@ table.rows th.sortable { cursor: pointer; user-select: none; }
 table.rows th.sortable:hover { color: var(--text); }
 table.rows th.asc::after { content: ' ▲'; color: var(--accent); }
 table.rows th.desc::after { content: ' ▼'; color: var(--accent); }
+
+/* ---- The conversation dock: a pin's AI session, bottom left, over everything ---- */
+#talk { position: fixed; left: 12px; bottom: 12px; z-index: 97; width: var(--talk-w, 640px); max-width: calc(100vw - 24px); height: var(--talk-h, 40vh); max-height: calc(100vh - 24px); display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--pin-design); border-radius: 10px; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55); overflow: hidden; }
+#talk[hidden] { display: none; }
+#talk-head { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+#talk-head .spacer { flex: 1; }
+#talk-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#talk-status { font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
+#talk-restart { background: transparent; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font: 11px var(--sans); cursor: pointer; }
+#talk-close { background: transparent; border: 0; color: var(--dim); font-size: 18px; cursor: pointer; }
+#talk-chips { padding: 6px 12px 0; }
+#talk-term { flex: 1; min-height: 120px; margin: 8px 12px 12px; background: #070b10; border: 1px solid var(--line); border-radius: 8px; padding: 6px; overflow: hidden; }
+#talk-term .xterm { height: 100%; }
+#talk-grip { position: absolute; top: 0; right: 0; width: 16px; height: 16px; cursor: nesw-resize; background: linear-gradient(225deg, var(--pin-design) 0 4px, transparent 4px); opacity: 0.8; }
+.pins-tabs { margin-bottom: 8px; }
+.tag.warn { color: var(--warn); border-color: var(--warn); }
+.tag.ok { color: var(--ok); border-color: var(--ok); }

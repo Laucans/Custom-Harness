@@ -3,12 +3,13 @@
 //!
 //! A pin is one of five kinds. A **note** is the human's words. A
 //! **brainstorm** has an AI session behind it, opened from the pin and
-//! remembered between visits (`note_session`). An **asking** is a change the
-//! human wants considered when the next roadmap is built — its conversation
-//! kept too; how it reaches the planner is still to be designed
-//! (`docs/PARKED.md`). On the mock-up, a **link** leads to another page of
-//! the product — or creates one, from an objective — and a **simulate** is a
-//! request whose result an AI session shows by editing the page.
+//! remembered between visits (`note_session`). A **request** is an
+//! intention for the next roadmap — a change, a behaviour — discussed in a
+//! session, and on the mock-up applied to the page's draft by an AI in one
+//! go (`drafts`); it is `pending` until applied, `simulated` after, `stale`
+//! when the page moved under it. On the mock-up, a **link** leads to
+//! another page of the product — or creates one, from an objective — and a
+//! **design** is a micro-frontend to make or to inject.
 //!
 //! A pin may be a **zone** instead of a point: a rectangle, a circle or a
 //! hand-drawn outline around several parts, annotated as one.
@@ -47,13 +48,13 @@ pub enum Kind {
     Note,
     /// A conversation with an AI session about what the pin sits on. Green.
     Brainstorm,
-    /// A change to consider when the next roadmap is built. Orange.
-    Asking,
+    /// An intention for the next roadmap: a change, a behaviour. Orange.
+    /// Discussed in a session; on the mock-up, applied to the draft by an
+    /// AI in one go. The old `asking` and `simulate` pins read as this.
+    #[serde(alias = "asking", alias = "simulate")]
+    Request,
     /// On the mock-up: leads to another page, or creates one. Blue.
     Link,
-    /// On the mock-up: a request whose result an AI session shows by
-    /// editing the page. Purple.
-    Simulate,
     /// On the mock-up: a micro-frontend to design — created by an AI
     /// session from its spec, or injected in the page it sits on. Teal.
     Design,
@@ -66,24 +67,23 @@ impl Kind {
         match self {
             Self::Note => "note",
             Self::Brainstorm => "brainstorm",
-            Self::Asking => "asking",
+            Self::Request => "request",
             Self::Link => "link",
-            Self::Simulate => "simulate",
             Self::Design => "design",
         }
     }
 
     /// A kind whose session needs the note written first: it is the first
-    /// prompt (a brainstorm, an asking), or the request (a simulate).
+    /// prompt (a brainstorm), or the intention (a request).
     #[must_use]
     pub const fn speaks_first(self) -> bool {
-        matches!(self, Self::Brainstorm | Self::Asking | Self::Simulate)
+        matches!(self, Self::Brainstorm | Self::Request)
     }
 
     /// A kind whose session edits the mock-up rather than talks about it.
     #[must_use]
     pub const fn edits(self) -> bool {
-        matches!(self, Self::Link | Self::Simulate | Self::Design)
+        matches!(self, Self::Link | Self::Design)
     }
 
     /// A kind whose text is the human's own — a page's objective, a
@@ -92,6 +92,19 @@ impl Kind {
     pub const fn keeps_its_text(self) -> bool {
         matches!(self, Self::Link | Self::Design)
     }
+}
+
+/// Where a request stands against the page's draft.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestState {
+    /// Not applied to the draft yet.
+    #[default]
+    Pending,
+    /// Applied: the draft carries the operations it produced.
+    Simulated,
+    /// Applied once, but the page moved under it since.
+    Stale,
 }
 
 /// The outline of a zone.
@@ -155,6 +168,9 @@ pub struct Note {
     /// elsewhere. A URL, or empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
+    /// For a request on the mock-up: where it stands against the draft.
+    #[serde(default, skip_serializing_if = "is_pending")]
+    pub state: RequestState,
     /// A zone's outline — `None` for a point.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<Shape>,
@@ -184,6 +200,11 @@ pub fn is_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` hands a reference
+fn is_pending(state: &RequestState) -> bool {
+    *state == RequestState::Pending
 }
 
 /// A micro-frontend's name: a Micro-UI's, `RiskBadge` — a capital, then
@@ -312,6 +333,7 @@ mod tests {
             page: String::new(),
             component: String::new(),
             source: String::new(),
+            state: RequestState::Pending,
             shape: None,
             turns: 0,
         }
@@ -358,10 +380,17 @@ mod tests {
         );
         link.page = "../x".to_string();
         assert!(checked(link).is_err());
-        let mut simulate = note("s");
-        simulate.kind = Kind::Simulate;
-        simulate.text = " ".to_string();
-        assert!(checked(simulate).is_err(), "a simulate is a request");
+        let mut request = note("s");
+        request.kind = Kind::Request;
+        request.text = " ".to_string();
+        assert!(checked(request).is_err(), "a request is an intention");
+        let old: Note = serde_json::from_str(r#"{"id":"n1","kind":"simulate","text":"t"}"#)
+            .expect("an old simulate reads");
+        assert_eq!(old.kind, Kind::Request);
+        let old: Note = serde_json::from_str(r#"{"id":"n1","kind":"asking","text":"t"}"#)
+            .expect("an old asking reads");
+        assert_eq!(old.kind, Kind::Request);
+        assert_eq!(old.state, RequestState::Pending);
         let json = serde_json::to_string(&note("p")).expect("json");
         assert!(!json.contains("shape") && !json.contains("page"), "{json}");
         let mut design = note("d");
@@ -399,7 +428,7 @@ mod tests {
                 .unwrap_err()
                 .contains("write it first")
         );
-        silent.kind = Kind::Asking;
+        silent.kind = Kind::Request;
         assert!(checked(silent.clone()).is_err());
         silent.kind = Kind::Note;
         assert!(checked(silent).is_ok(), "an empty note is still a note");

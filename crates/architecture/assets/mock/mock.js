@@ -10,7 +10,8 @@
   const base = new URL('./', document.currentScript.src);
   const load = async (el) => {
     const name = el.dataset.component;
-    if (!name || el.dataset.loaded) return;
+    // An inlined micro-frontend — forked on a page by the factory view — carries its own markup.
+    if (!name || el.dataset.loaded || el.dataset.inline) return;
     el.dataset.loaded = 'loading';
     try {
       const res = await fetch(new URL(`components/${name}.html`, base));

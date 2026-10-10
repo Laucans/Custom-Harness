@@ -44,6 +44,7 @@ use crate::domain::data_usage::{self, UsedBy};
 use crate::domain::data_versions::{self, Versions};
 use crate::domain::divergence;
 use crate::domain::doctor::{self, Diagnosis};
+use crate::domain::drafts::{self, Draft};
 use crate::domain::fusion;
 use crate::domain::gates;
 use crate::domain::history::{self, Range};
@@ -60,8 +61,8 @@ use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_o
 use crate::janitor::Janitor;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    BoardReading, Builds, Limits, MockState, Mockups, NoteStore, Plant, Prompts, Traces, TrialAsk,
-    Trials,
+    BoardReading, Builds, DraftStore, Limits, MockState, Mockups, NoteStore, Plant, Prompts,
+    Traces, TrialAsk, Trials,
 };
 use crate::units_desk::UnitsDesk;
 use harness_architecture::compare::{self, Comparison};
@@ -119,6 +120,8 @@ pub struct AppState {
     pub integration_branch: String,
     /// Where the human's pins and their conversations are kept.
     pub pins: Arc<dyn NoteStore>,
+    /// Where the pages' draft versions are kept.
+    pub drafts: Arc<dyn DraftStore>,
     /// The pins' AI sessions — `None` when the view runs no terminal.
     pub note_desks: Option<NoteDesks>,
     /// The product's mock-up on every branch — `None` when nothing can read
@@ -154,6 +157,7 @@ const BOARD_JS: &str = include_str!("../static/board.js");
 const ACTIONS_JS: &str = include_str!("../static/actions.js");
 const DATA_MODEL_JS: &str = include_str!("../static/data-model.js");
 const MOCKUP_JS: &str = include_str!("../static/mockup.js");
+const EDIT_JS: &str = include_str!("../static/edit.js");
 
 /// The run files a browser may tail.
 const TAILABLE: [&str; 4] = ["run.log", "session.log", "prompts.md", "stream.jsonl"];
@@ -178,6 +182,7 @@ pub fn router(state: AppState) -> Router {
         .route("/actions.js", get(actions_js))
         .route("/data-model.js", get(data_model_js))
         .route("/mockup.js", get(mockup_js))
+        .route("/edit.js", get(edit_js))
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
         .route("/mock/{slug}/{*path}", get(mock_file))
         .route("/render/{file}", get(render_asset))
@@ -221,6 +226,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mockup/discard", post(mockup_discard))
         .route("/api/capabilities", get(capability_list))
         .route("/api/capabilities/fusion", post(capability_fusion))
+        .route("/api/drafts", get(all_drafts))
+        .route("/api/drafts/{board}", get(draft_history).put(put_draft))
+        .route("/api/drafts/{board}/open", post(open_draft))
+        .route("/api/drafts/{board}/keep", post(keep_draft))
+        .route("/api/drafts/{board}/validate", post(validate_draft))
+        .route("/api/drafts/{board}/unvalidate", post(unvalidate_draft))
+        .route("/api/drafts/{board}/reset", post(reset_draft))
+        .route("/api/drafts/{board}/restore/{version}", post(restore_draft))
+        .route("/api/notes/{board}/apply", post(apply_requests))
+        .route("/api/mockup/write", post(mockup_write))
         .route("/api/notes", get(all_notes))
         .route("/api/notes/{board}", get(notes))
         .route("/api/notes/{board}/undo", post(undo_note))
@@ -308,6 +323,10 @@ async fn data_model_js(State(state): State<AppState>) -> Response {
 
 async fn mockup_js(State(state): State<AppState>) -> Response {
     asset(&state, "mockup.js", MOCKUP_JS, JS)
+}
+
+async fn edit_js(State(state): State<AppState>) -> Response {
+    asset(&state, "edit.js", EDIT_JS, JS)
 }
 
 /// Why the easel is empty.
@@ -1519,6 +1538,406 @@ async fn notes(State(state): State<AppState>, Path(board): Path<String>) -> Resp
     }
 }
 
+// ---- the pages' drafts -------------------------------------------------------------
+
+/// What the page sends when it opens a draft, or writes it.
+#[derive(Debug, Default, Deserialize)]
+struct DraftAsk {
+    #[serde(default)]
+    base: String,
+    #[serde(default)]
+    ops: Vec<serde_json::Value>,
+    #[serde(default)]
+    viewport: u32,
+    #[serde(default)]
+    name: String,
+}
+
+fn draft_board(board: &str) -> Result<(), Box<Response>> {
+    if annotations::is_board(board) {
+        Ok(())
+    } else {
+        Err(Box::new(not_found("no such board")))
+    }
+}
+
+fn history_of(state: &AppState, board: &str) -> Result<drafts::History, Box<Response>> {
+    state
+        .drafts
+        .versions(board)
+        .map(drafts::history)
+        .map_err(|why| Box::new((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()))
+}
+
+/// A board's draft versions: the open one and the kept ones.
+async fn draft_history(State(state): State<AppState>, Path(board): Path<String>) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    history_of(&state, &board).map_or_else(|r| *r, |h| json(&h))
+}
+
+/// Opens the page's draft: continues the open version, or starts one from
+/// the latest — its operations kept when the page is still the one they
+/// were made on.
+async fn open_draft(
+    State(state): State<AppState>,
+    Path(board): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    let ask: DraftAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let versions = match state.drafts.versions(&board) {
+        Ok(v) => v,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    if let Some(fresh) = drafts::opened(&versions, &ask.base, &stamp())
+        && let Err(why) = state.drafts.put(&board, &fresh)
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+    }
+    history_of(&state, &board).map_or_else(|r| *r, |h| json(&h))
+}
+
+/// Writes the open version's operations, width and name.
+async fn put_draft(
+    State(state): State<AppState>,
+    Path(board): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    let ask: DraftAsk = match serde_json::from_slice(&body) {
+        Ok(ask) => ask,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("not a draft: {e}")).into_response(),
+    };
+    if let Err(why) = drafts::checked_ops(&ask.ops) {
+        return (StatusCode::BAD_REQUEST, why).into_response();
+    }
+    let history = match history_of(&state, &board) {
+        Ok(h) => h,
+        Err(r) => return *r,
+    };
+    let Some(mut current) = history.current else {
+        return (
+            StatusCode::CONFLICT,
+            "no open version: open the draft first",
+        )
+            .into_response();
+    };
+    current.ops = ask.ops;
+    current.viewport = ask.viewport;
+    current.name = ask.name.chars().take(80).collect();
+    match state.drafts.put(&board, &current) {
+        Ok(()) => json(&current),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// Closes the open version into the kept ones, the oldest beyond the kept
+/// count destroyed — validated ones never.
+fn close_draft(state: &AppState, board: &str, as_state: drafts::State) -> Response {
+    let history = match history_of(state, board) {
+        Ok(h) => h,
+        Err(r) => return *r,
+    };
+    if let Some(mut current) = history.current {
+        current.state = as_state;
+        current.closed_at = stamp();
+        if let Err(why) = state.drafts.put(board, &current) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+        }
+    }
+    let versions = match state.drafts.versions(board) {
+        Ok(v) => v,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    for gone in drafts::beyond_kept(&versions) {
+        if let Err(why) = state.drafts.destroy(board, gone) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+        }
+    }
+    history_of(state, board).map_or_else(|r| *r, |h| json(&h))
+}
+
+async fn keep_draft(State(state): State<AppState>, Path(board): Path<String>) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    close_draft(&state, &board, drafts::State::Kept)
+}
+
+/// Validates the open version — closed and marked as the next round — or,
+/// with `?version=`, a kept one.
+#[derive(Debug, Default, Deserialize)]
+struct VersionQuery {
+    version: Option<u32>,
+}
+
+async fn validate_draft(
+    State(state): State<AppState>,
+    Path(board): Path<String>,
+    Query(query): Query<VersionQuery>,
+) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    let Some(version) = query.version else {
+        return close_draft(&state, &board, drafts::State::Validated);
+    };
+    set_state(&state, &board, version, drafts::State::Validated)
+}
+
+async fn unvalidate_draft(
+    State(state): State<AppState>,
+    Path(board): Path<String>,
+    Query(query): Query<VersionQuery>,
+) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    let Some(version) = query.version else {
+        return (StatusCode::BAD_REQUEST, "which version?").into_response();
+    };
+    set_state(&state, &board, version, drafts::State::Kept)
+}
+
+fn set_state(state: &AppState, board: &str, version: u32, to: drafts::State) -> Response {
+    let versions = match state.drafts.versions(board) {
+        Ok(v) => v,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let Some(mut found) = versions.into_iter().find(|d| d.version == version) else {
+        return not_found("no such version");
+    };
+    if found.state == drafts::State::Open {
+        return (
+            StatusCode::CONFLICT,
+            "the open version is kept or validated by closing it",
+        )
+            .into_response();
+    }
+    found.state = to;
+    match state.drafts.put(board, &found) {
+        Ok(()) => history_of(state, board).map_or_else(|r| *r, |h| json(&h)),
+        Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    }
+}
+
+/// Restores a version: a new open one with its operations, the former open
+/// one kept.
+async fn restore_draft(
+    State(state): State<AppState>,
+    Path((board, version)): Path<(String, u32)>,
+) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    let history = match history_of(&state, &board) {
+        Ok(h) => h,
+        Err(r) => return *r,
+    };
+    if let Some(mut current) = history.current {
+        current.state = drafts::State::Kept;
+        current.closed_at = stamp();
+        if let Err(why) = state.drafts.put(&board, &current) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+        }
+    }
+    let versions = match state.drafts.versions(&board) {
+        Ok(v) => v,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let fresh = match drafts::restored(&versions, version, &stamp()) {
+        Ok(d) => d,
+        Err(why) => return not_found(&why),
+    };
+    if let Err(why) = state.drafts.put(&board, &fresh) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+    }
+    for gone in drafts::beyond_kept(&versions) {
+        let _ = state.drafts.destroy(&board, gone);
+    }
+    history_of(&state, &board).map_or_else(|r| *r, |h| json(&h))
+}
+
+/// Starts again from the page as it is: the open version closed, a new one
+/// with no operation on the page's current fingerprint.
+async fn reset_draft(
+    State(state): State<AppState>,
+    Path(board): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    let ask: DraftAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let history = match history_of(&state, &board) {
+        Ok(h) => h,
+        Err(r) => return *r,
+    };
+    if let Some(mut current) = history.current {
+        current.state = drafts::State::Kept;
+        current.closed_at = stamp();
+        if let Err(why) = state.drafts.put(&board, &current) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+        }
+    }
+    let versions = match state.drafts.versions(&board) {
+        Ok(v) => v,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let next = versions
+        .iter()
+        .map(|d| d.version)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let fresh = Draft {
+        version: next,
+        state: drafts::State::Open,
+        base: ask.base,
+        created_at: stamp(),
+        ..Draft::default()
+    };
+    if let Err(why) = state.drafts.put(&board, &fresh) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+    }
+    for gone in drafts::beyond_kept(&versions) {
+        let _ = state.drafts.destroy(&board, gone);
+    }
+    history_of(&state, &board).map_or_else(|r| *r, |h| json(&h))
+}
+
+/// One board's drafts in short, for the office's pin board.
+#[derive(Serialize)]
+struct DraftSummary {
+    board: String,
+    current: Option<Draft>,
+    kept: usize,
+    validated: Vec<u32>,
+}
+
+/// Every board that has a draft: its open version and what is kept.
+async fn all_drafts(State(state): State<AppState>) -> Response {
+    let boards = match state.drafts.boards() {
+        Ok(b) => b,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let mut all = Vec::new();
+    for board in boards {
+        let versions = match state.drafts.versions(&board) {
+            Ok(v) => v,
+            Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+        };
+        let history = drafts::history(versions);
+        all.push(DraftSummary {
+            board,
+            validated: history
+                .kept
+                .iter()
+                .filter(|d| d.state == drafts::State::Validated)
+                .map(|d| d.version)
+                .collect(),
+            kept: history.kept.len(),
+            current: history.current,
+        });
+    }
+    json(&all)
+}
+
+/// What the page sends to apply requests to its draft: the page as the
+/// draft shows it, the micro-frontends in short, and the requests.
+#[derive(Debug, Default, Deserialize)]
+struct ApplyAsk {
+    #[serde(default)]
+    page: String,
+    #[serde(default)]
+    html: String,
+    #[serde(default)]
+    components: String,
+    #[serde(default)]
+    requests: Vec<drafts::Asked>,
+}
+
+/// The most of a page an application is handed.
+const APPLY_HTML_CHARS: usize = 120_000;
+
+/// Applies requests to the page's draft in one go: one question to Claude,
+/// answered with the operations, each signed with its request.
+async fn apply_requests(
+    State(state): State<AppState>,
+    Path(board): Path<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(r) = draft_board(&board) {
+        return *r;
+    }
+    let Some(desks) = state.note_desks.clone() else {
+        return not_found(NO_SESSIONS);
+    };
+    let ask: ApplyAsk = match serde_json::from_slice(&body) {
+        Ok(ask) => ask,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("not an application: {e}")).into_response();
+        }
+    };
+    if ask.requests.is_empty() {
+        return (StatusCode::BAD_REQUEST, "no request to apply").into_response();
+    }
+    let html: String = ask.html.chars().take(APPLY_HTML_CHARS).collect();
+    let prompt = drafts::apply_prompt(&ask.page, &html, &ask.components, &ask.requests);
+    let answer = match desks.ask(prompt).await {
+        Ok(answer) => answer,
+        Err(why) => return (StatusCode::BAD_GATEWAY, why).into_response(),
+    };
+    match drafts::ops_from_answer(&answer, &ask.requests) {
+        Ok(ops) => json(&serde_json::json!({ "ops": ops })),
+        Err(why) => (StatusCode::BAD_GATEWAY, format!("{why}\n\n{answer}")).into_response(),
+    }
+}
+
+/// What the page sends to write a file of the mock-up in the branch's
+/// workspace: the page as the draft shows it, a forked fragment, the
+/// draft's own file.
+#[derive(Debug, Default, Deserialize)]
+struct WriteAsk {
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    text: String,
+}
+
+/// The most a written file may weigh.
+const WRITE_CHARS: usize = 2_000_000;
+
+async fn mockup_write(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(mockups) = state.mockups.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let ask: WriteAsk = match serde_json::from_slice(&body) {
+        Ok(ask) => ask,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("not a file: {e}")).into_response(),
+    };
+    if ask.text.chars().count() > WRITE_CHARS {
+        return (StatusCode::BAD_REQUEST, "too big a file").into_response();
+    }
+    let branch = branch_or_integration(&state, Some(ask.branch));
+    let written =
+        tokio::task::spawn_blocking(move || mockups.write(&branch, &ask.path, ask.text.as_bytes()))
+            .await;
+    match written {
+        Ok(Ok(())) => json(&serde_json::json!({ "written": true })),
+        Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the write was dropped").into_response(),
+    }
+}
+
 /// One board and the pins on it, for the office's pin board.
 #[derive(Serialize)]
 struct BoardNotes {
@@ -1765,8 +2184,8 @@ async fn turn_note(
 ) -> Response {
     let kind = match kind.as_str() {
         "note" => annotations::Kind::Note,
-        "asking" => annotations::Kind::Asking,
-        _ => return not_found("a brainstorm turns into a note or an asking"),
+        "request" | "asking" => annotations::Kind::Request,
+        _ => return not_found("a brainstorm turns into a note or a request"),
     };
     let Some(desks) = state.note_desks.clone() else {
         return not_found(NO_SESSIONS);
@@ -2455,6 +2874,7 @@ mod tests {
             janitor: None,
             data: None,
             pins: Arc::new(Pins::default()),
+            drafts: Arc::new(Versions::default()),
             note_desks: None,
             mockups: None,
             builds: None,
@@ -2703,6 +3123,128 @@ mod tests {
         fn discard(&self, _branch: &str) -> Result<(), String> {
             Ok(())
         }
+        fn write(&self, _branch: &str, path: &str, _bytes: &[u8]) -> Result<(), String> {
+            if path.contains("..") {
+                Err("refused".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// Draft versions in memory.
+    #[derive(Default)]
+    struct Versions(std::sync::Mutex<Vec<(String, Draft)>>);
+
+    // A test fake: each method holds its lock for the whole of its few lines.
+    #[allow(clippy::significant_drop_tightening)]
+    impl DraftStore for Versions {
+        fn boards(&self) -> Result<Vec<String>, String> {
+            let kept = self.0.lock().map_err(|e| e.to_string())?;
+            let mut boards: Vec<String> = kept.iter().map(|(b, _)| b.clone()).collect();
+            boards.sort();
+            boards.dedup();
+            Ok(boards)
+        }
+        fn versions(&self, board: &str) -> Result<Vec<Draft>, String> {
+            let kept = self.0.lock().map_err(|e| e.to_string())?;
+            Ok(kept
+                .iter()
+                .filter(|(b, _)| b == board)
+                .map(|(_, d)| d.clone())
+                .collect())
+        }
+        fn put(&self, board: &str, draft: &Draft) -> Result<(), String> {
+            let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+            kept.retain(|(b, d)| !(b == board && d.version == draft.version));
+            kept.push((board.to_string(), draft.clone()));
+            Ok(())
+        }
+        fn destroy(&self, board: &str, version: u32) -> Result<(), String> {
+            let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+            kept.retain(|(b, d)| !(b == board && d.version == version));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_draft_opens_writes_keeps_restores_and_validates() {
+        let versions = Arc::new(Versions::default());
+        let with = || {
+            let mut st = state(Shelf::default(), None);
+            st.drafts = Arc::clone(&versions) as Arc<dyn DraftStore>;
+            st
+        };
+        let board = "mockup--main--home";
+        let (status, body) = post(
+            with(),
+            &format!("/api/drafts/{board}/open"),
+            r#"{"base":"abc"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("\"version\":1") && body.contains("\"state\":\"open\""),
+            "{body}"
+        );
+        let (status, _) = post(
+            with(),
+            &format!("/api/drafts/{board}/open"),
+            r#"{"base":"abc"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "opening again continues");
+        assert_eq!(versions.versions(board).expect("v").len(), 1);
+        let ops = r#"{"ops":[{"kind":"remove","by":"human","target":"id:x"}],"viewport":1280,"name":"first"}"#;
+        let response = router(with())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/drafts/{board}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(ops))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let (status, body) = post(with(), &format!("/api/drafts/{board}/keep"), "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("\"current\":null") && body.contains("\"kept\""),
+            "{body}"
+        );
+        let (status, body) = post(
+            with(),
+            &format!("/api/drafts/{board}/open"),
+            r#"{"base":"abc"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("\"version\":2") && body.contains("\"kind\":\"remove\""),
+            "carried over: {body}"
+        );
+        let (status, _) = post(
+            with(),
+            &format!("/api/drafts/{board}/validate?version=1"),
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = post(with(), &format!("/api/drafts/{board}/restore/1"), "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"version\":3"), "{body}");
+        let (status, body) = get(with(), "/api/drafts").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("\"validated\":[1]"), "{body}");
+        let (status, _) = post(
+            with(),
+            "/api/mockup/write",
+            r#"{"branch":"main","path":"../x","text":""}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "no product here");
     }
 
     async fn post(state: AppState, uri: &str, body: &str) -> (StatusCode, String) {

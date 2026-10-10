@@ -22,8 +22,9 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use crate::adapters::git_units::{Mirror, run};
+use crate::domain::drafts::fingerprint;
 use crate::domain::mockup;
-use crate::ports::{MockState, Mockups};
+use crate::ports::{MockPage, MockState, Mockups};
 
 /// The mock-up read through `git`, edited in a worktree.
 pub struct GitMockups {
@@ -126,6 +127,15 @@ fn listed(manifest: Option<&str>) -> Result<mockup::Manifest, String> {
     manifest.map_or_else(|| Ok(mockup::Manifest::default()), mockup::manifest_of)
 }
 
+/// Writes `dir/mock/<path>`, its folders made first.
+fn write_under(dir: &Path, path: &str, bytes: &[u8]) -> Result<(), String> {
+    let full = dir.join("mock").join(path);
+    if let Some(parent) = full.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    fs::write(&full, bytes).map_err(|e| format!("{}: {e}", full.display()))
+}
+
 /// Reads `dir/mock/<path>`; `None` when it is not there.
 fn read_under(dir: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
     match fs::read(dir.join("mock").join(path)) {
@@ -140,10 +150,20 @@ fn read_under(dir: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
 fn state_of_folder(branch: &str, folder: &Path) -> Result<MockState, String> {
     let manifest = fs::read_to_string(folder.join("mock/pages.json")).ok();
     let found = listed(manifest.as_deref())?;
+    let pages = found
+        .pages
+        .into_iter()
+        .map(|page| {
+            let hash = fs::read(folder.join("mock").join(&page.path))
+                .map(|bytes| fingerprint(&bytes))
+                .unwrap_or_default();
+            MockPage { hash, ..page }
+        })
+        .collect();
     Ok(MockState {
         branch: branch.to_string(),
         present: manifest.is_some(),
-        pages: found.pages,
+        pages,
         components: found.components,
         edited: false,
         saved: String::new(),
@@ -165,10 +185,19 @@ impl Mockups for GitMockups {
             .show(branch, "mock/pages.json")?
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
         let found = listed(manifest.as_deref())?;
+        let mut pages = Vec::new();
+        for page in found.pages {
+            let hash = self
+                .mirror
+                .show(branch, &format!("mock/{}", page.path))?
+                .map(|bytes| fingerprint(&bytes))
+                .unwrap_or_default();
+            pages.push(MockPage { hash, ..page });
+        }
         Ok(MockState {
             branch: branch.to_string(),
             present: manifest.is_some(),
-            pages: found.pages,
+            pages,
             components: found.components,
             edited: false,
             saved: String::new(),
@@ -248,6 +277,14 @@ impl Mockups for GitMockups {
         Ok(target)
     }
 
+    fn write(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
+        if !mockup::is_safe_path(path) {
+            return Err(format!("not a path under mock/: {path}"));
+        }
+        let folder = self.workspace(branch)?;
+        write_under(&folder, path, bytes)
+    }
+
     fn discard(&self, branch: &str) -> Result<(), String> {
         if let Some(folder) = self.worktree(branch) {
             let at = folder.to_string_lossy().into_owned();
@@ -304,6 +341,13 @@ impl Mockups for DirMockups {
         Err("the sample has no repository to save a mock-up to".to_string())
     }
 
+    fn write(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
+        if !mockup::is_safe_path(path) {
+            return Err(format!("not a path under mock/: {path}"));
+        }
+        write_under(&self.folder(branch), path, bytes)
+    }
+
     fn discard(&self, _branch: &str) -> Result<(), String> {
         Err("the sample is not a checkout: nothing to discard".to_string())
     }
@@ -330,6 +374,19 @@ mod tests {
         let state = sample.state("main").expect("read");
         assert!(state.present);
         assert_eq!(state.pages[0].title, "Home");
+        assert_eq!(
+            state.pages[0].hash.len(),
+            16,
+            "a page carries its fingerprint"
+        );
+        sample
+            .write("main", "drafts/home.json", b"{}")
+            .expect("written");
+        assert_eq!(
+            sample.file("main", "drafts/home.json").expect("read"),
+            Some(b"{}".to_vec())
+        );
+        assert!(sample.write("main", "../x", b"").is_err());
         assert_eq!(
             sample.file("main", "pages/home.html").expect("read"),
             Some(b"<h1>hi</h1>".to_vec())

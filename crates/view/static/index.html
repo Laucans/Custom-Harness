@@ -31,6 +31,12 @@
   <div class="act-log-head"><b class="act-log-title"></b><span class="act-log-state"></span><button type="button" data-action-close aria-label="close" title="Close (Esc)">×</button></div>
   <pre></pre>
 </div>
+<div id="talk" hidden role="dialog" aria-label="an AI session">
+  <div id="talk-head"><span id="talk-title"></span><span class="spacer"></span><span id="talk-status"></span><button type="button" id="talk-restart" class="mini" title="kill this Claude Code and start a fresh one">restart</button><button type="button" id="talk-close" title="close the session (its turns are kept)" aria-label="close">×</button></div>
+  <div id="talk-chips" class="chips"></div>
+  <div id="talk-term"></div>
+  <div id="talk-grip" title="drag to resize"></div>
+</div>
 <aside id="pane" hidden>
   <div id="pane-head">
     <button id="pane-back" title="back to the pane you came from" aria-label="back" hidden>←</button>
@@ -44,6 +50,7 @@
 <script src="/clock.js"></script>
 <script src="/actions.js"></script>
 <script src="/board.js"></script>
+<script src="/edit.js"></script>
 <script src="/data-model.js"></script>
 <script src="/mockup.js"></script>
 <script src="/app.js"></script>

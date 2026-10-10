@@ -599,18 +599,15 @@
       branch: p.branch,
       dir: p.dir,
       pin: p.pin,
-      onSession: (s) => openPane({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, dir: s.dir }),
+      onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, dir: s.dir }),
     }) : null),
     mockup: (el, p) => (window.MockupPane ? window.MockupPane.mount(el, {
       branch: p.branch,
       page: p.page,
       pageSlug: p.pageSlug,
       pin: p.pin,
-      onSession: (s) => {
-        // Back from the session, the pane reopens on the page the pin was on.
-        S.pane = Object.assign({}, S.pane, { branch: s.branch, page: s.page });
-        openPane({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page });
-      },
+      edit: !!p.edit,
+      onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page }),
     }) : null),
   };
 
@@ -620,6 +617,8 @@
   const PANE_HISTORY = 50;
   S.paneHistory = [];
   function openPane(p, goingBack = false) {
+    // A pin's session sits in the dock, not in the pane.
+    if (p.kind === 'note_session') { openTalk(p); return; }
     // The office's screen was the feature list before it was renamed.
     if (p.kind === 'features') p = { ...p, kind: 'capabilities' };
     acknowledge(S.pane);
@@ -1017,7 +1016,7 @@
     // A pin's AI session: opened by the server with the pin's conversation
     // handed back, closed when the pane is left — its turns are then kept.
     note_session: {
-      title: (p) => `${{ asking: 'Asking', simulate: 'Simulate', link: 'New page' }[p.pin] || 'Brainstorm'} · ${p.on}`,
+      title: (p) => `${{ request: 'Request', asking: 'Request', simulate: 'Request', link: 'New page', design: 'Micro-frontend', note: 'Note' }[p.pin] || 'Brainstorm'} · ${p.on}`,
       flag: '--no-steward',
       chips: [
         ['Where are we?', 'Summarize where we are: what is decided, what is open.'],
@@ -1059,17 +1058,27 @@
     S.term = null;
   }
   function stewardStatus(text) { const el = $('term-status'); if (el) el.textContent = text; }
-  async function mountTerminal(who, p) {
-    const el = $('term');
+  // The pane's slot for a terminal: where the pane draws it, how it says
+  // what the desk is doing, what to replace when the desk is closed.
+  const PANE_SLOT = {
+    el: () => $('term'),
+    alive: (who) => !!(S.pane && S.pane.kind === who && $('term')),
+    status: stewardStatus,
+    unavailable: (html) => { $('pane-body').classList.remove('terminal'); $('pane-body').innerHTML = html; },
+    chips: () => $('pane-body'),
+    restart: () => $('term-restart'),
+    set: (handle) => { S.term = handle; },
+  };
+  async function mountTerminal(who, p, slot = PANE_SLOT) {
+    const el = slot.el();
     if (!el) return;
     const desk = TERMINALS[who];
     let status = null;
-    if (desk.status) stewardStatus('opening the session — a long conversation is summarized first…');
+    if (desk.status) slot.status('opening the session — a long conversation is summarized first…');
     try { status = desk.status ? await desk.status(p) : await (await fetch('/api/' + who)).json(); } catch (e) { /* shown below */ }
-    if (!S.pane || S.pane.kind !== who || !$('term')) return;
+    if (!slot.alive(who, p)) return;
     if (!status || !status.available) {
-      $('pane-body').classList.remove('terminal');
-      $('pane-body').innerHTML = `<div class="callout">No ${who === 'note_session' ? 'session' : who}: ${status && status.why ? esc(status.why) : `the view runs with <code>${desk.flag}</code>, or the server is unreachable`}.</div>`;
+      slot.unavailable(`<div class="callout">No ${who === 'note_session' ? 'session' : who}: ${status && status.why ? esc(status.why) : `the view runs with <code>${desk.flag}</code>, or the server is unreachable`}.</div>`);
       return;
     }
     if (typeof Terminal === 'undefined' || typeof FitAddon === 'undefined') {
@@ -1091,18 +1100,18 @@
     ws.binaryType = 'arraybuffer';
     const enc = new TextEncoder();
     const send = (bytes) => { if (ws.readyState === 1) ws.send(bytes); };
-    stewardStatus(`connecting · ${status.command}`);
-    ws.onopen = () => { stewardStatus(`at the desk · ${status.command}`); term.focus(); };
+    slot.status(`connecting · ${status.command}`);
+    ws.onopen = () => { slot.status(`at the desk · ${status.command}`); term.focus(); };
     ws.onmessage = (ev) => { term.write(typeof ev.data === 'string' ? ev.data : new Uint8Array(ev.data)); };
-    ws.onclose = () => stewardStatus('disconnected — reopen the pane to sit down again');
-    ws.onerror = () => stewardStatus('the connection failed');
+    ws.onclose = () => slot.status('disconnected — reopen to sit down again');
+    ws.onerror = () => slot.status('the connection failed');
     term.onData((data) => send(enc.encode(data)));
     const ro = new ResizeObserver(() => {
       try { fit.fit(); send(JSON.stringify({ t: 'size', cols: term.cols, rows: term.rows })); } catch (e) { /* mid-layout */ }
     });
     ro.observe(el);
-    S.term = { term, ws, ro, close: desk.close ? () => desk.close(p) : null };
-    const restart = $('term-restart');
+    slot.set({ term, ws, ro, close: desk.close ? () => desk.close(p) : null });
+    const restart = slot.restart();
     if (restart) restart.onclick = () => {
       if (ws.readyState === 1 && window.confirm(`Kill the ${who}'s Claude Code and start a fresh one?`)) {
         term.reset();
@@ -1111,13 +1120,79 @@
     };
     // A chip types its sentence, then presses Enter a beat later — the way a
     // hand would, so the program sees a line and not a paste.
-    $('pane-body').querySelectorAll('[data-type]').forEach((b) => {
+    slot.chips().querySelectorAll('[data-type]').forEach((b) => {
       b.onclick = () => {
         send(enc.encode(b.dataset.type));
         setTimeout(() => { send(enc.encode('\r')); term.focus(); }, 180);
       };
     });
   }
+
+  // ---- the conversation dock ----------------------------------------------------
+  // A pin's AI session sits in a dock at the bottom left, floating over the
+  // page: it stays while the human walks the panes and pages, one session
+  // at a time, and closing it closes the session (its turns are kept). Its
+  // size is dragged from its top-right corner and remembered.
+  const TALK_SIZE = 'harness.talk.size';
+  S.talk = null;
+  const TALK_SLOT = {
+    el: () => $('talk-term'),
+    alive: (who, p) => !!(S.talk && S.talk.p === p),
+    status: (text) => { $('talk-status').textContent = text; },
+    unavailable: (html) => { $('talk-term').innerHTML = html; $('talk-status').textContent = 'no session'; },
+    chips: () => $('talk'),
+    restart: () => $('talk-restart'),
+    set: (handle) => { if (S.talk) Object.assign(S.talk, handle); },
+  };
+  function openTalk(p) {
+    closeTalk();
+    const desk = TERMINALS.note_session;
+    const talk = $('talk');
+    $('talk-title').textContent = typeof desk.title === 'function' ? desk.title(p) : desk.title;
+    $('talk-chips').innerHTML = desk.chips.map(([label, say]) => `<button data-type="${esc(say)}">${esc(label)}</button>`).join('');
+    $('talk-term').innerHTML = '';
+    const size = JSON.parse(localStorage.getItem(TALK_SIZE) || 'null') || {};
+    talk.style.setProperty('--talk-w', (size.w || 640) + 'px');
+    talk.style.setProperty('--talk-h', (size.h || Math.round(window.innerHeight * 0.4)) + 'px');
+    talk.hidden = false;
+    S.talk = { p, term: null, ws: null, ro: null, close: null };
+    mountTerminal('note_session', p, TALK_SLOT);
+  }
+  function closeTalk() {
+    const t = S.talk;
+    if (!t) return;
+    S.talk = null;
+    $('talk').hidden = true;
+    let closing = null;
+    if (t.close) { try { closing = t.close(); } catch (e) { /* the server keeps what it can */ } }
+    try { if (t.ro) t.ro.disconnect(); } catch (e) { /* already gone */ }
+    try { if (t.ws) t.ws.close(); } catch (e) { /* already gone */ }
+    try { if (t.term) t.term.dispose(); } catch (e) { /* already gone */ }
+    // The pin's turns are counted once the session is closed: the canvas rereads them.
+    if (closing) { const canvas = S.canvas; closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); }
+  }
+  $('talk-close').addEventListener('click', closeTalk);
+  $('talk-grip').addEventListener('pointerdown', (e) => {
+    const talk = $('talk');
+    const r = talk.getBoundingClientRect();
+    const start = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+    e.preventDefault();
+    $('talk-grip').setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const w = Math.max(360, Math.min(window.innerWidth - 24, start.w + ev.clientX - start.x));
+      const h = Math.max(200, Math.min(window.innerHeight - 24, start.h - (ev.clientY - start.y)));
+      talk.style.setProperty('--talk-w', w + 'px');
+      talk.style.setProperty('--talk-h', h + 'px');
+    };
+    const up = () => {
+      $('talk-grip').removeEventListener('pointermove', move);
+      $('talk-grip').removeEventListener('pointerup', up);
+      const rr = talk.getBoundingClientRect();
+      try { localStorage.setItem(TALK_SIZE, JSON.stringify({ w: Math.round(rr.width), h: Math.round(rr.height) })); } catch (err) { /* a preference */ }
+    };
+    $('talk-grip').addEventListener('pointermove', move);
+    $('talk-grip').addEventListener('pointerup', up);
+  });
 
   function renderPane(p, refresh) {
     const fn = PANES[p.kind] || PANES.placeholder;
@@ -2513,7 +2588,6 @@
 
     steward(p) { return terminalPane(p.kind, p); },
     doctor(p) { return terminalPane(p.kind, p); },
-    note_session(p) { return terminalPane(p.kind, p); },
 
     notifications(p) {
       const level = LEVELS.some(([l]) => l === p.level) ? p.level : 'error';
@@ -2591,7 +2665,7 @@
   // Boards are named after their branch: `data-model--<slug>` and
   // `mockup--<slug>--<page>`; the slugs are matched against the product's
   // branches, so a click opens the pin on the right branch and page.
-  const PIN_FILTER = { kind: 'all' };
+  const PIN_FILTER = { kind: 'all', tab: 'pins' };
   const plainSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   function dataSlug(branch) {
     const m = /^milestone\/(\d+)/.exec(branch);
@@ -2613,15 +2687,18 @@
   async function pinsLoad(p) {
     const host = $('pins');
     if (!host) return;
-    let boards = []; let versions = null;
+    let boards = []; let versions = null; let drafts = [];
     try {
-      [boards, versions] = await Promise.all([
+      [boards, versions, drafts] = await Promise.all([
         fetch('/api/notes').then((r) => (r.ok ? r.json() : [])),
         fetch('/api/data-model/versions').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        fetch('/api/drafts').then((r) => (r.ok ? r.json() : [])).catch(() => []),
       ]);
     } catch (e) { boards = []; }
     if (!$('pins')) return;
     const branches = (versions && versions.branches) || [];
+    const tabs = `<nav class="screens pins-tabs"><button class="${PIN_FILTER.tab === 'pins' ? 'here' : ''}" data-pin-tab="pins">pins</button><button class="${PIN_FILTER.tab === 'drafts' ? 'here' : ''}" data-pin-tab="drafts">drafts${drafts.length ? ' · ' + drafts.length : ''}</button></nav>`;
+    if (PIN_FILTER.tab === 'drafts') { host.innerHTML = tabs + draftsTable(drafts, boards, branches); return; }
     const rows = [];
     boards.forEach((b) => {
       const home = homeOf(b.board, branches);
@@ -2644,9 +2721,32 @@
             + `<td class="mono">${esc(r.home.label)}</td><td class="muted">${n.at ? esc(when(n.at)) : '—'}</td></tr>`;
         }).join('') + '</tbody></table>'
       : '<div class="muted">No pin yet. Drop one on the data model or the mock-up.</div>';
-    host.innerHTML = `<div class="chips pins-chips">${chips}</div>${table}`;
+    host.innerHTML = `${tabs}<div class="chips pins-chips">${chips}</div>${table}`;
+  }
+  // The pages with a draft: its open version, its kept ones, the requests
+  // still pending on the page; a click opens the page in edit mode.
+  function draftsTable(drafts, boards, branches) {
+    const rows = drafts.map((d) => {
+      const home = homeOf(d.board, branches);
+      const notes = ((boards.find((b) => b.board === d.board) || {}).notes || []);
+      const pending = notes.filter((n) => n.kind === 'request' && (n.state || 'pending') !== 'simulated').length;
+      return { d, home, pending };
+    }).filter((r) => r.home.view === 'mockup').sort((a, b) => ((b.d.current || {}).created_at || '').localeCompare((a.d.current || {}).created_at || ''));
+    if (!rows.length) return '<div class="muted">No draft yet. Open a page of the mock-up in edit mode and move a part.</div>';
+    return '<table class="pins-table"><thead><tr><th>page</th><th>branch</th><th>open version</th><th>kept</th><th>requests</th></tr></thead><tbody>'
+      + rows.map(({ d, home, pending }) => {
+        const open = esc(JSON.stringify({ kind: 'mockup', branch: home.branch, pageSlug: home.pageSlug, edit: true }));
+        const c = d.current;
+        return `<tr class="pin-row" data-open-pin="${open}">`
+          + `<td><b>${esc(home.where)}</b></td><td class="mono">${esc(home.label)}</td>`
+          + `<td>${c ? `v${c.version}${c.name ? ' · ' + esc(c.name) : ''} · ${c.ops.length} op${c.ops.length === 1 ? '' : 's'}` : '<span class="muted">none open</span>'}</td>`
+          + `<td class="muted">${d.kept}${d.validated.length ? ` · <span class="tag ok">validated v${d.validated.join(', v')}</span>` : ''}</td>`
+          + `<td>${pending ? `<span class="tag warn">${pending} pending</span>` : '<span class="muted">—</span>'}</td></tr>`;
+      }).join('') + '</tbody></table>';
   }
   $('pane-body').addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-pin-tab]');
+    if (tab && S.pane && S.pane.kind === 'pins') { PIN_FILTER.tab = tab.dataset.pinTab; pinsLoad(S.pane); return; }
     const chip = e.target.closest('[data-pin-kind]');
     if (chip && S.pane && S.pane.kind === 'pins') { PIN_FILTER.kind = chip.dataset.pinKind; pinsLoad(S.pane); return; }
     const row = e.target.closest('[data-open-pin]');
@@ -2657,7 +2757,7 @@
   window.HarnessPanes = { open: (p) => openPane(p) };
 
   // A page left with a pin's session open still keeps its turns.
-  window.addEventListener('pagehide', () => { if (S.term && S.term.close) S.term.close(); });
+  window.addEventListener('pagehide', () => { if (S.term && S.term.close) S.term.close(); if (S.talk && S.talk.close) S.talk.close(); });
 
   // ---- go --------------------------------------------------------------------
   fromHash();

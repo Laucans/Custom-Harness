@@ -47,6 +47,7 @@ data/model.json                    the data model: what every table and field is
 mock/pages.json                    the mock-up's pages, one per screen, and its micro-frontends (contract N)
 mock/pages/<screen>.html           one mocked page: static HTML, the rest injected as micro-frontends
 mock/components/<MicroUi>.html     one micro-frontend: the real Micro-UI bundled on the mock server, or a hand-written fragment before it is built
+mock/drafts/<page>.json            on a mockup/* branch: the operations, forks and requests behind the page as the human rewrote it
 mock/src/server.js, screen.js      installed: the mock server (the shell's wire protocol from mock/fixtures/) and the screen host ($ctx.<name>)
 mock/src/reads.js, commands.js     what the product teaches the server: a read per Capability, a judgement per DataCapability
 mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI (`source` in pages.json), bundled into mock/components/<MicroUi>.js, committed with its builtFrom
@@ -128,9 +129,17 @@ contracts/*.schema.json            the fourteen contracts, JSON Schema 2020-12
     `apps/screens/` with no page in `mock/pages.json`, a Micro-UI under
     `apps/` with no micro-frontend there or one whose `needs`/`actions`
     differ from its manifest, a listed micro-frontend with no fragment, or
-    a bundle not rebuilt by `mock/build.sh`, fails the gates. The human annotates the mock-up in
-    the factory view and may push a `mockup/*` branch with the pages as
-    they want them: read it before building the screen it names.
+    a bundle not rebuilt by `mock/build.sh`, fails the gates. The human
+    annotates the mock-up in the factory view and may push a `mockup/*`
+    branch with the pages as they want them: read it before building the
+    screen it names. Such a branch carries `mock/drafts/<page>.json` beside
+    the page it rewrote — the operations the human made on the committed
+    page (`move`, `resize`, `remove`, `clone`, `text`, `static`, `add`,
+    `fork`), the micro-frontends it forked (`variantOf` in `pages.json`,
+    the copy's fragment under `mock/components/`), and the requests it
+    carries, each an intention written for the next roadmap: build the
+    layout the page shows with clean code, not the operations one by one,
+    and keep a forked micro-frontend a variant of its origin.
 
 ### What a session does before writing code
 

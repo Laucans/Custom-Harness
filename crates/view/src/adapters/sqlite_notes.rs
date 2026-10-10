@@ -14,7 +14,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 #[cfg(test)]
 use crate::domain::annotations::Kind;
 use crate::domain::annotations::{self, Note};
-use crate::ports::{KeptNote, NoteStore};
+use crate::domain::drafts::Draft;
+use crate::ports::{DraftStore, KeptNote, NoteStore};
 
 /// How long a writer waits for another one.
 const BUSY: Duration = Duration::from_secs(5);
@@ -28,6 +29,12 @@ CREATE TABLE IF NOT EXISTS notes (
     conversation TEXT,
     turns        INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (board, id)
+);
+CREATE TABLE IF NOT EXISTS drafts (
+    board        TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    body         TEXT NOT NULL,
+    PRIMARY KEY (board, version)
 );
 ";
 
@@ -65,7 +72,7 @@ impl SqliteNotes {
         };
         for (board, notes) in annotations::shelf(Some(&text)) {
             for note in notes {
-                self.put(&board, &note)?;
+                NoteStore::put(self, &board, &note)?;
             }
         }
         let done = legacy.with_extension("json.imported");
@@ -78,6 +85,51 @@ impl SqliteNotes {
             .lock()
             .map_err(|_| "the pins' store is poisoned".to_string())?;
         f(&conn).map_err(|e| format!("the pins' store: {e}"))
+    }
+}
+
+impl DraftStore for SqliteNotes {
+    fn boards(&self) -> Result<Vec<String>, String> {
+        self.with(|conn| {
+            let mut statement = conn.prepare("SELECT DISTINCT board FROM drafts ORDER BY board")?;
+            let mapped = statement.query_map([], |row| row.get(0))?;
+            mapped.collect()
+        })
+    }
+
+    fn versions(&self, board: &str) -> Result<Vec<Draft>, String> {
+        let rows: Vec<String> = self.with(|conn| {
+            let mut statement =
+                conn.prepare("SELECT body FROM drafts WHERE board = ?1 ORDER BY version")?;
+            let mapped = statement.query_map(params![board], |row| row.get(0))?;
+            mapped.collect()
+        })?;
+        Ok(rows
+            .iter()
+            .filter_map(|body| serde_json::from_str(body).ok())
+            .collect())
+    }
+
+    fn put(&self, board: &str, draft: &Draft) -> Result<(), String> {
+        let body = serde_json::to_string(draft).map_err(|e| e.to_string())?;
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO drafts (board, version, body) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (board, version) DO UPDATE SET body = excluded.body",
+                params![board, draft.version, body],
+            )
+        })
+        .map(|_| ())
+    }
+
+    fn destroy(&self, board: &str, version: u32) -> Result<(), String> {
+        self.with(|conn| {
+            conn.execute(
+                "DELETE FROM drafts WHERE board = ?1 AND version = ?2",
+                params![board, version],
+            )
+        })
+        .map(|_| ())
     }
 }
 
@@ -194,9 +246,39 @@ mod tests {
             page: String::new(),
             component: String::new(),
             source: String::new(),
+            state: crate::domain::annotations::RequestState::Pending,
             shape: None,
             turns: 0,
         }
+    }
+
+    #[test]
+    fn drafts_round_trip_by_board_and_version() {
+        let dir = std::env::temp_dir().join(format!("harness-drafts-db-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let store =
+            SqliteNotes::open(&dir.join("harness.db"), &dir.join("none.json")).expect("open");
+        let mut draft = Draft {
+            version: 1,
+            name: "first".into(),
+            ..Draft::default()
+        };
+        DraftStore::put(&store, "mockup--main--home", &draft).expect("kept");
+        draft.version = 2;
+        DraftStore::put(&store, "mockup--main--home", &draft).expect("kept");
+        assert_eq!(
+            DraftStore::boards(&store).expect("boards"),
+            ["mockup--main--home"]
+        );
+        let versions = store.versions("mockup--main--home").expect("read");
+        assert_eq!(
+            versions.iter().map(|d| d.version).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        DraftStore::destroy(&store, "mockup--main--home", 1).expect("gone");
+        assert_eq!(store.versions("mockup--main--home").expect("read").len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -214,13 +296,12 @@ mod tests {
         assert!(!legacy.exists(), "imported once, then set aside");
         assert!(dir.join("annotations.json.imported").exists());
 
-        store.put("data-model", &note("a", "first")).expect("kept");
-        store.put("data-model", &note("a", "second")).expect("kept");
+        NoteStore::put(&store, "data-model", &note("a", "first")).expect("kept");
+        NoteStore::put(&store, "data-model", &note("a", "second")).expect("kept");
         store
             .save_conversation("data-model", "a", "{\"turns\":[]}", 4)
             .expect("kept");
-        store
-            .put("data-model", &note("a", "third"))
+        NoteStore::put(&store, "data-model", &note("a", "third"))
             .expect("a new version keeps the conversation");
         let notes = store.notes("data-model").expect("read");
         assert_eq!(notes.len(), 2);
@@ -247,7 +328,7 @@ mod tests {
                 .any(|k| k.deleted_at.is_some())
         );
         store.mark_deleted("data-model", "a", None).expect("back");
-        store.destroy("data-model", "a").expect("gone");
+        NoteStore::destroy(&store, "data-model", "a").expect("gone");
         assert_eq!(store.conversation("data-model", "a").expect("read"), None);
         assert!(store.notes("elsewhere").expect("read").is_empty());
         let _ = fs::remove_dir_all(&dir);
