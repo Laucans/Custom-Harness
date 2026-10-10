@@ -76,7 +76,7 @@ use design::{
     design_asset, design_asset_remove, design_discard, design_drop_candidate, design_generate,
     design_publish, design_reply, design_tokens, design_validate, kit_apply, kit_checked,
     kit_custom, kit_delete, kit_drop_draft, kit_generate, kit_preview, kit_reprompt, kit_save,
-    kit_usages,
+    kit_showcase, kit_usages,
 };
 use desks::{ask_doctor, diagnose, diagnoses, doctor, doctor_term, steward, steward_term};
 use drafts::{
@@ -207,6 +207,7 @@ pub fn router(state: AppState) -> Router {
         .route("/kit.js", get(kit_js))
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
         .route("/mock/{slug}/__kit/{name}", get(kit_preview))
+        .route("/mock/{slug}/__showcase/contact", get(kit_showcase))
         .route("/mock/{slug}/{*path}", get(mock_file))
         .route("/render/{file}", get(render_asset))
         .route("/vendor/xterm.js", get(xterm_js))

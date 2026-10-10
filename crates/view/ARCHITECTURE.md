@@ -584,7 +584,13 @@ branch, never saved aside as `mockup/*`. Three tabs:
   `harness:roadmap` + `harness:ready` issue — *install the design system in
   the product's frontend* — so the first real screen does not reinvent the
   variables; `design.json` remembers it. Nothing is generated from a design
-  system no one validated.
+  system no one validated. Once tokens exist, the sheet comes first, then
+  the **simulated page** — a contact page the harness codes
+  (`kit::SHOWCASE`, served at `/mock/design-system/__showcase/contact`)
+  made of the kit's components only, their texts fitted to the page once
+  each fragment is in, reloaded on every change of the branch, so a
+  component the canvas saves shows there too — and injecting or generating
+  again is folded under *regenerate the design system*.
 - **catalogue** — the kit's components: the harness's sixteen **bases**
   (`crates/architecture/assets/kit/`, neutral fragments every application
   starts from: button, input, drop list, checkbox, radio, toggle, menu, tabs,

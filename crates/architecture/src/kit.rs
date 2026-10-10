@@ -1006,6 +1006,24 @@ pub fn used_in(html: &str) -> Vec<String> {
     names
 }
 
+/// The design system's showcase: a simulated page made of the kit only.
+///
+/// A "contact us" page — a menu, a form (fields, a drop list, radios,
+/// checkboxes, switches, its buttons), a card with an image, a table of the
+/// other ways to reach the company.
+///
+/// Coded in the harness like the bases: each component is filled by the
+/// loader from its fragment, then its texts are fitted to the page, so the
+/// page follows every component the canvas saves. Served beside the
+/// previews, one folder down (`../mock.js`, `../design/tokens.css`).
+pub const SHOWCASE: &str = include_str!("../assets/showcase.html");
+
+/// The components the showcase is made of, by name.
+#[must_use]
+pub fn showcase_uses() -> Vec<String> {
+    used_in(SHOWCASE)
+}
+
 /// The preview page of one kit component alone: the tokens, one `data-kit`
 /// element, the loader.
 ///
@@ -1183,6 +1201,17 @@ mod tests {
         assert!(uses(page, "Carousel") && uses(page, "Menu") && !uses(page, "Card"));
         assert_eq!(used_in(page), ["Carousel", "Menu"]);
         assert!(preview_page("Carousel").contains("data-kit=\"Carousel\""));
+        // The showcase is made of bases only, each a default the human starts with.
+        let uses = showcase_uses();
+        assert!(uses.len() >= 8);
+        for name in &uses {
+            let base = BASE.iter().find(|b| b.name == name).expect("a base");
+            assert!(
+                DEFAULT_CHECKED.contains(&base.id),
+                "{name} ticked by default"
+            );
+        }
+        assert!(SHOWCASE.contains("../mock.js") && SHOWCASE.contains("../design/tokens.css"));
         assert!(!preview_page("Carousel").contains("style.css"));
         let json = serde_json::to_string(&kit).expect("json");
         assert!(!json.contains("variantOf"), "an empty fork is not written");

@@ -46,6 +46,28 @@ pub(super) async fn kit_preview(
         .into_response()
 }
 
+/// The design system's showcase: the simulated page the harness codes, made
+/// of the kit's components as the branch has them.
+pub(super) async fn kit_showcase(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> Response {
+    if state.mockups.is_none() {
+        return not_found(NO_MOCKUPS);
+    }
+    if mockup::branch_of(&slug).is_none() {
+        return not_found("no such branch");
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        kit::SHOWCASE,
+    )
+        .into_response()
+}
+
 pub(super) const NO_KIT: &str =
     "nothing reads the product's design system: the view runs with --no-board and no --data-dir";
 

@@ -495,6 +495,11 @@ async fn the_easel_serves_the_branch_s_pages_previews_and_saves() {
     let (status, body) = get(with(), "/mock/milestone__3-x/__preview/RiskBadge").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(r#"data-component="RiskBadge""#) && body.contains("../mock.js"));
+    let (status, body) = get(with(), "/mock/design-system/__showcase/contact").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#"data-kit="Table""#) && body.contains("../mock.js"));
+    let (status, _) = get(with(), "/mock/a..b/__showcase/contact").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _) = get(with(), "/mock/main/__preview/risk-badge").await;
     assert_eq!(
         status,

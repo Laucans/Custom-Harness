@@ -35,7 +35,7 @@ src/tree.rs         Tree::read (the checkout's manifests, through Disk), violati
 src/model.rs        the agents' data/model.json merged with the DDL, field by field, with every divergence
 src/compare.rs      two data models side by side: tables, fields, links and views added, removed or changed
 src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
-src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the static check a fragment is reused on
+src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the showcase page (assets/showcase.html), the static check a fragment is reused on
 src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–M, gates, CI, scripts
 assets/             those files, compiled in with include_str!
 tests/              test_scope_script.rs: the installed test-scope.sh, run on a real folder
@@ -62,6 +62,9 @@ tests/              test_scope_script.rs: the installed test-scope.sh, run on a 
   branch (`mock/kit/`). What a product carries is the styled kit, never the
   harness's base — and `kit::check` is the one reading of "reusable as it
   is" that the view shows and the code stage applies.
+  `assets/showcase.html` is the same kind of thing: a page the harness
+  codes once — a contact page of the kit's components (`kit::SHOWCASE`) —
+  that the view shows to preview a product's design system at work.
 - **The rules exist twice, knowingly.** `tree::violations` is the loop's own
   reading; `assets/gates.yml` runs the same rules in the target's CI. A change
   to one is a change to the other.

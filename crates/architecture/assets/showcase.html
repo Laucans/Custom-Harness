@@ -1,0 +1,185 @@
+<!doctype html>
+<!-- The design system's showcase: a "contact us" page made of the kit's
+     components only. Each `data-kit` element is filled by the loader from
+     `kit/<Name>.html`, as on any page; once filled, the script below fits
+     its texts to the page (the links of the menu, the fields of the form,
+     the rows of the table) without touching its style, so the page follows
+     every component the canvas saves. A fragment whose structure differs
+     from its base keeps its own texts. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contact us — showcase</title>
+<link rel="stylesheet" href="../design/tokens.css">
+<style>
+body { margin: 0; background: var(--color-surface-2, #f3f4f6); color: var(--color-text, #111827); font-family: var(--font-family, system-ui, sans-serif); font-size: var(--font-size-base, 15px); }
+.sc-main { max-width: 1040px; margin: 0 auto; padding: var(--space-5, 32px) var(--space-4, 24px); display: flex; flex-direction: column; gap: var(--space-5, 32px); }
+.sc-head h1 { font-family: var(--font-family-heading, system-ui, sans-serif); font-size: var(--font-size-heading, 28px); font-weight: var(--font-weight-heading, 700); margin: 0 0 var(--space-1, 4px); }
+.sc-head p { margin: 0; color: var(--color-text-muted, #6b7280); }
+.sc-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--space-4, 24px); align-items: start; }
+.sc-form { background: var(--color-surface, #ffffff); border: var(--border-width, 1px) solid var(--color-border, #d1d5db); border-radius: var(--radius-large, 16px); padding: var(--space-4, 24px); display: flex; flex-direction: column; gap: var(--space-3, 16px); }
+.sc-form h2, .sc-more h2 { font-family: var(--font-family-heading, system-ui, sans-serif); font-size: var(--font-size-large, 20px); margin: 0; }
+.sc-choices { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3, 16px); }
+.sc-more { display: flex; flex-direction: column; gap: var(--space-3, 16px); }
+.sc-art { width: 100%; height: 100%; display: block; align-self: stretch; justify-self: stretch; overflow: hidden; }
+.kit-missing { margin: 0; padding: var(--space-2, 8px) var(--space-3, 16px); border: var(--border-width, 1px) dashed var(--color-border, #d1d5db); border-radius: var(--radius-medium, 8px); color: var(--color-text-muted, #6b7280); font-size: var(--font-size-small, 12px); }
+@media (max-width: 760px) { .sc-grid, .sc-choices { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div data-kit="Menu"></div>
+<main class="sc-main">
+  <header class="sc-head">
+    <h1>Contact us</h1>
+    <p>A question, a quote, a hand with your account: write to us, we answer within a working day.</p>
+  </header>
+  <div class="sc-grid">
+    <form class="sc-form" onsubmit="return false">
+      <h2>Write to us</h2>
+      <div data-kit="Input"></div>
+      <div data-kit="Select"></div>
+      <div class="sc-choices">
+        <div data-kit="Radio"></div>
+        <div data-kit="Checkbox"></div>
+      </div>
+      <div data-kit="Toggle"></div>
+      <div data-kit="Button"></div>
+    </form>
+    <div data-kit="Card"></div>
+  </div>
+  <section class="sc-more">
+    <h2>Other ways to reach us</h2>
+    <div data-kit="Table"></div>
+  </section>
+</main>
+<script>
+(() => {
+  'use strict';
+  const ART = '<svg class="sc-art" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" role="img" aria-label="our office">'
+    + '<rect width="320" height="180" fill="var(--color-surface-2, #f3f4f6)"/>'
+    + '<circle cx="250" cy="44" r="22" fill="var(--color-accent, #d97706)"/>'
+    + '<path d="M0 150 L70 92 L120 130 L190 70 L320 160 L320 180 L0 180 Z" fill="var(--color-primary, #2b6cb0)" opacity=".85"/>'
+    + '<path d="M0 165 L90 128 L170 158 L250 120 L320 150 L320 180 L0 180 Z" fill="var(--color-secondary, #6b7280)" opacity=".6"/>'
+    + '</svg>';
+  // The nodes `all` given `texts`, one each, in place: the first ones are
+  // reused (a fragment's script keeps its listeners), the missing ones are
+  // copies of the first, the extra ones go.
+  const cloneTo = (all, texts, set) => {
+    if (!all.length) return;
+    let last = all[all.length - 1];
+    texts.forEach((value, i) => {
+      let node = all[i];
+      if (!node) { node = all[0].cloneNode(true); last.after(node); last = node; }
+      set(node, value, i);
+    });
+    all.slice(texts.length).forEach((node) => node.remove());
+  };
+  const text = (root, selector, value) => { const el = root.querySelector(selector); if (el) el.textContent = value; };
+  // The label's own words, its control and hint kept.
+  const relabel = (label, value) => {
+    const words = [...label.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
+    if (words) words.textContent = value;
+  };
+  const fit = {
+    Menu(root) {
+      text(root, '.brand', 'Brand');
+      cloneTo([...root.querySelectorAll('nav a')], ['Home', 'Services', 'About', 'Contact'], (a, t, i) => {
+        a.textContent = t;
+        if (i === 3) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+      });
+    },
+    Input(root) {
+      cloneTo([...root.querySelectorAll('label')], [
+        ['Full name', 'Jane Doe', ''],
+        ['Email', 'jane@example.com', 'We only use it to answer you.'],
+        ['Message', 'How can we help?', ''],
+      ], (label, [name, hint, small]) => {
+        relabel(label, name);
+        label.classList.remove('error');
+        const input = label.querySelector('input');
+        if (input) { input.value = ''; input.placeholder = hint; input.disabled = false; input.type = name === 'Email' ? 'email' : 'text'; }
+        const note = label.querySelector('small');
+        if (note) { if (small) note.textContent = small; else note.remove(); }
+      });
+    },
+    Select(root) {
+      text(root, ':scope > * > span', 'Subject');
+      const options = ['A general question', 'A quote', 'Help with my account', 'A partnership'];
+      cloneTo([...root.querySelectorAll('[role="option"]')], options, (li, t, i) => { li.textContent = t; li.setAttribute('aria-selected', String(i === 0)); });
+      text(root, '[data-value]', options[0]);
+    },
+    Radio(root) {
+      text(root, 'legend', 'Answer me by');
+      cloneTo([...root.querySelectorAll('fieldset > label')], [['Email', 'within a day'], ['Phone', 'office hours'], ['Either', '']], (label, [t, s], i) => {
+        text(label, 'span', t);
+        const small = label.querySelector('small');
+        if (small) { if (s) small.textContent = s; else small.remove(); }
+        const input = label.querySelector('input');
+        if (input) { input.checked = i === 0; input.disabled = false; input.name = 'sc-reply'; }
+      });
+    },
+    Checkbox(root) {
+      text(root, 'legend', 'I am interested in');
+      cloneTo([...root.querySelectorAll('fieldset > label')], ['Products', 'Services', 'Careers'], (label, t, i) => {
+        text(label, 'span', t);
+        const input = label.querySelector('input');
+        if (input) { input.checked = i === 0; input.disabled = false; }
+      });
+    },
+    Toggle(root) {
+      cloneTo([...root.querySelectorAll(':scope > * > label, :scope > label')], ['Send me a copy of this message', 'Subscribe to the newsletter'], (label, t, i) => {
+        text(label, 'span', t);
+        const sw = label.querySelector('[role="switch"]');
+        if (sw) { sw.setAttribute('aria-checked', String(i === 0)); sw.disabled = false; }
+      });
+    },
+    Button(root) {
+      const buttons = [...root.querySelectorAll('button')];
+      const primary = buttons.find((b) => b.classList.contains('primary') && !b.disabled);
+      const secondary = buttons.find((b) => b.classList.contains('secondary'));
+      if (!primary) return;
+      buttons.forEach((b) => { if (b !== primary && b !== secondary) b.remove(); });
+      primary.textContent = 'Send the message';
+      primary.type = 'submit';
+      if (secondary) secondary.textContent = 'Clear';
+    },
+    Card(root) {
+      const media = root.querySelector('.media');
+      if (media) media.innerHTML = ART;
+      text(root, 'h3', 'Visit our office');
+      text(root, '.body p', '123 Main Street, Montréal. Coffee is on us, Monday to Friday, by appointment.');
+      cloneTo([...root.querySelectorAll('.actions button')], ['Get directions', 'Book a visit'], (b, t, i) => { b.textContent = t; b.classList.toggle('secondary', i === 1); });
+    },
+    Table(root) {
+      const head = [...root.querySelectorAll('thead th')];
+      const rows = [...root.querySelectorAll('tbody tr')];
+      if (!head.length || !rows.length) return;
+      const columns = ['Method', 'Where', 'When'];
+      cloneTo(head, columns, (th, t) => { th.textContent = t; th.classList.remove('num'); });
+      const cells = [...rows[0].children];
+      cloneTo(rows, [
+        ['Phone', '+1 514 555 0142', 'Monday to Friday, 9:00–17:00'],
+        ['Email', 'hello@example.com', 'An answer within a working day'],
+        ['Chat', 'On the website, bottom right', 'Every day, 9:00–21:00'],
+        ['Mail', '123 Main Street, Montréal QC', 'Read every Monday'],
+      ], (tr, values) => {
+        tr.replaceChildren(...values.map((v) => { const td = (cells[0] || document.createElement('td')).cloneNode(false); td.classList.remove('num'); td.textContent = v; return td; }));
+      });
+    },
+  };
+  // Fitted once each fragment is in: the loader marks it `data-loaded="yes"`.
+  const done = new WeakSet();
+  const fitAll = () => {
+    document.querySelectorAll('[data-kit][data-loaded="yes"]').forEach((el) => {
+      if (done.has(el)) return;
+      done.add(el);
+      try { (fit[el.dataset.kit] || (() => {}))(el); } catch (e) { /* a fragment of another shape keeps its texts */ }
+    });
+  };
+  new MutationObserver(fitAll).observe(document.body, { attributes: true, attributeFilter: ['data-loaded'], subtree: true });
+})();
+</script>
+<script src="../mock.js"></script>
+</body>
+</html>

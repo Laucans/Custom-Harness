@@ -1310,7 +1310,7 @@
     if (m) {
       const name = m[2].replace(/\.draft$/, '');
       const file = /[?&]draft=1/.test(src) ? `${name}.draft.html` : `${name}.html`;
-      return `This is the kit component ${name} of the design system: its fragment is mock/kit/${file} on the product's \`design-system\` branch — in the view's workspace .llocal/view-mockups/design-system/mock/kit/${file} once one was made${demo ? `, under --demo crates/view/sample/units/design-system/mock/kit/${file}` : ''}; the tokens it consumes are mock/design/tokens.css, its record mock/kit/kit.json.`;
+      return `This is the kit component ${name} of the design system: its fragment is mock/kit/${file} on the product's \`design-system\` branch — in the view's workspace .llocal/view-mockups/design-system/mock/kit/${file} once one was made${demo ? `, under --demo .llocal/view-demo/design-system/mock/kit/${file}` : ''}; the tokens it consumes are mock/design/tokens.css, its record mock/kit/kit.json.`;
     }
     m = /^\/mock\/([^/]+)\/__preview\/([A-Za-z0-9]+)/.exec(src);
     if (m) return `This is the micro-frontend ${m[2]} alone: its fragment is mock/components/${m[2]}.html on the branch \`${branchOf(m[1])}\` (the view's workspace .llocal/view-mockups/${m[1]}/ when a session edited it, else \`git show ${branchOf(m[1])}:mock/components/${m[2]}.html\` on the product).`;
@@ -1320,7 +1320,7 @@
     if (m) {
       const kit = inner && inner.closest ? inner.closest('[data-kit]') : null;
       const mf = inner && inner.closest ? inner.closest('[data-component]') : null;
-      let text = `This is a page of the product's mock-up on the branch \`${branchOf(m[1])}\`, shown as its draft says: its files are under mock/ (the view's workspace .llocal/view-mockups/${m[1]}/ when a session edited it${demo ? `, under --demo crates/view/sample/units/${m[1]}/` : ''}).`;
+      let text = `This is a page of the product's mock-up on the branch \`${branchOf(m[1])}\`, shown as its draft says: its files are under mock/ (the view's workspace .llocal/view-mockups/${m[1]}/ when a session edited it${demo ? `, under --demo .llocal/view-demo/${m[1]}/` : ''}).`;
       if (mf) text += ` The element sits in the micro-frontend ${mf.dataset.component}: mock/components/${mf.dataset.component}.html.`;
       if (kit) text += ` The element sits in the kit component ${kit.dataset.kit}: mock/kit/${kit.dataset.kit}.html on the \`design-system\` branch.`;
       return text;
