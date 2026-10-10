@@ -122,7 +122,18 @@ mock/components/ first (they are the screen as the human wants it; a
 list them in mock/pages.json (contract N), and after any change under apps/
 or mock/src/ run mock/build.sh and commit the bundles — the gates refuse a
 screen no page mocks, a Micro-UI with no micro-frontend, a listing out of
-sync with the manifest, and a stale bundle. The PR body MUST carry the line `Closes #{num}` on its
+sync with the manifest, and a stale bundle. A frontend task reads the
+product's design system first: the `design-system` branch carries
+mock/design/tokens.css (one CSS variable per token — every colour, font,
+spacing, radius and shadow of a screen comes from them, never a literal)
+and the kit mock/kit/<Name>.html listed in mock/kit/kit.json (contract O),
+the visual components the mock-up injects with `data-kit`. Reuse a kit
+component as it is when it passes the kit's static check (no network, no
+external script or style, no iframe, colours only through `var(--…)`);
+when it does not, or the real stack cannot take it, recode it for real and
+write the corrected fragment back on `design-system` (a worktree of that
+branch, commit, push) with one line under `recoded` in kit.json saying what
+changed, so the mock-up matches what shipped. The PR body MUST carry the line `Closes #{num}` on its
 own: the loop reads that line off the merged PR to confirm the task shipped,
 and without it the round stops rather than replay a task nothing marks as
 delivered. The issue will stay open under `{waiting_merge}` until a
@@ -151,7 +162,10 @@ Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
 checks the same rules after you); a Micro-UI or a screen ships with its
 mock-up under mock/, listed in mock/pages.json (contract N), bundles
-rebuilt with mock/build.sh; then
+rebuilt with mock/build.sh, styled through the design system's variables
+(mock/design/tokens.css on the `design-system` branch) and the kit's
+components (mock/kit/, contract O) reused when they pass the kit's static
+check, recoded on `design-system` with a `recoded` line otherwise; then
 branch -> PR, and
 STOP THERE: open the pull request against the milestone branch with
 `gh pr create --label {to_review}` (the agent review runs on it), wait for

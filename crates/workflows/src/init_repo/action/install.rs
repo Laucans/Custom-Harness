@@ -218,8 +218,8 @@ mod tests {
         assert!(written.iter().any(
             |(path, text)| path.ends_with("docs/ARCHITECTURE.md") && text.contains(MARKER_OPEN)
         ));
-        assert!(lines[0].starts_with("installed 31 file(s) on main_agent"));
-        assert!(lines[0].contains("contracts/ (15 files)"));
+        assert!(lines[0].starts_with("installed 32 file(s) on main_agent"));
+        assert!(lines[0].contains("contracts/ (16 files)"));
     }
 
     #[tokio::test]
@@ -305,7 +305,7 @@ mod tests {
         assert!(disk.written.borrow().is_empty());
         assert_eq!(
             lines,
-            ["would install 31 file(s) on main_agent (read against an empty tree)"]
+            ["would install 32 file(s) on main_agent (read against an empty tree)"]
         );
     }
 
