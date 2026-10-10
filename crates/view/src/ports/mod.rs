@@ -488,6 +488,18 @@ pub trait Oneshot: Send + Sync {
     ///
     /// Claude could not be run, or answered nothing.
     fn ask(&self, model: &str, prompt: &str) -> Result<String, String>;
+
+    /// The answer to `prompt`, on `model`, asked in `dir` with the files
+    /// there readable — a moodboard's images, a reference drawing. Nothing
+    /// is written. The default reads nothing: it is [`Oneshot::ask`].
+    ///
+    /// # Errors
+    ///
+    /// Claude could not be run, or answered nothing.
+    fn ask_in(&self, model: &str, prompt: &str, dir: &std::path::Path) -> Result<String, String> {
+        let _ = dir;
+        self.ask(model, prompt)
+    }
 }
 
 /// What Claude Code kept of a session it ran: its transcript.
@@ -797,6 +809,37 @@ pub trait Mockups: Send + Sync {
     ///
     /// The workspace could not be made or written.
     fn write(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String>;
+
+    /// Removes `mock/<path>` from the branch's workspace, if it is there.
+    ///
+    /// # Errors
+    ///
+    /// The workspace could not be made or written.
+    fn remove(&self, branch: &str, path: &str) -> Result<(), String>;
+
+    /// Every branch of the product, the data archive's aside.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be read.
+    fn branches(&self) -> Result<Vec<String>, String>;
+
+    /// Makes `branch` exist, from `from` when it does not yet — the design
+    /// system's branch is born on the first visit — and pushes it.
+    ///
+    /// # Errors
+    ///
+    /// Neither branch exists, or `git` refused.
+    fn ensure_branch(&self, branch: &str, from: &str) -> Result<(), String>;
+
+    /// Commits what the branch's workspace changed under `mock/` **on the
+    /// branch itself** and pushes it — the design system's branch is the
+    /// one truth, never saved aside as `mockup/*`. Answers the commit.
+    ///
+    /// # Errors
+    ///
+    /// No workspace, nothing changed, or `git` refused.
+    fn publish(&self, branch: &str, message: &str) -> Result<String, String>;
 }
 
 /// Where a page's draft versions are kept (`domain::drafts`).

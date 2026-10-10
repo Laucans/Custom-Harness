@@ -25,7 +25,7 @@ what the watch writes.
 | level | what | read from |
 | --- | --- | --- |
 | **A** the plant | one chimney per model, smoking while a session on it is open; a sign (to do / done); a door | the latest run of each line; `costs.tsv`; the GitHub board |
-| **B** inside | six rooms: lines, office, store, infirmary, control, construction | the blueprint; the same picture |
+| **B** inside | six rooms: lines, office, store, infirmary, control, construction — the rooms of a **development factory**; another workflow family would have other rooms | the blueprint; the same picture |
 | **C** a room | the lines station by station, the product on the belt, an employee beside each station in progress — several when a parallel watch runs the line on several lanes; a crew that shares a station fans out and opens a pane to pick one | `run.log`, `prompts.md`, `stream.jsonl` of every fresh run; `watch.log` |
 | **D** a pane | logs live, a station's cost, how long a run, a machine or a trigger took — or has been running, ticking — an issue body, the dashboards, the versions | `/api/runs/…` tails; `/api/issues/…`; the picture |
 
@@ -524,6 +524,106 @@ a board named `mockup--…`, and the server makes the workspace before the
 session opens. The product's rules on the mock-up — one page per screen,
 `data-component` on every Micro-UI, the gates that refuse a screen no page
 mocks — are `harness-architecture`'s (contract N, `tree::violations`).
+
+## The design system, on its second easel
+
+This plant is a **development factory**: it builds software, and its office
+holds the tools of that trade. Other workflow families (a consulting report,
+a research brief) run other kinds of factory with other rooms; this easel is
+the development factory's own, nothing of it reaches `core`.
+
+The second easel in the architecture office, beside the mock-up's, opens
+the **design system** and its **kit** (`kit.js`, `kit_desk.rs`,
+`domain::design`; the shapes and the rules are `harness_architecture::kit`,
+contract O). Everything on it lives on one branch of the product, **`design-system`**,
+born from the integration branch on the first visit (`Mockups::ensure_branch`)
+and edited in a workspace of the view's own like a page's branch; the bar's
+**publish the design** commits that workspace *on the branch itself* and
+pushes it (`Mockups::publish`) — the design system is one truth for every
+branch, never saved aside as `mockup/*`. Three tabs:
+
+- **design system** — the **tokens** (`mock/design/tokens.json`, the W3C
+  design tokens format; `tokens.css` derived from it by the harness, one CSS
+  variable per token, the file every page, micro-frontend and kit component
+  consumes — change a token and the product restyles with no line generated
+  again). **Injected** as a file, or **generated** by one `claude -p` that
+  reads the **moodboard** and the **logo** kept under `mock/design/`
+  (`Oneshot::ask_in`: the session runs in that folder with `Read` alone) from
+  the human's brief; the sheet (palette, type, spacings, radii, three samples)
+  is what the human **validates**, the tokens retouched by hand in a table.
+  Before any validation the tokens are *the* candidate; after it, tokens
+  injected or generated again wait as a **candidate** beside the validated
+  ones (`candidate.json`) until the human takes them. Validation opens a
+  `harness:roadmap` + `harness:ready` issue — *install the design system in
+  the product's frontend* — so the first real screen does not reinvent the
+  variables; `design.json` remembers it. Nothing is generated from a design
+  system no one validated.
+- **catalogue** — the kit's components: the harness's sixteen **bases**
+  (`crates/architecture/assets/kit/`, neutral fragments every application
+  starts from: button, input, drop list, checkbox, radio, toggle, menu, tabs,
+  card, modal, table, carousel, badge, toast, pagination, breadcrumb — twelve
+  ticked by default) and the **custom** ones the human prompts (a text, a
+  reference image, a sketch drawn on the pad). A kit component is a **visual
+  primitive below the Micro-UI**: a fragment `mock/kit/<Name>.html` — markup,
+  a `<style>` on the variables, a `<script>` only for a visual dynamic (a
+  carousel turns, a menu opens) — with no data of its own and no network;
+  what loads from a server is a micro-frontend. **Generate** runs up to
+  `--kit-sessions` (3) one-shot sessions at once on `--kit-model`
+  (`claude-sonnet-5-5`), each one question: the base fragment and the tokens
+  in, the styled fragment out — applying the tokens to a base is what keeps
+  it cheap. Resumable: what is generated stays, a run stopped halfway
+  (quota, a refusal) takes only what is missing or failed next time
+  (`kit.json` carries each component's state).
+- **canvas** — every generated component on a card, rendered alone
+  (`/mock/design-system/__kit/<Name>`, the tokens linked), with its own pin
+  board (`kit--components`, note and request pins, **no backlog**: the kit is
+  not roadmap work). **Apply** on a card rewrites the fragment from its
+  requests in one question, kept as the component's **draft**
+  (`<Name>.draft.html`, what the card shows); **save…** then offers
+  **replace** — the draft takes the component's place, and the list of
+  **who uses it** (every page and micro-frontend of every active branch that
+  injects it with `data-kit`, `KitDesk::usages`) is shown before the click —
+  or **fork** — a new component, `variantOf` its origin, the origin
+  untouched. A component no active branch uses may be **deleted**. A pin's
+  **discuss it** opens its session in the design branch's workspace.
+
+Each fragment carries the verdict of the kit's **static check**
+(`kit::check`): under 60 000 characters, no `fetch`/`XMLHttpRequest`/
+`WebSocket`/`EventSource`/beacon/dynamic `import`, no `<script src>`, no
+`<link>`, no `@import`, no `<iframe>`, at least one `var(--…)`, and no
+colour literal outside a variable's fallback. That verdict is the rule the
+**code stage** reuses a component on: a frontend task reads the
+`design-system` branch first, reuses a `data-kit` component as it is when
+it passes, and otherwise recodes it for real and writes the corrected
+fragment back on `design-system` with one line under `recoded` in
+`kit.json` — the canvas then drops a **recoded** request pin on the card, so
+the human sees what the real frontend changed.
+
+On the mock-up, the design system reaches two places. In **edit mode**, a
+**search field** beside the image placeholder tool lists the kit's
+generated components as the human types; a pick arms the `kit` tool, and
+the next click drops `<div data-kit="<Name>" data-props='{}'>` where it
+lands — an ordinary part of the page from then on (moved, resized, forked
+like any; its `props` edited as JSON in the properties, a `props` operation
+of the draft). And the **request AI** (`drafts::apply_prompt`) is handed the
+kit's components with the micro-frontends: it adds a kit component rather
+than inventing markup, and for a visual component the kit lacks it answers
+`skip: missing component: <Name> — <what>` instead of guessing; the page
+then offers the four ways out — **build it** (the catalogue, the custom
+form prefilled), **edit a component** (the canvas), **a placeholder** (an
+image dropped for that request), **do without**. The pages find the kit
+beside themselves on any branch: `/mock/<slug>/kit/…` and
+`/mock/<slug>/design/…` fall back to the `design-system` branch, and a
+branch whose `mock/mock.js` predates the kit is served the harness's own
+loader, which fills `[data-kit]` like `[data-component]` and links
+`design/tokens.css` once.
+
+Routes: `GET /api/design` (the record, the tokens, the candidate, the
+catalogue, the generations, the branch's state), `POST /api/design/{tokens,
+generate,validate,candidate/drop,asset,asset/remove,publish,discard}`,
+`POST /api/kit/{checked,custom,generate}`, `GET /api/kit/usages`,
+`DELETE /api/kit/{name}`, `POST /api/kit/{name}/{prompt,apply,save,draft/drop}`.
+Under `--demo`, the sample's `design-system` folder stands for the branch.
 
 ## The pin board
 

@@ -1,0 +1,33 @@
+/* The design system's tokens as CSS variables — derived from tokens.json by the harness, never edited by hand. */
+:root {
+  --border-width: 1px;
+  --color-accent: #d97706;
+  --color-border: #d1d5db;
+  --color-danger: #b91c1c;
+  --color-primary: #2b6cb0;
+  --color-primary-contrast: #ffffff;
+  --color-secondary: #6b7280;
+  --color-success: #15803d;
+  --color-surface: #ffffff;
+  --color-surface-2: #f3f4f6;
+  --color-text: #111827;
+  --color-text-muted: #6b7280;
+  --font-family: system-ui, sans-serif;
+  --font-family-heading: system-ui, sans-serif;
+  --font-size-base: 15px;
+  --font-size-heading: 28px;
+  --font-size-large: 20px;
+  --font-size-small: 12px;
+  --font-weight-heading: 700;
+  --radius-large: 16px;
+  --radius-medium: 8px;
+  --radius-pill: 999px;
+  --radius-small: 4px;
+  --shadow-high: 0 8px 24px rgba(0, 0, 0, 0.18);
+  --shadow-low: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 40px;
+}

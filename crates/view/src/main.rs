@@ -25,6 +25,7 @@ mod data_desk;
 mod desk;
 mod domain;
 mod janitor;
+mod kit_desk;
 mod note_desks;
 mod ports;
 mod server;
@@ -74,6 +75,7 @@ use crate::domain::plant;
 use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
 use crate::janitor::Janitor;
+use crate::kit_desk::KitDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
     Board, BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
@@ -102,6 +104,10 @@ fn trials(cli: &Cli, workspace: &Workspace) -> Option<Arc<dyn Trials>> {
 
 /// `current_thread`, like the harness: the board port is `?Send`, and one
 /// human watching one plant needs no second thread.
+// The composition root reads top to bottom: every adapter built, the state
+// assembled, the tasks spawned and stopped — cut in two it would hide what
+// the view is made of.
+#[allow(clippy::too_many_lines)]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
@@ -122,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
     let diagnoses: server::Diagnoses = Arc::default();
     let (data, data_task) = data_for(product);
     let (units, mockups) = product_readers(&cli, &root, &project);
+    let kit = kit_for(&cli, mockups.clone(), &pins);
 
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
     let (board_tx, board_rx) = watch::channel(None);
@@ -154,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         restart_poll: Duration::from_secs(3),
         units,
         mockups,
+        kit: kit.clone(),
         zone: TimeZone::system(),
     };
 
@@ -203,6 +211,9 @@ async fn main() -> anyhow::Result<()> {
             }
             if let Some(desks) = note_desks {
                 desks.shutdown();
+            }
+            if let Some(kit) = kit {
+                kit.shutdown();
             }
             Ok(())
         })
@@ -737,6 +748,27 @@ fn mockups_for(cli: &Cli, root: &Path, mirror: Option<Arc<Mirror>>) -> Option<Ar
     }
     let workspaces = root.join(".llocal").join(cleanup::VIEW_MOCKUPS);
     mirror.map(|mirror| Arc::new(GitMockups::new(mirror, &workspaces)) as Arc<dyn Mockups>)
+}
+
+/// The design system's easel, when the product's mock-up can be read:
+/// its generations on the kit's model, several at once, through the newest
+/// Claude Code on the machine — none found, nothing generates.
+fn kit_for(
+    cli: &Cli,
+    mockups: Option<Arc<dyn Mockups>>,
+    pins: &Arc<dyn NoteStore>,
+) -> Option<KitDesk> {
+    let mockups = mockups?;
+    let oneshot = claude_bin::newest()
+        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
+    Some(KitDesk::new(kit_desk::Setup {
+        mockups,
+        oneshot,
+        model: cli.kit_model.clone(),
+        sessions: cli.kit_sessions,
+        pins: Arc::clone(pins),
+        integration_branch: cli.integration_branch.clone(),
+    }))
 }
 
 /// Reads the board on a slower cadence; a failed read keeps the last one.

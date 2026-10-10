@@ -24,7 +24,7 @@
   const NUDGE_DELAY = 450;
   const EDITABLE = '[data-component],[data-id],button,a,input,select,textarea,label,h1,h2,h3,h4,h5,h6,img,table,th,td,tr,ul,ol,li,form,section,article,aside,nav,header,footer,figure,p,div,span,main';
   const CONTAINERS = /^(DIV|SECTION|MAIN|ARTICLE|NAV|HEADER|FOOTER|FORM|UL|OL|ASIDE|FIGURE|LI)$/;
-  const TOOLS = { move: 'V', section: 'F', text: 'T', button: 'B', link: 'L', image: 'I' };
+  const TOOLS = { move: 'V', section: 'F', text: 'T', button: 'B', link: 'L', image: 'I', kit: '' };
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const newId = (prefix) => prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const round1 = (v) => Math.round(v * 2) / 2;
@@ -464,8 +464,10 @@
 
     // ---- the insert tools -----------------------------------------------------------------
     function setTool(name) {
-      st.tool = TOOLS[name] ? name : 'move';
+      st.tool = name in TOOLS ? name : 'move';
       ctx.host.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('on', b.dataset.tool === st.tool));
+      const search = ctx.host.querySelector('.fg-kit');
+      if (search) search.classList.toggle('on', st.tool === 'kit');
       ctx.host.classList.toggle('fg-inserting', st.tool !== 'move');
       setHover(null);
     }
@@ -490,6 +492,13 @@
       const what = st.tool;
       const id = newId(what[0]);
       const op = { kind: 'add', by: 'human', what, as: id, label: { text: 'Text', button: 'Button', link: 'Link', section: '', image: 'image' }[what] };
+      if (what === 'kit') {
+        // The component picked in the search field beside the tools.
+        op.name = ctx.kitPick ? ctx.kitPick() : '';
+        if (!op.name) { setTool('move'); return; }
+        op.label = op.name;
+        op.props = {};
+      }
       if (what === 'image' && rect) op.width = Math.round(rect.w);
       if (what === 'section' && rect) op.height = Math.round(rect.h);
       // Where it lands: in a free container at the point; in flow, after the part under the pointer.
@@ -518,7 +527,7 @@
       const meta = e.ctrlKey || e.metaKey;
       if (e.key === 'Escape') { if (st.menu) { closeMenu(); return true; } if (st.tool !== 'move') { setTool('move'); return true; } if (st.sels.length) { select([]); return true; } return false; }
       if (typing) return false;
-      const tool = Object.keys(TOOLS).find((t) => TOOLS[t].toLowerCase() === e.key.toLowerCase());
+      const tool = Object.keys(TOOLS).find((t) => TOOLS[t] && TOOLS[t].toLowerCase() === e.key.toLowerCase());
       if (tool && !meta && !e.altKey) { setTool(tool); return true; }
       if (meta && e.key.toLowerCase() === 'd') { duplicate(); return true; }
       if (meta && e.key.toLowerCase() === 'a' && !e.shiftKey) { selectAll(); return true; }
@@ -787,6 +796,7 @@
         + (text ? `<label class="mk-panel-field">text<input class="fg-text" data-field="text" value="${esc(el.children.length ? ([...el.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim()) || {}).textContent || '' : el.textContent)}" maxlength="500"></label>` : '')
         + (el.tagName === 'A' ? `<label class="mk-panel-field">goes to<select class="fg-page" data-field="page"><option value="">a URL…</option>${(ctx.pages() || []).map((p) => `<option value="${esc(p.path)}"${el.getAttribute('href') === '../' + p.path ? ' selected' : ''}>${esc(p.title)}</option>`).join('')}</select><input class="fg-href" data-field="href" value="${esc(el.getAttribute('href') || '')}" placeholder="https://…"></label>` : '')
         + (el.tagName === 'BUTTON' ? `<label class="mk-panel-field">intent<textarea class="fg-intent" data-field="intent" rows="2" placeholder="what this button is for — written for the next roadmap">${esc(el.dataset.intent || '')}</textarea></label>` : '')
+        + (el.dataset.kit ? `<div class="fg-comp"><b>kit component</b> <span class="mono">${esc(el.dataset.kit)}</span><div class="muted">a visual primitive of the design system: its look is edited on the design system's easel, not here</div><label class="mk-panel-field">props (JSON)<textarea class="fg-props" data-field="props" rows="2">${esc(el.dataset.props || '{}')}</textarea></label><div class="mk-panel-actions"><button type="button" class="mini" data-fg="kit">open on the easel</button></div></div>` : '')
         + (c ? `<div class="fg-comp"><b>micro-frontend</b><div class="muted">${esc(c.description || '')}</div><div class="muted">${c.needs.length ? 'needs ' + c.needs.map(esc).join(', ') : 'needs nothing'}${c.actions.length ? ' · triggers ' + c.actions.map(esc).join(', ') : ''}</div>`
           + `<div class="mk-panel-actions">${c.mocked ? '' : '<button type="button" class="mini on" data-fg="mock">mock it with an AI session</button>'}${el.dataset.inline ? '' : '<button type="button" class="mini" data-fg="fork">fork for this page</button>'}<button type="button" class="mini" data-fg="design">discuss its design</button></div></div>` : '')
         + '<div class="mk-panel-actions">'
@@ -803,6 +813,7 @@
       if (!f) return;
       const v = e.target.value;
       if (f === 'text') { ctx.step({ kind: 'text', by: 'human', target: ctx.opTarget(el), text: v }); return; }
+      if (f === 'props') { let props; try { props = JSON.parse(v || '{}'); } catch (err) { return; } ctx.step({ kind: 'props', by: 'human', target: ctx.opTarget(el), props }); return; }
       if (f === 'page' || f === 'href') { setHref(el, f === 'page' ? (v ? '../' + v : '') : v); return; }
       if (f === 'intent') { const id = el.dataset.id || newId('b'); ctx.step([{ kind: 'add', by: 'human', what: 'button', label: el.textContent, intent: v, as: id, after: ctx.opTarget(el) }, { kind: 'remove', by: 'human', target: ctx.opTarget(el) }]) && select('data:' + id); return; }
       if (/^[XYWH]$/.test(f)) {
@@ -826,6 +837,7 @@
       if (ctx.step([{ kind: 'add', by: 'human', what: 'link', label: el.textContent, href, as: id, after: ctx.opTarget(el) }, { kind: 'remove', by: 'human', target: ctx.opTarget(el) }])) select('data:' + id);
     }
     function onPanelClick(e) {
+      if (e.target.closest('[data-fg="kit"]')) { window.dispatchEvent(new CustomEvent('harness:open-pane', { detail: { kind: 'kit', tab: 'canvas' } })); return; }
       const a = e.target.closest('[data-align]');
       if (a) { align(a.dataset.align); return; }
       const b = e.target.closest('[data-fg]');
@@ -882,7 +894,8 @@
       ctx.onPanel && ctx.onPanel(false);
     }
 
-    return { attach, detach, refresh, select, selection: () => st.sels.slice(), setTool, tool: () => st.tool, duplicate, remove, toggleFree, align };
+    return {
+      setTool, attach, detach, refresh, select, selection: () => st.sels.slice(), setTool, tool: () => st.tool, duplicate, remove, toggleFree, align };
   }
 
   window.MockDesign = { create, TOOLS };

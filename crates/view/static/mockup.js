@@ -95,6 +95,7 @@
       + '<button type="button" class="mini" data-tool="button" title="Button (B)">⊡</button>'
       + '<button type="button" class="mini" data-tool="link" title="Link to a page or a URL (L)">⇗</button>'
       + '<button type="button" class="mini" data-tool="image" title="Image placeholder (I)">▨</button>'
+      + '<span class="fg-kit" title="A component of the design system\'s kit: type to search, pick one, then click where it goes on the page"><input class="fg-kit-search" type="search" placeholder="kit component…" aria-label="search a component of the kit" autocomplete="off"><div class="fg-kit-list" role="listbox" hidden></div></span>'
       + '</span>'
       + '<span class="mk-sep"></span>'
       + '<button type="button" class="mini" data-ed="apply-all" title="Apply every pending request of the page to the draft, in one go">simulate requests</button>'
@@ -115,7 +116,9 @@
       timer: null, gone: false, interact: false, mf: !!kept(MF_ON, false), board: null, frame: null, shield: null, doc: null, armed: null, proxies: new WeakMap(), fitted: false, saving: false,
       cards: [],
       // Edit mode: the page's source, its draft engine, the versions, the selection, a gesture under way.
-      edit: !!(opts && opts.edit), source: '', engine: null, history: null, sel: '', hover: null, drag: null, resize: null, space: false, saveTimer: null, viewing: null, width: DEFAULT_WIDTH, lastLoadedPage: '', toastTimer: null };
+      edit: !!(opts && opts.edit), source: '', engine: null, history: null, sel: '', hover: null, drag: null, resize: null, space: false, saveTimer: null, viewing: null, width: DEFAULT_WIDTH, lastLoadedPage: '', toastTimer: null,
+      // The design system's kit, for the search field of the tools; the component picked to drop.
+      kit: null, kitPick: '' };
 
     // ---- what the branch knows of its micro-frontends ----------------------------------
     const components = () => {
@@ -288,12 +291,20 @@
         say('the page could not be read');
       }
     }
+    // A page that loads no `mock.js` of its own is shown with the harness's
+    // loader, so a kit component dropped on it is filled and the tokens
+    // linked — on the page shown, never on the page saved.
+    function withLoader(html) {
+      if (/mock\.js/.test(html)) return html;
+      const tag = `<script src="${location.origin}/mock/${encodeURIComponent(slugOf(st.branch))}/mock.js"></script>`;
+      return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, tag + '</body>') : html + tag;
+    }
     // The page as the draft shows it, into the iframe.
     function render() {
       if (!st.frame || !st.engine) return;
       const html = st.viewing ? E.engine({ source: st.source, ops: st.viewing.ops }).html(baseHref()) : st.engine.html(baseHref());
       st.frame.style.width = st.width + 'px';
-      st.frame.srcdoc = html;
+      st.frame.srcdoc = withLoader(html);
       st.board.setSize(st.width, parseFloat(st.frame.style.height) || MIN_HEIGHT);
       drawEditBar();
       drawFrozen();
@@ -480,7 +491,60 @@
       mockComponent: designSession,
       designSession,
       onPanel: () => drawStrip(),
+      kitPick: () => st.kitPick,
     });
+
+    // ---- the kit's search field: the design system's components, dropped like a tool ------
+    async function loadKit() {
+      if (st.kit) return st.kit;
+      try {
+        const res = await fetch('/api/design');
+        st.kit = res.ok ? ((await res.json()).catalog || []).filter((c) => c.state === 'generated') : [];
+      } catch (e) { st.kit = []; }
+      return st.kit;
+    }
+    async function searchKit(text) {
+      const list = q('.fg-kit-list');
+      const kit = await loadKit();
+      const needle = String(text || '').trim().toLowerCase();
+      const hits = kit.filter((c) => !needle || `${c.name} ${c.title} ${c.what} ${c.prompt}`.toLowerCase().includes(needle)).slice(0, 12);
+      list.innerHTML = hits.length
+        ? hits.map((c) => `<button type="button" class="fg-kit-item" data-kit-pick="${esc(c.name)}" role="option"><b>${esc(c.name)}</b><small>${esc(c.title)}${c.what ? ' · ' + esc(c.what) : ''}</small></button>`).join('')
+        : `<div class="fg-kit-none">${kit.length ? 'no component matches' : 'no component generated yet — the design system\'s easel makes them'}</div>`;
+      list.hidden = false;
+    }
+    function pickKit(name) {
+      st.kitPick = name;
+      q('.fg-kit-search').value = name;
+      q('.fg-kit-list').hidden = true;
+      design.setTool('kit');
+      say(`<b>${esc(name)}</b> picked: click where it goes on the page (Esc cancels)`);
+    }
+    // A request the AI could not apply for want of a component: the four ways out.
+    function offerSkipped(skipped) {
+      const toastEl = q('.mk-toast');
+      const missing = skipped.map((s) => ({ s, m: /^missing component:\s*([A-Za-z0-9]+)\s*[—–:-]?\s*(.*)$/.exec(String(s.skip || '')) })).filter((x) => x.m);
+      skipped.filter((s) => !missing.some((x) => x.s === s)).forEach((s) => say(`request ${s.by}: ${esc(s.skip)}`));
+      if (!missing.length) return;
+      toastEl.innerHTML = missing.map(({ s, m }) => `<div class="mk-missing" data-missing="${esc(s.by)}" data-missing-name="${esc(m[1])}" data-missing-what="${esc(m[2] || '')}"><b>${esc(m[1])}</b> is not in the kit${m[2] ? ': ' + esc(m[2]) : ''}. <button type="button" class="mini on" data-miss="build">build it</button><button type="button" class="mini" data-miss="edit">edit a component</button><button type="button" class="mini" data-miss="placeholder">a placeholder</button><button type="button" class="mini" data-miss="without">do without</button></div>`).join('');
+      toastEl.hidden = false;
+      clearTimeout(st.toastTimer);
+    }
+    function onMissing(e) {
+      const b = e.target.closest('[data-miss]');
+      if (!b) return false;
+      const box = b.closest('[data-missing]');
+      const by = box.dataset.missing; const name = box.dataset.missingName; const what = box.dataset.missingWhat;
+      if (b.dataset.miss === 'build') window.dispatchEvent(new CustomEvent('harness:open-pane', { detail: { kind: 'kit', tab: 'catalogue', custom: { name, prompt: what } } }));
+      else if (b.dataset.miss === 'edit') window.dispatchEvent(new CustomEvent('harness:open-pane', { detail: { kind: 'kit', tab: 'canvas' } }));
+      else if (b.dataset.miss === 'placeholder' && st.engine && st.doc) {
+        const main = st.doc.querySelector('main') || st.doc.body.firstElementChild || st.doc.body;
+        if (st.engine.push({ kind: 'add', by, what: 'image', label: name, as: newId('i'), into: E.targetOf(main) || 'path:' }).ok) { afterChange(); if (st.board) st.board.patch(by, { state: 'simulated' }); }
+      } else if (b.dataset.miss === 'without' && st.board) st.board.patch(by, { state: 'simulated' });
+      box.remove();
+      if (!q('.mk-toast').children.length) q('.mk-toast').hidden = true;
+      return true;
+    }
 
     // Keys the pane keeps for itself: space pans, ctrl+z and ctrl+shift+z
     // undo and redo; the designer has the rest.
@@ -499,6 +563,20 @@
       }
     };
     const onKeyUp = (e) => { if (e.key === ' ') { st.space = false; host.classList.remove('mk-space'); } };
+    host.addEventListener('focusin', (e) => { if (e.target.classList.contains('fg-kit-search')) searchKit(e.target.value); });
+    host.addEventListener('input', (e) => { if (e.target.classList.contains('fg-kit-search')) { st.kitPick = ''; searchKit(e.target.value); } });
+    host.addEventListener('keydown', (e) => {
+      if (!e.target.classList.contains('fg-kit-search')) return;
+      e.stopPropagation();
+      if (e.key === 'Escape') { q('.fg-kit-list').hidden = true; st.kitPick = ''; e.target.value = ''; design.setTool('move'); e.target.blur(); }
+      if (e.key === 'Enter') { const first = q('.fg-kit-list [data-kit-pick]'); if (first) pickKit(first.dataset.kitPick); }
+    });
+    host.addEventListener('pointerdown', (e) => { if (!e.target.closest('.fg-kit')) q('.fg-kit-list').hidden = true; }, true);
+    host.addEventListener('click', (e) => {
+      const pick = e.target.closest('[data-kit-pick]');
+      if (pick) { pickKit(pick.dataset.kitPick); return; }
+      onMissing(e);
+    });
 
     // ---- requests applied to the draft, in one go ----------------------------------------
     async function applyRequests(notes) {
@@ -522,7 +600,7 @@
         if (ops.length && !st.engine.push(ops).ok) throw new Error('the operations found no target on the page');
         afterChange();
         asked.forEach((a) => { if (!skipped.some((s) => s.by === a.id)) st.board.patch(a.id, { state: 'simulated' }); });
-        skipped.forEach((s) => say(`request ${s.by}: ${esc(s.skip)}`));
+        offerSkipped(skipped);
         if (action) action.ok(`${ops.length} operation(s)${skipped.length ? `, ${skipped.length} left to the human` : ''}`);
         drawBar();
       } catch (e) {

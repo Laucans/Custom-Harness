@@ -29,8 +29,8 @@ pub const KEPT: usize = 3;
 pub const MAX_OPS: usize = 2_000;
 
 /// The operations a draft knows.
-pub const KINDS: [&str; 9] = [
-    "move", "resize", "remove", "clone", "text", "static", "add", "fork", "viewport",
+pub const KINDS: [&str; 10] = [
+    "move", "resize", "remove", "clone", "text", "static", "add", "fork", "viewport", "props",
 ];
 
 /// Where a version stands.
@@ -226,7 +226,13 @@ pub struct Asked {
 /// shape of the answer — a JSON list of operations, each signed with the
 /// request it answers.
 #[must_use]
-pub fn apply_prompt(page: &str, html: &str, components: &str, asked: &[Asked]) -> String {
+pub fn apply_prompt(
+    page: &str,
+    html: &str,
+    components: &str,
+    kit: &str,
+    asked: &[Asked],
+) -> String {
     let requests = asked
         .iter()
         .map(|a| {
@@ -258,14 +264,23 @@ pub fn apply_prompt(page: &str, html: &str, components: &str, asked: &[Asked]) -
          - `clone`: copies the target right after itself, `as` the new element's id;\n\
          - `text`: `text`, the new text of a static element;\n\
          - `static`: `layout` `static`|`flow` on a container;\n\
-         - `add`: `what` `link`|`button`, `label`, and `page` (a page path) or `href` for a link, \
-         `intent` (what the button is for, in words) for a button; placed `before`/`after`/`into` \
-         like a move, with `as` the new element's id.\n\
+         - `add`: `what` `link`|`button`|`text`|`section`|`image`|`kit`, `label`, and `page` (a page \
+         path) or `href` for a link, `intent` (what the button is for, in words) for a button, \
+         `name` (a component of the kit, listed below) for `kit` with optional `props` (an object); \
+         placed `before`/`after`/`into` like a move, with `as` the new element's id;\n\
+         - `props`: `props`, an object, on a kit component already on the page.\n\
+         The product has a **design system**: a kit of styled visual components (a menu, a \
+         carousel, a card…) listed below. When a request calls for something visual the kit \
+         holds, add the kit component (`what: kit`) rather than inventing markup. When it calls \
+         for a visual component the kit lacks, do not invent it: answer for that request one \
+         operation `{{\"kind\":\"add\",\"by\":\"<id>\",\"skip\":\"missing component: <Name> — <what it is, one line>\"}}` \
+         and the human decides (build it, edit one, a placeholder, or without).\n\
          A request that changes what a micro-frontend does inside is not a page operation: answer \
          for it one operation `{{\"kind\":\"add\",\"by\":\"<id>\",\"skip\":\"<why, one line>\"}}` and \
          leave the rest to the human. Use only elements that exist in the page. Keep the changes \
          small and faithful to each request.\n\n\
          The micro-frontends on this branch:\n{components}\n\n\
+         The kit's components:\n{kit}\n\n\
          The requests:\n{requests}\n\n<page>\n{html}\n</page>"
     )
 }
@@ -380,8 +395,22 @@ mod tests {
             .is_err()
         );
         assert!(ops_from_answer("no list here", &asked).is_err());
-        let prompt = apply_prompt("pages/home.html", "<main></main>", "- Campagnes", &asked);
+        let prompt = apply_prompt(
+            "pages/home.html",
+            "<main></main>",
+            "- Campagnes",
+            "- Menu (Navigation menu): a bar",
+            &asked,
+        );
         assert!(prompt.contains("request `r1` (on component:Campagnes): add an archive button"));
+        assert!(prompt.contains("The kit's components:\n- Menu (Navigation menu): a bar"));
+        assert!(prompt.contains("missing component: <Name>"));
+        assert!(
+            checked_ops(&[
+                json!({"kind": "props", "by": "human", "target": "data:k1", "props": {"n": 3}})
+            ])
+            .is_ok()
+        );
         assert!(prompt.contains("<page>\n<main></main>\n</page>"));
     }
 

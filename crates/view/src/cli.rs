@@ -130,6 +130,15 @@ pub struct Cli {
     /// tooling compares, the model only explains, so a small one does.
     #[arg(long, env = "FUSION_MODEL", default_value = "haiku")]
     pub fusion_model: String,
+
+    /// The model that generates the design system and the kit's components
+    /// from the easel — one-shot answers, several at once.
+    #[arg(long, env = "KIT_MODEL", default_value = "claude-sonnet-5-5")]
+    pub kit_model: String,
+
+    /// How many kit components are generated at once: one `claude -p` each.
+    #[arg(long, env = "KIT_SESSIONS", default_value_t = 3)]
+    pub kit_sessions: usize,
 }
 
 #[cfg(test)]

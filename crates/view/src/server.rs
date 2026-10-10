@@ -26,7 +26,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::WatchStream;
@@ -42,6 +42,7 @@ use crate::domain::capabilities::{self, Catalogue};
 use crate::domain::cleanup::Settings;
 use crate::domain::data_usage::{self, UsedBy};
 use crate::domain::data_versions::{self, Versions};
+use crate::domain::design;
 use crate::domain::divergence;
 use crate::domain::doctor::{self, Diagnosis};
 use crate::domain::drafts::{self, Draft};
@@ -59,6 +60,7 @@ use crate::domain::snapshot::StationView;
 use crate::domain::steward::Status;
 use crate::domain::traces::{RunStages, clock_span, is_run_id, line_of_run, run_of, stage_logs};
 use crate::janitor::Janitor;
+use crate::kit_desk::{Asset, KitDesk, Save};
 use crate::note_desks::NoteDesks;
 use crate::ports::{
     BoardReading, Builds, DraftStore, Limits, MockState, Mockups, NoteStore, Plant, Prompts,
@@ -66,6 +68,7 @@ use crate::ports::{
 };
 use crate::units_desk::UnitsDesk;
 use harness_architecture::compare::{self, Comparison};
+use harness_architecture::kit;
 use harness_architecture::model::DataModel;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
@@ -127,6 +130,8 @@ pub struct AppState {
     /// The product's mock-up on every branch — `None` when nothing can read
     /// the product.
     pub mockups: Option<Arc<dyn Mockups>>,
+    /// The design system's easel — `None` when nothing can read the product.
+    pub kit: Option<KitDesk>,
     /// The prompt book, read only, and the drafts the human leaves for the
     /// next start.
     pub prompts: Arc<dyn Prompts>,
@@ -159,6 +164,7 @@ const DATA_MODEL_JS: &str = include_str!("../static/data-model.js");
 const MOCKUP_JS: &str = include_str!("../static/mockup.js");
 const EDIT_JS: &str = include_str!("../static/edit.js");
 const DESIGN_JS: &str = include_str!("../static/design.js");
+const KIT_JS: &str = include_str!("../static/kit.js");
 
 /// The run files a browser may tail.
 const TAILABLE: [&str; 4] = ["run.log", "session.log", "prompts.md", "stream.jsonl"];
@@ -173,6 +179,9 @@ const TAIL_MAX: u64 = 512 * 1024;
 const TERM_DEFAULT: (u16, u16) = (120, 32);
 
 /// The routes, with their state.
+// One route per line: the table is the function, and splitting it would
+// hide where a path is served.
+#[allow(clippy::too_many_lines)]
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
@@ -185,7 +194,9 @@ pub fn router(state: AppState) -> Router {
         .route("/mockup.js", get(mockup_js))
         .route("/edit.js", get(edit_js))
         .route("/design.js", get(design_js))
+        .route("/kit.js", get(kit_js))
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
+        .route("/mock/{slug}/__kit/{name}", get(kit_preview))
         .route("/mock/{slug}/{*path}", get(mock_file))
         .route("/render/{file}", get(render_asset))
         .route("/vendor/xterm.js", get(xterm_js))
@@ -238,6 +249,24 @@ pub fn router(state: AppState) -> Router {
         .route("/api/drafts/{board}/restore/{version}", post(restore_draft))
         .route("/api/notes/{board}/apply", post(apply_requests))
         .route("/api/mockup/write", post(mockup_write))
+        .route("/api/design", get(design_reply))
+        .route("/api/design/tokens", post(design_tokens))
+        .route("/api/design/generate", post(design_generate))
+        .route("/api/design/validate", post(design_validate))
+        .route("/api/design/candidate/drop", post(design_drop_candidate))
+        .route("/api/design/asset", post(design_asset))
+        .route("/api/design/asset/remove", post(design_asset_remove))
+        .route("/api/design/publish", post(design_publish))
+        .route("/api/design/discard", post(design_discard))
+        .route("/api/kit/checked", post(kit_checked))
+        .route("/api/kit/custom", post(kit_custom))
+        .route("/api/kit/generate", post(kit_generate))
+        .route("/api/kit/usages", get(kit_usages))
+        .route("/api/kit/{name}", delete(kit_delete))
+        .route("/api/kit/{name}/prompt", post(kit_reprompt))
+        .route("/api/kit/{name}/apply", post(kit_apply))
+        .route("/api/kit/{name}/save", post(kit_save))
+        .route("/api/kit/{name}/draft/drop", post(kit_drop_draft))
         .route("/api/notes", get(all_notes))
         .route("/api/notes/{board}", get(notes))
         .route("/api/notes/{board}/undo", post(undo_note))
@@ -332,6 +361,15 @@ async fn edit_js(State(state): State<AppState>) -> Response {
     asset(&state, "edit.js", EDIT_JS, JS)
 }
 
+async fn kit_js(State(state): State<AppState>) -> Response {
+    asset(
+        &state,
+        "kit.js",
+        KIT_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
 async fn design_js(State(state): State<AppState>) -> Response {
     asset(&state, "design.js", DESIGN_JS, JS)
 }
@@ -356,7 +394,31 @@ async fn mock_file(
         return not_found("no such file");
     }
     let wanted = path.clone();
-    let read = tokio::task::spawn_blocking(move || mockups.file(&branch, &wanted)).await;
+    let read = tokio::task::spawn_blocking(move || {
+        let found = mockups.file(&branch, &wanted)?;
+        // The kit and the tokens live on the design system's branch: a page
+        // of any branch finds them beside itself. A loader older than the
+        // kit — no `data-kit` in it — is replaced by the harness's own.
+        let found = match found {
+            Some(bytes)
+                if wanted == "mock.js" && !String::from_utf8_lossy(&bytes).contains("data-kit") =>
+            {
+                harness_architecture::assets::content_of("mock/mock.js")
+                    .map(|text| text.as_bytes().to_vec())
+                    .or(Some(bytes))
+            }
+            None if (wanted.starts_with("kit/") || wanted.starts_with("design/"))
+                && branch != kit::DESIGN_BRANCH =>
+            {
+                mockups.file(kit::DESIGN_BRANCH, &wanted)?
+            }
+            None if wanted == "mock.js" => harness_architecture::assets::content_of("mock/mock.js")
+                .map(|text| text.as_bytes().to_vec()),
+            other => other,
+        };
+        Ok::<_, String>(found)
+    })
+    .await;
     match read {
         Ok(Ok(Some(bytes))) => (
             [
@@ -428,6 +490,41 @@ async fn mock_preview(
             (header::CACHE_CONTROL, "no-store"),
         ],
         mockup::preview_page(&name),
+    )
+        .into_response()
+}
+
+/// `?draft=1`: the component's draft rather than the component.
+#[derive(Debug, Default, Deserialize)]
+struct KitPreviewQuery {
+    #[serde(default)]
+    draft: Option<String>,
+}
+
+/// One kit component alone, for the canvas: a page the view makes around
+/// its `data-kit` element, the tokens linked. With `?draft=1`, its draft.
+async fn kit_preview(
+    State(state): State<AppState>,
+    Path((slug, name)): Path<(String, String)>,
+    Query(query): Query<KitPreviewQuery>,
+) -> Response {
+    if state.mockups.is_none() {
+        return not_found(NO_MOCKUPS);
+    }
+    if mockup::branch_of(&slug).is_none() || !kit::is_name(&name) {
+        return not_found("no such component");
+    }
+    let shown = if query.draft.is_some_and(|d| d == "1") {
+        format!("{name}.draft")
+    } else {
+        name
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        kit::preview_page(&shown),
     )
         .into_response()
 }
@@ -1896,7 +1993,11 @@ async fn apply_requests(
         return (StatusCode::BAD_REQUEST, "no request to apply").into_response();
     }
     let html: String = ask.html.chars().take(APPLY_HTML_CHARS).collect();
-    let prompt = drafts::apply_prompt(&ask.page, &html, &ask.components, &ask.requests);
+    let kit = match state.kit.clone() {
+        Some(desk) => desk.summary().await.unwrap_or_default(),
+        None => String::new(),
+    };
+    let prompt = drafts::apply_prompt(&ask.page, &html, &ask.components, &kit, &ask.requests);
     let answer = match desks.ask(prompt).await {
         Ok(answer) => answer,
         Err(why) => return (StatusCode::BAD_GATEWAY, why).into_response(),
@@ -1942,6 +2043,368 @@ async fn mockup_write(State(state): State<AppState>, body: Bytes) -> Response {
         Ok(Ok(())) => json(&serde_json::json!({ "written": true })),
         Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the write was dropped").into_response(),
+    }
+}
+
+// ---- the design system's easel ------------------------------------------------------
+
+const NO_KIT: &str =
+    "nothing reads the product's design system: the view runs with --no-board and no --data-dir";
+
+fn kit_of(state: &AppState) -> Result<KitDesk, Box<Response>> {
+    state.kit.clone().ok_or_else(|| Box::new(not_found(NO_KIT)))
+}
+
+fn outcome<T: Serialize>(result: Result<T, String>) -> Response {
+    match result {
+        Ok(value) => json(&value),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
+async fn design_reply(State(state): State<AppState>) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.reply().await {
+        Ok(reply) => json(&reply),
+        Err(why) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
+    }
+}
+
+/// A tokens file injected, or the tokens edited by hand (`edit`).
+#[derive(Debug, Default, Deserialize)]
+struct TokensAsk {
+    #[serde(default)]
+    json: String,
+    #[serde(default)]
+    edit: bool,
+}
+
+/// The most a tokens file may weigh.
+const TOKENS_CHARS: usize = 200_000;
+
+async fn design_tokens(State(state): State<AppState>, body: Bytes) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let ask: TokensAsk = match serde_json::from_slice(&body) {
+        Ok(ask) => ask,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("not a tokens file: {e}")).into_response();
+        }
+    };
+    if ask.json.chars().count() > TOKENS_CHARS {
+        return (StatusCode::BAD_REQUEST, "too big a tokens file").into_response();
+    }
+    outcome(desk.inject(ask.json, ask.edit).await)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BriefAsk {
+    #[serde(default)]
+    brief: String,
+}
+
+async fn design_generate(State(state): State<AppState>, body: Bytes) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let ask: BriefAsk = serde_json::from_slice(&body).unwrap_or_default();
+    match desk.generate(ask.brief).await {
+        Ok(view) => json(&view),
+        Err(why) => (StatusCode::BAD_GATEWAY, why).into_response(),
+    }
+}
+
+/// Validates the design system, and opens the roadmap task that installs it
+/// in the product — once, when a board is there to open it on.
+async fn design_validate(State(state): State<AppState>) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let view = match desk.validate().await {
+        Ok(view) => view,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    if view.design.issue.is_empty()
+        && let Some(data) = state.data.clone()
+    {
+        let (title, body) = design::install_issue(&view.design, &view.tokens);
+        let issue = Issue {
+            title,
+            body,
+            labels: divergence::ISSUE_LABELS
+                .iter()
+                .map(|l| (*l).to_string())
+                .collect(),
+        };
+        if let Ok(url) = data.open_issue(issue).await {
+            return outcome(desk.set_issue(url).await);
+        }
+    }
+    json(&view)
+}
+
+async fn design_drop_candidate(State(state): State<AppState>) -> Response {
+    match kit_of(&state) {
+        Ok(desk) => outcome(desk.drop_candidate().await),
+        Err(r) => *r,
+    }
+}
+
+/// `?kind=moodboard|logo|reference&name=<file>&component=<Name>`: the
+/// image's bytes are the body.
+#[derive(Debug, Default, Deserialize)]
+struct AssetQuery {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    component: String,
+}
+
+fn asset_of(query: &AssetQuery) -> Result<Asset, Box<Response>> {
+    match query.kind.as_str() {
+        "moodboard" => Ok(Asset::Moodboard),
+        "logo" => Ok(Asset::Logo),
+        "reference" if kit::is_name(&query.component) => Ok(Asset::Reference {
+            component: query.component.clone(),
+        }),
+        _ => Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                "an image is a moodboard's, the logo, or a component's reference",
+            )
+                .into_response(),
+        )),
+    }
+}
+
+async fn design_asset(
+    State(state): State<AppState>,
+    Query(query): Query<AssetQuery>,
+    body: Bytes,
+) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let asset = match asset_of(&query) {
+        Ok(asset) => asset,
+        Err(r) => return *r,
+    };
+    match desk.keep_asset(asset, &query.name, body.to_vec()).await {
+        Ok(path) => json(&serde_json::json!({ "path": path })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
+async fn design_asset_remove(State(state): State<AppState>, body: Bytes) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let query: AssetQuery = serde_json::from_slice(&body).unwrap_or_default();
+    let asset = match asset_of(&query) {
+        Ok(asset) => asset,
+        Err(r) => return *r,
+    };
+    outcome(desk.remove_asset(asset, &query.name).await)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MessageAsk {
+    #[serde(default)]
+    message: String,
+}
+
+async fn design_publish(State(state): State<AppState>, body: Bytes) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let ask: MessageAsk = serde_json::from_slice(&body).unwrap_or_default();
+    match desk.publish(ask.message).await {
+        Ok(commit) => json(&serde_json::json!({ "commit": commit })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
+async fn design_discard(State(state): State<AppState>) -> Response {
+    match kit_of(&state) {
+        Ok(desk) => match desk.discard().await {
+            Ok(()) => json(&serde_json::json!({ "discarded": true })),
+            Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+        },
+        Err(r) => *r,
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CheckedAsk {
+    #[serde(default)]
+    checked: Vec<String>,
+}
+
+async fn kit_checked(State(state): State<AppState>, body: Bytes) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let ask: CheckedAsk = serde_json::from_slice(&body).unwrap_or_default();
+    outcome(desk.set_checked(ask.checked).await)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CustomAsk {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    prompt: String,
+}
+
+async fn kit_custom(State(state): State<AppState>, body: Bytes) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let ask: CustomAsk = serde_json::from_slice(&body).unwrap_or_default();
+    outcome(desk.custom(ask.name, ask.title, ask.prompt).await)
+}
+
+async fn kit_reprompt(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    if !kit::is_name(&name) {
+        return not_found("no such component");
+    }
+    let ask: CustomAsk = serde_json::from_slice(&body).unwrap_or_default();
+    outcome(desk.reprompt(name, ask.title, ask.prompt).await)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NamesAsk {
+    #[serde(default)]
+    names: Vec<String>,
+}
+
+async fn kit_generate(State(state): State<AppState>, body: Bytes) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let ask: NamesAsk = serde_json::from_slice(&body).unwrap_or_default();
+    match desk.start_generation(ask.names).await {
+        Ok(queued) => json(&serde_json::json!({ "queued": queued, "jobs": desk.jobs() })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
+async fn kit_usages(State(state): State<AppState>) -> Response {
+    match kit_of(&state) {
+        Ok(desk) => match desk.usages().await {
+            Ok(usages) => json(&usages),
+            Err(why) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
+        },
+        Err(r) => *r,
+    }
+}
+
+async fn kit_delete(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    if !kit::is_name(&name) {
+        return not_found("no such component");
+    }
+    outcome(desk.delete(name).await)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct KitApplyAsk {
+    #[serde(default)]
+    requests: Vec<drafts::Asked>,
+}
+
+async fn kit_apply(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    if !kit::is_name(&name) {
+        return not_found("no such component");
+    }
+    let ask: KitApplyAsk = match serde_json::from_slice(&body) {
+        Ok(ask) => ask,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("not an application: {e}")).into_response();
+        }
+    };
+    match desk.apply(name, ask.requests).await {
+        Ok(skipped) => json(&serde_json::json!({ "skipped": skipped })),
+        Err(why) => (StatusCode::BAD_GATEWAY, why).into_response(),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SaveAsk {
+    #[serde(default)]
+    how: String,
+    #[serde(default)]
+    name: String,
+}
+
+async fn kit_save(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    if !kit::is_name(&name) {
+        return not_found("no such component");
+    }
+    let ask: SaveAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let how = if ask.how == "fork" {
+        Save::Fork { name: ask.name }
+    } else {
+        Save::Replace
+    };
+    outcome(desk.save(name, how).await)
+}
+
+async fn kit_drop_draft(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    if !kit::is_name(&name) {
+        return not_found("no such component");
+    }
+    match desk.drop_draft(name).await {
+        Ok(()) => json(&serde_json::json!({ "dropped": true })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }
 }
 
@@ -2214,6 +2677,27 @@ async fn open_session(
         brief.cwd = Some(cwd);
         brief.branch = branch;
         brief.page = ask.page.chars().take(200).collect();
+    }
+    // A pin on the kit's canvas: its session runs in the design system's
+    // workspace, where the fragments are.
+    if board == design::BOARD {
+        let Some(mockups) = state.mockups.clone() else {
+            return not_found(NO_MOCKUPS);
+        };
+        let made = tokio::task::spawn_blocking(move || mockups.workspace(kit::DESIGN_BRANCH)).await;
+        let cwd = match made {
+            Ok(Ok(cwd)) => cwd,
+            Ok(Err(why)) => return (StatusCode::BAD_REQUEST, why).into_response(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "the checkout was dropped",
+                )
+                    .into_response();
+            }
+        };
+        brief.cwd = Some(cwd);
+        brief.branch = kit::DESIGN_BRANCH.to_string();
     }
     match desks.open(&board, &id, brief).await {
         Ok(command) => json(&serde_json::json!({ "available": true, "command": command })),
@@ -2964,6 +3448,7 @@ mod tests {
             drafts: Arc::new(Versions::default()),
             note_desks: None,
             mockups: None,
+            kit: None,
             builds: None,
             integration_branch: "main_agent".to_string(),
             prompts: Arc::new(Book::default()),
@@ -3216,6 +3701,18 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+        fn remove(&self, _branch: &str, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn branches(&self) -> Result<Vec<String>, String> {
+            Ok(vec!["main".into()])
+        }
+        fn ensure_branch(&self, _branch: &str, _from: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn publish(&self, _branch: &str, _message: &str) -> Result<String, String> {
+            Err("nothing to publish".into())
         }
     }
 

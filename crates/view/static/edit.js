@@ -191,6 +191,12 @@
         el.style.width = `${op.width || 200}px`;
         el.style.height = 'auto';
         el.style.display = 'block';
+      } else if (op.what === 'kit') {
+        // A component of the design system's kit: the loader fills it from kit/<Name>.html.
+        el = doc.createElement('div');
+        el.dataset.kit = op.name || '';
+        el.dataset.props = JSON.stringify(op.props || {});
+        el.setAttribute('aria-label', op.label || op.name || 'component');
       } else {
         el = doc.createElement('button');
         el.textContent = op.label || 'button';
@@ -203,6 +209,12 @@
       const why = place(doc, el, op);
       if (why) return why;
       if (op.x != null) placeFree(el, op);
+      return '';
+    },
+    props(doc, op) {
+      const el = elementOf(doc, op.target);
+      if (!el) return 'no such part';
+      el.dataset.props = JSON.stringify(op.props || {});
       return '';
     },
     fork(doc, op) {

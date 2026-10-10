@@ -9,6 +9,7 @@ pub mod capabilities;
 pub mod cleanup;
 pub mod data_usage;
 pub mod data_versions;
+pub mod design;
 pub mod divergence;
 pub mod doctor;
 pub mod drafts;

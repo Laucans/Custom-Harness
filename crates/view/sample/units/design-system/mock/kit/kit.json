@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "checked": ["button", "badge"],
+  "components": [
+    { "name": "Button", "base": "button", "title": "Button", "what": "Primary, secondary and ghost buttons, with a disabled state.", "prompt": "", "reference": "", "state": "generated", "why": "", "generatedAt": "2026-10-10T18:00:00Z" },
+    { "name": "Badge", "base": "badge", "title": "Badge", "what": "Small labels: neutral, success, danger, accent.", "prompt": "", "reference": "", "state": "pending", "why": "", "generatedAt": "" }
+  ]
+}

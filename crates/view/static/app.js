@@ -547,6 +547,8 @@
     S.room = m[2] || null;
   }
   window.addEventListener('hashchange', () => { fromHash(); closePane(); crumbs(); pushView(); });
+  // A pane asked for by another script — the mock-up offering the design system's easel.
+  window.addEventListener('harness:open-pane', (e) => { if (e.detail && e.detail.kind) openPane(e.detail); });
   function back() {
     if (S.pane) return closePane();
     if (S.level === 'C') return go('B');
@@ -554,7 +556,8 @@
     return undefined;
   }
   function crumbs() {
-    const parts = [{ label: '🏭 ' + (S.snap ? S.snap.project.name : 'factory'), go: 'A' }];
+    // This plant is a development factory; other workflow families run other kinds.
+    const parts = [{ label: '🏭 ' + (S.snap ? S.snap.project.name : 'factory') + ' · development factory', go: 'A' }];
     if (S.level !== 'A') parts.push({ label: 'inside', go: 'B' });
     if (S.level === 'C') {
       const r = roomByKey(S.room);
@@ -601,6 +604,12 @@
       dir: p.dir,
       pin: p.pin,
       onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, dir: s.dir }),
+    }) : null),
+    kit: (el, p) => (window.KitPane ? window.KitPane.mount(el, {
+      tab: p.tab,
+      pin: p.pin,
+      custom: p.custom,
+      onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page }),
     }) : null),
     mockup: (el, p) => (window.MockupPane ? window.MockupPane.mount(el, {
       branch: p.branch,
@@ -2646,6 +2655,18 @@
       }, true];
     },
 
+    // The design system on its easel: the tokens, the kit's catalogue, the
+    // components on their canvas.
+    kit(p, refresh) {
+      const html = '<div id="kit-host" class="mk-host"></div>';
+      return ['Design system · ' + (S.snap && S.snap.project ? S.snap.project.name : 'the product'), html, (again) => {
+        if (again && S.canvas) return;
+        teardownCanvas();
+        S.canvas = CANVASES.kit($('kit-host'), p);
+        if (S.closing) { const canvas = S.canvas; S.closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); S.closing = null; }
+      }, true];
+    },
+
     // The office's pin board: every pin of every board, by branch; a click
     // opens the pin where it was dropped — the data model or the mock-up.
     pins(p, refresh) {
@@ -2676,6 +2697,7 @@
     return m ? `milestone-${m[1]}` : plainSlug(branch);
   }
   function homeOf(board, branches) {
+    if (board === 'kit--components') return { view: 'kit', branch: 'design-system', kind: 'other', label: 'design-system', where: 'the kit canvas' };
     let m = /^data-model--(.+)$/.exec(board);
     if (m) {
       const b = branches.find((x) => dataSlug(x.branch) === m[1]);

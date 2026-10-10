@@ -294,6 +294,72 @@ impl Mockups for GitMockups {
         let _ = self.mirror.git(&["worktree", "prune"], None);
         Ok(())
     }
+
+    fn remove(&self, branch: &str, path: &str) -> Result<(), String> {
+        if !mockup::is_safe_path(path) {
+            return Err(format!("not a path under mock/: {path}"));
+        }
+        let folder = self.workspace(branch)?;
+        remove_under(&folder, path)
+    }
+
+    fn branches(&self) -> Result<Vec<String>, String> {
+        self.mirror.refresh()?;
+        self.mirror.branches()
+    }
+
+    fn ensure_branch(&self, branch: &str, from: &str) -> Result<(), String> {
+        self.mirror.refresh()?;
+        if self.mirror.head_of(branch)?.is_some() {
+            return Ok(());
+        }
+        let branches = self.mirror.branches()?;
+        let base = [from, "main", "master"]
+            .into_iter()
+            .find(|b| branches.iter().any(|have| have == b))
+            .or_else(|| branches.first().map(String::as_str))
+            .ok_or_else(|| "the product has no branch to start from".to_string())?
+            .to_string();
+        let spec = format!("refs/heads/{base}");
+        self.mirror
+            .git(&["branch", "--quiet", branch, &spec], None)?;
+        let push = format!("refs/heads/{branch}:refs/heads/{branch}");
+        self.mirror
+            .git(&["push", "--quiet", "origin", &push], None)?;
+        Ok(())
+    }
+
+    fn publish(&self, branch: &str, message: &str) -> Result<String, String> {
+        let folder = self
+            .worktree(branch)
+            .ok_or_else(|| "nothing to publish: no workspace".to_string())?;
+        if !Self::dirty(&folder)? {
+            return Err("nothing to publish: the branch is as committed".to_string());
+        }
+        Self::at(&folder, &["add", "-A", "--", "mock"])?;
+        let message = if message.trim().is_empty() {
+            format!("design: {branch}")
+        } else {
+            message.trim().chars().take(200).collect()
+        };
+        Self::at(&folder, &["commit", "--quiet", "-m", &message])?;
+        let spec = format!("HEAD:refs/heads/{branch}");
+        Self::at(&folder, &["push", "--quiet", "origin", &spec])?;
+        // The mirror learns the new head on its next fetch; the worktree
+        // already sits on it, detached.
+        let out = Self::at(&folder, &["rev-parse", "HEAD"])?;
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
+}
+
+/// Removes `dir/mock/<path>`; absence is fine.
+fn remove_under(dir: &Path, path: &str) -> Result<(), String> {
+    let full = dir.join("mock").join(path);
+    match fs::remove_file(&full) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", full.display())),
+    }
 }
 
 /// The demo's mock-ups: one folder per branch under `dir` (a `/` in a
@@ -350,6 +416,39 @@ impl Mockups for DirMockups {
 
     fn discard(&self, _branch: &str) -> Result<(), String> {
         Err("the sample is not a checkout: nothing to discard".to_string())
+    }
+
+    fn remove(&self, branch: &str, path: &str) -> Result<(), String> {
+        if !mockup::is_safe_path(path) {
+            return Err(format!("not a path under mock/: {path}"));
+        }
+        remove_under(&self.folder(branch), path)
+    }
+
+    fn branches(&self) -> Result<Vec<String>, String> {
+        let entries =
+            fs::read_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        let mut found: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| mockup::branch_of(&e.file_name().to_string_lossy()))
+            .collect();
+        found.sort();
+        Ok(found)
+    }
+
+    fn ensure_branch(&self, branch: &str, _from: &str) -> Result<(), String> {
+        // The sample is tracked: a branch is a folder it already has, never
+        // one made on a visit.
+        if self.folder(branch).is_dir() {
+            Ok(())
+        } else {
+            Err(format!("the sample has no branch `{branch}`"))
+        }
+    }
+
+    fn publish(&self, _branch: &str, _message: &str) -> Result<String, String> {
+        Err("the sample has no repository to publish to".to_string())
     }
 }
 

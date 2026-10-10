@@ -2587,6 +2587,26 @@ fn product_corner(b: &mut Builder) {
     head.backing = Backing::Slate;
     b.label(2.2, 1.6, 6.35, "the frontend, mocked", 10.0, SCRIPT)
         .backing = Backing::Slate;
+    // The design system's easel, beside the mock-up's: the tokens, the kit
+    // of components, their canvas.
+    let kit = pane(
+        serde_json::json!({"kind": "kit", "title": "The design system"}),
+        "The design system and its kit of components",
+    );
+    let m = b.mark();
+    b.cylinder(8.35, 0.0, 6.35, 0.06, 1.15, Rgba::hex(WOOD));
+    b.cylinder(10.05, 0.0, 6.35, 0.06, 1.15, Rgba::hex(WOOD));
+    b.rounded(8.1, 1.0, 6.2, 2.2, 2.0, 0.14, 0.14, Rgba::hex(CREAM));
+    // Three swatches on the sheet: the palette the easel is about.
+    b.rounded(8.35, 2.35, 6.3, 0.5, 0.35, 0.06, 0.04, Rgba::hex(TEAL));
+    b.rounded(8.95, 2.35, 6.3, 0.5, 0.35, 0.06, 0.04, Rgba::hex(GOLD));
+    b.rounded(9.55, 2.35, 6.3, 0.5, 0.35, 0.06, 0.04, Rgba::hex("#b78cf0"));
+    b.hot_since(m, &kit);
+    let head = b.label(9.2, 1.9, 6.35, "DESIGN", 12.0, INK);
+    head.bold = true;
+    head.backing = Backing::Slate;
+    b.label(9.2, 1.5, 6.35, "the system, the kit", 10.0, SCRIPT)
+        .backing = Backing::Slate;
     let capabilities = pane(
         serde_json::json!({"kind": "capabilities"}),
         "The capabilities list",

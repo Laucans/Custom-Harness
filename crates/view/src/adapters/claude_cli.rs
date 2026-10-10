@@ -29,22 +29,45 @@ impl Oneshot for ClaudeOneshot {
         // An empty folder: a one-shot answer reads nothing of any repository.
         let empty = std::env::temp_dir().join("harness-view-oneshot");
         std::fs::create_dir_all(&empty).map_err(|e| format!("{}: {e}", empty.display()))?;
-        let mut child = Command::new(&self.claude)
-            .current_dir(&empty)
-            .args([
-                "-p",
-                "--model",
-                model,
-                "--output-format",
-                "text",
-                "--tools",
-                "",
-                "--no-session-persistence",
-                "--strict-mcp-config",
-                "--setting-sources",
-                "",
-                "--disable-slash-commands",
-            ])
+        self.run(model, prompt, &empty, "")
+    }
+
+    fn ask_in(&self, model: &str, prompt: &str, dir: &std::path::Path) -> Result<String, String> {
+        // `Read` alone: the images and files of `dir` are seen, nothing is
+        // written and nothing runs.
+        self.run(model, prompt, dir, "Read")
+    }
+}
+
+impl ClaudeOneshot {
+    /// `claude -p` in `dir`, with `tools` (empty: none) and the prompt on
+    /// its standard input.
+    fn run(
+        &self,
+        model: &str,
+        prompt: &str,
+        dir: &std::path::Path,
+        tools: &str,
+    ) -> Result<String, String> {
+        let mut command = Command::new(&self.claude);
+        command.current_dir(dir).args([
+            "-p",
+            "--model",
+            model,
+            "--output-format",
+            "text",
+            "--tools",
+            tools,
+            "--no-session-persistence",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+        ]);
+        if !tools.is_empty() {
+            command.args(["--allowedTools", tools]);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

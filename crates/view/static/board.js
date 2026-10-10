@@ -335,7 +335,7 @@
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
       // A request, a link or a design goes on the product's backlog as an issue.
       const backlog = editor.querySelector('.hb-backlog');
-      backlog.hidden = !(kind === 'request' || kind === 'link' || kind === 'design');
+      backlog.hidden = opts.backlog === false || !(kind === 'request' || kind === 'link' || kind === 'design');
       if (!backlog.hidden) {
         backlog.querySelector('button').hidden = !!n.issue;
         backlog.querySelector('button').disabled = busy;
