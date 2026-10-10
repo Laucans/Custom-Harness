@@ -622,7 +622,12 @@ and the toast says why. Three tabs:
 - **canvas** — every generated component on a card, rendered alone
   (`/mock/design-system/__kit/<Name>`, the tokens linked), with its own pin
   board (`kit--components`, note and request pins, **no backlog**: the kit is
-  not roadmap work). **Apply** on a card rewrites the fragment from its
+  not roadmap work). A card is a picture until **enable interaction** lifts
+  its shield — then it is clicked, typed into and opened as a visitor would,
+  and the board leaves it alone until **disable interaction**. The bar's
+  **component background** paints every card's preview: the design
+  system's `color.surface` by default, another colour the viewer picks
+  kept in their browser. **Apply** on a card rewrites the fragment from its
   requests in one question, kept as the component's **draft**
   (`<Name>.draft.html`, what the card shows); **save…** then offers
   **replace** — the draft takes the component's place, and the list of

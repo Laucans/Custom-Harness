@@ -23,6 +23,7 @@
   const POLL_MS = 4000;
   const BUSY_MS = 1500;
   const TAB = 'harness.kit.tab';
+  const BG = 'harness.kit.background';
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const kept = (key, fallback) => { try { const v = localStorage.getItem(key); return v == null ? fallback : JSON.parse(v); } catch (e) { return fallback; } };
@@ -38,6 +39,7 @@
       + '<div class="mk-views" role="group" aria-label="view"><button type="button" data-kt="tab" data-tab="system">design system</button><button type="button" data-kt="tab" data-tab="catalogue">catalogue</button><button type="button" data-kt="tab" data-tab="canvas">canvas</button></div>'
       + '<span class="dm-origin kt-origin">reading the design system…</span>'
       + '<span class="spacer"></span>'
+      + '<label class="kt-bg" hidden title="The background the components are shown on — the design system\'s surface until you pick another">component background <input type="color" data-kt="bg" aria-label="component background"><button type="button" class="mini" data-kt="bg-reset" hidden title="Back to the design system\'s surface">reset</button></label>'
       + '<span class="kt-state"></span>'
       + '<input class="kt-message" maxlength="200" placeholder="what changed, in a line" hidden aria-label="commit message">'
       + '<button type="button" class="mini" data-kt="publish" hidden title="Commit the workspace on the design-system branch, push it, and carry mock/design and mock/kit onto the integration branch">publish the design</button>'
@@ -47,7 +49,7 @@
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '' };
+    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', live: new Set(), bg: kept(BG, '') };
 
     // ---- reading -------------------------------------------------------------------------------
     async function load(quiet) {
@@ -102,10 +104,36 @@
       const state = d.state === 'validated' ? `<span class="tag ok">validated${d.candidate ? ' · a candidate waits' : ''}</span>` : d.state === 'candidate' ? '<span class="tag warn">candidate — validate it</span>' : '<span class="tag">no design system yet</span>';
       const n = catalog().filter((e) => e.state === 'generated').length;
       q('.kt-state').innerHTML = `${state} <span class="muted">· ${n} component${n === 1 ? '' : 's'} in the kit${r.edited ? ' · <b class="warn">edited, not published</b>' : ''}${r.no_claude ? ' · <span class="bad">no Claude: nothing generates</span>' : ''}</span>`;
+      q('.kt-bg').hidden = st.tab !== 'canvas';
+      drawBackground();
       q('.kt-message').hidden = !r.edited;
       q('[data-kt="publish"]').hidden = !r.edited;
       q('[data-kt="discard"]').hidden = !r.edited;
       if (!q('.kt-origin').innerHTML.includes('spin')) say(`branch <b>${SLUG}</b> · ${esc(r.model)} · ${r.sessions} session${r.sessions === 1 ? '' : 's'} at once`);
+    }
+    // ---- the components' background: the design system's surface, or the viewer's pick ----------
+    const surface = () => ((design().tokens || []).find((t) => t.path === 'color.surface') || {}).value || '#ffffff';
+    const background = () => st.bg || surface();
+    function drawBackground() {
+      const input = q('[data-kt="bg"]');
+      const colour = background();
+      if (document.activeElement !== input) input.value = /^#[0-9a-f]{6}$/i.test(colour) ? colour : '#ffffff';
+      q('[data-kt="bg-reset"]').hidden = !st.bg;
+      q('.kt-board').style.setProperty('--kt-bg', colour);
+      st.cards.forEach((c) => { if (c.frame && c.frame.dataset.loaded) paint(c.frame); });
+    }
+    function paint(frame) {
+      try {
+        const doc = frame.contentDocument;
+        if (!doc || !doc.body) return;
+        doc.documentElement.style.background = background();
+        doc.body.style.background = background();
+      } catch (e) { /* a frame let go */ }
+    }
+    function pickBackground(colour) {
+      st.bg = colour || '';
+      keep(BG, st.bg);
+      drawBackground();
     }
     function setTab(tab) {
       st.tab = tab; keep(TAB, tab);
@@ -368,6 +396,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
             ${pending ? `<button type="button" class="mini on" data-kt="apply" data-name="${esc(e.name)}" title="Apply the pending requests of this card to the fragment, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : working ? '' : '<span class="muted">drop a request pin on the card, then apply it</span>'}
             ${e.draft && !working ? `<button type="button" class="mini on" data-kt="save" data-name="${esc(e.name)}">save…</button><button type="button" class="mini" data-kt="drop-draft" data-name="${esc(e.name)}">drop the draft</button>` : ''}
             <span class="spacer"></span>
+            <button type="button" class="mini${st.live.has(e.name) ? ' on' : ''}" data-kt="live" data-name="${esc(e.name)}" title="${st.live.has(e.name) ? 'Back to the board: the card is moved and pinned again' : 'Use the component as a visitor would: click, type, open — the board leaves it alone'}">${st.live.has(e.name) ? 'disable interaction' : 'enable interaction'}</button>
             ${!used.length && st.usages && !working ? `<button type="button" class="mini" data-kt="delete" data-name="${esc(e.name)}" title="Used on no active branch: it may go">delete</button>` : ''}
           </div>
           <div class="kt-save" hidden><b>Save the draft</b><div class="kt-row"><button type="button" class="mini on" data-kt="save-replace" data-name="${esc(e.name)}" title="The draft takes the component's place: every page and micro-frontend that uses it shows the new one">replace ${esc(e.name)}${used.length ? ` (${used.length} usage${used.length === 1 ? '' : 's'})` : ''}</button><input class="kt-fork-name" maxlength="60" placeholder="${esc(e.name)}2" aria-label="fork name"><button type="button" class="mini" data-kt="save-fork" data-name="${esc(e.name)}" title="A new component from the draft; this one stays as it is">fork</button></div>${used.length ? `<div class="muted">Replacing changes: ${used.map((u) => esc(`${u.kind} ${u.what} on ${u.branch}`)).join('; ')}</div>` : ''}</div>
@@ -406,7 +435,8 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           if (card) { const height = card.querySelector('.mk-preview') && card.querySelector('.mk-preview').style.height; card.replaceWith(fresh); if (height) fresh.querySelector('.mk-preview').style.height = height; } else content.insertBefore(fresh, before ? before.nextSibling : content.firstChild);
           card = fresh;
           const frame = card.querySelector('.mk-preview');
-          if (frame) { frame.addEventListener('load', measureCards); watchFrame(frame); }
+          if (frame) { frame.addEventListener('load', () => { paint(frame); measureCards(); }); watchFrame(frame); }
+          card.querySelector('.mk-shield').hidden = st.live.has(e.name);
         }
         before = card;
         return { name: e.name, card, frame: card.querySelector('.mk-preview') };
@@ -540,6 +570,15 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         case 'save': { const c = card(name); if (c) { const box = c.card.querySelector('.kt-save'); box.hidden = !box.hidden; layoutCards(); } break; }
         case 'save-replace': act(`replacing ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'replace' }), () => { toast(`${esc(name)} replaced: every page that uses it shows the new one`); st.usages = null; }); break;
         case 'save-fork': { const c = card(name); const forkName = c ? c.card.querySelector('.kt-fork-name').value.trim() : ''; act(`forking ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'fork', name: forkName }), (entries) => { const made = (entries || []).find((x) => x.variant_of === name && x.name !== name && (!forkName || x.name === forkName)); toast(`forked as <b>${esc(made ? made.name : forkName || name + '2')}</b>; ${esc(name)} is as it was`); st.usages = null; }); break; }
+        case 'live': {
+          if (st.live.has(name)) st.live.delete(name); else st.live.add(name);
+          const card = host.querySelector(`.kt-card[data-card="${CSS.escape(name)}"]`);
+          if (card) card.querySelector('.mk-shield').hidden = st.live.has(name);
+          b.classList.toggle('on', st.live.has(name));
+          b.textContent = st.live.has(name) ? 'disable interaction' : 'enable interaction';
+          break;
+        }
+        case 'bg-reset': pickBackground(''); break;
         case 'drop-draft': act(`dropping the draft of ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/draft/drop`)); break;
         default: break;
       }
@@ -556,7 +595,10 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       }
       if (t.matches('input[type="color"][data-token]')) { const text = host.querySelector(`.kt-token[data-token="${CSS.escape(t.dataset.token)}"]`); if (text) { text.value = t.value; keepTokens(); } }
     });
-    host.addEventListener('input', (e) => { if (e.target.matches('.kt-token')) keepTokens(); });
+    host.addEventListener('input', (e) => {
+      if (e.target.matches('.kt-token')) keepTokens();
+      if (e.target.matches('[data-kt="bg"]')) pickBackground(e.target.value);
+    });
     function keepTokens() {
       clearTimeout(st.editTimer);
       st.editTimer = setTimeout(async () => {

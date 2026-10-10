@@ -746,6 +746,9 @@
       return undefined;
     }
     const paneTab = e.target.closest('[data-tab]');
+    // A pane that draws its own tabs (the design system's easel) only has the one shown remembered:
+    // drawing the pane again would mount it anew and drop what it holds.
+    if (paneTab && S.pane && paneTab.closest('[data-kt]')) { S.pane.tab = paneTab.dataset.tab; return undefined; }
     if (paneTab && S.pane) { S.pane.tab = paneTab.dataset.tab; renderPane(S.pane, false); return undefined; }
     const pane = e.target.closest('[data-pane]');
     if (pane) return openPane(JSON.parse(pane.dataset.pane));
