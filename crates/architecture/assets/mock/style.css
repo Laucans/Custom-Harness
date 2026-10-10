@@ -1,21 +1,25 @@
 /* The mock-up's shared style: plain, so a page reads as the product's
-   screens do and a micro-frontend looks the same on every page. Installed
-   by `harness init-repo`; the product makes it its own. */
-:root { font-family: system-ui, sans-serif; color: #1d2430; background: #f6f3ec; }
+   screens do and a micro-frontend looks the same on every page. Every
+   colour, font, spacing, radius and shadow goes through the design
+   system's variables (mock/design/tokens.css, contract O), the value after
+   the comma only standing in until there is one: publish the design system
+   and every page restyles. Installed by `harness init-repo`; the product
+   makes it its own — through the variables, never a literal. */
+:root { font-family: var(--font-family, system-ui, sans-serif); color: var(--color-text, #1d2430); background: var(--color-surface-2, #f6f3ec); }
 body { margin: 0; }
-header { display: flex; align-items: center; gap: 16px; padding: 14px 28px; background: #2b2118; color: #f3e7c9; }
-header h1 { margin: 0; font-size: 18px; }
-header nav a { color: #e2b240; margin-left: 14px; text-decoration: none; }
+header { display: flex; align-items: center; gap: var(--space-3, 16px); padding: 14px 28px; background: var(--color-primary, #2b2118); color: var(--color-primary-contrast, #f3e7c9); }
+header h1 { margin: 0; font-size: 18px; font-family: var(--font-family-heading, inherit); font-weight: var(--font-weight-heading, 700); }
+header nav a { color: var(--color-accent, #e2b240); margin-left: 14px; text-decoration: none; }
 main { padding: 24px 28px; display: grid; gap: 20px; max-width: 1100px; }
-[data-component] { background: #fff; border: 1px solid #ddd3c2; border-radius: 10px; padding: 16px 18px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06); }
-form { display: grid; gap: 8px; margin-bottom: 14px; }
-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #7a6a52; }
-input { font: inherit; padding: 7px 9px; border: 1px solid #cfc3ae; border-radius: 7px; }
-input[aria-invalid="true"] { border-color: #b23a3a; }
-button { background: #e2b240; border: 0; border-radius: 7px; padding: 7px 13px; font: inherit; cursor: pointer; }
+[data-component] { background: var(--color-surface, #fff); border: var(--border-width, 1px) solid var(--color-border, #ddd3c2); border-radius: var(--radius-large, 10px); padding: 16px 18px; box-shadow: var(--shadow-low, 0 2px 8px rgba(0, 0, 0, 0.06)); }
+form { display: grid; gap: var(--space-2, 8px); margin-bottom: 14px; }
+label { font-size: var(--font-size-small, 12px); text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, #7a6a52); }
+input { font: inherit; padding: 7px 9px; color: inherit; background: var(--color-surface, #fff); border: var(--border-width, 1px) solid var(--color-border, #cfc3ae); border-radius: var(--radius-medium, 7px); }
+input[aria-invalid="true"] { border-color: var(--color-danger, #b23a3a); }
+button { background: var(--color-accent, #e2b240); color: var(--color-text, #1d2430); border: 0; border-radius: var(--radius-medium, 7px); padding: 7px 13px; font: inherit; cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: default; }
-button[aria-pressed="true"] { background: #2b2118; color: #f3e7c9; }
+button[aria-pressed="true"] { background: var(--color-primary, #2b2118); color: var(--color-primary-contrast, #f3e7c9); }
 ul { margin: 0; padding: 0; list-style: none; }
-[role="alert"] p, [role="alert"] li { color: #b23a3a; margin: 0; font-size: 13px; }
-[role="status"] { color: #7a6a52; font-size: 13px; margin: 0; }
-.mf-missing { color: #7a2e2e; font: 12px monospace; }
+[role="alert"] p, [role="alert"] li { color: var(--color-danger, #b23a3a); margin: 0; font-size: 13px; }
+[role="status"] { color: var(--color-text-muted, #7a6a52); font-size: 13px; margin: 0; }
+.mf-missing { color: var(--color-danger, #7a2e2e); font: 12px monospace; }

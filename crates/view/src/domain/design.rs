@@ -430,8 +430,11 @@ pub fn install_issue(design: &Design, tokens: &[Token]) -> (String, String) {
          copy; every screen and Micro-UI is styled through the variables, never a literal \
          colour, font, spacing, radius or shadow, and writes the kit's markup and classes \
          with its own data; the kit's small behaviours (a drop list opens, a switch turns) \
-         are written once in the shell. `mock/design/` and `mock/kit/` stay read-only outside \
-         `design-system`: a gate refuses a pull request that changes them.\n\n",
+         are written once in the shell. The mock-up too: `mock/style.css` and every page \
+         and micro-frontend under `mock/` read the same variables, never a literal, so the \
+         easel shows the design system the moment it is published. `mock/design/` and \
+         `mock/kit/` stay read-only outside `design-system`: a gate refuses a pull request \
+         that changes them.\n\n",
     );
     let _ = writeln!(
         body,

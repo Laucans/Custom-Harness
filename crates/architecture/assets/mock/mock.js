@@ -11,12 +11,14 @@
 (() => {
   'use strict';
   const base = new URL('./', document.currentScript.src);
-  // The design system's tokens, once per document, when the page did not link them itself.
-  if (!document.querySelector('link[href$="design/tokens.css"]')) {
+  // The design system — its tokens and the kit's look — once per document, when the page did
+  // not link them itself; before the page's own style, so the page's rules still win.
+  for (const sheet of ['design/tokens.css', 'kit/kit.css']) {
+    if (document.querySelector(`link[href$="${sheet}"]`)) continue;
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = new URL('design/tokens.css', base);
-    document.head.appendChild(link);
+    link.href = new URL(sheet, base);
+    document.head.insertBefore(link, document.head.firstChild);
   }
   const fill = async (el, name, folder, what, mark) => {
     if (!name || el.dataset.loaded || el.dataset.inline) return;
