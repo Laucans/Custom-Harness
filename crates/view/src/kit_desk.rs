@@ -126,6 +126,20 @@ pub struct KitDesk {
     rewriting: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
 }
 
+/// A publication: the commit on the design system's branch, and what
+/// became of carrying it onto the integration branch.
+#[derive(Debug, Clone, Serialize)]
+pub struct Published {
+    /// The commit on `design-system`.
+    pub commit: String,
+    /// The branch it is carried onto.
+    pub integration: String,
+    /// The commit carried there, empty when it already had it so.
+    pub carried: String,
+    /// Why it could not be carried, or empty.
+    pub refused: String,
+}
+
 /// What the page asks the easel for in one go.
 #[derive(Debug, Clone, Serialize)]
 pub struct Reply {
@@ -1056,17 +1070,60 @@ impl KitDesk {
         .await
     }
 
-    /// Commits the workspace on the `design-system` branch and pushes it.
+    /// Commits the workspace on the `design-system` branch and pushes it —
+    /// the kit's stylesheet derived first — then carries the design system
+    /// onto the integration branch, where every branch in progress finds it
+    /// on its next sync: one writer, so no merge ever meets it.
     ///
     /// # Errors
     ///
-    /// Nothing changed, or `git` refused.
-    pub async fn publish(&self, message: String) -> Result<String, String> {
+    /// Nothing changed, or `git` refused the publication. A carry refused
+    /// is not an error: the publication stands, and the reply says why.
+    pub async fn publish(&self, message: String) -> Result<Published, String> {
+        let to = self.setup.integration_branch.clone();
         self.blocking(move |mockups, files| {
             let _held = lock(files);
-            mockups.publish(BRANCH, &message)
+            Self::derive_stylesheet(mockups)?;
+            let commit = mockups.publish(BRANCH, &message)?;
+            let short = commit.get(..10).unwrap_or(&commit);
+            let note = format!("design: the design system as published on {BRANCH} ({short})");
+            Ok(match mockups.carry(&commit, &to, &kit::OWNED, &note) {
+                Ok(carried) => Published {
+                    commit,
+                    integration: to,
+                    carried: carried.unwrap_or_default(),
+                    refused: String::new(),
+                },
+                Err(why) => Published {
+                    commit,
+                    integration: to,
+                    carried: String::new(),
+                    refused: why,
+                },
+            })
         })
         .await
+    }
+
+    /// Writes `mock/kit/kit.css` from the generated components' fragments,
+    /// when it changed.
+    fn derive_stylesheet(mockups: &dyn Mockups) -> Result<(), String> {
+        let kit = Self::kit_of(mockups)?;
+        let mut parts = Vec::new();
+        for component in kit
+            .components
+            .iter()
+            .filter(|c| c.state == ComponentState::Generated)
+        {
+            if let Some(fragment) = Self::text_of(mockups, &Kit::fragment_path(&component.name))? {
+                parts.push((component.name.clone(), fragment));
+            }
+        }
+        let css = kit::stylesheet(&parts);
+        if Self::text_of(mockups, kit::KIT_CSS)?.as_deref() != Some(css.as_str()) {
+            mockups.write(BRANCH, kit::KIT_CSS, css.as_bytes())?;
+        }
+        Ok(())
     }
 
     /// Drops the workspace: the branch as committed again.

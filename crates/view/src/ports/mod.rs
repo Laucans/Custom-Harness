@@ -876,6 +876,23 @@ pub trait Mockups: Send + Sync {
     ///
     /// No workspace, nothing changed, or `git` refused.
     fn publish(&self, branch: &str, message: &str) -> Result<String, String>;
+
+    /// Carries the `folders` of `mock/` as the commit `from` has them onto
+    /// the branch `to`, in one commit of their own pushed there: what `to`
+    /// has elsewhere stays, a file gone from `from` goes. Answers the
+    /// commit, `None` when `to` already had them so.
+    ///
+    /// # Errors
+    ///
+    /// No branch `to`, or `git` refused — the push tried again on a branch
+    /// that moved meanwhile.
+    fn carry(
+        &self,
+        from: &str,
+        to: &str,
+        folders: &[&str],
+        message: &str,
+    ) -> Result<Option<String>, String>;
 }
 
 /// Where a page's draft versions are kept (`domain::drafts`).

@@ -450,3 +450,29 @@ jobs:
             echo "::error file=mock/build.sh::the bundles under mock/components/ are stale — run mock/build.sh and commit them"
             exit 1
           fi
+
+  # Contract O — the design system has one writer. `mock/design/` and
+  # `mock/kit/` are written on the `design-system` branch and carried onto
+  # `main_agent` by the harness when the human publishes; every branch in
+  # progress finds them on its next sync, and a branch that never changes
+  # them never meets them in a merge. A pull request that changes them
+  # would make two writers: a kit component is recoded on `design-system`.
+  design-system-single-writer:
+    if: github.event_name == 'pull_request' && github.head_ref != 'design-system'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: A pull request leaves mock/design/ and mock/kit/ to the design-system branch
+        shell: bash
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "origin/$BASE...HEAD" -- mock/design mock/kit)
+          [ -z "$changed" ] && exit 0
+          while read -r file; do
+            echo "::error file=$file::$file belongs to the design-system branch — the harness carries it here on publish; recode a kit component on design-system, never on this branch"
+          done <<< "$changed"
+          exit 1

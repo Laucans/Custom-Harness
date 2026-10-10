@@ -241,7 +241,7 @@ pub(super) async fn design_publish(State(state): State<AppState>, body: Bytes) -
     };
     let ask: MessageAsk = serde_json::from_slice(&body).unwrap_or_default();
     match desk.publish(ask.message).await {
-        Ok(commit) => json(&serde_json::json!({ "commit": commit })),
+        Ok(published) => json(&published),
         Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }
 }

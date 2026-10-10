@@ -37,6 +37,14 @@ pub const DESIGN_DIR: &str = "mock/design";
 /// Where the kit's files sit, relative to the repository.
 pub const KIT_DIR: &str = "mock/kit";
 
+/// Where the kit's stylesheet sits, relative to `mock/`: every fragment's
+/// `<style>` gathered, derived on publish ([`stylesheet`]).
+pub const KIT_CSS: &str = "kit/kit.css";
+
+/// The folders of `mock/` the design system owns: written on the
+/// `design-system` branch only, carried onto the integration branch whole.
+pub const OWNED: [&str; 2] = ["design", "kit"];
+
 /// The most a fragment may weigh, in characters.
 pub const MAX_FRAGMENT: usize = 60_000;
 
@@ -1006,6 +1014,58 @@ pub fn used_in(html: &str) -> Vec<String> {
     names
 }
 
+/// The kit's stylesheet: the `<style>` of every fragment given, as
+/// `(name, fragment)`, in that order, under a header saying it is derived.
+///
+/// What the real frontend loads once, beside `tokens.css`: a fragment's
+/// style is scoped under its root's class (`.kit-table`), so a Micro-UI
+/// writes the kit's classes with its own data and wears the kit's look; a
+/// component generated again changes this file, never the Micro-UI.
+#[must_use]
+pub fn stylesheet(fragments: &[(String, String)]) -> String {
+    let mut css = String::from(
+        "/* The kit's stylesheet: every mock/kit/<Name>.html's style, derived by the harness \
+         on publish. Never edited by hand. */\n",
+    );
+    for (name, fragment) in fragments {
+        let styles = styles_of(fragment);
+        if styles.is_empty() {
+            continue;
+        }
+        let _ = writeln!(css, "\n/* {name} */");
+        for style in styles {
+            css.push_str(style.trim());
+            css.push('\n');
+        }
+    }
+    css
+}
+
+/// The bodies of a fragment's `<style>` elements, in order.
+fn styles_of(html: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut rest = html;
+    while let Some(open) = rest.find("<style") {
+        let Some(after) = rest.get(open..) else {
+            break;
+        };
+        let Some(body) = after
+            .find('>')
+            .and_then(|gt| after.get(gt.saturating_add(1)..))
+        else {
+            break;
+        };
+        let Some(close) = body.find("</style>") else {
+            break;
+        };
+        found.push(body.get(..close).unwrap_or_default());
+        rest = body
+            .get(close.saturating_add("</style>".len())..)
+            .unwrap_or_default();
+    }
+    found
+}
+
 /// The design system's showcase: a simulated page made of the kit only.
 ///
 /// A "contact us" page — a menu, a form (fields, a drop list, radios,
@@ -1201,6 +1261,21 @@ mod tests {
         assert!(uses(page, "Carousel") && uses(page, "Menu") && !uses(page, "Card"));
         assert_eq!(used_in(page), ["Carousel", "Menu"]);
         assert!(preview_page("Carousel").contains("data-kit=\"Carousel\""));
+        // The kit's stylesheet: each fragment's style, the markup and the scripts left out.
+        let css = stylesheet(&[
+            (
+                "Table".to_string(),
+                base("table").expect("table").fragment.to_string(),
+            ),
+            ("Plain".to_string(), "<p>no style</p>".to_string()),
+            (
+                "Two".to_string(),
+                "<style>.a{}</style><b></b><style media=\"x\">.b{}</style>".to_string(),
+            ),
+        ]);
+        assert!(css.contains("/* Table */") && css.contains(".kit-table"));
+        assert!(!css.contains("/* Plain */") && !css.contains("<table") && !css.contains("<style"));
+        assert!(css.contains(".a{}\n.b{}"));
         // The showcase is made of bases only, each a default the human starts with.
         let uses = showcase_uses();
         assert!(uses.len() >= 8);
@@ -1240,6 +1315,12 @@ mod tests {
             prop_assert!(out.len() <= text.len() + 1);
             let _ = colour_literals(&out);
             let _ = used_in(&text);
+        }
+
+        #[test]
+        fn the_stylesheet_never_panics_and_keeps_its_header(text in "(\\PC|<style>|</style>){0,60}") {
+            let css = stylesheet(&[("X".to_string(), text)]);
+            prop_assert!(css.starts_with("/* The kit's stylesheet"));
         }
 
         #[test]

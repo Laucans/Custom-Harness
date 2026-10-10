@@ -567,7 +567,17 @@ born from the integration branch on the first visit (`Mockups::ensure_branch`)
 and edited in a workspace of the view's own like a page's branch; the bar's
 **publish the design** commits that workspace *on the branch itself* and
 pushes it (`Mockups::publish`) — the design system is one truth for every
-branch, never saved aside as `mockup/*`. Three tabs:
+branch, never saved aside as `mockup/*`. Before the commit it derives
+`mock/kit/kit.css` (`kit::stylesheet`: every generated fragment's style,
+what the real frontend loads beside `tokens.css`); after it, it **carries**
+`mock/design/` and `mock/kit/` onto the integration branch
+(`Mockups::carry`: `git` plumbing on the mirror — `ls-tree`, `mktree`,
+`commit-tree` — one commit that replaces those two folders and nothing
+else, pushed, read again and spliced again when the branch moved). The
+branches in progress find it on their next sync; the product's gate
+`design-system-single-writer` keeps every pull request off those folders,
+so no merge meets them. A carry refused leaves the publication standing,
+and the toast says why. Three tabs:
 
 - **design system** — the **tokens** (`mock/design/tokens.json`, the W3C
   design tokens format; `tokens.css` derived from it by the harness, one CSS

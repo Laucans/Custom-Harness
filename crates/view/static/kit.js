@@ -40,7 +40,7 @@
       + '<span class="spacer"></span>'
       + '<span class="kt-state"></span>'
       + '<input class="kt-message" maxlength="200" placeholder="what changed, in a line" hidden aria-label="commit message">'
-      + '<button type="button" class="mini" data-kt="publish" hidden title="Commit the workspace on the design-system branch and push it">publish the design</button>'
+      + '<button type="button" class="mini" data-kt="publish" hidden title="Commit the workspace on the design-system branch, push it, and carry mock/design and mock/kit onto the integration branch">publish the design</button>'
       + '<button type="button" class="mini" data-kt="discard" hidden title="Drop the workspace: the branch as committed again">discard</button>'
       + '</div>'
       + '<div class="kt-body"><div class="kt-pane kt-system" hidden></div><div class="kt-pane kt-catalogue" hidden></div><div class="dm-main kt-canvas" hidden><div class="dm-board kt-board"></div></div></div>'
@@ -504,7 +504,10 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       const card = (n) => st.cards.find((c) => c.name === n);
       switch (what) {
         case 'tab': setTab(b.dataset.tab); break;
-        case 'publish': act('publishing', () => call('/api/design/publish', { message: q('.kt-message').value }), (got) => toast(`published on <b>${SLUG}</b> · ${esc(String(got.commit || '').slice(0, 10))}`)); break;
+        case 'publish': act('publishing', () => call('/api/design/publish', { message: q('.kt-message').value }), (got) => toast(`published on <b>${SLUG}</b> · ${esc(String(got.commit || '').slice(0, 10))}`
+          + (got.refused ? `<br><span class="bad">not carried onto <b>${esc(got.integration)}</b>: ${esc(String(got.refused).split('\n')[0])}</span>`
+            : got.carried ? `<br>carried onto <b>${esc(got.integration)}</b> · ${esc(got.carried.slice(0, 10))} — every branch finds it on its next sync`
+              : `<br><b>${esc(got.integration)}</b> already had it`), got.refused ? 12000 : 8000)); break;
         case 'discard': if (window.confirm('Drop the workspace of the design-system branch? What is not published goes.')) act('discarding', () => call('/api/design/discard')); break;
         case 'tokens-example': q('.kt-json').value = exampleTokens(); break;
         case 'inject': act('injecting the tokens', () => call('/api/design/tokens', { json: q('.kt-json').value, edit: false })); break;

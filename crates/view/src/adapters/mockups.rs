@@ -351,6 +351,134 @@ impl Mockups for GitMockups {
         let out = Self::at(&folder, &["rev-parse", "HEAD"])?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
+
+    fn carry(
+        &self,
+        from: &str,
+        to: &str,
+        folders: &[&str],
+        message: &str,
+    ) -> Result<Option<String>, String> {
+        self.mirror.refresh()?;
+        let mut last = String::new();
+        for _ in 0..CARRY_ATTEMPTS {
+            let base = self
+                .mirror
+                .head_of(to)?
+                .ok_or_else(|| format!("no branch `{to}` to carry the design system to"))?;
+            let Some(commit) = self.spliced(from, &base, folders, message)? else {
+                return Ok(None);
+            };
+            let spec = format!("{commit}:refs/heads/{to}");
+            match self.mirror.git(&["push", "--quiet", "origin", &spec], None) {
+                Ok(_) => return Ok(Some(commit)),
+                Err(why) => {
+                    // The branch moved since it was read: read it again, splice again.
+                    last = why;
+                    let fetch = format!("+refs/heads/{to}:refs/heads/{to}");
+                    self.mirror
+                        .git(&["fetch", "--quiet", "origin", &fetch], None)?;
+                }
+            }
+        }
+        Err(format!("`{to}` kept moving: {last}"))
+    }
+}
+
+/// How many times a carry is pushed onto a branch that keeps moving.
+const CARRY_ATTEMPTS: usize = 3;
+
+impl GitMockups {
+    /// The commit on `base` whose `mock/<folder>` are `from`'s, made with
+    /// `git` plumbing — no checkout is touched; `None` when `base` already
+    /// has them so.
+    fn spliced(
+        &self,
+        from: &str,
+        base: &str,
+        folders: &[&str],
+        message: &str,
+    ) -> Result<Option<String>, String> {
+        let mock = splice(
+            &self.listing(&format!("{base}:mock"))?,
+            &self.listing(&format!("{from}:mock"))?,
+            folders,
+        );
+        let root = self.listing(&format!("{base}^{{tree}}"))?;
+        let root = if mock.is_empty() {
+            splice(&root, &[], &["mock"])
+        } else {
+            let tree = self.mktree(&mock)?;
+            splice(
+                &root,
+                format!("040000 tree {tree}\tmock\0").as_bytes(),
+                &["mock"],
+            )
+        };
+        let tree = self.mktree(&root)?;
+        let before = self
+            .mirror
+            .git(&["rev-parse", &format!("{base}^{{tree}}")], None)?;
+        if String::from_utf8_lossy(&before).trim() == tree {
+            return Ok(None);
+        }
+        let out = self
+            .mirror
+            .git(&["commit-tree", &tree, "-p", base, "-m", message], None)?;
+        Ok(Some(String::from_utf8_lossy(&out).trim().to_string()))
+    }
+
+    /// `git ls-tree -z` of a tree, empty when there is no such tree.
+    fn listing(&self, tree: &str) -> Result<Vec<u8>, String> {
+        match self.mirror.git(&["ls-tree", "-z", tree], None) {
+            Ok(bytes) => Ok(bytes),
+            Err(why)
+                if why.contains("ot a valid object name")
+                    || why.contains("nvalid object name")
+                    || why.contains("does not exist") =>
+            {
+                Ok(Vec::new())
+            }
+            Err(why) => Err(why),
+        }
+    }
+
+    /// The tree made of a `ls-tree -z` listing.
+    fn mktree(&self, listing: &[u8]) -> Result<String, String> {
+        let out = self.mirror.git(&["mktree", "-z"], Some(listing))?;
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
+}
+
+/// A `ls-tree -z` listing of `base` whose entries named in `names` are
+/// those of `source` instead — absent when `source` has none.
+fn splice(base: &[u8], source: &[u8], names: &[&str]) -> Vec<u8> {
+    let replaced = |entry: &&[u8]| {
+        entry
+            .iter()
+            .position(|b| *b == b'\t')
+            .and_then(|tab| entry.get(tab.saturating_add(1)..))
+            .is_some_and(|name| names.iter().any(|n| n.as_bytes() == name))
+    };
+    let entries = |listing: &'_ [u8]| -> Vec<Vec<u8>> {
+        listing
+            .split(|b| *b == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect()
+    };
+    let mut out = Vec::new();
+    let kept = entries(base)
+        .into_iter()
+        .filter(|e| !replaced(&e.as_slice()));
+    let taken = entries(source)
+        .into_iter()
+        .filter(|e| replaced(&e.as_slice()));
+    for entry in kept.chain(taken) {
+        out.extend_from_slice(&entry);
+        out.push(0);
+    }
+    out
 }
 
 /// Removes `dir/mock/<path>`; absence is fine.
@@ -485,11 +613,131 @@ impl Mockups for DirMockups {
     fn publish(&self, _branch: &str, _message: &str) -> Result<String, String> {
         Err("the sample has no repository to publish to".to_string())
     }
+
+    fn carry(
+        &self,
+        _from: &str,
+        _to: &str,
+        _folders: &[&str],
+        _message: &str,
+    ) -> Result<Option<String>, String> {
+        Err("the sample has no repository to carry the design system to".to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The real thing, against throwaway repositories: the design system's
+    /// folders carried onto an integration branch that moved since the
+    /// fork, the rest of it untouched, a branch moved again caught up.
+    #[test]
+    fn the_design_system_is_carried_onto_the_integration_branch_alone() {
+        let dir = std::env::temp_dir().join(format!("harness-view-carry-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let origin = dir.join("origin.git");
+        let work = dir.join("work");
+        fs::create_dir_all(work.join("mock/kit")).expect("dir");
+        let git = |at: &Path, args: &[&str]| -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(at)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(
+            &dir,
+            &["init", "-q", "--bare", "-b", "main_agent", "origin.git"],
+        );
+        git(&work, &["init", "-q", "-b", "main_agent"]);
+        for (key, value) in [
+            ("user.name", "t"),
+            ("user.email", "t@t"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git(&work, &["config", key, value]);
+        }
+        git(
+            &work,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        fs::write(work.join("app.txt"), "base").expect("write");
+        fs::write(work.join("mock/pages.json"), "{}").expect("write");
+        fs::write(work.join("mock/kit/Old.html"), "old").expect("write");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-q", "-m", "base"]);
+        git(&work, &["checkout", "-q", "-b", "design-system"]);
+        fs::remove_file(work.join("mock/kit/Old.html")).expect("rm");
+        fs::create_dir_all(work.join("mock/design")).expect("dir");
+        fs::write(work.join("mock/kit/Button.html"), "button").expect("write");
+        fs::write(work.join("mock/design/tokens.css"), ":root{}").expect("write");
+        fs::write(work.join("app.txt"), "not carried").expect("write");
+        git(&work, &["add", "-A"]);
+        git(&work, &["commit", "-q", "-m", "design"]);
+        let published = git(&work, &["rev-parse", "HEAD"]);
+        git(&work, &["checkout", "-q", "main_agent"]);
+        fs::write(work.join("other.txt"), "moved on").expect("write");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-q", "-m", "meanwhile"]);
+        git(
+            &work,
+            &["push", "-q", "origin", "main_agent", "design-system"],
+        );
+        let before = git(&work, &["rev-parse", "main_agent"]);
+        git(&work, &["checkout", "-q", "--detach"]);
+
+        let mockups = GitMockups::new(Arc::new(Mirror::local(&work)), &dir.join("ws"));
+        let carried = mockups
+            .carry(
+                &published,
+                "main_agent",
+                &["design", "kit"],
+                "design: carried",
+            )
+            .expect("carried")
+            .expect("a commit");
+        let show = |path: &str| git(&origin, &["show", &format!("main_agent:{path}")]);
+        assert_eq!(git(&origin, &["rev-parse", "main_agent"]), carried);
+        assert_eq!(git(&origin, &["rev-parse", "main_agent^"]), before);
+        assert_eq!(show("mock/kit/Button.html"), "button");
+        assert_eq!(show("mock/design/tokens.css"), ":root{}");
+        assert_eq!(
+            show("app.txt"),
+            "base",
+            "only the design system's folders travel"
+        );
+        assert_eq!(show("other.txt"), "moved on");
+        assert_eq!(show("mock/pages.json"), "{}");
+        let kit = git(
+            &origin,
+            &["ls-tree", "--name-only", "main_agent", "mock/kit/"],
+        );
+        assert!(!kit.contains("Old.html"), "a fragment gone goes: {kit}");
+        // The local branch is behind the remote now: the push is refused,
+        // the branch read again, and nothing is left to carry.
+        let again = mockups.carry(&published, "main_agent", &["design", "kit"], "again");
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(again.expect("caught up"), None);
+    }
+
+    #[test]
+    fn a_splice_takes_the_named_entries_from_the_source() {
+        let base = b"040000 tree a\tdesign\x00100644 blob b\tpages.json\x00040000 tree c\tkit\x00";
+        let source = b"040000 tree d\tdesign\x00100644 blob e\tpages.json\x00";
+        let out = String::from_utf8(splice(base, source, &["design", "kit"])).expect("utf8");
+        assert_eq!(
+            out,
+            "100644 blob b\tpages.json\x00040000 tree d\tdesign\x00"
+        );
+    }
 
     #[test]
     fn the_demo_edits_a_copy_seeded_once() {

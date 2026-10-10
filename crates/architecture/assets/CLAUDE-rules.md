@@ -48,8 +48,8 @@ mock/pages.json                    the mock-up's pages, one per screen, and its 
 mock/pages/<screen>.html           one mocked page: static HTML, the rest injected as micro-frontends
 mock/components/<MicroUi>.html     one micro-frontend: the real Micro-UI bundled on the mock server, or a hand-written fragment before it is built
 mock/drafts/<page>.json            on a mockup/* branch: the operations, forks and requests behind the page as the human rewrote it
-mock/design/tokens.json + tokens.css   on the design-system branch: the design system's tokens (W3C), derived into one CSS variable each (contract O)
-mock/kit/kit.json + kit/<Name>.html    on the design-system branch: the kit of visual components a page injects with data-kit (contract O)
+mock/design/tokens.json + tokens.css   written on the design-system branch, carried onto main_agent on publish, read-only elsewhere: the tokens (W3C), one CSS variable each (contract O)
+mock/kit/kit.json + kit/<Name>.html    written on the design-system branch, carried like the tokens: the kit a mock-up injects with data-kit, its look in kit/kit.css for the real frontend (contract O)
 mock/src/server.js, screen.js      installed: the mock server (the shell's wire protocol from mock/fixtures/) and the screen host ($ctx.<name>)
 mock/src/reads.js, commands.js     what the product teaches the server: a read per Capability, a judgement per DataCapability
 mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI (`source` in pages.json), bundled into mock/components/<MicroUi>.js, committed with its builtFrom

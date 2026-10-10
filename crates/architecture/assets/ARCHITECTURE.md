@@ -652,6 +652,18 @@ reused as it is by the real frontend when it passes the kit's static check
 otherwise it is recoded for real and the fragment rewritten to match, with
 one line under `recoded`.
 
+The design system has **one writer**. It is written on `design-system` only,
+and when the human publishes it the harness carries `mock/design/` and
+`mock/kit/` whole onto `main_agent`, in one commit that touches nothing
+else. A branch in progress finds them on its next sync with `main_agent`,
+and since it never changes them, no merge ever conflicts on them — a gate
+(`design-system-single-writer`) refuses a pull request that does. The real
+frontend loads `mock/design/tokens.css` and `mock/kit/kit.css` (every
+fragment's `<style>`, derived on publish, scoped under the fragment's root
+class `kit-<name>`) once, from the shell; a Micro-UI writes the kit's
+markup and classes with its own data, so a token changed or a component
+generated again restyles the product without touching a screen.
+
 ```yaml
 # mock/design/design.json
 version: 1

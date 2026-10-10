@@ -421,13 +421,17 @@ pub fn skipped_in(fragment: &str) -> Vec<(String, String)> {
 pub fn install_issue(design: &Design, tokens: &[Token]) -> (String, String) {
     let title = "Install the design system in the product's frontend".to_string();
     let mut body = String::from(
-        "The design system was validated on the factory view's easel. Its tokens live on the \
-         `design-system` branch, `mock/design/tokens.json` (W3C design tokens), derived into \
-         `mock/design/tokens.css` — one CSS variable per token. Install them in the product's \
-         real frontend: the variables loaded once by the shell (or the screen host), every \
-         screen and Micro-UI styled through them and never through a literal colour, font, \
-         spacing, radius or shadow; the kit's components (`mock/kit/<Name>.html`, injected \
-         with `data-kit`) reused as they are when they pass the kit's static check.\n\n",
+        "The design system was validated on the factory view's easel. It is written on the \
+         `design-system` branch and carried onto the integration branch on every publish: \
+         `mock/design/tokens.json` (W3C design tokens) derived into `mock/design/tokens.css` — \
+         one CSS variable per token — and the kit, `mock/kit/<Name>.html`, its look gathered \
+         in `mock/kit/kit.css`. Install it in the product's real frontend: the shell (or the \
+         screen host) loads `tokens.css` and `kit.css` once, from where they sit, never a \
+         copy; every screen and Micro-UI is styled through the variables, never a literal \
+         colour, font, spacing, radius or shadow, and writes the kit's markup and classes \
+         with its own data; the kit's small behaviours (a drop list opens, a switch turns) \
+         are written once in the shell. `mock/design/` and `mock/kit/` stay read-only outside \
+         `design-system`: a gate refuses a pull request that changes them.\n\n",
     );
     let _ = writeln!(
         body,
@@ -454,8 +458,8 @@ pub fn install_issue(design: &Design, tokens: &[Token]) -> (String, String) {
     }
     body.push_str(
         "\nAcceptance: every screen of the product reads its colours, fonts, spacings, radii \
-         and shadows from these variables; changing a token in `mock/design/tokens.json` and \
-         rebuilding restyles the product with no other change.\n",
+         and shadows from these variables and wears the kit's classes; a design system \
+         published again restyles the product with no change to any screen or Micro-UI.\n",
     );
     (title, body)
 }

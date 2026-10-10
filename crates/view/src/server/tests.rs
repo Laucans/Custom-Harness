@@ -326,6 +326,15 @@ impl crate::ports::Mockups for FakeMockups {
     fn publish(&self, _branch: &str, _message: &str) -> Result<String, String> {
         Err("nothing to publish".into())
     }
+    fn carry(
+        &self,
+        _from: &str,
+        _to: &str,
+        _folders: &[&str],
+        _message: &str,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
 }
 
 /// Draft versions in memory.
