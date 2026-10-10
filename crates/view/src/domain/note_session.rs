@@ -398,9 +398,16 @@ fn mockup_rules(about: &About) -> String {
          `mock/pages.json` (contract N: path, title, objective, optional screen and components). \
          A page is static HTML plus **micro-frontends**: a micro-frontend is a Micro-UI as the \
          mock shows it — `mock/components/<Name>.html`, its markup and the script that fills it, \
-         reading `mock/fixtures/<Name>.json`, shaped like what its Capabilities (`needs`) would \
+         on fixtures under `mock/fixtures/` shaped like what its Capabilities (`needs`) would \
          answer; its user actions (`actions`) show a command's lifecycle (queued, confirmed, \
-         applied) on the fixture; its `props` come from `data-props`. Each is listed under \
+         applied) on the fixture; its `props` come from `data-props`. **When the Micro-UI exists \
+         under `apps/`, the micro-frontend is that real code**: an entry `mock/src/<Name>.js` \
+         mounts it on the product's real shell client over a mock server `mock/src/server.js` \
+         (the shell's wire protocol answered in memory from the fixtures, commands applied and \
+         `dataVersion` bumped), bundled by `mock/build.sh` (esbuild through `npx`) into \
+         `mock/components/<Name>.js`, which the fragment loads; the bundles are committed. Read \
+         `mock/README.md` and the existing `mock/src/` first and follow them. A hand-written \
+         fragment is only for a Micro-UI not built yet. Each is listed under \
          `components` of `mock/pages.json` (name, system, description, fragment, fixture, needs, \
          actions, props), and a page injects one with `<div data-component=\"<Name>\" \
          data-props='{{…}}'></div>` plus `<script src=\"../mock.js\"></script>` — `mock/mock.js` \
@@ -476,9 +483,13 @@ fn design_briefing(about: &About) -> String {
         let _ = write!(
             text,
             "\nThe human designs the micro-frontend `{name}` from the micro-frontends view. Make it: \
-             `mock/components/{name}.html` with its script, `mock/fixtures/{name}.json` shaped like \
-             what the Capabilities it needs would answer (read their manifests and persisted queries \
-             under `crates/` when they exist, the data model under `data/` otherwise), and its entry \
+             when the Micro-UI exists under `apps/`, an entry `mock/src/{name}.js` that mounts the \
+             real code on the shell over the mock server, the mock server taught its Capabilities and \
+             DataCapabilities if it does not know them yet, and the bundle built with `mock/build.sh`; \
+             otherwise `mock/components/{name}.html` with its script, drawn from the spec. Either way \
+             a fixture shaped like what the Capabilities it needs would answer (read their manifests \
+             and persisted queries under `crates/` when they exist, the data model under `data/` \
+             otherwise), and its entry \
              under `components` of `mock/pages.json` with the spec below. Make `mock/mock.js` and \
              `mock/style.css` if the mock-up has none yet. Do not inject it in a page: the human \
              drops it where they want it. When it previews well, ask what to adjust.\n",

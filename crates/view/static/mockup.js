@@ -309,7 +309,7 @@
           + `<div class="mk-card-meta">${c.needs.length ? 'needs ' + c.needs.map(esc).join(', ') : 'needs nothing'}${c.actions.length ? ' · triggers ' + c.actions.map(esc).join(', ') : ''}${c.pages.length ? ' · on ' + c.pages.map(esc).join(', ') : ' · on no page'}</div>`
           + (c.mocked
             ? `<div class="mk-card-body"><iframe class="mk-preview" title="${esc(c.name)}" src="${esc(previewSrc(c.name))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>`
-            : '<div class="mk-card-body mk-card-none">no fragment yet — drop a <b>design</b> pin on this card and open its session to make one</div>')
+            : `<div class="mk-card-body mk-card-none">no fragment yet${c.built ? ' — the Micro-UI exists under apps/, its mock does not' : ''}<br><button type="button" class="mini on" data-mock-card="${esc(c.name)}">mock it with an AI session</button></div>`)
           + '</div>';
       }).join('');
       st.cards = [...st.board.content.querySelectorAll('.mk-card')].map((card) => ({ name: card.dataset.card, card, frame: card.querySelector('.mk-preview') }));
@@ -560,6 +560,16 @@
       if (mk.dataset.mk === 'save') save();
       if (mk.dataset.mk === 'discard') discard();
     };
+    // A card without a fragment: a design pin with the manifest's spec, and its session.
+    const onCardMock = (e) => {
+      const b = e.target.closest('[data-mock-card]');
+      if (!b || !st.board) return;
+      const c = componentOf(b.dataset.mockCard);
+      if (!c) return;
+      const id = st.board.newNote({ kind: 'design', component: c.name, text: specOf(c), target: 'component:' + c.name });
+      st.board.session(id);
+    };
+
     const onChange = (e) => {
       if (e.target.classList.contains('mk-pages')) show(e.target.value);
     };
@@ -572,6 +582,7 @@
       }
     };
     host.addEventListener('click', onClick);
+    host.addEventListener('click', onCardMock);
     host.addEventListener('change', onChange);
     host.addEventListener('keydown', onKey);
     q('.mk-strip').addEventListener('pointerdown', onStripDown);
@@ -587,6 +598,7 @@
         clearTimeout(st.timer);
         clearInterval(measured);
         host.removeEventListener('click', onClick);
+        host.removeEventListener('click', onCardMock);
         host.removeEventListener('change', onChange);
         host.removeEventListener('keydown', onKey);
         if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }

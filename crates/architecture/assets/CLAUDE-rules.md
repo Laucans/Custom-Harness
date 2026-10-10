@@ -46,8 +46,10 @@ concepts/<Concept>/v<n>/concept.json + fixtures.json      a versioned Concept (c
 data/model.json                    the data model: what every table and field is for (contract M)
 mock/pages.json                    the mock-up's pages, one per screen, and its micro-frontends (contract N)
 mock/pages/<screen>.html           one mocked page: static HTML, the rest injected as micro-frontends
-mock/components/<MicroUi>.html     one micro-frontend: a Micro-UI's markup and script on its fixture
-mock/fixtures/<MicroUi>.json       what that Micro-UI's Capabilities would answer
+mock/components/<MicroUi>.html     one micro-frontend: the real Micro-UI bundled on the mock server, or a hand-written fragment before it is built
+mock/src/server.js                 the mock server: the shell's wire protocol answered in memory from mock/fixtures/
+mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI, bundled (esbuild) into mock/components/<MicroUi>.js, committed
+mock/fixtures/*.json               what the Capabilities would answer
 mock/mock.js                       the loader: fills every data-component element from components/
 scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)
 contracts/*.schema.json            the fourteen contracts, JSON Schema 2020-12
@@ -106,14 +108,24 @@ contracts/*.schema.json            the fourteen contracts, JSON Schema 2020-12
     the schema the migrations build when the stack changes.
 14. **Every screen is mocked before it is built, and stays mocked.** The
     mock-up under `mock/` is the product's frontend without a backend: one
-    static HTML page per screen under `mock/pages/`, plain HTML/JS, reading
-    its data from JSON fixtures under `mock/fixtures/` — never a build step,
-    never a server. `mock/pages.json` (contract N) lists every page with its
-    objective. A task that builds a Micro-UI updates the pages that show it
-    (the Micro-UI's root element carries `data-component="<MicroUi>"`); a task
-    that builds a screen composition ships the screen's page and lists it
-    with `screen: <screen>`. A screen under `apps/screens/` with no page in
-    `mock/pages.json` fails the gates. The human annotates the mock-up in
+    static HTML page per screen under `mock/pages/`, any file server runs it,
+    no backend ever. `mock/pages.json` (contract N) lists every page with its
+    objective, and every **micro-frontend**: a Micro-UI as the mock shows it,
+    with `needs`, `actions` and `props` as contract D has them. A built
+    Micro-UI is shown **as its real code**: an entry `mock/src/<MicroUi>.js`
+    mounts it on the shell client over the mock server (`mock/src/server.js`,
+    the shell's wire protocol answered from `mock/fixtures/`), bundled by
+    `mock/build.sh` into `mock/components/<MicroUi>.js` and committed; a
+    Micro-UI not built yet is a hand-written fragment
+    `mock/components/<MicroUi>.html`. A page is static HTML plus the
+    micro-frontends it injects: `<div data-component="<MicroUi>"
+    data-props='{…}'></div>`, filled by `mock/mock.js`. A task that builds a
+    Micro-UI replaces its fragment with the real code's entry and rebuilds
+    the bundle; a task that adds a Capability or a DataCapability teaches the
+    mock server its answer; a task that builds a screen composition ships the
+    screen's page and lists it with `screen: <screen>`. A screen under
+    `apps/screens/` with no page in `mock/pages.json`, or a listed
+    micro-frontend with no fragment, fails the gates. The human annotates the mock-up in
     the factory view and may push a `mockup/*` branch with the pages as
     they want them: read it before building the screen it names.
 

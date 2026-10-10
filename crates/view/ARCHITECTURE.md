@@ -387,9 +387,11 @@ part's box through the iframe's place and the board's zoom. A pin's
 session is told the page, its objective and the part's markup.
 
 **Micro-frontends.** A page is static HTML plus the micro-frontends it
-injects: a micro-frontend is a Micro-UI as the mock shows it — a fragment
-`mock/components/<Name>.html` on a fixture `mock/fixtures/<Name>.json`
-shaped like what its Capabilities answer, listed under `components` of
+injects: a micro-frontend is a Micro-UI as the mock shows it — once built,
+**its real code** bundled (`mock/src/<Name>.js`, `mock/build.sh`) on the
+product's shell client over a mock server (`mock/src/server.js`) that
+answers the shell's protocol from `mock/fixtures/`; before, a hand-written
+fragment — `mock/components/<Name>.html`, listed under `components` of
 `mock/pages.json` with its `needs`, `actions` and `props`, injected as a
 `<div data-component="<Name>" data-props='…'>` that `mock/mock.js` fills.
 The easel has **two views**. In the *frontend* view, the `micro-frontends ◧`

@@ -101,17 +101,22 @@ build step, no framework the page must compile. `mock/pages.json`
 created from, the screen it mocks once that screen is frozen, the
 micro-frontends it injects.
 
-A **micro-frontend** is a Micro-UI as the mock shows it: a fragment
-`mock/components/<MicroUi>.html` — its markup and the script that fills it —
-drawn from a fixture `mock/fixtures/<MicroUi>.json` shaped like what its
-Capabilities would answer, declared in `mock/pages.json` with the `needs`,
-`actions` and `props` its manifest (contract D) will carry. A page is
-static HTML plus the micro-frontends it injects, each a
+A **micro-frontend** is a Micro-UI as the mock shows it, declared in
+`mock/pages.json` with the `needs`, `actions` and `props` its manifest
+(contract D) carries. Once the Micro-UI is built, the micro-frontend is
+**its real code**: an entry `mock/src/<MicroUi>.js` mounts it on the shell
+client over a **mock server** (`mock/src/server.js`), which answers the
+shell's wire protocol in memory from `mock/fixtures/` — reads from the
+fixtures, commands judged as the DataGuard would, applied, `dataVersion`
+bumped so every micro-frontend on the page refetches — and `mock/build.sh`
+bundles it into `mock/components/<MicroUi>.js`, committed, loaded by
+`mock/components/<MicroUi>.html`. Before it is built, the micro-frontend is
+a hand-written fragment, drawn from its spec. A page is static HTML plus the
+micro-frontends it injects, each a
 `<div data-component="<MicroUi>" data-props='{…}'></div>` that `mock/mock.js`
-fills from the fragment; a user action in a fragment shows the command's
-lifecycle (queued, confirmed, applied) on the fixture, never a backend. A
-human designs micro-frontends in the factory view and drops them on pages;
-the Micro-UI task then builds what the fragment shows.
+fills from the fragment. A human designs micro-frontends in the factory
+view and drops them on pages; the Micro-UI task then builds what the
+fragment shows, and replaces the fragment with the real code.
 
 The mock-up is where the screen is **designed before it is built**: the
 human creates a page from an objective, annotates its components, asks for
