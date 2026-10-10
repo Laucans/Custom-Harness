@@ -18,7 +18,10 @@ run something** versus **what running it takes**:
 ```
 src/main.rs       entry point: parse, find the repo, dispatch, map the exit code
 src/cli.rs        what a human types: the arguments and their environment variables
-src/router.rs     what decides on its own: `harness watch`, the polling loop — which, starting, applies the prompt drafts (`shared::apply_drafts`)
+src/router/       what decides on its own: `harness watch`
+  mod.rs            the loop: a tick, its reads of the board, the rest after a `QUOTA` stop — and, starting, the prompt drafts applied (`shared::apply_drafts`)
+  routes.rs         what a tick decided, run in this process: the route's workflow, the merges, a refinement round, the record a failed dispatch leaves for the doctor
+  lanes.rs          the lanes of a parallel watch filled: a `harness` child per runnable task, split or refinement, in a checkout of its own
 src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`; a lane that stops (exit 1) parks its task until the issue's body or labels change
 
 src/dispatch/     one module per thing that can be run, plus what they share
@@ -81,13 +84,16 @@ asserted by a test. `RunArgs` is the dev loop's flags and the only type that
 reads the environment; `Cli` flattens it (`#[command(flatten)]`) alongside an
 optional `#[command(subcommand)] command: Option<Command>` — no subcommand
 still parses exactly as the flat `Cli` once did (`harness --rounds 1 --stages
-code` keeps meaning the dev loop). Two subcommands today:
-`Command::InitRepo(InitRepoArgs)` and `Command::Watch(WatchArgs)`. The other
-six workflows have **no** subcommand on purpose: they are reached by the
-router, whose own arguments (`--interval`, `--once`, `--dry-run`) are what a
+code` keeps meaning the dev loop). Eight subcommands today: `init-repo`,
+`watch`, `doctor`, `refine`, `split`, `trial`, `data-snapshot` and
+`data-model-draft`. `refine` and `split` exist for the lanes of a parallel
+watch — one child process per issue — and for a human who wants one issue
+done now; `planner`, `pr_review`, `pr_fix`, the merges and `data_diagnosis`
+have **no** subcommand on purpose: they are reached by the router, whose own
+arguments (`--interval`, `--once`, `--dry-run`, `--parallel`) are what a
 human tunes instead.
 
-## `router.rs` — the trigger nobody types
+## `router/` — the trigger nobody types
 
 `harness watch`: read a snapshot, call `harness_workflows::common::routing::
 decide` (pure, tested without a fake adapter), dispatch, sleep `--interval`
@@ -116,12 +122,19 @@ forty-odd reads of a snapshot are paid when something changed, or every
 then fills every free lane before dispatching its route — the runnable tasks
 first, then splits and refinements (`routing::lane_work`).
 
-Two rules, and they are not symmetric:
+Three rules, and they are not symmetric:
 
 - **A failed routing read stops the loop.** Bad credentials or an unreadable
   repo will not fix themselves, and retrying silently forever hides them.
-- **A failed dispatch does not.** One workflow's quota or session hiccup is
-  that workflow's business; it is logged and likely to succeed on a later tick.
+- **A failed dispatch does not.** One workflow's session hiccup is that
+  workflow's business; it is logged and likely to succeed on a later tick.
+- **A `QUOTA` stop makes the watch rest** (`routing::Rest`, kept in the
+  `Pulse`): nothing is read or dispatched for `FIRST_REST` ticks, twice as
+  many after each stop in a row up to `LONGEST_REST`, and the count starts
+  again once a dispatch went through. A lane that exits 3 counts as a stop
+  too (`Lanes::struck_by_quota`). The rest is one `QuotaRest` event, a
+  warning in the view. Before it, an exhausted window bought one `QUOTA` row
+  and one doctor's visit per tick, four a minute at the default interval.
 
 It builds one `GitHub` of its own for the decision alone — no checkout, since
 a route is a decision and not a payload. The reads that a flat issue list

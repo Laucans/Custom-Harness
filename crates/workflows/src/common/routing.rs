@@ -233,6 +233,62 @@ pub struct Pulse {
     pub watching_ci: bool,
     /// Ticks since the last full read.
     pub quiet_ticks: u32,
+    /// The rest after a `QUOTA` stop.
+    pub rest: Rest,
+}
+
+/// The first rest after a `QUOTA` stop, in ticks.
+pub const FIRST_REST: u32 = 4;
+
+/// The longest rest, in ticks: each stop in a row doubles the rest up to
+/// here. At the default interval that is about half an hour.
+pub const LONGEST_REST: u32 = 64;
+
+/// How long the watch rests after a `QUOTA` stop, in ticks.
+///
+/// A subscription window that is exhausted does not come back on the next
+/// tick: trying again every thirty seconds buys nothing and leaves one
+/// `QUOTA` row per tick in the ledgers. The rest doubles with every stop in a
+/// row — the window may take hours — and starts again from
+/// [`FIRST_REST`] once a dispatch went through.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Rest {
+    /// Ticks still to wait before anything is dispatched again.
+    pub ticks_left: u32,
+    /// `QUOTA` stops in a row.
+    pub strikes: u32,
+}
+
+impl Rest {
+    /// A `QUOTA` stop: rests twice as long as the last one, up to
+    /// [`LONGEST_REST`]. Returns the ticks to wait.
+    pub fn struck(&mut self) -> u32 {
+        self.strikes = self.strikes.saturating_add(1);
+        let doubled = 2u32.saturating_pow(self.strikes.saturating_sub(1).min(16));
+        self.ticks_left = FIRST_REST.saturating_mul(doubled).min(LONGEST_REST);
+        self.ticks_left
+    }
+
+    /// A tick passes: whether the rest is over — true when there was none.
+    pub const fn passes(&mut self) -> bool {
+        if self.ticks_left == 0 {
+            return true;
+        }
+        self.ticks_left -= 1;
+        false
+    }
+
+    /// A dispatch went through: the next rest starts again from the first.
+    pub const fn cleared(&mut self) {
+        self.strikes = 0;
+        self.ticks_left = 0;
+    }
+
+    /// Whether the watch is resting.
+    #[must_use]
+    pub const fn resting(&self) -> bool {
+        self.ticks_left > 0
+    }
 }
 
 impl Pulse {
@@ -588,7 +644,38 @@ mod tests {
             etag: Some("W/\"abc\"".to_string()),
             watching_ci: false,
             quiet_ticks: 0,
+            rest: Rest::default(),
         }
+    }
+
+    #[test]
+    fn a_quota_stop_rests_longer_each_time_up_to_the_cap() {
+        let mut rest = Rest::default();
+        assert!(!rest.resting());
+        assert!(rest.passes(), "no rest: the tick goes on");
+        assert_eq!(rest.struck(), FIRST_REST);
+        assert_eq!(rest.struck(), FIRST_REST * 2);
+        assert_eq!(rest.struck(), FIRST_REST * 4);
+        for _ in 0..20 {
+            rest.struck();
+        }
+        assert_eq!(rest.ticks_left, LONGEST_REST, "capped, never overflowing");
+    }
+
+    #[test]
+    fn a_rest_passes_tick_by_tick_and_a_dispatch_clears_it() {
+        let mut rest = Rest::default();
+        rest.struck();
+        for _ in 0..FIRST_REST {
+            assert!(rest.resting());
+            assert!(!rest.passes());
+        }
+        assert!(!rest.resting());
+        assert!(rest.passes(), "the rest is over");
+        rest.struck();
+        rest.cleared();
+        assert_eq!(rest, Rest::default());
+        assert_eq!(rest.struck(), FIRST_REST, "cleared: back to the first rest");
     }
 
     #[test]

@@ -60,6 +60,8 @@ pub struct Lanes {
     parked: HashMap<u64, String>,
     /// Set once a soft stop is asked: no slot is free from then on.
     closed: Arc<AtomicBool>,
+    /// Lanes that ended on exit 3 (`QUOTA`) since the watch last asked.
+    quota_hits: usize,
 }
 
 impl Lanes {
@@ -71,6 +73,7 @@ impl Lanes {
             taken_at: HashMap::new(),
             parked: HashMap::new(),
             closed: Arc::new(AtomicBool::new(false)),
+            quota_hits: 0,
         }
     }
 
@@ -105,6 +108,9 @@ impl Lanes {
                             log.event(&Event::TaskParked { task: running.task });
                             self.parked.insert(running.task, version);
                         }
+                        if status.code() == Some(3) {
+                            self.quota_hits = self.quota_hits.saturating_add(1);
+                        }
                         true
                     }
                     Ok(None) => false,
@@ -124,6 +130,14 @@ impl Lanes {
             }
         }
         freed
+    }
+
+    /// Whether a lane ended on `QUOTA` (exit 3) since this was last asked.
+    /// Asking takes the answer: the watch rests once per stop.
+    pub const fn struck_by_quota(&mut self) -> bool {
+        let struck = self.quota_hits > 0;
+        self.quota_hits = 0;
+        struck
     }
 
     /// Notes the issue version `task` is taken at, so a stop can park it on
@@ -253,6 +267,33 @@ mod tests {
         assert_eq!(lanes.running(), [] as [u64; 0]);
         assert!(lanes.is_parked(15, "v1"), "exit 1 is a stop: parked");
         assert!(!lanes.is_parked(16, "v1"), "exit 2 is a failure: retried");
+        assert!(!lanes.struck_by_quota(), "neither was a quota stop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_lane_that_ends_on_quota_is_told_once() {
+        let dir = std::env::temp_dir().join(format!("lanes-quota-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let log = Logbook::null();
+        let mut lanes = Lanes::new(1);
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("exit 3");
+        lanes.taken(15, "v1".to_string());
+        lanes.spawn(0, 15, command, &dir).expect("spawned");
+        for _ in 0..100 {
+            lanes.reap(&log);
+            if lanes.running().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            !lanes.is_parked(15, "v1"),
+            "exit 3 is not a stop: not parked"
+        );
+        assert!(lanes.struck_by_quota(), "exit 3 is a quota stop");
+        assert!(!lanes.struck_by_quota(), "asking takes the answer");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

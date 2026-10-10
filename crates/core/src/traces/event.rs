@@ -58,6 +58,14 @@ pub enum Event {
         /// Why, in the read's own words.
         reason: String,
     },
+    /// A dispatch stopped on `QUOTA`: the watch rests before paying again,
+    /// longer with every stop in a row.
+    QuotaRest {
+        /// Ticks the watch waits before dispatching anything.
+        ticks: u32,
+        /// `QUOTA` stops in a row.
+        strikes: u32,
+    },
     /// A lane took a task of the dev loop.
     LaneTaken {
         /// The lane.
@@ -207,6 +215,8 @@ pub enum Event {
 impl Event {
     /// The journal line that tells this event to a human — `None` for an
     /// event whose line is a ledger row instead.
+    // One arm per event: the list of lines is read whole, not in two halves.
+    #[allow(clippy::too_many_lines)]
     #[must_use]
     pub fn line(&self) -> Option<String> {
         let tasks = |list: &[u64]| {
@@ -237,6 +247,9 @@ impl Event {
                 prompts.join(", ")
             ),
             Self::TickFailed { reason } => format!("watch: tick -> {reason}"),
+            Self::QuotaRest { ticks, strikes } => format!(
+                "watch: quota -> exhausted, resting {ticks} tick(s) ({strikes} stop(s) in a row)"
+            ),
             Self::LaneTaken {
                 lane,
                 task,
@@ -323,6 +336,7 @@ impl Event {
             Self::Halted { kind, .. } if kind == "FAILED" => Level::Error,
             Self::LaneEnded { code: Some(0), .. } => Level::Info,
             Self::TickFailed { .. }
+            | Self::QuotaRest { .. }
             | Self::DataSnapshotFailed { .. }
             | Self::Halted { .. }
             | Self::LaneEnded {
@@ -433,6 +447,15 @@ mod tests {
             Level::Warning
         );
         assert_eq!(Event::WatchStopped.level(), Level::Info);
+        let rest = Event::QuotaRest {
+            ticks: 8,
+            strikes: 2,
+        };
+        assert_eq!(rest.level(), Level::Warning);
+        assert_eq!(
+            rest.line().as_deref(),
+            Some("watch: quota -> exhausted, resting 8 tick(s) (2 stop(s) in a row)")
+        );
     }
 
     #[test]

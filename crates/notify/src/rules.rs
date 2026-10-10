@@ -56,6 +56,7 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
             at,
         ),
         Event::ChangesApplied { prompts } => changes_applied(board, prompts, at),
+        Event::QuotaRest { ticks, strikes } => quota_rest(board, *ticks, *strikes, at),
         Event::TickFailed { reason } => board.add(Notification::once(
             "tick-failed",
             Level::Error,
@@ -200,6 +201,17 @@ fn snapshot_failed(board: &mut Board, branch: &str, sha: &str, reason: &str, at:
 
 /// The watch's life is one line, telling its last state.
 /// The watch started on changes the human left waiting.
+fn quota_rest(board: &mut Board, ticks: u32, strikes: u32, at: &str) {
+    board.add(Notification::once(
+        "quota-rest",
+        Level::Warning,
+        "The subscription window is exhausted",
+        format!("the watch rests {ticks} tick(s) before paying again — {strikes} stop(s) in a row"),
+        at,
+        Some(screen("quota", at)),
+    ));
+}
+
 fn changes_applied(board: &mut Board, prompts: &[String], at: &str) {
     board.add(Notification::once(
         format!("changes-applied:{at}"),
@@ -340,6 +352,20 @@ mod tests {
                 failure: String::new(),
             },
         )
+    }
+
+    #[test]
+    fn a_quota_rest_is_one_warning_that_counts_up() {
+        let rest = |id, ticks, strikes| Stored {
+            id,
+            at: "2026-10-10T10:00:00Z".to_string(),
+            source: "watch".to_string(),
+            event: Event::QuotaRest { ticks, strikes },
+        };
+        let told = from_events(&[rest(1, 4, 1), rest(2, 8, 2)]).into_sorted();
+        assert_eq!(told.len(), 1);
+        assert_eq!((told[0].level, told[0].count), (Level::Warning, 2));
+        assert!(told[0].detail.contains("8 tick(s)"));
     }
 
     #[test]
