@@ -1221,3 +1221,4 @@ body.picking, body.picking * { user-select: none; }
 .hb-pin.applying { cursor: progress; }
 @keyframes hb-applying { to { transform: rotate(360deg); } }
 .hb-note.applying textarea { opacity: 0.75; cursor: default; }
+.kt-working { color: var(--pin-design); font: 11px var(--sans); display: inline-flex; align-items: center; gap: 4px; }

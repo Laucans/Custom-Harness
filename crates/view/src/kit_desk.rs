@@ -120,6 +120,10 @@ pub struct KitDesk {
     running: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
     workers: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    /// One lock per component being rewritten: requests applied to the same
+    /// component at once run one after the other, each on the last one's
+    /// draft, so none is lost.
+    rewriting: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
 }
 
 /// What the page asks the easel for in one go.
@@ -156,7 +160,14 @@ impl KitDesk {
             running: Arc::default(),
             stopping: Arc::default(),
             workers: Arc::default(),
+            rewriting: Arc::default(),
         }
+    }
+
+    /// The lock of the component `name`'s rewrites, made on first use.
+    fn rewrite_lock(&self, name: &str) -> Arc<Mutex<()>> {
+        let mut locks = lock(&self.rewriting);
+        Arc::clone(locks.entry(name.to_string()).or_default())
     }
 
     /// Runs `f` on a blocking thread with the mock-ups port.
@@ -843,7 +854,11 @@ impl KitDesk {
         if asked.is_empty() {
             return Err("no request to apply".to_string());
         }
+        let rewrite = self.rewrite_lock(&name);
         self.blocking(move |mockups, files| {
+            // Held from the read to the write: a second request on this
+            // component waits, then starts from the draft this one wrote.
+            let _rewriting = lock(&rewrite);
             let (fragment, css) = {
                 let _held = lock(files);
                 let fragment = Self::text_of(mockups, &draft_path(&name))?
@@ -1350,6 +1365,66 @@ mod tests {
             "the sample has no repository"
         );
         desk.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Claude, rewriting slowly: the fragment it is handed, with a mark of
+    /// each request it was asked.
+    struct Appending;
+
+    impl Oneshot for Appending {
+        fn ask(&self, _model: &str, prompt: &str) -> Result<String, String> {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            let fragment = prompt
+                .split("<fragment>\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\n</fragment>").next())
+                .unwrap_or_default();
+            let ids: Vec<&str> = prompt
+                .lines()
+                .filter_map(|l| l.strip_prefix("- request `"))
+                .filter_map(|l| l.split('`').next())
+                .collect();
+            Ok(format!("{}\n<i>{}</i>", fragment.trim(), ids.join(",")))
+        }
+    }
+
+    #[tokio::test]
+    async fn two_requests_applied_at_once_on_one_component_both_land() {
+        let (_, dir) = desk(false);
+        let desk = KitDesk::new(Setup {
+            mockups: Arc::new(DirMockups::new(&dir)),
+            oneshot: Some(Arc::new(Appending)),
+            model: "m".into(),
+            sessions: 1,
+            pins: Arc::new(Shelf::default()),
+            integration_branch: "main".into(),
+        });
+        std::fs::create_dir_all(dir.join("design-system/mock/kit")).expect("kit dir");
+        std::fs::write(
+            dir.join("design-system/mock/kit/Button.html"),
+            "<div class=\"kit-button\">b</div>",
+        )
+        .expect("fragment");
+        let asked = |id: &str| {
+            vec![Asked {
+                id: id.into(),
+                text: format!("change {id}"),
+                target: String::new(),
+            }]
+        };
+        let (first, second) = tokio::join!(
+            desk.apply("Button".into(), asked("r1")),
+            desk.apply("Button".into(), asked("r2"))
+        );
+        first.expect("first applied");
+        second.expect("second applied");
+        let draft = std::fs::read_to_string(dir.join("design-system/mock/kit/Button.draft.html"))
+            .expect("a draft");
+        assert!(
+            draft.contains("<i>r1</i>") && draft.contains("<i>r2</i>"),
+            "the second started from the first's draft: {draft}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -46,7 +46,7 @@
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '' };
+    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '' };
 
     // ---- reading -------------------------------------------------------------------------------
     async function load(quiet) {
@@ -276,7 +276,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
     }
 
     // ---- the canvas: every component on a card, pins on them ------------------------------------
-    const previewSrc = (name, draft) => `/mock/${SLUG}/__kit/${encodeURIComponent(name)}?${draft ? 'draft=1&' : ''}v=${encodeURIComponent(st.stamp)}`;
+    const previewSrc = (name, draft, version) => `/mock/${SLUG}/__kit/${encodeURIComponent(name)}?${draft ? 'draft=1&' : ''}v=${encodeURIComponent(version || st.stamp)}`;
     const describe = (target) => (target && target.startsWith('kit:') ? 'the component ' + target.slice(4) : target || 'the canvas');
     const context = (target) => {
       const name = target && target.startsWith('kit:') ? target.slice(4) : '';
@@ -284,59 +284,94 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       if (!e) return 'The kit of the design system: its components, on the design-system branch under mock/kit/.';
       return `The kit component ${e.name} (${e.title}): ${e.what || e.prompt}\nIts fragment: mock/kit/${e.name}.html on the design-system branch (the folder you are in). The tokens: mock/design/tokens.css. A kit component is a visual primitive: no data of its own, no network; colours, fonts, spacings, radii and shadows only through var(--…).${e.recoded ? '\nRecoded by the code stage: ' + e.recoded : ''}`;
     };
+    // The board is made once and kept: its zoom, its pins and the pins being
+    // applied survive every reload. A reload redraws the cards in place.
     function drawCanvas(changed) {
-      if (st.board && !changed) { drawCards(); return; }
-      if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
-      st.board = null; st.cards = [];
-      const onSession = opts && opts.onSession
-        ? (note, ctx) => opts.onSession({ board: BOARD, id: note.id, on: describe(note.target), kind: note.kind, context: ctx, branch: SLUG, page: '' })
-        : null;
-      st.board = window.HarnessBoard.create(q('.kt-board'), {
-        id: BOARD,
-        describe,
-        context,
-        onSession,
-        kinds: ['note', 'request'],
-        backlog: false,
-        apply: (note) => applyRequests(note.target ? note.target.slice(4) : '', [note]),
-        onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; },
-        bounds: () => ({ x: 0, y: 0, w: Math.max(WIDTH, st.board ? parseFloat(st.board.content.style.width) || WIDTH : WIDTH), h: Math.max(MIN_HEIGHT, st.board ? parseFloat(st.board.content.style.height) || MIN_HEIGHT : MIN_HEIGHT) }),
-      });
+      if (!st.board) {
+        const onSession = opts && opts.onSession
+          ? (note, ctx) => opts.onSession({ board: BOARD, id: note.id, on: describe(note.target), kind: note.kind, context: ctx, branch: SLUG, page: '' })
+          : null;
+        st.board = window.HarnessBoard.create(q('.kt-board'), {
+          id: BOARD,
+          describe,
+          context,
+          onSession,
+          kinds: ['note', 'request'],
+          backlog: false,
+          apply: (note) => applyRequests(note.target ? note.target.slice(4) : '', [note]),
+          onApplying: () => drawCards(),
+          onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; drawCards(); },
+          bounds: () => ({ x: 0, y: 0, w: Math.max(WIDTH, st.board ? parseFloat(st.board.content.style.width) || WIDTH : WIDTH), h: Math.max(MIN_HEIGHT, st.board ? parseFloat(st.board.content.style.height) || MIN_HEIGHT : MIN_HEIGHT) }),
+        });
+        st.fitted = false;
+        loadUsages();
+      } else if (changed) loadUsages();
       drawCards();
-      loadUsages();
+      st.board.refresh();
+    }
+    // A card's preview is reloaded only when what it shows changed: its
+    // fragment written again, its draft made, rewritten or dropped.
+    const versionOf = (e) => `${e.generated_at || ''}-${e.draft ? 'd' : ''}${st.rev[e.name] || 0}`;
+    function cardHtml(e) {
+      const used = (st.usages && st.usages[e.name]) || [];
+      // The requests waiting: written, not applied, not being applied.
+      const pending = st.board ? st.board.all().filter((n) => n.target === 'kit:' + e.name && n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim() && !st.board.isApplying(n.id)).length : 0;
+      const working = st.applying[e.name] || 0;
+      return `<div class="mk-card kt-card" data-pin="kit:${esc(e.name)}" data-card="${esc(e.name)}" data-version="${esc(versionOf(e))}" style="width:${CARD_W}px;--mf:var(--pin-design)">
+          <div class="mk-card-head"><b>${esc(e.name)}</b><span class="mk-card-sys">${esc(e.title)}</span><span class="mk-card-tags">${e.variant_of ? `<i title="forked from ${esc(e.variant_of)}">fork of ${esc(e.variant_of)}</i>` : ''}${e.draft ? '<i class="bad">draft</i>' : ''}${e.checks.length ? `<i class="bad" title="${esc(e.checks.join('\n'))}">fails the check</i>` : '<i class="ok" title="reusable as it is by the real code">passes the check</i>'}${e.recoded ? `<i class="bad" title="${esc(e.recoded)}">recoded</i>` : ''}</span></div>
+          <div class="mk-card-desc">${esc(e.what || e.prompt)}</div>
+          <div class="mk-card-meta">${used.length ? `used by ${used.length}: ` + used.slice(0, 4).map((u) => esc(`${u.kind === 'page' ? (u.title || u.what) : u.what} (${u.branch})`)).join(', ') + (used.length > 4 ? '…' : '') : st.usages ? 'used nowhere yet' : 'reading who uses it…'}</div>
+          <div class="mk-card-body"><iframe class="mk-preview" title="${esc(e.name)}" src="${esc(previewSrc(e.name, e.draft, versionOf(e)))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>
+          <div class="kt-card-actions">
+            ${working ? `<span class="kt-working"><span class="spin"></span> the AI rewrites it${working > 1 ? ` · ${working} in a row` : ''}</span>` : ''}
+            ${pending ? `<button type="button" class="mini on" data-kt="apply" data-name="${esc(e.name)}" title="Apply the pending requests of this card to the fragment, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : working ? '' : '<span class="muted">drop a request pin on the card, then apply it</span>'}
+            ${e.draft && !working ? `<button type="button" class="mini on" data-kt="save" data-name="${esc(e.name)}">save…</button><button type="button" class="mini" data-kt="drop-draft" data-name="${esc(e.name)}">drop the draft</button>` : ''}
+            <span class="spacer"></span>
+            ${!used.length && st.usages && !working ? `<button type="button" class="mini" data-kt="delete" data-name="${esc(e.name)}" title="Used on no active branch: it may go">delete</button>` : ''}
+          </div>
+          <div class="kt-save" hidden><b>Save the draft</b><div class="kt-row"><button type="button" class="mini on" data-kt="save-replace" data-name="${esc(e.name)}" title="The draft takes the component's place: every page and micro-frontend that uses it shows the new one">replace ${esc(e.name)}${used.length ? ` (${used.length} usage${used.length === 1 ? '' : 's'})` : ''}</button><input class="kt-fork-name" maxlength="60" placeholder="${esc(e.name)}2" aria-label="fork name"><button type="button" class="mini" data-kt="save-fork" data-name="${esc(e.name)}" title="A new component from the draft; this one stays as it is">fork</button></div>${used.length ? `<div class="muted">Replacing changes: ${used.map((u) => esc(`${u.kind} ${u.what} on ${u.branch}`)).join('; ')}</div>` : ''}</div>
+        </div>`;
     }
     function drawCards() {
       if (!st.board) return;
       const list = catalog().filter((e) => e.state === 'generated' || e.draft);
-      const per = Math.max(1, Math.floor((WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
+      const content = st.board.content;
       if (!list.length) {
-        st.board.content.innerHTML = '<div class="mk-empty" data-pin="kit:none"><h2>No component yet</h2><p>The canvas shows the kit once it is generated: tick the components in the <b>catalogue</b> and generate them from the validated design system.</p></div>';
+        content.innerHTML = '<div class="mk-empty" data-pin="kit:none"><h2>No component yet</h2><p>The canvas shows the kit once it is generated: tick the components in the <b>catalogue</b> and generate them from the validated design system.</p></div>';
+        st.cards = [];
         st.board.setSize(WIDTH, MIN_HEIGHT);
         st.board.fit();
         return;
       }
-      const usedBy = (name) => (st.usages && st.usages[name]) || [];
-      st.board.content.innerHTML = list.map((e, i) => {
-        const x = (i % per) * (CARD_W + CARD_GAP);
-        const y = Math.floor(i / per) * (CARD_MIN + 90 + CARD_GAP);
-        const used = usedBy(e.name);
-        const pending = st.board ? st.board.all().filter((n) => n.target === 'kit:' + e.name && n.kind === 'request' && (n.state || 'pending') !== 'simulated').length : 0;
-        return `<div class="mk-card kt-card" data-pin="kit:${esc(e.name)}" data-card="${esc(e.name)}" style="left:${x}px;top:${y}px;width:${CARD_W}px;--mf:var(--pin-design)">
-          <div class="mk-card-head"><b>${esc(e.name)}</b><span class="mk-card-sys">${esc(e.title)}</span><span class="mk-card-tags">${e.variant_of ? `<i title="forked from ${esc(e.variant_of)}">fork of ${esc(e.variant_of)}</i>` : ''}${e.draft ? '<i class="bad">draft</i>' : ''}${e.checks.length ? `<i class="bad" title="${esc(e.checks.join('\n'))}">fails the check</i>` : '<i class="ok" title="reusable as it is by the real code">passes the check</i>'}${e.recoded ? `<i class="bad" title="${esc(e.recoded)}">recoded</i>` : ''}</span></div>
-          <div class="mk-card-desc">${esc(e.what || e.prompt)}</div>
-          <div class="mk-card-meta">${used.length ? `used by ${used.length}: ` + used.slice(0, 4).map((u) => esc(`${u.kind === 'page' ? (u.title || u.what) : u.what} (${u.branch})`)).join(', ') + (used.length > 4 ? '…' : '') : st.usages ? 'used nowhere yet' : 'reading who uses it…'}</div>
-          <div class="mk-card-body"><iframe class="mk-preview" title="${esc(e.name)}" src="${esc(previewSrc(e.name, e.draft))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>
-          <div class="kt-card-actions">
-            ${pending ? `<button type="button" class="mini on" data-kt="apply" data-name="${esc(e.name)}" title="Apply the pending requests of this card to the fragment, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : '<span class="muted">drop a request pin on the card, then apply it</span>'}
-            ${e.draft ? `<button type="button" class="mini on" data-kt="save" data-name="${esc(e.name)}">save…</button><button type="button" class="mini" data-kt="drop-draft" data-name="${esc(e.name)}">drop the draft</button>` : ''}
-            <span class="spacer"></span>
-            ${!used.length && st.usages ? `<button type="button" class="mini" data-kt="delete" data-name="${esc(e.name)}" title="Used on no active branch: it may go">delete</button>` : ''}
-          </div>
-          <div class="kt-save" hidden><b>Save the draft</b><div class="kt-row"><button type="button" class="mini on" data-kt="save-replace" data-name="${esc(e.name)}" title="The draft takes the component's place: every page and micro-frontend that uses it shows the new one">replace ${esc(e.name)}${used.length ? ` (${used.length} usage${used.length === 1 ? '' : 's'})` : ''}</button><input class="kt-fork-name" maxlength="60" placeholder="${esc(e.name)}2" aria-label="fork name"><button type="button" class="mini" data-kt="save-fork" data-name="${esc(e.name)}" title="A new component from the draft; this one stays as it is">fork</button></div>${used.length ? `<div class="muted">Replacing changes: ${used.map((u) => esc(`${u.kind} ${u.what} on ${u.branch}`)).join('; ')}</div>` : ''}</div>
-        </div>`;
-      }).join('');
-      st.cards = [...st.board.content.querySelectorAll('.kt-card')].map((card) => ({ name: card.dataset.card, card, frame: card.querySelector('.mk-preview') }));
-      st.cards.forEach((c) => { if (c.frame) c.frame.addEventListener('load', measureCards); });
+      const empty = content.querySelector('.mk-empty');
+      if (empty) empty.remove();
+      const have = new Map([...content.querySelectorAll('.kt-card')].map((c) => [c.dataset.card, c]));
+      const make = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+      let before = null;
+      const cards = list.map((e) => {
+        const fresh = make(cardHtml(e));
+        let card = have.get(e.name);
+        have.delete(e.name);
+        if (card && card.dataset.version === fresh.dataset.version) {
+          // The same preview: everything but the frame is redrawn, the frame stays loaded.
+          const open = !card.querySelector('.kt-save').hidden;
+          const fork = card.querySelector('.kt-fork-name').value;
+          [...card.children].forEach((child) => { if (!child.classList.contains('mk-card-body')) child.remove(); });
+          const body = card.querySelector('.mk-card-body');
+          [...fresh.children].forEach((child) => { if (!child.classList.contains('mk-card-body')) card.insertBefore(child, child.classList.contains('kt-card-actions') || child.classList.contains('kt-save') ? null : body); });
+          card.querySelector('.kt-save').hidden = !open;
+          card.querySelector('.kt-fork-name').value = fork;
+        } else {
+          if (card) { const height = card.querySelector('.mk-preview') && card.querySelector('.mk-preview').style.height; card.replaceWith(fresh); if (height) fresh.querySelector('.mk-preview').style.height = height; } else content.insertBefore(fresh, before ? before.nextSibling : content.firstChild);
+          card = fresh;
+          const frame = card.querySelector('.mk-preview');
+          if (frame) frame.addEventListener('load', measureCards);
+        }
+        before = card;
+        return { name: e.name, card, frame: card.querySelector('.mk-preview') };
+      });
+      have.forEach((card) => card.remove());
+      st.cards = cards;
       layoutCards();
       if (!st.fitted) { st.board.fit(); st.fitted = true; }
     }
@@ -378,20 +413,23 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       if (!name || !st.board) return;
       const asked = notes.filter((n) => (n.text || '').trim()).map((n) => ({ id: n.id, text: n.text, target: '' }));
       if (!asked.length) { toast('nothing to apply: write the request first'); return; }
-      const action = window.HarnessActions && window.HarnessActions.start({ key: `kit-apply:${name}`, label: `apply ${asked.length} request(s) to ${name}` });
-      say(`<span class="spin"></span> the AI rewrites ${esc(name)}…`);
+      const action = window.HarnessActions && window.HarnessActions.start({ key: `kit-apply:${name}:${asked.map((a) => a.id).join(',')}`, label: `apply ${asked.length} request(s) to ${name}` });
+      // Several at once are fine: the server rewrites a component one request after the other.
+      st.applying[name] = (st.applying[name] || 0) + 1;
+      drawCards();
       try {
         const got = await said(await post(`/api/kit/${encodeURIComponent(name)}/apply`, { requests: asked }));
         const skipped = got.skipped || [];
         asked.forEach((a) => { if (!skipped.some(([id]) => id === a.id)) st.board.drop(a.id); });
         skipped.forEach(([id, why]) => toast(`request ${esc(id)}: ${esc(why)}`));
         if (action) action.ok(`${asked.length - skipped.length} applied`);
-        say('');
-        await load(false);
-        st.cards.forEach((c) => { if (c.name === name && c.frame) c.frame.src = previewSrc(name, true); });
+        st.rev[name] = (st.rev[name] || 0) + 1;
       } catch (e) {
         if (action) action.fail(e.message || e);
-        say(`<span class="bad">not applied: ${esc(String(e.message || e).split('\n')[0])}</span>`);
+        toast(`${esc(name)}: not applied — ${esc(String(e.message || e).split('\n')[0])}`);
+      } finally {
+        st.applying[name] = Math.max(0, (st.applying[name] || 1) - 1);
+        if (!st.gone) await load(false);
       }
     }
 
@@ -429,7 +467,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         case 'sketch-toggle': { const pad = host.querySelector('.kt-sketch'); pad.hidden = !pad.hidden; if (!pad.hidden && !st.sketch) armSketch(pad.querySelector('canvas')); break; }
         case 'sketch-clear': if (st.sketch) st.sketch.clear(); break;
         case 'apply': {
-          const pins = st.board.all().filter((n) => n.target === 'kit:' + name && n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim());
+          const pins = st.board.all().filter((n) => n.target === 'kit:' + name && n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim() && !st.board.isApplying(n.id));
           st.board.track(pins.map((n) => n.id), applyRequests(name, pins));
           break;
         }

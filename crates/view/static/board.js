@@ -133,8 +133,10 @@
       drawPins();
       const n = notes.find((x) => x.id === openId);
       if (n && applying.has(n.id)) drawEditor(n);
+      if (opts.onApplying) opts.onApplying();
       return Promise.resolve(work).finally(() => {
         ids.forEach((x) => applying.delete(x));
+        if (opts.onApplying) opts.onApplying();
         drawPins();
         const open = notes.find((x) => x.id === openId);
         if (open) drawEditor(open);
@@ -950,6 +952,7 @@
       open: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n) openNote(n); },
       // Pins being applied by the pane itself — a card's "apply" — turn the same way.
       track: (ids, work) => track(ids, work),
+      isApplying: (noteId) => applying.has(noteId),
       // A pin whose work is done goes, as a delete does: ctrl+z brings it back.
       drop: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n) remove(n); },
       goTo,
