@@ -196,7 +196,9 @@ impl Workspace {
         self.loop_dir().join("state")
     }
 
-    /// The cost ledger, whose header is frozen.
+    /// The cost ledger, whose header is frozen — **the one ledger**: every
+    /// workflow's paid sessions land here, a review's passes and a
+    /// refinement's phases with the rounds, the subject's number in `task`.
     #[must_use]
     pub fn ledger(&self) -> PathBuf {
         self.loop_dir().join("costs.tsv")
@@ -231,23 +233,11 @@ impl Workspace {
         self.log_dir("pr-review")
     }
 
-    /// The review ledger — columns distinct from the rounds one.
-    #[must_use]
-    pub fn review_ledger(&self) -> PathBuf {
-        self.review_dir().join("costs.tsv")
-    }
-
     /// Refinement's folder: its locks, artifacts, one subfolder
     /// per issue.
     #[must_use]
     pub fn refinement_dir(&self) -> PathBuf {
         self.log_dir("refinement")
-    }
-
-    /// The refinement ledger — same columns as the rounds one.
-    #[must_use]
-    pub fn refinement_ledger(&self) -> PathBuf {
-        self.refinement_dir().join("costs.tsv")
     }
 
     /// Where workspaces this repo mounts land.
@@ -360,16 +350,8 @@ mod tests {
             Path::new("/depot/.llocal/logs/pr-review")
         );
         assert_eq!(
-            here.review_ledger(),
-            Path::new("/depot/.llocal/logs/pr-review/costs.tsv")
-        );
-        assert_eq!(
             here.refinement_dir(),
             Path::new("/depot/.llocal/logs/refinement")
-        );
-        assert_eq!(
-            here.refinement_ledger(),
-            Path::new("/depot/.llocal/logs/refinement/costs.tsv")
         );
         assert_eq!(here.loop_dir(), Path::new("/depot/.llocal/logs/agent-loop"));
     }

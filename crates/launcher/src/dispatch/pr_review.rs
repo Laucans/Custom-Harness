@@ -81,9 +81,9 @@ pub async fn run(
         gh: Rc::clone(&built.gh),
         sessions: Rc::clone(&built.sessions),
         spending: Rc::clone(&built.spending),
-        // The only reader of the review ledger: what the footer of the posted
-        // comment says this review cost.
-        costs: Rc::new(ReviewLedger::new(&workspace.review_ledger())) as Rc<dyn ReviewCosts>,
+        // What the footer of the posted comment says this review cost: a
+        // read of the one ledger every workflow writes, on the PR's rows.
+        costs: Rc::new(ReviewLedger::new(&workspace.ledger())) as Rc<dyn ReviewCosts>,
         disk: Rc::clone(&built.disk),
         locks: Rc::clone(&built.locks),
         now: spending::now,

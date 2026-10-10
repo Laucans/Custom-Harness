@@ -11,10 +11,13 @@ the loop at the labels.
 
 | crate | role |
 | --- | --- |
-| `crates/core` | the framework: vocabulary, traces, execution shapes, ports, adapters |
-| `crates/workflows` | the workflows declared against it: `dev_loop`, `refinement`, `planner`, `split`, `pr_review`, `pr_fix` |
-| `crates/launcher` | the `harness` binary: CLI, the `watch` router, the place that builds adapters |
-| `crates/view` | the factory view: a local page showing the plant, read from the traces |
+| `crates/core` | the framework: vocabulary, traces, execution shapes, ports — no adapter, no workflow |
+| `crates/adapters` | the outside: one implementation per port — `git`, `gh`, the `claude` CLI, the disk, the ledgers, SQLite |
+| `crates/architecture` | the architecture of the products the harness builds: vocabulary, manifest rules, data model, the files `init-repo` installs |
+| `crates/workflows` | the workflows declared against the framework: `dev_loop`, `refinement`, `planner`, `split`, `pr_review`, `pr_fix`, `data_diagnosis`; and the deterministic commands `init_repo`, `milestone_merge`, `main_agent_merge`, `data_snapshot`, `data_model_draft` |
+| `crates/launcher` | the `harness` binary: the CLI and its eight subcommands, the `watch` router, the place that builds adapters |
+| `crates/notify` | what to tell a human from the harness's events, pure — the view shows it |
+| `crates/view` | the factory view: a local page showing the plant, read from the traces; its hands on the plant are listed in its `ARCHITECTURE.md` |
 | `crates/view-render` | the drawing: a Bevy scene compiled to WebAssembly |
 
 The design is hexagonal and it is a rule, not a style: `ARCHITECTURE_OVERVIEW.md`

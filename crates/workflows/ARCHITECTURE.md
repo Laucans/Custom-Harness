@@ -1,7 +1,8 @@
 # `harness-workflows` — architecture
 
-The instances: what `harness-core` cannot name. Three workflows declared against
-the framework, plus `common/` for what at least two of them actually read.
+The instances: what `harness-core` cannot name. Seven workflows declared
+against the framework, five deterministic commands beside them (§13), plus
+`common/` for what at least two of them actually read.
 
 Read this before adding a workflow or moving a file inside one. The crate graph
 is in [ARCHITECTURE_OVERVIEW.md](../../ARCHITECTURE_OVERVIEW.md); the framework
@@ -304,9 +305,17 @@ its precheck, its lock and its trigger.
   the last to get a launcher entry point: its documented trigger used to be a
   hook on `gh pr create`, which needs a public URL this harness does not have.
 
-Three more modules sit beside these, not in the table above: `init_repo`,
-`milestone_merge` and `main_agent_merge`, all the deterministic-command departure described
-in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
+**The one that works a version of the data model:** `data_diagnosis` — a
+version of `main` or `main_agent` whose two sides (`schema.sql`, `model.json`)
+disagree, right after its snapshot. Trigger: the router, once the snapshot
+reports a divergence; state `DiagnosisState`; `remaining` 1; core's
+`Round<S>`; one stage, `diagnose`, an Opus session in the snapshot clone whose
+answer is the `DataModelDiverged` event; no lock (two diagnoses of one
+version say the same thing), no resume, no tolerance.
+
+Five more modules sit beside these, not in the tables above: `init_repo`,
+`milestone_merge`, `main_agent_merge`, `data_snapshot` and `data_model_draft`,
+all the deterministic-command departure described in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
 router route, no `state`, no `remaining`, no round, no lock, no resume, no
 tolerance — every column above would read "n/a". `init_repo` creates the
 `harness:*` labels and the integration branch, installs the architecture's
@@ -320,6 +329,11 @@ branch once the agent review has run and every check is green — the write
 side's PR, which the session leaves open — and marks the task delivered;
 `main_agent_merge` opens, then merges, the milestone branch's PR into the
 integration branch once every task is merged into it and its CI is green.
+`data_snapshot` dumps the data model of every branch whose head moved and
+archives it on the target's `harness/data-model` branch; `data_model_draft`
+asks one session for the first `model.json` of a branch that has none, from
+its dump and its code, and proposes it as a pull request a human merges. Every one of them is reached by its own subcommand or by the
+router (`crates/launcher/ARCHITECTURE.md`).
 
 ## 14. Adding a workflow
 

@@ -10,7 +10,9 @@ use jiff::tz::TimeZone;
 use serde::Serialize;
 
 use crate::domain::journal::{self, Journal};
-use crate::domain::traces::{self, Costs, Stamped, attribute_sides, stamped, summarize_costs};
+use crate::domain::traces::{
+    self, Costs, Stamped, attribute_milestones, attribute_sides, stamped, summarize_costs,
+};
 use crate::ports::{ErrorRow, LedgerRow};
 
 /// How many of the period's paid sessions are listed one by one.
@@ -106,6 +108,7 @@ pub fn history(
     errors: &[ErrorRow],
     watch_log: &str,
     is_data_layer: impl Fn(&str) -> Option<bool>,
+    milestone_of: impl Fn(&str) -> Option<String>,
     zone: &TimeZone,
 ) -> History {
     let rows: Vec<LedgerRow> = ledger
@@ -115,6 +118,7 @@ pub fn history(
         .collect();
     let mut costs = summarize_costs(&rows, SESSIONS_LISTED, zone);
     attribute_sides(&mut costs, &rows, is_data_layer);
+    attribute_milestones(&mut costs, &rows, milestone_of);
     let errors = errors
         .iter()
         .rev()
@@ -215,7 +219,15 @@ mod tests {
 [2026-10-08T20:30:00Z] quiet: nothing moved
 [2026-10-08T20:31:00Z] quiet: nothing moved
 ";
-        let history = history(range, &ledger, &errors, log, |_| None, &TimeZone::UTC);
+        let history = history(
+            range,
+            &ledger,
+            &errors,
+            log,
+            |_| None,
+            |_| None,
+            &TimeZone::UTC,
+        );
         assert!((history.costs.total_usd - 3.5).abs() < 1e-9);
         assert_eq!(history.costs.sessions, 2);
         assert_eq!(history.errors.len(), 1);

@@ -39,8 +39,11 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   (core's `EventLog` port, SQLite adapter in `harness-adapters`).
   `core` never depends on `workflows`, `launcher` or `view` — enforced by
   Cargo, not a lint: a `use` the wrong way is a cyclic-dependency error, not
-  a warning. `view` is read-only: it shows the traces the harness leaves in
-  `.llocal/logs` and the GitHub board, and never writes anything a run reads.
+  a warning. `view` writes nothing a run reads, with one exception, the
+  prompt drafts: it shows the traces the harness leaves in `.llocal/logs`
+  and the GitHub board. Its six ways of acting on the world are all the
+  human's gesture, never a run's input, and are listed in
+  `crates/view/ARCHITECTURE.md` (*What the view writes*).
   A robot's prompt edited in the view is a **draft**
   (`.llocal/prompts.drafts.json`, core's `DraftStore` port) that no run
   reads: `harness watch` applies the drafts itself when it starts, into the
@@ -101,7 +104,7 @@ the rules a diff is checked against:
   `ports/` and every workflow take `Rc<dyn Trait>`; only the two outer rings
   build a concrete adapter — `harness-launcher` builds `GhCli`, `GitCli`,
   `ClaudeCliFactory`, `Checkpoint`, `ReviewLedger`, `DirLocks`, in its
-  composition root (`dispatch/*.rs` and `router.rs`, never in the inside rings);
+  composition root (`dispatch/*.rs` and `router/`, never in the inside rings);
   `harness-view` builds `GhCli` and its own read-only `FsTraces`, in its
   `main.rs` and nowhere else. One exception, test-only: a `workflows`
   fixture may wire `Rehearsal` as its session factory (the stand-in carrier

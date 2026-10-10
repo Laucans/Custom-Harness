@@ -3,8 +3,10 @@
 The factory view: a local web server that draws the harness as an isometric
 plant, read from the traces the harness leaves behind. A **second outer ring**
 beside `harness-launcher` — the only other crate allowed to build a concrete
-adapter — and it **writes nothing the harness reads** (a prompt edited
-here is a draft the watch applies itself, see *The robots' prompts*). The
+adapter — and it **writes nothing a run reads**, with one exception: a
+prompt edited here is a draft the watch applies itself (*The robots'
+prompts*). It does act on the world in six ways, every one a human's
+gesture and none a run's input — the list is *What the view writes*. The
 crate graph is in
 [ARCHITECTURE_OVERVIEW.md](../../ARCHITECTURE_OVERVIEW.md); the Rust rules in
 [../../CLAUDE.md](../../CLAUDE.md).
@@ -33,6 +35,28 @@ An **employee** is a run believed to be at work: the watch dispatched its
 workflow and has not reported back, or its folder was written to in the last
 two minutes. The harness logs no "run over" line, so this is a judgement, and
 it lives in one function (`assemble::is_live`) with its two thresholds.
+
+## What the view writes
+
+The rule is **nothing a run reads**, and the one exception is the prompt
+draft (`.llocal/prompts.drafts.json`), which only a start of the watch
+takes. Everything else the view writes is the human's own gesture, done
+through a port so a test can refuse it:
+
+| what | where it lands | port | the gesture |
+| --- | --- | --- | --- |
+| a prompt draft, its shelf, a trial's report | `.llocal/prompts.drafts.json`, `.llocal/prompts.shelf.json`, `.llocal/trials/` | `Prompts`, `Trials` | save in the editor; dry-run |
+| the steward's and the doctor's keystrokes | an interactive `claude` in the checkout — a shell, which may do anything the human types | `TerminalFactory` | typing in the pane |
+| the watch started, drained or killed | the `harness watch` process | `Plant` | the status button |
+| caches and old traces removed from `.llocal/` | the yard, by static rules, never a clone, a ledger or the event store | `Yard` | the janitor's buttons, or the threshold the human set |
+| a mock-up edited, then a `mockup/*` branch pushed | a `git worktree` of the mirror under `.llocal/view-mockups/`; the target's remote on save | `Mockups` | a link or simulate session; *save the mock-up* |
+| an issue opened, a pin and its conversation kept | the target's board (`harness:roadmap`); `.llocal/harness.db`, table `notes` | `Product::open_issue`, `NoteStore` | *Open the issue*; a pin dropped, a brainstorm |
+
+A pin's session and a mock-up session are Claude Code sessions that edit
+the product's checkout — in a worktree the view made, never the harness's
+lanes — in the launcher's permission mode. Nothing they do is committed by
+the view; a human saves or discards. The `asking` pins have no reader yet
+(`docs/PARKED.md`).
 
 ## The steward, and the doctor
 
@@ -776,7 +800,7 @@ src/adapters/
   prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server.rs          axum: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
+src/server/            axum, one file per pane: `mod.rs` the state, the route table, the page's assets; `runs`, `desks`, `plant`, `janitor`, `data_model`, `mockup`, `drafts` (a page's draft and its versions), `design` (the design system's easel), `capabilities`, `notes`, `prompts` the handlers of each; `tests.rs` the router driven with fakes. The routes: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
 static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, the draft, the requests, the forks), edit.js (the draft engine: a page as source + operations, undo, materialization), design.js (the designer's hands: selection, handles, guides, marquee, layers, properties, tools, menu, keys), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```
