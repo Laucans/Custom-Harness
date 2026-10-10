@@ -541,8 +541,10 @@ version's `viewport`; the operations do not depend on it. Routes:
 Everything goes through the `Mockups` port (`adapters::mockups`): on
 GitHub, `GitMockups` over the same `git_units::Mirror` the capabilities
 list reads (`show`, `head_of`, a worktree per edited branch); under
-`--demo`, `DirMockups` serves the sample's folders and a session edits them
-in place. Routes `GET /mock/{branch slug}/{*path}` (a page's relative links
+`--demo`, `DirMockups` serves a copy of the sample seeded once under
+`.llocal/view-demo/`, and a session edits the copy — the tracked sample
+never changes, and a kit component, its reference image included, lands
+in the product's repository only. Routes `GET /mock/{branch slug}/{*path}` (a page's relative links
 resolve beside it), `GET /api/mockup?branch=`, `POST /api/mockup/{save,discard}`;
 `POST /api/notes/{board}/{id}/session` carries the branch and the page for
 a board named `mockup--…`, and the server makes the workspace before the
@@ -793,7 +795,7 @@ src/adapters/
   watch_proc.rs        `ps`/`lsof` to find the watch, a detached spawn to start it, `kill` to stop it
   fs_yard.rs           .llocal walked and swept with std::fs, symlinks never followed, every path kept inside
   git_units.rs         the product's manifests, and the Mirror they are read through: a bare mirror under .llocal/view-mirror, a --data-dir checkout, or the demo's folders
-  mockups.rs           the mock-up through the same mirror, a detached worktree per edited branch under .llocal/view-mockups, saved on a mockup/* branch; the demo's folders in place
+  mockups.rs           the mock-up through the same mirror, a detached worktree per edited branch under .llocal/view-mockups, saved on a mockup/* branch; the demo's copy of the sample under .llocal/view-demo
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   sqlite_notes.rs      the pins and their conversations, in .llocal/harness.db
   claude_cli.rs        claude -p asked once (summary, conclusion, request), and Claude Code's transcripts read back

@@ -12,7 +12,8 @@
 //! fetch never meets a branch checked out somewhere.
 //!
 //! Under `--demo`, the sample's folders stand for the branches, and a
-//! session edits them in place: there is no repository to save to.
+//! session edits them in a copy of the yard's ([`seed`]) — never the sample
+//! the harness tracks: there is no repository to save to.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -362,6 +363,40 @@ fn remove_under(dir: &Path, path: &str) -> Result<(), String> {
     }
 }
 
+/// Copies the sample at `from` to `to` once, when `to` is absent; a copy
+/// cut short is never left behind as a whole one.
+///
+/// # Errors
+///
+/// A file of the sample unreadable, or the copy unwritable.
+pub fn seed(from: &Path, to: &Path) -> std::io::Result<()> {
+    if to.exists() {
+        return Ok(());
+    }
+    let partial = to.with_extension("partial");
+    match fs::remove_dir_all(&partial) {
+        Err(e) if e.kind() != ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    copy_tree(from, &partial)?;
+    fs::rename(&partial, to)
+}
+
+/// Copies the folder `from` into `to`, recursively.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// The demo's mock-ups: one folder per branch under `dir` (a `/` in a
 /// branch name is a `__` in the folder's), each with its `mock/`.
 pub struct DirMockups {
@@ -455,6 +490,33 @@ impl Mockups for DirMockups {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_demo_edits_a_copy_seeded_once() {
+        let dir = std::env::temp_dir().join(format!("seed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let sample = dir.join("sample");
+        fs::create_dir_all(sample.join("main/mock")).expect("sample");
+        fs::write(sample.join("main/mock/pages.json"), "[]").expect("write");
+        let copy = dir.join("copy");
+        seed(&sample, &copy).expect("seed");
+        assert_eq!(
+            fs::read_to_string(copy.join("main/mock/pages.json")).expect("copied"),
+            "[]"
+        );
+        fs::write(copy.join("main/mock/pages.json"), "edited").expect("edit");
+        seed(&sample, &copy).expect("again");
+        assert_eq!(
+            fs::read_to_string(copy.join("main/mock/pages.json")).expect("kept"),
+            "edited"
+        );
+        assert_eq!(
+            fs::read_to_string(sample.join("main/mock/pages.json")).expect("sample"),
+            "[]"
+        );
+        assert!(!dir.join("copy.partial").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_folder_without_pages_json_has_no_mockup_and_a_stamp_follows_the_files() {

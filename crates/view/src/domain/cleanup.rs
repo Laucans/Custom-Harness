@@ -82,13 +82,17 @@ pub const VIEW_MIRROR: &str = "view-mirror";
 /// session edits: a store, read by no run, dropped by the human's discard.
 pub const VIEW_MOCKUPS: &str = "view-mockups";
 
+/// The demo's own copy of the sample units, seeded once: what a `--demo`
+/// session edits, so the sample the harness tracks stays untouched.
+pub const VIEW_DEMO: &str = "view-demo";
+
 /// The folder of the throwaway clones `harness init-repo` makes.
 pub const INIT: &str = "init";
 
 /// Every folder the harness itself writes under the yard — the launcher's
 /// own list, mirrored: a store added there without its name here shows up
 /// as a stray, which is the reminder to add it.
-const KNOWN: [&str; 12] = [
+const KNOWN: [&str; 13] = [
     WORKSPACES,
     LOGS,
     "grill",
@@ -101,6 +105,7 @@ const KNOWN: [&str; 12] = [
     "trials",
     VIEW_MIRROR,
     VIEW_MOCKUPS,
+    VIEW_DEMO,
 ];
 
 /// What a human allowed: how heavy the yard may be, and whether the janitor

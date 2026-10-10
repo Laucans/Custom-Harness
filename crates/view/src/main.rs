@@ -53,7 +53,7 @@ use crate::adapters::gh_board::GhBoard;
 use crate::adapters::git_units::{DirUnits, GitUnits, Mirror};
 use crate::adapters::harness_builds::HarnessBuilds;
 use crate::adapters::limits_cli::CliLimits;
-use crate::adapters::mockups::{DirMockups, GitMockups};
+use crate::adapters::mockups::{self, DirMockups, GitMockups};
 use crate::adapters::product::{DirProduct, GhProduct};
 use crate::adapters::prompt_files::PromptFiles;
 use crate::adapters::pty::Pty;
@@ -684,13 +684,12 @@ fn data_for(product: Option<DataSource>) -> (Option<DataDesk>, Option<impl Futur
 const SAMPLE_UNITS: &str = "crates/view/sample/units";
 
 /// Where the capabilities list is read: the folder the human named, the
-/// sample under `--demo`, else a mirror of the product on GitHub — nothing
+/// demo's copy of the sample under `--demo`, else a mirror of the product on GitHub — nothing
 /// under `--no-board` without a folder.
-fn units_for(cli: &Cli, root: &Path, mirror: Option<Arc<Mirror>>) -> Option<UnitsDesk> {
-    let units: Arc<dyn Units> = if cli.demo && cli.data_dir.is_none() {
-        Arc::new(DirUnits::new(&root.join(SAMPLE_UNITS)))
-    } else {
-        Arc::new(GitUnits::new(mirror?))
+fn units_for(cli: &Cli, demo: Option<&Path>, mirror: Option<Arc<Mirror>>) -> Option<UnitsDesk> {
+    let units: Arc<dyn Units> = match demo {
+        Some(dir) => Arc::new(DirUnits::new(dir)),
+        None => Arc::new(GitUnits::new(mirror?)),
     };
     let claude = claude_bin::newest().map(|(path, _)| path);
     let oneshot = claude.map(|path| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
@@ -703,6 +702,16 @@ fn units_for(cli: &Cli, root: &Path, mirror: Option<Arc<Mirror>>) -> Option<Unit
     ))
 }
 
+/// The demo's units: a copy of the sample under the yard, seeded on the
+/// first start — a session edits it, never the sample the harness tracks.
+fn demo_units(root: &Path) -> PathBuf {
+    let copy = root.join(".llocal").join(cleanup::VIEW_DEMO);
+    if let Err(e) = mockups::seed(&root.join(SAMPLE_UNITS), &copy) {
+        tracing::warn!("the demo's copy of the sample is unwritable: {e}");
+    }
+    copy
+}
+
 /// What reads the product with `git`: the capabilities list and the
 /// mock-up, over one mirror.
 fn product_readers(
@@ -711,9 +720,10 @@ fn product_readers(
     project: &Project,
 ) -> (Option<UnitsDesk>, Option<Arc<dyn Mockups>>) {
     let mirror = mirror_for(cli, root, project);
+    let demo = (cli.demo && cli.data_dir.is_none()).then(|| demo_units(root));
     (
-        units_for(cli, root, mirror.clone()),
-        mockups_for(cli, root, mirror),
+        units_for(cli, demo.as_deref(), mirror.clone()),
+        mockups_for(demo.as_deref(), root, mirror),
     )
 }
 
@@ -739,12 +749,16 @@ fn mirror_for(cli: &Cli, root: &Path, project: &Project) -> Option<Arc<Mirror>> 
     )))
 }
 
-/// Where the product's mock-up is read and edited: the sample's folders
-/// under `--demo`, else the mirror's branches with a worktree per edited
+/// Where the product's mock-up is read and edited: the folders of the
+/// demo's copy under `--demo`, else the mirror's branches with a worktree per edited
 /// branch under `.llocal/view-mockups/`.
-fn mockups_for(cli: &Cli, root: &Path, mirror: Option<Arc<Mirror>>) -> Option<Arc<dyn Mockups>> {
-    if cli.demo && cli.data_dir.is_none() {
-        return Some(Arc::new(DirMockups::new(&root.join(SAMPLE_UNITS))));
+fn mockups_for(
+    demo: Option<&Path>,
+    root: &Path,
+    mirror: Option<Arc<Mirror>>,
+) -> Option<Arc<dyn Mockups>> {
+    if let Some(dir) = demo {
+        return Some(Arc::new(DirMockups::new(dir)));
     }
     let workspaces = root.join(".llocal").join(cleanup::VIEW_MOCKUPS);
     mirror.map(|mirror| Arc::new(GitMockups::new(mirror, &workspaces)) as Arc<dyn Mockups>)
