@@ -10,8 +10,8 @@
 <body>
 <header id="hud">
   <nav id="crumbs" aria-label="where you are"></nav>
-  <button id="hud-steward" class="hud-btn" title="Talk to the steward — a Claude Code in the harness checkout, at the bottom left. Hold and drag the pin onto a part of the page: the session opens with that part's context">🧙 steward</button>
-  <button id="hud-doctor" class="hud-btn doctor" title="Call the doctor — a Claude Code that examines the plant, at the bottom left. Hold and drag the pin onto a part of the page: the session opens with that part's context">🦞 doctor</button>
+  <button id="hud-steward" class="hud-btn" title="Talk to the steward — a Claude Code in the harness checkout, at the bottom left">🧙 steward</button>
+  <button id="hud-doctor" class="hud-btn doctor" title="Call the doctor — a Claude Code that examines the plant, at the bottom left">🦞 doctor</button>
   <button id="hud-janitor" class="hud-btn janitor" title="The janitor — what the workspace weighs on disk, and a sweep of what is no longer useful">🧹 janitor</button>
   <div id="status-wrap">
     <button id="status" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="plant-menu" title="Start or stop the plant"><span id="watch-dot" class="dot"></span><span id="watch-text">connecting…</span><span class="caret" aria-hidden="true">▾</span></button>
@@ -40,7 +40,6 @@
 <div id="pick-layer" hidden aria-hidden="true"></div>
 <div id="pick-box" hidden aria-hidden="true"></div>
 <div id="pick-hint" hidden role="status"></div>
-<div id="pin-ghost" hidden aria-hidden="true">📍<span></span></div>
 <aside id="pane" hidden>
   <div id="pane-head">
     <button id="pane-back" title="back to the pane you came from" aria-label="back" hidden>←</button>

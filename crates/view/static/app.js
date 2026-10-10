@@ -583,35 +583,8 @@
     if (e.key === 'Escape' || e.key === 'Backspace') { if (!typing && e.target.tagName !== 'CANVAS') back(); else if (e.key === 'Escape') back(); }
   });
   // The two desks of the header: a click opens (or closes) the desk in the
-  // dock at the bottom left; a hold — or a drag — lifts a pin off the button
-  // that is dropped on a part of the page, and the desk opens with it.
-  const LONG_PRESS = 380;
-  for (const who of ['steward', 'doctor']) {
-    const button = $('hud-' + who);
-    let press = null;
-    const lift = () => { if (press && !press.long) { press.long = true; clearTimeout(press.timer); carryStart(who, press.x, press.y); } };
-    button.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      press = { x: e.clientX, y: e.clientY, long: false };
-      button.setPointerCapture(e.pointerId);
-      press.timer = setTimeout(lift, LONG_PRESS);
-    });
-    button.addEventListener('pointermove', (e) => {
-      if (!press) return;
-      if (!press.long && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) lift();
-      if (press.long) carryMove(e.clientX, e.clientY);
-    });
-    button.addEventListener('pointerup', (e) => {
-      if (!press) return;
-      clearTimeout(press.timer);
-      const long = press.long;
-      press = null;
-      if (long) carryDrop(who, e.clientX, e.clientY); else toggleDesk(who);
-    });
-    button.addEventListener('pointercancel', () => { if (press) { clearTimeout(press.timer); if (press.long) carryEnd(); press = null; } });
-    // The keyboard's Enter or Space: a click with no pointer behind it.
-    button.addEventListener('click', (e) => { if (e.detail === 0) toggleDesk(who); });
-  }
+  // dock at the bottom left.
+  for (const who of ['steward', 'doctor']) $('hud-' + who).addEventListener('click', () => toggleDesk(who));
   $('hud-janitor').addEventListener('click', () => {
     if (S.pane && S.pane.kind === 'janitor') closePane(); else openPane({ kind: 'janitor' });
   });
@@ -1275,7 +1248,7 @@
   const inside = (r, x, y) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   // What is under a point: the element, and through a shield or a frame, the element inside it.
   function hitAt(x, y) {
-    const layers = ['pick-layer', 'pick-box', 'pin-ghost', 'pick-hint'].map($).filter(Boolean);
+    const layers = ['pick-layer', 'pick-box', 'pick-hint'].map($).filter(Boolean);
     const was = layers.map((l) => l.style.display);
     layers.forEach((l) => { l.style.display = 'none'; });
     let el = document.elementFromPoint(x, y);
@@ -1393,37 +1366,10 @@
     box.hidden = false;
   }
   const outside = (hit) => !hit || hit.el.closest('#hud, #talk, #pick-hint');
-  // A pin carried off a header button.
-  function carryStart(who, x, y) {
-    const ghost = $('pin-ghost');
-    ghost.querySelector('span').textContent = who;
-    ghost.hidden = false;
-    document.body.classList.add('picking');
-    $('pick-hint').textContent = `Drop the pin on a part of the page: the ${who} opens with it`;
-    $('pick-hint').hidden = false;
-    carryMove(x, y);
-  }
-  function carryMove(x, y) {
-    const ghost = $('pin-ghost');
-    if (ghost.hidden) return;
-    ghost.style.left = x + 'px';
-    ghost.style.top = y + 'px';
-    const hit = hitAt(x, y);
-    showBox(outside(hit) ? null : hit.rect);
-  }
-  function carryEnd() {
-    $('pin-ghost').hidden = true;
+  function pickEnd() {
     $('pick-box').hidden = true;
     $('pick-hint').hidden = true;
     document.body.classList.remove('picking');
-  }
-  function carryDrop(who, x, y) {
-    const hit = hitAt(x, y);
-    carryEnd();
-    if (outside(hit)) return;
-    const text = contextOf(hit, x, y);
-    openDesk(who);
-    handTo(text);
   }
   // The dock's pin: the window steps aside, the next click on the page is the part.
   function pickStart() {
@@ -1443,7 +1389,7 @@
       layer.removeEventListener('click', click);
       window.removeEventListener('keydown', key, true);
       $('talk').classList.remove('stepped-aside');
-      carryEnd();
+      pickEnd();
     };
     const click = (e) => {
       e.preventDefault();

@@ -655,10 +655,8 @@ sits down at it again.
 
 The **steward** and the **doctor** sit in the same dock: a click on their
 header button opens (or closes) theirs, the pin's ways out hidden. Every
-session in the dock can be **pointed at a part of the page**, two ways.
-**Hold** the steward's or the doctor's button — or drag off it — and a pin
-comes away with the pointer: dropped on a part, the desk opens with that
-part handed over. Or the dock's own **📍** at its top left: the window steps
+session in the dock can be **pointed at a part of the page** with the
+dock's own **📍** at its top left: the window steps
 aside (hidden by visibility, so the terminal keeps its columns), the cursor
 becomes a pin, the part under it is outlined, and a click hands it over (Esc
 cancels). What is handed over is written by `app.js` (`contextOf`): where

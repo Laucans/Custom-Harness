@@ -1214,9 +1214,6 @@ body.full-pane > #stage, body.full-pane > #hud { visibility: hidden; }
 #pick-box[hidden] { display: none; }
 #pick-hint { position: fixed; z-index: 201; top: 54px; left: 50%; transform: translateX(-50%); pointer-events: none; background: var(--panel); color: var(--text); border: 1px solid var(--pin-design); border-radius: 18px; padding: 6px 14px; font: 13px var(--sans); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
 #pick-hint[hidden] { display: none; }
-#pin-ghost { position: fixed; z-index: 202; pointer-events: none; transform: translate(-50%, -100%); font-size: 26px; filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.45)); display: flex; align-items: flex-end; gap: 2px; }
-#pin-ghost span { font: 600 11px var(--sans); color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1px 6px; margin-bottom: 4px; }
-#pin-ghost[hidden] { display: none; }
 body.picking, body.picking * { user-select: none; }
 
 /* A pin an AI is applying: its dashed outline turns until the work is done. */
