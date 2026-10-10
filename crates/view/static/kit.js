@@ -67,6 +67,8 @@
       } catch (e) {
         if (!st.gone) say('the design system could not be read: ' + esc(String(e.message || e).split('\n')[0]));
       }
+      // A pane gone while the read was on its way polls no more: a failed read must not revive it.
+      if (st.gone) return;
       clearTimeout(st.timer);
       st.timer = setTimeout(() => load(true), running().length ? BUSY_MS : POLL_MS);
     }
