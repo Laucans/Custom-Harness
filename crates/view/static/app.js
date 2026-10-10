@@ -1143,12 +1143,18 @@
   // at a time, and closing it closes the session (its turns are kept). Its
   // size is dragged from its top-right corner and remembered.
   const TALK_SIZE = 'harness.talk.size';
+  // The status line, cut to fit the bar: the whole of it on hover.
+  function talkStatus(text) {
+    const el = $('talk-status');
+    el.textContent = text;
+    el.title = text;
+  }
   S.talk = null;
   const TALK_SLOT = {
     el: () => $('talk-term'),
     alive: (who, p) => !!(S.talk && S.talk.p === p),
-    status: (text) => { $('talk-status').textContent = text; },
-    unavailable: (html) => { $('talk-term').innerHTML = html; $('talk-status').textContent = 'no session'; },
+    status: (text) => talkStatus(text),
+    unavailable: (html) => { $('talk-term').innerHTML = html; talkStatus('no session'); },
     chips: () => $('talk'),
     restart: () => $('talk-restart'),
     set: (handle) => {
@@ -1339,7 +1345,7 @@
     if (!t) return;
     t.pending = text;
     t.pendingAt = Date.now();
-    $('talk-status').textContent = 'handing the part over…';
+    talkStatus('handing the part over…');
     deliver();
   }
   function deliver() {
@@ -1354,7 +1360,7 @@
       t.term.paste(t.pending);
       t.pending = '';
       t.term.focus();
-      $('talk-status').textContent = 'the part is in the input — ask your question';
+      talkStatus('the part is in the input — ask your question');
       return;
     }
     if (Date.now() - t.pendingAt < 60000) t.deliverTimer = setTimeout(deliver, 300);
