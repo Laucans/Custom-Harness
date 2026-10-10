@@ -39,6 +39,7 @@
       + '<div class="mk-views" role="group" aria-label="view"><button type="button" data-kt="tab" data-tab="system">design system</button><button type="button" data-kt="tab" data-tab="catalogue">catalogue</button><button type="button" data-kt="tab" data-tab="canvas">canvas</button></div>'
       + '<span class="dm-origin kt-origin">reading the design system…</span>'
       + '<span class="spacer"></span>'
+      + '<input type="search" class="kt-find" data-kt="find" hidden maxlength="80" placeholder="find a component — its name or code name" aria-label="find a component">'
       + '<label class="kt-bg" hidden title="The background the components are shown on — the design system\'s surface until you pick another">component background <input type="color" data-kt="bg" aria-label="component background"><button type="button" class="mini" data-kt="bg-reset" hidden title="Back to the design system\'s surface">reset</button></label>'
       + '<span class="kt-state"></span>'
       + '<input class="kt-message" maxlength="200" placeholder="what changed, in a line" hidden aria-label="commit message">'
@@ -49,7 +50,7 @@
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', live: new Set(), bg: kept(BG, '') };
+    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', live: new Set(), bg: kept(BG, ''), find: '' };
 
     // ---- reading -------------------------------------------------------------------------------
     async function load(quiet) {
@@ -105,6 +106,7 @@
       const n = catalog().filter((e) => e.state === 'generated').length;
       q('.kt-state').innerHTML = `${state} <span class="muted">· ${n} component${n === 1 ? '' : 's'} in the kit${r.edited ? ' · <b class="warn">edited, not published</b>' : ''}${r.no_claude ? ' · <span class="bad">no Claude: nothing generates</span>' : ''}</span>`;
       q('.kt-bg').hidden = st.tab !== 'canvas';
+      q('.kt-find').hidden = st.tab !== 'canvas';
       drawBackground();
       q('.kt-message').hidden = !r.edited;
       q('[data-kt="publish"]').hidden = !r.edited;
@@ -316,7 +318,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           <section class="kt-block kt-customs"><h3>Custom components <small class="muted">prompted, drawn without a base</small></h3>
             <ul class="kt-list">${customs.map(row).join('') || '<li class="muted">none yet</li>'}</ul>
             <form class="kt-custom" autocomplete="off">
-              <div class="kt-row"><input name="name" maxlength="60" placeholder="Name, like HeroBanner" value="${esc(st.custom && st.custom.name || '')}" aria-label="name"><input name="title" maxlength="80" placeholder="title, for humans" aria-label="title"></div>
+              <div class="kt-row"><input name="title" maxlength="80" placeholder="its name, for humans — like Hero frame" value="${esc(st.custom && st.custom.name || '')}" aria-label="name" required><input type="hidden" name="name" value="${esc(st.custom && st.custom.name || '')}">${st.custom && st.custom.name ? `<span class="muted">named <b class="mono">${esc(st.custom.name)}</b>, as the page injects it</span>` : '<span class="muted">its code name is made from it</span>'}</div>
               <textarea name="prompt" rows="3" maxlength="4000" placeholder="what it shows and does, visually — the AI draws it from these words">${esc(st.custom && st.custom.prompt || '')}</textarea>
               <div class="kt-row"><label class="muted">reference image <input type="file" name="reference" accept="image/*"></label><button type="button" class="mini" data-kt="sketch-toggle">draw a sketch</button></div>
               <div class="kt-sketch" hidden><canvas width="420" height="240"></canvas><div class="kt-row"><button type="button" class="mini" data-kt="sketch-clear">clear</button><span class="muted">draw with the pointer: a rough layout is enough</span></div></div>
@@ -443,6 +445,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       });
       have.forEach((card) => { const frame = card.querySelector('.mk-preview'); if (frame && st.seen) st.seen.unobserve(frame); card.remove(); });
       st.cards = cards;
+      filterCards();
       layoutCards();
       if (!st.fitted) { st.board.fit(); st.fitted = true; }
     }
@@ -480,10 +483,31 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       });
       if (changed) layoutCards();
     }
+    // ---- the finder: the cards whose name or code name holds every word typed ----------------------
+    const plain = (text) => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    function matches(name) {
+      const words = plain(st.find).split(/\s+/).filter(Boolean);
+      if (!words.length) return true;
+      const e = entry(name) || { name, title: '' };
+      const hay = [plain(e.name), plain(e.title), plain(e.title).replace(/[^a-z0-9]/g, '')];
+      return words.every((w) => hay.some((h) => h.includes(w)));
+    }
+    function filterCards() {
+      if (!st.board) return;
+      let shown = 0;
+      st.cards.forEach((c) => { c.card.hidden = !matches(c.name); if (!c.card.hidden) shown += 1; });
+      const content = st.board.content;
+      let none = content.querySelector('.kt-none');
+      if (!shown && st.cards.length) {
+        if (!none) { none = document.createElement('div'); none.className = 'mk-empty kt-none'; content.appendChild(none); }
+        none.innerHTML = `<h2>No component matches</h2><p>Nothing in the kit is named like <b>${esc(st.find)}</b>.</p>`;
+      } else if (none) none.remove();
+      layoutCards();
+    }
     function layoutCards() {
       const per = Math.max(1, Math.floor((WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
       let y = 0; let rowH = 0; let maxX = 0;
-      st.cards.forEach((c, i) => {
+      st.cards.filter((c) => !c.card.hidden).forEach((c, i) => {
         if (i % per === 0 && i) { y += rowH + CARD_GAP; rowH = 0; }
         const x = (i % per) * (CARD_W + CARD_GAP);
         c.card.style.left = x + 'px'; c.card.style.top = y + 'px';
@@ -598,6 +622,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
     host.addEventListener('input', (e) => {
       if (e.target.matches('.kt-token')) keepTokens();
       if (e.target.matches('[data-kt="bg"]')) pickBackground(e.target.value);
+      if (e.target.matches('[data-kt="find"]')) { st.find = e.target.value; filterCards(); }
     });
     function keepTokens() {
       clearTimeout(st.editTimer);
@@ -622,12 +647,12 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       const state = form.querySelector('.kt-form-state');
       state.textContent = 'adding…';
       try {
-        await said(await post('/api/kit/custom', { name, title, prompt }));
-        if (file) await upload('reference', file, name);
-        else if (st.sketch && st.sketch.drawn()) { const blob = await st.sketch.blob(); await upload('reference', new File([blob], 'sketch.png', { type: 'image/png' }), name); }
+        const made = (await said(await post('/api/kit/custom', { name, title, prompt }))).name || name;
+        if (file) await upload('reference', file, made);
+        else if (st.sketch && st.sketch.drawn()) { const blob = await st.sketch.blob(); await upload('reference', new File([blob], 'sketch.png', { type: 'image/png' }), made); }
         state.textContent = '';
         st.sketch = null;
-        toast(`<b>${esc(name)}</b> is in the kit, to generate`);
+        toast(`<b>${esc(title || made)}</b> is in the kit as <b class="mono">${esc(made)}</b>, to generate`);
         await load(false);
       } catch (err) {
         state.textContent = String(err.message || err).split('\n')[0];

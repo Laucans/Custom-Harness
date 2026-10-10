@@ -654,6 +654,66 @@ pub fn is_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
+/// The component's name a human's title makes, unique among `taken`.
+///
+/// Its words, accents dropped, each capitalised and joined (`Portrait du
+/// héros` → `PortraitDuHeros`), with a number added when `taken` already
+/// has it — `None` when the title has no letter to make one from.
+#[must_use]
+pub fn name_for(title: &str, taken: &[&str]) -> Option<String> {
+    let mut name = String::new();
+    for word in title.split(|c: char| !c.is_alphanumeric()) {
+        let plain: String = word.chars().flat_map(plain_letters).collect();
+        let mut chars = plain.chars();
+        if let Some(first) = chars.next() {
+            name.push(first.to_ascii_uppercase());
+            name.extend(chars);
+        }
+    }
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        name.insert_str(0, "Kit");
+    }
+    let stem: String = name.chars().take(56).collect();
+    if !is_name(&stem) {
+        return None;
+    }
+    let free = |candidate: &str| !taken.iter().any(|t| t.eq_ignore_ascii_case(candidate));
+    if free(&stem) {
+        return Some(stem);
+    }
+    (2..1000)
+        .map(|n| format!("{stem}{n}"))
+        .find(|candidate| free(candidate))
+}
+
+/// A character as ASCII letters and digits: an accented Latin letter as its
+/// plain one, anything else dropped.
+fn plain_letters(c: char) -> Vec<char> {
+    if c.is_ascii_alphanumeric() {
+        return vec![c];
+    }
+    let plain = match c.to_lowercase().next().unwrap_or(c) {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => "a",
+        'ç' => "c",
+        'è' | 'é' | 'ê' | 'ë' => "e",
+        'ì' | 'í' | 'î' | 'ï' => "i",
+        'ñ' => "n",
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' => "o",
+        'ù' | 'ú' | 'û' | 'ü' => "u",
+        'ý' | 'ÿ' => "y",
+        'œ' => "oe",
+        'æ' => "ae",
+        'ß' => "ss",
+        _ => "",
+    };
+    let plain: Vec<char> = plain.chars().collect();
+    if c.is_uppercase() {
+        plain.iter().map(char::to_ascii_uppercase).collect()
+    } else {
+        plain
+    }
+}
+
 /// One base of the kit: a neutral fragment the generation styles with the
 /// product's tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1261,6 +1321,22 @@ mod tests {
         assert!(uses(page, "Carousel") && uses(page, "Menu") && !uses(page, "Card"));
         assert_eq!(used_in(page), ["Carousel", "Menu"]);
         assert!(preview_page("Carousel").contains("data-kit=\"Carousel\""));
+        // A human's title names the component.
+        assert_eq!(name_for("Hero frame", &[]).as_deref(), Some("HeroFrame"));
+        assert_eq!(
+            name_for("Portrait du héros", &[]).as_deref(),
+            Some("PortraitDuHeros")
+        );
+        assert_eq!(
+            name_for("bouton d'état", &[]).as_deref(),
+            Some("BoutonDEtat")
+        );
+        assert_eq!(name_for("3 colonnes", &[]).as_deref(), Some("Kit3Colonnes"));
+        assert_eq!(
+            name_for("hero frame", &["HeroFrame", "heroframe2"]).as_deref(),
+            Some("HeroFrame3")
+        );
+        assert_eq!(name_for("!!! ???", &[]), None);
         // The kit's stylesheet: each fragment's style, the markup and the scripts left out.
         let css = stylesheet(&[
             (
@@ -1321,6 +1397,13 @@ mod tests {
         fn the_stylesheet_never_panics_and_keeps_its_header(text in "(\\PC|<style>|</style>){0,60}") {
             let css = stylesheet(&[("X".to_string(), text)]);
             prop_assert!(css.starts_with("/* The kit's stylesheet"));
+        }
+
+        #[test]
+        fn a_title_makes_a_valid_name_or_none(title in "\\PC{0,120}") {
+            if let Some(name) = name_for(&title, &["Button"]) {
+                prop_assert!(is_name(&name), "{name}");
+            }
         }
 
         #[test]

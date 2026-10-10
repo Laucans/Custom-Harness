@@ -607,8 +607,10 @@ and the toast says why. Three tabs:
   (`crates/architecture/assets/kit/`, neutral fragments every application
   starts from: button, input, drop list, checkbox, radio, toggle, menu, tabs,
   card, modal, table, carousel, badge, toast, pagination, breadcrumb — twelve
-  ticked by default) and the **custom** ones the human prompts (a text, a
-  reference image, a sketch drawn on the pad). A kit component is a **visual
+  ticked by default) and the **custom** ones the human prompts (a name for
+  humans — the code name is made from it, `kit::name_for`, unless a page
+  already injects one — a text, a reference image, a sketch drawn on the
+  pad). A kit component is a **visual
   primitive below the Micro-UI**: a fragment `mock/kit/<Name>.html` — markup,
   a `<style>` on the variables, a `<script>` only for a visual dynamic (a
   carousel turns, a menu opens) — with no data of its own and no network;
@@ -627,7 +629,9 @@ and the toast says why. Three tabs:
   and the board leaves it alone until **disable interaction**. The bar's
   **component background** paints every card's preview: the design
   system's `color.surface` by default, another colour the viewer picks
-  kept in their browser. **Apply** on a card rewrites the fragment from its
+  kept in their browser. The bar's **finder** shows only the cards whose
+  name for humans or code name holds every word typed (accents and case
+  ignored); a card filtered out hides its pins with it. **Apply** on a card rewrites the fragment from its
   requests in one question, kept as the component's **draft**
   (`<Name>.draft.html`, what the card shows); **save…** then offers
   **replace** — the draft takes the component's place, and the list of

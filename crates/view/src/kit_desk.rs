@@ -126,6 +126,15 @@ pub struct KitDesk {
     rewriting: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
 }
 
+/// A custom component added: the name it was given, and the catalogue.
+#[derive(Debug, Clone, Serialize)]
+pub struct Created {
+    /// The component's name, made from its title unless one was given.
+    pub name: String,
+    /// The catalogue with it.
+    pub catalog: Vec<Entry>,
+}
+
 /// A publication: the commit on the design system's branch, and what
 /// became of carrying it onto the integration branch.
 #[derive(Debug, Clone, Serialize)]
@@ -618,21 +627,31 @@ impl KitDesk {
         .await
     }
 
-    /// Adds a custom component from the human's words, pending.
+    /// Adds a custom component from the human's words, pending. Its name
+    /// is made from the title (`kit::name_for`) unless one is given — a
+    /// page that already injects it by that name.
     ///
     /// # Errors
     ///
-    /// Not a name, already there, or the workspace could not be written.
+    /// No title to name it from, a name given that is not one, already
+    /// there, or the workspace could not be written.
     pub async fn custom(
         &self,
         name: String,
         title: String,
         prompt: String,
-    ) -> Result<Vec<Entry>, String> {
-        if !kit::is_name(&name) {
+    ) -> Result<Created, String> {
+        let name = name.trim().to_string();
+        let title: String = title.trim().chars().take(80).collect();
+        if !name.is_empty() && !kit::is_name(&name) {
             return Err(
                 "a component is named like `HeroBanner`: a capital, then letters and digits"
                     .to_string(),
+            );
+        }
+        if name.is_empty() && title.is_empty() {
+            return Err(
+                "give the component a name, for humans: its code name is made from it".to_string(),
             );
         }
         if prompt.trim().is_empty() {
@@ -645,17 +664,37 @@ impl KitDesk {
             let _held = lock(files);
             Self::ensure(mockups, &from)?;
             let mut kit = Self::kit_of(mockups)?;
+            let name = if name.is_empty() {
+                let taken: Vec<&str> = kit
+                    .components
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .chain(kit::BASE.iter().map(|b| b.name))
+                    .collect();
+                kit::name_for(&title, &taken).ok_or_else(|| {
+                    format!("\"{title}\" has no letter to name the component from")
+                })?
+            } else {
+                name
+            };
             if kit.component(&name).is_some() || kit::BASE.iter().any(|b| b.name == name) {
                 return Err(format!("{name} is already in the kit"));
             }
             kit.components.push(Component {
-                name,
-                title: title.chars().take(80).collect(),
+                name: name.clone(),
+                title: if title.is_empty() {
+                    name.clone()
+                } else {
+                    title
+                },
                 prompt: prompt.chars().take(design::MAX_PROMPT).collect(),
                 ..Component::default()
             });
             Self::write_json(mockups, design::KIT_JSON, &kit)?;
-            Ok(Self::catalog_of(mockups, &kit))
+            Ok(Created {
+                name,
+                catalog: Self::catalog_of(mockups, &kit),
+            })
         })
         .await
     }
@@ -1302,14 +1341,30 @@ mod tests {
         desk.set_checked(vec!["button".into(), "card".into()])
             .await
             .expect("checked");
-        let entries = desk
+        let created = desk
             .custom("Hero".into(), "Hero".into(), "a banner".into())
             .await
             .expect("custom");
         assert!(
-            entries
+            created
+                .catalog
                 .iter()
                 .any(|e| e.name == "Hero" && e.base.is_empty())
+        );
+        // Only a title: the name is made from it.
+        let named = desk
+            .custom(
+                String::new(),
+                "Bannière du héros".into(),
+                "another banner".into(),
+            )
+            .await
+            .expect("named from the title");
+        assert_eq!(named.name, "BanniereDuHeros");
+        assert!(
+            desk.custom(String::new(), "  ".into(), "x".into())
+                .await
+                .is_err()
         );
         assert!(
             desk.custom("hero".into(), String::new(), "x".into())
@@ -1320,7 +1375,7 @@ mod tests {
             .await
             .expect("custom");
         let queued = desk.start_generation(vec![]).await.expect("started");
-        assert_eq!(queued, 4);
+        assert_eq!(queued, 5);
         // Wait for the workers.
         for _ in 0..200 {
             if desk

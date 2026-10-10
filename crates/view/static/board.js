@@ -287,6 +287,8 @@
     function placeOf(n) {
       const el = n.target ? resolve(n.target) : null;
       if (!el) return { x: n.x, y: n.y, orphan: !!n.target };
+      // A part the pane hides (a card filtered out) hides its pins with it.
+      if (el.closest('[hidden]')) return { x: n.x, y: n.y, orphan: false, hidden: true };
       const b = boxOf(el);
       const x = b.x + clamp(n.dx, 0, b.w);
       const y = b.y + clamp(n.dy, 0, b.h);
@@ -299,6 +301,7 @@
       notes.forEach((n, i) => {
         if (carry && carry.note === n) return;
         const p = n.shape ? Object.assign(anchorOf(n.shape), { orphan: false }) : placeOf(n);
+        if (p.hidden) return;
         if (n.shape) { n.x = p.x; n.y = p.y; }
         const s = toScreen(p.x, p.y);
         if (s.x < -30 || s.y < -30 || s.x > r.width + 30 || s.y > r.height + 60) return;
