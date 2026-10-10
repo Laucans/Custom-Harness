@@ -189,7 +189,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       const open = new Set([...pane.querySelectorAll('details[data-keep]')].filter((x) => x.open).map((x) => x.dataset.keep));
       pane.innerHTML = `${none ? sources : ''}
       ${none ? '<div class="callout">No design system yet: inject a tokens file, or generate one from a moodboard. The kit is generated from it once it is validated.</div>' : ''}
-      ${d.candidate && dv.candidate.length ? `<section class="kt-block kt-candidate"><h3>The candidate <span class="tag warn">waiting</span></h3><p class="muted">Generated or injected after the validation: the validated tokens stay until you take this one.</p><iframe class="kt-sheet" title="the candidate" srcdoc="${esc(sheet(cssOf(dv.candidate), dv.candidate))}"></iframe><div class="kt-row"><button type="button" class="mini on" data-kt="validate">validate the candidate</button><button type="button" class="mini" data-kt="drop-candidate">drop it</button></div></section>` : ''}
+      ${d.candidate && dv.candidate.length ? `<section class="kt-block kt-candidate"><h3>The candidate <span class="tag warn">waiting</span></h3><p class="muted">Generated or injected after the validation: the validated tokens stay until you take this one.</p><iframe class="kt-sheet" title="the candidate" srcdoc="${esc(sheet(cssOf(dv.candidate), dv.candidate))}"></iframe><h4>The candidate on the simulated page</h4><iframe class="kt-showcase" title="the simulated page, with the candidate" src="/mock/${SLUG}/__showcase/contact?v=${esc(r.stamp)}"></iframe><div class="kt-row"><button type="button" class="mini on" data-kt="validate">validate the candidate</button><button type="button" class="mini" data-kt="drop-candidate">drop it</button></div></section>` : ''}
       ${!none ? `<section class="kt-block"><h3>The sheet ${d.state === 'validated' ? '<span class="tag ok">validated</span>' : '<span class="tag warn">candidate</span>'}</h3>
         <iframe class="kt-sheet" title="the design system" srcdoc="${esc(sheet(dv.tokens_css, dv.tokens))}"></iframe>
         <div class="kt-row">${d.state !== 'validated' ? '<button type="button" class="mini on" data-kt="validate" title="Validate: the kit may be generated, and a roadmap task installs the design system in the product">validate</button>' : ''}${d.issue ? `<a class="tag-link" href="${esc(d.issue)}" target="_blank" rel="noopener">the roadmap task that installs it ↗</a>` : ''}${d.validatedAt ? `<span class="muted">validated ${esc(String(d.validatedAt).slice(0, 16).replace('T', ' '))}</span>` : ''}${dv.missing.length ? `<span class="muted">${dv.missing.length} token(s) at the neutral value</span>` : ''}</div>
@@ -201,6 +201,11 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       </section>
       <details class="kt-block kt-regen" data-keep="regen"><summary>regenerate the design system</summary>${sources}</details>` : ''}`;
       pane.querySelectorAll('details[data-keep]').forEach((x) => { if (open.has(x.dataset.keep)) x.open = true; });
+      // The candidate's page is the validated one with the candidate's variables laid over the tokens.
+      const trial = pane.querySelector('.kt-candidate .kt-showcase');
+      if (trial) trial.addEventListener('load', () => {
+        try { const style = trial.contentDocument.createElement('style'); style.textContent = cssOf(dv.candidate); trial.contentDocument.head.appendChild(style); } catch (e) { /* the page keeps the validated tokens */ }
+      });
       if (st.custom) { setTab('catalogue'); }
     }
     const cssOf = (tokens) => ':root{' + tokens.map((t) => `--${t.path.replace(/\./g, '-')}:${t.value};`).join('') + '}';
@@ -529,7 +534,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           st.reply.design = got;
           const frame = host.querySelector('.kt-system .kt-sheet:not(.kt-candidate .kt-sheet)');
           if (frame) frame.srcdoc = sheet(got.tokens_css, got.tokens);
-          const page = host.querySelector('.kt-showcase');
+          const page = host.querySelector('.kt-showcase:not(.kt-candidate .kt-showcase)');
           if (page) page.src = page.src.replace(/\?.*$/, '') + '?v=' + Date.now();
           st.lastDrawn = '';
         } catch (err) { say(`<span class="bad">${esc(String(err.message || err).split('\n')[0])}</span>`); }

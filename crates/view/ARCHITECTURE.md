@@ -589,8 +589,10 @@ branch, never saved aside as `mockup/*`. Three tabs:
   (`kit::SHOWCASE`, served at `/mock/design-system/__showcase/contact`)
   made of the kit's components only, their texts fitted to the page once
   each fragment is in, reloaded on every change of the branch, so a
-  component the canvas saves shows there too — and injecting or generating
-  again is folded under *regenerate the design system*.
+  component the canvas saves shows there too — a candidate waiting
+  shows its own copy of the page, the candidate's variables laid over the
+  tokens, beside its sheet — and injecting or generating again is folded
+  under *regenerate the design system*.
 - **catalogue** — the kit's components: the harness's sixteen **bases**
   (`crates/architecture/assets/kit/`, neutral fragments every application
   starts from: button, input, drop list, checkbox, radio, toggle, menu, tabs,
