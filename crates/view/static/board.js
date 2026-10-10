@@ -22,6 +22,10 @@
 // a part the board cannot reach itself — one inside an iframe — as long as
 // it has getBoundingClientRect(), getAttribute('data-pin') and a classList.
 //   board.setBoard(id)   // another set of pins: the same canvas, another branch
+//
+// `onChange()` is told when a pin is kept or goes.
+// `only(note)` keeps the pins shown to some of the board's — the design
+// system's one-component view shows that component's pins alone.
 (() => {
   'use strict';
 
@@ -121,6 +125,8 @@
     const view = { x: 40, y: 40, k: 1 };
     const size = { w: 800, h: 600 };
     let notes = [];
+    // The pins shown: every pin of the board, or those the pane keeps.
+    const shown = () => (opts.only ? notes.filter((n) => opts.only(n)) : notes);
     let openId = null;
     let saveTimer = null;
     let pending = null; // the pin whose text waits to be saved
@@ -235,7 +241,7 @@
     }
     function drawZones() {
       let h = '';
-      notes.forEach((n) => {
+      shown().forEach((n) => {
         if (!n.shape) return;
         const cls = ['hb-zone', n.kind || 'note', openId === n.id ? 'open' : ''].join(' ');
         h += zoneMarkup(n.shape, cls, `data-zone-id="${esc(n.id)}"`);
@@ -298,7 +304,7 @@
     function drawPins() {
       const r = host.getBoundingClientRect();
       let h = '';
-      notes.forEach((n, i) => {
+      shown().forEach((n, i) => {
         if (carry && carry.note === n) return;
         const p = n.shape ? Object.assign(anchorOf(n.shape), { orphan: false }) : placeOf(n);
         if (p.hidden) return;
@@ -311,7 +317,7 @@
         h += `<button type="button" class="${cls}" data-note-id="${esc(n.id)}" style="left:${s.x}px;top:${s.y}px" title="${esc(tip)}"><span>${i + 1}</span></button>`;
       });
       pinLayer.innerHTML = h;
-      q('.hb-count').textContent = notes.length;
+      q('.hb-count').textContent = shown().length;
       drawZones();
       placeEditor();
     }
@@ -526,6 +532,7 @@
         try {
           await put(n);
           if (openId === n.id) setState('saved');
+          changed();
         } catch (e) {
           if (openId === n.id) setState('not saved: ' + (e.message || e));
         }
@@ -538,15 +545,20 @@
       clearTimeout(saveTimer);
       const n = pending;
       pending = null;
-      put(n).catch(() => { /* the next edit saves it again */ });
+      put(n).then(changed).catch(() => { /* the next edit saves it again */ });
     }
     async function remove(n) {
       notes = notes.filter((x) => x !== n);
       if (openId === n.id) { openId = null; editor.hidden = true; }
       if (pending === n) { pending = null; clearTimeout(saveTimer); }
       drawPins();
+      changed();
       if (n.fresh) return;
       try { await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'DELETE' }); } catch (e) { /* shown by its absence on reload */ }
+    }
+    // The pane told a pin was kept or went — the design system counts its requests.
+    function changed() {
+      if (opts.onChange) { try { opts.onChange(); } catch (e) { /* the pane's own trouble */ } }
     }
     async function undo() {
       try {
@@ -555,6 +567,7 @@
         const n = await res.json();
         if (!notes.some((x) => x.id === n.id)) notes.push(n);
         drawPins();
+        changed();
       } catch (e) { /* nothing to bring back */ }
     }
     async function load() {
@@ -598,8 +611,8 @@
     }
     function showList() {
       if (!list.hidden) { list.hidden = true; return; }
-      list.innerHTML = notes.length
-        ? notes.map((n, i) => `<button type="button" data-goto-note="${esc(n.id)}"><b class="${esc(n.kind || 'note')}">${i + 1}</b><span>${esc(n.text || (n.kind || 'note'))}</span><small>${esc(n.kind || 'note')} · ${esc(describe(n.target))}</small></button>`).join('')
+      list.innerHTML = shown().length
+        ? shown().map((n, i) => `<button type="button" data-goto-note="${esc(n.id)}"><b class="${esc(n.kind || 'note')}">${i + 1}</b><span>${esc(n.text || (n.kind || 'note'))}</span><small>${esc(n.kind || 'note')} · ${esc(describe(n.target))}</small></button>`).join('')
         : '<div class="hb-empty">No note yet. Drag the pin onto a part of the board.</div>';
       list.hidden = false;
     }

@@ -621,17 +621,23 @@ and the toast says why. Three tabs:
   it cheap. Resumable: what is generated stays, a run stopped halfway
   (quota, a refusal) takes only what is missing or failed next time
   (`kit.json` carries each component's state).
-- **canvas** — every generated component on a card, rendered alone
-  (`/mock/design-system/__kit/<Name>`, the tokens linked), with its own pin
-  board (`kit--components`, note and request pins, **no backlog**: the kit is
-  not roadmap work). A card is a picture until **enable interaction** lifts
-  its shield — then it is clicked, typed into and opened as a visitor would,
-  and the board leaves it alone until **disable interaction**. The bar's
-  **component background** paints every card's preview: the design
-  system's `color.surface` by default, another colour the viewer picks
-  kept in their browser. The bar's **finder** shows only the cards whose
-  name for humans or code name holds every word typed (accents and case
-  ignored); a card filtered out hides its pins with it. **Apply** on a card rewrites the fragment from its
+- **canvas** — two views. The **gallery** only scrolls down: a grid of
+  three tiles a row (two when narrow), each a component rendered alone
+  (`/mock/design-system/__kit/<Name>`, the tokens linked) at a fixed height,
+  its frame loaded while it is on the screen or a screen away and let go
+  further, so nothing moves as frames come in and a long kit stays light.
+  The **finder** stays above it — every word typed in the name for humans
+  or the code name, accents and case ignored, `/` to reach it — with the
+  count and chips (standard, custom, drafts, with requests, fails the
+  check); a list changed by them starts again from the top. A tile opens
+  its component **alone on the board** (`kit--components`, note and request
+  pins, **no backlog**: the kit is not roadmap work; the board shows that
+  component's pins only, `only` in `board.js`): zoomed, **used** as a
+  visitor would by default, **pinned** with its shield up, the previous and
+  the next of the list a click away, and the gallery found where it was
+  left. The bar's **component background** paints every preview: the design
+  system's `color.surface` by default, another colour the viewer picks kept
+  in their browser. **Apply** on a component rewrites the fragment from its
   requests in one question, kept as the component's **draft**
   (`<Name>.draft.html`, what the card shows); **save…** then offers
   **replace** — the draft takes the component's place, and the list of

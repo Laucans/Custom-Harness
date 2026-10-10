@@ -13,12 +13,6 @@
 
   const BOARD = 'kit--components';
   const SLUG = 'design-system';
-  const CARD_W = 420;
-  const CARD_GAP = 28;
-  const CARD_MIN = 140;
-  const CARD_MAX = 640;
-  const WIDTH = 1320;
-  const MIN_HEIGHT = 480;
   const MAX_IMAGE = 8 * 1024 * 1024;
   const POLL_MS = 4000;
   const BUSY_MS = 1500;
@@ -39,18 +33,20 @@
       + '<div class="mk-views" role="group" aria-label="view"><button type="button" data-kt="tab" data-tab="system">design system</button><button type="button" data-kt="tab" data-tab="catalogue">catalogue</button><button type="button" data-kt="tab" data-tab="canvas">canvas</button></div>'
       + '<span class="dm-origin kt-origin">reading the design system…</span>'
       + '<span class="spacer"></span>'
-      + '<input type="search" class="kt-find" data-kt="find" hidden maxlength="80" placeholder="find a component — its name or code name" aria-label="find a component">'
       + '<label class="kt-bg" hidden title="The background the components are shown on — the design system\'s surface until you pick another">component background <input type="color" data-kt="bg" aria-label="component background"><button type="button" class="mini" data-kt="bg-reset" hidden title="Back to the design system\'s surface">reset</button></label>'
       + '<span class="kt-state"></span>'
       + '<input class="kt-message" maxlength="200" placeholder="what changed, in a line" hidden aria-label="commit message">'
       + '<button type="button" class="mini" data-kt="publish" hidden title="Commit the workspace on the design-system branch, push it, and carry mock/design and mock/kit onto the integration branch">publish the design</button>'
       + '<button type="button" class="mini" data-kt="discard" hidden title="Drop the workspace: the branch as committed again">discard</button>'
       + '</div>'
-      + '<div class="kt-body"><div class="kt-pane kt-system" hidden></div><div class="kt-pane kt-catalogue" hidden></div><div class="dm-main kt-canvas" hidden><div class="dm-board kt-board"></div></div></div>'
+      + '<div class="kt-body"><div class="kt-pane kt-system" hidden></div><div class="kt-pane kt-catalogue" hidden></div><div class="kt-canvas" hidden>'
+      + '<div class="kt-gallery"><div class="kt-gallery-top"><input type="search" class="kt-find" data-kt="find" maxlength="80" placeholder="Find a component — its name or its code name" aria-label="find a component" title="Press / to come here"><span class="kt-count"></span><div class="kt-chips" role="group" aria-label="show"></div></div><div class="kt-grid"></div><div class="mk-empty kt-none" hidden></div></div>'
+      + '<div class="kt-detail" hidden><div class="kt-detail-bar"></div><div class="kt-detail-save kt-save" hidden></div><div class="dm-main"><div class="dm-board kt-board"></div></div></div>'
+      + '</div></div>'
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', live: new Set(), bg: kept(BG, ''), find: '' };
+    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', bg: kept(BG, ''), find: '', chip: 'all', notes: [], detail: null, pinMode: false, saveOpen: false, galleryTop: 0 };
 
     // ---- reading -------------------------------------------------------------------------------
     async function load(quiet) {
@@ -58,12 +54,14 @@
         const res = await fetch('/api/design');
         if (!res.ok) throw new Error(await res.text());
         const reply = await res.json();
+        if (st.tab === 'canvas') await loadNotes();
         if (st.gone) return;
         const changed = reply.stamp !== st.stamp;
         st.reply = reply;
         st.stamp = reply.stamp;
         drawBar();
         if (!quiet || changed || running().length) draw(changed);
+        else if (st.tab === 'canvas') drawCanvas(false);
       } catch (e) {
         if (!st.gone) say('the design system could not be read: ' + esc(String(e.message || e).split('\n')[0]));
       }
@@ -108,7 +106,6 @@
       const n = catalog().filter((e) => e.state === 'generated').length;
       q('.kt-state').innerHTML = `${state} <span class="muted">· ${n} component${n === 1 ? '' : 's'} in the kit${r.edited ? ' · <b class="warn">edited, not published</b>' : ''}${r.no_claude ? ' · <span class="bad">no Claude: nothing generates</span>' : ''}</span>`;
       q('.kt-bg').hidden = st.tab !== 'canvas';
-      q('.kt-find').hidden = st.tab !== 'canvas';
       drawBackground();
       q('.kt-message').hidden = !r.edited;
       q('[data-kt="publish"]').hidden = !r.edited;
@@ -123,8 +120,8 @@
       const colour = background();
       if (document.activeElement !== input) input.value = /^#[0-9a-f]{6}$/i.test(colour) ? colour : '#ffffff';
       q('[data-kt="bg-reset"]').hidden = !st.bg;
-      q('.kt-board').style.setProperty('--kt-bg', colour);
-      st.cards.forEach((c) => { if (c.frame && c.frame.dataset.loaded) paint(c.frame); });
+      q('.kt-canvas').style.setProperty('--kt-bg', colour);
+      host.querySelectorAll('.kt-canvas iframe.mk-preview').forEach((frame) => { if (frame.dataset.loaded) paint(frame); });
     }
     function paint(frame) {
       try {
@@ -348,7 +345,14 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       st.sketch = { canvas, clear: () => { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); drawn = false; }, drawn: () => drawn, blob: () => new Promise((done) => canvas.toBlob(done, 'image/png')) };
     }
 
-    // ---- the canvas: every component on a card, pins on them ------------------------------------
+    // ---- the canvas: a gallery that only scrolls down, and one component alone on its board ------
+    // The gallery is a grid of tiles at a fixed height: a tile's preview is a
+    // frame loaded while it is on the screen or about to be, let go when far
+    // away, and nothing moves as the frames come in. The finder and the chips
+    // stay above it; a list changed by them starts again from the top. A tile
+    // opens its component alone on the board — zoomed, used as a visitor
+    // would, pinned and rewritten there — and coming back finds the gallery
+    // where it was left.
     const previewSrc = (name, draft, version) => `/mock/${SLUG}/__kit/${encodeURIComponent(name)}?${draft ? 'draft=1&' : ''}v=${encodeURIComponent(version || st.stamp)}`;
     const describe = (target) => (target && target.startsWith('kit:') ? 'the component ' + target.slice(4) : target || 'the canvas');
     const context = (target) => {
@@ -357,108 +361,135 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       if (!e) return 'The kit of the design system: its components, on the design-system branch under mock/kit/.';
       return `The kit component ${e.name} (${e.title}): ${e.what || e.prompt}\nIts fragment: mock/kit/${e.name}.html on the design-system branch (the folder you are in). The tokens: mock/design/tokens.css. A kit component is a visual primitive: no data of its own, no network; colours, fonts, spacings, radii and shadows only through var(--…).${e.recoded ? '\nRecoded by the code stage: ' + e.recoded : ''}`;
     };
-    // The board is made once and kept: its zoom, its pins and the pins being
-    // applied survive every reload. A reload redraws the cards in place.
-    function drawCanvas(changed) {
-      if (!st.board) {
-        const onSession = opts && opts.onSession
-          ? (note, ctx) => opts.onSession({ board: BOARD, id: note.id, on: describe(note.target), kind: note.kind, context: ctx, branch: SLUG, page: '' })
-          : null;
-        st.board = window.HarnessBoard.create(q('.kt-board'), {
-          id: BOARD,
-          describe,
-          context,
-          onSession,
-          kinds: ['note', 'request'],
-          backlog: false,
-          apply: (note) => applyRequests(note.target ? note.target.slice(4) : '', [note]),
-          onApplying: () => drawCards(),
-          onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; drawCards(); },
-          bounds: () => ({ x: 0, y: 0, w: Math.max(WIDTH, st.board ? parseFloat(st.board.content.style.width) || WIDTH : WIDTH), h: Math.max(MIN_HEIGHT, st.board ? parseFloat(st.board.content.style.height) || MIN_HEIGHT : MIN_HEIGHT) }),
-        });
-        st.fitted = false;
-        loadUsages();
-      } else if (changed) loadUsages();
-      drawCards();
-      st.board.refresh();
-    }
-    // A card's preview is reloaded only when what it shows changed: its
-    // fragment written again, its draft made, rewritten or dropped.
+    // A preview is reloaded only when what it shows changed: its fragment
+    // written again, its draft made, rewritten or dropped.
     const versionOf = (e) => `${e.generated_at || ''}-${e.draft ? 'd' : ''}${st.rev[e.name] || 0}`;
-    function cardHtml(e) {
-      const used = (st.usages && st.usages[e.name]) || [];
-      // The requests waiting: written, not applied, not being applied.
-      const pending = st.board ? st.board.all().filter((n) => n.target === 'kit:' + e.name && n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim() && !st.board.isApplying(n.id)).length : 0;
-      const working = st.applying[e.name] || 0;
-      return `<div class="mk-card kt-card" data-pin="kit:${esc(e.name)}" data-card="${esc(e.name)}" data-version="${esc(versionOf(e))}" style="width:${CARD_W}px;--mf:var(--pin-design)">
-          <div class="mk-card-head"><b>${esc(e.name)}</b><span class="mk-card-sys">${esc(e.title)}</span><span class="mk-card-tags">${e.variant_of ? `<i title="forked from ${esc(e.variant_of)}">fork of ${esc(e.variant_of)}</i>` : ''}${e.draft ? '<i class="bad">draft</i>' : ''}${e.checks.length ? `<i class="bad" title="${esc(e.checks.join('\n'))}">fails the check</i>` : '<i class="ok" title="reusable as it is by the real code">passes the check</i>'}${e.recoded ? `<i class="bad" title="${esc(e.recoded)}">recoded</i>` : ''}</span></div>
-          <div class="mk-card-desc">${esc(e.what || e.prompt)}</div>
-          <div class="mk-card-meta">${used.length ? `used by ${used.length}: ` + used.slice(0, 4).map((u) => esc(`${u.kind === 'page' ? (u.title || u.what) : u.what} (${u.branch})`)).join(', ') + (used.length > 4 ? '…' : '') : st.usages ? 'used nowhere yet' : 'reading who uses it…'}</div>
-          <div class="mk-card-body"><iframe class="mk-preview" title="${esc(e.name)}" data-src="${esc(previewSrc(e.name, e.draft, versionOf(e)))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>
-          <div class="kt-card-actions">
-            ${working ? `<span class="kt-working"><span class="spin"></span> the AI rewrites it${working > 1 ? ` · ${working} in a row` : ''}</span>` : ''}
-            ${pending ? `<button type="button" class="mini on" data-kt="apply" data-name="${esc(e.name)}" title="Apply the pending requests of this card to the fragment, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : working ? '' : '<span class="muted">drop a request pin on the card, then apply it</span>'}
-            ${e.draft && !working ? `<button type="button" class="mini on" data-kt="save" data-name="${esc(e.name)}">save…</button><button type="button" class="mini" data-kt="drop-draft" data-name="${esc(e.name)}">drop the draft</button>` : ''}
-            <span class="spacer"></span>
-            <button type="button" class="mini${st.live.has(e.name) ? ' on' : ''}" data-kt="live" data-name="${esc(e.name)}" title="${st.live.has(e.name) ? 'Back to the board: the card is moved and pinned again' : 'Use the component as a visitor would: click, type, open — the board leaves it alone'}">${st.live.has(e.name) ? 'disable interaction' : 'enable interaction'}</button>
-            ${!used.length && st.usages && !working ? `<button type="button" class="mini" data-kt="delete" data-name="${esc(e.name)}" title="Used on no active branch: it may go">delete</button>` : ''}
-          </div>
-          <div class="kt-save" hidden><b>Save the draft</b><div class="kt-row"><button type="button" class="mini on" data-kt="save-replace" data-name="${esc(e.name)}" title="The draft takes the component's place: every page and micro-frontend that uses it shows the new one">replace ${esc(e.name)}${used.length ? ` (${used.length} usage${used.length === 1 ? '' : 's'})` : ''}</button><input class="kt-fork-name" maxlength="60" placeholder="${esc(e.name)}2" aria-label="fork name"><button type="button" class="mini" data-kt="save-fork" data-name="${esc(e.name)}" title="A new component from the draft; this one stays as it is">fork</button></div>${used.length ? `<div class="muted">Replacing changes: ${used.map((u) => esc(`${u.kind} ${u.what} on ${u.branch}`)).join('; ')}</div>` : ''}</div>
-        </div>`;
+    const shownOnCanvas = () => catalog().filter((e) => e.state === 'generated' || e.draft);
+    // The pins: the board's own once it is made, else as last read.
+    const pinsOf = () => (st.board ? st.board.all() : st.notes);
+    // The requests waiting on a component: written, not applied, not being applied.
+    const pendingOf = (name) => pinsOf().filter((n) => n.target === 'kit:' + name && n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim() && !(st.board && st.board.isApplying(n.id)));
+    async function loadNotes() {
+      try {
+        const res = await fetch(`/api/notes/${encodeURIComponent(BOARD)}`);
+        st.notes = res.ok ? await res.json() : [];
+      } catch (e) { st.notes = []; }
     }
-    function drawCards() {
-      if (!st.board) return;
-      const list = catalog().filter((e) => e.state === 'generated' || e.draft);
-      const content = st.board.content;
-      if (!list.length) {
-        content.innerHTML = '<div class="mk-empty" data-pin="kit:none"><h2>No component yet</h2><p>The canvas shows the kit once it is generated: tick the components in the <b>catalogue</b> and generate them from the validated design system.</p></div>';
-        st.cards = [];
-        st.board.setSize(WIDTH, MIN_HEIGHT);
-        st.board.fit();
-        return;
+    async function loadUsages() {
+      if (st.usagesAsked) return;
+      st.usagesAsked = true;
+      try {
+        const res = await fetch('/api/kit/usages');
+        st.usages = res.ok ? await res.json() : {};
+      } catch (e) { st.usages = {}; }
+      st.usagesAsked = false;
+      if (!st.gone && st.tab === 'canvas') drawCanvas(false);
+    }
+
+    // ---- the finder: every word typed in the name or the code name, and a chip --------------------
+    const CHIPS = [['all', 'all'], ['standard', 'standard'], ['custom', 'custom'], ['draft', 'drafts'], ['requests', 'with requests'], ['fails', 'fails the check']];
+    const plain = (text) => String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    function matches(e) {
+      const words = plain(st.find).split(/\s+/).filter(Boolean);
+      const hay = [plain(e.name), plain(e.title), plain(e.title).replace(/[^a-z0-9]/g, '')];
+      if (!words.every((w) => hay.some((h) => h.includes(w)))) return false;
+      switch (st.chip) {
+        case 'standard': return !!e.base;
+        case 'custom': return !e.base;
+        case 'draft': return !!e.draft;
+        case 'requests': return pendingOf(e.name).length > 0;
+        case 'fails': return e.checks.length > 0;
+        default: return true;
       }
-      const empty = content.querySelector('.mk-empty');
-      if (empty) empty.remove();
-      const have = new Map([...content.querySelectorAll('.kt-card')].map((c) => [c.dataset.card, c]));
-      const make = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
-      let before = null;
-      const cards = list.map((e) => {
-        const fresh = make(cardHtml(e));
-        let card = have.get(e.name);
-        have.delete(e.name);
-        if (card && card.dataset.version === fresh.dataset.version) {
-          // The same preview: everything but the frame is redrawn, the frame stays loaded.
-          const open = !card.querySelector('.kt-save').hidden;
-          const fork = card.querySelector('.kt-fork-name').value;
-          [...card.children].forEach((child) => { if (!child.classList.contains('mk-card-body')) child.remove(); });
-          const body = card.querySelector('.mk-card-body');
-          [...fresh.children].forEach((child) => { if (!child.classList.contains('mk-card-body')) card.insertBefore(child, child.classList.contains('kt-card-actions') || child.classList.contains('kt-save') ? null : body); });
-          card.querySelector('.kt-save').hidden = !open;
-          card.querySelector('.kt-fork-name').value = fork;
-        } else {
-          if (card) { const height = card.querySelector('.mk-preview') && card.querySelector('.mk-preview').style.height; card.replaceWith(fresh); if (height) fresh.querySelector('.mk-preview').style.height = height; } else content.insertBefore(fresh, before ? before.nextSibling : content.firstChild);
-          card = fresh;
-          const frame = card.querySelector('.mk-preview');
-          if (frame) { frame.addEventListener('load', () => { paint(frame); measureCards(); }); watchFrame(frame); }
-          card.querySelector('.mk-shield').hidden = st.live.has(e.name);
-        }
-        before = card;
-        return { name: e.name, card, frame: card.querySelector('.mk-preview') };
-      });
-      have.forEach((card) => { const frame = card.querySelector('.mk-preview'); if (frame && st.seen) st.seen.unobserve(frame); card.remove(); });
-      st.cards = cards;
-      filterCards();
-      layoutCards();
-      if (!st.fitted) { st.board.fit(); st.fitted = true; }
     }
-    // A preview is a whole document, its scripts running: only the cards on
-    // the screen, and a little around it, hold one. A card scrolled or
-    // zoomed away lets its document go and keeps its height; it loads again
-    // when it comes back.
+    const listed = () => shownOnCanvas().filter(matches);
+    // The list changed by the finder or a chip: the gallery starts again from the top.
+    function refind() {
+      drawGallery();
+      q('.kt-gallery').scrollTop = 0;
+    }
+
+    function drawCanvas(changed) {
+      if (!st.usages || changed) loadUsages();
+      // A pin asked for from elsewhere opens its component.
+      if (opts && opts.pin && !st.pinOpened && st.notes.length) {
+        st.pinOpened = true;
+        const pin = st.notes.find((n) => n.id === opts.pin);
+        if (pin && pin.target && pin.target.startsWith('kit:') && entry(pin.target.slice(4))) st.detail = pin.target.slice(4);
+      }
+      if (st.detail && !entry(st.detail)) st.detail = null;
+      q('.kt-gallery').hidden = !!st.detail;
+      q('.kt-detail').hidden = !st.detail;
+      if (st.detail) drawDetail();
+      else drawGallery();
+    }
+
+    // ---- the gallery -----------------------------------------------------------------------------
+    function footOf(e) {
+      const pending = pendingOf(e.name).length;
+      const working = st.applying[e.name] || 0;
+      const tags = [
+        working ? '<i class="acc"><span class="spin"></span> rewriting</i>' : '',
+        pending ? `<i class="acc">${pending} request${pending === 1 ? '' : 's'}</i>` : '',
+        e.draft ? '<i class="bad">draft</i>' : '',
+        e.checks.length ? `<i class="bad" title="${esc(e.checks.join('\n'))}">fails the check</i>` : '',
+        e.recoded ? `<i class="bad" title="${esc(e.recoded)}">recoded</i>` : '',
+        e.base ? '' : '<i>custom</i>',
+      ].join('');
+      return `<b class="kt-tile-title">${esc(e.title || e.name)}</b><span class="mono kt-tile-code">${esc(e.name)}</span><span class="kt-tile-tags">${tags}</span>`;
+    }
+    function drawGallery() {
+      const all = shownOnCanvas();
+      const list = listed();
+      const grid = q('.kt-grid');
+      q('.kt-count').textContent = `${list.length} / ${all.length}`;
+      q('.kt-chips').innerHTML = CHIPS.map(([id, label]) => `<button type="button" class="kt-chip${st.chip === id ? ' on' : ''}" data-kt="chip" data-chip="${id}">${label}</button>`).join('');
+      const have = new Map([...grid.children].map((tile) => [tile.dataset.card, tile]));
+      let before = null;
+      list.forEach((e) => {
+        let tile = have.get(e.name);
+        have.delete(e.name);
+        if (!tile) {
+          tile = document.createElement('article');
+          tile.className = 'kt-tile';
+          tile.dataset.card = e.name;
+          tile.dataset.pin = 'kit:' + e.name;
+          tile.tabIndex = 0;
+          tile.innerHTML = `<div class="kt-tile-preview"><iframe class="mk-preview" tabindex="-1" scrolling="no" title="${esc(e.name)}"></iframe></div><div class="kt-tile-foot"></div>`;
+          const frame = tile.querySelector('iframe');
+          frame.addEventListener('load', () => paint(frame));
+        }
+        const frame = tile.querySelector('iframe');
+        const src = previewSrc(e.name, e.draft, versionOf(e));
+        if (frame.dataset.src !== src) {
+          frame.dataset.src = src;
+          // Shown already: the new version at once; else when it comes on the screen.
+          if (frame.dataset.loaded) { frame.dataset.loaded = src; frame.src = src; }
+        }
+        const foot = footOf(e);
+        if (tile.dataset.foot !== foot) { tile.dataset.foot = foot; tile.querySelector('.kt-tile-foot').innerHTML = foot; }
+        const next = before ? before.nextSibling : grid.firstChild;
+        if (tile !== next) grid.insertBefore(tile, next);
+        watchFrame(frame);
+        before = tile;
+      });
+      have.forEach((tile) => { if (st.seen) st.seen.unobserve(tile.querySelector('iframe')); tile.remove(); });
+      const none = q('.kt-none');
+      none.hidden = list.length > 0;
+      if (!list.length) {
+        none.innerHTML = all.length
+          ? `<h2>No component matches</h2><p>Nothing in the kit is named like <b>${esc(st.find)}</b>${st.chip !== 'all' ? ` among the <b>${esc((CHIPS.find(([id]) => id === st.chip) || ['', st.chip])[1])}</b>` : ''}.</p>`
+          : '<h2>No component yet</h2><p>The canvas shows the kit once it is generated: tick the components in the <b>catalogue</b> and generate them from the validated design system.</p>';
+      }
+    }
+    // A preview is a whole document, its scripts running: only the tiles on
+    // the screen, and a screen above and below, hold one. The gallery hidden
+    // behind a component lets nothing go.
     function watchFrame(frame) {
-      if (!window.IntersectionObserver) { frame.src = frame.dataset.src; return; }
+      if (!window.IntersectionObserver) { if (!frame.dataset.loaded) { frame.dataset.loaded = frame.dataset.src; frame.src = frame.dataset.src; } return; }
       if (!st.seen) {
         st.seen = new IntersectionObserver((entries) => {
+          if (st.detail) return;
           entries.forEach((entry) => {
             const f = entry.target;
             if (entry.isIntersecting) {
@@ -468,64 +499,128 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
               f.src = 'about:blank';
             }
           });
-        }, { root: q('.kt-board'), rootMargin: '300px' });
+        }, { root: q('.kt-gallery'), rootMargin: '100% 0px' });
       }
       st.seen.observe(frame);
     }
-    function measureCards() {
-      let changed = false;
-      st.cards.forEach((c) => {
-        // A frame let go keeps the height it had: its card does not move.
-        if (!c.frame || !c.frame.dataset.loaded) return;
-        let doc = null;
-        try { doc = c.frame.contentDocument; } catch (e) { doc = null; }
-        if (!doc || !doc.body) return;
-        const h = Math.min(CARD_MAX, Math.max(CARD_MIN, doc.documentElement.scrollHeight, doc.body.scrollHeight));
-        if (Math.abs(h - (parseFloat(c.frame.style.height) || 0)) > 2) { c.frame.style.height = h + 'px'; changed = true; }
+
+    // ---- one component alone on its board ----------------------------------------------------------
+    const STAGE_W = 760;
+    function openDetail(name) {
+      if (!entry(name)) return;
+      if (!st.detail) st.galleryTop = q('.kt-gallery').scrollTop;
+      st.detail = name;
+      st.saveOpen = false;
+      st.pinMode = false;
+      st.fittedDetail = false;
+      drawCanvas(false);
+    }
+    function closeDetail() {
+      st.detail = null;
+      drawCanvas(false);
+      q('.kt-gallery').scrollTop = st.galleryTop || 0;
+    }
+    function ensureBoard() {
+      if (st.board) return;
+      const onSession = opts && opts.onSession
+        ? (note, ctx) => opts.onSession({ board: BOARD, id: note.id, on: describe(note.target), kind: note.kind, context: ctx, branch: SLUG, page: '' })
+        : null;
+      st.board = window.HarnessBoard.create(q('.kt-board'), {
+        id: BOARD,
+        describe,
+        context,
+        onSession,
+        kinds: ['note', 'request'],
+        backlog: false,
+        // The component's pins, and those dropped beside it.
+        only: (n) => !n.target || n.target === 'kit:' + st.detail,
+        apply: (note) => applyRequests(note.target ? note.target.slice(4) : '', [note]),
+        onApplying: () => drawDetailBar(),
+        onChange: () => drawDetailBar(),
+        onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board.goTo(opts.pin)) st.pinned = true; drawDetailBar(); },
+        bounds: () => ({ x: 0, y: 0, w: STAGE_W, h: st.stageH || 400 }),
       });
-      if (changed) layoutCards();
     }
-    // ---- the finder: the cards whose name or code name holds every word typed ----------------------
-    const plain = (text) => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-    function matches(name) {
-      const words = plain(st.find).split(/\s+/).filter(Boolean);
-      if (!words.length) return true;
-      const e = entry(name) || { name, title: '' };
-      const hay = [plain(e.name), plain(e.title), plain(e.title).replace(/[^a-z0-9]/g, '')];
-      return words.every((w) => hay.some((h) => h.includes(w)));
-    }
-    function filterCards() {
-      if (!st.board) return;
-      let shown = 0;
-      st.cards.forEach((c) => { c.card.hidden = !matches(c.name); if (!c.card.hidden) shown += 1; });
+    function drawDetail() {
+      ensureBoard();
+      const e = entry(st.detail);
       const content = st.board.content;
-      let none = content.querySelector('.kt-none');
-      if (!shown && st.cards.length) {
-        if (!none) { none = document.createElement('div'); none.className = 'mk-empty kt-none'; content.appendChild(none); }
-        none.innerHTML = `<h2>No component matches</h2><p>Nothing in the kit is named like <b>${esc(st.find)}</b>.</p>`;
-      } else if (none) none.remove();
-      layoutCards();
-    }
-    function layoutCards() {
-      const per = Math.max(1, Math.floor((WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
-      let y = 0; let rowH = 0; let maxX = 0;
-      st.cards.filter((c) => !c.card.hidden).forEach((c, i) => {
-        if (i % per === 0 && i) { y += rowH + CARD_GAP; rowH = 0; }
-        const x = (i % per) * (CARD_W + CARD_GAP);
-        c.card.style.left = x + 'px'; c.card.style.top = y + 'px';
-        rowH = Math.max(rowH, c.card.offsetHeight);
-        maxX = Math.max(maxX, x + CARD_W);
-      });
-      st.board.setSize(Math.max(WIDTH, maxX), Math.max(MIN_HEIGHT, y + rowH + 20));
+      const src = previewSrc(e.name, e.draft, versionOf(e));
+      let stage = content.querySelector('.kt-stage');
+      if (!stage || stage.dataset.card !== e.name) {
+        content.innerHTML = `<div class="kt-stage" data-pin="kit:${esc(e.name)}" data-card="${esc(e.name)}" style="width:${STAGE_W}px"><iframe class="mk-preview" title="${esc(e.name)}"></iframe><div class="mk-shield"></div></div>`;
+        stage = content.querySelector('.kt-stage');
+        const frame = stage.querySelector('iframe');
+        frame.addEventListener('load', () => {
+          paint(frame);
+          sizeStage(frame);
+          // A list opened, a modal shown: the stage grows to what the component shows now.
+          try {
+            const doc = frame.contentDocument;
+            ['click', 'keyup', 'transitionend'].forEach((kind) => doc.addEventListener(kind, () => setTimeout(() => sizeStage(frame), 60)));
+          } catch (e) { /* the frame let go */ }
+        });
+      }
+      const frame = stage.querySelector('iframe');
+      if (frame.dataset.loaded !== src) { frame.dataset.loaded = src; frame.src = src; }
+      // Used as a visitor would by default; pinned with the shield up.
+      stage.querySelector('.mk-shield').hidden = !st.pinMode;
+      drawDetailBar();
       st.board.refresh();
     }
-    async function loadUsages() {
+    function sizeStage(frame) {
+      let h = 240;
       try {
-        const res = await fetch('/api/kit/usages');
-        st.usages = res.ok ? await res.json() : {};
-      } catch (e) { st.usages = {}; }
-      if (!st.gone && st.tab === 'canvas') drawCards();
+        const doc = frame.contentDocument;
+        if (doc && doc.body) h = Math.min(2400, Math.max(320, doc.documentElement.scrollHeight, doc.body.scrollHeight));
+      } catch (e) { /* the frame let go */ }
+      if (h === st.stageH && frame.style.height === h + 'px') return;
+      frame.style.height = h + 'px';
+      st.stageH = h;
+      st.board.setSize(STAGE_W, h);
+      if (!st.fittedDetail) { st.board.fit(); st.fittedDetail = true; }
+      st.board.refresh();
     }
+    function drawDetailBar() {
+      const e = st.detail && entry(st.detail);
+      if (!e) return;
+      const list = listed();
+      const at = list.findIndex((x) => x.name === e.name);
+      const used = (st.usages && st.usages[e.name]) || [];
+      const pending = pendingOf(e.name).length;
+      const working = st.applying[e.name] || 0;
+      const tags = `${e.variant_of ? `<i title="forked from ${esc(e.variant_of)}">fork of ${esc(e.variant_of)}</i>` : ''}${e.draft ? '<i class="bad">draft</i>' : ''}${e.checks.length ? `<i class="bad" title="${esc(e.checks.join('\n'))}">fails the check</i>` : '<i class="ok" title="reusable as it is by the real code">passes the check</i>'}${e.recoded ? `<i class="bad" title="${esc(e.recoded)}">recoded</i>` : ''}`;
+      const bar = `<div class="kt-detail-row">
+          <button type="button" class="mini" data-kt="back" title="Back to the gallery, where you left it">← all components</button>
+          <button type="button" class="mini" data-kt="step" data-step="-1" ${at <= 0 ? 'disabled' : ''} title="The previous one of the list">‹</button>
+          <span class="muted kt-detail-at">${at >= 0 ? at + 1 : '–'} / ${list.length}</span>
+          <button type="button" class="mini" data-kt="step" data-step="1" ${at < 0 || at >= list.length - 1 ? 'disabled' : ''} title="The next one of the list">›</button>
+          <b class="kt-detail-title">${esc(e.title || e.name)}</b><span class="mono muted">${esc(e.name)}</span><span class="mk-card-tags">${tags}</span>
+          <span class="spacer"></span>
+          <div class="mk-views" role="group" aria-label="mode"><button type="button" data-kt="mode" data-mode="use" class="${st.pinMode ? '' : 'on'}" title="Click, type, open: the component as a visitor uses it">use it</button><button type="button" data-kt="mode" data-mode="pin" class="${st.pinMode ? 'on' : ''}" title="The component holds still: drop note and request pins on it">pin it</button></div>
+          ${working ? `<span class="kt-working"><span class="spin"></span> the AI rewrites it${working > 1 ? ` · ${working} in a row` : ''}</span>` : ''}
+          ${pending ? `<button type="button" class="mini on" data-kt="apply" data-name="${esc(e.name)}" title="Apply the pending requests to the fragment, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : ''}
+          ${e.draft && !working ? `<button type="button" class="mini on" data-kt="save" data-name="${esc(e.name)}">save…</button><button type="button" class="mini" data-kt="drop-draft" data-name="${esc(e.name)}">drop the draft</button>` : ''}
+          ${!used.length && st.usages && !working ? `<button type="button" class="mini" data-kt="delete" data-name="${esc(e.name)}" title="Used on no active branch: it may go">delete</button>` : ''}
+        </div>
+        <div class="kt-detail-sub muted">${esc(e.what || e.prompt)} · ${used.length ? `used by ${used.length}: ` + used.slice(0, 6).map((u) => esc(`${u.kind === 'page' ? (u.title || u.what) : u.what} (${u.branch})`)).join(', ') + (used.length > 6 ? '…' : '') : st.usages ? 'used nowhere yet' : 'reading who uses it…'}${pending || working || e.draft ? '' : ' · switch to <b>pin it</b> and drop a request on it, then apply it'}</div>`;
+      if (st.lastBar !== bar) { st.lastBar = bar; q('.kt-detail-bar').innerHTML = bar; }
+      const box = q('.kt-detail-save');
+      box.hidden = !(st.saveOpen && e.draft);
+      if (!box.hidden) {
+        const fork = box.querySelector('.kt-fork-name');
+        const kept = fork ? fork.value : '';
+        box.innerHTML = `<b>Save the draft</b><div class="kt-row"><button type="button" class="mini on" data-kt="save-replace" data-name="${esc(e.name)}" title="The draft takes the component's place: every page and micro-frontend that uses it shows the new one">replace ${esc(e.name)}${used.length ? ` (${used.length} usage${used.length === 1 ? '' : 's'})` : ''}</button><input class="kt-fork-name" maxlength="60" placeholder="${esc(e.name)}2" aria-label="fork name"><button type="button" class="mini" data-kt="save-fork" data-name="${esc(e.name)}" title="A new component from the draft; this one stays as it is">fork</button></div>${used.length ? `<div class="muted">Replacing changes: ${used.map((u) => esc(`${u.kind} ${u.what} on ${u.branch}`)).join('; ')}</div>` : ''}`;
+        box.querySelector('.kt-fork-name').value = kept;
+      }
+    }
+    function step(by) {
+      const list = listed();
+      const at = list.findIndex((x) => x.name === st.detail);
+      const next = list[at + by];
+      if (next) openDetail(next.name);
+    }
+
     // Applies requests to a component: its draft is rewritten, the pins
     // applied go (ctrl+z on the board brings one back), the skipped stay.
     async function applyRequests(name, notes) {
@@ -535,7 +630,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       const action = window.HarnessActions && window.HarnessActions.start({ key: `kit-apply:${name}:${asked.map((a) => a.id).join(',')}`, label: `apply ${asked.length} request(s) to ${name}` });
       // Several at once are fine: the server rewrites a component one request after the other.
       st.applying[name] = (st.applying[name] || 0) + 1;
-      drawCards();
+      drawCanvas(false);
       try {
         const got = await said(await post(`/api/kit/${encodeURIComponent(name)}/apply`, { requests: asked }));
         const skipped = got.skipped || [];
@@ -554,10 +649,11 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
 
     // ---- what the human does ---------------------------------------------------------------------
     host.addEventListener('click', async (e) => {
+      const tile = e.target.closest('.kt-tile');
+      if (tile) { openDetail(tile.dataset.card); return; }
       const b = e.target.closest('[data-kt]');
       if (!b || b.disabled) return;
       const what = b.dataset.kt; const name = b.dataset.name || '';
-      const card = (n) => st.cards.find((c) => c.name === n);
       switch (what) {
         case 'tab': setTab(b.dataset.tab); break;
         case 'publish': act('publishing', () => call('/api/design/publish', { message: q('.kt-message').value }), (got) => toast(`published on <b>${SLUG}</b> · ${esc(String(got.commit || '').slice(0, 10))}`
@@ -593,17 +689,19 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           st.board.track(pins.map((n) => n.id), applyRequests(name, pins));
           break;
         }
-        case 'save': { const c = card(name); if (c) { const box = c.card.querySelector('.kt-save'); box.hidden = !box.hidden; layoutCards(); } break; }
+        case 'save': st.saveOpen = !st.saveOpen; drawDetailBar(); break;
         case 'save-replace': act(`replacing ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'replace' }), () => { toast(`${esc(name)} replaced: every page that uses it shows the new one`); st.usages = null; }); break;
-        case 'save-fork': { const c = card(name); const forkName = c ? c.card.querySelector('.kt-fork-name').value.trim() : ''; act(`forking ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'fork', name: forkName }), (entries) => { const made = (entries || []).find((x) => x.variant_of === name && x.name !== name && (!forkName || x.name === forkName)); toast(`forked as <b>${esc(made ? made.name : forkName || name + '2')}</b>; ${esc(name)} is as it was`); st.usages = null; }); break; }
-        case 'live': {
-          if (st.live.has(name)) st.live.delete(name); else st.live.add(name);
-          const card = host.querySelector(`.kt-card[data-card="${CSS.escape(name)}"]`);
-          if (card) card.querySelector('.mk-shield').hidden = st.live.has(name);
-          b.classList.toggle('on', st.live.has(name));
-          b.textContent = st.live.has(name) ? 'disable interaction' : 'enable interaction';
+        case 'save-fork': { const input = q('.kt-detail-save .kt-fork-name'); const forkName = input ? input.value.trim() : ''; act(`forking ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'fork', name: forkName }), (entries) => { const made = (entries || []).find((x) => x.variant_of === name && x.name !== name && (!forkName || x.name === forkName)); toast(`forked as <b>${esc(made ? made.name : forkName || name + '2')}</b>; ${esc(name)} is as it was`); st.usages = null; }); break; }
+        case 'mode': {
+          st.pinMode = b.dataset.mode === 'pin';
+          const shield = q('.kt-stage .mk-shield');
+          if (shield) shield.hidden = !st.pinMode;
+          drawDetailBar();
           break;
         }
+        case 'back': closeDetail(); break;
+        case 'step': step(Number(b.dataset.step) || 0); break;
+        case 'chip': st.chip = b.dataset.chip; refind(); break;
         case 'bg-reset': pickBackground(''); break;
         case 'drop-draft': act(`dropping the draft of ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/draft/drop`)); break;
         default: break;
@@ -621,10 +719,18 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       }
       if (t.matches('input[type="color"][data-token]')) { const text = host.querySelector(`.kt-token[data-token="${CSS.escape(t.dataset.token)}"]`); if (text) { text.value = t.value; keepTokens(); } }
     });
+    // `/` reaches the finder; Enter on a tile opens it.
+    const onKey = (e) => {
+      if (st.gone || st.tab !== 'canvas' || !host.isConnected) return;
+      const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable);
+      if (e.key === '/' && !typing && !st.detail) { e.preventDefault(); q('.kt-find').focus(); return; }
+      if (e.key === 'Enter' && e.target && e.target.classList && e.target.classList.contains('kt-tile')) openDetail(e.target.dataset.card);
+    };
+    document.addEventListener('keydown', onKey);
     host.addEventListener('input', (e) => {
       if (e.target.matches('.kt-token')) keepTokens();
       if (e.target.matches('[data-kt="bg"]')) pickBackground(e.target.value);
-      if (e.target.matches('[data-kt="find"]')) { st.find = e.target.value; filterCards(); }
+      if (e.target.matches('[data-kt="find"]')) { st.find = e.target.value; refind(); }
     });
     function keepTokens() {
       clearTimeout(st.editTimer);
@@ -684,6 +790,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       },
       destroy() {
         st.gone = true;
+        document.removeEventListener('keydown', onKey);
         clearTimeout(st.timer); clearTimeout(st.editTimer); clearTimeout(st.toastTimer);
         if (st.seen) st.seen.disconnect();
         if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
