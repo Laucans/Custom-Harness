@@ -372,7 +372,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Every listed page exists, and every frozen screen is mocked
+      - name: Every listed page and micro-frontend exists, and every frozen screen is mocked
         shell: bash
         run: |
           set -euo pipefail
@@ -389,6 +389,18 @@ jobs:
           for page in $(jq -r '.pages[].path' "$manifest"); do
             if [ ! -f "mock/$page" ]; then
               echo "::error file=$manifest::lists $page, which is not under mock/"
+              failed=1
+            fi
+          done
+          for fragment in $(jq -r '.components[]?.fragment' "$manifest"); do
+            if [ ! -f "mock/$fragment" ]; then
+              echo "::error file=$manifest::lists the micro-frontend $fragment, which is not under mock/"
+              failed=1
+            fi
+          done
+          for name in $(jq -r '[.pages[].components[]?] | unique[]' "$manifest"); do
+            if ! jq -e --arg n "$name" '.components[]? | select(.name == $n)' "$manifest" > /dev/null; then
+              echo "::error file=$manifest::a page injects $name, a micro-frontend components does not list"
               failed=1
             fi
           done

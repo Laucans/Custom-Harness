@@ -44,8 +44,11 @@ crates/dataguard/data-capabilities/<name>/  one DataCapability + data-capability
 crates/dataguard/aggregates/<Aggregate>/aggregate.json   criticality, invariants, relations (contract I)
 concepts/<Concept>/v<n>/concept.json + fixtures.json      a versioned Concept (contract A)
 data/model.json                    the data model: what every table and field is for (contract M)
-mock/pages.json                    the mock-up's pages, one per screen (contract N)
-mock/pages/<screen>.html           one mocked page: static HTML/JS on mock/fixtures/*.json, no backend
+mock/pages.json                    the mock-up's pages, one per screen, and its micro-frontends (contract N)
+mock/pages/<screen>.html           one mocked page: static HTML, the rest injected as micro-frontends
+mock/components/<MicroUi>.html     one micro-frontend: a Micro-UI's markup and script on its fixture
+mock/fixtures/<MicroUi>.json       what that Micro-UI's Capabilities would answer
+mock/mock.js                       the loader: fills every data-component element from components/
 scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)
 contracts/*.schema.json            the fourteen contracts, JSON Schema 2020-12
 ```

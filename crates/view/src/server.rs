@@ -178,6 +178,7 @@ pub fn router(state: AppState) -> Router {
         .route("/actions.js", get(actions_js))
         .route("/data-model.js", get(data_model_js))
         .route("/mockup.js", get(mockup_js))
+        .route("/mock/{slug}/__preview/{name}", get(mock_preview))
         .route("/mock/{slug}/{*path}", get(mock_file))
         .route("/render/{file}", get(render_asset))
         .route("/vendor/xterm.js", get(xterm_js))
@@ -356,8 +357,52 @@ struct MockupReply {
     enabled: bool,
     #[serde(flatten)]
     state: MockState,
+    /// What the branch's manifests say: Micro-UIs built, Capabilities and
+    /// `DataCapabilities` a micro-frontend may need or trigger.
+    units: mockup::Units,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+/// The branch's manifests, as the designer offers them; empty when nothing
+/// reads them here.
+async fn mockup_units(state: &AppState, branch: &str) -> mockup::Units {
+    let Some(units) = state.units.clone() else {
+        return mockup::Units::default();
+    };
+    units.reading(false).await.map_or_else(
+        |_| mockup::Units::default(),
+        |reading| {
+            reading
+                .refs
+                .iter()
+                .find(|r| r.git_ref == branch)
+                .map(|r| mockup::units_of(&r.files))
+                .unwrap_or_default()
+        },
+    )
+}
+
+/// One micro-frontend alone, for the micro-frontends view: a page the
+/// view makes around its `data-component` element.
+async fn mock_preview(
+    State(state): State<AppState>,
+    Path((slug, name)): Path<(String, String)>,
+) -> Response {
+    if state.mockups.is_none() {
+        return not_found(NO_MOCKUPS);
+    }
+    if mockup::branch_of(&slug).is_none() || !annotations::is_component(&name) {
+        return not_found("no such micro-frontend");
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        mockup::preview_page(&name),
+    )
+        .into_response()
 }
 
 fn branch_or_integration(state: &AppState, branch: Option<String>) -> String {
@@ -375,15 +420,18 @@ async fn mockup_state(State(state): State<AppState>, Query(query): Query<MockupQ
                 branch,
                 ..MockState::default()
             },
+            units: mockup::Units::default(),
             error: Some(NO_MOCKUPS.to_string()),
         });
     };
     let asked = branch.clone();
     let read = tokio::task::spawn_blocking(move || mockups.state(&asked)).await;
+    let units = mockup_units(&state, &branch).await;
     match read {
         Ok(Ok(found)) => json(&MockupReply {
             enabled: true,
             state: found,
+            units,
             error: None,
         }),
         Ok(Err(why)) => json(&MockupReply {
@@ -392,6 +440,7 @@ async fn mockup_state(State(state): State<AppState>, Query(query): Query<MockupQ
                 branch,
                 ..MockState::default()
             },
+            units,
             error: Some(why),
         }),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the read was dropped").into_response(),

@@ -51,6 +51,9 @@ pub enum Kind {
     /// On the mock-up: a request whose result an AI session shows by
     /// editing the page. Purple.
     Simulate,
+    /// On the mock-up: a micro-frontend to design — created by an AI
+    /// session from its spec, or injected in the page it sits on. Teal.
+    Design,
 }
 
 impl Kind {
@@ -63,6 +66,7 @@ impl Kind {
             Self::Asking => "asking",
             Self::Link => "link",
             Self::Simulate => "simulate",
+            Self::Design => "design",
         }
     }
 
@@ -76,7 +80,14 @@ impl Kind {
     /// A kind whose session edits the mock-up rather than talks about it.
     #[must_use]
     pub const fn edits(self) -> bool {
-        matches!(self, Self::Link | Self::Simulate)
+        matches!(self, Self::Link | Self::Simulate | Self::Design)
+    }
+
+    /// A kind whose text is the human's own — a page's objective, a
+    /// micro-frontend's spec — and never rewritten by a compact.
+    #[must_use]
+    pub const fn keeps_its_text(self) -> bool {
+        matches!(self, Self::Link | Self::Design)
     }
 }
 
@@ -134,6 +145,9 @@ pub struct Note {
     /// For a link: the page it leads to, as `mock/pages.json` lists it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub page: String,
+    /// For a design: the micro-frontend's name, `RiskBadge`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub component: String,
     /// A zone's outline — `None` for a point.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<Shape>,
@@ -163,6 +177,15 @@ pub fn is_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// A micro-frontend's name: a Micro-UI's, `RiskBadge` — a capital, then
+/// letters and digits, at most 80.
+#[must_use]
+pub fn is_component(name: &str) -> bool {
+    (1..=80).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 /// The old file's shelf; an unreadable file is an empty shelf.
@@ -199,6 +222,15 @@ pub fn checked(note: Note) -> Result<Note, String> {
     }
     if note.page.chars().count() > MAX_PAGE || note.page.contains("..") {
         return Err(format!("pin {}: its page is not a page", note.id));
+    }
+    if !note.component.is_empty() && !is_component(&note.component) {
+        return Err(format!(
+            "pin {}: a micro-frontend is named like a Micro-UI, `RiskBadge`",
+            note.id
+        ));
+    }
+    if note.kind == Kind::Design && note.component.is_empty() {
+        return Err(format!("pin {}: name the micro-frontend first", note.id));
     }
     if let Some(shape) = &note.shape {
         let enough = match shape.kind {
@@ -262,6 +294,7 @@ mod tests {
             at: "2026-10-09T12:00:00Z".to_string(),
             kind: Kind::Note,
             page: String::new(),
+            component: String::new(),
             shape: None,
             turns: 0,
         }
@@ -314,6 +347,13 @@ mod tests {
         assert!(checked(simulate).is_err(), "a simulate is a request");
         let json = serde_json::to_string(&note("p")).expect("json");
         assert!(!json.contains("shape") && !json.contains("page"), "{json}");
+        let mut design = note("d");
+        design.kind = Kind::Design;
+        assert!(checked(design.clone()).is_err(), "a design is named");
+        design.component = "risk-badge".to_string();
+        assert!(checked(design.clone()).is_err(), "named like a Micro-UI");
+        design.component = "RiskBadge".to_string();
+        assert!(checked(design).is_ok());
     }
 
     #[test]

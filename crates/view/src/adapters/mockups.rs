@@ -121,9 +121,9 @@ fn stamp_of(dir: &Path) -> String {
     format!("{newest}-{size}")
 }
 
-/// The pages of a manifest's text, when there is one.
-fn pages_in(manifest: Option<&str>) -> Result<Vec<crate::ports::MockPage>, String> {
-    manifest.map_or_else(|| Ok(Vec::new()), mockup::pages_of)
+/// What a manifest's text lists, when there is one.
+fn listed(manifest: Option<&str>) -> Result<mockup::Manifest, String> {
+    manifest.map_or_else(|| Ok(mockup::Manifest::default()), mockup::manifest_of)
 }
 
 /// Reads `dir/mock/<path>`; `None` when it is not there.
@@ -139,10 +139,12 @@ fn read_under(dir: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
 /// The state of a mock-up held in a folder: the demo's, or a worktree.
 fn state_of_folder(branch: &str, folder: &Path) -> Result<MockState, String> {
     let manifest = fs::read_to_string(folder.join("mock/pages.json")).ok();
+    let found = listed(manifest.as_deref())?;
     Ok(MockState {
         branch: branch.to_string(),
         present: manifest.is_some(),
-        pages: pages_in(manifest.as_deref())?,
+        pages: found.pages,
+        components: found.components,
         edited: false,
         saved: String::new(),
         stamp: stamp_of(&folder.join("mock")),
@@ -162,10 +164,12 @@ impl Mockups for GitMockups {
             .mirror
             .show(branch, "mock/pages.json")?
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        let found = listed(manifest.as_deref())?;
         Ok(MockState {
             branch: branch.to_string(),
             present: manifest.is_some(),
-            pages: pages_in(manifest.as_deref())?,
+            pages: found.pages,
+            components: found.components,
             edited: false,
             saved: String::new(),
             stamp: self.mirror.head_of(branch)?.unwrap_or_default(),

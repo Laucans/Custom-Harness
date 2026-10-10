@@ -1,0 +1,9 @@
+<span class="niveau"><b>?</b> <small>niveau du groupe</small></span>
+<script>
+  (() => {
+    const root = document.currentScript.closest('[data-component]');
+    const props = JSON.parse(root.dataset.props || '{}');
+    const niveaux = { c1: 4, c2: 2, c3: 9 };
+    root.querySelector('b').textContent = niveaux[props.campagne] || 4;
+  })();
+</script>

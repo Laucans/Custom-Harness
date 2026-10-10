@@ -322,6 +322,7 @@ A pin is one of five kinds (`domain::annotations::Kind`):
 | asking | orange | a change to consider when the next roadmap is built — its session kept too; how it reaches the planner is parked (`docs/PARKED.md`) |
 | link | blue | on the mock-up: leads to another page of the product, or creates one from an objective |
 | simulate | purple | on the mock-up: a request whose result an AI session shows by editing the page |
+| design | teal | on the mock-up: a micro-frontend — made by an AI session from the spec the pin carries, or injected in the page it sits on |
 
 A pin may be a **zone** instead of a point: the toolbar's rectangle, circle
 and freehand tools draw an outline around several parts (`Note::shape`, in
@@ -384,6 +385,31 @@ document — a `data-component`, an `id`, else a short tag path — and
 `resolve(target)` finds it again, each as a stand-in that carries the
 part's box through the iframe's place and the board's zoom. A pin's
 session is told the page, its objective and the part's markup.
+
+**Micro-frontends.** A page is static HTML plus the micro-frontends it
+injects: a micro-frontend is a Micro-UI as the mock shows it — a fragment
+`mock/components/<Name>.html` on a fixture `mock/fixtures/<Name>.json`
+shaped like what its Capabilities answer, listed under `components` of
+`mock/pages.json` with its `needs`, `actions` and `props`, injected as a
+`<div data-component="<Name>" data-props='…'>` that `mock/mock.js` fills.
+The easel has **two views**. In the *frontend* view, the `micro-frontends ◧`
+switch outlines every one on the page in its own colour with its name
+(a style the view injects in the page's document), and pins then land on
+the micro-frontend rather than its parts; a strip beside the page lists the
+branch's micro-frontends — the registry's and the manifests' Micro-UIs
+together (`domain::mockup::units_of`), each marked mocked or built — to
+**drag onto the page**: the drop is a **design** pin carrying the spec,
+whose session injects it there (and makes it first when it has no
+fragment). In the *micro-frontends* view, each is a card rendered alone
+from its fragment (`/mock/<slug>/__preview/<Name>`, a page the view makes
+around one `data-component` element) with its own board of pins
+(`mockup--<branch>--micro-frontends`), and **+ micro-frontend** is a form —
+name, system, description, the Capabilities it needs and the
+`DataCapabilities` it triggers, chosen among the branch's, its props — that
+becomes a design pin on that board and opens its session at once: the
+session writes the fragment, the fixture and the registry entry. A design
+pin's editor is the same form; its text is the spec written out, what the
+session reads, never rewritten by a compact.
 
 Two kinds are the mock-up's own. A **link** leads to another page — chosen
 in its editor — or to a page that does not exist yet: named there, drawn by

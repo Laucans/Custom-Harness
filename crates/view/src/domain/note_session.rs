@@ -281,6 +281,9 @@ pub struct About {
     /// for a link, the page it leads to or creates.
     #[serde(default)]
     pub page: String,
+    /// For a design: the micro-frontend's name.
+    #[serde(default)]
+    pub component: String,
     /// The branch the pin belongs to: `main_agent`, `milestone/3-…`; on
     /// the mock-up, the branch shown.
     #[serde(default)]
@@ -347,6 +350,7 @@ pub fn briefing(about: &About, handback: &Handback) -> String {
     let mut text = match about.kind.as_str() {
         "simulate" => simulate_briefing(about),
         "link" => page_briefing(about),
+        "design" => design_briefing(about),
         _ => talk_briefing(about),
     };
     if !about.context.trim().is_empty() {
@@ -392,6 +396,19 @@ fn mockup_rules(about: &About) -> String {
          `mock/` in this folder — one HTML page per screen under `mock/pages/`, plain HTML and \
          JavaScript, data read from JSON fixtures under `mock/fixtures/`, every page listed in \
          `mock/pages.json` (contract N: path, title, objective, optional screen and components). \
+         A page is static HTML plus **micro-frontends**: a micro-frontend is a Micro-UI as the \
+         mock shows it — `mock/components/<Name>.html`, its markup and the script that fills it, \
+         reading `mock/fixtures/<Name>.json`, shaped like what its Capabilities (`needs`) would \
+         answer; its user actions (`actions`) show a command's lifecycle (queued, confirmed, \
+         applied) on the fixture; its `props` come from `data-props`. Each is listed under \
+         `components` of `mock/pages.json` (name, system, description, fragment, fixture, needs, \
+         actions, props), and a page injects one with `<div data-component=\"<Name>\" \
+         data-props='{{…}}'></div>` plus `<script src=\"../mock.js\"></script>` — `mock/mock.js` \
+         (create it if absent) fetches each `components/<Name>.html` into its element and runs its \
+         scripts; a fragment's script finds its root as `document.currentScript.closest('[data-component]')`. \
+         The factory view previews a micro-frontend alone at `__preview/<Name>`: a page that loads \
+         `../style.css`, `../mock.js` and one `data-component` element, so a fragment must stand \
+         on its own. \
          This folder is a checkout of the branch `{branch}` made for you; the factory view serves \
          `mock/` from it and reloads the page as you save files. Rules: edit only under `mock/`; \
          keep `mock/pages.json` valid JSON and listing every page; keep each Micro-UI's root \
@@ -451,6 +468,46 @@ fn page_briefing(about: &About) -> String {
     text
 }
 
+/// A design: a micro-frontend to make from its spec, and to inject in the
+/// page the pin sits on when it sits on one.
+fn design_briefing(about: &About) -> String {
+    let mut text = mockup_rules(about);
+    if about.page.is_empty() {
+        let _ = write!(
+            text,
+            "\nThe human designs the micro-frontend `{name}` from the micro-frontends view. Make it: \
+             `mock/components/{name}.html` with its script, `mock/fixtures/{name}.json` shaped like \
+             what the Capabilities it needs would answer (read their manifests and persisted queries \
+             under `crates/` when they exist, the data model under `data/` otherwise), and its entry \
+             under `components` of `mock/pages.json` with the spec below. Make `mock/mock.js` and \
+             `mock/style.css` if the mock-up has none yet. Do not inject it in a page: the human \
+             drops it where they want it. When it previews well, ask what to adjust.\n",
+            name = about.component,
+        );
+    } else {
+        let _ = write!(
+            text,
+            "\nThe human dropped the micro-frontend `{name}` on {target} of the page `{page}`. \
+             Inject it there: a `<div data-component=\"{name}\" data-props='{{…}}'></div>` at that \
+             spot with the props the page can give it, the page loading `../mock.js`, and `{name}` \
+             added to the page's `components` in `mock/pages.json`. If `mock/components/{name}.html` \
+             does not exist yet, make it first from the spec below, with its fixture and its entry \
+             under `components`. Keep the rest of the page as it is.\n",
+            name = about.component,
+            target = if about.target.is_empty() {
+                "a spot"
+            } else {
+                &about.target
+            },
+            page = about.page,
+        );
+    }
+    if !about.note.trim().is_empty() {
+        let _ = writeln!(text, "The micro-frontend's spec:\n{}", about.note.trim());
+    }
+    text
+}
+
 /// A brainstorm or an asking: a conversation, nothing edited.
 fn talk_briefing(about: &About) -> String {
     let mut text = format!(
@@ -506,6 +563,17 @@ pub fn first_prompt(about: &About) -> Option<String> {
             format!(
                 "Create the page `{}` of the mock-up. Its objective: {note}",
                 about.page
+            )
+        }),
+        "design" => Some(if about.page.is_empty() {
+            format!(
+                "Make the micro-frontend `{}` of the mock-up from its spec.",
+                about.component
+            )
+        } else {
+            format!(
+                "Inject the micro-frontend `{}` in the page `{}` where the pin sits; make it first if it does not exist.",
+                about.component, about.page
             )
         }),
         _ if note.is_empty() => None,
@@ -652,9 +720,28 @@ not json
             branch: "main".into(),
             schema: String::new(),
             milestone: String::new(),
+            component: String::new(),
         };
         let text = briefing(&about, &Handback::Nothing);
         assert!(text.contains("edit only under `mock/`"));
+        let design = About {
+            kind: "design".into(),
+            component: "RiskBadge".into(),
+            note: "name: RiskBadge\nneeds: credit.calculateRisk".into(),
+            ..about.clone()
+        };
+        let made = briefing(&design, &Handback::Nothing);
+        assert!(made.contains("Inject it there") && made.contains("`RiskBadge`"));
+        assert!(
+            first_prompt(&design)
+                .expect("a prompt")
+                .starts_with("Inject the micro-frontend `RiskBadge`")
+        );
+        let alone = About {
+            page: String::new(),
+            ..design
+        };
+        assert!(briefing(&alone, &Handback::Nothing).contains("Do not inject it in a page"));
         assert!(text.contains("`pages/home.html`") && text.contains("show a late customer"));
         assert!(text.contains("branch `main`"));
         assert_eq!(
@@ -732,6 +819,7 @@ not json
             note: "unique?".into(),
             kind: "brainstorm".into(),
             page: String::new(),
+            component: String::new(),
             branch: "milestone/3-campaigns".into(),
             schema: "CREATE TABLE character (name varchar(40));".into(),
             milestone: milestone_words(&crate::ports::Milestone {

@@ -98,9 +98,20 @@ runs. One HTML page per screen under `mock/pages/`, plain HTML and
 JavaScript, its data read from JSON fixtures under `mock/fixtures/`; no
 build step, no framework the page must compile. `mock/pages.json`
 (contract N) lists every page: its file, its title, the objective it was
-created from, the screen it mocks once that screen is frozen, the Micro-UIs
-it shows. In a page, a Micro-UI's root element carries
-`data-component="<MicroUi>"`, so a human can point at it.
+created from, the screen it mocks once that screen is frozen, the
+micro-frontends it injects.
+
+A **micro-frontend** is a Micro-UI as the mock shows it: a fragment
+`mock/components/<MicroUi>.html` — its markup and the script that fills it —
+drawn from a fixture `mock/fixtures/<MicroUi>.json` shaped like what its
+Capabilities would answer, declared in `mock/pages.json` with the `needs`,
+`actions` and `props` its manifest (contract D) will carry. A page is
+static HTML plus the micro-frontends it injects, each a
+`<div data-component="<MicroUi>" data-props='{…}'></div>` that `mock/mock.js`
+fills from the fragment; a user action in a fragment shows the command's
+lifecycle (queued, confirmed, applied) on the fixture, never a backend. A
+human designs micro-frontends in the factory view and drops them on pages;
+the Micro-UI task then builds what the fragment shows.
 
 The mock-up is where the screen is **designed before it is built**: the
 human creates a page from an objective, annotates its components, asks for
@@ -605,6 +616,15 @@ pages:
     objective: "Assess whether we can raise this customer's limit"
     screen: credit-review          # once the composition is frozen
     components: [RiskBadge, LatePaymentsList, LimitReviewForm]
+components:
+  - name: RiskBadge
+    system: credit
+    description: "Shows a customer's risk score and level"
+    fragment: components/RiskBadge.html
+    fixture: fixtures/RiskBadge.json
+    needs: [credit.calculateRisk]
+    actions: [credit.requestLimitReview]
+    props: { customerId: ID }
 ```
 
 ## CI gates
@@ -629,7 +649,7 @@ off until an agent implements them.
 | Invariants | Every declared invariant has tests; every DataCapability lists the ones it may affect | F, I |
 | Relations | Every foreign key has a declared `onDelete` and `onUpdate` policy | I |
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
-| Pages mocked | `mock/pages.json` validates; every page it lists exists; every frozen screen has a page | E, N |
+| Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page | E, N |
 
 ## Organisation of the agents
 

@@ -182,6 +182,7 @@ mod tests {
             at: String::new(),
             kind: Kind::Brainstorm,
             page: String::new(),
+            component: String::new(),
             shape: None,
             turns: 0,
         }

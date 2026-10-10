@@ -7,7 +7,7 @@
 //! `fixtures/x.json`) resolve under `/mock/<slug>/`. The slug is the
 //! convention the demo's folders already use.
 
-use crate::ports::MockPage;
+use crate::ports::{MockComponent, MockPage, UnitFile};
 
 /// The longest branch name accepted from a URL.
 const MAX_BRANCH: usize = 200;
@@ -51,20 +51,119 @@ pub fn is_safe_path(path: &str) -> bool {
             .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
-/// The pages of a `mock/pages.json`.
+/// What a `mock/pages.json` lists: its pages and its micro-frontends.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Manifest {
+    /// The pages.
+    #[serde(default)]
+    pub pages: Vec<MockPage>,
+    /// The micro-frontends.
+    #[serde(default)]
+    pub components: Vec<MockComponent>,
+}
+
+/// The pages and micro-frontends of a `mock/pages.json`.
 ///
 /// # Errors
 ///
 /// The text is not the manifest contract N describes.
-pub fn pages_of(json: &str) -> Result<Vec<MockPage>, String> {
-    #[derive(serde::Deserialize)]
-    struct Manifest {
-        #[serde(default)]
-        pages: Vec<MockPage>,
+pub fn manifest_of(json: &str) -> Result<Manifest, String> {
+    serde_json::from_str::<Manifest>(json).map_err(|e| format!("mock/pages.json: {e}"))
+}
+
+/// What the manifests of a branch say that the micro-frontend designer
+/// offers: the Micro-UIs built, and the Capabilities and `DataCapabilities`
+/// a new one may need or trigger.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Units {
+    /// The Micro-UIs declared under `apps/`, as mock components would be.
+    pub micro_uis: Vec<MockComponent>,
+    /// Every Capability id, `credit.calculateRisk`.
+    pub capabilities: Vec<String>,
+    /// Every `DataCapability` id.
+    pub data_capabilities: Vec<String>,
+}
+
+/// Reads the manifests of a branch.
+#[must_use]
+pub fn units_of(files: &[UnitFile]) -> Units {
+    let mut units = Units::default();
+    for file in files {
+        let name = file.path.rsplit('/').next().unwrap_or_default();
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&file.text) else {
+            continue;
+        };
+        let text = |key: &str| json.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        let list = |key: &str| -> Vec<String> {
+            json.get(key)
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| {
+                            v.as_str().map(str::to_string).or_else(|| {
+                                v.get("capability")
+                                    .or_else(|| v.get("dataCapability"))
+                                    .or_else(|| v.get("id"))
+                                    .and_then(|x| x.as_str())
+                                    .map(str::to_string)
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        match name {
+            "capability.json" => units.capabilities.extend(text("capability")),
+            "data-capability.json" => units.data_capabilities.extend(text("dataCapability")),
+            "micro-ui.json" => {
+                if let Some(name) = text("microUi") {
+                    units.micro_uis.push(MockComponent {
+                        name,
+                        system: text("system").unwrap_or_default(),
+                        description: text("description").unwrap_or_default(),
+                        fragment: String::new(),
+                        fixture: String::new(),
+                        needs: list("needs"),
+                        actions: list("actions"),
+                        props: json
+                            .get("props")
+                            .and_then(|v| v.as_object())
+                            .map(|props| {
+                                props
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        (k.clone(), v.as_str().unwrap_or_default().to_string())
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    });
+                }
+            }
+            _ => {}
+        }
     }
-    serde_json::from_str::<Manifest>(json)
-        .map(|m| m.pages)
-        .map_err(|e| format!("mock/pages.json: {e}"))
+    units.capabilities.sort();
+    units.capabilities.dedup();
+    units.data_capabilities.sort();
+    units.data_capabilities.dedup();
+    units.micro_uis.sort_by(|a, b| a.name.cmp(&b.name));
+    units
+}
+
+/// The page that previews one micro-frontend alone: the mock-up's style
+/// and loader, and one `data-component` element — served at
+/// `/mock/<slug>/__preview/<Name>` beside the pages.
+#[must_use]
+pub fn preview_page(name: &str) -> String {
+    format!(
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{name}</title>\
+         <link rel=\"stylesheet\" href=\"../style.css\"></head>\n\
+         <body style=\"margin:0;padding:16px;background:transparent\">\n\
+         <div data-component=\"{name}\"></div>\n\
+         <script src=\"../mock.js\"></script>\n</body></html>\n"
+    )
 }
 
 /// The media type a file is served with, by its extension.
@@ -144,14 +243,49 @@ mod tests {
 
     #[test]
     fn the_manifest_lists_its_pages() {
-        let pages = pages_of(
+        let pages = manifest_of(
             r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A","objective":"o","screen":"a"}]}"#,
         )
-        .expect("a manifest");
+        .expect("a manifest")
+        .pages;
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].screen, "a");
-        assert!(pages_of("nope").is_err());
-        assert!(pages_of("{}").expect("empty").is_empty());
+        assert!(manifest_of("nope").is_err());
+        assert!(manifest_of("{}").expect("empty").pages.is_empty());
+    }
+
+    #[test]
+    fn the_manifests_say_what_the_designer_offers() {
+        let files = vec![
+            UnitFile {
+                path: "apps/credit/risk-badge/micro-ui.json".into(),
+                text: r#"{"microUi":"RiskBadge","system":"credit","description":"d","needs":["credit.calculateRisk"],"actions":[{"dataCapability":"credit.requestLimitChange"}],"props":{"customerId":"ID"}}"#.into(),
+            },
+            UnitFile {
+                path: "crates/credit/capabilities/calculate-risk/capability.json".into(),
+                text: r#"{"capability":"credit.calculateRisk"}"#.into(),
+            },
+            UnitFile {
+                path: "crates/dataguard/data-capabilities/x/data-capability.json".into(),
+                text: r#"{"dataCapability":"credit.requestLimitChange"}"#.into(),
+            },
+            UnitFile {
+                path: "apps/x/micro-ui.json".into(),
+                text: "nope".into(),
+            },
+        ];
+        let units = units_of(&files);
+        assert_eq!(units.capabilities, ["credit.calculateRisk"]);
+        assert_eq!(units.data_capabilities, ["credit.requestLimitChange"]);
+        assert_eq!(units.micro_uis.len(), 1);
+        assert_eq!(units.micro_uis[0].actions, ["credit.requestLimitChange"]);
+        assert_eq!(units.micro_uis[0].props["customerId"], "ID");
+        let manifest = manifest_of(
+            r#"{"version":1,"pages":[],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html"}]}"#,
+        )
+        .expect("a manifest");
+        assert_eq!(manifest.components[0].fragment, "components/RiskBadge.html");
+        assert!(preview_page("RiskBadge").contains(r#"data-component="RiskBadge""#));
     }
 
     #[test]

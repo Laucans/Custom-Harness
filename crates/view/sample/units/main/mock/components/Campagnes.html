@@ -1,0 +1,26 @@
+<section class="card">
+  <h2>Mes campagnes</h2>
+  <table>
+    <thead><tr><th>Nom</th><th>Niveau du groupe</th><th>PJs</th><th>Statut</th><th></th></tr></thead>
+    <tbody class="campagnes-rows"></tbody>
+  </table>
+  <p><button class="creer-campagne">Créer une campagne</button></p>
+</section>
+<script>
+  (() => {
+    const root = document.currentScript.closest('[data-component]');
+    const props = JSON.parse(root.dataset.props || '{}');
+    // A page under pages/ and a preview under __preview/ both sit one level down.
+    fetch(new URL('../fixtures/campagnes.json', location.href)).then((r) => r.json()).then((rows) => {
+      const shown = props.statut ? rows.filter((c) => c.statut === props.statut) : rows;
+      root.querySelector('.campagnes-rows').innerHTML = shown.map((c) =>
+        `<tr id="campagne-${c.id}"><td>${c.nom}</td><td>${c.niveau}</td><td>${c.pjs}</td><td><span class="badge ${c.statut === 'archivée' ? 'archived' : ''}">${c.statut}</span></td><td><a href="campagne.html"><button>Ouvrir</button></a></td></tr>`).join('');
+    });
+    root.querySelector('.creer-campagne').addEventListener('click', () => {
+      // The command's lifecycle, as the DataGuard would answer: queued, then applied.
+      const p = root.querySelector('p');
+      p.insertAdjacentHTML('beforeend', ' <span class="badge">commande en file…</span>');
+      setTimeout(() => { p.lastElementChild.textContent = 'campagne créée'; }, 900);
+    });
+  })();
+</script>

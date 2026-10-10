@@ -6,7 +6,27 @@
       "title": "Campagnes",
       "objective": "Voir ses campagnes et en ouvrir une",
       "screen": "campagnes",
-      "components": ["Campagnes"]
+      "components": [
+        "Campagnes"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "name": "Campagnes",
+      "system": "campagne",
+      "description": "La liste des campagnes du MJ, à ouvrir ou à créer",
+      "fragment": "components/Campagnes.html",
+      "fixture": "fixtures/campagnes.json",
+      "needs": [
+        "campagne.listerCampagnes"
+      ],
+      "actions": [
+        "campagne.creerCampagne"
+      ],
+      "props": {
+        "statut": "string?"
+      }
     }
   ]
 }

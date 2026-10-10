@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.agent-native.dev/n-mock-pages.schema.json",
   "title": "N. Mock pages",
-  "description": "The pages of the product's mock-up: a static frontend under `mock/`, one HTML page per screen, on JSON fixtures and no backend. What the factory view shows on its easel, and what the gates check every screen has.",
+  "description": "The pages and the micro-frontends of the product's mock-up: a static frontend under `mock/`, one HTML page per screen on JSON fixtures and no backend. A micro-frontend is a Micro-UI as the mock shows it — a fragment on a fixture — injected in pages; what the factory view shows on its easel, and what the gates check every screen has.",
   "type": "object",
   "properties": {
     "version": {
@@ -40,13 +40,76 @@
               "type": "string",
               "pattern": "^[A-Z][A-Za-z0-9]*$"
             },
-            "description": "The Micro-UIs the page shows; each is marked `data-component=\"<MicroUi>\"` on its root element in the page."
+            "description": "The micro-frontends the page injects, by name: each is `<div data-component=\"<Name>\" data-props='{…}'></div>` in the page, filled by `mock/mock.js` from `components/<Name>.html`."
           }
         },
         "required": [
           "path",
           "title",
           "objective"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "components": {
+      "type": "array",
+      "description": "The micro-frontends the mock-up knows: one per Micro-UI shown, built or still to build.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Za-z0-9]*$",
+            "description": "The Micro-UI's name (contract D `microUi`)."
+          },
+          "system": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What it shows and lets the user do — what the composer reads."
+          },
+          "fragment": {
+            "type": "string",
+            "pattern": "^components/[A-Z][A-Za-z0-9]*\\.html$",
+            "description": "Its markup and script, relative to `mock/`: `components/RiskBadge.html`."
+          },
+          "fixture": {
+            "type": "string",
+            "pattern": "^fixtures/[A-Za-z0-9/_-]+\\.json$",
+            "description": "What its Capabilities would answer, as the fragment reads it."
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*\\.[A-Za-z][A-Za-z0-9]*$"
+            },
+            "description": "The Capabilities it reads, `<system>.<name>`."
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*\\.[A-Za-z][A-Za-z0-9]*$"
+            },
+            "description": "The DataCapabilities a user action may trigger."
+          },
+          "props": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The props it takes, `name: type`."
+          }
+        },
+        "required": [
+          "name",
+          "system",
+          "description",
+          "fragment"
         ],
         "additionalProperties": false
       }

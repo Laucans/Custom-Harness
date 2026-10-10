@@ -665,9 +665,38 @@ pub struct MockPage {
     /// The frozen screen it mocks, once there is one.
     #[serde(default)]
     pub screen: String,
-    /// The Micro-UIs it shows.
+    /// The micro-frontends it injects, by name.
     #[serde(default)]
     pub components: Vec<String>,
+}
+
+/// One micro-frontend of the mock-up, as `mock/pages.json` lists it: a
+/// Micro-UI as the mock shows it (contract N).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MockComponent {
+    /// The Micro-UI's name: `RiskBadge`.
+    pub name: String,
+    /// Its system.
+    #[serde(default)]
+    pub system: String,
+    /// What it shows and lets the user do.
+    #[serde(default)]
+    pub description: String,
+    /// Its markup and script, relative to `mock/`.
+    #[serde(default)]
+    pub fragment: String,
+    /// What its Capabilities would answer, relative to `mock/`.
+    #[serde(default)]
+    pub fixture: String,
+    /// The Capabilities it reads.
+    #[serde(default)]
+    pub needs: Vec<String>,
+    /// The `DataCapabilities` a user action may trigger.
+    #[serde(default)]
+    pub actions: Vec<String>,
+    /// The props it takes, `name: type`.
+    #[serde(default)]
+    pub props: std::collections::BTreeMap<String, String>,
 }
 
 /// The mock-up of one branch, as it is right now: what the committed branch
@@ -680,6 +709,9 @@ pub struct MockState {
     pub present: bool,
     /// Its pages, in the manifest's order.
     pub pages: Vec<MockPage>,
+    /// Its micro-frontends, in the manifest's order.
+    #[serde(default)]
+    pub components: Vec<MockComponent>,
     /// A workspace holds changes under `mock/` no commit carries yet.
     pub edited: bool,
     /// The `mockup/*` branch the workspace was saved to, if it was.

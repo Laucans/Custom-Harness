@@ -76,6 +76,9 @@ pub struct Tree {
     pub mock_pages: Option<Manifest>,
     /// The pages listed in `mock/pages.json` whose file is under `mock/`.
     pub mocked: Vec<String>,
+    /// The micro-frontends listed in `mock/pages.json` whose fragment is
+    /// under `mock/`, by name.
+    pub mocked_components: Vec<String>,
 }
 
 impl Tree {
@@ -144,6 +147,15 @@ impl Tree {
                 tree.mocked.push(page);
             }
         }
+        for (name, fragment) in tree
+            .mock_pages
+            .as_ref()
+            .map_or_else(Vec::new, components_of)
+        {
+            if disk.exists(&root.join("mock").join(&fragment)) {
+                tree.mocked_components.push(name);
+            }
+        }
         for concept in disk.dir_names(&root.join("concepts")) {
             for version in disk.dir_names(&root.join("concepts").join(&concept)) {
                 let Some(number) = version
@@ -178,6 +190,54 @@ fn pages_of(manifest: &Manifest) -> Vec<String> {
             pages
                 .iter()
                 .filter_map(|page| str_of(page, "path").map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The micro-frontends a `mock/pages.json` lists: `(name, fragment)`.
+fn components_of(manifest: &Manifest) -> Vec<(String, String)> {
+    manifest
+        .json
+        .as_ref()
+        .and_then(|json| json.get("components")?.as_array())
+        .map(|components| {
+            components
+                .iter()
+                .filter_map(|c| {
+                    Some((
+                        str_of(c, "name")?.to_string(),
+                        str_of(c, "fragment")?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The micro-frontends each page of a `mock/pages.json` injects:
+/// `(page path, name)`.
+fn injected(manifest: &Manifest) -> Vec<(String, String)> {
+    manifest
+        .json
+        .as_ref()
+        .and_then(|json| json.get("pages")?.as_array())
+        .map(|pages| {
+            pages
+                .iter()
+                .flat_map(|page| {
+                    let path = str_of(page, "path").unwrap_or_default().to_string();
+                    page.get("components")
+                        .and_then(Value::as_array)
+                        .map(|names| {
+                            names
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(|n| (path.clone(), n.to_string()))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -398,6 +458,26 @@ fn mockup_kept(tree: &Tree) -> Vec<String> {
                     ));
                 }
             }
+            let listed: Vec<String> = components_of(manifest)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
+            for (name, fragment) in components_of(manifest) {
+                if !tree.mocked_components.contains(&name) {
+                    found.push(format!(
+                        "{}: lists the micro-frontend {name} at {fragment}, which is not under mock/",
+                        manifest.path
+                    ));
+                }
+            }
+            for (page, name) in injected(manifest) {
+                if !listed.contains(&name) {
+                    found.push(format!(
+                        "{}: {page} injects {name}, a micro-frontend `components` does not list",
+                        manifest.path
+                    ));
+                }
+            }
             let mocked = mocked_screens(manifest);
             for screen in &tree.screens {
                 if !mocked.contains(screen) {
@@ -608,10 +688,29 @@ mod tests {
             screens: vec!["credit-review".to_string()],
             mock_pages: Some(manifest(
                 "mock/pages.json",
-                r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"Credit review","objective":"o","screen":"credit-review"}]}"#,
+                r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"Credit review","objective":"o","screen":"credit-review","components":["RiskBadge"]}],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html"}]}"#,
             )),
             mocked: vec!["pages/credit-review.html".to_string()],
+            mocked_components: vec!["RiskBadge".to_string()],
         }
+    }
+
+    #[test]
+    fn a_micro_frontend_has_its_fragment_and_a_page_injects_only_listed_ones() {
+        let mut tree = sound();
+        tree.mocked_components.clear();
+        let found = violations(&tree, None);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("components/RiskBadge.html"));
+        let mut stray = sound();
+        stray.mock_pages = Some(manifest(
+            "mock/pages.json",
+            r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"t","objective":"o","screen":"credit-review","components":["Ghost"]}],"components":[]}"#,
+        ));
+        stray.mocked_components.clear();
+        let found = violations(&stray, None);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("injects Ghost"));
     }
 
     #[test]
@@ -822,16 +921,21 @@ mod tests {
         );
         existing.insert(
             root.join("mock/pages.json"),
-            r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"t","objective":"o","screen":"credit-review"},{"path":"pages/gone.html","title":"t","objective":"o"}]}"#.to_string(),
+            r#"{"version":1,"pages":[{"path":"pages/credit-review.html","title":"t","objective":"o","screen":"credit-review"},{"path":"pages/gone.html","title":"t","objective":"o"}],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html"}]}"#.to_string(),
         );
         existing.insert(
             root.join("mock/pages/credit-review.html"),
             "<html>".to_string(),
         );
+        existing.insert(
+            root.join("mock/components/RiskBadge.html"),
+            "<div>".to_string(),
+        );
         let disk = FakeDisk { existing };
         let tree = Tree::read(&disk, &root);
         assert_eq!(tree.screens, ["credit-review"]);
         assert_eq!(tree.mocked, ["pages/credit-review.html"]);
+        assert_eq!(tree.mocked_components, ["RiskBadge"]);
         assert!(tree.under_architecture);
         assert_eq!(tree.capabilities.len(), 1);
         assert_eq!(tree.capabilities[0].system, "credit");

@@ -240,7 +240,7 @@ impl NoteDesks {
         conversation.turns.extend(said);
         self.save(board, id, &conversation)?;
         // A link's text is its page's objective: a compact would overwrite it.
-        if compact && grew && self.note(board, id)?.kind != Kind::Link {
+        if compact && grew && !self.note(board, id)?.kind.keeps_its_text() {
             let mut note = self.note(board, id)?;
             let about = Self::about(board, &note);
             let text = self
@@ -269,6 +269,7 @@ impl NoteDesks {
             }
             .to_string(),
             page: note.page.clone(),
+            component: note.component.clone(),
         }
     }
 
@@ -290,7 +291,7 @@ impl NoteDesks {
         let said = conversation.digest();
         let prompt = match kind {
             Kind::Asking => note_session::request_prompt(&about, &said),
-            Kind::Note | Kind::Brainstorm | Kind::Link | Kind::Simulate => {
+            Kind::Note | Kind::Brainstorm | Kind::Link | Kind::Simulate | Kind::Design => {
                 note_session::conclusion_prompt(&about, &said)
             }
         };
@@ -441,6 +442,7 @@ mod tests {
             at: String::new(),
             kind,
             page: String::new(),
+            component: String::new(),
             shape: None,
             turns: 0,
         }

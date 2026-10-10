@@ -36,6 +36,7 @@
     asking: ['asking', 'A change to consider when the next roadmap is built'],
     link: ['link', 'Leads to another page of the mock-up — or creates one'],
     simulate: ['simulate', 'A request: an AI session edits the page to show its result'],
+    design: ['design', 'A micro-frontend: made by an AI session from its spec, or injected where the pin sits'],
   };
   const DEFAULT_KINDS = ['note', 'brainstorm', 'asking'];
   // A zone smaller than this, in screen pixels, is a click that drew nothing.
@@ -86,7 +87,14 @@
       + '<label>leads to <select class="hb-link-pages" aria-label="page"></select></label>'
       + '<div class="hb-link-new" hidden><input class="hb-link-title" maxlength="80" placeholder="Title of the new page"></div>'
       + '</div>'
-      + '<textarea maxlength="4000" placeholder="Write a note…"></textarea>'
+      + '<div class="hb-design" hidden>'
+      + '<div class="hb-design-row"><input class="hb-design-name" maxlength="80" placeholder="Name, like RiskBadge" aria-label="name"><input class="hb-design-system" maxlength="40" placeholder="system" aria-label="system"></div>'
+      + '<input class="hb-design-desc" maxlength="300" placeholder="What it shows and lets the user do" aria-label="description">'
+      + '<div class="hb-design-pick"><b>needs</b><div class="hb-design-needs"></div></div>'
+      + '<div class="hb-design-pick"><b>actions</b><div class="hb-design-actions"></div></div>'
+      + '<textarea class="hb-design-props" rows="2" placeholder="props, one per line: customerId: ID"></textarea>'
+      + '</div>'
+      + '<textarea class="hb-text" maxlength="4000" placeholder="Write a note…"></textarea>'
       + '<div class="hb-link-go" hidden><button type="button" data-note="go">Open the page →</button><button type="button" data-note="create">Create it with an AI session</button></div>'
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
       + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="delete">delete</button></div>'
@@ -98,11 +106,12 @@
     const zoneLayer = q('.hb-zones');
     const pinLayer = q('.hb-pins');
     const editor = q('.hb-note');
-    const textarea = editor.querySelector('textarea');
+    const textarea = editor.querySelector('textarea.hb-text');
     const list = q('.hb-list');
     const linkBox = editor.querySelector('.hb-link');
     const linkPages = editor.querySelector('.hb-link-pages');
     const linkTitle = editor.querySelector('.hb-link-title');
+    const designBox = editor.querySelector('.hb-design');
 
     const view = { x: 40, y: 40, k: 1 };
     const size = { w: 800, h: 600 };
@@ -307,6 +316,7 @@
       });
       const session = editor.querySelector('.hb-session');
       session.hidden = kind === 'note' || kind === 'link' || !opts.onSession;
+      session.querySelector('button').textContent = kind === 'design' ? (n.turns ? 'Continue the AI session' : 'Make / inject it with an AI session') : 'Open the AI session';
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
       textarea.disabled = busy;
       textarea.placeholder = {
@@ -315,7 +325,70 @@
         simulate: 'The request: what happens, and the page shows the result',
       }[kind] || 'Where the discussion stands — rewritten when you leave the session';
       drawLink(n, kind);
+      drawDesign(n, kind);
     }
+    // A design's editor: the micro-frontend's spec as fields; the note's
+    // text is the spec written out, what the session reads.
+    const SPEC_KEYS = ['name', 'system', 'description', 'needs', 'actions', 'props'];
+    function parseSpec(text) {
+      const spec = { name: '', system: '', description: '', needs: [], actions: [], props: [] };
+      let key = '';
+      (text || '').split('\n').forEach((line) => {
+        const m = /^([a-z]+):\s*(.*)$/.exec(line);
+        if (m && SPEC_KEYS.includes(m[1])) {
+          key = m[1];
+          const v = m[2].trim();
+          if (key === 'needs' || key === 'actions') spec[key] = v ? v.split(/[,\s]+/).filter(Boolean) : [];
+          else if (key === 'props') spec.props = v ? [v] : [];
+          else spec[key] = v;
+        } else if (key === 'props' && line.trim()) {
+          spec.props.push(line.trim());
+        }
+      });
+      return spec;
+    }
+    function writeSpec(spec) {
+      return `name: ${spec.name}\nsystem: ${spec.system}\ndescription: ${spec.description}\nneeds: ${spec.needs.join(', ')}\nactions: ${spec.actions.join(', ')}\nprops:\n${spec.props.map((p) => '  ' + p).join('\n')}`.trim();
+    }
+    function drawDesign(n, kind) {
+      designBox.hidden = kind !== 'design';
+      textarea.hidden = kind === 'design';
+      if (designBox.hidden) return;
+      const spec = parseSpec(n.text);
+      if (!spec.name && n.component) spec.name = n.component;
+      const pick = (sel, offered, chosen) => {
+        const all = [...new Set([...(offered || []), ...chosen])].sort();
+        editor.querySelector(sel).innerHTML = all.length
+          ? all.map((id) => `<label><input type="checkbox" value="${esc(id)}"${chosen.includes(id) ? ' checked' : ''}> ${esc(id)}</label>`).join('')
+          : '<span class="hb-empty">none declared on this branch</span>';
+      };
+      editor.querySelector('.hb-design-name').value = spec.name;
+      editor.querySelector('.hb-design-system').value = spec.system;
+      editor.querySelector('.hb-design-desc').value = spec.description;
+      pick('.hb-design-needs', opts.capabilities && opts.capabilities(), spec.needs);
+      pick('.hb-design-actions', opts.dataCapabilities && opts.dataCapabilities(), spec.actions);
+      editor.querySelector('.hb-design-props').value = spec.props.join('\n');
+    }
+    // The design's fields changed: the spec is written again, the pin named.
+    const onDesignInput = () => {
+      const n = notes.find((x) => x.id === openId);
+      if (!n || (n.kind || 'note') !== 'design' || busy) return;
+      const checked = (sel) => [...editor.querySelectorAll(`${sel} input:checked`)].map((i) => i.value);
+      const spec = {
+        name: editor.querySelector('.hb-design-name').value.trim(),
+        system: editor.querySelector('.hb-design-system').value.trim(),
+        description: editor.querySelector('.hb-design-desc').value.trim(),
+        needs: checked('.hb-design-needs'),
+        actions: checked('.hb-design-actions'),
+        props: editor.querySelector('.hb-design-props').value.split('\n').map((l) => l.trim()).filter(Boolean),
+      };
+      n.component = spec.name;
+      n.text = writeSpec(spec);
+      n.at = new Date().toISOString();
+      setState(/^[A-Z][A-Za-z0-9]*$/.test(spec.name) ? '…' : 'name it like a Micro-UI: RiskBadge');
+      if (/^[A-Z][A-Za-z0-9]*$/.test(spec.name)) save(n, false);
+      drawPins();
+    };
     // A link's editor: the page it leads to, among the pages the pane knows,
     // or a new one to create — named here, drawn by an AI session.
     function drawLink(n, kind) {
@@ -361,6 +434,8 @@
       }
       // A zone drawn and left without a word is still a zone: kept.
       if (n && n.fresh && n.shape) save(n, true);
+      // A design left without a name is nothing yet.
+      if (n && n.fresh && (n.kind || 'note') === 'design' && !n.component) notes = notes.filter((x) => x !== n);
       drawPins();
     }
     function setState(text) { editor.querySelector('.hb-note-state').textContent = text; }
@@ -484,7 +559,7 @@
         return;
       }
       // A brainstorm, an asking or a simulate opens its session on what the note says.
-      if (kind !== 'note' && kind !== 'link' && !(n.text || '').trim()) {
+      if (kind !== 'note' && kind !== 'link' && kind !== 'design' && !(n.text || '').trim()) {
         setState(kind === 'simulate' ? 'write the request first: it is what the AI simulates' : 'write the first prompt first: the note is what the AI is asked');
         textarea.focus();
         return;
@@ -497,15 +572,15 @@
     }
 
     // ---- carrying a pin: a new one off the toolbar, or one already placed ----------
-    function startCarry(e, note) {
+    function startCarry(e, note, preset) {
       e.preventDefault();
       e.stopPropagation();
       list.hidden = true;
       const ghost = document.createElement('div');
-      ghost.className = 'hb-pin ghost ' + ((note && note.kind) || 'note');
+      ghost.className = 'hb-pin ghost ' + ((note && note.kind) || (preset && preset.kind) || 'note');
       ghost.innerHTML = '<span>+</span>';
       pinLayer.appendChild(ghost);
-      carry = { note, ghost, over: null, startX: e.clientX, startY: e.clientY, moved: !note };
+      carry = { note, ghost, over: null, startX: e.clientX, startY: e.clientY, moved: !note, preset: preset || null };
       host.setPointerCapture(e.pointerId);
       moveCarry(e);
       host.classList.add('placing');
@@ -545,7 +620,7 @@
       const at = toBoard(e.clientX, e.clientY);
       const target = c.over ? c.over.getAttribute('data-pin') : '';
       const b = c.over ? boxOf(c.over) : { x: 0, y: 0 };
-      const n = c.note || { id: newId(), text: '', at: '', kind: 'note', turns: 0, fresh: true };
+      const n = c.note || Object.assign({ id: newId(), text: '', at: '', kind: 'note', turns: 0, fresh: true }, c.preset || {});
       // A zone moved is a zone translated: its outline follows.
       if (n.shape) {
         const ddx = at.x - n.x; const ddy = at.y - n.y;
@@ -556,6 +631,8 @@
       }
       if (!c.note) notes.push(n);
       else if (!n.fresh) save(n, true);
+      // A preset pin — a micro-frontend dropped from the designer — is kept at once.
+      if (!c.note && c.preset && c.preset.kind) save(n, true);
       openNote(n);
     }
 
@@ -716,6 +793,8 @@
     host.addEventListener('click', onToolClick);
     host.addEventListener('wheel', onWheel, { passive: false });
     textarea.addEventListener('input', onInput);
+    designBox.addEventListener('input', onDesignInput);
+    designBox.addEventListener('change', onDesignInput);
     linkPages.addEventListener('change', onLinkChange);
     linkTitle.addEventListener('input', onLinkTitle);
     editor.addEventListener('keydown', onKey);
@@ -738,6 +817,20 @@
       setBoard,
       board: () => id,
       zoom: () => view.k,
+      // A pin carried from outside the board — a micro-frontend dragged off
+      // the designer — with the fields it lands with.
+      carryFrom: (e, preset) => startCarry(e, null, preset),
+      // A new pin with preset fields, near the top left of what is shown.
+      newNote(preset) {
+        const r = host.getBoundingClientRect();
+        const at = toBoard(r.left + 70, r.top + 90 + 40 * notes.filter((x) => x.fresh).length);
+        const n = Object.assign({ id: newId(), text: '', at: '', kind: 'note', turns: 0, fresh: true, target: '', dx: 0, dy: 0, x: at.x, y: at.y }, preset || {});
+        notes.push(n);
+        if (n.kind === 'design' && n.component) save(n, true);
+        openNote(n);
+        return n.id;
+      },
+      session: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n && opts.onSession) openSession(n); },
       // A link to a page that does not exist yet, dropped near the top left
       // of what is shown and opened on its "new page" form.
       newLink() {

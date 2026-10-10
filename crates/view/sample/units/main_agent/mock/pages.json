@@ -14,5 +14,25 @@
       "objective": "Suivre une campagne : son groupe, ses PJs, son niveau",
       "components": ["NiveauDuGroupe"]
     }
+  ],
+  "components": [
+    {
+      "name": "Campagnes",
+      "system": "campagne",
+      "description": "La liste des campagnes du MJ, à ouvrir ou à créer",
+      "fragment": "components/Campagnes.html",
+      "fixture": "fixtures/campagnes.json",
+      "needs": ["campagne.listerCampagnes"],
+      "actions": ["campagne.creerCampagne"],
+      "props": { "statut": "string?" }
+    },
+    {
+      "name": "NiveauDuGroupe",
+      "system": "campagne",
+      "description": "Le niveau du groupe d'une campagne",
+      "fragment": "components/NiveauDuGroupe.html",
+      "needs": ["campagne.niveauDuGroupe"],
+      "props": { "campagne": "ID" }
+    }
   ]
 }
