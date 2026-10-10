@@ -223,8 +223,34 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       });
       return JSON.stringify(root, null, 2);
     }
-    async function upload(kind, file, component) {
-      if (file.size > MAX_IMAGE) throw new Error(`${file.name || 'this image'} weighs ${(file.size / 1048576).toFixed(1)} MB: an image may weigh up to 8 MB`);
+    // An image heavier than the desk allows is redrawn smaller in the
+    // browser — as WebP, which keeps transparency, else JPEG — a step at a
+    // time until it fits; what the AI reads is the picture, not its pixels.
+    async function shrunk(file) {
+      if (file.size <= MAX_IMAGE) return file;
+      let bitmap;
+      try { bitmap = await createImageBitmap(file); } catch (e) { throw new Error(`${file.name || 'this image'} weighs ${(file.size / 1048576).toFixed(1)} MB and cannot be reduced here: an image may weigh up to 8 MB`); }
+      const canvas = document.createElement('canvas');
+      let side = Math.min(1, 2560 / Math.max(bitmap.width, bitmap.height));
+      for (let quality = 0.9; side > 0.05; side *= 0.8, quality = Math.max(0.6, quality - 0.1)) {
+        canvas.width = Math.max(1, Math.round(bitmap.width * side));
+        canvas.height = Math.max(1, Math.round(bitmap.height * side));
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        for (const type of ['image/webp', 'image/jpeg']) {
+          const blob = await new Promise((done) => canvas.toBlob(done, type, quality));
+          if (blob && blob.type === type && blob.size <= MAX_IMAGE * 0.9) {
+            const stem = (file.name || 'image').replace(/\.[^.]*$/, '').slice(0, 60);
+            bitmap.close();
+            return new File([blob], `${stem}.${type === 'image/webp' ? 'webp' : 'jpg'}`, { type });
+          }
+        }
+      }
+      bitmap.close();
+      throw new Error(`${file.name || 'this image'} weighs ${(file.size / 1048576).toFixed(1)} MB and could not be reduced under 8 MB`);
+    }
+    async function upload(kind, original, component) {
+      const file = await shrunk(original);
+      if (file !== original) toast(`<b>${esc(original.name || 'the image')}</b> weighed ${(original.size / 1048576).toFixed(1)} MB: reduced to ${(file.size / 1048576).toFixed(1)} MB`, 5000);
       const res = await fetch(`/api/design/asset?kind=${kind}&name=${encodeURIComponent(file.name || 'sketch.png')}${component ? '&component=' + encodeURIComponent(component) : ''}`, { method: 'POST', body: file });
       return said(res);
     }
