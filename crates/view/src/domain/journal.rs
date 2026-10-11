@@ -408,6 +408,19 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    #[test]
+    fn an_inline_route_reports_under_the_tag_its_dispatch_writes() {
+        // `watch: <tag> -> …` is written by the router's `report_failure`,
+        // with the workflow's own name.
+        for (route, said) in [
+            ("PrFix { pr: \"71\" }", "pr_fix"),
+            ("TestDebt { issue: 80 }", "test_debt"),
+            ("Nothing", ""),
+        ] {
+            assert_eq!(tag(route), said, "{route}");
+        }
+    }
+
     /// Cut from the `dnd_helper2` run's own `watch.log`.
     const LOG: &str = "\
 [2026-10-08T19:55:36Z] watch: every 30s on Laucans/dnd_helper2 — journal .llocal/logs/agent-loop/watch.log

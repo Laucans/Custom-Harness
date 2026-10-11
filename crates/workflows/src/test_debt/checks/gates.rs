@@ -49,6 +49,12 @@ mod tests {
         )
     }
 
+    #[test]
+    fn its_purpose_says_what_it_checks() {
+        // What the view's scanner shows beside the gate's verdict.
+        assert!(NamesAFile.purpose().contains("Rust source file"));
+    }
+
     #[tokio::test]
     async fn a_named_file_opens_the_paid_stage_and_none_skips_it() {
         assert_eq!(

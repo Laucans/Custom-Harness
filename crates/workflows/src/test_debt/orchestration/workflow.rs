@@ -227,6 +227,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn one_attempt_per_issue_holds_its_lock_and_its_tooling_gate() {
+        let gh = Rc::new(FakeGitHub::default());
+        let debt_dir = dir("lock");
+        let run = built(&gh, debt_dir.clone());
+        let lock = Workflow::lock(&run).expect("an attempt is locked per issue");
+        assert_eq!(lock.dir, debt_dir.as_path());
+        assert_eq!(lock.name, "7");
+        let held = Workflow::held(&run, &ctx(false));
+        assert!(held.starts_with("skip") && held.contains("#7"), "{held}");
+        let pre = Executable::pre(&run).expect("the tooling gate is mounted");
+        assert_eq!(pre.name, "tooling");
+        assert!(std::ptr::eq(
+            Workflow::remaining(&run),
+            std::ptr::from_ref(&run.remaining)
+        ));
+    }
+
     #[tokio::test]
     async fn the_summary_never_claims_the_mutants_are_caught() {
         let gh = Rc::new(FakeGitHub::default());

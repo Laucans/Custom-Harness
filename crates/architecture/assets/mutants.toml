@@ -21,3 +21,7 @@ additional_cargo_test_args = ["--all-features"]
 # never under a minute, so a cold cache is not read as a hang.
 timeout_multiplier = 5
 minimum_test_timeout = 60
+
+# A test may read the repository it runs in: the copy a mutant is tested
+# in keeps `.git`, as the CI's `--in-place` run does.
+copy_vcs = true
