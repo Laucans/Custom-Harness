@@ -581,7 +581,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       }
       const frame = stage.querySelector('iframe');
       if (frame.dataset.loaded !== src) { frame.dataset.loaded = src; frame.src = src; }
-      // Used as a visitor would by default; inspected or pinned with the shield up.
+      // Used as a visitor would by default; the shield is up while inspecting. Pins are dropped in either.
       stage.querySelector('.mk-shield').hidden = st.mode === 'use';
       stage.classList.toggle('inspecting', st.mode === 'inspect');
       drawDetailBar();
@@ -620,13 +620,13 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           <button type="button" class="mini" data-kt="step" data-step="1" ${at < 0 || at >= list.length - 1 ? 'disabled' : ''} title="The next one of the list">›</button>
           <b class="kt-detail-title">${esc(e.title || e.name)}</b><span class="mono muted">${esc(e.name)}</span><span class="mk-card-tags">${tags}</span>
           <span class="spacer"></span>
-          <div class="mk-views" role="group" aria-label="mode"><button type="button" data-kt="mode" data-mode="use" class="${st.mode === 'use' ? 'on' : ''}" title="Click, type, open: the component as a visitor uses it">use it</button><button type="button" data-kt="mode" data-mode="inspect" class="${st.mode === 'inspect' ? 'on' : ''}" title="Pick a part: the tokens it wears, each to swap for another of its kind">inspect</button><button type="button" data-kt="mode" data-mode="pin" class="${st.mode === 'pin' ? 'on' : ''}" title="The component holds still: drop note and request pins on it">pin it</button></div>
+          <div class="mk-views" role="group" aria-label="mode"><button type="button" data-kt="mode" data-mode="use" class="${st.mode === 'use' ? 'on' : ''}" title="Click, type, open: the component as a visitor uses it">use it</button><button type="button" data-kt="mode" data-mode="inspect" class="${st.mode === 'inspect' ? 'on' : ''}" title="Pick a part: the tokens it wears, each to swap for another of its kind">inspect</button></div>
           ${working ? `<span class="kt-working"><span class="spin"></span> the AI rewrites it${working > 1 ? ` · ${working} in a row` : ''}</span>` : ''}
           ${pending ? `<button type="button" class="mini on" data-kt="apply" data-name="${esc(e.name)}" title="Apply the pending requests to the fragment, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : ''}
           ${e.draft && !working ? `<button type="button" class="mini on" data-kt="save" data-name="${esc(e.name)}">save…</button><button type="button" class="mini" data-kt="drop-draft" data-name="${esc(e.name)}">drop the draft</button>` : ''}
           ${!used.length && st.usages && !working ? `<button type="button" class="mini" data-kt="delete" data-name="${esc(e.name)}" title="Used on no active branch: it may go">delete</button>` : ''}
         </div>
-        <div class="kt-detail-sub muted">${esc(e.what || e.prompt)} · ${used.length ? `used by ${used.length}: ` + used.slice(0, 6).map((u) => esc(`${u.kind === 'page' ? (u.title || u.what) : u.what} (${u.branch})`)).join(', ') + (used.length > 6 ? '…' : '') : st.usages ? 'used nowhere yet' : 'reading who uses it…'}${pending || working || e.draft ? '' : ' · switch to <b>pin it</b> and drop a request on it, then apply it'}</div>`;
+        <div class="kt-detail-sub muted">${esc(e.what || e.prompt)} · ${used.length ? `used by ${used.length}: ` + used.slice(0, 6).map((u) => esc(`${u.kind === 'page' ? (u.title || u.what) : u.what} (${u.branch})`)).join(', ') + (used.length > 6 ? '…' : '') : st.usages ? 'used nowhere yet' : 'reading who uses it…'}${pending || working || e.draft ? '' : ' · drag a pin from the toolbar onto it to ask for a change'}</div>`;
       if (st.lastBar !== bar) { st.lastBar = bar; q('.kt-detail-bar').innerHTML = bar; }
       const box = q('.kt-detail-save');
       box.hidden = !(st.saveOpen && e.draft);

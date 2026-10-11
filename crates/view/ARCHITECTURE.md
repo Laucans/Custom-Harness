@@ -633,7 +633,7 @@ and the toast says why. Three tabs:
   its component **alone on the board** (`kit--components`, note and request
   pins, **no backlog**: the kit is not roadmap work; the board shows that
   component's pins only, `only` in `board.js`): zoomed, **used** as a
-  visitor would by default, **pinned** with its shield up, the previous and
+  visitor would by default, pinnable at any time, the previous and
   the next of the list a click away, and the gallery found where it was
   left. **Inspect** picks a part of it — named by its path of children from
   the fragment's root, found again after a reload — and lists the tokens
