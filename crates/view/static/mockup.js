@@ -1149,9 +1149,11 @@
       drawMarks();
     }
     // The parts outlined: those of the unit the pointer is on in the panel, and the one picked.
-    function drawMarks(unit, how) {
+    function drawMarks() {
       const marks = q('.mk-board .mk-marks');
       if (!marks) return;
+      // The unit the pointer is on in the panel: kept across every redraw until the pointer leaves it.
+      const { unit, how } = st.mfHover || {};
       const show = unit ? partsOf(how === 'writes' ? 'data-writes' : 'data-reads', unit) : [];
       marks.innerHTML = show.map((el) => { const b = el.getBoundingClientRect(); return `<i style="left:${b.left}px;top:${b.top}px;width:${b.width}px;height:${b.height}px"></i>`; }).join('');
       const pick = q('.mk-board .mk-stage .kt-pick');
@@ -1228,6 +1230,12 @@
       doc.addEventListener('pointermove', (ev) => { if (down && Math.hypot(ev.clientX - down[0], ev.clientY - down[1]) > 6) clearTimeout(timer); });
       ['pointerup', 'pointercancel'].forEach((kind) => doc.addEventListener(kind, () => clearTimeout(timer)));
       ['click', 'keyup', 'transitionend'].forEach((kind) => doc.addEventListener(kind, () => setTimeout(() => { sizeMf(); drawRules(); }, 60)));
+      // The real code draws itself once its data has come: the parts and the rules are counted again as it does.
+      let again = 0;
+      new MutationObserver(() => {
+        clearTimeout(again);
+        again = setTimeout(() => { sizeMf(); drawRules(); }, 120);
+      }).observe(doc.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-writes', 'data-reads', 'data-kit', 'hidden'] });
     }
     // The kit component on the design system's easel, alone.
     function openKit(name) {
@@ -1549,9 +1557,9 @@
     // A unit pointed at in the panel outlines its parts in the frame.
     host.addEventListener('mouseover', (e) => {
       const row = e.target.closest && e.target.closest('.mk-rules .mk-rule');
-      if (row) drawMarks(row.dataset.unit, row.dataset.how);
+      if (row) { st.mfHover = { unit: row.dataset.unit, how: row.dataset.how }; drawMarks(); }
     });
-    host.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('.mk-rules') && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.mk-rules'))) drawMarks(); });
+    host.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('.mk-rules') && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.mk-rules'))) { st.mfHover = null; drawMarks(); } });
     host.addEventListener('change', onChange);
     host.addEventListener('keydown', onKey);
     host.addEventListener('keyup', onKeyUp);
