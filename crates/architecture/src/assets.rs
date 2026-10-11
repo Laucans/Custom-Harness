@@ -32,9 +32,9 @@ pub const CLAUDE_RULES: &str = include_str!("../assets/CLAUDE-rules.md");
 pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 
 /// The files installed as they are: the document, the gates, the CI, the
-/// test scope, the schema dump, the data model, the mock-up's files, the
+/// test scope, the isolation check, the schema dump, the data model, the mock-up's files, the
 /// contracts A–O.
-pub const FILES: [Asset; 31] = [
+pub const FILES: [Asset; 32] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -54,6 +54,10 @@ pub const FILES: [Asset; 31] = [
     Asset {
         path: "scripts/dump-schema.sh",
         content: include_str!("../assets/dump-schema.sh"),
+    },
+    Asset {
+        path: "scripts/isolation.sh",
+        content: include_str!("../assets/isolation.sh"),
     },
     Asset {
         path: "data/model.json",

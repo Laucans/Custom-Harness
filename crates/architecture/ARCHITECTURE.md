@@ -39,6 +39,7 @@ src/kit.rs          the design system (W3C tokens → CSS variables), the kit of
 src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–M, gates, CI, scripts
 assets/             those files, compiled in with include_str!
 tests/              test_scope_script.rs: the installed test-scope.sh, run on a real folder
+                    isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, and each way a slice could reach another
 ```
 
 ## Decisions

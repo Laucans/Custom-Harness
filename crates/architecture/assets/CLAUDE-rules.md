@@ -67,8 +67,13 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
 2. **A Capability reads, and only reads.** It uses read-only credentials, reads
    through its persisted queries only, and never imports, invokes or
    references another Capability, a DataCapability, the DataQueue, the
-   DataGuard or the Resolver. Its `Cargo.toml` depends on no other crate under
-   `capabilities/` and on nothing under `crates/dataguard/`.
+   DataGuard or the Resolver. On the real dependency graph
+   (`scripts/isolation.sh`, the gate): it reaches no other Capability or
+   DataCapability, directly or transitively, and only crates of its own
+   system; a crate it depends on is plumbing — it reaches no slice and no
+   other system — never a bridge; no `#[path]` or `include!` leaves its
+   folder. A DataCapability follows the same rule inside the DataGuard's
+   system.
 3. **A Capability's logic is local.** Shared *meaning* is a Concept with
    conformance fixtures, never a shared library of business code. Duplicate the
    computation; declare the Concept it implements; pass its fixtures.

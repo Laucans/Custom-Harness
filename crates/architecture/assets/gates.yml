@@ -47,25 +47,19 @@ jobs:
           validate m-data-model.schema.json data/model.json
           validate n-mock-pages.schema.json mock/pages.json
 
-  # Contract B — no Capability depends on another Capability or on the write
-  # side. Read in the one place Rust declares dependencies: Cargo.toml.
+  # Contract B, principle 5 — a slice knows no other slice. Checked on the
+  # graph `cargo metadata` answers, not on a Cargo.toml's text: a Capability
+  # or a DataCapability reaches no other one, directly or transitively, and
+  # only crates of its own system; what it depends on is plumbing, never a
+  # bridge; no inclusion leaves a slice's folder (scripts/isolation.sh).
   capability-isolation:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: A Capability crate depends on no Capability and on nothing of the write side
+      - uses: dtolnay/rust-toolchain@stable
+      - name: A slice depends on no other slice, and only on its own system's plumbing
         shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob globstar
-          failed=0
-          for toml in crates/*/capabilities/*/Cargo.toml; do
-            if grep -nE 'capabilities/|dataguard|dataqueue|resolver' "$toml" | grep -vE '^\s*[0-9]+:\s*#'; then
-              echo "::error file=$toml::a Capability must not depend on another Capability or on the write side"
-              failed=1
-            fi
-          done
-          exit $failed
+        run: bash scripts/isolation.sh
       - name: No Capability manifest names an `invokes` field
         shell: bash
         run: |

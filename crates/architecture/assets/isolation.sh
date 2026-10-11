@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# The isolation of the slices, checked on the real dependency graph —
+# installed by `harness init-repo`; the repository owns it from here.
+#
+#   bash scripts/isolation.sh
+#
+# What the architecture asks (docs/ARCHITECTURE.md, principle 5, rules 2
+# and 3): the world of reading is parallelisable because no slice knows
+# another. So, on the graph `cargo metadata` answers — not on the text of a
+# Cargo.toml, which misses a workspace-level dependency and a transitive one:
+#
+# 1. A Capability (crates/<system>/capabilities/<name>/) or a DataCapability
+#    (crates/<system>/data-capabilities/<name>/) depends on no other
+#    Capability or DataCapability, directly or transitively.
+# 2. It depends only on crates of its own system (crates/<system>/…),
+#    never on another system's. A DataCapability's system is the DataGuard's.
+# 3. A crate shared inside a system — one that a Capability or a
+#    DataCapability depends on — depends on no Capability, no DataCapability
+#    and no crate of another system: plumbing, never a bridge.
+#
+# And code is shared through a crate or not at all: no `#[path]`,
+# `include!` or `include_str!` that leaves a slice's folder, no symlink
+# inside one. Shared *meaning* is a Concept with its fixtures, not a crate.
+#
+# Exits 1 on the first rule broken, every break printed as a CI annotation.
+set -euo pipefail
+
+command -v jq >/dev/null || { echo "::error::isolation.sh needs jq"; exit 1; }
+command -v cargo >/dev/null || { echo "::error::isolation.sh needs cargo"; exit 1; }
+
+metadata=$(cargo metadata --format-version 1 --no-deps 2>/dev/null) || {
+  echo "::error file=Cargo.toml::cargo metadata failed — the workspace does not resolve"
+  exit 1
+}
+root=$(jq -r '.workspace_root' <<< "$metadata")
+
+# name<TAB>relative manifest path, one line per workspace crate.
+crates=$(jq -r --arg root "$root/" '.packages[] | [.name, (.manifest_path | ltrimstr($root))] | @tsv' <<< "$metadata")
+
+# Direct path dependencies: name<TAB>dependency name, one line each.
+edges=$(jq -r '.packages[] | .name as $n | .dependencies[] | select(.path != null) | "\($n)\t\(.name)"' <<< "$metadata")
+
+declare -A manifest system kind
+while IFS=$'\t' read -r name rel; do
+  [ -n "$name" ] || continue
+  manifest["$name"]="$rel"
+  # The system is the first folder under crates/; the kind, where the manifest sits.
+  case "$rel" in
+    crates/*/capabilities/*/Cargo.toml) kind["$name"]="capability" ;;
+    crates/*/data-capabilities/*/Cargo.toml) kind["$name"]="data-capability" ;;
+    *) kind["$name"]="other" ;;
+  esac
+  if [[ "$rel" =~ ^crates/([^/]+)/ ]]; then system["$name"]="${BASH_REMATCH[1]}"; else system["$name"]=""; fi
+done <<< "$crates"
+
+declare -A direct
+while IFS=$'\t' read -r from to; do
+  [ -n "$from" ] || continue
+  direct["$from"]+="$to "
+done <<< "$edges"
+
+# Every workspace crate reachable from a crate, transitively, space separated.
+reach() {
+  local -A seen=()
+  local queue=("$1") current dep
+  while [ ${#queue[@]} -gt 0 ]; do
+    current="${queue[0]}"; queue=("${queue[@]:1}")
+    for dep in ${direct[$current]:-}; do
+      [ -n "${seen[$dep]:-}" ] && continue
+      seen["$dep"]=1
+      queue+=("$dep")
+    done
+  done
+  echo "${!seen[@]}"
+}
+
+failed=0
+fail() { echo "::error file=$1::$2"; failed=1; }
+
+for name in "${!kind[@]}"; do
+  k="${kind[$name]}"
+  [ "$k" = "other" ] && continue
+  what="a Capability"; [ "$k" = "data-capability" ] && what="a DataCapability"
+  own="${system[$name]}"
+  for dep in $(reach "$name"); do
+    case "${kind[$dep]:-other}" in
+      capability|data-capability)
+        fail "${manifest[$name]}" "$what depends on no other slice: $name reaches $dep (${manifest[$dep]})" ;;
+    esac
+    if [ -n "${system[$dep]:-}" ] && [ "${system[$dep]}" != "$own" ]; then
+      fail "${manifest[$name]}" "$what depends only on its own system's crates: $name ($own) reaches $dep (${system[$dep]})"
+    fi
+    if [ -z "${system[$dep]:-}" ]; then
+      fail "${manifest[$name]}" "$what depends only on crates under crates/<system>/: $name reaches $dep (${manifest[$dep]})"
+    fi
+    # A crate shared inside the system is plumbing: it reaches no slice and no other system.
+    for far in $(reach "$dep"); do
+      case "${kind[$far]:-other}" in
+        capability|data-capability)
+          fail "${manifest[$dep]}" "a crate a slice depends on is plumbing, never a bridge: $dep reaches the slice $far" ;;
+      esac
+      if [ -n "${system[$far]:-}" ] && [ "${system[$far]}" != "${system[$dep]:-}" ]; then
+        fail "${manifest[$dep]}" "a crate a slice depends on stays in its system: $dep (${system[$dep]:-}) reaches $far (${system[$far]})"
+      fi
+    done
+  done
+
+  # Code shared outside a crate is not shared: an inclusion resolves inside the slice's folder
+  # (its own manifest beside src/ is inside), and no symlink sits in it.
+  dir=$(dirname "${manifest[$name]}")
+  dir_abs=$(cd "$dir" && pwd -P)
+  while IFS= read -r file; do
+    while IFS= read -r target; do
+      [ -n "$target" ] || continue
+      resolved=$(cd "$(dirname "$file")" && cd "$(dirname "$target")" 2>/dev/null && pwd -P)/$(basename "$target")
+      case "$resolved" in
+        "$dir_abs"/*) ;;
+        *) fail "$file" "$what shares code through a crate or not at all: \"$target\" leaves $dir" ;;
+      esac
+    done < <(grep -oE '(#\[path *= *"|include(_str|_bytes)?! *\( *")[^"]+' "$file" 2>/dev/null | sed -E 's/^[^"]*"//')
+  done < <(find "$dir" -name '*.rs' -type f 2>/dev/null)
+  while IFS= read -r link; do
+    fail "$link" "$what shares code through a crate or not at all: a symlink inside $dir"
+  done < <(find "$dir" -type l 2>/dev/null)
+done
+
+exit $failed
