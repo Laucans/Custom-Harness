@@ -32,3 +32,4 @@ pub mod pr_review;
 pub mod prompts;
 pub mod refinement;
 pub mod split;
+pub mod test_debt;

@@ -6,9 +6,12 @@
 #
 # Reads `missed.txt` of a cargo-mutants run (`scripts/mutants-rotation.sh`'s)
 # and files one issue per source file, labelled `harness:test-debt`, titled
-# `Test debt: <file>`. A file that already has one open gets a comment
-# listing what is missed now, never a second issue. The agent that takes the
-# issue writes the tests that catch those mutants (`/create-test`).
+# `Test debt: <file>`. A file that already has one open — labelled or not —
+# gets a comment listing what is missed now and the label again, never a
+# second issue. The harness's `test_debt` workflow takes a labelled issue,
+# removes the label as it starts (one label, one attempt), and writes the
+# tests that catch those mutants; a file still owing tests is asked again
+# here, the next time the rotation judges it.
 #
 # Needs `gh`, authenticated for the repository (GH_TOKEN in CI). Creates the
 # label when it is missing, without touching it when it exists.
@@ -33,13 +36,15 @@ for file in $(cut -d: -f1 "$missed" | sort -u); do
   title="Test debt: $file"
   mutants=$(grep -F "$file:" "$missed" | sed -E "s|^$file:([0-9]+):([0-9]+): (.*)$|- line \1: \3|")
   n=$(printf '%s\n' "$mutants" | wc -l | tr -d ' ')
-  existing=$(gh issue list --label "$LABEL" --state open --search "\"$title\" in:title" \
+  # Any open issue of that title: the workflow took the label off it.
+  existing=$(gh issue list --state open --search "\"$title\" in:title" \
     --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
   if [ -n "$existing" ]; then
     gh issue comment "$existing" --body "Still missed in $where — $n mutant(s):
 
 $mutants" >/dev/null
-    echo "test-debt: $file — commented on #$existing ($n)" >&2
+    gh issue edit "$existing" --add-label "$LABEL" >/dev/null
+    echo "test-debt: $file — commented on #$existing and asked again ($n)" >&2
     continue
   fi
   gh issue create --label "$LABEL" --title "$title" --body "\`cargo mutants\` rewrote these parts of \`$file\` and every test still passed — $n mutant(s), found in $where:
@@ -48,7 +53,7 @@ $mutants
 
 ## What to do
 
-Write the tests that catch them (\`/create-test\` on this issue): each test fails on its mutant and passes on the code as it is — prove it red, then green. Never change the code to dodge a mutant. A mutant with no observable difference (an equivalent one) goes in \`.cargo/mutants.toml\`'s \`exclude_re\`, with the reason beside it.
+The harness's \`test_debt\` workflow takes this issue while it carries \`$LABEL\` — or a human, with \`/create-test\`. Write the tests that catch them: each test fails on its mutant and passes on the code as it is — prove it red, then green. Never change the code to dodge a mutant. A mutant with no observable difference (an equivalent one) goes in \`.cargo/mutants.toml\`'s \`exclude_re\`, with the reason beside it.
 
 ## Verification
 

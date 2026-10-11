@@ -249,6 +249,17 @@ fn a_missed_mutant_opens_one_issue_per_file_or_comments_on_the_open_one() {
     assert!(log.contains("- line 9: delete match arm 'x' in g"), "{log}");
     assert!(log.contains("issue comment 17"), "{log}");
     assert!(log.contains("- line 2: replace == with != in h"), "{log}");
+    // The open issue is found without its label — the workflow took it off
+    // as it started — and asked again.
+    assert!(
+        log.contains("issue edit 17 --add-label harness:test-debt"),
+        "{log}"
+    );
+    let listing = log
+        .lines()
+        .find(|line| line.starts_with("issue list"))
+        .unwrap_or_default();
+    assert!(!listing.contains("--label"), "{listing}");
 }
 
 #[test]

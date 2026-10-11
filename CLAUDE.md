@@ -236,8 +236,9 @@ the rules a diff is checked against:
   The rest of the code is judged in rotation, a bucket of files per CI run
   (`scripts/mutants-rotation.sh`, bucket = hash of the path, so parallel
   runs judge disjoint files); what it misses is never red, it becomes a
-  `harness:test-debt` issue per file (`scripts/test-debt.sh`) for
-  `/create-test`.
+  `harness:test-debt` issue per file (`scripts/test-debt.sh`), which
+  `harness watch` routes to the `test_debt` workflow when nothing else
+  waits.
 - `cargo update` is a deliberate action with its own PR — never bundled
   with feature work.
 - Add `default-features = false` on a dependency when only some of its

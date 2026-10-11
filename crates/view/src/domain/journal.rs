@@ -106,6 +106,7 @@ fn tag(route: &str) -> &'static str {
         "Planner" => "planner",
         "PrReview" => "pr_review",
         "PrFix" => "pr_fix",
+        "TestDebt" => "test_debt",
         "MergeMainAgent" => "main_agent_merge",
         "MergeIntoMilestone" => "milestone_merge",
         _ => "",

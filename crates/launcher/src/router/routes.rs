@@ -162,6 +162,19 @@ async fn dispatched(
         Route::TechRefinement { issue } => {
             refine_here(args, here, gh, Phase::Technical, issue, log).await
         }
+        Route::TestDebt { issue } => report_failure(
+            "test_debt",
+            crate::dispatch::test_debt::run(
+                issue,
+                here,
+                &args.target_repo_url,
+                &args.branch,
+                &args.permission_mode,
+                args.dry_run,
+            )
+            .await,
+            log,
+        ),
     }
 }
 

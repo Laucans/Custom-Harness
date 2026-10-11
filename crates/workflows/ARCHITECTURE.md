@@ -1,6 +1,6 @@
 # `harness-workflows` — architecture
 
-The instances: what `harness-core` cannot name. Seven workflows declared
+The instances: what `harness-core` cannot name. Eight workflows declared
 against the framework, five deterministic commands beside them (§13), plus
 `common/` for what at least two of them actually read.
 
@@ -300,7 +300,7 @@ its precheck, its lock and its trigger.
 - `pr_fix` is the only workflow whose **first** stage writes: it removes its own
   trigger label before paying for anything, so a PR nobody can repair does not
   buy one session per poll. Its own `mod.rs` carries the reasoning.
-- All six are wired into the binary — `dev_loop` directly (`harness`) and every
+- All of them are wired into the binary — `dev_loop` directly (`harness`) and every
   one of them through the router's dispatch (`harness watch`). `pr_review` was
   the last to get a launcher entry point: its documented trigger used to be a
   hook on `gh pr create`, which needs a public URL this harness does not have.
@@ -312,6 +312,19 @@ reports a divergence; state `DiagnosisState`; `remaining` 1; core's
 `Round<S>`; one stage, `diagnose`, an Opus session in the snapshot clone whose
 answer is the `DataModelDiverged` event; no lock (two diagnoses of one
 version say the same thing), no resume, no tolerance.
+
+**The one that works a file's tests:** `test_debt` — the issue the CI's
+mutants rotation opens against one source file (`Test debt: <file>`,
+`scripts/test-debt.sh`), listing the mutants no test caught. Trigger:
+`harness:test-debt` on that open issue, routed last, when nothing else
+waits; state `DebtState`; `remaining` 1; core's `Round<S>`; stages
+`context` (reads the file and the findings, then consumes the label — the
+`pr_fix` shape, one label one attempt) and `cover` (a session that writes
+the tests, proves them with `cargo mutants --file`, and lands them through
+its own PR on the integration branch), gated by `NamesAFile`; lock per
+issue; no resume, no tolerance. It never changes the code under test and
+never claims the mutants caught: the next rotation that judges the file
+says so, and labels the issue again if not.
 
 Five more modules sit beside these, not in the tables above: `init_repo`,
 `milestone_merge`, `main_agent_merge`, `data_snapshot` and `data_model_draft`,

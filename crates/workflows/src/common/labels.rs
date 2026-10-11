@@ -151,8 +151,10 @@ pub const REVIEW_PENDING: &str = "harness:review-pending";
 ///
 /// Opened by the CI's mutants rotation (`scripts/test-debt.sh`), one issue
 /// per source file, titled `Test debt: <file>`, never twice for the same
-/// file while one is open. `/create-test` closes it with the tests that
-/// catch the mutants it lists. Not in [`LOOP`]: the loop does not pick it.
+/// file while one is open. The router sends it to `test_debt`, which takes
+/// the label off as it starts — one label, one attempt — and the script
+/// poses it again when a later run still finds mutants there. Not in
+/// [`LOOP`]: the dev loop does not read it.
 pub const TEST_DEBT: &str = "harness:test-debt";
 
 /// The eleven the loop requires.

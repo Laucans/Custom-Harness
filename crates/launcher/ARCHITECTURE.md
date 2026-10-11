@@ -30,7 +30,9 @@ src/dispatch/     one module per thing that can be run, plus what they share
   split.rs          a milestone into tasks
   refinement.rs     an issue body into its five canonical sections
   pr_review.rs      an advisory review on a PR
-  pr_fix.rs         one repair attempt on a red PR — the only writable checkout here
+  pr_fix.rs         one repair attempt on a red PR — a writable checkout of its own
+  test_debt.rs      the tests one file owes, from its test-debt issue — writable too,
+                     on the integration branch
   data_diagnosis.rs  a version of main or main_agent whose two sides disagree, right after
                      its snapshot: one Opus session in the snapshot clone says why; its
                      answer is the `DataModelDiverged` event, an error in the view
@@ -88,7 +90,7 @@ code` keeps meaning the dev loop). Eight subcommands today: `init-repo`,
 `watch`, `doctor`, `refine`, `split`, `trial`, `data-snapshot` and
 `data-model-draft`. `refine` and `split` exist for the lanes of a parallel
 watch — one child process per issue — and for a human who wants one issue
-done now; `planner`, `pr_review`, `pr_fix`, the merges and `data_diagnosis`
+done now; `planner`, `pr_review`, `pr_fix`, `test_debt`, the merges and `data_diagnosis`
 have **no** subcommand on purpose: they are reached by the router, whose own
 arguments (`--interval`, `--once`, `--dry-run`, `--parallel`) are what a
 human tunes instead.
@@ -250,6 +252,7 @@ Three checkouts, and the difference is whether the tenant commits:
 | exclusive | the repo's name | `dev_loop` | several sessions deep, leaves a checkpoint |
 | shared, read-only | `router-readonly` | `planner`, `split`, `refinement`, `pr_review` | none of them commits, so none can conflict |
 | its own, writable | `router-prfix` | `pr_fix` | it commits; `force_reset`, on the PR's branch |
+| its own, writable | `router-testdebt` | `test_debt` | it commits; `force_reset`, on the integration branch |
 
 `init_repo` and `main_agent_merge` mount nothing: both only talk to GitHub.
 

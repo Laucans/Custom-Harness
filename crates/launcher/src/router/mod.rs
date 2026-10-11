@@ -5,7 +5,8 @@
 //! routing decision — a lightweight read, no checkout mounted for it.
 //! Dispatching to a workflow is each workflow's own launcher module's job
 //! (`dev_loop.rs`, `planner.rs`, `split.rs`, `refinement.rs`,
-//! `pr_review.rs`, `pr_fix.rs`) — each mounts what it needs itself, and only
+//! `pr_review.rs`, `pr_fix.rs`, `test_debt.rs`) — each mounts what it needs
+//! itself, and only
 //! when actually dispatched to. A tick that routes to [`Route::Nothing`]
 //! therefore never touches disk.
 //!
@@ -204,11 +205,12 @@ async fn tick(
     // wrong: the counts are the whole input to `routing::decide`.
     log.debug(&format!(
         "saw: {} roadmap, {} milestone(s), {} refining, {} tech-refining, \
-         pr_fix={:?}, pr_review={:?}, ready_to_merge={:?}, dev_loop={:?}",
+         {} test-debt, pr_fix={:?}, pr_review={:?}, ready_to_merge={:?}, dev_loop={:?}",
         found.roadmap.len(),
         found.milestones.len(),
         found.refining.len(),
         found.tech_refining.len(),
+        found.test_debt.len(),
         found.pr_to_fix.as_ref().map(|pr| pr.num.clone()),
         found.pr_to_review.as_ref().map(|pr| pr.num.clone()),
         found.ready_to_merge,
@@ -337,6 +339,7 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>, bool)> 
     let ready_to_merge = lowest_ready_to_merge(gh, &milestones).await?;
     let refining = gh.issues_labelled(labels::REFINEMENT, "open").await?;
     let tech_refining = gh.issues_labelled(labels::TECH_REFINEMENT, "open").await?;
+    let test_debt = gh.issues_labelled(labels::TEST_DEBT, "open").await?;
     // Tolerant on purpose: "no open milestone at all" is this probe's most
     // common answer, not a failure — `dev_loop::run` itself is where that
     // distinction matters and is already made.
@@ -364,6 +367,7 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>, bool)> 
         refining,
         tech_refining,
         dev_loop_milestone,
+        test_debt,
     };
     Ok((snapshot, idle, watching_ci))
 }
