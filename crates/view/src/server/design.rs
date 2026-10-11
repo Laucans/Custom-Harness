@@ -109,7 +109,21 @@ pub(super) async fn design_tokens(State(state): State<AppState>, body: Bytes) ->
     if ask.json.chars().count() > TOKENS_CHARS {
         return (StatusCode::BAD_REQUEST, "too big a tokens file").into_response();
     }
-    outcome(desk.inject(ask.json, ask.edit).await)
+    let view = match desk.inject(ask.json, ask.edit).await {
+        Ok(view) => view,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    queue_kit(&desk).await;
+    json(&view)
+}
+
+/// Queues the kit's own generation once tokens exist to style it from —
+/// candidate or validated, either already has a `tokens.css` of its own
+/// (`KitDesk::inject`, `::generate`): the simulated page means something
+/// before the human commits to a candidate, not only after. Best-effort:
+/// no Claude at hand, or nothing ticked, is not this call's business.
+async fn queue_kit(desk: &KitDesk) {
+    let _ = desk.start_generation(Vec::new()).await;
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -124,10 +138,12 @@ pub(super) async fn design_generate(State(state): State<AppState>, body: Bytes) 
         Err(r) => return *r,
     };
     let ask: BriefAsk = serde_json::from_slice(&body).unwrap_or_default();
-    match desk.generate(ask.brief).await {
-        Ok(view) => json(&view),
-        Err(why) => (StatusCode::BAD_GATEWAY, why).into_response(),
-    }
+    let view = match desk.generate(ask.brief).await {
+        Ok(view) => view,
+        Err(why) => return (StatusCode::BAD_GATEWAY, why).into_response(),
+    };
+    queue_kit(&desk).await;
+    json(&view)
 }
 
 /// Validates the design system, and opens the roadmap task that installs it
@@ -141,11 +157,7 @@ pub(super) async fn design_validate(State(state): State<AppState>) -> Response {
         Ok(view) => view,
         Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
-    // The kit is styled from the tokens just validated: queue every ticked
-    // component that is not generated yet, here rather than left to
-    // whoever opens the easel next — no Claude, or nothing ticked, is not
-    // this call's business to report.
-    let _ = desk.start_generation(Vec::new()).await;
+    queue_kit(&desk).await;
     if view.design.issue.is_empty()
         && let Some(data) = state.data.clone()
     {

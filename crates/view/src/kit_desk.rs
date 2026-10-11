@@ -785,9 +785,14 @@ impl KitDesk {
                 let _held = lock(files);
                 Self::ensure(mockups, &from)?;
                 let design = Self::design_of(mockups)?;
-                if design.state != DesignState::Validated {
+                // A candidate not yet validated already has its own
+                // `tokens.css` the first time (`keep_tokens`): the kit can
+                // be drawn from it so the simulated page means something
+                // before the human commits to it, not only after.
+                if design.state == DesignState::None {
                     return Err(
-                        "validate the design system first: the kit is styled from it".to_string(),
+                        "generate or inject the tokens first: the kit is styled from them"
+                            .to_string(),
                     );
                 }
                 let mut kit = Self::kit_of(mockups)?;

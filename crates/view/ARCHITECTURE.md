@@ -117,11 +117,13 @@ It has two sections:
   5. **scope** — the proof of concept as the AI proposes it (Markdown),
      edited freely, proposed again on demand;
   6. **design system** — the design system's easel opened over the page
-     (moodboard, logo, tokens, kit); validating queues the ticked kit
-     components' generation by itself (`design_validate`, the same route
-     whichever pane opens the easel from — the standalone one too), and the
-     step closes when none waits (`Facts::kit_waiting`) — the mock-ups are
-     drawn on the kit, not on tokens alone;
+     (moodboard, logo, tokens, kit); generating or injecting tokens already
+     queues the ticked kit components' generation by itself, the first
+     candidate included (`design_generate`, `design_tokens`,
+     `design_validate` — the same routes whichever pane opens the easel
+     from, the standalone one too), and the step closes when none waits
+     (`Facts::kit_waiting`) — the mock-ups are drawn on the kit, not on
+     tokens alone;
   7. **mock-ups** — one Claude Code session at work in the integration
      branch's mock-up workspace (`Oneshot::work_in`: read and write, nothing
      that runs) draws a page per screen of the scope, on the kit and the
@@ -751,17 +753,22 @@ and the toast says why. Three tabs:
   (`Oneshot::ask_in`: the session runs in that folder with `Read` alone) from
   the human's brief; the sheet (palette, type, spacings, radii, three samples)
   is what the human **validates**, the tokens retouched by hand in a table.
-  Before any validation the tokens are *the* candidate; after it, tokens
-  injected or generated again wait as a **candidate** beside the validated
-  ones (`candidate.json`) until the human takes them. Validation opens a
-  `harness:roadmap` + `harness:ready` issue — *install the design system in
-  the product's frontend* — so the first real screen does not reinvent the
-  variables; `design.json` remembers it, and on the same call queues the
-  ticked bases' generation (`start_generation(vec![])`, best-effort — no
-  Claude at hand is not this call's business to report), so the simulated
-  page below does not 404 its way through a kit nobody asked for yet.
-  Nothing is generated from a design system no one validated. Once tokens
-  exist, the sheet comes first, then
+  Before any validation the tokens are *the* candidate, with a real
+  `tokens.css` of their own (`KitDesk::inject`, `::generate`: the first
+  candidate writes it in place, same as validating does); after a first
+  validation, tokens injected or generated again wait as a **candidate**
+  beside the validated ones (`candidate.json`) until the human takes them,
+  the live preview laying its variables over the validated sheet instead.
+  Injecting, generating and validating each end by queueing the ticked
+  bases' generation on whichever `tokens.css` is now there
+  (`start_generation(vec![])`, best-effort — no Claude at hand is not
+  these calls' business to report): the kit is styled from tokens that
+  exist, not from the human's validation of them, so the simulated page
+  means something while a candidate is still being judged — not only once
+  it is taken. Validation opens a `harness:roadmap` + `harness:ready`
+  issue — *install the design system in the product's frontend* — so the
+  first real screen does not reinvent the variables; `design.json`
+  remembers it. Once tokens exist, the sheet comes first, then
   the **simulated page** — a contact page the harness codes
   (`kit::SHOWCASE`, served at `/mock/design-system/__showcase/contact`)
   made of the kit's components only, their texts fitted to the page once

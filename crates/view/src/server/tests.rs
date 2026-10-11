@@ -1796,9 +1796,34 @@ fn kit_product(tag: &str) -> std::path::PathBuf {
     dir
 }
 
+/// Waits for `kit`'s jobs to show at least one, then for the catalogue to
+/// carry that it is actually under way — never still at its generic
+/// freshly-listed `Pending` (the catalogue's default for a base not even
+/// added yet).
+async fn settled_kit(kit: &crate::kit_desk::KitDesk, why: &str) {
+    for _ in 0..200 {
+        let reply = kit.reply().await.expect("read");
+        if !reply.jobs.is_empty() {
+            assert!(
+                reply.catalog.iter().any(|c| c.checked
+                    && matches!(
+                        c.state,
+                        harness_architecture::kit::ComponentState::Running
+                            | harness_architecture::kit::ComponentState::Generated
+                    )),
+                "{why}: {:?}",
+                reply.catalog
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{why}: never queued a single job");
+}
+
 #[tokio::test]
-async fn validating_the_design_system_queues_the_kits_generation_by_itself() {
-    let dir = kit_product("validate");
+async fn generating_tokens_queues_the_kit_on_a_candidate_not_yet_validated() {
+    let dir = kit_product("candidate");
     let mockups: Arc<dyn crate::ports::Mockups> =
         Arc::new(crate::adapters::mockups::DirMockups::new(&dir));
     let kit = crate::kit_desk::KitDesk::new(crate::kit_desk::Setup {
@@ -1814,38 +1839,85 @@ async fn validating_the_design_system_queues_the_kits_generation_by_itself() {
         ..state_without_plant()
     };
     let (status, _) = post(
-        state.clone(),
+        state,
         "/api/design/generate",
         r#"{"brief":"a plant, teal and cream"}"#,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    // No job queued before the design is validated: generating is what
-    // validate itself triggers, not the tokens landing.
+    // Not validated yet: the simulated page still means something before
+    // the human commits to this candidate, not only after.
+    assert_eq!(
+        kit.reply().await.expect("read").design.design.state,
+        harness_architecture::kit::DesignState::Candidate
+    );
+    settled_kit(
+        &kit,
+        "generating a fresh candidate queues the kit on its own",
+    )
+    .await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn validating_queues_the_kit_too() {
+    let dir = kit_product("validate");
+    let mockups: Arc<dyn crate::ports::Mockups> =
+        Arc::new(crate::adapters::mockups::DirMockups::new(&dir));
+    let kit = crate::kit_desk::KitDesk::new(crate::kit_desk::Setup {
+        mockups,
+        oneshot: Some(Arc::new(KitModel)),
+        model: "m".to_string(),
+        sessions: 2,
+        pins: Arc::new(crate::kit_desk::tests::Shelf::default()),
+        integration_branch: "main".to_string(),
+    });
+    // The candidate is injected through the desk directly, never the
+    // router: nothing has asked the kit to generate yet, so the route's
+    // own queueing is what the rest of this test actually proves.
+    kit.inject(harness_architecture::kit::default_tokens_json(), false)
+        .await
+        .expect("injected");
     assert!(
         kit.reply().await.expect("read").jobs.is_empty(),
-        "nothing queued before validate"
+        "nothing queued by the direct inject"
     );
+    let state = AppState {
+        kit: Some(kit.clone()),
+        ..state_without_plant()
+    };
     let (status, _) = post(state, "/api/design/validate", "").await;
     assert_eq!(status, StatusCode::OK);
-    for _ in 0..200 {
-        let reply = kit.reply().await.expect("read");
-        if !reply.jobs.is_empty() {
-            assert!(
-                reply.catalog.iter().any(|c| c.checked
-                    && matches!(
-                        c.state,
-                        harness_architecture::kit::ComponentState::Pending
-                            | harness_architecture::kit::ComponentState::Running
-                            | harness_architecture::kit::ComponentState::Generated
-                    )),
-                "validating on its own queues the kit: {:?}",
-                reply.catalog
-            );
-            let _ = std::fs::remove_dir_all(&dir);
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("validate never queued a single job");
+    settled_kit(&kit, "validating queues the kit too").await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn injecting_tokens_queues_the_kit_too() {
+    let dir = kit_product("inject");
+    let mockups: Arc<dyn crate::ports::Mockups> =
+        Arc::new(crate::adapters::mockups::DirMockups::new(&dir));
+    let kit = crate::kit_desk::KitDesk::new(crate::kit_desk::Setup {
+        mockups,
+        oneshot: Some(Arc::new(KitModel)),
+        model: "m".to_string(),
+        sessions: 2,
+        pins: Arc::new(crate::kit_desk::tests::Shelf::default()),
+        integration_branch: "main".to_string(),
+    });
+    let state = AppState {
+        kit: Some(kit.clone()),
+        ..state_without_plant()
+    };
+    let body = serde_json::to_string(&serde_json::json!({
+        "json": harness_architecture::kit::default_tokens_json(),
+        "edit": false,
+    }))
+    .expect("json");
+    let (status, response) = post(state, "/api/design/tokens", &body).await;
+    assert_eq!(status, StatusCode::OK);
+    let view: serde_json::Value = serde_json::from_str(&response).expect("json");
+    assert_eq!(view["design"]["state"], "candidate", "{response}");
+    settled_kit(&kit, "injecting tokens queues the kit too").await;
+    let _ = std::fs::remove_dir_all(&dir);
 }
