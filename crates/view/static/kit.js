@@ -154,18 +154,18 @@
     function sheet(css, tokens) {
       const t = (path) => (tokens.find((x) => x.path === path) || {}).value || '';
       const colours = tokens.filter((x) => x.kind === 'color' || /^color\./.test(x.path));
-      const swatches = colours.map((c) => `<div class="sw"><i style="background:var(--${c.path.replace(/\./g, '-')})"></i><b>${esc(c.path.replace(/^color\./, ''))}</b><small>${esc(c.value)}</small></div>`).join('');
-      const spaces = tokens.filter((x) => /^space\./.test(x.path)).map((s) => `<div class="sp"><i style="width:var(--${s.path.replace(/\./g, '-')})"></i><small>${esc(s.path.replace(/^space\./, ''))} · ${esc(s.value)}</small></div>`).join('');
-      const radii = tokens.filter((x) => /^radius\./.test(x.path)).map((r) => `<div class="rd"><i style="border-radius:var(--${r.path.replace(/\./g, '-')})"></i><small>${esc(r.path.replace(/^radius\./, ''))}</small></div>`).join('');
+      const swatches = colours.map((c) => `<div class="sw" data-token="${esc(c.path)}" role="button" tabindex="0"><i style="background:var(--${c.path.replace(/\./g, '-')})"></i><b>${esc(c.path.replace(/^color\./, ''))}</b><small>${esc(c.value)}</small></div>`).join('');
+      const spaces = tokens.filter((x) => /^space\./.test(x.path)).map((s) => `<div class="sp" data-token="${esc(s.path)}" role="button" tabindex="0"><i style="width:var(--${s.path.replace(/\./g, '-')})"></i><small>${esc(s.path.replace(/^space\./, ''))} · ${esc(s.value)}</small></div>`).join('');
+      const radii = tokens.filter((x) => /^radius\./.test(x.path)).map((r) => `<div class="rd" data-token="${esc(r.path)}" role="button" tabindex="0"><i style="border-radius:var(--${r.path.replace(/\./g, '-')})"></i><small>${esc(r.path.replace(/^radius\./, ''))}</small></div>`).join('');
       return `<!doctype html><html><head><meta charset="utf-8"><style>${css}
 body{margin:0;padding:18px;font-family:var(--font-family,system-ui,sans-serif);color:var(--color-text,#111);background:var(--color-surface,#fff);font-size:var(--font-size-base,15px)}
 h1{font-family:var(--font-family-heading,system-ui);font-size:var(--font-size-heading,28px);font-weight:var(--font-weight-heading,700);margin:0 0 4px}
 h2{font-size:var(--font-size-small,12px);text-transform:uppercase;letter-spacing:.08em;color:var(--color-text-muted,#666);margin:22px 0 8px}
 p{margin:0;color:var(--color-text-muted,#666)}
 .row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
-.sw{width:92px}.sw i{display:block;height:48px;border-radius:var(--radius-medium,8px);border:1px solid var(--color-border,#ddd)}.sw b{display:block;font-size:11px;margin-top:4px}.sw small{font-size:10px;color:var(--color-text-muted,#666)}
-.sp i{display:block;height:10px;background:var(--color-primary,#2b6cb0);border-radius:2px}.sp small{font-size:10px;color:var(--color-text-muted,#666)}
-.rd i{display:block;width:48px;height:48px;background:var(--color-surface-2,#eee);border:1px solid var(--color-border,#ddd)}.rd small{font-size:10px;color:var(--color-text-muted,#666)}
+.sw{width:92px;cursor:pointer;border-radius:6px;padding:2px}.sw:hover,.sw:focus-visible{outline:2px solid #6b8ab0;outline-offset:1px}.sw i{display:block;height:48px;border-radius:var(--radius-medium,8px);border:1px solid var(--color-border,#ddd)}.sw b{display:block;font-size:11px;margin-top:4px}.sw small{font-size:10px;color:var(--color-text-muted,#666)}
+.sp{cursor:pointer;border-radius:6px;padding:4px}.sp:hover,.sp:focus-visible{outline:2px solid #6b8ab0;outline-offset:1px}.sp i{display:block;height:10px;background:var(--color-primary,#2b6cb0);border-radius:2px}.sp small{font-size:10px;color:var(--color-text-muted,#666)}
+.rd{cursor:pointer;border-radius:6px;padding:2px}.rd:hover,.rd:focus-visible{outline:2px solid #6b8ab0;outline-offset:1px}.rd i{display:block;width:48px;height:48px;background:var(--color-surface-2,#eee);border:1px solid var(--color-border,#ddd)}.rd small{font-size:10px;color:var(--color-text-muted,#666)}
 .samples{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
 button{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border-radius:var(--radius-medium,8px);border:1px solid var(--color-primary,#2b6cb0);background:var(--color-primary,#2b6cb0);color:var(--color-primary-contrast,#fff);cursor:pointer}
 button.secondary{background:transparent;color:var(--color-primary,#2b6cb0)}
@@ -247,7 +247,67 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       if (trial) trial.addEventListener('load', () => {
         try { const style = trial.contentDocument.createElement('style'); style.textContent = cssOf(dv.candidate); trial.contentDocument.head.appendChild(style); } catch (e) { /* the page keeps the validated tokens */ }
       });
+      // A swatch, a spacing bar or a radius box in the live sheet opens a
+      // small floating editor for that one token — the candidate's own
+      // trial preview above has no hand-edit of its own yet.
+      const live = pane.querySelector('.kt-system .kt-sheet:not(.kt-candidate .kt-sheet)');
+      if (live) live.addEventListener('load', () => wireSheetClicks(live));
       if (st.custom) { setTab('catalogue'); }
+    }
+    // Delegated on the iframe's own document — same-origin (`srcdoc`), read
+    // fresh on every load since the frame's content is replaced wholesale,
+    // never patched, each time a token changes.
+    function wireSheetClicks(frame) {
+      let doc;
+      try { doc = frame.contentDocument; } catch (e) { return; }
+      if (!doc) return;
+      const open = (e) => {
+        const el = e.target.closest('[data-token]');
+        if (!el) return;
+        const box = frame.getBoundingClientRect();
+        tokenPopover(el.dataset.token, box.left + el.getBoundingClientRect().left + el.offsetWidth / 2, box.top + el.getBoundingClientRect().top);
+      };
+      doc.addEventListener('click', open);
+      doc.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); } });
+    }
+    // The floating editor for one token: a colour picker or a text field,
+    // positioned near what was clicked, saved through the same debounced
+    // path as the table below — this is another way to reach the same
+    // `.kt-token` input, not a second way to keep a value.
+    function tokenPopover(path, x, y) {
+      host.querySelectorAll('.kt-token-pop').forEach((p) => p.remove());
+      const input = host.querySelector(`.kt-token[data-token="${CSS.escape(path)}"]`);
+      if (!input) return;
+      const colour = /^#[0-9a-f]{6}$/i.test(input.value);
+      const pop = document.createElement('div');
+      pop.className = 'kt-token-pop';
+      pop.innerHTML = `<div class="kt-token-pop-path">${esc(path)}</div>
+        <div class="kt-row">${colour ? `<input type="color" value="${esc(input.value)}">` : ''}<input type="text" maxlength="300" value="${esc(input.value)}"></div>
+        <div class="kt-row"><button type="button" class="mini" data-pop="cancel">cancel</button><button type="button" class="mini on" data-pop="save">save</button></div>`;
+      document.body.appendChild(pop);
+      const text = pop.querySelector('input[type="text"]');
+      const picker = pop.querySelector('input[type="color"]');
+      if (picker) picker.addEventListener('input', () => { text.value = picker.value; });
+      const w = pop.offsetWidth || 220; const h = pop.offsetHeight || 100;
+      pop.style.left = Math.max(8, Math.min(x - w / 2, window.innerWidth - w - 8)) + 'px';
+      pop.style.top = Math.max(8, Math.min(y + 10, window.innerHeight - h - 8)) + 'px';
+      const close = () => { pop.remove(); document.removeEventListener('mousedown', outside, true); window.removeEventListener('keydown', onKey, true); };
+      const save = () => {
+        input.value = text.value;
+        if (picker) { const colourInput = host.querySelector(`input[type="color"][data-token="${CSS.escape(path)}"]`); if (colourInput) colourInput.value = picker.value; }
+        keepTokens();
+        close();
+      };
+      pop.addEventListener('click', (e) => {
+        if (e.target.closest('[data-pop="save"]')) save();
+        else if (e.target.closest('[data-pop="cancel"]')) close();
+      });
+      text.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+      const outside = (e) => { if (!pop.contains(e.target)) close(); };
+      const onKey = (e) => { if (e.key === 'Escape') close(); };
+      setTimeout(() => { document.addEventListener('mousedown', outside, true); window.addEventListener('keydown', onKey, true); }, 0);
+      (picker || text).focus();
+      text.select();
     }
     const cssOf = (tokens) => ':root{' + tokens.map((t) => `--${t.path.replace(/\./g, '-')}:${t.value};`).join('') + '}';
     function tokensJsonEdited() {

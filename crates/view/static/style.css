@@ -1140,11 +1140,11 @@ body.full-pane > #stage, body.full-pane > #hud { visibility: hidden; }
 .kt-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .kt-row > b { font: 600 12px var(--mono); color: var(--dim); }
 .kt-row .spacer { flex: 1; }
-.kt-pane .mini, .kt-canvas .mini { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
-.kt-pane .mini:hover, .kt-canvas .mini:hover { border-color: var(--accent); color: var(--accent); }
-.kt-pane .mini.on, .kt-canvas .mini.on { border-color: var(--pin-design); color: var(--pin-design); }
+.kt-pane .mini, .kt-canvas .mini, .kt-token-pop .mini { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
+.kt-pane .mini:hover, .kt-canvas .mini:hover, .kt-token-pop .mini:hover { border-color: var(--accent); color: var(--accent); }
+.kt-pane .mini.on, .kt-canvas .mini.on, .kt-token-pop .mini.on { border-color: var(--pin-design); color: var(--pin-design); }
 .kt-pane .mini:disabled { opacity: .5; cursor: default; }
-.kt-pane textarea, .kt-pane input[type="text"], .kt-pane input[type="search"], .kt-message, .kt-fork-name { min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: 12px var(--sans); }
+.kt-pane textarea, .kt-pane input[type="text"], .kt-pane input[type="search"], .kt-message, .kt-fork-name, .kt-token-pop input[type="text"] { min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: 12px var(--sans); }
 .kt-pane textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 .kt-json { font: 11px var(--mono) !important; }
 .kt-pane input[type="file"] { font: 11px var(--sans); color: var(--dim); max-width: 220px; }
@@ -1171,6 +1171,16 @@ body.full-pane > #stage, body.full-pane > #hud { visibility: hidden; }
 .kt-regen .kt-cols .kt-block { margin-bottom: 0; }
 .kt-candidate { border-color: var(--warn); }
 .kt-edit summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+/* The floating editor a click on a swatch, a spacing bar or a radius box opens. */
+.kt-token-pop {
+  position: fixed; z-index: 60; width: 220px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .4);
+}
+.kt-token-pop-path { font: 12px var(--mono); color: var(--dim); overflow-wrap: anywhere; }
+.kt-token-pop input[type="text"] { flex: 1; min-width: 0; }
+.kt-token-pop input[type="color"] { width: 32px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: transparent; cursor: pointer; }
+.kt-token-pop .kt-row:last-child { justify-content: flex-end; }
 .kt-tokens { width: 100%; border-collapse: collapse; font-size: 12px; }
 .kt-tokens td { padding: 2px 6px; border-bottom: 1px solid var(--line); }
 .kt-tokens td:first-child { width: 36%; color: var(--dim); }
