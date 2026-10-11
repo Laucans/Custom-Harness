@@ -2,7 +2,10 @@
 //!
 //! The session decided *what* the milestones are — this is the only place
 //! that decides *how* they land on GitHub: created, linked to the roadmap
-//! item, chained by `blocked_by`, labelled for refinement. The side of the
+//! item, chained by `blocked_by` on every milestone that touches one of
+//! its aggregates — already open or opened just before — so two
+//! milestones on different aggregates open together and a milestone with
+//! none waits on nothing; labelled for refinement. The side of the
 //! architecture is stated in the body's `## Architecture` only: no label
 //! carries it at this level — `split` decides it task by task, and a
 //! milestone label would contradict the tasks it holds.
@@ -53,7 +56,15 @@ impl Action<PlannerState> for Write {
         }
 
         let roadmap_number = ctx.state.roadmap().number;
-        let mut previous = ctx.state.existing.last().map(|issue| issue.number);
+        // Who touches which aggregate: the milestones already open, by their
+        // body, then those opened here, in order. A new milestone waits on
+        // every one before it that shares an aggregate with it.
+        let mut touched: Vec<(u64, Vec<String>)> = ctx
+            .state
+            .existing
+            .iter()
+            .map(|issue| (issue.number, plan::aggregates_of(&issue.body)))
+            .collect();
         for item in &items {
             let number = self
                 .gh
@@ -62,13 +73,34 @@ impl Action<PlannerState> for Write {
             self.gh
                 .create_sub_issue_link(roadmap_number, number)
                 .await?;
-            if let Some(blocker) = previous {
-                self.gh.add_blocked_by(number, blocker).await?;
+            let mine = item.aggregate_keys();
+            let blockers: Vec<u64> = touched
+                .iter()
+                .filter(|(_, theirs)| theirs.iter().any(|a| mine.contains(a)))
+                .map(|(n, _)| *n)
+                .collect();
+            for blocker in &blockers {
+                self.gh.add_blocked_by(number, *blocker).await?;
             }
             self.gh.add_label(number, labels::REFINEMENT).await?;
-            ctx.traces
-                .say(&format!("opened milestone #{number}: {}", item.title));
-            previous = Some(number);
+            ctx.traces.say(&format!(
+                "opened milestone #{number}: {} ({})",
+                item.title,
+                if blockers.is_empty() {
+                    "waits on nothing".to_string()
+                } else {
+                    format!(
+                        "after {}, on {}",
+                        blockers
+                            .iter()
+                            .map(|b| format!("#{b}"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        mine.join(", ")
+                    )
+                }
+            ));
+            touched.push((number, mine));
         }
         Ok(Verdict::Continue)
     }
@@ -101,7 +133,7 @@ mod tests {
         ctx.results.insert(
             "plan".to_string(),
             Reply {
-                text: r#"[{"title":"A","goal":"do A"},{"title":"B","goal":"do B"}]"#.to_string(),
+                text: r#"[{"title":"A","goal":"do A","aggregates":["PJ"]},{"title":"B","goal":"do B","aggregates":["Campagne"]},{"title":"C","goal":"do C","aggregates":["pj","Campagne"]},{"title":"D","goal":"do D"}]"#.to_string(),
                 stop_line: None,
                 spend: Spend::default(),
             },
@@ -110,7 +142,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_milestone_is_created_linked_and_chained_in_order() {
+    async fn milestones_on_different_aggregates_open_together_and_one_on_both_waits_on_both() {
         let gh = Rc::new(FakeGitHub::default());
         let mut context = ctx(false);
         Write {
@@ -121,12 +153,15 @@ mod tests {
         .await
         .expect("published");
         let writes = gh.writes();
+        // A (PJ) and B (Campagne) share nothing: both wait on nothing. C
+        // touches both, whatever the case: it waits on A and B. D names no
+        // aggregate: it waits on nothing.
         assert_eq!(
             writes,
             vec![
                 Wrote::CreatedIssue(
                     "A".to_string(),
-                    "do A\n\n## Architecture\n\nsystems: -\nconcepts: -\nside: harness:read-side"
+                    "do A\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: PJ\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -134,13 +169,30 @@ mod tests {
                 Wrote::Label(1, labels::REFINEMENT.to_string()),
                 Wrote::CreatedIssue(
                     "B".to_string(),
-                    "do B\n\n## Architecture\n\nsystems: -\nconcepts: -\nside: harness:read-side"
+                    "do B\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: Campagne\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
                 Wrote::SubIssueLink(4, 2),
-                Wrote::BlockedByLink(2, 1),
                 Wrote::Label(2, labels::REFINEMENT.to_string()),
+                Wrote::CreatedIssue(
+                    "C".to_string(),
+                    "do C\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: pj, Campagne\nside: harness:read-side"
+                        .to_string(),
+                    vec![labels::MILESTONE.to_string()]
+                ),
+                Wrote::SubIssueLink(4, 3),
+                Wrote::BlockedByLink(3, 1),
+                Wrote::BlockedByLink(3, 2),
+                Wrote::Label(3, labels::REFINEMENT.to_string()),
+                Wrote::CreatedIssue(
+                    "D".to_string(),
+                    "do D\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: -\nside: harness:read-side"
+                        .to_string(),
+                    vec![labels::MILESTONE.to_string()]
+                ),
+                Wrote::SubIssueLink(4, 4),
+                Wrote::Label(4, labels::REFINEMENT.to_string()),
             ]
         );
     }
@@ -160,13 +212,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_first_new_milestone_chains_onto_the_last_existing_one() {
+    async fn a_new_milestone_waits_on_an_open_one_only_when_they_share_an_aggregate() {
         let gh = Rc::new(FakeGitHub::default());
         let mut context = ctx(false);
-        context.state.existing = vec![Issue {
-            number: 9,
-            ..Issue::default()
-        }];
+        context.state.existing = vec![
+            Issue {
+                number: 8,
+                body: "old\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: Campagne\nside: harness:write-side".to_string(),
+                ..Issue::default()
+            },
+            Issue {
+                number: 9,
+                body: "older, on nothing".to_string(),
+                ..Issue::default()
+            },
+        ];
         Write {
             gh: gh.clone(),
             plan_stage: "plan".to_string(),
@@ -174,11 +234,16 @@ mod tests {
         .run(&mut context)
         .await
         .expect("published");
-        assert!(
-            gh.writes()
-                .iter()
-                .any(|w| matches!(w, Wrote::BlockedByLink(_, 9)))
-        );
+        let links: Vec<(u64, u64)> = gh
+            .writes()
+            .into_iter()
+            .filter_map(|w| match w {
+                Wrote::BlockedByLink(task, dependency) => Some((task, dependency)),
+                _ => None,
+            })
+            .collect();
+        // A (PJ) waits on nothing already open; B (Campagne) on #8; C (both) on #8, A and B; D on nothing.
+        assert_eq!(links, vec![(2, 8), (3, 8), (3, 1), (3, 2)]);
     }
 
     #[tokio::test]

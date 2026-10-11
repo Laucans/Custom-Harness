@@ -98,6 +98,9 @@ heading:
 
 systems: credit            # the bounded context(s) — one, where possible
 concepts: Risk@3           # the versioned Concepts it defines or implements
+aggregates: Account        # the aggregates it shapes or writes, as their
+                           # manifests name them — what chains it after
+                           # the milestones that touch one of them
 side: harness:read-side    # harness:write-side if any of its work mutates
                            # data or the rules that guard it
 ```
@@ -108,13 +111,23 @@ task's `/business-analyst` pass will read; writing more here is work
 
 ### A milestone delivers one piece of the product whole
 
-A milestone carries its data layer — aggregates, invariants, migrations,
-DataCapabilities, the DataGuard's own plumbing — **and** what reads it —
-Capabilities, Micro-UIs, Concepts, persisted queries, compositions. Never a
-"write" milestone followed by a "read" one: `/split` opens the data layer
-as the milestone's first task (serialized, on the strongest model) and the
-readers in parallel after it. Order a milestone after the ones whose data it
-reads, and keep it inside one system where possible. Say in its body's
+A milestone carries its data layer — aggregates, DataCapabilities, the
+DataGuard's own plumbing — **and** what reads it — Capabilities, Micro-UIs,
+Concepts, persisted queries, compositions. Never a "write" milestone
+followed by a "read" one: `/split` opens one task per aggregate, one per
+command, one per Capability, one per Micro-UI, each waiting only on what it
+builds on. Keep a milestone inside one system where possible.
+
+### Chain milestones by aggregate, and only by aggregate
+
+Name in `aggregates:` what the milestone shapes or writes. A milestone is
+`blocked_by` every milestone — already open, or earlier in your plan — that
+touches one of its aggregates, and by nothing else: two milestones on
+different aggregates open together, and so do their tasks. Cut the roadmap
+so that what can be built apart touches different aggregates; a milestone
+that only reads names none and waits on nothing. (Step 4 of the commands
+below chains "after the previous milestone": chain after each one that
+shares an aggregate instead.) Say in its body's
 `side:` line whether it has a data layer — never as a label:
 `harness:read-side`, `harness:write-side` and `harness:data-layer` belong
 to tasks, which `/split` places one by one.

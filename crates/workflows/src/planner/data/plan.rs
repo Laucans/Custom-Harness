@@ -25,11 +25,15 @@ pub struct MilestoneItem {
     #[serde(default)]
     pub concepts: Vec<String>,
     /// Whether any of its work is on the write side — a `DataCapability`
-    /// that mutates, an invariant, a migration. Such a milestone comes
-    /// before the readers that depend on it, and its tasks wait for a human
-    /// merge.
+    /// that mutates, an aggregate shaped. Such a milestone's tasks wait for
+    /// a human merge.
     #[serde(default)]
     pub writes: bool,
+    /// The aggregates it shapes or writes (`PJ`, `Campagne`): what chains
+    /// it after the milestones that touch one of them, and lets two
+    /// milestones on different aggregates open together.
+    #[serde(default)]
+    pub aggregates: Vec<String>,
 }
 
 impl MilestoneItem {
@@ -55,14 +59,43 @@ impl MilestoneItem {
             }
         };
         format!(
-            "{}\n\n## {}\n\nsystems: {}\nconcepts: {}\nside: {}",
+            "{}\n\n## {}\n\nsystems: {}\nconcepts: {}\naggregates: {}\nside: {}",
             self.goal.trim(),
             sections::heading_of(sections::ARCHITECTURE),
             list(&self.systems),
             list(&self.concepts),
+            list(&self.aggregates),
             self.side().label()
         )
     }
+
+    /// The aggregates, trimmed and lower-cased: what two milestones compare.
+    #[must_use]
+    pub fn aggregate_keys(&self) -> Vec<String> {
+        self.aggregates
+            .iter()
+            .map(|a| a.trim().to_lowercase())
+            .filter(|a| !a.is_empty() && a != "-")
+            .collect()
+    }
+}
+
+/// The aggregates a milestone's body names (`aggregates: PJ, Campagne`
+/// under `## Architecture`), lower-cased — what an already open milestone
+/// is compared on.
+#[must_use]
+pub fn aggregates_of(body: &str) -> Vec<String> {
+    sections::parse(body)
+        .get(sections::ARCHITECTURE)
+        .map(|text| {
+            text.lines()
+                .filter_map(|line| line.trim().strip_prefix("aggregates:"))
+                .flat_map(|value| value.split(','))
+                .map(|a| a.trim().trim_matches('`').to_lowercase())
+                .filter(|a| !a.is_empty() && a != "-")
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Extracts the JSON array of milestones from a reply's text.
@@ -96,21 +129,26 @@ mod tests {
             systems: vec!["credit".to_string(), " ".to_string()],
             concepts: vec!["Risk@3".to_string()],
             writes: true,
+            aggregates: vec!["Account".to_string(), " ".to_string()],
         };
         assert_eq!(
             item.body(),
             "Score every customer.\n\n## Architecture\n\nsystems: credit\nconcepts: Risk@3\n\
-             side: harness:write-side"
+             aggregates: Account\nside: harness:write-side"
         );
+        assert_eq!(item.aggregate_keys(), ["account"]);
+        assert_eq!(aggregates_of(&item.body()), ["account"]);
+        assert!(aggregates_of("no section").is_empty());
         let bare = MilestoneItem {
             writes: false,
+            aggregates: Vec::new(),
             systems: Vec::new(),
             concepts: Vec::new(),
             ..item
         };
         assert!(
             bare.body()
-                .ends_with("systems: -\nconcepts: -\nside: harness:read-side")
+                .ends_with("systems: -\nconcepts: -\naggregates: -\nside: harness:read-side")
         );
         assert_eq!(bare.side(), Side::Read);
     }

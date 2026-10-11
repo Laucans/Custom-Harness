@@ -63,11 +63,24 @@ fn existing_block(existing: &[Issue]) -> String {
     }
     let lines: Vec<String> = existing
         .iter()
-        .map(|issue| format!("  - #{} {}", issue.number, issue.title))
+        .map(|issue| {
+            let aggregates = plan::aggregates_of(&issue.body);
+            if aggregates.is_empty() {
+                format!("  - #{} {}", issue.number, issue.title)
+            } else {
+                format!(
+                    "  - #{} {} (aggregates: {})",
+                    issue.number,
+                    issue.title,
+                    aggregates.join(", ")
+                )
+            }
+        })
         .collect();
     format!(
         "Milestones already open under this roadmap item — do not reopen \
-         them, only plan what is still missing:\n{}",
+         them, only plan what is still missing; a new milestone that touches \
+         one of their aggregates is chained after them:\n{}",
         lines.join("\n")
     )
 }

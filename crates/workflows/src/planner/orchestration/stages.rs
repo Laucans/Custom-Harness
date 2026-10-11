@@ -46,12 +46,19 @@ behind one DataGuard — DataCapabilities that mutate, invariants, migrations.
 Draw each milestone inside one system (bounded context) where possible, and
 name the `systems` it works in and the `concepts` (versioned, `Risk@3`) it
 defines or implements. A milestone delivers one piece of the product
-**whole**: its data layer — aggregates, invariants, migrations,
-DataCapabilities — **and** what reads it — Capabilities, Micro-UIs — never a
-"write" milestone followed by a "read" one. `split` opens the data layer as
-the milestone's first task and the readers in parallel after it. Set
-`writes: true` on a milestone that has a data layer, and order a milestone
-after the ones whose data it reads.
+**whole**: its data layer — aggregates, DataCapabilities — **and** what
+reads it — Capabilities, Micro-UIs — never a "write" milestone followed by
+a "read" one. `split` opens one task per aggregate, one per command, one
+per Capability action, one per Micro-UI, each waiting only on what it
+builds on. Set `writes: true` on a milestone that has a data layer.
+
+**Name the `aggregates` each milestone shapes or writes** (`PJ`,
+`Campagne`), as their manifests name them: a milestone is chained after
+every milestone — already open, or earlier in this plan — that touches one
+of its aggregates, and after nothing else. Two milestones on different
+aggregates open together, and so do their tasks: cut the roadmap so that
+what can be built apart touches different aggregates. A milestone that
+only reads names no aggregate and waits on nothing.
 
 {existing}
 
@@ -60,7 +67,7 @@ after the ones whose data it reads.
 Answer with a JSON array and nothing else, one object per milestone, in
 delivery order:
 ```json
-[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "writes": false}]
+[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "aggregates": ["Account"], "writes": false}]
 ```
 An empty array `[]` means this roadmap item needs no further milestone right
 now."#;
