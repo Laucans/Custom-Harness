@@ -106,6 +106,7 @@ fn tag(route: &str) -> &'static str {
         "Planner" => "planner",
         "PrReview" => "pr_review",
         "PrFix" => "pr_fix",
+        "TestDebt" => "test_debt",
         "MergeMainAgent" => "main_agent_merge",
         "MergeIntoMilestone" => "milestone_merge",
         _ => "",
@@ -406,6 +407,19 @@ pub fn read_within(text: &str, range: Option<&Range>) -> Journal {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn an_inline_route_reports_under_the_tag_its_dispatch_writes() {
+        // `watch: <tag> -> …` is written by the router's `report_failure`,
+        // with the workflow's own name.
+        for (route, said) in [
+            ("PrFix { pr: \"71\" }", "pr_fix"),
+            ("TestDebt { issue: 80 }", "test_debt"),
+            ("Nothing", ""),
+        ] {
+            assert_eq!(tag(route), said, "{route}");
+        }
+    }
 
     /// Cut from the `dnd_helper2` run's own `watch.log`.
     const LOG: &str = "\

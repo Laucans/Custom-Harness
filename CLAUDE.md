@@ -225,6 +225,20 @@ the rules a diff is checked against:
   `cargo fmt --all` before every commit.
 - `cargo audit` runs in CI (see `.github/workflows/ci.yml`); known
   advisories block the build until patched.
+- Dead code is a CI failure, beyond what rustc sees: `cargo machete` (a
+  dependency no crate uses) and `bash scripts/dead-code.sh` (a `pub` item
+  no crate of the workspace calls). Remove it; `#[allow(dead_code)]` with
+  the reason is for an item the workspace cannot show the use of.
+- The tests are gated too: `cargo mutants` on the lines a change touches
+  (`.cargo/mutants.toml`). A mutant no test catches fails the CI — the
+  answer is a test, not a weaker mutant. Locally:
+  `git diff main > change.diff && cargo mutants --workspace --in-diff change.diff`.
+  The rest of the code is judged in rotation, a bucket of files per CI run
+  (`scripts/mutants-rotation.sh`, bucket = hash of the path, so parallel
+  runs judge disjoint files); what it misses is never red, it becomes a
+  `harness:test-debt` issue per file (`scripts/test-debt.sh`), which
+  `harness watch` routes to the `test_debt` workflow when nothing else
+  waits.
 - `cargo update` is a deliberate action with its own PR — never bundled
   with feature work.
 - Add `default-features = false` on a dependency when only some of its
@@ -238,4 +252,6 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 cargo test --workspace --all-features
 cargo audit
+cargo machete && bash scripts/dead-code.sh
+cargo mutants --workspace --in-diff change.diff
 ```

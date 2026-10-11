@@ -1,0 +1,1 @@
+../crates/architecture/assets/dead-code.sh

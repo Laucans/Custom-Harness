@@ -22,6 +22,7 @@ use crate::pr_fix::orchestration::stages as pr_fix;
 use crate::pr_review::orchestration::stages as pr_review;
 use crate::refinement::orchestration::prompts as refinement;
 use crate::split::orchestration::stages as split;
+use crate::test_debt::orchestration::stages as test_debt;
 
 /// `technical-refinement`'s instructions.
 pub const TECHNICAL_REFINEMENT: &str = "agent-loop/technical-refinement";
@@ -59,6 +60,8 @@ pub const INLINE: &str = "pr-review/inline";
 pub const BRIEF: &str = "pr-review/brief";
 /// PR fix's repair.
 pub const FIX: &str = "pr-fix/fix";
+/// Test debt's tests for the mutants of one file.
+pub const COVER: &str = "test-debt/cover";
 
 /// One editable prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +186,12 @@ const CATALOG: &[Prompt] = &[
         title: "Repair",
         stations: &[("pr-fix", "fix")],
         default: pr_fix::FIX_PROMPT,
+    },
+    Prompt {
+        key: COVER,
+        title: "Tests for the mutants",
+        stations: &[("test-debt", "cover")],
+        default: test_debt::COVER_PROMPT,
     },
 ];
 

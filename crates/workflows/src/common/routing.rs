@@ -14,9 +14,11 @@
 //! repair before a green one to review, since reviewing a change whose CI
 //! is broken reviews something about to change; then merging a reviewed,
 //! green task PR into its milestone; then finishing a milestone that's
-//! done; then a runnable task; and last a pending refinement (business, then
-//! technical). Structural decomposition before unblocking what's in flight
-//! before closing out before delivering before preparing the next delivery.
+//! done; then a runnable task; then a pending refinement (business, then
+//! technical); and last a file's test debt. Structural decomposition before
+//! unblocking what's in flight before closing out before delivering before
+//! preparing the next delivery — and paying back the tests only when nothing
+//! else waits, since the debt is real but never blocks anyone.
 //!
 //! A parallel watch does not stop at the route: it first fills every free
 //! lane, the runnable tasks before splits and refinements ([`lane_work`]),
@@ -25,7 +27,8 @@
 //! `harness:ready` is the same human gate at every issue level: it means
 //! "plan this" on a roadmap item, "split this" on a milestone, and "build
 //! this" on a task. `harness:to-review` and `harness:pr-fix` are the same
-//! kind of gate on a **pull request**. The router never acts on something
+//! kind of gate on a **pull request**, and `harness:test-debt` on the issue
+//! the CI's mutants rotation opens. The router never acts on something
 //! nobody has opened the tap on.
 
 use harness_core::domain::{Issue, Pr};
@@ -94,6 +97,11 @@ pub enum Route {
         /// a fixed integration branch.
         milestone: u64,
     },
+    /// Write the tests this issue's file owes — `test_debt`.
+    TestDebt {
+        /// The test-debt issue's number.
+        issue: u64,
+    },
     /// Nothing is ready to run.
     Nothing,
 }
@@ -133,6 +141,8 @@ pub struct Snapshot {
     /// `None` either because there's no open milestone, or because the one
     /// there is has nothing runnable.
     pub dev_loop_milestone: Option<u64>,
+    /// Open `harness:test-debt` issues, any order.
+    pub test_debt: Vec<Issue>,
 }
 
 /// Decides the next route from a snapshot.
@@ -187,6 +197,11 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     }
     if let Some(issue) = lowest_open(&snapshot.tech_refining) {
         return Route::TechRefinement {
+            issue: issue.number,
+        };
+    }
+    if let Some(issue) = lowest_open(&snapshot.test_debt) {
+        return Route::TestDebt {
             issue: issue.number,
         };
     }
@@ -381,6 +396,7 @@ mod tests {
             refining: Vec::new(),
             tech_refining: Vec::new(),
             dev_loop_milestone: None,
+            test_debt: Vec::new(),
         }
     }
 
@@ -426,8 +442,32 @@ mod tests {
             refining: vec![issue(6, &[labels::REFINEMENT])],
             tech_refining: vec![],
             dev_loop_milestone: Some(3),
+            test_debt: vec![issue(8, &[labels::TEST_DEBT])],
         };
         assert_eq!(decide(&snapshot), Route::Planner { roadmap: 4 });
+    }
+
+    #[test]
+    fn test_debt_waits_until_nothing_else_does_then_takes_the_lowest_open() {
+        let mut closed = issue(3, &[labels::TEST_DEBT]);
+        closed.state = "closed".to_string();
+        let debt = vec![
+            issue(12, &[labels::TEST_DEBT]),
+            closed,
+            issue(9, &[labels::TEST_DEBT]),
+        ];
+        let waiting = Snapshot {
+            tech_refining: vec![issue(6, &[labels::TECH_REFINEMENT])],
+            test_debt: debt.clone(),
+            ..empty()
+        };
+        assert_eq!(decide(&waiting), Route::TechRefinement { issue: 6 });
+        let alone = Snapshot {
+            test_debt: debt,
+            ..empty()
+        };
+        assert_eq!(decide(&alone), Route::TestDebt { issue: 9 });
+        assert_eq!(decide(&empty()), Route::Nothing);
     }
 
     #[test]

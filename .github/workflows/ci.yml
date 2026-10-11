@@ -26,6 +26,90 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo test --workspace --doc
 
+  # The dead code the compiler lets through: a dependency no crate uses, a
+  # `pub` item no crate of the workspace calls (scripts/dead-code.sh).
+  dead-code:
+    name: dead-code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+      - run: cargo machete
+      - run: bash scripts/dead-code.sh
+
+  # The tests are judged too: a function cargo-mutants can rewrite without a
+  # test failing was never tested. Only the functions the change touches —
+  # the whole workspace is seven thousand mutants (`.cargo/mutants.toml`).
+  mutants:
+    name: mutants
+    runs-on: ubuntu-latest
+    # A push that creates the branch has no "before" to diff against.
+    if: github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: The lines this change touches
+        env:
+          # A pull request against its target, a push against what it replaced.
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          # A base rewritten away (a force push) leaves only the last commit.
+          git diff "$BASE" HEAD > change.diff || git diff HEAD~1 HEAD > change.diff
+          wc -l change.diff
+      - name: Mutants
+        run: |
+          code=0
+          cargo mutants --workspace --in-place --no-shuffle --in-diff change.diff || code=$?
+          # A mutant that hangs changed what the code does: caught by the
+          # clock (exit 3) — a failure only if another one was missed too.
+          case "$code" in
+            0) ;;
+            3) test ! -s mutants.out/missed.txt ;;
+            *) exit "$code" ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants.out
+          path: mutants.out
+
+  # The code no change touches is judged too, a bucket of files per run
+  # (scripts/mutants-rotation.sh: the run number picks the bucket, so runs in
+  # parallel judge disjoint files). Never red: what it misses becomes a
+  # `harness:test-debt` issue (scripts/test-debt.sh) an agent closes.
+  mutants-rotation:
+    name: mutants-rotation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - run: bash scripts/mutants-rotation.sh ${{ github.run_number }} -- --in-place --output rotation
+      - name: File what no test caught
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/test-debt.sh rotation/mutants.out "run ${{ github.run_number }} (${{ github.sha }})"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants-rotation.out
+          path: rotation/mutants.out
+          if-no-files-found: ignore
+
   # The pinned `rust-version` means nothing unless something builds with it.
   msrv:
     name: msrv

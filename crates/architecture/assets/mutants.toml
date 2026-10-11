@@ -1,0 +1,27 @@
+# cargo-mutants, the gate that judges the tests rather than the code —
+# installed by `harness init-repo`; the repository owns it from here.
+#
+# Each mutant is one function whose body is replaced by a plausible wrong
+# one; a test suite that still passes never tested that function. The CI
+# (.github/workflows/ci.yml, "Mutants") runs the mutants of the lines a
+# change touches, and fails on the first one no test catches. The whole
+# workspace is `cargo mutants --workspace`, which takes as long as the
+# workspace is large.
+#
+# Not mutated: the entry points — `main.rs` wires, and nothing tests wiring.
+# A crate whose functions are seen rather than asserted (a renderer, a
+# page) is added here, with the reason, in a task of its own.
+exclude_globs = ["**/main.rs"]
+
+# Every mutant runs the mutated crate's own tests, under the flags the CI
+# tests with.
+additional_cargo_test_args = ["--all-features"]
+
+# A mutant that loops is caught by the clock: five times the baseline, and
+# never under a minute, so a cold cache is not read as a hang.
+timeout_multiplier = 5
+minimum_test_timeout = 60
+
+# A test may read the repository it runs in: the copy a mutant is tested
+# in keeps `.git`, as the CI's `--in-place` run does.
+copy_vcs = true

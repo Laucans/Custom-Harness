@@ -53,6 +53,19 @@ evidence the round never happened. State the
 resolved file list; a docs-only, config-only or `AIchore` round goes
 straight to section 9.
 
+### From a `harness:test-debt` issue
+
+The CI's mutants rotation opens one per file it judged, `Test debt: <file>`,
+listing the mutants no test caught. That issue replaces the round: the
+scope is that file, the mutants are the triage, and every one listed is
+worth a test unless it is equivalent (no observable difference) — then it
+goes in `.cargo/mutants.toml`'s `exclude_re` with the reason, and says so in
+the PR. Never change the code to dodge a mutant. Branch `test/debt-<slug>`
+off the integration branch, prove each test red on its mutant (`cargo
+mutants --workspace --file <file>` lists them, `--in-place` is not needed),
+and close the issue from the PR (`Closes #<n>`). Section 9 reports the
+mutants left, by line.
+
 ## 3. Triage — report, then wait for a go-ahead
 
 Give every changed file one of two verdicts. Present a table — file,

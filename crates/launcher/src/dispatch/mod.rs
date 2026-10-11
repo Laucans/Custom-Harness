@@ -15,7 +15,7 @@
 //! - [`planner`], [`split`], [`refinement`] and [`pr_review`] share one
 //!   **read-only** checkout ([`shared`]): none of them commits.
 //! - [`pr_fix`] gets a **writable** one of its own, on the PR's branch,
-//!   because it does commit.
+//!   because it does commit; [`test_debt`] too, on the integration branch.
 //! - [`init_repo`] and [`main_agent_merge`] mount nothing: both are
 //!   deterministic commands that only talk to GitHub.
 //!
@@ -44,5 +44,6 @@ pub mod refinement;
 pub mod shared;
 pub mod skills;
 pub mod split;
+pub mod test_debt;
 pub mod tooling;
 pub mod trial;

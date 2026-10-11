@@ -726,6 +726,20 @@ off until an agent implements them.
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
 | Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page; every Micro-UI has a micro-frontend whose listing says its needs and actions; the bundles are rebuilt from the Micro-UIs' code | D, E, N |
 
+Beside the gates, the project's own CI (`.github/workflows/ci.yml`) judges
+the code and its tests, not the contracts: format and lint; the tests a
+change can break (`scripts/test-scope.sh`); the dead code the compiler lets
+through — a dependency no crate uses (`cargo machete`), a `pub` item no
+crate of the workspace calls (`scripts/dead-code.sh`); and the tests
+themselves, by mutation — every function the change touches is rewritten
+wrong by `cargo mutants`, and a rewrite no test catches fails the build
+(`.cargo/mutants.toml` says what is never mutated). The code no change
+touches is judged in rotation: each run mutates one bucket of files, the
+bucket a hash of the path, so runs in parallel judge disjoint files
+(`scripts/mutants-rotation.sh`); what it misses never fails the build, it
+becomes a `harness:test-debt` issue per file (`scripts/test-debt.sh`).
+Dead code is removed, not allowed; a missed mutant is answered with a test.
+
 ## Organisation of the agents
 
 Many agents in parallel on the read side, few agents and a human review on the

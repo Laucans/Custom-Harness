@@ -289,6 +289,7 @@ pub fn lines() -> Vec<Line> {
         split_line(),
         pr_review_line(),
         pr_fix_line(),
+        test_debt_line(),
         milestone_merge_line(),
         main_agent_merge_line(),
     ]
@@ -672,6 +673,37 @@ fn pr_fix_line() -> Line {
     )
 }
 
+fn test_debt_line() -> Line {
+    line(
+        "test-debt",
+        "Test debt",
+        "harness:test-debt on the issue the mutants rotation opened",
+        "Writes the tests a file owes: the mutants cargo-mutants found no test catching, \
+         one attempt per request, through a pull request of its own.",
+        vec![
+            vec![free(
+                "context",
+                "read the debt",
+                Kind::Printer,
+                "Reads the file the issue names and every mutant found against it.",
+            )],
+            paid(
+                "cover",
+                "write the tests",
+                Kind::Builder,
+                "sonnet",
+                "Writes the tests that catch each mutant, proves them, and lands them — never \
+                 a change to the code under test.",
+                Some(gate(
+                    "cover requires",
+                    "The issue names the Rust source file whose mutants no test catches.",
+                )),
+                None,
+            ),
+        ],
+    )
+}
+
 fn main_agent_merge_line() -> Line {
     line(
         "main-agent-merge",
@@ -782,6 +814,7 @@ mod tests {
             "Planner { roadmap: 12 }",
             "PrReview { pr: \"71\", base: \"main_agent\" }",
             "PrFix { pr: \"71\" }",
+            "TestDebt { issue: 80 }",
             "MergeMainAgent { milestone: 16 }",
         ] {
             let workflow = workflow_of_route(route).expect(route);

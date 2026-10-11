@@ -29,6 +29,10 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The mutants rotation files what no test caught as an issue.
+      issues: write
     services:
       postgres:
         image: postgres:16
@@ -75,6 +79,59 @@ jobs:
           else
             cargo test --workspace --all-features
           fi
+      - uses: taiki-e/install-action@v2
+        if: hashFiles('Cargo.toml') != ''
+        with:
+          tool: cargo-machete,cargo-mutants
+      # The dead code the compiler lets through: a dependency no crate uses,
+      # a `pub` item no crate of the workspace calls (scripts/dead-code.sh).
+      - name: Dead code
+        if: hashFiles('Cargo.toml') != ''
+        run: |
+          cargo machete
+          if [ -f scripts/dead-code.sh ]; then bash scripts/dead-code.sh; fi
+      # The code no change touches is judged too, a bucket of files per run
+      # (scripts/mutants-rotation.sh: the run number picks the bucket, so
+      # runs in parallel judge disjoint files). Never red: what it misses
+      # becomes a `harness:test-debt` issue (scripts/test-debt.sh).
+      - name: Mutants rotation
+        if: hashFiles('Cargo.toml') != '' && hashFiles('scripts/mutants-rotation.sh') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/mutants-rotation.sh ${{ github.run_number }} -- --in-place --output rotation
+          bash scripts/test-debt.sh rotation/mutants.out "run ${{ github.run_number }} (${{ github.sha }})"
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('Cargo.toml') != ''
+        with:
+          name: mutants-rotation.out
+          path: rotation/mutants.out
+          if-no-files-found: ignore
+      # The tests are judged too: a function cargo-mutants can rewrite
+      # without a test failing was never tested. Only the functions the
+      # change touches (.cargo/mutants.toml says what is never mutated).
+      - name: Mutants
+        if: hashFiles('Cargo.toml') != '' && (github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000')
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          # A base rewritten away (a force push) leaves only the last commit.
+          git diff "$BASE" HEAD > change.diff || git diff HEAD~1 HEAD > change.diff
+          code=0
+          cargo mutants --workspace --in-place --no-shuffle --in-diff change.diff || code=$?
+          # A mutant that hangs changed what the code does: caught by the
+          # clock (exit 3) — a failure only if another one was missed too.
+          case "$code" in
+            0) ;;
+            3) test ! -s mutants.out/missed.txt ;;
+            *) exit "$code" ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('Cargo.toml') != ''
+        with:
+          name: mutants.out
+          path: mutants.out
+          if-no-files-found: ignore
       - name: No Rust workspace yet
         if: hashFiles('Cargo.toml') == ''
         run: echo "no Cargo.toml — nothing to check yet"
