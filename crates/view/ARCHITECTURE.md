@@ -445,7 +445,7 @@ gallery found where it was left. Beside it, **its rules**, read from
 triggers, its effect and target, what it sends, the invariants it meets —
 and every **view** — each Capability it reads, what it is handed and what
 it returns — with the parts of the frame tied to each by the markup's own
-words (`data-action`, `data-reads`, contract D): pointed at in the panel,
+words (`data-writes`, `data-reads`, contract D): pointed at in the panel,
 they are outlined; picked in the frame, their unit is shown; a unit no part
 names is marked *not tagged*. A **long press** on a kit component inside it
 opens that component alone on the design system's easel, and the pane's
@@ -462,7 +462,7 @@ maker at a time so two plans lacking the same component make it once);
 **write**: a question reads the skeletons of the components used
 (`kit::skeleton`: elements and classes, no style, no script, no text), the
 units' contracts and rules, the fixture when there is one, and answers the
-fragment — tagged `data-action`/`data-reads`, at rest, falling back on the
+fragment — tagged `data-writes`/`data-reads`, at rest, falling back on the
 fixture when a prop is missing — and a fixture when there was none; the
 fragment, the fixture and the manifest's entry (`mock/pages.json`) are
 written in the branch's workspace and saved with the mock-up. The stable

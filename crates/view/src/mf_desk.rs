@@ -599,7 +599,7 @@ mod tests {
                 ));
             }
             if prompt.starts_with("You write one micro-frontend") {
-                return Ok("```html\n<section><button class=\"primary\" data-action=\"campagne.ajouterPj\">Ajouter</button><ul data-reads=\"campagne.listerPjs\"></ul></section>\n```\n```json\n[{\"id\": 1, \"nom\": \"Aldric\"}]\n```".to_string());
+                return Ok("```html\n<section><button class=\"primary\" data-writes=\"campagne.ajouterPj\">Ajouter</button><ul data-reads=\"campagne.listerPjs\"></ul></section>\n```\n```json\n[{\"id\": 1, \"nom\": \"Aldric\"}]\n```".to_string());
             }
             Ok("```html\n<div class=\"kit-fiche\" style=\"color:var(--color-text, #111111)\">Fiche</div>\n```".to_string())
         }
@@ -712,7 +712,7 @@ mod tests {
         let made = read("design-system/mock/kit/Fiche.html");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
-            fragment.contains("data-action=\"campagne.ajouterPj\""),
+            fragment.contains("data-writes=\"campagne.ajouterPj\""),
             "{fragment}"
         );
         assert!(fixture.contains("Aldric"), "{fixture}");

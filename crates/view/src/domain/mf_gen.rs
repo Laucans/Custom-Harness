@@ -262,7 +262,7 @@ pub fn generate_prompt(
          missing falls back to the fixture's first fitting value, so it always shows its data.\n\
          - It opens at rest: what overlays — a dialog, a toast, a drop list — stays hidden \
          until its actuator opens it, and closes again.\n\
-         - Every actuator carries `data-action=\"<DataCapability>\"`, every part that shows a read \
+         - Every actuator carries `data-writes=\"<DataCapability>\"`, every part that shows a read \
          `data-reads=\"<Capability>\"`: each action and each need of the spec at least once.\n\
          - A write calls no server: it checks the rules below in the page, shows a violation next \
          to its field (`aria-invalid`, a short message) and refuses; else it shows the command's \
@@ -341,7 +341,7 @@ pub fn rewrite_prompt(
          requests on it. Apply every request to the fragment below and answer the WHOLE fragment \
          back in a ```html block — its markup and its script — no prose. Keep what the requests do \
          not touch as it is, and keep its rules: its data from the one fetch of its fixture, no \
-         other network; `data-action` on every actuator and `data-reads` on every part that shows \
+         other network; `data-writes` on every actuator and `data-reads` on every part that shows \
          a read; a write checks the rules below in the page and shows the command's life; it opens \
          at rest; the kit's components written with their classes, any other style through \
          `var(--…)`, never a colour literal. A request that needs data or a unit the \
@@ -474,7 +474,7 @@ fn block(text: &str, lang: &str) -> Option<String> {
 }
 
 /// What the parts named in a fragment leave out of the spec: the actions
-/// and needs no `data-action`/`data-reads` names.
+/// and needs no `data-writes`/`data-reads` names.
 #[must_use]
 pub fn untagged(fragment: &str, spec: &Spec) -> Vec<String> {
     let lower = fragment.to_lowercase();
@@ -488,7 +488,7 @@ pub fn untagged(fragment: &str, spec: &Spec) -> Vec<String> {
     };
     spec.actions
         .iter()
-        .filter(|a| !named("data-action", a))
+        .filter(|a| !named("data-writes", a))
         .chain(spec.needs.iter().filter(|n| !named("data-reads", n)))
         .cloned()
         .collect()
@@ -643,7 +643,7 @@ mod tests {
             None,
         );
         assert!(
-            prompt.contains("data-action=")
+            prompt.contains("data-writes=")
                 && prompt.contains("fixtures/pjs.json")
                 && prompt.contains("```json")
         );
@@ -663,7 +663,7 @@ mod tests {
         assert!(generated_of("```json\n[]\n```").is_err());
         assert!(generated_of("```html\n<div data-x></div>\n```\n```json\nnot json\n```").is_err());
         assert_eq!(
-            untagged("<button data-action=\"campagne.ajouterPj\">", &spec()),
+            untagged("<button data-writes=\"campagne.ajouterPj\">", &spec()),
             ["campagne.listerPjs"]
         );
     }

@@ -120,7 +120,7 @@ mock-up: open the page under mock/pages/ and the micro-frontend under
 mock/components/ first (they are the screen as the human wants it; a
 `mockup/*` branch may carry a newer one), keep them true to what you build,
 list them in mock/pages.json (contract N), name the parts of what a Micro-UI
-renders (contract D: data-action=\"<DataCapability>\" on every actuator,
+renders (contract D: data-writes=\"<DataCapability>\" on every actuator,
 data-reads=\"<Capability>\" on every part that shows a read, one at least per
 entry of its actions and needs), and after any change under apps/ or
 mock/src/ run mock/build.sh and commit the bundles — the gates refuse a
@@ -169,7 +169,7 @@ Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
 checks the same rules after you); a Micro-UI or a screen ships with its
 mock-up under mock/, listed in mock/pages.json (contract N), its parts
-named (data-action / data-reads, contract D), bundles
+named (data-writes / data-reads, contract D), bundles
 rebuilt with mock/build.sh, styled through the design system's variables
 (mock/design/tokens.css) and the kit's classes (mock/kit/kit.css, contract
 O) — both carried onto the integration branch from `design-system`,

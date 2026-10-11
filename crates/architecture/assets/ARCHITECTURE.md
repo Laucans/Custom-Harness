@@ -487,10 +487,10 @@ props:   { customerId: ID }
 
 What a Micro-UI renders says which part does what, in the markup's own
 words: every actuator — a button, a form, a toggle that triggers a write —
-carries `data-action="<DataCapability>"`, and every part that shows what a
+carries `data-writes="<DataCapability>"`, and every part that shows what a
 Capability answers carries `data-reads="<Capability>"` (several, space
 separated, when one part does both). Every entry of `actions` has at least
-one `data-action` and every entry of `needs` at least one `data-reads`: the
+one `data-writes` and every entry of `needs` at least one `data-reads`: the
 factory view ties each part to its rules — the invariants a write meets,
 what a read returns — and a gate checks the micro-frontend carries them.
 

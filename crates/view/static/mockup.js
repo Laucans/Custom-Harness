@@ -823,7 +823,7 @@
     // DataCapability: its effect, what it sends, its invariants) and what
     // each part shows (a Capability: what it is handed, what it returns),
     // read from `/api/capabilities`. A part is tied to its unit by the
-    // markup's own words — `data-action="<DataCapability>"` on what writes,
+    // markup's own words — `data-writes="<DataCapability>"` on what writes,
     // `data-reads="<Capability>"` on what shows (contract N) — and a kit
     // component inside it opens on the design system's easel on a long press.
     const MF_W = 960;
@@ -1107,7 +1107,7 @@
     }
     function unitHtml(id, how) {
       const u = unitOf(id);
-      const attr = how === 'writes' ? 'data-action' : 'data-reads';
+      const attr = how === 'writes' ? 'data-writes' : 'data-reads';
       const n = partsOf(attr, id).length;
       const on = st.mfPicked && st.mfPicked.unit && lower(st.mfPicked.unit) === lower(id) ? ' on' : '';
       const where = n
@@ -1152,7 +1152,7 @@
     function drawMarks(unit, how) {
       const marks = q('.mk-board .mk-marks');
       if (!marks) return;
-      const show = unit ? partsOf(how === 'writes' ? 'data-action' : 'data-reads', unit) : [];
+      const show = unit ? partsOf(how === 'writes' ? 'data-writes' : 'data-reads', unit) : [];
       marks.innerHTML = show.map((el) => { const b = el.getBoundingClientRect(); return `<i style="left:${b.left}px;top:${b.top}px;width:${b.width}px;height:${b.height}px"></i>`; }).join('');
       const pick = q('.mk-board .mk-stage .kt-pick');
       const el = st.mfPicked && st.mfPicked.el && st.mfPicked.el.isConnected ? st.mfPicked.el : null;
@@ -1176,11 +1176,11 @@
     // What a part is tied to: the unit it triggers or shows, the kit component it is.
     function meaningOf(el) {
       if (!el || !el.closest) return null;
-      const act = el.closest('[data-action]');
+      const act = el.closest('[data-writes]');
       const reads = el.closest('[data-reads]');
       const kit = el.closest('[data-kit]');
       const tied = act || reads;
-      const unit = act ? act.getAttribute('data-action') : reads ? reads.getAttribute('data-reads') : '';
+      const unit = act ? act.getAttribute('data-writes') : reads ? reads.getAttribute('data-reads') : '';
       const target = tied || kit || el;
       const label = act ? `triggers ${unit}` : reads ? `shows ${unit}` : kit ? `the kit component ${kit.dataset.kit}` : `<${el.tagName.toLowerCase()}>`;
       return { el: target, unit: unit.split(/\s+/)[0] || '', how: act ? 'writes' : reads ? 'reads' : '', kit: kit ? kit.dataset.kit : '', label };
