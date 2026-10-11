@@ -411,6 +411,11 @@ fn mocked_screens(manifest: &Manifest) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// A manifest's string field, when it is JSON and has one.
+fn str_of_manifest<'a>(manifest: &'a Manifest, key: &str) -> Option<&'a str> {
+    manifest.json.as_ref().and_then(|json| str_of(json, key))
+}
+
 fn str_of<'a>(json: &'a Value, key: &str) -> Option<&'a str> {
     json.get(key).and_then(Value::as_str)
 }
@@ -795,9 +800,7 @@ fn unit_present(tree: &Tree, task: &Declaration) -> Vec<String> {
                 _ => Vec::new(),
             }
         }
-        Unit::Invariant if tree.aggregates.is_empty() => {
-            missing("invariant, and no aggregate.json carries one")
-        }
+        Unit::Aggregate => aggregate_present(tree, task),
         Unit::PersistedQuery if !tree.has_query_registry => {
             missing("persisted query, and queries/registry.json does not exist")
         }
@@ -807,11 +810,26 @@ fn unit_present(tree: &Tree, task: &Declaration) -> Vec<String> {
                  exist — the stack builds it in Rust, there"
             ))
         }
-        Unit::Invariant
-        | Unit::PersistedQuery
-        | Unit::Migration
-        | Unit::Infrastructure
-        | Unit::Tooling => Vec::new(),
+        Unit::PersistedQuery | Unit::Infrastructure | Unit::Tooling => Vec::new(),
+    }
+}
+
+/// An `aggregate` task documented the aggregate it named — or one at all.
+fn aggregate_present(tree: &Tree, task: &Declaration) -> Vec<String> {
+    let missing = |what: &str| vec![format!("the task declared it built an {what}")];
+    match task.aggregate.as_deref() {
+        Some(name)
+            if !tree
+                .aggregates
+                .iter()
+                .any(|m| str_of_manifest(m, "aggregate") == Some(name)) =>
+        {
+            missing(&format!(
+                "aggregate `{name}`, and no aggregate.json declares it"
+            ))
+        }
+        None if tree.aggregates.is_empty() => missing("aggregate, and no aggregate.json exists"),
+        _ => Vec::new(),
     }
 }
 
@@ -1043,6 +1061,9 @@ mod tests {
                 effect: None,
                 touches: Vec::new(),
                 aggregate: None,
+                produces: Vec::new(),
+                needs: Vec::new(),
+                profile: None,
             };
             let found = violations(&unmocked, Some(&task));
             assert!(found.iter().any(|f| f.contains("contract N")), "{found:?}");
@@ -1142,6 +1163,9 @@ mod tests {
             effect: None,
             touches: Vec::new(),
             aggregate: None,
+            produces: Vec::new(),
+            needs: Vec::new(),
+            profile: None,
         };
         assert_eq!(
             violations(&tree, Some(&capability)),

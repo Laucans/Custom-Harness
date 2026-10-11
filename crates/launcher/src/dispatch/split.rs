@@ -34,6 +34,7 @@ pub async fn run(
     checkout: &shared::Checkout<'_>,
     permission_mode: &str,
     dry_run: bool,
+    profile: &str,
 ) -> Outcome<Verdict> {
     let run_id = spending::run_id_for(milestone);
     let branch = checkout.branch;
@@ -78,6 +79,7 @@ pub async fn run(
         },
         root: workspace.root().to_path_buf(),
         prompts: shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?,
+        profile: profile.to_string(),
     };
 
     let workflow = run::build(

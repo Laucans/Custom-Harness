@@ -37,45 +37,36 @@ everything else is `needs_human: false`.
 
 The repository follows the agent-native architecture (`docs/ARCHITECTURE.md`
 in the repository map): every slice is exactly one unit of it. Name the
-`unit` — `concept`, `data-capability`, `invariant`, `migration`,
-`infrastructure`, `capability`, `persisted-query`, `micro-ui`, `composition`
-or `tooling` — the `system` it belongs to (the bounded context, e.g.
-`credit`), the `concept` it implements when there is one (`Risk@3`), and for
-a `data-capability` its `effect` (`insert`, `update`, `delete`, `upsert`) and
-the existing fields it `touches` (empty for a pure insert). `infrastructure`
-is the store's own plumbing (DataQueue, DataGuard, Resolver, schema); Rust
-that touches no store — contract types, helpers, CI — is `tooling`.
+`unit` — `concept`, `aggregate`, `data-capability`, `infrastructure`,
+`capability`, `persisted-query`, `micro-ui`, `composition` or `tooling` —
+the `system` it belongs to (the bounded context, e.g. `credit`), the
+`concept` it implements when there is one (`Risk@3`), and for the data
+layer the `aggregate` it writes or shapes (as its manifest's
+`target.aggregate` names it) — a `data-capability` also its `effect`
+(`insert`, `update`, `delete`, `upsert`) and the existing fields it
+`touches` (empty for a pure insert). An `aggregate` slice is one
+aggregate's structure whole — its `aggregate.json`, its invariants, the
+migration that shapes its tables; `infrastructure` is the store's own
+plumbing (DataQueue, DataGuard, Resolver); Rust that touches no store —
+contract types, helpers, CI — is `tooling`.
 
-Order the slices in five layers, in this order and no other. A layer is
-built once the one before it exists: the loop runs a layer's slices in
-parallel and waits between layers. Those waits are added for you — give a
-slice a `depends_on` only when it builds on a slice of its own layer, which
-should be rare.
-1. The Concepts the milestone defines, if any (`concept`): everything else
-   reads them.
-2. The **data layer**: every `data-capability` of the milestone (an insert
-   included), its aggregates, `invariant`, `migration` and `infrastructure`.
-   ONE slice when one session can build it; two or three only when it is
-   too big for one session, each chained on the previous — they are
-   serialized anyway, behind the DataGuard. Built first: everything after
-   it reads it or calls it. This is where the data design is decided; the
-   loop builds it on its strongest model.
-3. The **interface contract**, ONE `tooling` slice: the types the
-   Capabilities and the Micro-UIs of this milestone exchange — each
-   Capability's input and output, each Micro-UI's `needs` and `props`, the
-   closed failure sets — and their manifests. Once the contract is fixed,
-   the next two layers build against it, with fakes, in parallel.
-4. The **Capabilities** (`capability`, `persisted-query`): ONE slice per
-   action — list the objects, describe one, generate a value, compute a
-   value, ask for a creation (a call to a DataCapability)... Never cut one
-   action further, never merge two actions into one slice. They share
-   nothing and run in parallel.
-5. The **UI** (`micro-ui`, then `composition`): the screen fragments, once
-   every action exists, and last the Composition that proves the whole
-   milestone runs end to end.
+**What a slice produces and needs is what orders the plan.** Every slice
+lists in `produces` the ids its manifests will carry — an aggregate (`PJ`),
+a DataCapability (`campagne.ajouterPj`), a Capability
+(`campagne.listerPjs`), a Concept (`Risk@3`), a Micro-UI (`Pjs`), a screen
+— and in `needs` the ids it builds on: the aggregate(s) a command writes or
+a Capability reads, the Capabilities a Micro-UI reads and the
+DataCapabilities it triggers, the Micro-UIs a screen composes, the Concept
+a Capability implements. The loop chains a slice on the slice of this plan
+that produces each id it needs, and on nothing else: an id no slice
+produces is already in the repository. So cut for the graph, not for
+layers — one slice per aggregate, one per DataCapability, one per
+Capability action, one per Micro-UI, the screen last — and two slices that
+share no id run in parallel. Never bundle "the data layer" into one slice:
+two aggregates are two slices. `depends_on` (0-based indexes in this array)
+is only for a wait `needs` cannot express, and should be rare.
 
-`depends_on` lists the 0-based indexes, in this same array, of the slices
-one builds on beyond the layer before it.
+{profile}
 
 {existing}
 
@@ -93,9 +84,37 @@ touches, payload, mode, invariants, permissions, callableBy, idempotencyKey),
 Answer with a JSON array and nothing else, one object per slice, in the
 order tasks must be taken:
 ```json
-[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false, "unit": "capability", "system": "credit", "concept": "Risk@3", "effect": null, "touches": [], "depends_on": []}]
+[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false, "unit": "capability", "system": "credit", "concept": "Risk@3", "effect": null, "touches": [], "aggregate": null, "produces": ["credit.calculateRisk"], "needs": ["Account", "Risk@3"], "depends_on": []}]
 ```
 An empty array `[]` means this milestone needs no further task."#;
+
+/// What a profile asks of the cut: how much one slice may hold, for the
+/// session that will build it.
+#[must_use]
+pub fn profile_block(profile: &str) -> String {
+    match profile {
+        "strong" => "The sessions that build these slices hold a lot (profile `strong`): an \
+                     aggregate with its invariants and migration is one slice; a Micro-UI with \
+                     its micro-frontend and its code is one slice; a Capability with its \
+                     persisted query is one slice."
+            .to_string(),
+        "small" => "The sessions that build these slices hold little (profile `small`): cut \
+                    finer, each slice verifiable on its own and chained by `needs` — an \
+                    aggregate as its structure first, then its invariants, then its \
+                    migration (each `produces` the same aggregate id suffixed: `PJ`, \
+                    `PJ.invariants`, `PJ.migration`, the next `needs` the previous); a \
+                    Micro-UI as its mocked micro-frontend first, then its code (the code \
+                    `needs` the micro-frontend); a Capability as its persisted query first, \
+                    then the Capability. More slices, more parallelism, more merges."
+            .to_string(),
+        _ => "The sessions that build these slices hold a fair amount (profile `mid`): an \
+              aggregate with its invariants and migration is one slice, a Micro-UI with its \
+              micro-frontend and its code is one slice, a Capability with its persisted \
+              query is one slice — cut one of them in two only when its brief would not \
+              fit one session."
+            .to_string(),
+    }
+}
 
 /// The free context-reading stage: task slices already open. Costs nothing,
 /// so no `pre`/`post` gate is needed.
@@ -139,6 +158,7 @@ pub fn slice(ports: &Ports, config: &Config) -> Stage<SplitState> {
                 stage: SLICE.to_string(),
                 template: config.prompts.text(prompts::SLICE, SLICE_PROMPT),
                 spending: Rc::clone(&ports.spending),
+                profile: config.profile.clone(),
             })],
         },
     }
@@ -156,6 +176,7 @@ pub fn publish(ports: &Ports, config: &Config) -> Stage<SplitState> {
                 gh: Rc::clone(&ports.gh),
                 slice_stage: SLICE.to_string(),
                 base_branch: config.base_branch.clone(),
+                profile: config.profile.clone(),
             })],
         },
     }
@@ -188,7 +209,14 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_every_placeholder_the_action_fills() {
-        for placeholder in ["{num}", "{title}", "{body}", "{existing}", "{inventory}"] {
+        for placeholder in [
+            "{num}",
+            "{title}",
+            "{body}",
+            "{existing}",
+            "{inventory}",
+            "{profile}",
+        ] {
             assert!(
                 SLICE_PROMPT.contains(placeholder),
                 "{placeholder} missing from SLICE_PROMPT"

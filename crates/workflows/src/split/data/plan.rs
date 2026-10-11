@@ -44,6 +44,12 @@ pub struct TaskItem {
     /// of (`PJ`), as its manifest names it. What serializes two such slices.
     #[serde(default)]
     pub aggregate: Option<String>,
+    /// The ids this slice delivers, as the manifests will name them.
+    #[serde(default)]
+    pub produces: Vec<String>,
+    /// The ids this slice builds on: `split` chains it on their producers.
+    #[serde(default)]
+    pub needs: Vec<String>,
     /// The 0-based indexes, in the same array, of the slices this one builds
     /// on, beyond the layer before its own (that wait is added by `publish`).
     /// Empty: none — a slice then runs in parallel with the rest of its
@@ -83,8 +89,19 @@ impl TaskItem {
                 .map(str::trim)
                 .filter(|aggregate| !aggregate.is_empty() && *aggregate != "-")
                 .map(ToString::to_string),
+            produces: ids(&self.produces),
+            needs: ids(&self.needs),
+            profile: None,
         }
     }
+}
+
+/// Ids trimmed, the empty and the `-` dropped.
+fn ids(list: &[String]) -> Vec<String> {
+    list.iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty() && id != "-")
+        .collect()
 }
 
 /// Extracts the JSON array of task slices from a reply's text.

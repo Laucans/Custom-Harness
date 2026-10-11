@@ -37,10 +37,11 @@ pub enum Unit {
     PersistedQuery,
     /// A frozen screen: Micro-UIs composed for one user goal.
     Composition,
-    /// An integrity rule the `DataGuard` checks, or a relation's policy.
-    Invariant,
-    /// A schema change, expand/contract.
-    Migration,
+    /// One aggregate's structure: its `aggregate.json`, its invariants, the
+    /// migration that shapes its tables — what its `DataCapabilities` then
+    /// write through. Held while it is built: two tasks on one aggregate
+    /// run in turn.
+    Aggregate,
     /// The plumbing itself: `DataQueue`, `DataGuard`, Resolver, the Data layer.
     Infrastructure,
     /// Rust that touches no store: contract types, shared helpers, CI and
@@ -50,15 +51,14 @@ pub enum Unit {
 
 impl Unit {
     /// Every unit, in the order the architecture presents them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::Capability,
         Self::MicroUi,
         Self::Concept,
         Self::DataCapability,
         Self::PersistedQuery,
         Self::Composition,
-        Self::Invariant,
-        Self::Migration,
+        Self::Aggregate,
         Self::Infrastructure,
         Self::Tooling,
     ];
@@ -73,8 +73,7 @@ impl Unit {
             Self::DataCapability => "data-capability",
             Self::PersistedQuery => "persisted-query",
             Self::Composition => "composition",
-            Self::Invariant => "invariant",
-            Self::Migration => "migration",
+            Self::Aggregate => "aggregate",
             Self::Infrastructure => "infrastructure",
             Self::Tooling => "tooling",
         }
@@ -88,7 +87,9 @@ impl Unit {
     }
 
     /// From a spelling, forgiving case, underscores and a missing dash:
-    /// `MicroUI`, `micro_ui` and `micro-ui` are one unit.
+    /// `MicroUI`, `micro_ui` and `micro-ui` are one unit. `invariant` and
+    /// `migration`, the units an aggregate's task used to be cut into, read
+    /// as `aggregate`: an issue opened before still has a unit.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let folded: String = text
@@ -97,6 +98,9 @@ impl Unit {
             .chars()
             .filter(char::is_ascii_alphanumeric)
             .collect();
+        if folded == "invariant" || folded == "migration" {
+            return Some(Self::Aggregate);
+        }
         Self::ALL.into_iter().find(|unit| {
             let key: String = unit.key().chars().filter(|c| *c != '-').collect();
             key == folded
@@ -167,19 +171,17 @@ impl Side {
 ///
 /// Each layer reads the one before it: a Concept is read by everything, the
 /// data layer exists before anything reads or calls it, the contract fixes
-/// what the Capabilities and the Micro-UIs exchange, the Capabilities each
-/// implement one action in parallel against it, and the UI composes them
-/// last. `split` chains a task on the layer before its own; inside a layer
-/// nothing is chained.
+/// the Capabilities each implement one action in parallel against the data,
+/// and the UI composes them last. The layers order a plan for a human to
+/// read; what a task waits on is the graph `split` draws from what each
+/// one produces and needs, never the layer before its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Layer {
     /// `concept`: a definition everything else reads.
     Concept,
-    /// `data-capability` (insert included), `invariant`, `migration`,
-    /// `infrastructure`: built first, serialized behind the `DataGuard`.
+    /// `aggregate`, `data-capability` (insert included), `infrastructure`,
+    /// `tooling`: the data, built first.
     Data,
-    /// `tooling`: the interface contracts and the types they exchange.
-    Contract,
     /// `capability`, `persisted-query`: one action each, in parallel.
     Capability,
     /// `micro-ui`, `composition`: the screen, once every action exists.
@@ -193,7 +195,6 @@ impl Layer {
         match self {
             Self::Concept => "concept",
             Self::Data => "data layer",
-            Self::Contract => "contract",
             Self::Capability => "capability",
             Self::Ui => "ui",
         }
@@ -206,10 +207,9 @@ impl Unit {
     pub const fn layer(self) -> Layer {
         match self {
             Self::Concept => Layer::Concept,
-            Self::DataCapability | Self::Invariant | Self::Migration | Self::Infrastructure => {
+            Self::DataCapability | Self::Aggregate | Self::Infrastructure | Self::Tooling => {
                 Layer::Data
             }
-            Self::Tooling => Layer::Contract,
             Self::Capability | Self::PersistedQuery => Layer::Capability,
             Self::MicroUi | Self::Composition => Layer::Ui,
         }
@@ -234,6 +234,17 @@ pub struct Declaration {
     /// of (`PJ`), as its manifest's `target.aggregate` names it: what two
     /// such tasks must not hold at once.
     pub aggregate: Option<String>,
+    /// The ids this task delivers, as the manifests will name them: an
+    /// aggregate (`PJ`), a `DataCapability` (`campagne.ajouterPj`), a
+    /// Capability, a Micro-UI (`Pjs`), a screen. What later tasks wait on.
+    pub produces: Vec<String>,
+    /// The ids this task builds on — what it reads, triggers or composes.
+    /// `split` chains it on the task that produces each; one no task of the
+    /// plan produces is read as already there.
+    pub needs: Vec<String>,
+    /// How much one session is trusted to hold: `strong`, `mid` or `small`
+    /// — what the slice was cut for, so the SPEC is calibrated the same way.
+    pub profile: Option<String>,
 }
 
 impl Declaration {
@@ -244,7 +255,7 @@ impl Declaration {
     #[must_use]
     pub fn held_aggregate(&self) -> Option<&str> {
         let changes_structure = match self.unit {
-            Unit::Invariant | Unit::Migration => true,
+            Unit::Aggregate => true,
             Unit::DataCapability => self.side() == Side::Write,
             _ => false,
         };
@@ -258,7 +269,7 @@ impl Declaration {
     /// Everything on the read side runs without review; a `DataCapability` is
     /// read-side only as an insert that touches nothing existing — the
     /// architecture's "pure addition" — and every other effect, every
-    /// invariant, migration and piece of store plumbing is the write side.
+    /// aggregate and piece of store plumbing is the write side.
     /// `Tooling` is Rust with no store in it, and reads.
     #[must_use]
     pub fn side(&self) -> Side {
@@ -269,7 +280,7 @@ impl Declaration {
             | Unit::PersistedQuery
             | Unit::Composition
             | Unit::Tooling => Side::Read,
-            Unit::Invariant | Unit::Migration | Unit::Infrastructure => Side::Write,
+            Unit::Aggregate | Unit::Infrastructure => Side::Write,
             Unit::DataCapability => {
                 if self.effect == Some(Effect::Insert) && self.touches.is_empty() {
                     Side::Read
@@ -309,6 +320,15 @@ impl Declaration {
         if let Some(aggregate) = &self.aggregate {
             lines.push(format!("aggregate: {aggregate}"));
         }
+        if !self.produces.is_empty() {
+            lines.push(format!("produces: {}", self.produces.join(", ")));
+        }
+        if !self.needs.is_empty() {
+            lines.push(format!("needs: {}", self.needs.join(", ")));
+        }
+        if let Some(profile) = &self.profile {
+            lines.push(format!("profile: {profile}"));
+        }
         lines.push(format!("side: {}", self.side().label()));
         lines.join("\n")
     }
@@ -324,6 +344,17 @@ impl Declaration {
         let mut effect = None;
         let mut touches = Vec::new();
         let mut aggregate = None;
+        let mut produces = Vec::new();
+        let mut needs = Vec::new();
+        let mut profile = None;
+        let list = |value: &str| -> Vec<String> {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && *id != "-")
+                .map(ToString::to_string)
+                .collect()
+        };
         for line in section.lines() {
             let line = line.trim().trim_start_matches(['-', '*']).trim();
             let Some((key, value)) = line.split_once(':') else {
@@ -354,6 +385,11 @@ impl Declaration {
                 "aggregate" => {
                     aggregate = (!value.is_empty() && value != "-").then(|| value.to_string());
                 }
+                "produces" => produces = list(value),
+                "needs" => needs = list(value),
+                "profile" => {
+                    profile = (!value.is_empty() && value != "-").then(|| value.to_lowercase());
+                }
                 "touches" => {
                     touches = value
                         .split(',')
@@ -372,6 +408,9 @@ impl Declaration {
             effect,
             touches,
             aggregate,
+            produces,
+            needs,
+            profile,
         })
     }
 }
@@ -388,6 +427,9 @@ mod tests {
             effect: None,
             touches: Vec::new(),
             aggregate: None,
+            produces: Vec::new(),
+            needs: Vec::new(),
+            profile: None,
         }
     }
 
@@ -401,16 +443,19 @@ mod tests {
         assert_eq!(Unit::parse("data_capability"), Some(Unit::DataCapability));
         assert_eq!(Unit::parse("Persisted Query"), Some(Unit::PersistedQuery));
         assert_eq!(Unit::parse("widget"), None);
+        // What an aggregate's task used to be cut into still reads as one.
+        assert_eq!(Unit::parse("invariant"), Some(Unit::Aggregate));
+        assert_eq!(Unit::parse("Migration"), Some(Unit::Aggregate));
     }
 
     #[test]
     fn the_layers_are_built_in_order_and_a_pure_insert_is_still_data() {
         assert!(Layer::Concept < Layer::Data);
-        assert!(Layer::Data < Layer::Contract);
-        assert!(Layer::Contract < Layer::Capability);
+        assert!(Layer::Data < Layer::Capability);
         assert!(Layer::Capability < Layer::Ui);
         assert_eq!(Unit::DataCapability.layer(), Layer::Data);
-        assert_eq!(Unit::Tooling.layer(), Layer::Contract);
+        assert_eq!(Unit::Aggregate.layer(), Layer::Data);
+        assert_eq!(Unit::Tooling.layer(), Layer::Data);
         assert_eq!(Unit::PersistedQuery.layer(), Layer::Capability);
         assert_eq!(Unit::Composition.layer(), Layer::Ui);
     }
@@ -431,7 +476,7 @@ mod tests {
             };
             assert_eq!(declaration.side(), Side::Read, "{unit:?}");
         }
-        for unit in [Unit::Invariant, Unit::Migration, Unit::Infrastructure] {
+        for unit in [Unit::Aggregate, Unit::Infrastructure] {
             let declaration = Declaration {
                 unit,
                 ..capability()
@@ -488,12 +533,16 @@ mod tests {
                 "Account.tags".to_string(),
             ],
             aggregate: Some("Account".to_string()),
+            produces: vec!["credit.raiseLimit".to_string()],
+            needs: vec!["Account".to_string(), "Risk@3".to_string()],
+            profile: Some("small".to_string()),
         };
         let text = written.render();
         assert_eq!(
             text,
             "unit: data-capability\nsystem: credit\neffect: update\n\
-             touches: Account.creditLimit, Account.tags\naggregate: Account\nside: harness:write-side"
+             touches: Account.creditLimit, Account.tags\naggregate: Account\n\
+             produces: credit.raiseLimit\nneeds: Account, Risk@3\nprofile: small\nside: harness:write-side"
         );
         assert_eq!(Declaration::parse(&text), Some(written.clone()));
         // Held while it runs: it changes the aggregate's data. A pure insert and a reader hold nothing.
@@ -509,7 +558,7 @@ mod tests {
             "a pure addition adds a folder, holds nothing"
         );
         let migration = Declaration {
-            unit: Unit::Migration,
+            unit: Unit::Aggregate,
             effect: None,
             touches: Vec::new(),
             ..written

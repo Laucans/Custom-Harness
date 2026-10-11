@@ -110,16 +110,19 @@ architecture (`docs/ARCHITECTURE.md`), as `key: value` lines:
 ## Architecture
 
 unit: capability          # capability | micro-ui | concept | data-capability
-                          # | persisted-query | composition | invariant
-                          # | migration | infrastructure
+                          # | persisted-query | composition | aggregate
+                          # | infrastructure | tooling
 system: credit            # the bounded context
 concept: Risk@3           # the versioned Concept it implements, if any
 effect: insert            # data-capability only: insert | update | delete | upsert
 touches: -                # data-capability only: existing fields it changes
-aggregate: Account        # data layer only (data-capability, invariant,
-                          # migration): the aggregate it writes or changes,
-                          # as its manifest's target.aggregate names it —
-                          # two tasks changing one aggregate run in turn
+aggregate: Account        # data layer (aggregate, data-capability): the
+                          # aggregate it writes or shapes, as its manifest's
+                          # target.aggregate names it — two tasks on one
+                          # aggregate run in turn
+produces: credit.raiseLimit   # the ids its manifests will carry
+needs: Account, Risk@3    # the ids it builds on — what it is blocked_by
+profile: mid              # what it was cut for: strong | mid | small
 side: harness:read-side   # or harness:write-side — see below
 ```
 
@@ -134,42 +137,52 @@ first.
 one that proves the whole milestone actually runs end to end — not a
 cleanup task tacked on after everything else.
 
-### Five layers, in this order: Concepts, data, contract, Capabilities, UI
+### What a task produces and needs is what chains it
 
 Every task carries `harness:read-side` or `harness:write-side`, next to
 `harness:agent`/`harness:human`; the write-side data layer also carries
 `harness:data-layer`.
 
-A layer is built once the one before it exists: each task is `blocked_by`
-every task of the layer before its own, and by a task of its own layer
-**only** when it really builds on it. Inside a layer, tasks run **in
-parallel**, each in its own session and clone.
+A task is `blocked_by` the task that **produces** each id it **needs**, and
+by nothing else. An id no task of the plan produces is already in the
+repository. Cut for that graph, not for layers:
 
-1. **Concepts** the milestone defines (`concept`), if any — first:
-   everything else reads them.
-2. **The data layer** — every `data-capability` of the milestone (an insert
-   included), its aggregates, invariants, migrations and any
-   `infrastructure` (the store's own plumbing). ONE task when one session
-   can build it; cut it into two or three only when it is too big for one
-   session, each `blocked_by` the previous: mutations are serialized behind
-   the DataGuard, and so is this. Built first: everything after it reads it
-   or calls it. When it mutates existing data it is write-side and
-   `harness:data-layer`: the loop builds it on its strongest model, and its
-   review blocks on a weak invariant or a migration that cannot be
-   replayed. Its PR is merged by `milestone_merge` once reviewed clean and
-   green.
-3. **The interface contract** — ONE `tooling` task: the types the
-   Capabilities and the Micro-UIs of this milestone exchange (each
-   Capability's input and output, each Micro-UI's `needs` and `props`, the
-   closed failure sets) and their manifests. With the contract fixed, the
-   next two layers build against it with fakes, in parallel.
-4. **The Capabilities** (`capability`, `persisted-query`) — ONE task per
-   action: list the objects, describe one, generate a value, compute a
-   value, ask for a creation (a call to a DataCapability)... Never cut one
-   action further, never merge two actions into one task.
-5. **The UI** (`micro-ui`, then `composition`) — the screen fragments once
-   every action exists, and last the Composition that proves the whole
-   milestone runs end to end.
+- **Concepts** (`concept`) — one each; nothing blocks them, every
+  Capability that implements one `needs` it.
+- **Aggregates** (`aggregate`) — ONE task per aggregate: its
+  `aggregate.json`, its invariants, the migration that shapes its tables,
+  whole. It `produces` the aggregate's id (`PJ`). Two aggregates are two
+  tasks, and they run **in parallel**; the loop holds the second of two
+  tasks on one aggregate while the first runs.
+- **DataCapabilities** (`data-capability`) — ONE task each, `needs` its
+  aggregate, `produces` its id (`campagne.ajouterPj`). Two commands on two
+  aggregates run in parallel; a pure insert is read-side.
+- **Capabilities** (`capability`, `persisted-query`) — ONE task per action,
+  `needs` the aggregate(s) it reads and the Concept it implements,
+  `produces` its id. Never cut one action further, never merge two.
+- **Micro-UIs** (`micro-ui`) — ONE task each, `needs` the Capabilities it
+  reads and the DataCapabilities it triggers — those and no other —
+  `produces` its name (`Pjs`). It ships its micro-frontend (generated on the
+  factory view, or mocked) before its code, writes the kit's classes and
+  names its parts `data-writes`/`data-reads`.
+- **The screen** (`composition`) — last, `needs` its Micro-UIs, and proves
+  the milestone runs end to end.
+
+There is no "interface contract" task: each unit lands with its own
+manifest, which the gates validate. `depends_on` is only for a wait `needs`
+cannot say, and should be rare.
+
+### The profile: how much one session holds
+
+`profile:` says what the slices were cut for — `strong` (opus), `mid`
+(sonnet), `small` (haiku, a local model). `harness split --split-profile`
+sets it; empty, it is `mid`. A `strong` or `mid` cut keeps an aggregate, a
+Micro-UI or a Capability whole; a `small` cut splits each into steps
+chained by `needs` (an aggregate's structure, then its invariants, then its
+migration; a Micro-UI's micro-frontend, then its code; a query, then its
+Capability) — more tasks, more parallelism, more merges. The profile is
+written in every task so `/business-analyst` calibrates the SPEC the same
+way, and so a task cut for `small` is seen if a `strong` model takes it.
 
 ### Mark `harness:human` honestly
 

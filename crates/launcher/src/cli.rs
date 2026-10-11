@@ -166,6 +166,12 @@ pub struct TrialArgs {
 /// checkout, which repository, how to run `claude -p`.
 #[derive(Debug, Args)]
 pub struct LaneArgs {
+    /// What `split` cuts the tasks for: `strong`, `mid` or `small` — how
+    /// much one session of the model that will build them holds. Empty:
+    /// deduced from `--model`, else from the loop's default (`sonnet`, mid).
+    #[arg(long, env = "SPLIT_PROFILE", default_value = "")]
+    pub split_profile: String,
+
     /// The checkout to read the repository from, by id. Empty: the shared
     /// read-only checkout the router uses.
     #[arg(long, default_value = "")]
@@ -208,6 +214,11 @@ pub struct DoctorArgs {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 pub struct WatchArgs {
+    /// What `split` cuts the tasks for: `strong`, `mid` or `small` — how
+    /// much one session of the model that will build them holds. Empty: `mid`.
+    #[arg(long, env = "SPLIT_PROFILE", default_value = "")]
+    pub split_profile: String,
+
     /// Seconds between two polls.
     #[arg(long, default_value_t = 30)]
     pub interval: u64,

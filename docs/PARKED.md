@@ -129,6 +129,16 @@ Proposal, in three parts:
    The milestone's `## Architecture` gains an `aggregates:` line, the
    planner's equivalent of the task's `aggregate:`.
 
+Done since (`split` on the graph): `aggregate` is a unit, `migration` and
+`invariant` read as it; `produces`/`needs` chain the tasks and the layers
+only order the plan; the "interface contract" task is gone; a `profile`
+(`strong`/`mid`/`small`) sets how much one slice holds. **Still parked:**
+the profile is not deduced from the loop's model (`RunArgs.model`,
+`DATA_LAYER_MODEL`) — `--split-profile` sets it, else `mid`; `split` reads
+no run config today, and wiring one would couple it to the loop. Deduce it
+at the place both are known (the watch's route), when a product runs on a
+small model for real.
+
 Open with it: whether a DataCapability's task should be allowed to *also*
 add a field to its aggregate (one task, one unit says no — a field is the
 aggregate's task), and what `/refinement` does with the `aggregate:` line

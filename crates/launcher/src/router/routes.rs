@@ -112,6 +112,7 @@ async fn dispatched(
                 &shared_checkout(args),
                 &args.permission_mode,
                 args.dry_run,
+                &harness_workflows::split::config::profile_for(&args.split_profile, ""),
             )
             .await,
             log,

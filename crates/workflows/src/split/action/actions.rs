@@ -342,6 +342,8 @@ pub struct AskForSlice {
     pub template: String,
     /// Where spending is recorded.
     pub spending: Rc<dyn Spending>,
+    /// What the slices are cut for: `strong`, `mid` or `small`.
+    pub profile: String,
 }
 
 #[async_trait(?Send)]
@@ -364,6 +366,10 @@ impl SessionAction<SplitState> for AskForSlice {
                 ("title", &milestone.title),
                 ("body", &body),
                 ("existing", &existing),
+                (
+                    "profile",
+                    &crate::split::orchestration::stages::profile_block(&self.profile),
+                ),
                 ("inventory", &open.state.inventory),
             ],
         );

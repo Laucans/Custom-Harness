@@ -90,6 +90,7 @@ async fn main() -> ExitCode {
                 &checkout_of(&sub.lane),
                 &sub.lane.permission_mode,
                 sub.lane.dry_run,
+                &harness_workflows::split::config::profile_for(&sub.lane.split_profile, ""),
             )
             .await;
             lane_exit(&here, "split", sub.milestone, ran)
