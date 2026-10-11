@@ -86,6 +86,7 @@
       await read();
       const after = job();
       drawJob();
+      drawPreview();
       if (after && after.state !== 'running') onJobEnd(before, after);
       else poll();
     }, POLL_MS);
@@ -211,8 +212,11 @@
     if (!j) return '';
     const title = { found: 'Founding the factory', connect: 'Connecting the repository', mockups: 'Drawing the mock-ups', initialize: 'Initializing the factory' }[j.work] || j.work;
     const state = j.state === 'running' ? '<span class="cr-spin" aria-hidden="true"></span> under way' : j.state === 'done' ? '<span class="tag ok">done</span>' : '<span class="tag bad">stopped</span>';
+    // Every step but the last one of a still-running job is done — the
+    // last is whatever is under way right now, so it stays plain.
+    const last = j.steps.length - 1;
     return `<div class="cr-job ${esc(j.state)}" role="status"><div class="cr-job-head"><b>${esc(title)}</b> ${state}</div>
-      <ul>${j.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>
+      <ul>${j.steps.map((s, i) => `<li>${j.state !== 'running' || i < last ? '<span class="cr-ok">✓</span> ' : ''}${esc(s)}</li>`).join('')}</ul>
       ${j.why ? `<p class="cr-bad">${esc(j.why)}</p>` : ''}
       ${j.report ? `<details><summary>init-repo's report</summary><pre>${esc(j.report)}</pre></details>` : ''}
       ${C.opening ? `<p>Opening the factory… the page reloads when it is up.</p>` : ''}</div>`;
@@ -220,6 +224,45 @@
   function drawJob() {
     const el = page.querySelector('[data-cr-job]');
     if (el) el.innerHTML = jobPanel();
+  }
+
+  // A live, navigable preview of the mock-up as it stands right now: the
+  // same /mock/{branch}/{*path} route the review step's easel reads pages
+  // through, which already serves whatever is on disk — committed or still
+  // mid-session — with no gate on the job being done. Only reloaded when
+  // job.steps actually grew (kept on the host's own dataset, so a freshly
+  // drawn pane starts correctly whatever ran before it existed), and at
+  // its *current* path rather than forced back to the index, so clicking
+  // into another page survives the next tick.
+  function drawPreview() {
+    const j = job();
+    const host = page.querySelector('[data-cr-preview]');
+    if (!j || !host || (j.work !== 'mockups' && j.work !== 'initialize')) return;
+    const seen = Number(host.dataset.steps || 0);
+    if (j.steps.length <= seen) return;
+    host.dataset.steps = String(j.steps.length);
+    const frame = host.querySelector('.cr-draw-frame');
+    if (!frame) return;
+    if (frame.hidden) {
+      frame.hidden = false;
+      host.querySelector('.cr-draw-empty')?.setAttribute('hidden', '');
+      const slug = (host.dataset.crPreview || '').replace(/\//g, '__');
+      frame.src = `/mock/${encodeURIComponent(slug)}/index.html`;
+    } else {
+      frame.src = frame.src.replace(/\?.*$/, '') + '?v=' + Date.now();
+    }
+  }
+  // Two columns while the job runs: the checklist on the left, the
+  // preview on the right — a placeholder until the first page lands.
+  function drawSplit(branch, track) {
+    return `<div class="cr-draw-split">
+      <div class="cr-draw-track">${track}</div>
+      <div class="cr-draw-preview" data-cr-preview="${esc(branch)}">
+        <h3>Taking shape</h3>
+        <p class="muted cr-draw-empty">Nothing drawn yet — the first page appears here once it is written.</p>
+        <iframe class="cr-draw-frame" title="the proof of concept, as it is drawn" hidden></iframe>
+      </div>
+    </div>`;
   }
 
   function landing() {
@@ -331,8 +374,8 @@
     const mine = j && j.work === 'mockups';
     const failed = mine && j.state === 'failed';
     return `<p class="muted">A Claude Code session draws the proof of concept as interactive mock-ups, fast: one page per screen of the scope, the journeys linked, the design system's components and tokens. The micro-frontends come once you accept it.</p>
-      ${running('mockups') ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Drawing the proof of concept…</b></div>' : ''}
-      <div data-cr-job>${mine ? jobPanel() : ''}</div>
+      ${running('mockups') ? drawSplit(C.data.branch, '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Drawing the proof of concept…</b></div><div data-cr-job>' + jobPanel() + '</div>') : ''}
+      ${!running('mockups') && mine ? `<div data-cr-job>${jobPanel()}</div>` : ''}
       ${r.mocked && !running('mockups') ? `<div class="callout">${esc(r.mocked)}</div>` : ''}
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="design"${running('mockups') ? ' disabled' : ''}>← Back</button>
         <span class="cr-gap"></span>
@@ -367,8 +410,9 @@
     const failed = mine && j.state === 'failed';
     const done = !!r.issue && !running('initialize');
     return `<p class="muted">The accepted mock-up made again of micro-frontends — you find them in the mock-up's micro-frontends view — then the design system and the mock-up published on the integration branch, the proof of concept's roadmap task opened, the watch started: the planner takes it from there.</p>
+      ${running('initialize') ? drawSplit(C.data.branch, '<div data-cr-job>' + jobPanel() + '</div>') : ''}
+      ${!running('initialize') && mine ? `<div data-cr-job>${jobPanel()}</div>` : ''}
       ${r.componentized ? `<div class="callout">${esc(r.componentized)}</div>` : ''}
-      <div data-cr-job>${mine ? jobPanel() : ''}</div>
       ${r.issue ? `<p>The roadmap task: <a href="${esc(r.issue)}" target="_blank" rel="noopener">${esc(r.issue)} ↗</a></p>` : ''}
       <div class="cr-actions"><span></span>
         ${failed || (!mine && !r.issue) ? '<button type="button" class="cr-btn" data-cr-accept>Initialize again</button>' : ''}

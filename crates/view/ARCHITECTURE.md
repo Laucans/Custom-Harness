@@ -128,7 +128,18 @@ It has two sections:
      branch's mock-up workspace (`Oneshot::work_in`: read and write, nothing
      that runs) draws a page per screen of the scope, on the kit and the
      tokens (`mockups_prompt`, the mock-up's own rules first) — fast, its
-     markup inline: the proposal loop is what is optimised here;
+     markup inline: the proposal loop is what is optimised here. While it
+     runs, a concurrent poller (`poll_mockup_pages`, every `DRAW_POLL`, 2s)
+     reads `Mockups::state` — safe alongside an active write, no locking
+     either side needs — and reports each page the manifest lists once it
+     actually has a fragment (`MockPage::hash` non-empty; a page merely
+     listed is still to do), naming it and the count read back from the
+     manifest itself, never predicted from the scope's prose. The page's
+     left column is the growing checklist; the right shows the mock-up
+     itself, navigable in its current state, through the same
+     `/mock/{branch}/{*path}` route the review step's easel already reads
+     pages through — reloaded at its own current path, not forced back to
+     the index, whenever a new step lands;
   8. **review** — the pages, then three ways: **request changes** (the
      mock-up's easel and its pins, over the page), **regenerate** (back to
      the brief, everything kept; the grilling keeps its questions, editable
@@ -137,11 +148,15 @@ It has two sections:
   9. **initialize** — first, a session makes the accepted mock-up again of
      **micro-frontends** without changing what the human saw
      (`componentize_prompt`: a fragment, a fixture and a `pages.json` entry
-     per Micro-UI, the pages left as layout and `data-component`), and a
-     gate refuses a page that injects none or one unlisted or without a
-     fragment (`not_componentized`) — so they are in the mock-up's
-     micro-frontends view; then the design system published and carried, the
-     mock-up published on the integration branch (else saved on
+     per Micro-UI, the pages left as layout and `data-component`), the same
+     split and the same live poller watching for each micro-frontend
+     (`poll_componentize`, seeded with whatever the branch already had —
+     this call has no `discard()`, components persist across a retry, so
+     one already there is never reported as just made), and a gate refuses
+     a page that injects none or one unlisted or without a fragment
+     (`not_componentized`) — so they are in the mock-up's micro-frontends
+     view; then the design system published and carried, the mock-up
+     published on the integration branch (else saved on
      `mockup/proof-of-concept`), a `harness:roadmap` + `harness:ready` task
      carrying the brief, the decisions, the scope and the pages
      (`roadmap_issue`), the watch started; *open the plant* ends the

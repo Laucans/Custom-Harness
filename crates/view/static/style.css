@@ -1446,7 +1446,17 @@ body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 .cr-job.done { border-color: var(--ok); }
 .cr-job-head { display: flex; align-items: center; gap: 8px; }
 .cr-job ul { margin: 8px 0; padding-left: 18px; font: 12px/1.6 var(--mono); color: var(--dim); }
+.cr-job li .cr-ok { color: var(--ok); }
 .cr-job pre { max-height: 280px; overflow: auto; font: 11px var(--mono); white-space: pre-wrap; }
+/* The drawing steps, in two columns: the checklist, and the mock-up taking shape. */
+.cr-draw-split { display: grid; grid-template-columns: 1fr 2fr; gap: 14px; align-items: start; }
+.cr-draw-track { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.cr-draw-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cr-draw-preview h3 { margin: 0; font: 600 14px var(--sans); color: var(--text); }
+.cr-draw-empty { border: 1px dashed var(--line); border-radius: 8px; padding: 16px; text-align: center; }
+.cr-draw-frame { width: 100%; min-height: 560px; height: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.cr-draw-frame[hidden] { display: none; }
+@media (max-width: 900px) { .cr-draw-split { grid-template-columns: 1fr; } .cr-draw-frame { min-height: 420px; } }
 .cr-kinds { display: grid; gap: 10px; }
 .cr-kind { display: grid; grid-template-columns: 22px 1fr auto; grid-template-rows: auto auto; gap: 2px 8px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; }
 .cr-kind input { grid-row: 1 / 3; }

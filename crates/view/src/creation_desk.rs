@@ -9,8 +9,10 @@
 //! system's easel and the mock-up's serve it as they serve every other.
 //! One job at a time; each is a task, kept to be aborted on shutdown.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -545,6 +547,8 @@ impl CreationDesk {
         let prompt = mockups_prompt(&record, &rules, &kit);
         let model = self.setup.model.clone();
         self.step("opening the integration branch's mock-up");
+        let poll_mockups = mockups.clone();
+        let poll_branch = branch.clone();
         let dir = tokio::task::spawn_blocking(move || {
             // A drawing starts from the branch as committed: one sent back
             // leaves nothing of the last behind.
@@ -554,9 +558,14 @@ impl CreationDesk {
         .await
         .map_err(|e| format!("the step did not finish: {e}"))??;
         self.step("a Claude Code session draws the proof of concept's pages");
+        // The workspace was just discarded above: nothing of a page is
+        // there yet, so the poller starts from an empty `seen`.
+        let poll = tokio::spawn(poll_mockup_pages(self.clone(), poll_mockups, poll_branch));
         let said = tokio::task::spawn_blocking(move || oneshot.work_in(&model, &prompt, &dir))
             .await
-            .map_err(|e| format!("the session did not finish: {e}"))??;
+            .map_err(|e| format!("the session did not finish: {e}"));
+        poll.abort();
+        let said = said??;
         self.step("the mock-up is drawn");
         let facts = self.facts().await;
         let _held = self.record.lock().await;
@@ -718,7 +727,26 @@ impl CreationDesk {
         let prompt = componentize_prompt(record, &rules, &kit);
         let model = self.setup.model.clone();
         self.step("a Claude Code session makes the mock-up again of micro-frontends");
-        let (said, problems) = tokio::task::spawn_blocking(move || {
+        // Seeded with whatever is already there: a retry's own earlier
+        // components are never reported as newly made.
+        let seed_mockups = mockups.clone();
+        let seed_branch = branch.clone();
+        let seen: HashSet<String> = tokio::task::spawn_blocking(move || {
+            seed_mockups
+                .state(&seed_branch)
+                .map(|state| state.components.into_iter().map(|c| c.name).collect())
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+        let poll = tokio::spawn(poll_componentize(
+            self.clone(),
+            mockups.clone(),
+            branch.clone(),
+            seen,
+        ));
+        let said = tokio::task::spawn_blocking(move || {
             let dir = mockups.workspace(&branch)?;
             let said = oneshot.work_in(&model, &prompt, &dir)?;
             let state = mockups.state(&branch)?;
@@ -739,7 +767,9 @@ impl CreationDesk {
             Ok::<_, String>((said, not_componentized(&pages, &components)))
         })
         .await
-        .map_err(|e| format!("the session did not finish: {e}"))??;
+        .map_err(|e| format!("the session did not finish: {e}"));
+        poll.abort();
+        let (said, problems) = said??;
         if !problems.is_empty() {
             return Err(format!(
                 "the mock-up is not made of micro-frontends yet: {}",
@@ -758,6 +788,78 @@ impl CreationDesk {
         let task = lock(&self.task).take();
         if let Some(task) = task {
             task.abort();
+        }
+    }
+}
+
+/// How often the mock-up's drawing and the micro-frontends' remake are
+/// polled for a page or a component that just landed.
+const DRAW_POLL: Duration = Duration::from_secs(2);
+
+/// Reports each page of `branch`'s mock-up as it gets a real fragment,
+/// starting from nothing: `drawn()` always calls this on a freshly
+/// discarded workspace, so no page is there yet to seed `seen` with. Runs
+/// until aborted — `drawn()` stops it once `work_in` returns, success or
+/// not; a read that fails is skipped, never reported as a reason the job
+/// failed, since the real outcome is `work_in`'s alone.
+async fn poll_mockup_pages(desk: CreationDesk, mockups: Arc<dyn Mockups>, branch: String) {
+    let mut seen: HashSet<String> = HashSet::new();
+    loop {
+        tokio::time::sleep(DRAW_POLL).await;
+        let (mockups, at) = (mockups.clone(), branch.clone());
+        let Ok(Ok(state)) = tokio::task::spawn_blocking(move || mockups.state(&at)).await else {
+            continue;
+        };
+        let total = state.pages.len();
+        for page in &state.pages {
+            if page.hash.is_empty() || seen.contains(&page.path) {
+                continue;
+            }
+            seen.insert(page.path.clone());
+            desk.step(&format!(
+                "drew the mock-up's \"{}\" page ({} of {total})",
+                page.title,
+                seen.len()
+            ));
+        }
+    }
+}
+
+/// Reports each micro-frontend of `branch`'s mock-up as it gets a real
+/// fragment, `seen` seeded with whatever `componentize()` found already
+/// there before it started — a retry's own earlier components are not
+/// reported as newly made. Runs until aborted, the same as above.
+async fn poll_componentize(
+    desk: CreationDesk,
+    mockups: Arc<dyn Mockups>,
+    branch: String,
+    mut seen: HashSet<String>,
+) {
+    loop {
+        tokio::time::sleep(DRAW_POLL).await;
+        let (mockups, at) = (mockups.clone(), branch.clone());
+        let Ok(Ok(state)) = tokio::task::spawn_blocking(move || {
+            let state = mockups.state(&at)?;
+            let mut built = Vec::new();
+            for c in &state.components {
+                built.push((c.name.clone(), mockups.file(&at, &c.fragment)?.is_some()));
+            }
+            Ok::<_, String>((state.components.len(), built))
+        })
+        .await
+        else {
+            continue;
+        };
+        let (total, built) = state;
+        for (name, there) in built {
+            if !there || seen.contains(&name) {
+                continue;
+            }
+            seen.insert(name.clone());
+            desk.step(&format!(
+                "made the \"{name}\" micro-frontend real ({} of {total})",
+                seen.len()
+            ));
         }
     }
 }
@@ -1191,6 +1293,237 @@ mod tests {
                 .expect("a record")
                 .componentized,
             None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session that draws two pages, several seconds apart — slow enough
+    /// that a poller's own 2s tick lands on each page in turn, not just the
+    /// end of a fast call.
+    struct StagedPages;
+
+    impl Oneshot for StagedPages {
+        fn ask(&self, _: &str, _: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+
+        fn work_in(&self, _: &str, _: &str, dir: &Path) -> Result<String, String> {
+            let write = |name: &str, manifest: &str| -> Result<(), String> {
+                std::fs::create_dir_all(dir.join("mock/pages")).map_err(|e| e.to_string())?;
+                std::fs::write(dir.join(format!("mock/pages/{name}.html")), "<main></main>")
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(dir.join("mock/pages.json"), manifest).map_err(|e| e.to_string())
+            };
+            // "C" is listed from the start but never gets a file: it must
+            // never be reported, whatever a mutated `||` would let through.
+            write(
+                "a",
+                r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A"},{"path":"pages/c.html","title":"C"}],"components":[]}"#,
+            )?;
+            std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
+            write(
+                "b",
+                r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A"},{"path":"pages/b.html","title":"B"},{"path":"pages/c.html","title":"C"}],"components":[]}"#,
+            )?;
+            // Left on disk long enough for the poller's next tick to see it
+            // before the call returns and the poller is aborted.
+            std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
+            Ok("two pages".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn drawing_the_mock_up_reports_each_page_live_as_it_is_written() {
+        let dir = product("staged-pages");
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let kit = KitDesk::new(kit_desk::Setup {
+            mockups: Arc::clone(&mockups),
+            oneshot: None,
+            model: "m".into(),
+            sessions: 1,
+            pins: Arc::new(Shelf::default()),
+            integration_branch: "main_agent".into(),
+        });
+        let book = Arc::new(Book::default());
+        let record = Creation {
+            kind: Some(Kind::Vertical),
+            brief: "a ledger".to_string(),
+            questions: vec![Question {
+                id: 1,
+                title: "who".to_string(),
+                answer: "the client".to_string(),
+                ..Question::default()
+            }],
+            scope: "## Goal\nproof".to_string(),
+            step: Step::Mockups,
+            ..Creation::new("alpha", "me/alpha")
+        };
+        book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: Some(Arc::new(StagedPages)),
+            model: "m".to_string(),
+            mockups: Some(mockups),
+            kit: Some(kit),
+            data: None,
+            plant: None,
+        });
+        desk.draw_mockups().await.expect("started");
+        // The first page's own line shows up while the session is still
+        // mid-write, well before `work_in` itself returns.
+        let mut seen_a = false;
+        for _ in 0..80 {
+            if desk
+                .job()
+                .is_some_and(|j| j.steps.iter().any(|s| s.contains("\"A\" page (1 of 2)")))
+            {
+                seen_a = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(seen_a, "the first page's step never showed up live");
+        assert_eq!(
+            desk.job().map(|j| j.state),
+            Some(State::Running),
+            "the session itself had not returned yet"
+        );
+        let job = settled(&desk).await;
+        assert_eq!((job.work, job.state), (Work::Mockups, State::Done));
+        assert!(
+            job.steps.iter().any(|s| s.contains("\"B\" page (2 of 3)")),
+            "{:?}",
+            job.steps
+        );
+        assert!(
+            !job.steps.iter().any(|s| s.contains("\"C\" page")),
+            "listed with no file ever written: never reported done — {:?}",
+            job.steps
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session that leaves an already-made component as it is and makes
+    /// one brand new one, several seconds in.
+    struct StagedComponentize;
+
+    impl Oneshot for StagedComponentize {
+        fn ask(&self, _: &str, _: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+
+        fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
+            assert!(
+                prompt.contains("Make it again of **micro-frontends**"),
+                "the right prompt"
+            );
+            std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
+            let write = |path: &str, text: &str| -> Result<(), String> {
+                let full = dir.join(path);
+                std::fs::create_dir_all(full.parent().ok_or("no folder")?)
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(full, text).map_err(|e| e.to_string())
+            };
+            write("mock/components/New.html", "<section>new</section>")?;
+            write(
+                "mock/pages.json",
+                r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","components":["Old","New"]}],"components":[{"name":"Old","fragment":"components/Old.html"},{"name":"New","fragment":"components/New.html"}]}"#,
+            )?;
+            write(
+                "mock/pages/home.html",
+                r#"<div data-component="Old"></div><div data-component="New"></div>"#,
+            )?;
+            // Left on disk long enough for the poller's next tick to see it
+            // before the call returns and the poller is aborted.
+            std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
+            Ok("one new micro-frontend".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn remaking_micro_frontends_never_reports_one_already_there_as_just_made() {
+        let dir = product("staged-componentize");
+        // An already-made component, as a prior attempt would have left it.
+        std::fs::write(
+            dir.join("main_agent/mock/pages.json"),
+            r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","components":["Old"]}],"components":[{"name":"Old","fragment":"components/Old.html"}]}"#,
+        )
+        .expect("seeded");
+        std::fs::create_dir_all(dir.join("main_agent/mock/components")).expect("dir");
+        std::fs::write(
+            dir.join("main_agent/mock/components/Old.html"),
+            "<section>old</section>",
+        )
+        .expect("seeded");
+        std::fs::create_dir_all(dir.join("main_agent/mock/pages")).expect("dir");
+        std::fs::write(
+            dir.join("main_agent/mock/pages/home.html"),
+            r#"<div data-component="Old"></div>"#,
+        )
+        .expect("seeded");
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let kit = KitDesk::new(kit_desk::Setup {
+            mockups: Arc::clone(&mockups),
+            oneshot: None,
+            model: "m".into(),
+            sessions: 1,
+            pins: Arc::new(Shelf::default()),
+            integration_branch: "main_agent".into(),
+        });
+        let book = Arc::new(Book::default());
+        let record = Creation {
+            kind: Some(Kind::Vertical),
+            brief: "a ledger".to_string(),
+            questions: vec![Question {
+                id: 1,
+                title: "who".to_string(),
+                answer: "the client".to_string(),
+                ..Question::default()
+            }],
+            scope: "## Goal\nproof".to_string(),
+            mocked: Some("drawn".to_string()),
+            ..Creation::new("alpha", "me/alpha")
+        };
+        book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: Some(Arc::new(StagedComponentize)),
+            model: "m".to_string(),
+            mockups: Some(mockups),
+            kit: Some(kit),
+            data: None,
+            plant: None,
+        });
+        desk.accept().await.expect("accepted");
+        let mut seen_new = false;
+        for _ in 0..80 {
+            if desk
+                .job()
+                .is_some_and(|j| j.steps.iter().any(|s| s.contains("\"New\" micro-frontend")))
+            {
+                seen_new = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(seen_new, "the new component's step never showed up live");
+        let job = settled(&desk).await;
+        assert!(
+            !job.steps
+                .iter()
+                .any(|s| s.contains("\"Old\" micro-frontend")),
+            "an already-made component must never be reported as just made: {:?}",
+            job.steps
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
