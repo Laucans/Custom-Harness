@@ -76,6 +76,14 @@
     // Entering the control room reads the limits its panel shows.
     if (S.level === 'C' && S.room === 'control') readLimitsNow(false);
   }
+  // The scene is not loaded for the factory-creation page, which has no 3D;
+  // it loads when the plant is shown.
+  function ensureRenderer() {
+    if (S.rendererStarted || window.HarnessFactories.creating()) return;
+    S.rendererStarted = true;
+    loadRenderer();
+  }
+  window.addEventListener('harness:factory-page', ensureRenderer);
   async function loadRenderer() {
     const notice = $('render-notice');
     try {
@@ -100,7 +108,7 @@
   // the clock, so a slower pace only makes them coarser.
   function setPace() {
     if (!S.render || !S.render.setPace) return;
-    const pace = document.hidden || document.body.classList.contains('full-pane') ? 'paused'
+    const pace = document.hidden || document.body.classList.contains('full-pane') || document.body.classList.contains('creating') ? 'paused'
       : document.body.classList.contains('split') ? 'dim' : 'full';
     if (pace === S.pace) return;
     S.pace = pace;
@@ -147,6 +155,8 @@
     es.onerror = () => { $('watch-dot').className = 'dot warn'; $('watch-text').textContent = 'reconnecting…'; };
   }
   function onSnapshot() {
+    window.HarnessFactories.onSnapshot(S.snap);
+    ensureRenderer();
     status();
     dock();
     crewBar();
@@ -550,6 +560,7 @@
   // bookmarked or opened straight from a link.
   function go(level, room = null) {
     S.level = level; S.room = room;
+    window.dispatchEvent(new Event('harness:navigate'));
     closePane();
     hideTip();
     crumbs();
@@ -574,18 +585,21 @@
   }
   function crumbs() {
     // This plant is a development factory; other workflow families run other kinds.
-    const parts = [{ label: '🏭 ' + (S.snap ? S.snap.project.name : 'factory') + ' · development factory', go: 'A' }];
-    if (S.level !== 'A') parts.push({ label: 'inside', go: 'B' });
+    const parts = [{ label: '🏭 ' + (S.snap ? S.snap.project.name : 'factory') + ' · development factory', go: 'A', factory: true }];
+    if (S.level !== 'A') parts.push({ label: 'plant', go: 'A' }, { label: 'inside', go: 'B' });
     if (S.level === 'C') {
       const r = roomByKey(S.room);
       parts.push({ label: r ? `room ${r.id} · ${r.name}` : S.room, go: 'C', room: S.room });
     }
     $('crumbs').innerHTML = parts
-      .map((p, i) => `${i ? '<span class="sep">›</span>' : ''}<button data-go="${p.go}" data-room="${p.room || ''}" class="${i === parts.length - 1 ? 'here' : ''}">${esc(p.label)}</button>`)
+      .map((p, i) => `${i ? '<span class="sep">›</span>' : ''}${p.factory
+        ? `<button data-factory aria-haspopup="dialog" aria-expanded="false" title="Switch factory">${esc(p.label)}<span class="caret" aria-hidden="true">▾</span></button>`
+        : `<button data-go="${p.go}" data-room="${p.room || ''}" class="${i === parts.length - 1 ? 'here' : ''}">${esc(p.label)}</button>`}`)
       .join('');
   }
   $('crumbs').addEventListener('click', (e) => {
     const b = e.target.closest('button');
+    if (b && b.dataset.factory !== undefined) { window.HarnessFactories.toggle(); return; }
     if (!b || b.classList.contains('here')) return;
     go(b.dataset.go, b.dataset.room || null);
   });
@@ -3039,7 +3053,6 @@
   // ---- go --------------------------------------------------------------------
   fromHash();
   crumbs();
-  loadRenderer();
   load().then(subscribe);
   // A diagnosis asked before a reload is still polled after it.
   pullDiagnoses();

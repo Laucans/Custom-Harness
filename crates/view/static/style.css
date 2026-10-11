@@ -48,6 +48,7 @@ body {
   font-size: 12px;
 }
 
+#hud { position: relative; }
 #crumbs { display: flex; align-items: center; gap: 6px; }
 #crumbs button {
   background: transparent;
@@ -1315,3 +1316,56 @@ body.picking, body.picking * { user-select: none; }
 .mk-stage .mk-marks i { position: absolute; outline: 2px solid var(--accent); background: rgba(226, 178, 64, 0.12); border-radius: 2px; }
 .mk-stage-none { height: 240px; }
 .mk-mfsave { margin: 0 16px; flex: none; }
+
+/* ---- the factories menu and the creation page (factories.js) ------------------------ */
+#factory-menu {
+  position: absolute; left: 10px; top: calc(100% + 4px); z-index: 40; width: 320px;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35); font: 12px var(--mono);
+}
+#factory-menu[hidden] { display: none; }
+#fm-search {
+  width: 100%; background: var(--panel-2); color: var(--text); font: inherit;
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+}
+#fm-search:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Five rows show; the rest scrolls, the bar always drawn. */
+#fm-list { max-height: calc(44px * 5); overflow-y: scroll; display: flex; flex-direction: column; }
+.fm-row {
+  flex: none; height: 44px; display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  text-align: left; background: transparent; color: var(--text); font: inherit;
+  border: 1px solid transparent; border-radius: 6px; padding: 0 10px; cursor: pointer;
+}
+.fm-row b, .fm-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fm-row small { color: var(--dim); font-size: 11px; }
+.fm-row:hover, .fm-row:focus-visible { background: var(--panel-2); border-color: var(--line); outline: none; }
+.fm-row.current b { color: var(--accent); }
+.fm-row:disabled { opacity: .5; cursor: default; }
+.fm-empty { color: var(--dim); padding: 12px 10px; }
+#fm-note { color: var(--dim); padding: 2px 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#fm-note.bad { color: var(--bad); }
+#fm-new {
+  background: transparent; color: var(--accent); font: inherit; text-align: left; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
+}
+#fm-new:hover, #fm-new:focus-visible { background: var(--panel-2); border-color: var(--accent); outline: none; }
+
+#crumbs button[data-factory] .caret { font-size: 10px; opacity: .7; margin-left: 4px; }
+#factory-page[hidden] { display: none; }
+#factory-page { grid-area: work; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 64px 16px; }
+body.creating > #stage, body.creating > #pane { display: none; }
+.fp-card { width: min(560px, 100%); display: flex; flex-direction: column; gap: 12px; }
+.fp-card h1 { margin: 0; font-size: 22px; }
+.fp-card p { margin: 0; }
+.fp-soon { color: var(--dim); }
+.fp-back {
+  align-self: flex-start; background: transparent; color: var(--text); font: 13px var(--mono); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px;
+}
+.fp-back:hover, .fp-back:focus-visible { border-color: var(--accent); outline: none; }
+/* A drawn scrollbar (the system's hides itself): the list is longer than five rows. */
+#fm-list::-webkit-scrollbar { width: 8px; }
+#fm-list::-webkit-scrollbar-track { background: var(--panel-2); border-radius: 4px; }
+#fm-list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+#fm-list::-webkit-scrollbar-thumb:hover { background: var(--dim); }

@@ -1,7 +1,7 @@
 //! The ports onto what outlives a run: spending, locks, the resume point,
-//! the human's prompt edits.
+//! the human's prompt edits, the register of factories.
 //!
-//! All three survive the code they describe — a disposable workspace
+//! All of them survive the code they describe — a disposable workspace
 //! disappears, the accounting stays. That is what makes a clone disposable.
 //!
 //! [`spending`] is the one port `harness-core` declares and does **not**
@@ -11,6 +11,7 @@
 
 pub mod checkpoint;
 pub mod events;
+pub mod factories;
 pub mod lock;
 pub mod prompts;
 pub mod review;

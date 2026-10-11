@@ -17,6 +17,7 @@ pub mod mockups;
 pub mod product;
 pub mod prompt_files;
 pub mod pty;
+pub mod relaunch;
 pub mod sqlite_notes;
 pub mod trial_proc;
 pub mod watch_proc;

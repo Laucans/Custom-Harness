@@ -17,6 +17,12 @@
     <button id="status" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="plant-menu" title="Start or stop the plant"><span id="watch-dot" class="dot"></span><span id="watch-text">connecting…</span><span class="caret" aria-hidden="true">▾</span></button>
     <div id="plant-menu" role="listbox" aria-label="plant switch" hidden></div>
   </div>
+  <div id="factory-menu" role="dialog" aria-label="factories" hidden>
+    <input id="fm-search" type="search" placeholder="Search a factory…" autocomplete="off" aria-label="search a factory">
+    <div id="fm-list" role="listbox" aria-label="factories"></div>
+    <div id="fm-note" class="note" hidden></div>
+    <button id="fm-new" type="button">+ new factory</button>
+  </div>
   <div id="help">drag to pan · wheel to zoom · click to enter · Esc to go back</div>
 </header>
 <main id="stage">
@@ -26,6 +32,14 @@
   <div id="tooltip" hidden></div>
   <nav id="dock" aria-label="notifications"></nav>
 </main>
+<section id="factory-page" hidden aria-label="factory creation">
+  <div class="fp-card">
+    <h1>Factory creation</h1>
+    <p id="fp-lead"></p>
+    <p class="fp-soon">The creation steps are not built yet.</p>
+    <button id="fp-back" type="button" class="fp-back"></button>
+  </div>
+</section>
 <div id="action-errors" aria-live="assertive"></div>
 <div id="action-log" hidden role="dialog" aria-label="an action's log">
   <div class="act-log-head"><b class="act-log-title"></b><span class="act-log-state"></span><button type="button" data-action-close aria-label="close" title="Close (Esc)">×</button></div>
@@ -59,6 +73,7 @@
 <script src="/mockup.js"></script>
 <script src="/gallery.js"></script>
 <script src="/kit.js"></script>
+<script src="/factories.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

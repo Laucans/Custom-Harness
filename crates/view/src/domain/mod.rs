@@ -26,4 +26,5 @@ pub mod plant;
 pub mod prompts;
 pub mod snapshot;
 pub mod steward;
+pub mod switch;
 pub mod traces;

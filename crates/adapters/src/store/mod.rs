@@ -1,5 +1,5 @@
 //! What the harness writes and re-reads on disk: its accounting, its locks,
-//! and its resume point.
+//! its resume point and the register of factories.
 //!
 //! The implementations behind [`ports::store`](harness_core::ports::store), plus the
 //! two ledgers the launcher writes directly — `ledger` for rounds and
@@ -8,6 +8,7 @@
 pub mod checkpoint;
 pub mod error_ledger;
 pub mod events;
+pub mod factories;
 pub mod ledger;
 pub mod lock;
 pub mod prompt_book;

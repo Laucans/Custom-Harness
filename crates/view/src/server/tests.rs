@@ -71,6 +71,9 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         restart_poll: Duration::from_millis(5),
         units: None,
         zone: jiff::tz::TimeZone::UTC,
+        factories: None,
+        factory: String::new(),
+        switching: Arc::new(watch::channel(None).0),
     }
 }
 
@@ -1194,4 +1197,125 @@ fn the_page_controls_are_size_and_restart() {
     let restart: Control = serde_json::from_str(r#"{"t":"restart"}"#).expect("restart");
     assert!(matches!(restart, Control::Restart));
     assert!(serde_json::from_str::<Control>(r#"{"t":"nuke"}"#).is_err());
+}
+
+/// A register in memory: the factories it was given, no more.
+struct Roll(Vec<Factory>);
+
+impl Factories for Roll {
+    fn list(&self) -> harness_core::domain::Outcome<Vec<Factory>> {
+        Ok(self.0.clone())
+    }
+
+    fn get(&self, id: &str) -> harness_core::domain::Outcome<Option<Factory>> {
+        Ok(self.0.iter().find(|f| f.id == id).cloned())
+    }
+
+    fn enroll(
+        &self,
+        _: &std::path::Path,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> harness_core::domain::Outcome<Factory> {
+        Err(harness_core::domain::Halt::Failed("read only".to_string()))
+    }
+}
+
+fn factory_in(id: &str, root: &std::path::Path) -> Factory {
+    Factory {
+        id: id.to_string(),
+        name: id.to_string(),
+        slug: format!("me/{id}"),
+        root: root.to_path_buf(),
+        integration_branch: "main_agent".to_string(),
+    }
+}
+
+fn state_with_register(here: &str, known: Vec<Factory>) -> AppState {
+    AppState {
+        factories: Some(Arc::new(Roll(known))),
+        factory: here.to_string(),
+        ..state_without_plant()
+    }
+}
+
+#[tokio::test]
+async fn the_factories_are_listed_with_the_one_the_view_is_on() {
+    let dir = std::env::temp_dir();
+    let known = vec![factory_in("alpha", &dir), factory_in("beta", &dir)];
+    let (status, body) = get(state_with_register("beta", known), "/api/factories").await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(listed["current"], "beta");
+    assert_eq!(listed["factories"][0]["id"], "alpha");
+    assert_eq!(listed["factories"][1]["slug"], "me/beta");
+}
+
+#[tokio::test]
+async fn without_a_register_there_is_nothing_to_list_nor_to_open() {
+    let (status, body) = get(state_without_plant(), "/api/factories").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"factories\":[]"), "{body}");
+    let (status, _) = post(state_without_plant(), "/api/factories/alpha/open", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn opening_another_factory_puts_it_where_main_listens() {
+    let known = vec![
+        factory_in("alpha", &std::env::temp_dir()),
+        factory_in("beta", &std::env::temp_dir()),
+    ];
+    let state = state_with_register("alpha", known);
+    let sender = Arc::clone(&state.switching);
+    let mut asked = sender.subscribe();
+    let (status, body) = post(state, "/api/factories/beta/open", "").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(body.contains("\"opening\":true"), "{body}");
+    assert!(asked.has_changed().expect("sender alive"));
+    assert_eq!(
+        asked.borrow_and_update().as_ref().map(|f| f.id.clone()),
+        Some("beta".to_string())
+    );
+}
+
+#[tokio::test]
+async fn opening_the_factory_already_open_changes_nothing() {
+    let known = vec![factory_in("alpha", &std::env::temp_dir())];
+    let state = state_with_register("alpha", known);
+    let sender = Arc::clone(&state.switching);
+    let asked = sender.subscribe();
+    let (status, body) = post(state, "/api/factories/alpha/open", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"opening\":false"), "{body}");
+    assert!(!asked.has_changed().expect("sender alive"));
+}
+
+#[tokio::test]
+async fn an_unknown_factory_or_a_folder_gone_is_refused() {
+    let known = vec![
+        factory_in("alpha", &std::env::temp_dir()),
+        factory_in("gone", std::path::Path::new("/nonexistent/factory")),
+    ];
+    let state = state_with_register("alpha", known);
+    let sender = Arc::clone(&state.switching);
+    let asked = sender.subscribe();
+    let (status, _) = post(state.clone(), "/api/factories/nobody/open", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = post(state, "/api/factories/gone/open", "").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body.contains("/nonexistent/factory"), "{body}");
+    assert!(!asked.has_changed().expect("sender alive"));
+}
+
+#[tokio::test]
+async fn the_page_carries_the_factory_menu_and_its_script() {
+    let (_, page) = get(state_without_plant(), "/").await;
+    assert!(page.contains("id=\"factory-menu\""), "{page}");
+    assert!(page.contains("id=\"factory-page\""), "{page}");
+    assert!(page.contains("/factories.js"), "{page}");
+    let (status, script) = get(state_without_plant(), "/factories.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(script.contains("HarnessFactories"), "{script}");
 }

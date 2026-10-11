@@ -85,6 +85,7 @@ store/spending    Spending, Entry — implemented in the launcher, not here
 store/lock        Locks — one bearer per name
 store/checkpoint  Checkpoints, Pointer — where a run says what it was doing
 store/review      ReviewCosts — the one *read* of a review's spending
+store/factories   Factories, Factory — the machine's register of factories, read and enrolled by the view
 store/prompts     PromptStore — the book, written only by the harness at a start; DraftStore — the drafts, written by the view, taken at a start
 ```
 

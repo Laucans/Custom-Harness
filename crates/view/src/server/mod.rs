@@ -22,6 +22,7 @@ mod data_model;
 mod design;
 mod desks;
 mod drafts;
+mod factories;
 mod janitor;
 mod mockup;
 mod notes;
@@ -64,10 +65,15 @@ use crate::ports::{
 use crate::units_desk::UnitsDesk;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
+use harness_core::ports::store::factories::{Factories, Factory};
 
 /// The diagnoses asked of the doctor, by `workflow/run`, shared with the
 /// listeners that hear them end.
 pub type Diagnoses = Arc<std::sync::Mutex<HashMap<String, Diagnosis>>>;
+
+/// The factory the human asked to move to, once they did: `main` hears it,
+/// stops serving and starts the view again there.
+pub type Switching = Arc<watch::Sender<Option<Factory>>>;
 
 use capabilities::{capability_fusion, capability_list};
 use data_model::{
@@ -85,6 +91,7 @@ use drafts::{
     all_drafts, draft_history, keep_draft, open_draft, put_draft, reset_draft, restore_draft,
     unvalidate_draft, validate_draft,
 };
+use factories::{list as factory_list, open as factory_open};
 use janitor::{janitor, janitor_diagnose, janitor_settings, janitor_sweep};
 use mockup::{
     apply_requests, mf_apply, mf_drop_draft, mf_generate, mf_generations, mf_save, mock_file,
@@ -175,6 +182,12 @@ pub struct AppState {
     /// The harness machine's time zone, asked of the system (`TZ`, else
     /// `/etc/localtime`): the control room counts its days in it.
     pub zone: jiff::tz::TimeZone,
+    /// The factories this machine knows — `None` under `--demo`.
+    pub factories: Option<Arc<dyn Factories + Send + Sync>>,
+    /// The id of the factory this view is on; empty without a register.
+    pub factory: String,
+    /// Where a switch to another factory is put for `main` to act on.
+    pub switching: Switching,
 }
 
 const INDEX: &str = include_str!("../../static/index.html");
@@ -192,6 +205,7 @@ const EDIT_JS: &str = include_str!("../../static/edit.js");
 const DESIGN_JS: &str = include_str!("../../static/design.js");
 const KIT_JS: &str = include_str!("../../static/kit.js");
 const GALLERY_JS: &str = include_str!("../../static/gallery.js");
+const FACTORIES_JS: &str = include_str!("../../static/factories.js");
 
 /// The routes, with their state.
 // One route per line: the table is the function, and splitting it would
@@ -211,6 +225,7 @@ pub fn router(state: AppState) -> Router {
         .route("/design.js", get(design_js))
         .route("/kit.js", get(kit_js))
         .route("/gallery.js", get(gallery_js))
+        .route("/factories.js", get(factories_js))
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
         .route("/mock/{slug}/__kit/{name}", get(kit_preview))
         .route("/mock/{slug}/__showcase/contact", get(kit_showcase))
@@ -316,6 +331,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/prompts/{line}/{station}", get(station_prompts))
         .route("/api/pending", get(pending))
         .route("/api/restart", post(restart))
+        .route("/api/factories", get(factory_list))
+        .route("/api/factories/{id}/open", post(factory_open))
         .with_state(state)
 }
 
@@ -478,6 +495,10 @@ async fn kit_js(State(state): State<AppState>) -> Response {
         KIT_JS,
         "application/javascript; charset=utf-8",
     )
+}
+
+async fn factories_js(State(state): State<AppState>) -> Response {
+    asset(&state, "factories.js", FACTORIES_JS, JS)
 }
 
 async fn gallery_js(State(state): State<AppState>) -> Response {

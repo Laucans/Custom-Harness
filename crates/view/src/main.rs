@@ -32,6 +32,7 @@ mod ports;
 mod server;
 mod units_desk;
 
+use std::future::IntoFuture as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -59,6 +60,7 @@ use crate::adapters::product::{DirProduct, GhProduct};
 use crate::adapters::prompt_files::PromptFiles;
 use crate::adapters::pty::Pty;
 use crate::adapters::pty::PtyMaker;
+use crate::adapters::relaunch;
 use crate::adapters::sqlite_notes::SqliteNotes;
 use crate::adapters::trial_proc::TrialProcess;
 use crate::adapters::watch_proc::WatchProcess;
@@ -86,8 +88,64 @@ use crate::ports::{
 use crate::server::{AppState, router};
 use crate::units_desk::UnitsDesk;
 use harness_adapters::store::events::SqliteEvents;
+use harness_adapters::store::factories::SqliteFactories;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
+use harness_core::ports::store::factories::{Factories, Factory};
+
+/// How long a switch lets the page's answer reach it before the connections
+/// are cut.
+const SWITCH_GRACE: Duration = Duration::from_millis(1500);
+
+/// Resolves a moment after the human asked for another factory.
+async fn after_switch(asked: &mut watch::Receiver<Option<Factory>>) {
+    if asked.wait_for(Option::is_some).await.is_ok() {
+        tokio::time::sleep(SWITCH_GRACE).await;
+    }
+}
+
+/// Where the register lives: `--harness-home`, else `~/.harness`.
+fn register_path(cli: &Cli) -> Option<PathBuf> {
+    let home = cli
+        .harness_home
+        .clone()
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".harness")))?;
+    Some(home.join("factories.db"))
+}
+
+/// The register of factories, with this folder enrolled in it — none under
+/// `--demo`, where the folder is nobody's factory, or when it cannot be
+/// opened (the menu then lists nothing; the plant still runs).
+fn register_for(
+    cli: &Cli,
+    root: &Path,
+    project: &Project,
+) -> (Option<Arc<dyn Factories + Send + Sync>>, String) {
+    if cli.demo {
+        return (None, String::new());
+    }
+    let opened = register_path(cli)
+        .ok_or_else(|| "no home directory to keep it in".to_string())
+        .and_then(|path| SqliteFactories::open(&path).map_err(|why| why.reason().to_string()))
+        .and_then(|register| {
+            register
+                .enroll(
+                    root,
+                    &project.name,
+                    &project.slug,
+                    &project.integration_branch,
+                )
+                .map(|factory| (register, factory.id))
+                .map_err(|why| why.reason().to_string())
+        });
+    match opened {
+        Ok((register, id)) => (Some(Arc::new(register)), id),
+        Err(why) => {
+            eprintln!("harness-view: no factory menu — {why}");
+            (None, String::new())
+        }
+    }
+}
 
 /// The watch switch — none under `--demo`: a demo replays a finished run,
 /// there is no plant to switch.
@@ -118,6 +176,10 @@ async fn main() -> anyhow::Result<()> {
     let workspace = Workspace::new(&root);
     let traces: Arc<dyn Traces> = Arc::new(FsTraces::new(workspace.clone()));
     let project = project_of(&cli, &root);
+    let (factories, factory) = register_for(&cli, &root, &project);
+    let switching: server::Switching = Arc::new(watch::channel(None).0);
+    let mut switched = switching.subscribe();
+    let mut switched_for_grace = switching.subscribe();
     let (board, product) = github_for(&cli, &root, &project);
     let program = program_for(&cli);
     let (pins, drafts, note_desks) = notes_for(&cli, &root, &project, &program, &workspace)?;
@@ -167,6 +229,9 @@ async fn main() -> anyhow::Result<()> {
         kit: kit.clone(),
         mf: mf.clone(),
         zone: TimeZone::system(),
+        factories,
+        factory,
+        switching: Arc::clone(&switching),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -175,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
     println!("{}", banner(&cli, &workspace));
 
     let local = tokio::task::LocalSet::new();
-    local
+    let next = local
         .run_until(async move {
             let traces_task = tokio::task::spawn_local(poll_traces(
                 traces,
@@ -200,12 +265,20 @@ async fn main() -> anyhow::Result<()> {
             });
             let janitor_task = janitor.map(|janitor| tokio::task::spawn_local(chronic(janitor)));
             let data_task = data_task.map(tokio::task::spawn_local);
-            axum::serve(listener, router(state))
-                .with_graceful_shutdown(async {
-                    let _ = tokio::signal::ctrl_c().await;
-                })
-                .await
-                .context("serving the page")?;
+            let stop = async move {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = switched.wait_for(Option::is_some) => {}
+                }
+            };
+            // A switch does not wait for the page's open streams (the
+            // events, the terminals) to end: they never do on their own.
+            tokio::select! {
+                served = axum::serve(listener, router(state))
+                    .with_graceful_shutdown(stop)
+                    .into_future() => served.context("serving the page")?,
+                () = after_switch(&mut switched_for_grace) => {}
+            }
             traces_task.abort();
             for task in [board_task, janitor_task, data_task].into_iter().flatten() {
                 task.abort();
@@ -222,9 +295,20 @@ async fn main() -> anyhow::Result<()> {
             if let Some(mf) = mf {
                 mf.shutdown();
             }
-            Ok(())
+            // The factory the human moved to, if that is why the page stopped.
+            Ok::<_, anyhow::Error>(switching.borrow().clone())
         })
-        .await
+        .await?;
+    if let Some(factory) = next {
+        // Only comes back when it failed: the view is replaced otherwise.
+        return Err(
+            anyhow::Error::new(relaunch::into(&factory)).context(format!(
+                "starting the view again in {}",
+                factory.root.display()
+            )),
+        );
+    }
+    Ok(())
 }
 
 /// The line printed when the page is up: where it listens, what it reads,

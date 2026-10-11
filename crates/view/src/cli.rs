@@ -44,6 +44,12 @@ pub struct Cli {
     #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
     pub integration_branch: String,
 
+    /// Where the register of factories lives (`factories.db`). Unset:
+    /// `~/.harness`. Outside every checkout, so the menu lists the same
+    /// factories whichever one the view was started in.
+    #[arg(long, env = "HARNESS_HOME")]
+    pub harness_home: Option<PathBuf>,
+
     /// Never call `gh`: the sign and the store stay empty.
     #[arg(long)]
     pub no_board: bool,

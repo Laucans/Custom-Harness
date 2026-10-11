@@ -51,12 +51,43 @@ through a port so a test can refuse it:
 | caches and old traces removed from `.llocal/` | the yard, by static rules, never a clone, a ledger or the event store | `Yard` | the janitor's buttons, or the threshold the human set |
 | a mock-up edited, then a `mockup/*` branch pushed | a `git worktree` of the mirror under `.llocal/view-mockups/`; the target's remote on save | `Mockups` | a link or simulate session; *save the mock-up* |
 | an issue opened, a pin and its conversation kept | the target's board (`harness:roadmap`); `.llocal/harness.db`, table `notes` | `Product::open_issue`, `NoteStore` | *Open the issue*; a pin dropped, a brainstorm |
+| the factory register, and the view started again in another factory | `~/.harness/factories.db` (`--harness-home`), outside every checkout; the view's own `exec` | `harness-core::ports::store::factories::Factories` (adapter in `harness-adapters`), `adapters::relaunch` | the header's factory menu |
 
 A pin's session and a mock-up session are Claude Code sessions that edit
 the product's checkout — in a worktree the view made, never the harness's
 lanes — in the launcher's permission mode. Nothing they do is committed by
 the view; a human saves or discards. The `asking` pins have no reader yet
 (`docs/PARKED.md`).
+
+## Several factories
+
+A **factory** is a folder with its own `.llocal/` and its own target
+repository. The register (`Factories`, SQLite at `~/.harness/factories.db`,
+or `--harness-home`) lists the ones this machine knows; the view enrolls the
+folder it starts in, by root, so the factory it was always run in is there
+from the first start (none under `--demo`).
+
+**One view serves one factory; a switch starts it again in another.** The
+header's factory name opens a menu (`static/factories.js`): a search field,
+a list showing five factories at a time, and *+ new factory* below it.
+Choosing a factory is `POST /api/factories/{id}/open`: the handler puts the
+factory in `AppState::switching` and answers `202`; `main` stops serving
+(the page's open streams get 1.5 s, they never end on their own), shuts the
+desks down and `exec`s the same binary in the factory's folder with its
+repository and branch (`domain::switch::args_for`, `adapters::relaunch`).
+Same pid, same port, so the page's event stream comes back with a new
+`build` and the page reloads itself. The watches the view started live in
+process groups of their own and keep running; a view finds the watch of its
+factory by working directory (`WatchProcess::works_here`). The cost is a few
+seconds and the desks' sessions, which close.
+
+A factory with no GitHub repository (`project.slug` empty), or *+ new
+factory*, shows the **factory-creation page** (`#new-factory`): a page, not a
+pane — the scene is hidden, paused and, when the page opens that way, never
+loaded. Its steps are not built yet.
+
+Routes: `GET /api/factories` (`current`, `factories`),
+`POST /api/factories/{id}/open`.
 
 ## The steward, and the doctor
 
@@ -843,13 +874,13 @@ matter, and the merged unit. Route `GET /api/capabilities?fresh=`.
 
 ```
 src/main.rs            the wiring: two pollers, one server, one desk, one switch, one thread; the event store and harness-notify's feed, once per poll
-src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch
+src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, PERMISSION_MODE shared with the launcher; HARNESS_WATCH_COMMAND for the switch; HARNESS_HOME for the factory register
 src/note_desks.rs      the pins' sessions at work: one Claude Code per open pin, its turns read back when it closes; a page to create edits the mock-up's workspace; `ask`, the one-shot a request is applied with
 src/units_desk.rs      the capabilities list's reading, kept a minute; the fusion's one question to the model
 src/data_desk.rs       the data desk: one task owning the Product port, versions cached, the handlers answered by channel
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
-src/domain/            the inside — no disk, no subprocess, no clock
+src/domain/            the inside — no disk, no subprocess, no clock (`switch.rs`: the command line a view starts again with in another factory)
   blueprint.rs         the rooms, the models, one line per workflow, station by station; the gates each stage really declares, two in a row shown as one arch
   gates.rs             the gate verdicts out of the event store: which gate said what in which run, the checks of its last pass, the state an arch takes
   traces.rs            parsers: watch.log, run.log, prompts.md headers, the stream's first event, the ledger sums
@@ -883,11 +914,12 @@ src/adapters/
   mockups.rs           the mock-up through the same mirror, a detached worktree per edited branch under .llocal/view-mockups, saved on a mockup/* branch; the demo's copy of the sample under .llocal/view-demo
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   sqlite_notes.rs      the pins and their conversations, in .llocal/harness.db
+  relaunch.rs          the view `exec`ed again in another factory's folder
   claude_cli.rs        claude -p asked once (summary, conclusion, request), and Claude Code's transcripts read back
   prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server/            axum, one file per pane: `mod.rs` the state, the route table, the page's assets; `runs`, `desks`, `plant`, `janitor`, `data_model`, `mockup`, `drafts` (a page's draft and its versions), `design` (the design system's easel), `capabilities`, `notes`, `prompts` the handlers of each; `tests.rs` the router driven with fakes. The routes: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart
+src/server/            axum, one file per pane: `mod.rs` the state, the route table, the page's assets; `runs`, `desks`, `plant`, `janitor`, `data_model`, `mockup`, `drafts` (a page's draft and its versions), `design` (the design system's easel), `capabilities`, `notes`, `prompts` the handlers of each; `tests.rs` the router driven with fakes. The routes: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart, /api/factories, POST /api/factories/{id}/open
 static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, the draft, the requests, the forks), edit.js (the draft engine: a page as source + operations, undo, materialization), design.js (the designer's hands: selection, handles, guides, marquee, layers, properties, tools, menu, keys), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```
