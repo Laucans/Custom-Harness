@@ -7,6 +7,7 @@
 
 pub mod claude_bin;
 pub mod claude_cli;
+pub mod foundry;
 pub mod fs_traces;
 pub mod fs_yard;
 pub mod gh_board;

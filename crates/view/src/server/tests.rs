@@ -72,6 +72,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         units: None,
         zone: jiff::tz::TimeZone::UTC,
         factories: None,
+        creation: None,
         factory: String::new(),
         switching: Arc::new(watch::channel(None).0),
     }
@@ -1199,26 +1200,67 @@ fn the_page_controls_are_size_and_restart() {
     assert!(serde_json::from_str::<Control>(r#"{"t":"nuke"}"#).is_err());
 }
 
-/// A register in memory: the factories it was given, no more.
-struct Roll(Vec<Factory>);
+/// A register in memory: the factories it was given, no more, and the
+/// creations kept beside them.
+#[derive(Default)]
+struct Roll {
+    known: Vec<Factory>,
+    enrolled: std::sync::Mutex<Vec<Factory>>,
+    creations: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
+}
+
+impl Roll {
+    fn of(known: Vec<Factory>) -> Self {
+        Self {
+            known,
+            ..Self::default()
+        }
+    }
+}
 
 impl Factories for Roll {
     fn list(&self) -> harness_core::domain::Outcome<Vec<Factory>> {
-        Ok(self.0.clone())
+        let enrolled = self.enrolled.lock().expect("held").clone();
+        Ok(self.known.iter().cloned().chain(enrolled).collect())
     }
 
     fn get(&self, id: &str) -> harness_core::domain::Outcome<Option<Factory>> {
-        Ok(self.0.iter().find(|f| f.id == id).cloned())
+        Ok(self.known.iter().find(|f| f.id == id).cloned())
     }
 
     fn enroll(
         &self,
-        _: &std::path::Path,
-        _: &str,
-        _: &str,
-        _: &str,
+        root: &std::path::Path,
+        name: &str,
+        slug: &str,
+        integration_branch: &str,
     ) -> harness_core::domain::Outcome<Factory> {
-        Err(harness_core::domain::Halt::Failed("read only".to_string()))
+        let factory = Factory {
+            id: harness_core::ports::store::factories::id_from(name),
+            name: name.to_string(),
+            slug: slug.to_string(),
+            root: root.to_path_buf(),
+            integration_branch: integration_branch.to_string(),
+        };
+        self.enrolled.lock().expect("held").push(factory.clone());
+        Ok(factory)
+    }
+
+    fn creation(&self, id: &str) -> harness_core::domain::Outcome<Option<String>> {
+        Ok(self.creations.lock().expect("held").get(id).cloned())
+    }
+
+    fn keep_creation(&self, id: &str, record: &str) -> harness_core::domain::Outcome<()> {
+        self.creations
+            .lock()
+            .expect("held")
+            .insert(id.to_string(), record.to_string());
+        Ok(())
+    }
+
+    fn end_creation(&self, id: &str) -> harness_core::domain::Outcome<()> {
+        self.creations.lock().expect("held").remove(id);
+        Ok(())
     }
 }
 
@@ -1234,7 +1276,7 @@ fn factory_in(id: &str, root: &std::path::Path) -> Factory {
 
 fn state_with_register(here: &str, known: Vec<Factory>) -> AppState {
     AppState {
-        factories: Some(Arc::new(Roll(known))),
+        factories: Some(Arc::new(Roll::of(known))),
         factory: here.to_string(),
         ..state_without_plant()
     }
@@ -1318,4 +1360,351 @@ async fn the_page_carries_the_factory_menu_and_its_script() {
     let (status, script) = get(state_without_plant(), "/factories.js").await;
     assert_eq!(status, StatusCode::OK);
     assert!(script.contains("HarnessFactories"), "{script}");
+}
+
+/// A foundry that makes nothing and says what it was asked.
+#[derive(Default)]
+struct Forge {
+    asked: std::sync::Mutex<Vec<String>>,
+}
+
+impl crate::ports::Foundry for Forge {
+    fn owners(&self) -> Result<Vec<String>, String> {
+        Ok(vec!["me".to_string(), "org".to_string()])
+    }
+
+    fn create_repository(
+        &self,
+        owner: &str,
+        name: &str,
+        private: bool,
+        _: &str,
+    ) -> Result<String, String> {
+        self.asked
+            .lock()
+            .expect("held")
+            .push(format!("create {owner}/{name} private={private}"));
+        Ok(format!("{owner}/{name}"))
+    }
+
+    fn make_folder(&self, root: &std::path::Path) -> Result<(), String> {
+        self.asked
+            .lock()
+            .expect("held")
+            .push(format!("folder {}", root.display()));
+        Ok(())
+    }
+
+    fn init_repo(
+        &self,
+        _: &std::path::Path,
+        slug: &str,
+        branch: &str,
+    ) -> Result<crate::ports::Initialized, String> {
+        self.asked
+            .lock()
+            .expect("held")
+            .push(format!("init {slug} {branch}"));
+        Ok(crate::ports::Initialized {
+            ready: true,
+            report: "ready".to_string(),
+        })
+    }
+}
+
+/// An AI that answers the same text to every question.
+struct Says(String);
+
+impl crate::ports::Oneshot for Says {
+    fn ask(&self, _: &str, _: &str) -> Result<String, String> {
+        Ok(self.0.clone())
+    }
+}
+
+/// A view on `alpha`, with a creation desk over `roll`, `forge` and an AI
+/// answering `says`.
+fn state_creating(roll: Arc<Roll>, forge: Arc<Forge>, says: &str) -> AppState {
+    let desk = crate::creation_desk::CreationDesk::new(crate::creation_desk::Setup {
+        register: roll.clone(),
+        factory: "alpha".to_string(),
+        foundry: forge,
+        factories_dir: std::path::PathBuf::from("/factories"),
+        integration_branch: "main_agent".to_string(),
+        oneshot: Some(Arc::new(Says(says.to_string()))),
+        model: "m".to_string(),
+        mockups: None,
+        kit: None,
+        data: None,
+        plant: None,
+    });
+    AppState {
+        factories: Some(roll),
+        creation: Some(desk),
+        factory: "alpha".to_string(),
+        ..state_without_plant()
+    }
+}
+
+async fn json_call(state: AppState, method: &str, uri: &str, body: &str) -> (StatusCode, String) {
+    let response = router(state)
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn being_created(roll: &Roll, record: &crate::domain::creation::Creation) {
+    roll.keep_creation("alpha", &serde_json::to_string(record).expect("json"))
+        .expect("kept");
+}
+
+#[tokio::test]
+async fn without_a_register_there_is_no_creation_to_read() {
+    let (status, _) = get(state_without_plant(), "/api/creation").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_factory_not_being_created_reads_no_record_and_the_nine_steps() {
+    let state = state_creating(Arc::default(), Arc::default(), "");
+    let (status, body) = get(state, "/api/creation").await;
+    assert_eq!(status, StatusCode::OK);
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert!(view["record"].is_null(), "{body}");
+    assert_eq!(view["steps"].as_array().map(Vec::len), Some(9));
+    assert_eq!(view["branch"], "main_agent");
+}
+
+#[tokio::test]
+async fn the_accounts_a_repository_may_be_created_under_are_listed() {
+    let state = state_creating(Arc::default(), Arc::default(), "");
+    let (status, body) = get(state, "/api/creation/owners").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, r#"{"owners":["me","org"]}"#);
+}
+
+#[tokio::test]
+async fn a_founding_refuses_a_bad_name_and_founds_a_good_one_to_its_record() {
+    let roll = Arc::new(Roll::default());
+    let forge = Arc::new(Forge::default());
+    let state = state_creating(Arc::clone(&roll), Arc::clone(&forge), "");
+    let (status, body) = json_call(
+        state.clone(),
+        "POST",
+        "/api/creation/found",
+        r#"{"name":"a b","owner":"me"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = json_call(
+        state.clone(),
+        "POST",
+        "/api/creation/found",
+        r#"{"name":"My-App","owner":"me","private":true}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let desk = state.creation.clone().expect("a desk");
+    for _ in 0..200 {
+        if desk
+            .job()
+            .is_some_and(|j| j.state != crate::creation_desk::State::Running)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let job = desk.job().expect("a job");
+    assert_eq!(job.state, crate::creation_desk::State::Done, "{}", job.why);
+    assert_eq!(job.factory, "my-app");
+    assert!(
+        !job.steps.iter().any(|s| s.contains("gaps")),
+        "a ready repository leaves no gap: {:?}",
+        job.steps
+    );
+    assert_eq!(job.report, "ready");
+    assert_eq!(
+        *forge.asked.lock().expect("held"),
+        [
+            "create me/My-App private=true",
+            "folder /factories/my-app",
+            "init me/My-App main_agent"
+        ]
+    );
+    let record: crate::domain::creation::Creation = serde_json::from_str(
+        &roll
+            .creation("my-app")
+            .expect("read")
+            .expect("a record for the new factory"),
+    )
+    .expect("readable");
+    assert_eq!(
+        (record.name.as_str(), record.slug.as_str()),
+        ("My-App", "me/My-App")
+    );
+    assert_eq!(record.step, crate::domain::creation::Step::Kind);
+    // A second one in the same place is refused before anything runs.
+    let (status, body) = json_call(
+        state,
+        "POST",
+        "/api/creation/found",
+        r#"{"name":"my-app","owner":"me"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("lives there already"), "{body}");
+}
+
+#[tokio::test]
+async fn connecting_a_repository_a_factory_drives_already_is_refused() {
+    let roll = Arc::new(Roll::of(vec![factory_in("beta", &std::env::temp_dir())]));
+    let state = state_creating(roll, Arc::default(), "");
+    let (status, body) = json_call(
+        state.clone(),
+        "POST",
+        "/api/creation/connect",
+        r#"{"url":"https://github.com/ME/beta"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("drives ME/beta already"), "{body}");
+    let (status, _) = json_call(state, "POST", "/api/creation/connect", r#"{"url":"nope"}"#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_step_opens_only_through_its_gate() {
+    let roll = Arc::new(Roll::default());
+    being_created(
+        &roll,
+        &crate::domain::creation::Creation::new("alpha", "me/alpha"),
+    );
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) =
+        json_call(state.clone(), "PUT", "/api/creation", r#"{"step":"brief"}"#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "choose the kind of factory");
+    let (status, body) = json_call(
+        state.clone(),
+        "PUT",
+        "/api/creation",
+        r#"{"kind":"vertical","brief":"a ledger","step":"brief"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["record"]["step"], "brief");
+    assert_eq!(view["reachable"], "grilling");
+    let (status, _) = json_call(state, "PUT", "/api/creation", r#"{"step":"repository"}"#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_grilling_round_and_a_scope_are_asked_of_the_ai_and_kept() {
+    let roll = Arc::new(Roll::default());
+    let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
+    record.kind = Some(crate::domain::creation::Kind::Vertical);
+    record.brief = "a ledger".to_string();
+    being_created(&roll, &record);
+    let round = r#"{"questions":[{"title":"Who pays?","recommended":"the client"}]}"#;
+    let state = state_creating(Arc::clone(&roll), Arc::default(), round);
+    let (status, body) = post(state.clone(), "/api/creation/grill", "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["record"]["questions"][0]["title"], "Who pays?");
+    assert_eq!(view["record"]["questions"][0]["id"], 1);
+    // An open question closes the scope's gate.
+    let (status, body) = post(state.clone(), "/api/creation/scope", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "answer every question, or delete it");
+    let (status, _) = json_call(
+        state.clone(),
+        "PUT",
+        "/api/creation",
+        r#"{"questions":[{"id":1,"answer":"the client"}]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post(state, "/api/creation/scope", "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let kept: crate::domain::creation::Creation =
+        serde_json::from_str(&roll.creation("alpha").expect("read").expect("kept")).expect("json");
+    assert_eq!(kept.scope, round, "the AI's answer is the scope");
+}
+
+#[tokio::test]
+async fn the_creation_ends_only_once_the_factory_is_initialized() {
+    let roll = Arc::new(Roll::default());
+    let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state.clone(), "/api/creation/finish", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "initialize the factory first");
+    record.issue = "https://github.com/me/alpha/issues/1".to_string();
+    being_created(&roll, &record);
+    let (status, _) = post(state.clone(), "/api/creation/finish", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(roll.creation("alpha").expect("read"), None);
+    let (_, body) = get(state, "/api/creation").await;
+    assert!(body.contains("\"record\":null"), "{body}");
+}
+
+#[tokio::test]
+async fn regenerating_sends_the_creation_back_to_the_brief() {
+    let roll = Arc::new(Roll::default());
+    let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
+    record.mocked = Some("two pages".to_string());
+    record.step = crate::domain::creation::Step::Review;
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state, "/api/creation/regenerate", "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["record"]["step"], "brief");
+    assert!(view["record"]["mocked"].is_null());
+    assert_eq!(view["record"]["regenerations"], 1);
+}
+
+#[tokio::test]
+async fn the_page_carries_the_creation_script() {
+    let (_, page) = get(state_without_plant(), "/").await;
+    assert!(page.contains("/creation.js"), "{page}");
+    let (status, script) = get(state_without_plant(), "/creation.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(script.contains("HarnessCreation"), "{script}");
+}
+
+#[tokio::test]
+async fn the_mockups_and_the_acceptance_wait_for_their_gates() {
+    let roll = Arc::new(Roll::default());
+    let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
+    record.kind = Some(crate::domain::creation::Kind::Vertical);
+    record.brief = "b".to_string();
+    record.scope = "s".to_string();
+    record.questions = vec![crate::domain::creation::Question {
+        id: 1,
+        title: "t".to_string(),
+        answer: "a".to_string(),
+        ..crate::domain::creation::Question::default()
+    }];
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state.clone(), "/api/creation/mockups", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "validate the design system");
+    let (status, body) = post(state, "/api/creation/accept", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "validate the design system");
 }

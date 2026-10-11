@@ -1,7 +1,7 @@
 // The factories this machine knows: the menu under the factory's name in the
-// header, and the factory-creation page. Talks to app.js through
-// `window.HarnessFactories` and two events (`harness:factory-page` out,
-// `harness:navigate` in).
+// header, and when the factory-creation page shows (its content is
+// creation.js's). Talks to app.js through `window.HarnessFactories` and two
+// events (`harness:factory-page` out, `harness:navigate` in).
 (() => {
   'use strict';
 
@@ -9,7 +9,7 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const PAGE_HASH = '#new-factory';
 
-  const F = { list: [], current: '', query: '', opening: '', checked: false, auto: false };
+  const F = { list: [], current: '', query: '', opening: '', checked: false, deciding: false };
 
   // ---- the menu ---------------------------------------------------------------
   const menu = $('factory-menu');
@@ -80,7 +80,12 @@
     const row = e.target.closest('[data-factory]');
     if (row) switchTo(row.dataset.factory);
   });
-  $('fm-new').addEventListener('click', () => { close(); openPage(false); });
+  $('fm-new').addEventListener('click', () => {
+    close();
+    // The landing, whatever step the page was on.
+    history.replaceState(null, '', location.pathname + location.search + PAGE_HASH);
+    openPage(false);
+  });
   menu.addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     const stops = [$('fm-search'), ...$('fm-list').querySelectorAll('.fm-row:not([disabled])'), $('fm-new')];
@@ -99,48 +104,55 @@
   });
 
   // ---- the creation page -------------------------------------------------------
+  // Its content is creation.js's; here, when it shows and when it goes.
   const page = $('factory-page');
-  const creating = () => document.body.classList.contains('creating');
+  const onPage = () => location.hash === PAGE_HASH || location.hash.startsWith(`${PAGE_HASH}/`);
+  // Until the first picture said whether this factory is being created, the
+  // scene waits: a factory being created never loads it.
+  const creating = () => document.body.classList.contains('creating') || F.deciding;
 
-  function paint() {
-    $('fp-lead').textContent = F.auto
-      ? 'This factory is not linked to a GitHub repository.'
-      : 'Start a new factory.';
-    $('fp-back').textContent = F.auto ? '← open the plant anyway' : '← back to the plant';
-  }
   function setPage(on) {
     page.hidden = !on;
     document.body.classList.toggle('creating', on);
     window.dispatchEvent(new CustomEvent('harness:factory-page', { detail: { open: on } }));
   }
   function openPage(auto) {
-    F.auto = auto;
-    paint();
+    if (!onPage()) history.replaceState(null, '', location.pathname + location.search + PAGE_HASH);
     setPage(true);
-    if (location.hash !== PAGE_HASH) history.replaceState(null, '', location.pathname + location.search + PAGE_HASH);
+    window.HarnessCreation.open({ auto });
   }
   function leavePage() {
     if (!creating()) return;
+    window.HarnessCreation.close();
     setPage(false);
-    if (location.hash === PAGE_HASH) history.replaceState(null, '', location.pathname + location.search);
+    if (onPage()) history.replaceState(null, '', location.pathname + location.search);
   }
-  $('fp-back').addEventListener('click', leavePage);
   window.addEventListener('harness:navigate', leavePage);
   window.addEventListener('hashchange', () => {
-    if (location.hash === PAGE_HASH && !creating()) openPage(false);
-    else if (location.hash !== PAGE_HASH && creating()) leavePage();
+    if (onPage() && !creating()) openPage(false);
+    else if (!onPage() && creating()) leavePage();
+    else if (onPage()) window.HarnessCreation.route();
   });
 
-  // The first picture decides: a factory with no repository opens the page by
-  // itself (a demo has none to link), and until then the scene is not even loaded.
-  function onSnapshot(snap) {
+  // The first picture decides: a factory being created, or with no
+  // repository, opens the page by itself (a demo has none to link).
+  async function onSnapshot(snap) {
     if (F.checked) return;
     F.checked = true;
     read();
-    const unlinked = !snap.demo && !snap.project.slug;
-    if (location.hash === PAGE_HASH) openPage(unlinked);
-    else if (unlinked) openPage(true);
+    if (snap.demo) {
+      if (onPage()) openPage(false);
+      return;
+    }
+    F.deciding = true;
+    let being = false;
+    try { being = await window.HarnessCreation.pending(); } catch (e) { being = false; }
+    F.deciding = false;
+    const unlinked = !snap.project.slug;
+    if (being || unlinked) openPage(true);
+    else if (onPage()) openPage(false);
+    else window.dispatchEvent(new CustomEvent('harness:factory-page', { detail: { open: false } }));
   }
 
-  window.HarnessFactories = { toggle, onSnapshot, creating };
+  window.HarnessFactories = { toggle, onSnapshot, creating, leave: leavePage };
 })();

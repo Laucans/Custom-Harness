@@ -536,6 +536,78 @@ pub trait Oneshot: Send + Sync {
         let _ = dir;
         self.ask(model, prompt)
     }
+
+    /// The answer to `prompt`, on `model`, by a session at work in `dir`:
+    /// it reads and **writes** the files there — a mock-up drawn — and
+    /// answers what it did. Nothing outside `dir` is its business; nothing
+    /// is committed. The default writes nothing and refuses.
+    ///
+    /// # Errors
+    ///
+    /// Claude could not be run, gave up, or this Claude cannot write.
+    fn work_in(&self, model: &str, prompt: &str, dir: &std::path::Path) -> Result<String, String> {
+        let _ = (model, prompt, dir);
+        Err("this Claude cannot write files".to_string())
+    }
+}
+
+/// What a new factory is made of, outside the view: its repository on
+/// GitHub, its folder on this machine, the harness's `init-repo` run there.
+/// Blocking — a desk runs it on a blocking thread.
+pub trait Foundry: Send + Sync {
+    /// The accounts a repository may be created under: the human's own
+    /// login first, then their organisations.
+    ///
+    /// # Errors
+    ///
+    /// `gh` could not be asked, or is not signed in.
+    fn owners(&self) -> Result<Vec<String>, String>;
+
+    /// Creates `owner/name` on GitHub, with a first commit so a branch can
+    /// be born from it, and answers its `owner/name`.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused: the name is taken, the owner is not the human's.
+    fn create_repository(
+        &self,
+        owner: &str,
+        name: &str,
+        private: bool,
+        description: &str,
+    ) -> Result<String, String>;
+
+    /// Makes the factory's folder at `root`: a checkout of the harness, so
+    /// its skills are there to lend and its `.llocal/` is the factory's own.
+    ///
+    /// # Errors
+    ///
+    /// `root` exists already, or `git` refused.
+    fn make_folder(&self, root: &std::path::Path) -> Result<(), String>;
+
+    /// Runs `harness init-repo` for `slug` in `root`, which writes its
+    /// `.env.local`, then adds there what the view needs to drive the
+    /// factory from anywhere (the harness binary, by absolute path). Answers
+    /// the report; `ready` is false when gaps remain that a human must close.
+    ///
+    /// # Errors
+    ///
+    /// The harness could not be run, or stopped.
+    fn init_repo(
+        &self,
+        root: &std::path::Path,
+        slug: &str,
+        branch: &str,
+    ) -> Result<Initialized, String>;
+}
+
+/// What `harness init-repo` said.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Initialized {
+    /// Nothing blocks: the repository is ready to be worked.
+    pub ready: bool,
+    /// Its report, as printed.
+    pub report: String,
 }
 
 /// What Claude Code kept of a session it ran: its transcript.

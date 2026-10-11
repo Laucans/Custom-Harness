@@ -611,6 +611,8 @@
     if (e.key === 'Escape' && !$('plant-menu').hidden) { plantClose(); $('status').focus(); return; }
     // Typing in a field is typing: Backspace erases, Escape leaves the field's pane.
     const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable;
+    // The creation page is left by its own button: a stray key never drops a step.
+    if (window.HarnessFactories.creating() && !S.pane) return;
     if (e.key === 'Escape' || e.key === 'Backspace') { if (!typing && e.target.tagName !== 'CANVAS') back(); else if (e.key === 'Escape') back(); }
   });
   // The two desks of the header: a click opens (or closes) the desk in the
@@ -693,6 +695,8 @@
     document.body.classList.remove('split');
     $('pane').hidden = true;
     $('pane-body').classList.remove('terminal', 'canvas');
+    // The creation page takes back the place an easel took over it.
+    window.dispatchEvent(new Event('harness:pane-closed'));
   }
   $('pane-close').addEventListener('click', closePane);
   $('pane-back').addEventListener('click', () => {

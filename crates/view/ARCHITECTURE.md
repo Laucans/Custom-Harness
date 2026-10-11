@@ -52,6 +52,8 @@ through a port so a test can refuse it:
 | a mock-up edited, then a `mockup/*` branch pushed | a `git worktree` of the mirror under `.llocal/view-mockups/`; the target's remote on save | `Mockups` | a link or simulate session; *save the mock-up* |
 | an issue opened, a pin and its conversation kept | the target's board (`harness:roadmap`); `.llocal/harness.db`, table `notes` | `Product::open_issue`, `NoteStore` | *Open the issue*; a pin dropped, a brainstorm |
 | the factory register, and the view started again in another factory | `~/.harness/factories.db` (`--harness-home`), outside every checkout; the view's own `exec` | `harness-core::ports::store::factories::Factories` (adapter in `harness-adapters`), `adapters::relaunch` | the header's factory menu |
+| a new factory: its GitHub repository, its folder, `init-repo` run there, the record of its creation | GitHub (`gh repo create`); a detached `git worktree` of the harness under `~/.harness/factories/<id>`; its `.env.local`; the register's `creations` table | `Foundry` (`adapters::foundry`), `Factories::keep_creation` | *Create the factory*, *Connect* on the creation page |
+| the proof of concept drawn, then published; its roadmap task; the watch started | the integration branch's mock-up workspace (a `claude -p` that writes, `Oneshot::work_in`), then the branch itself (or `mockup/proof-of-concept`); the board; the `harness watch` process | `Oneshot`, `Mockups`, `KitDesk::publish`, `DataDesk::open_issue`, `Plant` | *Draw the mock-ups*, *Accept* |
 
 A pin's session and a mock-up session are Claude Code sessions that edit
 the product's checkout — in a worktree the view made, never the harness's
@@ -81,13 +83,72 @@ process groups of their own and keep running; a view finds the watch of its
 factory by working directory (`WatchProcess::works_here`). The cost is a few
 seconds and the desks' sessions, which close.
 
-A factory with no GitHub repository (`project.slug` empty), or *+ new
-factory*, shows the **factory-creation page** (`#new-factory`): a page, not a
-pane — the scene is hidden, paused and, when the page opens that way, never
-loaded. Its steps are not built yet.
+A switch also loads the target factory's `.env.local` into the new image's
+environment (`domain::switch::env_of`: set values only, never
+`HARNESS_VIEW_PORT` — the page waits on the port it talks to), so a
+factory's own watch command and harness binary win over the one it leaves.
+
+### The factory-creation page
+
+A factory with no GitHub repository (`project.slug` empty), one whose
+creation is under way, or *+ new factory*, shows the **factory-creation
+page** (`#new-factory`, `static/creation.js`): a page, not a pane — the
+scene is hidden, paused and, when the page opens that way, never loaded.
+It has two sections:
+
+- **Connect an existing repository** — a URL; the view makes the factory's
+  folder, runs `init-repo` there, enrolls it, and opens its plant.
+- **Initialize a factory** — nine steps under a breadcrumb
+  (`#new-factory/<step>`), each gated (`domain::creation`, `Creation::may_enter`:
+  a step opens once every step before it has what it needs):
+
+  1. **repository** — name, owner (`gh api user`, `user/orgs`), visibility:
+     `gh repo create --add-readme`, the folder, `harness init-repo`, the
+     register, a creation record; then the view switches to the new factory,
+     where steps 2 to 9 run — a factory like any, so the easels serve it;
+  2. **kind** — *vertical architecture development factory*, the one there
+     is (*hexagonal* shown, not selectable);
+  3. **brief** — what the application does (one box for now);
+  4. **grilling** — rounds of questions (`grill_prompt`: the grilling skill's
+     frontier, each question with its recommended answer, JSON), answered,
+     retouched or deleted; *continue grilling* asks the next round once
+     every open one is answered;
+  5. **scope** — the proof of concept as the AI proposes it (Markdown),
+     edited freely, proposed again on demand;
+  6. **design system** — the design system's easel opened over the page
+     (moodboard, logo, tokens, kit); the step closes once it is validated;
+  7. **mock-ups** — one Claude Code session at work in the integration
+     branch's mock-up workspace (`Oneshot::work_in`: read and write, nothing
+     that runs) draws a page per screen of the scope, on the kit and the
+     tokens (`mockups_prompt`, the mock-up's own rules first);
+  8. **review** — the pages, then three ways: **request changes** (the
+     mock-up's easel and its pins, over the page), **regenerate** (back to
+     the brief, everything kept; the grilling keeps its questions, editable
+     and deletable, and may ask more; the workspace starts again from the
+     branch), **accept**;
+  9. **initialize** — the design system published and carried, the
+     mock-up published on the integration branch (else saved on
+     `mockup/proof-of-concept`), a `harness:roadmap` + `harness:ready` task
+     carrying the brief, the decisions, the scope and the pages
+     (`roadmap_issue`), the watch started; *open the plant* ends the
+     creation (`Factories::end_creation`).
+
+The record is the register's (`Factories::creation`, `keep_creation`): the
+creation survives a reload, a switch and a restart. One long job at a time
+(`creation_desk.rs`: found, connect, mock-ups, initialize), followed by the
+page every two seconds. The AI is `--creation-model` (`CREATION_MODEL`,
+`claude-opus-5-5`). A factory's folder is a worktree of the harness the view
+runs from, not an empty folder: the watch lends the harness's
+`.claude/skills` from the checkout it runs in, and `init-repo`'s
+`.env.local` gets the harness binary by absolute path
+(`HARNESS_BIN`, `HARNESS_WATCH_COMMAND`, `HARNESS_TRIAL_COMMAND`). The
+renderer bundle, never committed, is read from the view's own checkout when
+the factory's has none.
 
 Routes: `GET /api/factories` (`current`, `factories`),
-`POST /api/factories/{id}/open`.
+`POST /api/factories/{id}/open`, `GET|PUT /api/creation`,
+`GET /api/creation/owners`,
+`POST /api/creation/{found,connect,grill,scope,mockups,regenerate,accept,finish}`.
 
 ## The steward, and the doctor
 
@@ -878,9 +939,10 @@ src/cli.rs             what a human types; TARGET_REPO_URL, INTEGRATION_BRANCH, 
 src/note_desks.rs      the pins' sessions at work: one Claude Code per open pin, its turns read back when it closes; a page to create edits the mock-up's workspace; `ask`, the one-shot a request is applied with
 src/units_desk.rs      the capabilities list's reading, kept a minute; the fusion's one question to the model
 src/data_desk.rs       the data desk: one task owning the Product port, versions cached, the handlers answered by channel
+src/creation_desk.rs   a factory's creation at work: the record in the register, the AI's rounds and scope, the long jobs (found, connect, mock-ups, initialize)
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
-src/domain/            the inside — no disk, no subprocess, no clock (`switch.rs`: the command line a view starts again with in another factory)
+src/domain/            the inside — no disk, no subprocess, no clock (`switch.rs`: the command line and the environment a view starts again with in another factory; `creation.rs`: a factory's creation, its gates, the AI's prompts and the reading of its answers)
   blueprint.rs         the rooms, the models, one line per workflow, station by station; the gates each stage really declares, two in a row shown as one arch
   gates.rs             the gate verdicts out of the event store: which gate said what in which run, the checks of its last pass, the state an arch takes
   traces.rs            parsers: watch.log, run.log, prompts.md headers, the stream's first event, the ledger sums
@@ -914,12 +976,13 @@ src/adapters/
   mockups.rs           the mock-up through the same mirror, a detached worktree per edited branch under .llocal/view-mockups, saved on a mockup/* branch; the demo's copy of the sample under .llocal/view-demo
   product.rs           the product's files: on GitHub at the integration branch, or in a folder
   sqlite_notes.rs      the pins and their conversations, in .llocal/harness.db
-  relaunch.rs          the view `exec`ed again in another factory's folder
+  relaunch.rs          the view `exec`ed again in another factory's folder, its `.env.local` loaded
+  foundry.rs           a new factory: `gh repo create`, a worktree of the harness, `harness init-repo`
   claude_cli.rs        claude -p asked once (summary, conclusion, request), and Claude Code's transcripts read back
   prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server/            axum, one file per pane: `mod.rs` the state, the route table, the page's assets; `runs`, `desks`, `plant`, `janitor`, `data_model`, `mockup`, `drafts` (a page's draft and its versions), `design` (the design system's easel), `capabilities`, `notes`, `prompts` the handlers of each; `tests.rs` the router driven with fakes. The routes: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart, /api/factories, POST /api/factories/{id}/open
+src/server/            axum, one file per pane: `mod.rs` the state, the route table, the page's assets; `runs`, `desks`, `plant`, `janitor`, `data_model`, `mockup`, `drafts` (a page's draft and its versions), `design` (the design system's easel), `capabilities`, `notes`, `prompts` the handlers of each; `tests.rs` the router driven with fakes. The routes: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart, /api/factories, POST /api/factories/{id}/open, /api/creation, POST /api/creation/…
 static/                index.html, style.css, clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, the draft, the requests, the forks), edit.js (the draft engine: a page as source + operations, undo, materialization), design.js (the designer's hands: selection, handles, guides, marquee, layers, properties, tools, menu, keys), vendor/ (xterm.js), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```

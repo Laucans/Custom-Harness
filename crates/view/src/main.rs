@@ -21,6 +21,7 @@
 
 mod adapters;
 mod cli;
+mod creation_desk;
 mod data_desk;
 mod desk;
 mod domain;
@@ -49,6 +50,7 @@ use tokio::sync::watch;
 
 use crate::adapters::claude_bin;
 use crate::adapters::claude_cli::{ClaudeOneshot, ClaudeTranscripts};
+use crate::adapters::foundry;
 use crate::adapters::fs_traces::FsTraces;
 use crate::adapters::fs_yard::FsYard;
 use crate::adapters::gh_board::GhBoard;
@@ -65,6 +67,7 @@ use crate::adapters::sqlite_notes::SqliteNotes;
 use crate::adapters::trial_proc::TrialProcess;
 use crate::adapters::watch_proc::WatchProcess;
 use crate::cli::Cli;
+use crate::creation_desk::CreationDesk;
 use crate::data_desk::DataDesk;
 use crate::desk::Desk;
 use crate::domain::assemble::{self, Inputs};
@@ -194,6 +197,18 @@ async fn main() -> anyhow::Result<()> {
     let (units, mockups) = product_readers(&cli, &root, &project);
     let kit = kit_for(&cli, mockups.clone(), &pins);
     let mf = mf_for(&cli, mockups.clone(), kit.clone());
+    let creation = creation_for(
+        &cli,
+        &root,
+        factories.clone(),
+        &factory,
+        Hold {
+            mockups: mockups.clone(),
+            kit: kit.clone(),
+            data: data.clone(),
+            plant: plant.clone(),
+        },
+    );
 
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
     let (board_tx, board_rx) = watch::channel(None);
@@ -202,7 +217,7 @@ async fn main() -> anyhow::Result<()> {
         board: board_rx.clone(),
         traces: Arc::clone(&traces),
         static_dir: cli.static_dir.clone(),
-        render_dir: root.join("crates/view/static/render"),
+        render_dir: render_dir_for(&root),
         desk: desk.clone(),
         doctor: doctor.clone(),
         diagnoses: Arc::clone(&diagnoses),
@@ -230,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
         mf: mf.clone(),
         zone: TimeZone::system(),
         factories,
+        creation: creation.clone(),
         factory,
         switching: Arc::clone(&switching),
     };
@@ -295,6 +311,9 @@ async fn main() -> anyhow::Result<()> {
             if let Some(mf) = mf {
                 mf.shutdown();
             }
+            if let Some(creation) = creation {
+                creation.shutdown();
+            }
             // The factory the human moved to, if that is why the page stopped.
             Ok::<_, anyhow::Error>(switching.borrow().clone())
         })
@@ -350,6 +369,17 @@ fn builds_for(cli: &Cli, root: &Path) -> Option<Arc<dyn Builds>> {
     if cli.demo {
         return None;
     }
+    Some(Arc::new(HarnessBuilds::new(
+        harness_candidates(cli, root),
+        root.to_path_buf(),
+    )) as Arc<dyn Builds>)
+}
+
+/// Where the harness binary may be, in order of preference: `--harness-bin`,
+/// else a `harness` beside this view's executable — built with it, so it
+/// knows the same commands — else the program the switch starts the watch
+/// with.
+fn harness_candidates(cli: &Cli, root: &Path) -> Vec<PathBuf> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("harness")));
@@ -361,11 +391,66 @@ fn builds_for(cli: &Cli, root: &Path) -> Option<Arc<dyn Builds>> {
             first.to_path_buf()
         }
     });
-    let candidates: Vec<PathBuf> = cli.harness_bin.clone().map_or_else(
+    cli.harness_bin.clone().map_or_else(
         || beside.into_iter().chain(watched).collect(),
         |chosen| vec![chosen],
-    );
-    Some(Arc::new(HarnessBuilds::new(candidates, root.to_path_buf())) as Arc<dyn Builds>)
+    )
+}
+
+/// What the creation desk acts through, besides the register.
+struct Hold {
+    mockups: Option<Arc<dyn Mockups>>,
+    kit: Option<KitDesk>,
+    data: Option<DataDesk>,
+    plant: Option<Arc<dyn Plant>>,
+}
+
+/// The factory-creation desk — none without a register (`--demo`). New
+/// factories' folders go beside the register, under `factories/`.
+fn creation_for(
+    cli: &Cli,
+    root: &Path,
+    register: Option<Arc<dyn Factories + Send + Sync>>,
+    factory: &str,
+    hold: Hold,
+) -> Option<CreationDesk> {
+    let register = register?;
+    let factories_dir = register_path(cli)?.parent()?.join("factories");
+    let oneshot = claude_bin::newest()
+        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
+    Some(CreationDesk::new(creation_desk::Setup {
+        register,
+        factory: factory.to_string(),
+        foundry: Arc::new(foundry::Cli::new(
+            root.to_path_buf(),
+            harness_candidates(cli, root),
+        )),
+        factories_dir,
+        integration_branch: cli.integration_branch.clone(),
+        oneshot,
+        model: cli.creation_model.clone(),
+        mockups: hold.mockups,
+        kit: hold.kit,
+        data: hold.data,
+        plant: hold.plant,
+    }))
+}
+
+/// Where the renderer bundle lies: in this checkout, else in the one this
+/// view was built in — a factory's folder is a fresh worktree, and the
+/// bundle is built, never committed.
+fn render_dir_for(root: &Path) -> PathBuf {
+    const RENDER: &str = "crates/view/static/render";
+    let here = root.join(RENDER);
+    if here.join("render.js").is_file() {
+        return here;
+    }
+    // `<checkout>/target/<profile>/harness-view`.
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.ancestors().nth(3).map(|checkout| checkout.join(RENDER)))
+        .filter(|built| built.join("render.js").is_file())
+        .unwrap_or(here)
 }
 
 /// The rate limits, read through the newest Claude Code and `gh`.

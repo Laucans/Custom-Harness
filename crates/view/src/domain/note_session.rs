@@ -392,7 +392,8 @@ pub fn briefing(about: &About, handback: &Handback) -> String {
 
 /// What the mock-up's sessions share: where the pages are and what must
 /// stay true of them.
-fn mockup_rules(about: &About) -> String {
+#[must_use]
+pub fn mockup_rules(about: &About) -> String {
     format!(
         "You are working on the product's mock-up: a static frontend with no backend under \
          `mock/` in this folder — one HTML page per screen under `mock/pages/`, plain HTML and \

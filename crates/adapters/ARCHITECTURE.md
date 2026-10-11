@@ -31,7 +31,7 @@ store/    checkpoint   Checkpoint: a two-line pointer + one JSONL per flow
           review_ledger  ReviewLedger: what a PR cost, read from the one ledger on its rows
           lock         DirLocks — an atomic `mkdir`
           events       the `EventLog` over SQLite, `.llocal/harness.db`
-          factories    the `Factories` register over SQLite, `~/.harness/factories.db`, outside every checkout
+          factories    the `Factories` register over SQLite, `~/.harness/factories.db`, outside every checkout; a `creations` table beside it
           error_ledger what stopped a run, and what was done about it
           prompt_book  PromptFile (`.llocal/prompts.json`), DraftFile (`.llocal/prompts.drafts.json`, taken by a rename), ShelfFile (`.llocal/prompts.shelf.json`, the deactivated drafts, never taken), a run's `prompt-texts.json`
           trial        a dry-run's report, `.llocal/trials/<id>/trial.json`

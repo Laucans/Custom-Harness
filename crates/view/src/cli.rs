@@ -50,6 +50,11 @@ pub struct Cli {
     #[arg(long, env = "HARNESS_HOME")]
     pub harness_home: Option<PathBuf>,
 
+    /// The model a factory's creation asks: the grilling, the scope, the
+    /// mock-ups of the proof of concept.
+    #[arg(long, env = "CREATION_MODEL", default_value = "claude-opus-5-5")]
+    pub creation_model: String,
+
     /// Never call `gh`: the sign and the store stay empty.
     #[arg(long)]
     pub no_board: bool,

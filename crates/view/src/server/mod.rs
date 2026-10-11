@@ -18,6 +18,7 @@
 //! few helpers every group shares.
 
 mod capabilities;
+mod creation;
 mod data_model;
 mod design;
 mod desks;
@@ -49,6 +50,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use tokio_stream::{Stream, StreamExt as _};
 
+use crate::creation_desk::CreationDesk;
 use crate::data_desk::DataDesk;
 use crate::desk::Desk;
 use crate::domain::design::MAX_ASSET_BYTES;
@@ -184,6 +186,9 @@ pub struct AppState {
     pub zone: jiff::tz::TimeZone,
     /// The factories this machine knows — `None` under `--demo`.
     pub factories: Option<Arc<dyn Factories + Send + Sync>>,
+    /// A factory's creation: founding a new one from here, and the steps of
+    /// this one's when it is being created — `None` without a register.
+    pub creation: Option<CreationDesk>,
     /// The id of the factory this view is on; empty without a register.
     pub factory: String,
     /// Where a switch to another factory is put for `main` to act on.
@@ -206,6 +211,7 @@ const DESIGN_JS: &str = include_str!("../../static/design.js");
 const KIT_JS: &str = include_str!("../../static/kit.js");
 const GALLERY_JS: &str = include_str!("../../static/gallery.js");
 const FACTORIES_JS: &str = include_str!("../../static/factories.js");
+const CREATION_JS: &str = include_str!("../../static/creation.js");
 
 /// The routes, with their state.
 // One route per line: the table is the function, and splitting it would
@@ -226,6 +232,7 @@ pub fn router(state: AppState) -> Router {
         .route("/kit.js", get(kit_js))
         .route("/gallery.js", get(gallery_js))
         .route("/factories.js", get(factories_js))
+        .route("/creation.js", get(creation_js))
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
         .route("/mock/{slug}/__kit/{name}", get(kit_preview))
         .route("/mock/{slug}/__showcase/contact", get(kit_showcase))
@@ -333,6 +340,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/restart", post(restart))
         .route("/api/factories", get(factory_list))
         .route("/api/factories/{id}/open", post(factory_open))
+        .route("/api/creation", get(creation::creation).put(creation::save))
+        .route("/api/creation/owners", get(creation::owners))
+        .route("/api/creation/found", post(creation::found))
+        .route("/api/creation/connect", post(creation::connect))
+        .route("/api/creation/grill", post(creation::grill))
+        .route("/api/creation/scope", post(creation::scope))
+        .route("/api/creation/mockups", post(creation::mockups))
+        .route("/api/creation/regenerate", post(creation::regenerate))
+        .route("/api/creation/accept", post(creation::accept))
+        .route("/api/creation/finish", post(creation::finish))
         .with_state(state)
 }
 
@@ -499,6 +516,10 @@ async fn kit_js(State(state): State<AppState>) -> Response {
 
 async fn factories_js(State(state): State<AppState>) -> Response {
     asset(&state, "factories.js", FACTORIES_JS, JS)
+}
+
+async fn creation_js(State(state): State<AppState>) -> Response {
+    asset(&state, "creation.js", CREATION_JS, JS)
 }
 
 async fn gallery_js(State(state): State<AppState>) -> Response {

@@ -4,6 +4,9 @@
 //! its own `.llocal/` and its own target repository. The register lives
 //! outside every checkout (the view lists factories whichever it was started
 //! in), so a switch is "start the view again in that folder".
+//!
+//! A factory being created keeps a record of where its creation stands
+//! beside it — opaque here: the tool that creates it decides its shape.
 
 use std::path::PathBuf;
 
@@ -78,6 +81,28 @@ pub trait Factories {
         slug: &str,
         integration_branch: &str,
     ) -> Outcome<Factory>;
+
+    /// The record of the factory `id`'s creation, as the tool creating it
+    /// wrote it; `None` once it is created, or when it never was by a tool.
+    ///
+    /// # Errors
+    ///
+    /// The register could not be read.
+    fn creation(&self, id: &str) -> Outcome<Option<String>>;
+
+    /// Keeps `record` as the factory `id`'s creation, in place of the last.
+    ///
+    /// # Errors
+    ///
+    /// The register could not be written.
+    fn keep_creation(&self, id: &str, record: &str) -> Outcome<()>;
+
+    /// Forgets the factory `id`'s creation: it is created.
+    ///
+    /// # Errors
+    ///
+    /// The register could not be written.
+    fn end_creation(&self, id: &str) -> Outcome<()>;
 }
 
 #[cfg(test)]

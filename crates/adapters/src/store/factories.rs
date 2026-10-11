@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS factories (
     root               TEXT NOT NULL UNIQUE,
     integration_branch TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS creations (
+    id     TEXT PRIMARY KEY,
+    record TEXT NOT NULL
+);
 ";
 
 const COLUMNS: &str = "id, name, slug, root, integration_branch";
@@ -175,6 +179,41 @@ impl Factories for SqliteFactories {
             integration_branch: integration_branch.to_string(),
         })
     }
+
+    fn creation(&self, id: &str) -> Outcome<Option<String>> {
+        self.conn
+            .lock()
+            .map_err(|_| failed("is poisoned", "a writer panicked"))?
+            .query_row(
+                "SELECT record FROM creations WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| failed("cannot be read", e))
+    }
+
+    fn keep_creation(&self, id: &str, record: &str) -> Outcome<()> {
+        self.conn
+            .lock()
+            .map_err(|_| failed("is poisoned", "a writer panicked"))?
+            .execute(
+                "INSERT INTO creations (id, record) VALUES (?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET record = excluded.record",
+                params![id, record],
+            )
+            .map(|_| ())
+            .map_err(|e| failed("cannot be written", e))
+    }
+
+    fn end_creation(&self, id: &str) -> Outcome<()> {
+        self.conn
+            .lock()
+            .map_err(|_| failed("is poisoned", "a writer panicked"))?
+            .execute("DELETE FROM creations WHERE id = ?1", params![id])
+            .map(|_| ())
+            .map_err(|e| failed("cannot be written", e))
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +311,26 @@ mod tests {
         assert_eq!(
             (a.id.as_str(), b.id.as_str(), c.id.as_str()),
             ("app", "app-2", "app-3")
+        );
+    }
+
+    #[test]
+    fn a_creation_is_kept_replaced_and_forgotten_by_factory() {
+        let dir = Dir::new("creation");
+        let store = register(&dir);
+        assert_eq!(store.creation("alpha").expect("read"), None);
+        store.keep_creation("alpha", "one").expect("kept");
+        store.keep_creation("beta", "other").expect("kept");
+        store.keep_creation("alpha", "two").expect("kept");
+        assert_eq!(
+            store.creation("alpha").expect("read").as_deref(),
+            Some("two")
+        );
+        store.end_creation("alpha").expect("ended");
+        assert_eq!(store.creation("alpha").expect("read"), None);
+        assert_eq!(
+            register(&dir).creation("beta").expect("read").as_deref(),
+            Some("other")
         );
     }
 
