@@ -3,8 +3,10 @@
 //! Compiled in, so every repository the plant works on carries the same
 //! architecture from the same source: the architecture document, the rules
 //! section of `CLAUDE.md`, the fifteen contracts, the CI gates, the project's
-//! CI for its stack, the script that scopes its tests, the one that dumps its
-//! schema, an empty data model to grow, an empty list of mock pages and the
+//! CI for its stack, the script that scopes its tests, the one that finds the
+//! dead code the compiler cannot see, the mutation gate's configuration, the
+//! script that dumps its schema, an empty data model to grow, an empty list
+//! of mock pages and the
 //! mock-up's loader, screen host, mock server and build. The kit's base
 //! fragments are not installed: the harness keeps them and writes the styled
 //! ones (`kit`). What to write of them in a given
@@ -31,10 +33,12 @@ pub const CLAUDE_RULES: &str = include_str!("../assets/CLAUDE-rules.md");
 /// `scripts/dump-schema.sh`; `data_snapshot` runs it when the repository has none.
 pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 
-/// The files installed as they are: the document, the gates, the CI, the
-/// test scope, the schema dump, the data model, the mock-up's files, the
-/// contracts A–O.
-pub const FILES: [Asset; 31] = [
+/// The files installed as they are.
+///
+/// The document, the gates, the CI, the test scope, the dead-code script,
+/// the mutants configuration, the schema dump, the data model, the mock-up's
+/// files, the contracts A–O.
+pub const FILES: [Asset; 33] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -50,6 +54,14 @@ pub const FILES: [Asset; 31] = [
     Asset {
         path: "scripts/test-scope.sh",
         content: include_str!("../assets/test-scope.sh"),
+    },
+    Asset {
+        path: "scripts/dead-code.sh",
+        content: include_str!("../assets/dead-code.sh"),
+    },
+    Asset {
+        path: ".cargo/mutants.toml",
+        content: include_str!("../assets/mutants.toml"),
     },
     Asset {
         path: "scripts/dump-schema.sh",
@@ -219,6 +231,24 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(asset.content)
                 .unwrap_or_else(|e| panic!("{} is not JSON: {e}", asset.path));
         }
+    }
+
+    #[test]
+    fn the_ci_runs_the_dead_code_script_and_the_mutants_it_is_installed_with() {
+        let ci = content_of(".github/workflows/ci.yml").unwrap_or_default();
+        assert!(ci.contains("cargo machete"), "{ci}");
+        assert!(ci.contains("bash scripts/dead-code.sh"), "{ci}");
+        assert!(ci.contains("--in-diff change.diff"), "{ci}");
+        assert!(
+            ci.contains("--workspace"),
+            "default-members would narrow it"
+        );
+        assert!(
+            content_of("scripts/dead-code.sh")
+                .is_some_and(|s| s.starts_with("#!/usr/bin/env bash"))
+        );
+        let mutants = content_of(".cargo/mutants.toml").unwrap_or_default();
+        assert!(mutants.contains("exclude_globs"), "{mutants}");
     }
 
     #[test]

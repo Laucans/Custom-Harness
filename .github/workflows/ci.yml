@@ -26,6 +26,51 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo test --workspace --doc
 
+  # The dead code the compiler lets through: a dependency no crate uses, a
+  # `pub` item no crate of the workspace calls (scripts/dead-code.sh).
+  dead-code:
+    name: dead-code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+      - run: cargo machete
+      - run: bash scripts/dead-code.sh
+
+  # The tests are judged too: a function cargo-mutants can rewrite without a
+  # test failing was never tested. Only the functions the change touches —
+  # the whole workspace is seven thousand mutants (`.cargo/mutants.toml`).
+  mutants:
+    name: mutants
+    runs-on: ubuntu-latest
+    # A push that creates the branch has no "before" to diff against.
+    if: github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: The lines this change touches
+        env:
+          # A pull request against its target, a push against what it replaced.
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          # A base rewritten away (a force push) leaves only the last commit.
+          git diff "$BASE" HEAD > change.diff || git diff HEAD~1 HEAD > change.diff
+          wc -l change.diff
+      - run: cargo mutants --workspace --in-place --no-shuffle --in-diff change.diff
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants.out
+          path: mutants.out
+
   # The pinned `rust-version` means nothing unless something builds with it.
   msrv:
     name: msrv

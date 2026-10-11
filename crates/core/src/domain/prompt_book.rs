@@ -307,11 +307,6 @@ impl Drafts {
         Ok(())
     }
 
-    /// Withdraws the draft of `key`, if there is one.
-    pub fn withdraw(&mut self, key: &str) {
-        self.prompts.remove(key);
-    }
-
     /// Deactivates the draft of `key`: it leaves the drafts for the head of
     /// `aside`. Nothing happens when no draft waits.
     pub fn deactivate(&mut self, aside: &mut Shelf, key: &str) {

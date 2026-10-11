@@ -75,6 +75,34 @@ jobs:
           else
             cargo test --workspace --all-features
           fi
+      - uses: taiki-e/install-action@v2
+        if: hashFiles('Cargo.toml') != ''
+        with:
+          tool: cargo-machete,cargo-mutants
+      # The dead code the compiler lets through: a dependency no crate uses,
+      # a `pub` item no crate of the workspace calls (scripts/dead-code.sh).
+      - name: Dead code
+        if: hashFiles('Cargo.toml') != ''
+        run: |
+          cargo machete
+          if [ -f scripts/dead-code.sh ]; then bash scripts/dead-code.sh; fi
+      # The tests are judged too: a function cargo-mutants can rewrite
+      # without a test failing was never tested. Only the functions the
+      # change touches (.cargo/mutants.toml says what is never mutated).
+      - name: Mutants
+        if: hashFiles('Cargo.toml') != '' && (github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000')
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          # A base rewritten away (a force push) leaves only the last commit.
+          git diff "$BASE" HEAD > change.diff || git diff HEAD~1 HEAD > change.diff
+          cargo mutants --workspace --in-place --no-shuffle --in-diff change.diff
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('Cargo.toml') != ''
+        with:
+          name: mutants.out
+          path: mutants.out
+          if-no-files-found: ignore
       - name: No Rust workspace yet
         if: hashFiles('Cargo.toml') == ''
         run: echo "no Cargo.toml — nothing to check yet"

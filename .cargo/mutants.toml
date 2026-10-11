@@ -1,0 +1,21 @@
+# cargo-mutants, the gate that judges the tests rather than the code
+# (.github/workflows/ci.yml, `mutants`): each mutant is one function whose
+# body is replaced by a plausible wrong one, and a test that still passes
+# never tested that function. The CI runs the mutants of the lines a change
+# touches (`--in-diff`); `cargo mutants --workspace -e main.rs` runs them all,
+# which takes hours.
+#
+# What is not mutated: the entry points (`main.rs` wires, nothing tests
+# wiring), the renderer (a Bevy scene, seen on a page and never asserted),
+# and the fakes a test injects (a fake that lies makes the test fail, which
+# is the test's finding, not the fake's).
+exclude_globs = ["**/main.rs", "crates/view-render/**", "**/fake_*.rs"]
+
+# Every mutant runs the mutated crate's own tests, under the flags the CI
+# tests with.
+additional_cargo_test_args = ["--all-features"]
+
+# A mutant that loops is caught by the clock: five times the baseline, and
+# never under a minute, so a cold cache is not read as a hang.
+timeout_multiplier = 5
+minimum_test_timeout = 60
