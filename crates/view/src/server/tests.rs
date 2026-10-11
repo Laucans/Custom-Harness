@@ -73,6 +73,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         zone: jiff::tz::TimeZone::UTC,
         factories: None,
         creation: None,
+        usage: None,
         factory: String::new(),
         switching: Arc::new(watch::channel(None).0),
     }
@@ -1707,4 +1708,54 @@ async fn the_mockups_and_the_acceptance_wait_for_their_gates() {
     let (status, body) = post(state, "/api/creation/accept", "").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body, "validate the design system");
+}
+
+/// A `Usage` kept in memory, for a test to read back.
+#[derive(Default)]
+struct Spent(std::sync::Mutex<Vec<crate::ports::Spend>>);
+
+impl crate::ports::Usage for Spent {
+    fn log(&self, spend: &crate::ports::Spend) -> Result<(), String> {
+        self.0.lock().expect("held").push(spend.clone());
+        Ok(())
+    }
+
+    fn all(&self) -> Result<Vec<crate::ports::Spend>, String> {
+        Ok(self.0.lock().expect("held").clone())
+    }
+}
+
+#[tokio::test]
+async fn without_a_store_usage_reads_as_empty() {
+    let (status, body) = get(state_without_plant(), "/api/usage").await;
+    assert_eq!(status, StatusCode::OK);
+    let summary: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(summary["totalUsd"], 0.0);
+    assert_eq!(summary["calls"], 0);
+}
+
+#[tokio::test]
+async fn usage_sums_what_was_logged_by_who() {
+    let kept = Spent::default();
+    kept.log(&crate::ports::Spend {
+        at: "2026-10-12T00:00:00Z".to_string(),
+        who: "creation".to_string(),
+        model: "m".to_string(),
+        mode: "write".to_string(),
+        cost_usd: Some(0.5),
+        duration_ms: Some(10),
+        input_tokens: Some(1),
+        output_tokens: Some(2),
+    })
+    .expect("logged");
+    let state = AppState {
+        usage: Some(Arc::new(kept)),
+        ..state_without_plant()
+    };
+    let (status, body) = get(state, "/api/usage").await;
+    assert_eq!(status, StatusCode::OK);
+    let summary: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(summary["totalUsd"], 0.5);
+    assert_eq!(summary["calls"], 1);
+    assert_eq!(summary["byWho"][0]["who"], "creation");
 }

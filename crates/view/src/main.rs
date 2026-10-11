@@ -64,6 +64,7 @@ use crate::adapters::pty::Pty;
 use crate::adapters::pty::PtyMaker;
 use crate::adapters::relaunch;
 use crate::adapters::sqlite_notes::SqliteNotes;
+use crate::adapters::sqlite_usage::SqliteUsage;
 use crate::adapters::trial_proc::TrialProcess;
 use crate::adapters::watch_proc::WatchProcess;
 use crate::cli::Cli;
@@ -86,7 +87,7 @@ use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
     Board, BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
-    TerminalFactory, Traces, Trials, Units, Yard,
+    TerminalFactory, Traces, Trials, Units, Usage, Yard,
 };
 use crate::server::{AppState, router};
 use crate::units_desk::UnitsDesk;
@@ -185,7 +186,9 @@ async fn main() -> anyhow::Result<()> {
     let mut switched_for_grace = switching.subscribe();
     let (board, product) = github_for(&cli, &root, &project);
     let program = program_for(&cli);
-    let (pins, drafts, note_desks) = notes_for(&cli, &root, &project, &program, &workspace)?;
+    let usage = usage_store(&workspace);
+    let (pins, drafts, note_desks) =
+        notes_for(&cli, &root, &project, &program, &workspace, usage.clone())?;
     let desk = desk_for(&cli, &root, &project, &program);
     let doctor = doctor_for(&cli, &root, &project, &program);
     let plant = plant_for(&cli, &workspace);
@@ -194,9 +197,9 @@ async fn main() -> anyhow::Result<()> {
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
     let (data, data_task) = data_for(product);
-    let (units, mockups) = product_readers(&cli, &root, &project);
-    let kit = kit_for(&cli, mockups.clone(), &pins);
-    let mf = mf_for(&cli, mockups.clone(), kit.clone());
+    let (units, mockups) = product_readers(&cli, &root, &project, usage.clone());
+    let kit = kit_for(&cli, mockups.clone(), &pins, usage.clone());
+    let mf = mf_for(&cli, mockups.clone(), kit.clone(), usage.clone());
     let creation = creation_for(
         &cli,
         &root,
@@ -208,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
             data: data.clone(),
             plant: plant.clone(),
         },
+        usage.clone(),
     );
 
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
@@ -246,6 +250,7 @@ async fn main() -> anyhow::Result<()> {
         zone: TimeZone::system(),
         factories,
         creation: creation.clone(),
+        usage,
         factory,
         switching: Arc::clone(&switching),
     };
@@ -413,11 +418,12 @@ fn creation_for(
     register: Option<Arc<dyn Factories + Send + Sync>>,
     factory: &str,
     hold: Hold,
+    usage: Option<Arc<dyn Usage>>,
 ) -> Option<CreationDesk> {
     let register = register?;
     let factories_dir = register_path(cli)?.parent()?.join("factories");
     let oneshot = claude_bin::newest()
-        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
+        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path, "creation", usage)) as Arc<dyn Oneshot>);
     Some(CreationDesk::new(creation_desk::Setup {
         register,
         factory: factory.to_string(),
@@ -478,6 +484,7 @@ fn notes_for(
     project: &Project,
     program: &str,
     workspace: &Workspace,
+    usage: Option<Arc<dyn Usage>>,
 ) -> anyhow::Result<Notes> {
     let store = Arc::new(
         SqliteNotes::open(
@@ -489,7 +496,7 @@ fn notes_for(
     );
     let pins: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
     let drafts: Arc<dyn DraftStore> = store as Arc<dyn DraftStore>;
-    let desks = note_desks_for(cli, root, project, program, &pins);
+    let desks = note_desks_for(cli, root, project, program, &pins, usage);
     Ok((pins, drafts, desks))
 }
 
@@ -502,6 +509,7 @@ fn note_desks_for(
     project: &Project,
     program: &str,
     pins: &Arc<dyn NoteStore>,
+    usage: Option<Arc<dyn Usage>>,
 ) -> Option<NoteDesks> {
     if cli.no_steward {
         return None;
@@ -522,7 +530,7 @@ fn note_desks_for(
     Some(NoteDesks::new(note_desks::Setup {
         store: Arc::clone(pins),
         maker: Arc::new(PtyMaker::new(program)),
-        oneshot: Arc::new(ClaudeOneshot::new(claude)),
+        oneshot: Arc::new(ClaudeOneshot::new(claude, "notes", usage)),
         transcripts: Arc::new(ClaudeTranscripts::new(projects)),
         model: cli.steward_model.clone(),
         cwd,
@@ -620,6 +628,19 @@ fn event_store(workspace: &Workspace) -> Option<Arc<dyn EventLog + Send + Sync>>
         Ok(store) => Some(Arc::new(store)),
         Err(why) => {
             eprintln!("harness-view: no notifications — {}", why.reason());
+            None
+        }
+    }
+}
+
+/// Where the view's own `claude -p` calls — the design system's, a
+/// factory's creation, a micro-frontend's, a pin's — are counted, beside
+/// the event store in the same file.
+fn usage_store(workspace: &Workspace) -> Option<Arc<dyn Usage>> {
+    match SqliteUsage::open(&workspace.events()) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(why) => {
+            eprintln!("harness-view: the view's own AI calls go unmeasured — {why}");
             None
         }
     }
@@ -862,13 +883,19 @@ const SAMPLE_UNITS: &str = "crates/view/sample/units";
 /// Where the capabilities list is read: the folder the human named, the
 /// demo's copy of the sample under `--demo`, else a mirror of the product on GitHub — nothing
 /// under `--no-board` without a folder.
-fn units_for(cli: &Cli, demo: Option<&Path>, mirror: Option<Arc<Mirror>>) -> Option<UnitsDesk> {
+fn units_for(
+    cli: &Cli,
+    demo: Option<&Path>,
+    mirror: Option<Arc<Mirror>>,
+    usage: Option<Arc<dyn Usage>>,
+) -> Option<UnitsDesk> {
     let units: Arc<dyn Units> = match demo {
         Some(dir) => Arc::new(DirUnits::new(dir)),
         None => Arc::new(GitUnits::new(mirror?)),
     };
     let claude = claude_bin::newest().map(|(path, _)| path);
-    let oneshot = claude.map(|path| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
+    let oneshot =
+        claude.map(|path| Arc::new(ClaudeOneshot::new(path, "units", usage)) as Arc<dyn Oneshot>);
     Some(UnitsDesk::new(
         units,
         Duration::from_secs(60),
@@ -894,11 +921,12 @@ fn product_readers(
     cli: &Cli,
     root: &Path,
     project: &Project,
+    usage: Option<Arc<dyn Usage>>,
 ) -> (Option<UnitsDesk>, Option<Arc<dyn Mockups>>) {
     let mirror = mirror_for(cli, root, project);
     let demo = (cli.demo && cli.data_dir.is_none()).then(|| demo_units(root));
     (
-        units_for(cli, demo.as_deref(), mirror.clone()),
+        units_for(cli, demo.as_deref(), mirror.clone(), usage),
         mockups_for(demo.as_deref(), root, mirror),
     )
 }
@@ -947,10 +975,11 @@ fn kit_for(
     cli: &Cli,
     mockups: Option<Arc<dyn Mockups>>,
     pins: &Arc<dyn NoteStore>,
+    usage: Option<Arc<dyn Usage>>,
 ) -> Option<KitDesk> {
     let mockups = mockups?;
     let oneshot = claude_bin::newest()
-        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
+        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path, "kit", usage)) as Arc<dyn Oneshot>);
     Some(KitDesk::new(kit_desk::Setup {
         mockups,
         oneshot,
@@ -963,10 +992,15 @@ fn kit_for(
 
 /// The micro-frontends' generations, when the product's mock-up can be
 /// read: on the kit's model, the kit making what they lack first.
-fn mf_for(cli: &Cli, mockups: Option<Arc<dyn Mockups>>, kit: Option<KitDesk>) -> Option<MfDesk> {
+fn mf_for(
+    cli: &Cli,
+    mockups: Option<Arc<dyn Mockups>>,
+    kit: Option<KitDesk>,
+    usage: Option<Arc<dyn Usage>>,
+) -> Option<MfDesk> {
     let mockups = mockups?;
     let oneshot = claude_bin::newest()
-        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
+        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path, "mf", usage)) as Arc<dyn Oneshot>);
     Some(MfDesk::new(mf_desk::Setup {
         mockups,
         kit,

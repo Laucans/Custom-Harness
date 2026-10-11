@@ -29,3 +29,4 @@ pub mod snapshot;
 pub mod steward;
 pub mod switch;
 pub mod traces;
+pub mod usage;

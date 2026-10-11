@@ -610,6 +610,49 @@ pub struct Initialized {
     pub report: String,
 }
 
+/// One `claude -p` call the view itself paid for — never a dev-loop run,
+/// which has its own ledger (`LedgerRow`): a question the view asked on its
+/// own account (the design system's tokens, a factory's grilling, a
+/// mock-up drawn) to answer a human waiting on a page, not a task.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Spend {
+    /// ISO-8601 UTC, to the second.
+    pub at: String,
+    /// Who asked: a short tag fixed when the asker was built (`creation`,
+    /// `kit`, `mf`, `notes`, `units`).
+    pub who: String,
+    /// The model asked.
+    pub model: String,
+    /// What the call could touch: `ask` (nothing), `read`, or `write`.
+    pub mode: String,
+    /// The API's own estimate; `None` when the answer carried none.
+    pub cost_usd: Option<f64>,
+    /// End to end.
+    pub duration_ms: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+/// Where the view keeps what its own `claude -p` calls cost — never a run's
+/// ledger, read by the dashboards' *Spending* screen beside it.
+pub trait Usage: Send + Sync {
+    /// Keeps one call. Never fails a call that answered: a handler logs the
+    /// error and moves on.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn log(&self, spend: &Spend) -> Result<(), String>;
+
+    /// Every call kept, newest first.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read.
+    fn all(&self) -> Result<Vec<Spend>, String>;
+}
+
 /// What Claude Code kept of a session it ran: its transcript.
 pub trait Transcripts: Send + Sync {
     /// The transcript of session `id`, JSON lines; `None` when there is none.

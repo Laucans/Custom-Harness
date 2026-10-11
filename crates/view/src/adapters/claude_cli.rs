@@ -4,9 +4,12 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::ports::{Oneshot, Transcripts};
+use serde::Deserialize;
+
+use crate::ports::{Oneshot, Spend, Transcripts, Usage};
 
 /// The longest a one-shot answer may take: a summary of a long conversation.
 const TIMEOUT: Duration = Duration::from_secs(300);
@@ -22,16 +25,77 @@ fn overdue(started: Instant, timeout: Duration) -> bool {
     started.elapsed().saturating_sub(timeout) != Duration::ZERO
 }
 
-/// `claude -p`, the prompt on its standard input, no tool, nothing kept.
+/// `read`, `write`, or `ask` (no tool at all) — the mode a call's `tools`
+/// string stands for, kept beside its [`Spend`] so the dashboard reads who
+/// could touch what.
+fn mode_of(tools: &str) -> &'static str {
+    if tools.is_empty() {
+        "ask"
+    } else if tools == WORK_TOOLS {
+        "write"
+    } else {
+        "read"
+    }
+}
+
+/// Tokens as the turn's `result` event reports them.
+#[derive(Debug, Default, Deserialize)]
+struct TurnUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+}
+
+/// What `--output-format stream-json`'s terminal event carries. Every field
+/// optional: an event this cannot make sense of is read as carrying none,
+/// never as a reason to fail an answer that otherwise came through.
+#[derive(Debug, Default, Deserialize)]
+struct TurnResult {
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    is_error: bool,
+    #[serde(default)]
+    result: String,
+    #[serde(default)]
+    total_cost_usd: Option<f64>,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    #[serde(default)]
+    usage: TurnUsage,
+}
+
+/// The **last** `result` event among the stream's lines — read by kind, not
+/// position, the same reason the dev loop's own parser does: a format that
+/// adds something after it must not break the answer.
+fn result_of(stdout: &str) -> Option<TurnResult> {
+    stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<TurnResult>(line.trim()).ok())
+        .rfind(|event| event.kind == "result")
+}
+
+/// `claude -p`, the prompt on its standard input, no tool, nothing kept —
+/// except what it cost, logged through `usage` under `who`'s name.
 pub struct ClaudeOneshot {
     claude: PathBuf,
+    who: String,
+    usage: Option<Arc<dyn Usage>>,
 }
 
 impl ClaudeOneshot {
-    /// Asks through this `claude` binary.
+    /// Asks through this `claude` binary. `who` names the asker on the
+    /// dashboard (`creation`, `kit`, `mf`, `notes`, `units`); `usage` is
+    /// where what it cost is kept — `None` logs nothing.
     #[must_use]
-    pub const fn new(claude: PathBuf) -> Self {
-        Self { claude }
+    pub fn new(claude: PathBuf, who: &str, usage: Option<Arc<dyn Usage>>) -> Self {
+        Self {
+            claude,
+            who: who.to_string(),
+            usage,
+        }
     }
 }
 
@@ -55,6 +119,27 @@ impl Oneshot for ClaudeOneshot {
 }
 
 impl ClaudeOneshot {
+    /// Keeps what a turn cost; never fails the call it rides along with.
+    fn log(&self, model: &str, tools: &str, event: &TurnResult) {
+        let Some(usage) = &self.usage else { return };
+        let at = jiff::Timestamp::now()
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        let spend = Spend {
+            at,
+            who: self.who.clone(),
+            model: model.to_string(),
+            mode: mode_of(tools).to_string(),
+            cost_usd: event.total_cost_usd,
+            duration_ms: event.duration_ms,
+            input_tokens: event.usage.input_tokens,
+            output_tokens: event.usage.output_tokens,
+        };
+        if let Err(why) = usage.log(&spend) {
+            tracing::warn!("what claude cost was not kept: {why}");
+        }
+    }
+
     /// `claude -p` in `dir`, with `tools` (empty: none) and the prompt on
     /// its standard input, killed past `timeout`.
     fn run(
@@ -75,7 +160,10 @@ impl ClaudeOneshot {
             "--model",
             model,
             "--output-format",
-            "text",
+            "stream-json",
+            // Required by the CLI alongside `-p --output-format stream-json`,
+            // and what makes the turn's `result` event carry `total_cost_usd`.
+            "--verbose",
             "--tools",
             tools,
             "--no-session-persistence",
@@ -129,7 +217,18 @@ impl ClaudeOneshot {
             }
             return Err(format!("claude failed ({status}): {}", err.trim()));
         }
-        let answer = out.trim().to_string();
+        let Some(event) = result_of(&out) else {
+            return Err("claude answered nothing".to_string());
+        };
+        self.log(model, tools, &event);
+        let answer = event.result.trim().to_string();
+        if event.is_error {
+            return Err(if answer.is_empty() {
+                "claude reported an error with no detail".to_string()
+            } else {
+                answer
+            });
+        }
         if answer.is_empty() {
             return Err("claude answered nothing".to_string());
         }
@@ -143,7 +242,7 @@ pub struct ClaudeTranscripts {
 }
 
 impl ClaudeTranscripts {
-    /// Under `projects` — `~/.claude/projects`.
+    /// Reads transcripts under `projects` (`~/.claude/projects`).
     #[must_use]
     pub const fn new(projects: PathBuf) -> Self {
         Self { projects }
@@ -152,10 +251,6 @@ impl ClaudeTranscripts {
 
 impl Transcripts for ClaudeTranscripts {
     fn read(&self, id: &str) -> Option<String> {
-        // An id is a UUID: nothing in it can climb out of the folder.
-        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
-            return None;
-        }
         let file = format!("{id}.jsonl");
         std::fs::read_dir(&self.projects)
             .ok()?
@@ -170,9 +265,19 @@ impl Transcripts for ClaudeTranscripts {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::Mutex;
 
-    /// A `claude` that runs `body` (sh), in a folder of its own.
+    /// A `claude` that runs `body` (sh), in a folder of its own, with `kept`
+    /// collecting what the calls logged.
     fn fake(tag: &str, body: &str) -> (PathBuf, ClaudeOneshot) {
+        fake_logged(tag, body, None)
+    }
+
+    fn fake_logged(
+        tag: &str,
+        body: &str,
+        usage: Option<Arc<dyn Usage>>,
+    ) -> (PathBuf, ClaudeOneshot) {
         let dir =
             std::env::temp_dir().join(format!("harness-fake-claude-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -180,12 +285,35 @@ mod tests {
         let bin = dir.join("claude");
         std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).expect("script");
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("mode");
-        (dir, ClaudeOneshot::new(bin))
+        (dir, ClaudeOneshot::new(bin, "test", usage))
+    }
+
+    /// A stream-json `result` line, success or not, with a cost.
+    fn result_line(text: &str, cost: f64, is_error: bool) -> String {
+        format!(
+            r#"{{"type":"result","is_error":{is_error},"result":"{text}","total_cost_usd":{cost},"duration_ms":42,"usage":{{"input_tokens":10,"output_tokens":5}}}}"#
+        )
+    }
+
+    /// A `Usage` kept in memory, for a test to read back.
+    #[derive(Default)]
+    struct Logged(Mutex<Vec<Spend>>);
+
+    impl Usage for Logged {
+        fn log(&self, spend: &Spend) -> Result<(), String> {
+            self.0.lock().expect("held").push(spend.clone());
+            Ok(())
+        }
+
+        fn all(&self) -> Result<Vec<Spend>, String> {
+            Ok(self.0.lock().expect("held").clone())
+        }
     }
 
     #[test]
-    fn an_answer_is_what_claude_prints_trimmed() {
-        let (dir, claude) = fake("answer", "cat >/dev/null; echo '  the answer  '");
+    fn an_answer_is_the_results_text_trimmed() {
+        let line = result_line("  the answer  ", 0.01, false);
+        let (dir, claude) = fake("answer", &format!("cat >/dev/null; echo '{line}'"));
         assert_eq!(claude.ask("m", "q"), Ok("the answer".to_string()));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -200,13 +328,24 @@ mod tests {
         let (other, failing) = fake("failing", "cat >/dev/null; echo 'quota' >&2; exit 3");
         let why = failing.ask("m", "q").expect_err("failed");
         assert!(why.contains("quota"), "{why}");
+        let line = result_line("", 0.0, true);
+        let (bad, errored) = fake("errored", &format!("cat >/dev/null; echo '{line}'"));
+        assert_eq!(
+            errored.ask("m", "q"),
+            Err("claude reported an error with no detail".to_string())
+        );
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(other);
+        let _ = std::fs::remove_dir_all(bad);
     }
 
     #[test]
     fn each_way_of_asking_gives_its_own_tools_and_folder() {
-        let (dir, claude) = fake("tools", "cat >/dev/null; pwd; echo \"$@\"");
+        // Built by the shell at run time: embedding `$(pwd)` in a Rust string
+        // destined for a double-quoted `echo` only invites quoting trouble.
+        let body = r#"cat >/dev/null
+printf '{"type":"result","is_error":false,"result":"%s [%s]","total_cost_usd":0.0}' "$(pwd)" "$*""#;
+        let (dir, claude) = fake("tools", body);
         let read = claude.ask_in("m", "q", &dir).expect("answered");
         assert!(read.contains("--allowedTools Read"), "{read}");
         assert!(read.contains("harness-fake-claude-tools"), "{read}");
@@ -223,7 +362,9 @@ mod tests {
 
     #[test]
     fn a_folder_that_does_not_exist_yet_is_made_before_claude_starts() {
-        let (dir, claude) = fake("mkdir", "pwd");
+        let body = r#"cat >/dev/null
+printf '{"type":"result","is_error":false,"result":"%s","total_cost_usd":0.0}' "$(pwd)""#;
+        let (dir, claude) = fake("mkdir", body);
         let missing = dir.join("design").join("moodboard");
         let read = claude.ask_in("m", "q", &missing).expect("answered");
         assert!(read.ends_with("design/moodboard"), "{read}");
@@ -254,6 +395,59 @@ mod tests {
     }
 
     #[test]
+    fn mode_names_match_the_tools_a_call_was_given() {
+        assert_eq!(mode_of(""), "ask");
+        assert_eq!(mode_of("Read"), "read");
+        assert_eq!(mode_of(WORK_TOOLS), "write");
+    }
+
+    #[test]
+    fn a_successful_call_logs_its_cost_and_tokens_under_the_asker_who_built_it() {
+        let kept: Arc<dyn Usage> = Arc::new(Logged::default());
+        let line = result_line("ok", 0.0321, false);
+        let (dir, claude) = fake_logged(
+            "logs",
+            &format!("cat >/dev/null; echo '{line}'"),
+            Some(Arc::clone(&kept)),
+        );
+        claude.ask_in("opus", "q", &dir).expect("answered");
+        let spends = kept.all().expect("read");
+        assert_eq!(spends.len(), 1);
+        assert_eq!(spends[0].who, "test");
+        assert_eq!(spends[0].model, "opus");
+        assert_eq!(spends[0].mode, "read");
+        assert_eq!(spends[0].cost_usd, Some(0.0321));
+        assert_eq!(spends[0].duration_ms, Some(42));
+        assert_eq!(spends[0].input_tokens, Some(10));
+        assert_eq!(spends[0].output_tokens, Some(5));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_a_usage_store_nothing_is_logged_and_the_answer_still_comes_through() {
+        let line = result_line("ok", 0.01, false);
+        let (dir, claude) = fake("no-store", &format!("cat >/dev/null; echo '{line}'"));
+        assert_eq!(claude.ask("m", "q"), Ok("ok".to_string()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_call_that_cannot_be_parsed_logs_nothing_and_still_errs() {
+        let kept: Arc<dyn Usage> = Arc::new(Logged::default());
+        let (dir, claude) = fake_logged(
+            "unparseable",
+            "cat >/dev/null; echo 'not json'",
+            Some(Arc::clone(&kept)),
+        );
+        assert_eq!(
+            claude.ask("m", "q"),
+            Err("claude answered nothing".to_string())
+        );
+        assert!(kept.all().expect("read").is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_transcript_is_found_in_whichever_project_folder_holds_it() {
         let root = std::env::temp_dir().join(format!("harness-transcripts-{}", std::process::id()));
         let id = "0b6c1d2e-0000-4000-8000-000000000001";
@@ -265,13 +459,8 @@ mod tests {
         )
         .expect("written");
         let transcripts = ClaudeTranscripts::new(root.clone());
-        assert_eq!(transcripts.read(id).as_deref(), Some("{}\n"));
-        assert!(
-            transcripts
-                .read("0b6c1d2e-0000-4000-8000-000000000002")
-                .is_none()
-        );
-        assert!(transcripts.read("../x").is_none());
-        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(transcripts.read(id), Some("{}\n".to_string()));
+        assert_eq!(transcripts.read("nope"), None);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -53,6 +53,7 @@ through a port so a test can refuse it:
 | an issue opened, a pin and its conversation kept | the target's board (`harness:roadmap`); `.llocal/harness.db`, table `notes` | `Product::open_issue`, `NoteStore` | *Open the issue*; a pin dropped, a brainstorm |
 | the factory register, and the view started again in another factory | `~/.harness/factories.db` (`--harness-home`), outside every checkout; the view's own `exec` | `harness-core::ports::store::factories::Factories` (adapter in `harness-adapters`), `adapters::relaunch` | the header's factory menu |
 | a new factory: its GitHub repository, its folder, `init-repo` run there, the record of its creation | GitHub (`gh repo create`); a detached `git worktree` of the harness under `~/.harness/factories/<id>`; its `.env.local`; the register's `creations` table | `Foundry` (`adapters::foundry`), `Factories::keep_creation` | *Create the factory*, *Connect* on the creation page |
+| what the view's own `claude -p` calls cost (the design system's, a factory's creation, a micro-frontend's, a pin's) | `.llocal/harness.db`, table `usage`, beside the event store | `Usage` (`adapters::sqlite_usage`), read by every `ClaudeOneshot` the composition root builds | every such call; never a dev-loop run, which keeps its own ledger |
 | the proof of concept drawn, then published; its roadmap task; the watch started | the integration branch's mock-up workspace (a `claude -p` that writes, `Oneshot::work_in`), then the branch itself (or `mockup/proof-of-concept`); the board; the `harness watch` process | `Oneshot`, `Mockups`, `KitDesk::publish`, `DataDesk::open_issue`, `Plant` | *Draw the mock-ups*, *Accept* |
 
 A pin's session and a mock-up session are Claude Code sessions that edit
@@ -159,6 +160,23 @@ Routes: `GET /api/factories` (`current`, `factories`),
 `POST /api/factories/{id}/open`, `GET|PUT /api/creation`,
 `GET /api/creation/owners`,
 `POST /api/creation/{found,connect,grill,scope,mockups,regenerate,accept,finish}`.
+
+### What the view's own AI calls cost
+
+Every `ClaudeOneshot` the composition root builds (`creation`, `kit`, `mf`,
+`notes`, `units` — one per asker, tagged at construction) runs
+`--output-format stream-json --verbose` rather than plain text, reads the
+turn's own `result` event for its `total_cost_usd`, `duration_ms` and token
+counts, and keeps one row per call through the `Usage` port
+(`adapters::sqlite_usage`, table `usage` in `.llocal/harness.db`, beside the
+event store). This is never a dev-loop run's own ledger
+(`costs.tsv`, read by the *Spending* screen already) — a question the view
+asked on its own account to answer a human waiting on a page, not a task a
+run billed. The *Spending* screen's own section, *the view's own AI calls*,
+reads it summed by asker (`GET /api/usage`, `domain::usage::summarize`). A
+call that answered with no parseable `result` event logs nothing; one that
+did, but carried no cost, is kept and counted under *uncosted* rather than
+silently read as free.
 
 ## The steward, and the doctor
 

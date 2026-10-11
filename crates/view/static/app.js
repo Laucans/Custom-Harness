@@ -1732,6 +1732,26 @@
     p.limitsBusy = false;
     if (S.pane === p) renderPane(p, false);
   }
+  // The view's own AI calls (the design system's, a factory's creation, a
+  // micro-frontend's, a pin's) — read once per visit to the costs screen,
+  // never a run's own ledger, which the tiles below it already show.
+  function readUsageNow() {
+    if (S.usageRead) return S.usageRead;
+    S.usageRead = (async () => {
+      try {
+        const r = await fetch('/api/usage');
+        if (r.ok) S.usage = await r.json();
+      } catch (e) { /* the screen keeps what it had */ }
+      S.usageRead = null;
+      pushPicture();
+    })();
+    return S.usageRead;
+  }
+  async function readUsage(p) {
+    p.usageAsked = true;
+    await readUsageNow();
+    if (S.pane === p) renderPane(p, false);
+  }
   // A section's `?`: what it monitors, where the numbers come from. Open ones
   // are kept on the pane, so a refresh of the data does not close them.
   const helpBtn = (p, key) => `<button class="help-btn ${(p.helps || []).includes(key) ? 'on' : ''}" data-help="${esc(key)}" title="What is monitored here?" aria-expanded="${(p.helps || []).includes(key)}">?</button>`;
@@ -1739,6 +1759,7 @@
   const section = (p, key, title) => `<h3 class="with-help">${esc(title)}${helpBtn(p, key)}</h3>` + helpBox(p, key);
   const HELP = {
     costs: 'What the plant has spent, from <code>.llocal/logs/agent-loop/costs.tsv</code>: one row per paid session a run opened (one stage of one task). The dollars are Claude\'s own estimate for each session, not an invoice. The bar above picks a period: <b>from</b> and <b>to</b> (either left empty), or a shortcut; the figures are then recomputed from the whole traces for that period, and <b>live</b> goes back.',
+    'costs.view': 'What this view itself has asked Claude for — the design system\'s tokens and kit, a factory\'s grilling and mock-ups, a pin\'s brainstorm, the capabilities fusion test — never a run\'s own session. Logged from the turn\'s own <code>total_cost_usd</code>; a call still shows if it carried none, counted under “with no cost reported”.',
     'costs.totals': '<b>spent</b>: the sum of every session\'s estimate. <b>paid sessions</b>: rows in the ledger. The four token counts add up what every session reported: <b>output</b> written by the model, <b>cache read</b> and <b>cache write</b> of the prompt cache, and <b>uncached input</b>.',
     'costs.data': 'The tasks labelled <code>harness:data-layer</code> run every stage on the strongest model. Their spending, and its share of all spending, says what that choice costs.',
     'costs.side': 'Spending grouped by the side of the architecture the task carries as a label: <code>harness:read-side</code>, <code>harness:write-side</code>, <code>harness:data-layer</code>. A task with none is counted apart.',
@@ -1764,7 +1785,13 @@
     costs(p) {
       if (S.range && !period()) return '';
       const c = period() ? period().costs : S.snap.costs;
-      let h = section(p, 'costs.totals', 'Totals') + tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
+      const u = S.usage;
+      let h = section(p, 'costs.view', "The view's own AI calls")
+        + (u
+          ? tiles([[usd(u.totalUsd), 'spent, the view\'s own calls'], [u.calls, 'calls'], [u.uncosted, 'with no cost reported']])
+            + (u.byWho.length ? bars(u.byWho.map((w) => ({ key: w.who, usd: w.costUsd, count: w.calls }))) : '<div class="muted">no calls yet</div>')
+          : '<div class="muted">reading…</div>');
+      h += section(p, 'costs.totals', 'Totals') + tiles([[usd(c.total_usd), 'spent, all runs'], [c.sessions, 'paid sessions'], [kfmt(c.tokens.output), 'output tokens'], [kfmt(c.tokens.cache_read), 'cache read'], [kfmt(c.tokens.cache_write), 'cache write'], [kfmt(c.tokens.input), 'uncached input']]);
       // The data layer runs on the strongest model: what it costs against the rest.
       const dl = (c.by_side || []).find((b) => b.key === 'data-layer');
       if (dl) h += section(p, 'costs.data', 'Data layer') + tiles([[usd(dl.usd), 'data layer (strongest model)'], [c.total_usd > 0 ? Math.round(100 * dl.usd / c.total_usd) + '%' : '—', 'of all spending'], [dl.count, 'sessions']]);
@@ -2843,6 +2870,7 @@
       // chosen period is read when a screen that shows one opens on it.
       const after = () => {
         if (focus === 'quota' && !p.limitsAsked) readLimits(p, false);
+        if (focus === 'costs' && !p.usageAsked) readUsage(p);
         if (timed && S.range && (!S.history || S.history.key !== rangeKey()) ) readHistory();
       };
       // A date being typed is not wiped by a refresh of the figures.

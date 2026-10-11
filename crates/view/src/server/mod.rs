@@ -32,6 +32,7 @@ mod prompts;
 mod runs;
 #[cfg(test)]
 mod tests;
+mod usage;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -63,6 +64,7 @@ use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
     BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Plant, Prompts, Traces, Trials,
+    Usage,
 };
 use crate::units_desk::UnitsDesk;
 use harness_core::domain::quota::Reading;
@@ -189,6 +191,8 @@ pub struct AppState {
     /// A factory's creation: founding a new one from here, and the steps of
     /// this one's when it is being created — `None` without a register.
     pub creation: Option<CreationDesk>,
+    /// What the view's own AI calls cost — `None` when nothing is kept.
+    pub usage: Option<Arc<dyn Usage>>,
     /// The id of the factory this view is on; empty without a register.
     pub factory: String,
     /// Where a switch to another factory is put for `main` to act on.
@@ -350,6 +354,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/creation/regenerate", post(creation::regenerate))
         .route("/api/creation/accept", post(creation::accept))
         .route("/api/creation/finish", post(creation::finish))
+        .route("/api/usage", get(usage::usage))
         .with_state(state)
 }
 
