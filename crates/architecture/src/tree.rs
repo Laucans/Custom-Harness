@@ -1014,6 +1014,7 @@ mod tests {
                 concept: None,
                 effect: None,
                 touches: Vec::new(),
+                aggregate: None,
             };
             let found = violations(&unmocked, Some(&task));
             assert!(found.iter().any(|f| f.contains("contract N")), "{found:?}");
@@ -1112,6 +1113,7 @@ mod tests {
             concept: Some("Risk@3".to_string()),
             effect: None,
             touches: Vec::new(),
+            aggregate: None,
         };
         assert_eq!(
             violations(&tree, Some(&capability)),

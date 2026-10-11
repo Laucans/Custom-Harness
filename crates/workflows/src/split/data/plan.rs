@@ -40,6 +40,10 @@ pub struct TaskItem {
     /// For a `data-capability`: the existing fields it touches.
     #[serde(default)]
     pub touches: Vec<String>,
+    /// For the data layer: the aggregate it writes or changes the structure
+    /// of (`PJ`), as its manifest names it. What serializes two such slices.
+    #[serde(default)]
+    pub aggregate: Option<String>,
     /// The 0-based indexes, in the same array, of the slices this one builds
     /// on, beyond the layer before its own (that wait is added by `publish`).
     /// Empty: none — a slice then runs in parallel with the rest of its
@@ -73,6 +77,12 @@ impl TaskItem {
                 .map(|field| field.trim().to_string())
                 .filter(|field| !field.is_empty() && field != "-")
                 .collect(),
+            aggregate: self
+                .aggregate
+                .as_deref()
+                .map(str::trim)
+                .filter(|aggregate| !aggregate.is_empty() && *aggregate != "-")
+                .map(ToString::to_string),
         }
     }
 }
@@ -140,12 +150,14 @@ mod tests {
     fn a_data_capability_carries_its_effect_and_touches() {
         let items = parse(
             r#"[{"title":"A","brief":"a","branch":"feat/a","unit":"data-capability","system":"credit",
-                "effect":"update","touches":["Account.creditLimit"," "],"depends_on":[0]}]"#,
+                "effect":"update","touches":["Account.creditLimit"," "],"aggregate":" Account ","depends_on":[0]}]"#,
         )
         .expect("parse");
         let declaration = items[0].declaration();
         assert_eq!(declaration.effect, Some(Effect::Update));
         assert_eq!(declaration.touches, ["Account.creditLimit"]);
+        assert_eq!(declaration.aggregate.as_deref(), Some("Account"));
+        assert_eq!(declaration.held_aggregate(), Some("Account"));
         assert_eq!(declaration.side(), Side::Write);
         assert_eq!(items[0].depends_on, [0]);
     }

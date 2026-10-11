@@ -206,10 +206,9 @@ pub(super) async fn run_lanes(
     let running = lanes.running();
     let mut parked = Vec::new();
     let mut candidates: Vec<(u64, String)> = Vec::new();
-    for task in harness_workflows::dev_loop::data::tasks::runnable_tasks(&board.tasks) {
-        if running.contains(&task.number) {
-            continue;
-        }
+    // The runnable tasks not on a lane, those changing an aggregate another
+    // holds left for a later tick.
+    for task in harness_workflows::dev_loop::data::tasks::startable_tasks(&board.tasks, &running) {
         let version = issue_version(task);
         if lanes.is_parked(task.number, &version) {
             parked.push(task.number);

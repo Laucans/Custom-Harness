@@ -230,9 +230,29 @@ pub struct Declaration {
     /// For a `DataCapability`, the existing fields it touches: empty with an
     /// insert is what makes the fast path.
     pub touches: Vec<String>,
+    /// The aggregate a unit of the data layer writes or changes the structure
+    /// of (`PJ`), as its manifest's `target.aggregate` names it: what two
+    /// such tasks must not hold at once.
+    pub aggregate: Option<String>,
 }
 
 impl Declaration {
+    /// The aggregate this task holds while it runs, if it changes its
+    /// structure: an invariant, a migration, or a `DataCapability` that is
+    /// not a pure addition. A pure insert only adds a folder; a reader holds
+    /// nothing. Two tasks holding the same aggregate run one after the other.
+    #[must_use]
+    pub fn held_aggregate(&self) -> Option<&str> {
+        let changes_structure = match self.unit {
+            Unit::Invariant | Unit::Migration => true,
+            Unit::DataCapability => self.side() == Side::Write,
+            _ => false,
+        };
+        changes_structure
+            .then_some(self.aggregate.as_deref())
+            .flatten()
+    }
+
     /// The side the architecture assigns to this unit.
     ///
     /// Everything on the read side runs without review; a `DataCapability` is
@@ -286,6 +306,9 @@ impl Declaration {
             };
             lines.push(format!("touches: {touches}"));
         }
+        if let Some(aggregate) = &self.aggregate {
+            lines.push(format!("aggregate: {aggregate}"));
+        }
         lines.push(format!("side: {}", self.side().label()));
         lines.join("\n")
     }
@@ -300,6 +323,7 @@ impl Declaration {
         let mut concept = None;
         let mut effect = None;
         let mut touches = Vec::new();
+        let mut aggregate = None;
         for line in section.lines() {
             let line = line.trim().trim_start_matches(['-', '*']).trim();
             let Some((key, value)) = line.split_once(':') else {
@@ -327,6 +351,9 @@ impl Declaration {
                     concept = (!value.is_empty() && value != "-").then(|| value.to_string());
                 }
                 "effect" => effect = Effect::parse(value),
+                "aggregate" => {
+                    aggregate = (!value.is_empty() && value != "-").then(|| value.to_string());
+                }
                 "touches" => {
                     touches = value
                         .split(',')
@@ -344,6 +371,7 @@ impl Declaration {
             concept,
             effect,
             touches,
+            aggregate,
         })
     }
 }
@@ -359,6 +387,7 @@ mod tests {
             concept: Some("Risk@3".to_string()),
             effect: None,
             touches: Vec::new(),
+            aggregate: None,
         }
     }
 
@@ -458,14 +487,37 @@ mod tests {
                 "Account.creditLimit".to_string(),
                 "Account.tags".to_string(),
             ],
+            aggregate: Some("Account".to_string()),
         };
         let text = written.render();
         assert_eq!(
             text,
             "unit: data-capability\nsystem: credit\neffect: update\n\
-             touches: Account.creditLimit, Account.tags\nside: harness:write-side"
+             touches: Account.creditLimit, Account.tags\naggregate: Account\nside: harness:write-side"
         );
-        assert_eq!(Declaration::parse(&text), Some(written));
+        assert_eq!(Declaration::parse(&text), Some(written.clone()));
+        // Held while it runs: it changes the aggregate's data. A pure insert and a reader hold nothing.
+        assert_eq!(written.held_aggregate(), Some("Account"));
+        let pure = Declaration {
+            effect: Some(Effect::Insert),
+            touches: Vec::new(),
+            ..written.clone()
+        };
+        assert_eq!(
+            pure.held_aggregate(),
+            None,
+            "a pure addition adds a folder, holds nothing"
+        );
+        let migration = Declaration {
+            unit: Unit::Migration,
+            effect: None,
+            touches: Vec::new(),
+            ..written
+        };
+        assert_eq!(migration.held_aggregate(), Some("Account"));
+        let mut reader = capability();
+        reader.aggregate = Some("Account".to_string());
+        assert_eq!(reader.held_aggregate(), None, "a reader holds nothing");
         let text = capability().render();
         assert!(text.contains("concept: Risk@3"));
         assert!(!text.contains("effect:"), "a Capability has no effect");

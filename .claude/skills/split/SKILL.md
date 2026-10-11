@@ -116,6 +116,10 @@ system: credit            # the bounded context
 concept: Risk@3           # the versioned Concept it implements, if any
 effect: insert            # data-capability only: insert | update | delete | upsert
 touches: -                # data-capability only: existing fields it changes
+aggregate: Account        # data layer only (data-capability, invariant,
+                          # migration): the aggregate it writes or changes,
+                          # as its manifest's target.aggregate names it —
+                          # two tasks changing one aggregate run in turn
 side: harness:read-side   # or harness:write-side — see below
 ```
 

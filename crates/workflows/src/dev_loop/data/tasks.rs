@@ -230,6 +230,53 @@ pub fn open_agent_tasks(issues: &[Issue]) -> Vec<&Issue> {
         .collect()
 }
 
+/// The aggregate a task holds while it runs.
+///
+/// The `aggregate:` line of its `## Architecture`, for a unit that changes
+/// the aggregate's structure ([`Declaration::held_aggregate`]). A task that
+/// declares nothing holds nothing: the behaviour every task had before, and
+/// the harmless reading.
+#[must_use]
+pub fn held_aggregate(issue: &Issue) -> Option<String> {
+    sections::parse(&issue.body)
+        .get(sections::ARCHITECTURE)
+        .and_then(|text| Declaration::parse(text))
+        .and_then(|declaration| declaration.held_aggregate().map(ToString::to_string))
+}
+
+/// The runnable tasks a parallel watch may start now, given those on a lane.
+///
+/// Two tasks that change the structure of the same aggregate run one after
+/// the other — the data layer is shared by construction, and two changes of
+/// one aggregate in parallel meet there. A task is held back while a running
+/// task holds its aggregate, or while a runnable task of a smaller number
+/// does — so two free lanes do not take the same aggregate on one tick.
+/// Different aggregates, and tasks holding none, run together.
+#[must_use]
+pub fn startable_tasks<'a>(issues: &'a [Issue], running: &[u64]) -> Vec<&'a Issue> {
+    let runnable = runnable_tasks(issues);
+    let mut held: Vec<String> = issues
+        .iter()
+        .filter(|issue| running.contains(&issue.number))
+        .filter_map(held_aggregate)
+        .collect();
+    let mut startable = Vec::new();
+    for task in runnable {
+        if running.contains(&task.number) {
+            continue;
+        }
+        match held_aggregate(task) {
+            Some(aggregate) if held.contains(&aggregate) => {}
+            Some(aggregate) => {
+                held.push(aggregate);
+                startable.push(task);
+            }
+            None => startable.push(task),
+        }
+    }
+    startable
+}
+
 /// Rule 2: the smallest runnable open task.
 #[must_use]
 pub fn next_task(issues: &[Issue]) -> Option<&Issue> {
@@ -560,6 +607,68 @@ mod tests {
         );
         assert_eq!(declared_branch("no branch here"), None);
         assert_eq!(declared_branch("branch:   "), None);
+    }
+
+    fn holding(number: u64, aggregate: &str, unit: &str) -> Issue {
+        let mut issue = task(number);
+        issue.body = format!(
+            "## Architecture\n\nunit: {unit}\nsystem: campagne\neffect: update\ntouches: {aggregate}.name\naggregate: {aggregate}\n"
+        );
+        issue
+    }
+
+    #[test]
+    fn two_tasks_changing_one_aggregate_start_one_after_the_other() {
+        // #7 and #8 both change PJ; #9 changes Campagne; #10 declares nothing.
+        let issues = [
+            holding(7, "PJ", "data-capability"),
+            holding(8, "PJ", "migration"),
+            holding(9, "Campagne", "invariant"),
+            task(10),
+        ];
+        let numbers = |running: &[u64]| -> Vec<u64> {
+            startable_tasks(&issues, running)
+                .iter()
+                .map(|t| t.number)
+                .collect()
+        };
+        assert_eq!(
+            numbers(&[]),
+            [7, 9, 10],
+            "one task per aggregate on a tick, the smallest first"
+        );
+        assert_eq!(numbers(&[7]), [9, 10], "#8 waits while #7 holds PJ");
+        assert_eq!(numbers(&[7, 9]), [10]);
+        assert_eq!(
+            numbers(&[]),
+            runnable_tasks(&issues)
+                .iter()
+                .map(|t| t.number)
+                .filter(|n| *n != 8)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_pure_insert_and_a_reader_hold_no_aggregate() {
+        let mut insert = holding(7, "PJ", "data-capability");
+        insert.body = "## Architecture\n\nunit: data-capability\nsystem: campagne\neffect: insert\ntouches: -\naggregate: PJ\n".to_string();
+        let mut reader = holding(8, "PJ", "capability");
+        reader.body =
+            "## Architecture\n\nunit: capability\nsystem: campagne\naggregate: PJ\n".to_string();
+        let changer = holding(9, "PJ", "migration");
+        let issues = [insert, reader, changer];
+        let numbers: Vec<u64> = startable_tasks(&issues, &[])
+            .iter()
+            .map(|t| t.number)
+            .collect();
+        assert_eq!(
+            numbers,
+            [7, 8, 9],
+            "only a structure change holds the aggregate"
+        );
+        assert_eq!(held_aggregate(&issues[0]), None);
+        assert_eq!(held_aggregate(&issues[2]).as_deref(), Some("PJ"));
     }
 
     #[test]
