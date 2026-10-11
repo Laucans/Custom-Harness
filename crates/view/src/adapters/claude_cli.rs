@@ -65,6 +65,10 @@ impl ClaudeOneshot {
         tools: &str,
         timeout: Duration,
     ) -> Result<String, String> {
+        // `dir` may not exist yet (a generation asked before any asset was
+        // uploaded there): the process needs a folder to start in, not a
+        // promise that one is there.
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let mut command = Command::new(&self.claude);
         command.current_dir(dir).args([
             "-p",
@@ -214,6 +218,16 @@ mod tests {
         let bare = claude.ask("m", "q").expect("answered");
         assert!(!bare.contains("--allowedTools"), "{bare}");
         assert!(bare.contains("harness-view-oneshot"), "{bare}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_folder_that_does_not_exist_yet_is_made_before_claude_starts() {
+        let (dir, claude) = fake("mkdir", "pwd");
+        let missing = dir.join("design").join("moodboard");
+        let read = claude.ask_in("m", "q", &missing).expect("answered");
+        assert!(read.ends_with("design/moodboard"), "{read}");
+        assert!(missing.is_dir());
         let _ = std::fs::remove_dir_all(dir);
     }
 

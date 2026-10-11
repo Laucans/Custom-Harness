@@ -598,16 +598,11 @@ impl CreationDesk {
         {
             self.componentize(&record, oneshot, mockups).await?;
         }
-        if let Some(kit) = &self.setup.kit {
-            self.step("publishing the design system");
-            match kit
-                .publish(format!("design: the design system of {}", record.name))
-                .await
-            {
-                Ok(published) => self.step(&creation::design_published(&published.refused)),
-                Err(why) => self.step(&format!("the design system stays as it is: {why}")),
-            }
-        }
+        // The mock-up is published first: `carry` always reads the
+        // integration branch's latest head before splicing the design
+        // system onto it, so it lands on top of the mock-up's commit — the
+        // other way around, the mock-up's own push would meet a branch the
+        // carry already moved, and be refused as not a fast-forward.
         let pages = match self.setup.mockups.clone() {
             Some(mockups) => {
                 self.step("publishing the mock-up on the integration branch");
@@ -647,6 +642,16 @@ impl CreationDesk {
             }
             None => Vec::new(),
         };
+        if let Some(kit) = &self.setup.kit {
+            self.step("publishing the design system");
+            match kit
+                .publish(format!("design: the design system of {}", record.name))
+                .await
+            {
+                Ok(published) => self.step(&creation::design_published(&published.refused)),
+                Err(why) => self.step(&format!("the design system stays as it is: {why}")),
+            }
+        }
         let data = self
             .setup
             .data
