@@ -221,6 +221,46 @@ jobs:
           done
           exit $failed
 
+  # Contract F, rule 2 — a DataCapability is a folder, never an edit of a
+  # shared file: every crates/<system>/data-capabilities/<name>/ is a workspace
+  # member, its library is named after its folder (what the server's build
+  # script registers it by), and the server depends on it. Two added in
+  # parallel then meet nowhere but on a dependency line that merges on its own.
+  data-capability-registered:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Every DataCapability folder is a member, named after its folder, and a dependency of its server
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          metadata=$(cargo metadata --format-version 1 --no-deps)
+          root=$(jq -r '.workspace_root' <<< "$metadata")
+          for toml in crates/*/data-capabilities/*/Cargo.toml; do
+            dir=$(dirname "$toml")
+            folder=$(basename "$dir")
+            expected=${folder//-/_}
+            if ! jq -e --arg m "$root/$toml" '.packages[] | select(.manifest_path == $m)' <<< "$metadata" > /dev/null; then
+              echo "::error file=$toml::$dir is not a workspace member — list crates/*/data-capabilities/* by glob in the root Cargo.toml"
+              failed=1
+              continue
+            fi
+            lib=$(jq -r --arg m "$root/$toml" '.packages[] | select(.manifest_path == $m) | .targets[] | select(.kind[] == "lib") | .name' <<< "$metadata")
+            if [ "$lib" != "$expected" ]; then
+              echo "::error file=$toml::the library of $folder is named $lib — name it $expected, as its folder: the server registers it by that name"
+              failed=1
+            fi
+            pkg=$(jq -r --arg m "$root/$toml" '.packages[] | select(.manifest_path == $m) | .name' <<< "$metadata")
+            if ! jq -e --arg d "$pkg" '[.packages[] | select(.manifest_path | test("/serveur/Cargo.toml$|/server/Cargo.toml$")) | .dependencies[] | select(.name == $d)] | length > 0' <<< "$metadata" > /dev/null; then
+              echo "::error file=$toml::no server depends on $pkg — add it to the server's [dependencies]; its registration is the build script's"
+              failed=1
+            fi
+          done
+          exit $failed
+
   # Contract F — an `insert` DataCapability with empty `touches` contains no
   # update, upsert, delete or trigger in its implementation: a pure addition
   # takes the fast path, and must stay one.

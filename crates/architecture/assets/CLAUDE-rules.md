@@ -73,7 +73,11 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
    system; a crate it depends on is plumbing — it reaches no slice and no
    other system — never a bridge; no `#[path]` or `include!` leaves its
    folder. A DataCapability follows the same rule inside the DataGuard's
-   system.
+   system — and is a **folder**: `crates/<system>/data-capabilities/<name>/`,
+   its library named after it, listed by glob in the workspace and
+   discovered by the server's build script; adding one edits no shared file
+   but the server's `[dependencies]` line (the gate checks it), so two land
+   in parallel without meeting.
 3. **A Capability's logic is local.** Shared *meaning* is a Concept with
    conformance fixtures, never a shared library of business code. Duplicate the
    computation; declare the Concept it implements; pass its fixtures.
