@@ -102,6 +102,7 @@ pub async fn run(
         router: spec(),
         coherence: spec(),
         advice: spec(),
+        graph: spec(),
         artifacts_dir: artifacts_dir.clone(),
         prompts: Rc::clone(&prompts),
     };

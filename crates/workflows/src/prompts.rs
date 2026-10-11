@@ -15,6 +15,7 @@
 //! folder its runs are logged under), so `harness-view` can place each prompt
 //! on the station that sends it.
 
+use crate::arbiter::orchestration::stages as arbiter;
 use crate::common::explore;
 use crate::dev_loop::orchestration::stages as dev_loop;
 use crate::planner::orchestration::stages as planner;
@@ -50,6 +51,8 @@ pub const TECHNICAL_PLAN: &str = "refinement/technical-plan";
 pub const COHERENCE: &str = "refinement/coherence";
 /// Refinement's advice on the technical refinement.
 pub const ADVICE: &str = "refinement/human-advice";
+/// The graph pass of the technical refinement.
+pub const GRAPH: &str = "refinement/graph-advice";
 /// The planner's plan.
 pub const PLAN: &str = "planner/plan";
 /// Split's slice.
@@ -62,6 +65,8 @@ pub const BRIEF: &str = "pr-review/brief";
 pub const FIX: &str = "pr-fix/fix";
 /// Test debt's tests for the mutants of one file.
 pub const COVER: &str = "test-debt/cover";
+/// The arbiter's one session: which task produces each open id.
+pub const ARBITRATE: &str = "arbiter/arbitrate";
 
 /// One editable prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +163,12 @@ const CATALOG: &[Prompt] = &[
         default: refinement::ADVICE_PROMPT,
     },
     Prompt {
+        key: GRAPH,
+        title: "Graph pass: does the design hold the task's Architecture?",
+        stations: &[("refinement", "graph-advice")],
+        default: refinement::GRAPH_PROMPT,
+    },
+    Prompt {
         key: PLAN,
         title: "Plan",
         stations: &[("planner", "plan")],
@@ -192,6 +203,12 @@ const CATALOG: &[Prompt] = &[
         title: "Tests for the mutants",
         stations: &[("test-debt", "cover")],
         default: test_debt::COVER_PROMPT,
+    },
+    Prompt {
+        key: ARBITRATE,
+        title: "Arbiter: which task produces what a refinement found missing",
+        stations: &[("arbiter", "arbitrate")],
+        default: arbiter::ARBITRATE_PROMPT,
     },
 ];
 

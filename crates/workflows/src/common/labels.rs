@@ -74,6 +74,23 @@ pub const TECH_REFINEMENT: &str = "harness:tech-refinement";
 /// adding [`READY`], which is how they say they decided.
 pub const NEEDS_DECISION: &str = "harness:needs-decision";
 
+/// The technical refinement raised a question on the task's graph that an
+/// agent may settle: an id the design builds on that `needs` does not name.
+///
+/// Posed by the technical refinement from its graph pass, the first time a
+/// question is raised ([`crate::common::decision`]); **consumed** by the
+/// `arbiter` workflow before it pays for anything, the `pr_fix` shape —
+/// one label, one arbitration. What the arbiter cannot settle — no task
+/// produces the id, a `produces` to change, a task to cut, a task already
+/// started, a verdict it is not sure of — it hands to a human under
+/// [`NEEDS_DECISION`], with its reasoning in a comment. A question raised a
+/// second time goes to the human directly: no second agent is paid to
+/// disagree with the first.
+///
+/// Read by the loop: a task carrying it is not runnable, its blockers may
+/// be incomplete — hence in [`LOOP`].
+pub const NEEDS_AI_DECISION: &str = "harness:needs-ai-decision";
+
 /// This milestone has already been split into tasks.
 ///
 /// Posed by the split workflow once it has opened a milestone's tasks, in
@@ -163,7 +180,7 @@ pub const TEST_DEBT: &str = "harness:test-debt";
 /// preflight would refuse to run without it. The three architecture labels
 /// are: the loop reads the side of every task it picks, and `review-pending`
 /// is what keeps a write-side task from being replayed.
-pub const LOOP: [&str; 11] = [
+pub const LOOP: [&str; 12] = [
     ROADMAP,
     MILESTONE,
     AGENT,
@@ -175,6 +192,7 @@ pub const LOOP: [&str; 11] = [
     READ_SIDE,
     WRITE_SIDE,
     REVIEW_PENDING,
+    NEEDS_AI_DECISION,
 ];
 
 /// One `harness:*` label, as `init-repo` creates it.
@@ -192,7 +210,7 @@ pub struct Label {
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 19] = [
+pub const ALL: [Label; 20] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -247,6 +265,11 @@ pub const ALL: [Label; 19] = [
         name: NEEDS_DECISION,
         color: "ee0701",
         description: "The refinement's advice says a human has a decision to make",
+    },
+    Label {
+        name: NEEDS_AI_DECISION,
+        color: "fbca04",
+        description: "The refinement raised a question on the task's graph that the arbiter may settle",
     },
     Label {
         name: TRIGGERED,
@@ -324,6 +347,7 @@ mod tests {
             READ_SIDE,
             WRITE_SIDE,
             REVIEW_PENDING,
+            NEEDS_AI_DECISION,
         ] {
             assert!(LOOP.contains(&label), "{label} missing from LOOP");
         }
@@ -343,6 +367,7 @@ mod tests {
             REFINEMENT,
             TECH_REFINEMENT,
             NEEDS_DECISION,
+            NEEDS_AI_DECISION,
             TRIGGERED,
             TO_REVIEW,
             PR_FIX,

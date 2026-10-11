@@ -95,6 +95,18 @@ async fn main() -> ExitCode {
             .await;
             lane_exit(&here, "split", sub.milestone, ran)
         }
+        Some(cli::Command::Arbitrate(sub)) => {
+            let ran = dispatch::arbiter::run(
+                sub.issue,
+                sub.force,
+                &here,
+                &checkout_of(&sub.lane),
+                &sub.lane.permission_mode,
+                sub.lane.dry_run,
+            )
+            .await;
+            lane_exit(&here, "arbitrate", sub.issue, ran)
+        }
         Some(cli::Command::Trial(sub)) => match dispatch::trial::run(sub, &here).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(halt) => halt_to_code(&halt),

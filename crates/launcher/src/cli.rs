@@ -57,6 +57,12 @@ pub enum Command {
     /// What a parallel `watch` gives each of its split lanes; by hand, it
     /// splits one `harness:ready` milestone without the router.
     Split(SplitArgs),
+    /// Arbitrate one task's graph question — what its technical refinement
+    /// found `## Architecture` could not hold.
+    ///
+    /// What the router runs on `harness:needs-ai-decision`; by hand, it
+    /// arbitrates one task without the router, `--force` without the label.
+    Arbitrate(ArbitrateArgs),
     /// Dry-runs one prompt: replays a past run's prompt with another text,
     /// in a session that cannot act (the view's prompt tab asks for it).
     Trial(TrialArgs),
@@ -120,6 +126,20 @@ pub struct RefineArgs {
 }
 
 /// `harness split`'s own arguments.
+/// `harness arbitrate <issue>`.
+#[derive(Debug, Args)]
+pub struct ArbitrateArgs {
+    /// The task's issue number.
+    pub issue: u64,
+
+    /// Arbitrate even if the task does not carry `harness:needs-ai-decision`.
+    #[arg(long)]
+    pub force: bool,
+
+    #[command(flatten)]
+    pub lane: LaneArgs,
+}
+
 #[derive(Debug, Args)]
 pub struct SplitArgs {
     /// The milestone to split into tasks.

@@ -163,6 +163,7 @@ async fn dispatched(
         Route::TechRefinement { issue } => {
             refine_here(args, here, gh, Phase::Technical, issue, log).await
         }
+        Route::Arbiter { issue } => arbitrate_here(args, here, issue, log).await,
         Route::TestDebt { issue } => report_failure(
             "test_debt",
             crate::dispatch::test_debt::run(
@@ -177,6 +178,30 @@ async fn dispatched(
             log,
         ),
     }
+}
+
+/// One arbitration in this process, on the shared checkout: one short
+/// session over the milestone's index, and the task it settles is held
+/// until it ran.
+async fn arbitrate_here(
+    args: &WatchArgs,
+    here: &Path,
+    issue: u64,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    report_failure(
+        "arbiter",
+        crate::dispatch::arbiter::run(
+            issue,
+            false,
+            here,
+            &shared_checkout(args),
+            &args.permission_mode,
+            args.dry_run,
+        )
+        .await,
+        log,
+    )
 }
 
 /// One refinement round in this process, on the shared checkout.

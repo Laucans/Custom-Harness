@@ -39,6 +39,8 @@ pub struct Config {
     pub coherence: SessionSpec,
     /// Model and effort for the advice on the technical refinement.
     pub advice: SessionSpec,
+    /// Model and effort for the graph pass of the technical refinement.
+    pub graph: SessionSpec,
     /// This issue's artifacts folder — same files the repository map drops
     /// there, resolved to the current round's name.
     pub artifacts_dir: PathBuf,
@@ -80,6 +82,7 @@ pub(crate) mod fake {
             router: spec(),
             coherence: spec(),
             advice: spec(),
+            graph: spec(),
         }
     }
 

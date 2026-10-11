@@ -38,6 +38,18 @@ re-plan the milestone (`/planner`), or build (`/code`).
   `produces` carried by a manifest the gates validate (name the file and
   its required fields as a step); a `small` profile means one artifact a
   step and a stop line the SPEC's `Non-goals` already drew.
+- **`## Architecture` is a contract, not a suggestion.** `produces`,
+  `aggregate` and `profile` are what the split cut this task for; `needs`
+  is what it may build on. Design inside it. Where it cannot hold — the
+  design builds on an id no `needs` line names, has to deliver what
+  `produces` does not list, or is too much for the profile — design what
+  holds and say the rest in one paragraph starting `Graph:` at the end of
+  the Technical section: which ids, why. Never widen the task yourself.
+  The harness's graph pass turns that paragraph into a `## Decision`
+  question; the arbiter chains what a sibling task produces, and a human
+  gets what no agent may decide (a `produces` to change, a task to cut).
+  If the body already carries a `## Decision` with `decided-by:`, the
+  question was settled: read `## Architecture` as it is now.
 - **Every file named in the SPEC's `Files & interfaces touched`**, plus
   whatever else the plan actually depends on — the module a new function
   imports, the config a new script is registered in, the test that will

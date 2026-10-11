@@ -107,6 +107,7 @@ fn tag(route: &str) -> &'static str {
         "PrReview" => "pr_review",
         "PrFix" => "pr_fix",
         "TestDebt" => "test_debt",
+        "Arbiter" => "arbiter",
         "MergeMainAgent" => "main_agent_merge",
         "MergeIntoMilestone" => "milestone_merge",
         _ => "",
@@ -415,6 +416,7 @@ mod tests {
         for (route, said) in [
             ("PrFix { pr: \"71\" }", "pr_fix"),
             ("TestDebt { issue: 80 }", "test_debt"),
+            ("Arbiter { issue: 81 }", "arbiter"),
             ("Nothing", ""),
         ] {
             assert_eq!(tag(route), said, "{route}");

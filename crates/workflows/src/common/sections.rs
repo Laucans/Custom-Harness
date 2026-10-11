@@ -47,8 +47,16 @@ pub const SCOPE: &str = "scope";
 /// across the read/write frontier behind the labels' back.
 pub const ARCHITECTURE: &str = "architecture";
 
+/// The key of the section a graph question is raised in and answered under.
+///
+/// What the task's `## Architecture` could not hold
+/// ([`crate::common::decision`]). Written by neither phase's sections: the
+/// refinement's graph pass adds it, the arbiter or a human settles it, and
+/// a round that finds the contract holds again drops it.
+pub const DECISION: &str = "decision";
+
 /// The canonical order: how the body is rewritten, and how stages run.
-pub const SECTIONS: [Section; 7] = [
+pub const SECTIONS: [Section; 8] = [
     Section {
         key: SCOPE,
         heading: "Scope",
@@ -77,10 +85,14 @@ pub const SECTIONS: [Section; 7] = [
         key: "technical-plan",
         heading: "Technical Implementation Plan",
     },
+    Section {
+        key: DECISION,
+        heading: "Decision",
+    },
 ];
 
 /// The keys, in canonical order.
-pub const KEYS: [&str; 7] = [
+pub const KEYS: [&str; 8] = [
     SCOPE,
     ARCHITECTURE,
     "business-goal",
@@ -88,6 +100,7 @@ pub const KEYS: [&str; 7] = [
     "business-rules",
     "technical",
     "technical-plan",
+    DECISION,
 ];
 
 /// The section for this key, or `None`.
@@ -310,6 +323,33 @@ pub fn merge(
         }
     }
     merged
+}
+
+/// The body with these sections replaced, or added in canonical order.
+///
+/// Everything else is kept: the other canonical sections as they stand,
+/// the unknown ones verbatim after them. An empty text drops the section.
+///
+/// What a workflow that touches one or two sections of a task — the
+/// arbiter on `## Architecture` and `## Decision` — writes with, so it
+/// never erases what it did not read.
+#[must_use]
+pub fn replace(body: &str, changes: &[(&str, &str)]) -> String {
+    let mut found = parse(body);
+    for (key, text) in changes {
+        if text.trim().is_empty() {
+            found.remove(*key);
+        } else {
+            found.insert((*key).to_string(), text.trim().to_string());
+        }
+    }
+    let rendered = render(&found);
+    let extras = unknown(body);
+    if extras.is_empty() {
+        rendered
+    } else {
+        format!("{rendered}\n{extras}\n")
+    }
 }
 
 #[cfg(test)]
@@ -540,5 +580,29 @@ mod tests {
             merged.get("business-goal").map(String::as_str),
             Some("unchanged")
         );
+    }
+
+    #[test]
+    fn replacing_a_section_keeps_the_others_and_the_unknown_ones() {
+        let body = "## Scope\n\nbranch: x\n\n## Architecture\n\nunit: capability\n\n\
+                    ## Owner Decisions\n\nkeep me\n";
+        let out = replace(body, &[(ARCHITECTURE, "unit: capability\nneeds: PJ")]);
+        assert_eq!(
+            out,
+            "## Scope\n\nbranch: x\n\n## Architecture\n\nunit: capability\nneeds: PJ\n\n\
+             ## Owner Decisions\n\nkeep me\n"
+        );
+    }
+
+    #[test]
+    fn replacing_adds_a_missing_section_in_canonical_order_and_an_empty_text_drops_one() {
+        let body = "## Scope\n\nbranch: x\n\n## Decision\n\nblocks: y\n";
+        let added = replace(body, &[(ARCHITECTURE, "unit: concept")]);
+        assert_eq!(
+            added,
+            "## Scope\n\nbranch: x\n\n## Architecture\n\nunit: concept\n\n## Decision\n\nblocks: y\n"
+        );
+        let dropped = replace(body, &[(DECISION, "  ")]);
+        assert_eq!(dropped, "## Scope\n\nbranch: x\n");
     }
 }

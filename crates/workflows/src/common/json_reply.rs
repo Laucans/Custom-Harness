@@ -31,6 +31,33 @@ pub fn parse_array<T: DeserializeOwned>(text: &str) -> Result<Vec<T>, ParseError
     serde_json::from_str(&candidate).map_err(|e| ParseError(format!("the JSON did not parse: {e}")))
 }
 
+/// Extracts one JSON object from a reply's text and deserializes it.
+///
+/// # Errors
+/// A [`ParseError`] if no object-shaped substring can be found, or if what
+/// was found does not deserialize into `T`.
+pub fn parse_object<T: DeserializeOwned>(text: &str) -> Result<T, ParseError> {
+    let candidate = extract_between(text, '{', '}')
+        .ok_or_else(|| ParseError("no JSON object found in the reply".to_string()))?;
+    serde_json::from_str(&candidate).map_err(|e| ParseError(format!("the JSON did not parse: {e}")))
+}
+
+/// The fenced block if there is one, else from the first `open` to the
+/// last `close`.
+fn extract_between(text: &str, open: char, close: char) -> Option<String> {
+    if let Some(start) = text.find("```json") {
+        let after = &text[start + 7..];
+        if let Some(end) = after.find("```") {
+            return Some(after[..end].trim().to_string());
+        }
+    }
+    let start = text.find(open)?;
+    // The close is searched after the open, so a stray one before it is
+    // never read as an end.
+    let end = start.checked_add(text.get(start..)?.rfind(close)?)?;
+    Some(text.get(start..=end)?.to_string())
+}
+
 /// The substring most likely to be the JSON array: a fenced ` ```json ` block
 /// if one exists, else the span from the first `[` to the last `]`.
 fn extract(text: &str) -> Option<String> {
@@ -89,6 +116,19 @@ mod tests {
     #[test]
     fn malformed_json_inside_the_brackets_is_a_parse_error_not_a_panic() {
         assert!(parse_array::<Item>("[{\"name\": }]").is_err());
+    }
+
+    #[test]
+    fn an_object_parses_bare_fenced_or_amid_prose_and_prose_alone_does_not() {
+        let item: Item = parse_object(r#"{"name":"A"}"#).expect("parse");
+        assert_eq!(item.name, "A");
+        let fenced: Item =
+            parse_object("Verdict:\n```json\n{\"name\":\"B\"}\n```\n").expect("parse");
+        assert_eq!(fenced.name, "B");
+        let amid: Item = parse_object("I think {\"name\":\"C\"} is right.").expect("parse");
+        assert_eq!(amid.name, "C");
+        assert!(parse_object::<Item>("nothing here").is_err());
+        assert!(parse_object::<Item>("} stray {").is_err());
     }
 
     #[test]

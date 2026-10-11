@@ -26,3 +26,7 @@
 
 # the renderer bundle, built by scripts/build-render.sh
 /crates/view/static/render/
+
+# cargo-mutants output, local runs
+mutants.out/
+mutants.out.old/

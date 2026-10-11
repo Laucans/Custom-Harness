@@ -75,6 +75,17 @@ lines. What remains:
   aggregate? The rule says no — a field is the aggregate's task — and the
   graph says the command then `needs` a second aggregate task. Decide
   when it first happens.
+- **A task the refinement finds too big, or whose `produces` must change,
+  still waits for a human.** The arbiter (`crates/workflows/src/arbiter`)
+  settles only what the graph settles — an id a sibling produces, or one
+  the repository holds — and hands a `cut:` or a `produces:` question to a
+  human under `harness:needs-decision`. The next step is a *delta* split:
+  `split` re-run on the milestone with the question as its request, opening
+  only the task the cut asks for, chained after the one it came from, and
+  updating the sibling's `produces`. One writer of the tasks (the split)
+  stays the rule; what is missing is a prompt that cuts one task instead
+  of a milestone, and a publish that adds to a board instead of creating
+  it.
 - **What `/refinement` does with `aggregate:` when the aggregate does not
   exist yet** — the task that creates it carries the same line; the
   refinement gates may want to tell "creates" from "writes".

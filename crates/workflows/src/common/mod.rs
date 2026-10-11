@@ -14,6 +14,7 @@
 //! the `harness-architecture` crate.
 
 pub mod branching;
+pub mod decision;
 pub mod delivery;
 pub mod explore;
 pub mod hierarchy;

@@ -5,6 +5,7 @@
 //! writes lives in `action`, what judges in `checks`.
 
 pub mod advice;
+pub mod graph;
 pub mod phase;
 pub mod rounds;
 /// The sections of an issue body, now shared: `common::hierarchy` reads a

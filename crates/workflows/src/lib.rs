@@ -18,6 +18,7 @@
 //! in an existing one. `init_repo` is a departure from that skeleton — see
 //! its own `mod.rs`.
 
+pub mod arbiter;
 pub mod common;
 pub mod data_diagnosis;
 pub mod data_model_draft;

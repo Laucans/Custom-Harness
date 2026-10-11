@@ -1,5 +1,6 @@
 //! The text of each refinement stage: the router, the five sections,
-//! coherence, and the advice on the technical refinement.
+//! coherence, the advice on the technical refinement, and the graph pass
+//! that closes the technical half.
 
 /// The router prompt: which sections this round reopens.
 pub const ROUTER_PROMPT: &str =
@@ -109,6 +110,16 @@ cost belongs to the first Rust unit's plan. The declared unit is what it is:
 a `capability` is a Capability crate with its manifest, never a \"local
 implementation\" of the Concept in the host. State what the bridge costs,
 then design it.
+
+That section is also the contract the split cut this task for: `produces`,
+`aggregate` and `profile` are fixed, `needs` names what it may build on.
+Design inside it. Where it cannot hold — the design builds on an id no
+`needs` line names, has to deliver something `produces` does not list, or is
+more than one session of the profile can carry — design what holds, and close
+this section with one short paragraph starting `Graph:` that says exactly
+what does not and which ids are concerned. A pass after this one reads it and
+raises the question where it is decided; do not resolve it yourself by
+widening the task.
 
 Here is the body of the issue as it stands right now:
 <issue-body>
@@ -356,3 +367,47 @@ posts your answer as a comment on #{num} itself.
 
 The issues are public — never write a secret, a token, a key, a password or
 a URL carrying one; name the variable and where it lives.";
+
+/// The graph prompt: does the technical half hold the task's `## Architecture`?
+pub const GRAPH_PROMPT: &str =
+    "You have just seen the technical half of the refinement of GitHub issue
+#{num} (\"{title}\") in this repository. Its `## Architecture` section is the
+contract the split cut this task for: what it produces, what it needs, the
+aggregate it holds, the profile it was cut for. The Technical section and the
+plan were written inside it — or said, in a paragraph starting `Graph:`, where
+they could not.
+
+Here is the body as it stands after this round:
+<issue-body>
+{body}
+</issue-body>
+
+Say whether the design holds the contract. It does not when:
+- it builds on an id — an aggregate, a DataCapability, a Capability, a
+  Micro-UI, a screen — that `needs` does not name;
+- it has to deliver an id that `produces` does not list, or cannot deliver one
+  it lists;
+- it is more than one session of the profile can hold, and should be cut in two.
+
+Answer in this exact shape, and nothing else.
+When it holds:
+Line 1: `graph: holds`
+When it does not:
+Line 1: `graph: open`
+Line 2: `blocks: ` one sentence on what does not hold.
+Then, each only when it applies, one per line:
+`needs: ` the ids the design builds on that `needs` does not name, comma
+separated, spelled as the manifests name them (`PJ`, `campagne.ajouterPj`);
+`produces: ` the ids the task would have to deliver beyond `produces`, or
+deliver differently;
+`cut: ` one sentence on how to cut the task in two, each half with what it
+produces.
+
+Read `## Architecture` as written, not as you would have cut it: an id already
+in `needs` is not missing, and a design that fits is `holds` even if you would
+have shaped it otherwise. A `Graph:` paragraph in the Technical section is
+your first clue, not your verdict — check it against the contract.
+
+Change no file, post no comment, touch no issue and no label. The workflow
+writes your answer into the body of #{num} and raises the question where it is
+decided.";

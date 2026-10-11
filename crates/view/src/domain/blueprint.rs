@@ -290,9 +290,61 @@ pub fn lines() -> Vec<Line> {
         pr_review_line(),
         pr_fix_line(),
         test_debt_line(),
+        arbiter_line(),
         milestone_merge_line(),
         main_agent_merge_line(),
     ]
+}
+
+fn arbiter_line() -> Line {
+    line(
+        "arbiter",
+        "Arbiter",
+        "harness:needs-ai-decision on a task whose refinement raised a graph question",
+        "Settles what a task's technical refinement found its Architecture could not hold: an \
+         id a sibling produces is chained mechanically, the rest is asked of one short session \
+         over the milestone's index, and what no agent may decide goes to a human with the \
+         reasoning.",
+        vec![
+            vec![free(
+                "context",
+                "read the board",
+                Kind::Printer,
+                "Reads the milestone's tasks and the repository's manifests, and chains what \
+                 needs no judgement.",
+            )],
+            vec![free(
+                "consume",
+                "take the request",
+                Kind::Arm,
+                "Removes the label before anything is paid: one request, one arbitration.",
+            )],
+            paid(
+                "arbitrate",
+                "name the producer",
+                Kind::Inspector,
+                "sonnet",
+                "Says which task of the milestone produces each id nobody does yet — or that \
+                 it is a human's call.",
+                Some(gate(
+                    "arbitrate requires",
+                    "An id nobody on the board produces is left, and the question is one an \
+                     agent may settle.",
+                )),
+                Some(gate(
+                    "arbitrate must achieve",
+                    "The reply parses as a JSON verdict.",
+                )),
+            ),
+            vec![free(
+                "apply",
+                "write the judgement",
+                Kind::Arm,
+                "Widens the task's needs and blocked_by, a producer's produces where an id was \
+                 nobody's, the verdict under Decision — or the human's label with the reason.",
+            )],
+        ],
+    )
 }
 
 fn milestone_merge_line() -> Line {
@@ -416,6 +468,43 @@ fn agent_loop_line() -> Line {
     )
 }
 
+/// The two advice stations of the refinement line: whether a human reads
+/// the technical half (business phase), whether it holds the task's
+/// Architecture (technical phase).
+fn advice_stations() -> Vec<Station> {
+    let mut stations = Vec::new();
+    for paid_stations in [
+        paid(
+            "human-advice",
+            "advise on a human",
+            Kind::Inspector,
+            "sonnet",
+            "Says whether the technical half of a task needs a human decision first.",
+            Some(gate(
+                "advice requires",
+                "The issue is a task, not a milestone — only a task gets the advice.",
+            )),
+            None,
+        ),
+        paid(
+            "graph-advice",
+            "check the graph",
+            Kind::Inspector,
+            "sonnet",
+            "Says whether the technical half holds the task's Architecture, or raises the \
+             question the arbiter settles.",
+            Some(gate(
+                "graph-advice requires",
+                "The issue is a task, not a milestone — only a task has an architecture.",
+            )),
+            None,
+        ),
+    ] {
+        stations.extend(paid_stations);
+    }
+    stations
+}
+
 fn refinement_line() -> Line {
     line(
         "refinement",
@@ -482,18 +571,7 @@ fn refinement_line() -> Line {
                 None,
                 None,
             ),
-            paid(
-                "human-advice",
-                "advise on a human",
-                Kind::Inspector,
-                "sonnet",
-                "Says whether the technical half of a task needs a human decision first.",
-                Some(gate(
-                    "advice requires",
-                    "The issue is a task, not a milestone — only a task gets the advice.",
-                )),
-                None,
-            ),
+            advice_stations(),
             vec![scanner(gate(
                 "publish requires",
                 "Not a dry run: the body is really written back.",
@@ -815,6 +893,7 @@ mod tests {
             "PrReview { pr: \"71\", base: \"main_agent\" }",
             "PrFix { pr: \"71\" }",
             "TestDebt { issue: 80 }",
+            "Arbiter { issue: 81 }",
             "MergeMainAgent { milestone: 16 }",
         ] {
             let workflow = workflow_of_route(route).expect(route);

@@ -12,8 +12,8 @@
 //!
 //! - [`dev_loop`] takes an **exclusive** workspace — it is the one that runs
 //!   several sessions deep and leaves a checkpoint behind.
-//! - [`planner`], [`split`], [`refinement`] and [`pr_review`] share one
-//!   **read-only** checkout ([`shared`]): none of them commits.
+//! - [`planner`], [`split`], [`refinement`], [`arbiter`] and [`pr_review`]
+//!   share one **read-only** checkout ([`shared`]): none of them commits.
 //! - [`pr_fix`] gets a **writable** one of its own, on the PR's branch,
 //!   because it does commit; [`test_debt`] too, on the integration branch.
 //! - [`init_repo`] and [`main_agent_merge`] mount nothing: both are
@@ -29,6 +29,7 @@
 //! **Nothing here decides *whether* to run.** That is `cli` (a human typed
 //! it) or `router` (a poll found the conditions met).
 
+pub mod arbiter;
 pub mod data_diagnosis;
 pub mod data_model_draft;
 pub mod data_snapshot;

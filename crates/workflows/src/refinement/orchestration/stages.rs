@@ -40,6 +40,8 @@ pub const ROUTER: &str = "router";
 pub const COHERENCE: &str = "coherence";
 /// The advice stage name: should the technical refinement have a human?
 pub const ADVICE: &str = "human-advice";
+/// The graph stage name: does the technical half hold `## Architecture`?
+pub const GRAPH: &str = "graph-advice";
 /// The publish local stage name.
 pub const PUBLISH: &str = "publish";
 
@@ -58,6 +60,7 @@ fn template_of(config: &Config, key: &str) -> String {
         "technical-plan" => (prompts::TECHNICAL_PLAN, text::TECHNICAL_PLAN_PROMPT),
         COHERENCE => (prompts::COHERENCE, text::COHERENCE_PROMPT),
         ADVICE => (prompts::ADVICE, text::ADVICE_PROMPT),
+        GRAPH => (prompts::GRAPH, text::GRAPH_PROMPT),
         other => unreachable!("unknown stage: {other}"),
     };
     config.prompts.text(edited, default)
@@ -171,6 +174,21 @@ pub fn advice(ports: &Ports, config: &Config, phase: Phase) -> Stage<RefinementS
     stage
 }
 
+/// The graph pass: does the finished technical half hold `## Architecture`?
+///
+/// When it does not, [`publish`] writes the question it raises into
+/// `## Decision` and hands it to the arbiter. Technical phase only, and
+/// skipped on a milestone, which has no architecture of its own.
+#[must_use]
+pub fn graph(ports: &Ports, config: &Config, phase: Phase) -> Stage<RefinementState> {
+    let mut stage = paid(ports, config, phase, GRAPH, config.graph.clone());
+    stage.pre = Some(Gate {
+        name: "graph-advice requires",
+        checks: vec![Box::new(IssueIsATask)],
+    });
+    stage
+}
+
 /// Publishing: a local stage, which costs nothing.
 #[must_use]
 pub fn publish(ports: &Ports, config: &Config, phase: Phase) -> Stage<RefinementState> {
@@ -186,6 +204,7 @@ pub fn publish(ports: &Ports, config: &Config, phase: Phase) -> Stage<Refinement
                 gh: Rc::clone(&ports.gh),
                 coherence: COHERENCE.to_string(),
                 advice: (phase == Phase::Business).then(|| ADVICE.to_string()),
+                graph: (phase == Phase::Technical).then(|| GRAPH.to_string()),
                 refinement_dir: config.refinement_dir.clone(),
                 disk: Rc::clone(&ports.disk),
             })],
@@ -193,8 +212,8 @@ pub fn publish(ports: &Ports, config: &Config, phase: Phase) -> Stage<Refinement
     }
 }
 
-/// The router, the phase's sections, coherence, the advice (business phase
-/// only), publishing — in order. The map (`ground`/`explore`) is not here:
+/// The router, the phase's sections, coherence, the advice (business phase)
+/// or the graph pass (technical phase), publishing — in order. The map (`ground`/`explore`) is not here:
 /// see the module.
 ///
 /// Coherence has no `skip`: by the time the sequence reaches it,
@@ -209,8 +228,9 @@ pub fn table(ports: &Ports, config: &Config, phase: Phase) -> Vec<Stage<Refineme
         built.push(section(ports, config, phase, key));
     }
     built.push(coherence(ports, config, phase));
-    if phase == Phase::Business {
-        built.push(advice(ports, config, phase));
+    match phase {
+        Phase::Business => built.push(advice(ports, config, phase)),
+        Phase::Technical => built.push(graph(ports, config, phase)),
     }
     built.push(publish(ports, config, phase));
     built
@@ -246,10 +266,17 @@ mod tests {
     }
 
     #[test]
-    fn the_technical_table_has_no_advice() {
+    fn the_technical_table_ends_with_the_graph_pass_then_publishing() {
         assert_eq!(
             names(Phase::Technical),
-            [ROUTER, "technical", "technical-plan", COHERENCE, PUBLISH]
+            [
+                ROUTER,
+                "technical",
+                "technical-plan",
+                COHERENCE,
+                GRAPH,
+                PUBLISH
+            ]
         );
     }
 
@@ -266,6 +293,7 @@ mod tests {
             }
         }
         assert_ne!(template_of(&config_fake::config(), ADVICE), "");
+        assert_ne!(template_of(&config_fake::config(), GRAPH), "");
     }
 
     #[test]

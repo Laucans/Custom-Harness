@@ -259,7 +259,7 @@ its precheck, its lock and its trigger.
 | state | `Loop` (`Resumable` + `Scoped`) | `RefinementState` (`Explored`) | `PlannerState` (`Explored`) | `SplitState` |
 | `remaining` | the `--rounds` budget | 1 | 1 | 1 |
 | the round | `TaskRound`, hand-written | core's `Round<S>` | core's `Round<S>` | core's `Round<S>` |
-| stages | `technical_refinement`, `code`, `create_test` | `router`, the phase sections (business: 3, technical: 2), `coherence`, `human-advice` (business), `publish` | the map, `context`, `plan`, `publish` | `context`, `slice`, `publish` |
+| stages | `technical_refinement`, `code`, `create_test` | `router`, the phase sections (business: 3, technical: 2), `coherence`, `human-advice` (business) or `graph-advice` (technical), `publish` | the map, `context`, `plan`, `publish` | `context`, `slice`, `publish` |
 | `orchestration/` | + `round.rs` | + `round.rs`, `prompts.rs` | + `round.rs` | + `round.rs` |
 | `checks/` | + `preflight.rs` | — | + `gates.rs` | + `gates.rs` |
 | lock | — | per issue | per roadmap item | per milestone |
@@ -325,6 +325,26 @@ its own PR on the integration branch), gated by `NamesAFile`; lock per
 issue; no resume, no tolerance. It never changes the code under test and
 never claims the mutants caught: the next rotation that judges the file
 says so, and labels the issue again if not.
+
+**The one that works a task's graph:** `arbiter` — a task whose technical
+refinement found the design could not hold its `## Architecture` as `split`
+cut it: an id it builds on that `needs` does not name, written as a question
+under `## Decision` by the refinement's `graph-advice` stage. Trigger:
+`harness:needs-ai-decision`, routed before the dev loop, since the task it
+settles is held until it ran; state `ArbiterState`; `remaining` 1; core's
+`Round<S>`; stages `context` (the milestone's tasks and the repository's
+manifests, and what is settled mechanically: an id a sibling `produces` is
+chained, one the repository holds needs no producer), `consume` (the label,
+the `pr_fix` shape), `arbitrate` (one short session over the board's index —
+one line per task, never a SPEC — naming which task produces each id left,
+gated by `NeedsASession` before and `VerdictParses` after) and `apply` (the
+task's `needs` and `blocked_by`, a producer's `produces` where the id was
+nobody's, the verdict under `## Decision`, a comment); lock per task; no
+resume, no tolerance. What no agent may decide — a `produces` to change, a
+task to cut, a task that has started, a verdict under 4/5, a question
+raised a second time — goes to a human under `harness:needs-decision` with
+the reasoning, the mechanical chains kept. `common::decision` is the
+question's shape, shared with the refinement that raises it.
 
 Five more modules sit beside these, not in the tables above: `init_repo`,
 `milestone_merge`, `main_agent_merge`, `data_snapshot` and `data_model_draft`,

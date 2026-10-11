@@ -141,7 +141,16 @@ pub fn runnable(issue: &Issue) -> bool {
         && is_ready(issue)
         && !waiting_merge(issue)
         && !review_pending(issue)
+        && !awaits_arbitration(issue)
         && blockers_pending(issue).is_empty()
+}
+
+/// The task's graph is in question: its refinement raised what `needs`
+/// does not name, and the arbiter has not settled it. Its blockers may be
+/// incomplete, so it does not start.
+#[must_use]
+pub fn awaits_arbitration(issue: &Issue) -> bool {
+    issue.has(labels::NEEDS_AI_DECISION)
 }
 
 /// Every runnable open task, in number order — what a parallel watch
@@ -181,6 +190,12 @@ pub fn why_not(issue: &Issue) -> String {
     let mut reasons = Vec::new();
     if !is_ready(issue) {
         reasons.push(format!("no {} label", labels::READY));
+    }
+    if awaits_arbitration(issue) {
+        reasons.push(format!(
+            "{}: its graph is in question until the arbiter settles it",
+            labels::NEEDS_AI_DECISION
+        ));
     }
     for blocker in blockers_pending(issue) {
         let said = if is_human(blocker) {
@@ -373,6 +388,24 @@ mod tests {
     fn closed(mut issue: Issue) -> Issue {
         issue.state = "closed".to_string();
         issue
+    }
+
+    #[test]
+    fn a_task_whose_graph_awaits_the_arbiter_does_not_run_and_says_why() {
+        let mut held = task(5);
+        held.labels.push(labels::NEEDS_AI_DECISION.to_string());
+        assert!(runnable(&task(5)));
+        assert!(!runnable(&held));
+        assert!(
+            why_not(&held).contains(labels::NEEDS_AI_DECISION),
+            "{}",
+            why_not(&held)
+        );
+        assert!(
+            runnable_tasks(&[held, task(6)])
+                .iter()
+                .all(|t| t.number == 6)
+        );
     }
 
     // --- rule 1: the milestone -----------------------------------------

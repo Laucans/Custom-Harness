@@ -12,9 +12,10 @@ use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 
+use crate::common::decision::Question;
 use crate::common::labels;
 use crate::refinement::data::state::RefinementState;
-use crate::refinement::data::{advice, rounds, sections};
+use crate::refinement::data::{advice, graph, rounds, sections};
 
 /// The publishing step: body, comment, labels.
 pub struct Write {
@@ -26,6 +27,10 @@ pub struct Write {
     /// The advice stage name, when this phase has one (business only): its
     /// reply is posted as a comment before the round counter.
     pub advice: Option<String>,
+    /// The graph stage name, when this phase has one (technical only): a
+    /// question it raises is written as the `## Decision` section and
+    /// labelled for the arbiter, or for a human the second time.
+    pub graph: Option<String>,
     /// The artifacts folder for this issue.
     pub refinement_dir: PathBuf,
     /// What keeps the body on disk before it is posted.
@@ -46,6 +51,102 @@ impl Write {
     /// Both directions, because the flag is derived from the latest round: a
     /// re-run that now concludes `no` has to take it off, or the board keeps
     /// claiming a blocker that has been answered.
+    /// What the graph pass said, if this phase ran one.
+    fn graph_read(&self, ctx: &Context<RefinementState>) -> Option<graph::Read> {
+        let stage = self.graph.as_ref()?;
+        let reply = ctx.results.get(stage)?;
+        Some(graph::read(reply.text.trim()))
+    }
+
+    /// Poses the label a raised question asks for — the arbiter's the first
+    /// time, a human's once an arbitration already answered — or clears the
+    /// arbiter's when the contract holds again. Never fails the round, for
+    /// the reason [`Self::flag_decision`] gives: the section in the body
+    /// carries the question anyway.
+    async fn flag_graph(
+        &self,
+        num: u64,
+        issue: &harness_core::domain::Issue,
+        raise: Option<&'static str>,
+        holds: bool,
+        ctx: &Context<RefinementState>,
+    ) {
+        let done = match raise {
+            Some(label) if !issue.has(label) => {
+                (label, "posed", self.gh.add_label(num, label).await)
+            }
+            None if holds && issue.has(labels::NEEDS_AI_DECISION) => (
+                labels::NEEDS_AI_DECISION,
+                "removed",
+                self.gh.remove_label(num, labels::NEEDS_AI_DECISION).await,
+            ),
+            _ => return,
+        };
+        match done {
+            (label, what, Ok(())) => ctx
+                .traces
+                .say(&format!("#{num} — {label} {what}: the graph pass said so")),
+            (label, what, Err(why)) => ctx.traces.warn(&format!(
+                "#{num} — could not have {label} {what}: {why}. The Decision section says \
+                 it anyway; the round is published"
+            )),
+        }
+    }
+
+    /// The graph pass, technical phase only: a question it raises becomes
+    /// the `## Decision` section — for the arbiter the first time, for a
+    /// human once an arbitration already answered it — and a round that
+    /// finds the contract holds again drops the question before. Returns
+    /// the label to pose, and whether the contract holds.
+    fn raise_question(
+        &self,
+        ctx: &Context<RefinementState>,
+        found: &mut std::collections::HashMap<String, String>,
+        num: u64,
+    ) -> (Option<&'static str>, bool) {
+        let graph = self.graph_read(ctx);
+        let mut raise: Option<&'static str> = None;
+        match &graph {
+            Some(graph::Read::Open(question)) => {
+                let before = found
+                    .get(sections::DECISION)
+                    .and_then(|t| Question::parse(t));
+                let mut question = question.clone();
+                question.round = before.map_or(1, |old| {
+                    if old.decided_by.is_some() {
+                        old.round.saturating_add(1)
+                    } else {
+                        old.round
+                    }
+                });
+                raise = Some(if question.raised_again() {
+                    labels::NEEDS_DECISION
+                } else {
+                    labels::NEEDS_AI_DECISION
+                });
+                ctx.traces.say(&format!(
+                    "#{num} — the graph pass raised a question (round {}): {}",
+                    question.round, question.blocks
+                ));
+                found.insert(sections::DECISION.to_string(), question.render());
+            }
+            Some(graph::Read::Holds) => {
+                if found.remove(sections::DECISION).is_some() {
+                    ctx.traces.say(&format!(
+                        "#{num} — the design holds its contract again: the Decision section \
+                         is dropped"
+                    ));
+                }
+            }
+            Some(graph::Read::Unreadable) => ctx.traces.warn(&format!(
+                "#{num} — the graph pass's reply had no readable shape: no question raised, \
+                 none dropped"
+            )),
+            None => {}
+        }
+        (raise, matches!(graph, Some(graph::Read::Holds)))
+    }
+
     async fn flag_decision(
         &self,
         num: u64,
@@ -120,6 +221,8 @@ impl Action<RefinementState> for Write {
             }
         }
 
+        let (raise, holds) = self.raise_question(ctx, &mut found, num);
+
         let body = sections::render(&found);
         if body.trim().is_empty() {
             return Err(Halt::Failed(format!(
@@ -157,6 +260,8 @@ impl Action<RefinementState> for Write {
 
         // One request writes the whole phase: the label it leaves says so.
         self.gh.add_label(num, phase.leaves()).await?;
+
+        self.flag_graph(num, &issue, raise, holds, ctx).await;
 
         if let Some(reply) = self
             .advice
@@ -206,6 +311,7 @@ mod tests {
     /// The name the table gives to the coherence stage.
     const COHERENCE: &str = "coherence";
     const ADVICE: &str = "human-advice";
+    const GRAPH: &str = "graph-advice";
 
     /// Where the body lands on the fake disk — never a real folder.
     fn dir(name: &str) -> PathBuf {
@@ -254,6 +360,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -277,6 +384,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -296,6 +404,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -315,6 +424,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -363,6 +473,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -447,6 +558,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -475,6 +587,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: None,
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -499,6 +612,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -521,6 +635,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: Some(ADVICE.to_string()),
+            graph: None,
             refinement_dir: review_dir.clone(),
             disk: Rc::clone(&disk) as Rc<dyn Disk>,
         };
@@ -550,6 +665,7 @@ mod tests {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             coherence: COHERENCE.to_string(),
             advice: None,
+            graph: None,
             refinement_dir: dir("extras"),
             disk: Rc::new(FakeDisk::default()),
         };
@@ -576,5 +692,163 @@ mod tests {
             body.contains("## Assumptions (autonomous run)\n\n- the API is v2"),
             "{body}"
         );
+    }
+
+    /// A technical round whose graph pass says `text`, on an issue whose
+    /// body already holds `decision` under `## Decision`, carrying `labels`.
+    async fn graphed(
+        name: &str,
+        text: &str,
+        decision: Option<&str>,
+        issue_labels: &[&str],
+    ) -> (Vec<Wrote>, String) {
+        let review_dir = dir(name);
+        let gh = Rc::new(FakeGitHub::default());
+        let write = Write {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            coherence: COHERENCE.to_string(),
+            advice: None,
+            graph: Some(GRAPH.to_string()),
+            refinement_dir: review_dir.clone(),
+            disk: Rc::new(FakeDisk::default()),
+        };
+        let mut context = ctx(1, issue_labels);
+        context.state.phase = Phase::Technical;
+        context.state.wanted = vec!["technical".to_string()];
+        context.results.insert(
+            "technical".to_string(),
+            Reply {
+                text: "the design".to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        if let Some(decision) = decision {
+            context
+                .state
+                .found
+                .insert(sections::DECISION.to_string(), decision.to_string());
+        }
+        context.results.insert(
+            GRAPH.to_string(),
+            Reply {
+                text: text.to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        write.run(&mut context).await.expect("written");
+        let writes = gh.writes();
+        let body = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Body(25, body) => Some(body.clone()),
+                _ => None,
+            })
+            .expect("a body");
+        (writes, body)
+    }
+
+    #[tokio::test]
+    async fn a_question_the_graph_pass_raises_is_written_and_handed_to_the_arbiter() {
+        let (writes, body) = graphed(
+            "graph-open",
+            "graph: open\nblocks: the list reads characters nobody produces\nneeds: Personnage",
+            None,
+            &[],
+        )
+        .await;
+        assert!(
+            body.ends_with(
+                "## Decision\n\nblocks: the list reads characters nobody produces\n\
+                 needs: Personnage\nround: 1\n"
+            ),
+            "{body}"
+        );
+        assert!(writes.contains(&Wrote::Label(25, labels::NEEDS_AI_DECISION.to_string())));
+        assert!(!writes.contains(&Wrote::Label(25, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_question_raised_again_after_an_arbitration_goes_to_a_human() {
+        // No second agent is paid to disagree with the first.
+        let (writes, body) = graphed(
+            "graph-again",
+            "graph: open\nblocks: still no producer",
+            Some("blocks: no producer\nround: 1\ndecided-by: ai\nverdict: chained on #12"),
+            &[],
+        )
+        .await;
+        assert!(
+            body.contains("blocks: still no producer\nround: 2\n"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("decided-by"),
+            "a new question, undecided: {body}"
+        );
+        assert!(writes.contains(&Wrote::Label(25, labels::NEEDS_DECISION.to_string())));
+        assert!(!writes.contains(&Wrote::Label(25, labels::NEEDS_AI_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_question_nobody_answered_yet_keeps_its_round() {
+        // Raised, then refined again before the arbiter ran: still its turn.
+        let (writes, body) = graphed(
+            "graph-pending",
+            "graph: open\nblocks: reworded",
+            Some("blocks: no producer\nround: 1"),
+            &[labels::NEEDS_AI_DECISION],
+        )
+        .await;
+        assert!(body.contains("blocks: reworded\nround: 1\n"), "{body}");
+        assert!(!writes.contains(&Wrote::Label(25, labels::NEEDS_AI_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_design_that_holds_again_drops_the_question_and_the_arbiter_s_label() {
+        let (writes, body) = graphed(
+            "graph-holds",
+            "graph: holds",
+            Some("blocks: no producer\nround: 1"),
+            &[labels::NEEDS_AI_DECISION],
+        )
+        .await;
+        assert!(!body.contains("## Decision"), "{body}");
+        assert!(writes.contains(&Wrote::Unlabelled(
+            25,
+            labels::NEEDS_AI_DECISION.to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn the_arbiter_s_label_is_cleared_only_when_the_contract_holds_and_it_is_carried() {
+        let (writes, _) = graphed("graph-holds-bare", "graph: holds", None, &[]).await;
+        assert!(!writes.iter().any(|w| matches!(w, Wrote::Unlabelled(..))));
+        let (writes, _) = graphed(
+            "graph-unreadable-carried",
+            "no shape at all",
+            Some("blocks: no producer\nround: 1"),
+            &[labels::NEEDS_AI_DECISION],
+        )
+        .await;
+        assert!(!writes.iter().any(|w| matches!(w, Wrote::Unlabelled(..))));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_graph_reply_raises_nothing_and_drops_nothing() {
+        let (writes, body) = graphed(
+            "graph-unreadable",
+            "it all seems fine",
+            Some("blocks: no producer\nround: 1"),
+            &[],
+        )
+        .await;
+        assert!(
+            body.contains("## Decision\n\nblocks: no producer\nround: 1"),
+            "{body}"
+        );
+        assert!(!writes.iter().any(|w| matches!(w, Wrote::Label(..) | Wrote::Unlabelled(..))
+            && matches!(w, Wrote::Label(_, l) | Wrote::Unlabelled(_, l) if l.contains("decision"))));
     }
 }

@@ -11,11 +11,12 @@
 # is the test's finding, not the fake's).
 exclude_globs = ["**/main.rs", "crates/view-render/**", "**/fake_*.rs"]
 
-# The router's composition root: `dispatched` builds the concrete adapters
-# and hands them to a workflow — wiring, like `main.rs`, that no unit test
+# The router's composition root: `dispatched` and the two helpers it hands
+# an issue to (`refine_here`, `arbitrate_here`) build the concrete adapters
+# and hand them to a workflow — wiring, like `main.rs`, that no unit test
 # runs (it would spawn `gh` and `claude`). What it decides is `routing::decide`,
 # which is mutated and tested.
-exclude_re = ["router/routes\\.rs:.*replace dispatched "]
+exclude_re = ["router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) "]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI
 # tests with.

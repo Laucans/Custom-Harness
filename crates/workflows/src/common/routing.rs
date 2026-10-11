@@ -14,8 +14,9 @@
 //! repair before a green one to review, since reviewing a change whose CI
 //! is broken reviews something about to change; then merging a reviewed,
 //! green task PR into its milestone; then finishing a milestone that's
-//! done; then a runnable task; then a pending refinement (business, then
-//! technical); and last a file's test debt. Structural decomposition before
+//! done; then a task whose graph is in question, for the arbiter; then a
+//! runnable task; then a pending refinement (business, then technical);
+//! and last a file's test debt. Structural decomposition before
 //! unblocking what's in flight before closing out before delivering before
 //! preparing the next delivery — and paying back the tests only when nothing
 //! else waits, since the debt is real but never blocks anyone.
@@ -90,6 +91,11 @@ pub enum Route {
         /// The issue's number.
         issue: u64,
     },
+    /// Settle this task's graph question, or hand it to a human — `arbiter`.
+    Arbiter {
+        /// The task's number.
+        issue: u64,
+    },
     /// Run the dev loop on this milestone's board.
     DevLoop {
         /// The milestone issue's number — so the dispatcher can derive the
@@ -137,6 +143,8 @@ pub struct Snapshot {
     pub refining: Vec<Issue>,
     /// Open `harness:tech-refinement` issues, any order.
     pub tech_refining: Vec<Issue>,
+    /// Open `harness:needs-ai-decision` issues, any order.
+    pub arbitrating: Vec<Issue>,
     /// The current milestone, if its board has a runnable task right now —
     /// `None` either because there's no open milestone, or because the one
     /// there is has nothing runnable.
@@ -184,6 +192,14 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     }
     if let Some(milestone) = snapshot.ready_to_merge {
         return Route::MergeMainAgent { milestone };
+    }
+    // A graph in question before a task is picked: the arbitration is
+    // cheap, and the task it settles — or the one that waits on it — may
+    // be the next one the loop would otherwise start on incomplete blockers.
+    if let Some(issue) = lowest_open(&snapshot.arbitrating) {
+        return Route::Arbiter {
+            issue: issue.number,
+        };
     }
     // Delivering before preparing: a runnable task is work already decided,
     // and a pending refinement only ever prepares the next one.
@@ -395,6 +411,7 @@ mod tests {
             ready_to_merge: None,
             refining: Vec::new(),
             tech_refining: Vec::new(),
+            arbitrating: Vec::new(),
             dev_loop_milestone: None,
             test_debt: Vec::new(),
         }
@@ -441,6 +458,7 @@ mod tests {
             ready_to_merge: Some(7),
             refining: vec![issue(6, &[labels::REFINEMENT])],
             tech_refining: vec![],
+            arbitrating: Vec::new(),
             dev_loop_milestone: Some(3),
             test_debt: vec![issue(8, &[labels::TEST_DEBT])],
         };
@@ -458,6 +476,7 @@ mod tests {
         ];
         let waiting = Snapshot {
             tech_refining: vec![issue(6, &[labels::TECH_REFINEMENT])],
+            arbitrating: Vec::new(),
             test_debt: debt.clone(),
             ..empty()
         };
@@ -628,10 +647,22 @@ mod tests {
     }
 
     #[test]
+    fn a_graph_in_question_outranks_the_dev_loop_and_refinement_but_not_a_merge() {
+        let mut snapshot = empty();
+        snapshot.arbitrating = vec![issue(9, &[labels::AGENT, labels::NEEDS_AI_DECISION])];
+        snapshot.dev_loop_milestone = Some(3);
+        snapshot.refining = vec![issue(6, &[labels::REFINEMENT])];
+        assert_eq!(decide(&snapshot), Route::Arbiter { issue: 9 });
+        snapshot.ready_to_merge = Some(7);
+        assert_eq!(decide(&snapshot), Route::MergeMainAgent { milestone: 7 });
+    }
+
+    #[test]
     fn the_dev_loop_outranks_pending_refinement() {
         let snapshot = Snapshot {
             refining: vec![issue(6, &[labels::REFINEMENT])],
             tech_refining: vec![issue(7, &[labels::TECH_REFINEMENT])],
+            arbitrating: Vec::new(),
             dev_loop_milestone: Some(3),
             ..empty()
         };
@@ -655,6 +686,7 @@ mod tests {
         let snapshot = Snapshot {
             refining: vec![issue(9, &[labels::REFINEMENT])],
             tech_refining: vec![issue(6, &[labels::TECH_REFINEMENT])],
+            arbitrating: Vec::new(),
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::Refinement { issue: 9 });
