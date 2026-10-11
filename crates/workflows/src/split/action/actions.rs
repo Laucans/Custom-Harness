@@ -191,14 +191,27 @@ fn listed(items: &[String]) -> String {
 }
 
 /// What exists, rendered for the prompt — or the fact that nothing does.
+///
+/// Three parts after what every slice shares: what the **write side**
+/// builds on (the aggregates with their fields and invariants, the
+/// `DataCapabilities` with their effect and target), what the **read side**
+/// builds on (the Capabilities, the Concepts, the query registry), and what
+/// the **UI** builds on (the design system and its kit, the micro-frontends
+/// mocked or built, the pages and the frozen screens) — each with the rule
+/// its slices keep, so a slice of one kind is told what it writes against.
 #[must_use]
 pub fn inventory_block(tree: &Tree) -> String {
+    // A product may hold a design system and a mock-up before its first crate: that counts.
     let empty = tree.systems.is_empty()
         && tree.concepts.is_empty()
         && tree.capabilities.is_empty()
         && tree.aggregates.is_empty()
         && tree.data_capabilities.is_empty()
-        && tree.micro_uis.is_empty();
+        && tree.micro_uis.is_empty()
+        && tree.design.is_none()
+        && tree.kit.is_empty()
+        && tree.mocked_components.is_empty()
+        && tree.screens.is_empty();
     if empty {
         return "The repository holds no unit of the architecture yet: this milestone's data \
                 layer is the first, and every id it declares is new."
@@ -214,28 +227,111 @@ pub fn inventory_block(tree: &Tree) -> String {
         .iter()
         .map(|(name, version)| format!("{name}@{version}"))
         .collect();
+    let ui = ui_lines(tree);
     format!(
         "What the repository already holds of the architecture — name these exactly when a \
          slice builds on them, and invent no id that is not here:\n\
          - systems with Rust code: {}\n\
          - Concepts: {}\n\
-         - Capabilities: {}\n\
+         - queries/registry.json: {}\n\
+         \n\
+         The write side (an `aggregate` or a `data-capability` slice builds on these; a \
+         DataCapability is a folder named after itself, a dependency of its server, and \
+         reaches no other slice):\n\
          - aggregates: {}\n\
          - DataCapabilities: {}\n\
-         - Micro-UIs: {}\n\
-         - queries/registry.json: {}",
+         \n\
+         The read side (a `capability` or `persisted-query` slice builds on these, reads \
+         through persisted queries only, and reaches no other slice — plumbing of its own \
+         system alone):\n\
+         - Capabilities: {}\n\
+         \n\
+         The UI (a `micro-ui` or `composition` slice builds on these: it writes the kit's \
+         classes with its own data, names its parts `data-writes`/`data-reads`, and ships \
+         its micro-frontend — generated or mocked — before its code):\n\
+         - design system: {}\n\
+         - kit components generated: {}\n\
+         - micro-frontends in the mock-up: {}\n\
+         - Micro-UIs with code: {}\n\
+         - pages mocked: {}\n\
+         - frozen screens: {}",
         listed(&tree.systems),
         listed(&concepts),
-        listed(&capability_lines(tree)),
-        listed(&aggregate_lines(tree)),
-        listed(&data_capability_lines(tree)),
-        listed(&micro_uis),
         if tree.has_query_registry {
             "present"
         } else {
             "absent"
-        }
+        },
+        listed(&aggregate_lines(tree)),
+        listed(&data_capability_lines(tree)),
+        listed(&capability_lines(tree)),
+        ui.design,
+        listed(&ui.kit),
+        listed(&ui.mocked),
+        listed(&micro_uis),
+        listed(&tree.mocked),
+        listed(&tree.screens),
     )
+}
+
+/// What the UI builds on, rendered: the design system's state, the kit's
+/// generated components, the micro-frontends of the mock-up and how each
+/// was made.
+struct UiLines {
+    design: String,
+    kit: Vec<String>,
+    mocked: Vec<String>,
+}
+
+fn ui_lines(tree: &Tree) -> UiLines {
+    let design = tree
+        .design
+        .as_ref()
+        .and_then(|m| m.json.as_ref())
+        .map_or_else(
+            || {
+                "none yet: a UI slice styles through the kit's variables with their fallbacks"
+                    .to_string()
+            },
+            |json| {
+                let state = field(Some(json), "state");
+                format!(
+                    "{state} (mock/design/tokens.css, one CSS variable per token){}",
+                    if state == "validated" {
+                        ""
+                    } else {
+                        " — not validated: no kit is generated from it yet"
+                    }
+                )
+            },
+        );
+    let kit: Vec<String> = tree
+        .kit
+        .iter()
+        .map(|(name, title)| {
+            if title.is_empty() || title == name {
+                name.clone()
+            } else {
+                format!("{name} ({title})")
+            }
+        })
+        .collect();
+    let mocked: Vec<String> = tree
+        .mocked_components
+        .iter()
+        .map(|name| {
+            if tree.bundles.iter().any(|b| &b.name == name) {
+                format!("{name} (built from its Micro-UI's code)")
+            } else {
+                format!("{name} (hand-written or generated)")
+            }
+        })
+        .collect();
+    UiLines {
+        design,
+        kit,
+        mocked,
+    }
 }
 
 /// the judgment stays out of the action that sends the prompt.
@@ -342,10 +438,54 @@ mod tests {
             "campagne.niveau (system campagne, implements NiveauDuGroupe@1)",
             "Campagne [fields: nom; invariants: nom-unique]",
             "campagne.creer (insert on Campagne)",
-            "Micro-UIs: (none)",
+            "Micro-UIs with code: (none)",
+            "design system: none yet",
+            "kit components generated: (none)",
         ] {
             assert!(said.contains(expected), "{expected} missing from:\n{said}");
         }
+    }
+
+    #[test]
+    fn the_ui_inventory_names_the_design_system_the_kit_and_the_mock_up() {
+        use harness_architecture::tree::{Bundle, Manifest};
+        let tree = Tree {
+            design: Some(Manifest {
+                path: "mock/design/design.json".to_string(),
+                json: serde_json::from_str(r#"{"state":"validated"}"#).ok(),
+            }),
+            kit: vec![
+                ("Button".to_string(), "Button".to_string()),
+                ("HeroFrame".to_string(), "Hero frame".to_string()),
+            ],
+            mocked_components: vec!["Campagnes".to_string(), "Pjs".to_string()],
+            bundles: vec![Bundle {
+                name: "Pjs".to_string(),
+                source: "apps/campagne/pjs".to_string(),
+                built_from: None,
+                digest: String::new(),
+            }],
+            mocked: vec!["pages/campagne.html".to_string()],
+            screens: vec!["campagne".to_string()],
+            ..Tree::default()
+        };
+        let said = inventory_block(&tree);
+        for expected in [
+            "design system: validated (mock/design/tokens.css",
+            "kit components generated: Button, HeroFrame (Hero frame)",
+            "micro-frontends in the mock-up: Campagnes (hand-written or generated), Pjs (built from its Micro-UI's code)",
+            "pages mocked: pages/campagne.html",
+            "frozen screens: campagne",
+            "writes the kit's classes",
+        ] {
+            assert!(said.contains(expected), "{expected} missing from:\n{said}");
+        }
+        let mut candidate = tree;
+        candidate.design = Some(Manifest {
+            path: String::new(),
+            json: serde_json::from_str(r#"{"state":"candidate"}"#).ok(),
+        });
+        assert!(inventory_block(&candidate).contains("not validated: no kit is generated"));
     }
 
     fn issue(number: u64, state: &str) -> Issue {

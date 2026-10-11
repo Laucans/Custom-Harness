@@ -84,6 +84,12 @@ pub struct Tree {
     /// The micro-frontends built from a Micro-UI's code (`source`), with
     /// what the bundle was built from and what the code is now.
     pub bundles: Vec<Bundle>,
+    /// The design system, as `mock/design/design.json` has it (contract O):
+    /// `None` when there is none.
+    pub design: Option<Manifest>,
+    /// The kit's generated components, by name with their title, as
+    /// `mock/kit/kit.json` lists them (contract O).
+    pub kit: Vec<(String, String)>,
 }
 
 /// A micro-frontend bundled from a Micro-UI's code.
@@ -298,6 +304,26 @@ fn read_mockup(disk: &dyn Disk, root: &Path, tree: &mut Tree) {
             digest,
         });
     }
+    tree.design = text("mock/design/design.json").map(|content| Manifest {
+        path: "mock/design/design.json".to_string(),
+        json: serde_json::from_str(&content).ok(),
+    });
+    tree.kit = text("mock/kit/kit.json")
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .and_then(|json| json.get("components")?.as_array().cloned())
+        .map(|components| {
+            components
+                .iter()
+                .filter(|c| str_of(c, "state") == Some("generated"))
+                .filter_map(|c| {
+                    Some((
+                        str_of(c, "name")?.to_string(),
+                        str_of(c, "title").unwrap_or_default().to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 }
 
 /// The micro-frontends a `mock/pages.json` lists: `(name, fragment)`.
@@ -889,6 +915,8 @@ mod tests {
             mocked: vec!["pages/credit-review.html".to_string()],
             mocked_components: vec!["RiskBadge".to_string()],
             bundles: Vec::new(),
+            design: None,
+            kit: Vec::new(),
         }
     }
 
@@ -1203,6 +1231,14 @@ mod tests {
         );
         existing.insert(root.join("mock/src/RiskBadge.js"), "mount();".to_string());
         existing.insert(
+            root.join("mock/design/design.json"),
+            r#"{"version":1,"state":"validated"}"#.to_string(),
+        );
+        existing.insert(
+            root.join("mock/kit/kit.json"),
+            r#"{"version":1,"components":[{"name":"Button","title":"Button","state":"generated"},{"name":"Badge","title":"Badge","state":"pending"},{"name":"HeroFrame","title":"Hero frame","state":"generated"}]}"#.to_string(),
+        );
+        existing.insert(
             root.join("apps/credit/risk-badge/src/index.ts"),
             "export {}".to_string(),
         );
@@ -1215,6 +1251,21 @@ mod tests {
         assert_eq!(tree.screens, ["credit-review"]);
         assert_eq!(tree.mocked, ["pages/credit-review.html"]);
         assert_eq!(tree.mocked_components, ["RiskBadge"]);
+        // The design system and the kit, as the UI builds on them: generated components only.
+        assert_eq!(
+            tree.design
+                .as_ref()
+                .and_then(|m| m.json.as_ref())
+                .and_then(|j| str_of(j, "state")),
+            Some("validated")
+        );
+        assert_eq!(
+            tree.kit,
+            [
+                ("Button".to_string(), "Button".to_string()),
+                ("HeroFrame".to_string(), "Hero frame".to_string())
+            ]
+        );
         assert_eq!(tree.bundles.len(), 1);
         assert_eq!(tree.bundles[0].digest, "c14e3564be9bd6b2");
         assert_eq!(
