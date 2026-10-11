@@ -17,8 +17,8 @@ const ESBUILD = 'esbuild@0.25.0';
 const SHARED = ['server.js', 'screen.js', 'reads.js', 'commands.js'];
 
 function walk(dir, out) {
-  let entries = [];
-  try { entries = readdirSync(dir); } catch (e) { return out; }
+  let entries;
+  try { entries = readdirSync(dir); } catch { return out; }
   for (const name of entries.sort()) {
     if (name === 'node_modules' || name === 'dist' || name.startsWith('.')) continue;
     const path = join(dir, name);
@@ -41,7 +41,7 @@ export function digest(files) {
 
 export function inputsOf(name, source) {
   const files = [];
-  const add = (path) => { try { files.push([path.split('\\').join('/'), readFileSync(path, 'utf8')]); } catch (e) { /* absent: not an input */ } };
+  const add = (path) => { try { files.push([path.split('\\').join('/'), readFileSync(path, 'utf8')]); } catch { /* absent: not an input */ } };
   add(join('mock/src', `${name}.js`));
   for (const shared of SHARED) add(join('mock/src', shared));
   for (const path of walk(join(source, 'src'), [])) add(relative('.', path));

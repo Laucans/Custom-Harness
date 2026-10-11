@@ -33,8 +33,8 @@ export function mountPoint() {
   const script = document.currentScript;
   const component = script && script.closest('[data-component]');
   const host = component ? component.querySelector('.mf-root') || component : document.body;
-  let props = {};
-  try { props = JSON.parse((component && component.dataset.props) || '{}'); } catch (e) { props = {}; }
+  let props;
+  try { props = JSON.parse((component && component.dataset.props) || '{}'); } catch { props = {}; }
   return { component, host, props };
 }
 
