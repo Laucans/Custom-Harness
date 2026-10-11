@@ -141,6 +141,11 @@ pub(super) async fn design_validate(State(state): State<AppState>) -> Response {
         Ok(view) => view,
         Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
+    // The kit is styled from the tokens just validated: queue every ticked
+    // component that is not generated yet, here rather than left to
+    // whoever opens the easel next — no Claude, or nothing ticked, is not
+    // this call's business to report.
+    let _ = desk.start_generation(Vec::new()).await;
     if view.design.issue.is_empty()
         && let Some(data) = state.data.clone()
     {

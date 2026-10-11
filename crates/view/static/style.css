@@ -1457,3 +1457,14 @@ body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 .cr-kit { margin-top: 10px; }
 .cr-kit .tag { margin: 0; }
 .cr-resume { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin: 0; }
+.cr-modal-backdrop {
+  position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .5); padding: 16px;
+}
+.cr-modal {
+  width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 20px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 12px 40px rgba(0, 0, 0, .4);
+}
+.cr-modal h3 { margin: 0; font-size: 16px; }
+.cr-modal p { margin: 0; color: var(--dim); }
+.cr-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }

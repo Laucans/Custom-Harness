@@ -1759,3 +1759,93 @@ async fn usage_sums_what_was_logged_by_who() {
     assert_eq!(summary["calls"], 1);
     assert_eq!(summary["byWho"][0]["who"], "creation");
 }
+
+/// A kit model that answers the tokens generation and any component
+/// fragment with something minimal but valid.
+struct KitModel;
+
+impl crate::ports::Oneshot for KitModel {
+    fn ask(&self, _model: &str, prompt: &str) -> Result<String, String> {
+        if prompt.contains("design tokens") {
+            return Ok(harness_architecture::kit::default_tokens_json());
+        }
+        let name = prompt.split('`').nth(1).unwrap_or("X");
+        Ok(format!(
+            "```html\n<div class=\"kit-{}\" style=\"color:var(--color-text, #111)\">{name}</div>\n```",
+            name.to_ascii_lowercase()
+        ))
+    }
+}
+
+/// A product folder a `DirMockups` can serve, with a `main` branch so the
+/// kit desk's `ensure` finds somewhere to start the design system from.
+fn kit_product(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "harness-design-validate-{tag}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("main/mock")).expect("dir");
+    // `ensure_branch` on the sample never makes `design-system`: it must be there already.
+    std::fs::create_dir_all(dir.join("design-system/mock")).expect("dir");
+    std::fs::write(
+        dir.join("main/mock/pages.json"),
+        r#"{"version":1,"pages":[],"components":[]}"#,
+    )
+    .expect("manifest");
+    dir
+}
+
+#[tokio::test]
+async fn validating_the_design_system_queues_the_kits_generation_by_itself() {
+    let dir = kit_product("validate");
+    let mockups: Arc<dyn crate::ports::Mockups> =
+        Arc::new(crate::adapters::mockups::DirMockups::new(&dir));
+    let kit = crate::kit_desk::KitDesk::new(crate::kit_desk::Setup {
+        mockups,
+        oneshot: Some(Arc::new(KitModel)),
+        model: "m".to_string(),
+        sessions: 2,
+        pins: Arc::new(crate::kit_desk::tests::Shelf::default()),
+        integration_branch: "main".to_string(),
+    });
+    let state = AppState {
+        kit: Some(kit.clone()),
+        ..state_without_plant()
+    };
+    let (status, _) = post(
+        state.clone(),
+        "/api/design/generate",
+        r#"{"brief":"a plant, teal and cream"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // No job queued before the design is validated: generating is what
+    // validate itself triggers, not the tokens landing.
+    assert!(
+        kit.reply().await.expect("read").jobs.is_empty(),
+        "nothing queued before validate"
+    );
+    let (status, _) = post(state, "/api/design/validate", "").await;
+    assert_eq!(status, StatusCode::OK);
+    for _ in 0..200 {
+        let reply = kit.reply().await.expect("read");
+        if !reply.jobs.is_empty() {
+            assert!(
+                reply.catalog.iter().any(|c| c.checked
+                    && matches!(
+                        c.state,
+                        harness_architecture::kit::ComponentState::Pending
+                            | harness_architecture::kit::ComponentState::Running
+                            | harness_architecture::kit::ComponentState::Generated
+                    )),
+                "validating on its own queues the kit: {:?}",
+                reply.catalog
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("validate never queued a single job");
+}

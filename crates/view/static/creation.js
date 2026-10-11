@@ -425,6 +425,41 @@
     else draw();
   }
 
+  // A small advisory dialog: two named choices, never a silent default.
+  // Resolves 'primary', 'secondary', or null (Escape, the backdrop, or the
+  // page leaving while it is open) — nothing happens on its own.
+  function confirmModal({ title, body, primary, secondary }) {
+    return new Promise((resolve) => {
+      const host = document.createElement('div');
+      host.className = 'cr-modal-backdrop';
+      host.innerHTML = `<div class="cr-modal" role="alertdialog" aria-modal="true" aria-label="${esc(title)}">
+        <h3>${esc(title)}</h3>
+        <p>${esc(body)}</p>
+        <div class="cr-modal-actions">
+          <button type="button" class="cr-btn" data-pick="secondary">${esc(secondary)}</button>
+          <button type="button" class="cr-btn on" data-pick="primary">${esc(primary)}</button>
+        </div>
+      </div>`;
+      document.body.appendChild(host);
+      const done = (pick) => { host.remove(); window.removeEventListener('keydown', onKey, true); resolve(pick); };
+      host.addEventListener('click', (e) => {
+        if (e.target === host) { done(null); return; }
+        const b = e.target.closest('[data-pick]');
+        if (b) done(b.dataset.pick);
+      });
+      function onKey(e) { if (e.key === 'Escape') done(null); }
+      window.addEventListener('keydown', onKey, true);
+      host.querySelector('[data-pick="primary"]').focus();
+    });
+  }
+  window.addEventListener('harness:navigate', () => document.querySelectorAll('.cr-modal-backdrop').forEach((h) => h.remove()));
+
+  // The next grilling round, asked.
+  function askGrill() {
+    const body = fields();
+    act('the AI prepares the next round', async () => { await save(body); await post('grill'); });
+  }
+
   // ---- gestures -------------------------------------------------------------------
   page.addEventListener('submit', (e) => {
     const form = e.target.closest('[data-cr-form]');
@@ -457,7 +492,20 @@
       enter();
       return;
     }
-    if (t.dataset.crNext) { next(t.dataset.crNext); return; }
+    if (t.dataset.crNext) {
+      const rounds = C.route === 'grilling' && record() ? record().rounds : null;
+      if (t.dataset.crNext === 'scope' && rounds !== null && rounds < 3) {
+        confirmModal({
+          title: rounds ? `Only ${rounds} round${rounds === 1 ? '' : 's'} so far` : 'No round asked yet',
+          body: 'Grilling at least three rounds usually surfaces the decisions that matter before the scope is drafted.',
+          primary: 'Keep grilling',
+          secondary: 'Continue anyway',
+        }).then((pick) => { if (pick === 'secondary') next('scope'); });
+        return;
+      }
+      next(t.dataset.crNext);
+      return;
+    }
     if (t.matches('[data-cr-kind]')) {
       const kind = page.querySelector('input[name="kind"]:checked');
       if (!kind) return;
@@ -478,8 +526,17 @@
       return;
     }
     if (t.matches('[data-cr-grill]')) {
-      const body = fields();
-      act('the AI prepares the next round', async () => { await save(body); await post('grill'); });
+      const rounds = record().rounds;
+      if (rounds >= 6) {
+        confirmModal({
+          title: `${rounds} rounds already`,
+          body: 'Six rounds usually covers the ground; asking for more adds little and spends more of the model\'s budget for a shrinking return.',
+          primary: 'Continue to the scope',
+          secondary: 'Keep grilling anyway',
+        }).then((pick) => { if (pick === 'primary') next('scope'); else if (pick === 'secondary') askGrill(); });
+        return;
+      }
+      askGrill();
       return;
     }
     if (t.matches('[data-cr-rescope]')) {
