@@ -493,6 +493,8 @@ separated, when one part does both). Every entry of `actions` has at least
 one `data-writes` and every entry of `needs` at least one `data-reads`: the
 factory view ties each part to its rules — the invariants a write meets,
 what a read returns — and a gate checks the micro-frontend carries them.
+The real code names the unit through its identifiers, never a literal
+outside them (`'data-writes': AJOUTER_PJ.dataCapability`).
 
 ### E. Screen composition
 

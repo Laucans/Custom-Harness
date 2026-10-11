@@ -428,12 +428,23 @@ jobs:
               continue
             fi
             # Its parts are named (contract D): each action tied to an actuator, each need to a part that shows it.
-            text=$(cat "mock/$fragment" "mock/${fragment%.html}.js" 2>/dev/null | tr '\n' ' ')
+            # A hand-written fragment names the unit in the attribute itself; the real code's bundle reaches
+            # it through its identifiers (one file names them), so it carries the attribute and the unit's id.
+            bundle="mock/${fragment%.html}.js"
+            text=$(tr '\n' ' ' < "mock/$fragment")
+            if [ -f "$bundle" ]; then text="$text $(tr '\n' ' ' < "$bundle")"; fi
             for key in actions needs; do
               attr=reads
               [ "$key" = actions ] && attr=writes
               for unit in $(jq -r --arg k "$key" '.[$k][]? | if type=="string" then . else (.capability // .dataCapability // .id // empty) end' "$ui"); do
-                if ! grep -qiE "(data-$attr|dataset\.$attr)[^;]{0,160}${unit//./\\.}" <<< "$text"; then
+                if [ -f "$bundle" ]; then
+                  named=0
+                  grep -qE "(data-$attr|dataset\.$attr)" <<< "$text" && grep -qiF "$unit" <<< "$text" && named=1
+                else
+                  named=0
+                  grep -qiE "(data-$attr|dataset\.$attr)[^;]{0,160}${unit//./\\.}" <<< "$text" && named=1
+                fi
+                if [ "$named" = 0 ]; then
                   echo "::error file=$ui::the micro-frontend $name names no part data-$attr=\"$unit\" — tie the part that does it to its unit (contract D)"
                   failed=1
                 fi
