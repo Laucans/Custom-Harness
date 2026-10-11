@@ -123,15 +123,20 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
     Micro-UI not built yet is a hand-written fragment
     `mock/components/<MicroUi>.html`. A page is static HTML plus the
     micro-frontends it injects: `<div data-component="<MicroUi>"
-    data-props='{…}'></div>`, filled by `mock/mock.js`. A task that builds a
+    data-props='{…}'></div>`, filled by `mock/mock.js`. What a Micro-UI
+    renders names its parts (contract D): `data-action="<DataCapability>"`
+    on every actuator, `data-reads="<Capability>"` on every part that shows
+    a read — one at least for each entry of `actions` and `needs`. A task that builds a
     Micro-UI replaces its fragment with the real code's entry and rebuilds
     the bundle; a task that adds a Capability or a DataCapability teaches the
     mock server its answer; a task that builds a screen composition ships the
     screen's page and lists it with `screen: <screen>`. A screen under
     `apps/screens/` with no page in `mock/pages.json`, a Micro-UI under
     `apps/` with no micro-frontend there or one whose `needs`/`actions`
-    differ from its manifest, a listed micro-frontend with no fragment, or
-    a bundle not rebuilt by `mock/build.sh`, fails the gates. The human
+    differ from its manifest, a listed micro-frontend with no fragment, one
+    whose fragment or bundle names no `data-action`/`data-reads` for an
+    entry of its `actions`/`needs`, or a bundle not rebuilt by
+    `mock/build.sh`, fails the gates. The human
     annotates the mock-up in the factory view and may push a `mockup/*`
     branch with the pages as they want them: read it before building the
     screen it names. Such a branch carries `mock/drafts/<page>.json` beside

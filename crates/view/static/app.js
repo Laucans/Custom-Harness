@@ -624,6 +624,7 @@
       tab: p.tab,
       pin: p.pin,
       custom: p.custom,
+      component: p.component,
       onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page }),
     }) : null),
     mockup: (el, p) => (window.MockupPane ? window.MockupPane.mount(el, {
@@ -632,6 +633,10 @@
       pageSlug: p.pageSlug,
       pin: p.pin,
       edit: !!p.edit,
+      view: p.view,
+      mf: p.mf,
+      // Where the pane stands — its view, the micro-frontend opened — so going back finds it there.
+      onPlace: (place) => Object.assign(p, place),
       onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page }),
     }) : null),
   };

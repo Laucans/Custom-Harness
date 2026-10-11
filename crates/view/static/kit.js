@@ -424,6 +424,11 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         const pin = st.notes.find((n) => n.id === opts.pin);
         if (pin && pin.target && pin.target.startsWith('kit:') && entry(pin.target.slice(4))) st.detail = pin.target.slice(4);
       }
+      // A component asked for from elsewhere — a long press on it in a micro-frontend — opens alone.
+      if (opts && opts.component && !st.componentOpened && entry(opts.component)) {
+        st.componentOpened = true;
+        st.detail = opts.component;
+      }
       if (st.detail && !entry(st.detail)) st.detail = null;
       q('.kt-gallery-host').hidden = !!st.detail;
       ensureGallery().pause(!!st.detail);

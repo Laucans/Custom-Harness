@@ -1294,3 +1294,23 @@ body.picking, body.picking * { user-select: none; }
 .kt-gallery-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .kt-gallery-host[hidden] { display: none; }
 .kt-tile-body { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 12px; box-sizing: border-box; color: var(--dim); font-size: 12px; text-align: center; background: var(--bg); }
+/* The mock-up's micro-frontends: the kit's gallery, one micro-frontend alone with its rules. */
+.mk-board[hidden], .mk-mfbar[hidden], .mk-rules[hidden] { display: none; }
+.mk-mfbar { flex: none; }
+.mk-rules { width: 380px; flex: none; overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 10px 12px 24px; font-size: 12px; display: flex; flex-direction: column; gap: 8px; }
+.mk-rules h4 { margin: 8px 0 0; font: 600 13px var(--sans); color: var(--text); }
+.mk-rules h4 small { font-weight: 400; }
+.mk-rule { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; background: var(--bg); }
+.mk-rule.on, .mk-rule:hover { border-color: var(--pin-design); }
+.mk-rule header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.mk-rule p { margin: 0; line-height: 1.4; }
+.mk-rule-n { margin-left: auto; font: 10px var(--mono); padding: 1px 6px; border-radius: 8px; border: 1px solid var(--pin-design); color: var(--pin-design); }
+.mk-rule-n.bad { border-color: var(--warn); color: var(--warn); }
+.mk-rule-k { line-height: 1.6; }
+.mk-rule-k code, .mk-rules code { font: 11px var(--mono); color: var(--text); }
+.mk-rule-list { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; line-height: 1.4; }
+.mk-picked { padding: 8px 10px; border-radius: 8px; border: 1px dashed var(--pin-design); }
+.mk-kits { display: flex; flex-wrap: wrap; gap: 4px; }
+.mk-stage .mk-marks { position: absolute; inset: 0; pointer-events: none; }
+.mk-stage .mk-marks i { position: absolute; outline: 2px solid var(--accent); background: rgba(226, 178, 64, 0.12); border-radius: 2px; }
+.mk-stage-none { height: 240px; }

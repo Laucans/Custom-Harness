@@ -432,10 +432,25 @@ branch's micro-frontends — the registry's and the manifests' Micro-UIs
 together (`domain::mockup::units_of`), each marked mocked or built — to
 **drag onto the page**: the drop is a **design** pin carrying the spec,
 whose session injects it there (and makes it first when it has no
-fragment). In the *micro-frontends* view, each is a card rendered alone
-from its fragment (`/mock/<slug>/__preview/<Name>`, a page the view makes
-around one `data-component` element) with its own board of pins
-(`mockup--<branch>--micro-frontends`), and **+ micro-frontend** is a form —
+fragment). The *micro-frontends* view keeps the design system's rules
+(`gallery.js`, shared with the kit): a gallery that only scrolls down, each
+tile rendered alone from its fragment (`/mock/<slug>/__preview/<Name>`, a
+page the view makes around one `data-component` element), the finder and
+chips (real code, hand-written, not mocked, writes, on no page) above it; a
+tile opens its micro-frontend **alone on the board**
+(`mockup--<branch>--micro-frontends`, its own pins only), **used** on its
+fixture or **inspected**, the previous and the next a click away and the
+gallery found where it was left. Beside it, **its rules**, read from
+`/api/capabilities`: every **actuator** — each `DataCapability` it
+triggers, its effect and target, what it sends, the invariants it meets —
+and every **view** — each Capability it reads, what it is handed and what
+it returns — with the parts of the frame tied to each by the markup's own
+words (`data-action`, `data-reads`, contract D): pointed at in the panel,
+they are outlined; picked in the frame, their unit is shown; a unit no part
+names is marked *not tagged*. A **long press** on a kit component inside it
+opens that component alone on the design system's easel, and the pane's
+back arrow returns to the micro-frontend (`onPlace` keeps the view and the
+one opened). **+ micro-frontend** is a form —
 name, system, description, the Capabilities it needs and the
 `DataCapabilities` it triggers, chosen among the branch's, its props — that
 becomes a design pin on that board and opens its session at once: the

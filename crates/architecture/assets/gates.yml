@@ -425,7 +425,20 @@ jobs:
             if [ ! -f "mock/$fragment" ]; then
               echo "::error file=$manifest::the micro-frontend $name has no fragment at mock/$fragment"
               failed=1
+              continue
             fi
+            # Its parts are named (contract D): each action tied to an actuator, each need to a part that shows it.
+            text=$(cat "mock/$fragment" "mock/${fragment%.html}.js" 2>/dev/null | tr '\n' ' ')
+            for key in actions needs; do
+              attr=reads
+              [ "$key" = actions ] && attr=action
+              for unit in $(jq -r --arg k "$key" '.[$k][]? | if type=="string" then . else (.capability // .dataCapability // .id // empty) end' "$ui"); do
+                if ! grep -qiE "(data-$attr|dataset\.$attr)[^;]{0,160}${unit//./\\.}" <<< "$text"; then
+                  echo "::error file=$ui::the micro-frontend $name names no part data-$attr=\"$unit\" — tie the part that does it to its unit (contract D)"
+                  failed=1
+                fi
+              done
+            done
             # The listing says the same needs and actions as the manifest.
             for key in needs actions; do
               ours=$(jq -c --arg k "$key" '[.[$k][]? | if type=="string" then . else (.capability // .dataCapability // .id // empty) end] | sort' "$ui")

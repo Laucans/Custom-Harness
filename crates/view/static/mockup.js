@@ -33,10 +33,6 @@
   const DEFAULT_WIDTH = 1280;
   const PRESETS = [['Mobile', 390], ['Tablet', 768], ['Laptop', 1280], ['Large', 1536]];
   const MIN_HEIGHT = 480;
-  const CARD_W = 400;
-  const CARD_GAP = 28;
-  const CARD_MIN = 160;
-  const CARD_MAX = 640;
   const POLL_MS = 3000;
   const SAVE_DELAY = 500;
   const SLOP = 5;
@@ -108,7 +104,8 @@
       + '</div>'
       + '<div class="mk-frozen" hidden></div>'
       + '<div class="mk-form" hidden></div>'
-      + '<div class="dm-main"><aside class="mk-layers" hidden></aside><div class="dm-board mk-board"></div><aside class="mk-strip" hidden></aside><aside class="mk-panel" hidden></aside><aside class="mk-history" hidden></aside></div>'
+      + '<div class="mk-mfbar kt-detail-bar" hidden></div>'
+      + '<div class="dm-main"><div class="mk-gallery-host kt-gallery-host" hidden></div><aside class="mk-layers" hidden></aside><div class="dm-board mk-board"></div><aside class="mk-rules" hidden></aside><aside class="mk-strip" hidden></aside><aside class="mk-panel" hidden></aside><aside class="mk-history" hidden></aside></div>'
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
@@ -118,7 +115,9 @@
       // Edit mode: the page's source, its draft engine, the versions, the selection, a gesture under way.
       edit: !!(opts && opts.edit), source: '', engine: null, history: null, sel: '', hover: null, drag: null, resize: null, space: false, saveTimer: null, viewing: null, width: DEFAULT_WIDTH, lastLoadedPage: '', toastTimer: null,
       // The design system's kit, for the search field of the tools; the component picked to drop.
-      kit: null, kitPick: '' };
+      kit: null, kitPick: '',
+      // The micro-frontends view: its gallery, the one opened alone, its mode, the part picked, the units read.
+      mfGallery: null, mfDetail: (opts && opts.mf) || null, mfMode: 'use', mfPicked: null, mfTop: 0, mfH: 0, mfFitted: false, caps: null, capsAt: 0 };
 
     // ---- what the branch knows of its micro-frontends ----------------------------------
     const components = () => {
@@ -225,13 +224,18 @@
       const onSession = opts && opts.onSession
         ? (note, ctx) => opts.onSession({ board: boardOf(), id: note.id, on: note.kind === 'link' ? 'page ' + (note.page || '?') : note.kind === 'design' ? 'micro-frontend ' + (note.component || '?') : describe(note.target), kind: note.kind, context: ctx, branch: st.branch, page: st.view === 'page' ? st.page : '' })
         : null;
+      layoutView();
+      const components = st.view === 'components';
       st.board = window.HarnessBoard.create(q('.mk-board'), {
         id: boardOf(),
         describe,
-        resolve,
+        // A page's parts are reached through its frame; a micro-frontend alone is one part, the board's own.
+        resolve: components ? undefined : resolve,
         context,
         onSession,
-        under,
+        under: components ? undefined : under,
+        // The micro-frontend opened alone shows its own pins.
+        only: components ? (n) => !n.target || n.target === 'component:' + st.mfDetail || n.target.startsWith('component:' + st.mfDetail + '>') : undefined,
         kinds: st.view === 'page' ? ['note', 'request', 'link', 'design'] : ['note', 'request', 'design'],
         zones: st.view === 'page',
         pages: () => (st.state && st.state.pages) || [],
@@ -246,12 +250,21 @@
           return text;
         },
         goto: (path) => { setView('page'); show(path); },
-        onLoaded: () => { if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true; design.refresh(); },
+        onLoaded: () => {
+          // A pin asked for on a micro-frontend opens it first.
+          if (opts && opts.pin && !st.pinned && st.board && st.view === 'components' && !st.mfDetail) {
+            const n = st.board.all().find((x) => x.id === opts.pin);
+            const name = n && n.target && n.target.startsWith('component:') ? n.target.slice(10).split('>')[0] : '';
+            if (name && componentOf(name)) openMf(name);
+          }
+          if (opts && opts.pin && !st.pinned && st.board && st.board.goTo(opts.pin)) st.pinned = true;
+          design.refresh();
+        },
         bounds: () => (st.view === 'page'
           ? { x: 0, y: 0, w: st.width, h: Math.max(MIN_HEIGHT, st.frame ? parseFloat(st.frame.style.height) || MIN_HEIGHT : MIN_HEIGHT) }
-          : { x: 0, y: 0, w: Math.max(DEFAULT_WIDTH, st.board ? parseFloat(st.board.content.style.width) || DEFAULT_WIDTH : DEFAULT_WIDTH), h: Math.max(MIN_HEIGHT, st.board ? parseFloat(st.board.content.style.height) || MIN_HEIGHT : MIN_HEIGHT) }),
+          : { x: 0, y: 0, w: MF_W, h: st.mfH || MIN_HEIGHT }),
       });
-      if (st.view === 'components') { mountCards(); return; }
+      if (st.view === 'components') { mountMf(); return; }
       const page = currentPage();
       if (!page) {
         st.board.content.innerHTML = `<div class="mk-empty" data-pin="page:none"><h2>${st.state && st.state.present ? 'No page chosen' : 'No page yet'}</h2>`
@@ -351,7 +364,7 @@
       });
     }
     function measure() {
-      if (st.view === 'components') { measureCards(); return; }
+      if (st.view === 'components') { if (st.mfDetail) sizeMf(); return; }
       if (!st.doc || !st.frame) return;
       const h = Math.max(MIN_HEIGHT, st.doc.documentElement.scrollHeight, st.doc.body ? st.doc.body.scrollHeight : 0);
       if (Math.abs(h - (parseFloat(st.frame.style.height) || 0)) > 2) {
@@ -361,7 +374,7 @@
       }
     }
     function reloadFrame() {
-      if (st.view === 'components') { st.cards.forEach((c) => { c.frame.src = previewSrc(c.name); }); return; }
+      if (st.view === 'components') { mountMf(); return; }
       if (!st.frame) { mountBoard(); return; }
       loadPage();
     }
@@ -798,60 +811,300 @@
       }
     }
 
-    // ---- the micro-frontends view: one card per micro-frontend ------------------------
-    function mountCards() {
-      const list = components();
-      const per = Math.max(1, Math.floor((DEFAULT_WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
-      if (!list.length) {
-        st.board.content.innerHTML = '<div class="mk-empty" data-pin="components:none"><h2>No micro-frontend yet</h2><p>A micro-frontend is a Micro-UI as the mock shows it: a fragment on a fixture shaped like what its Capabilities answer. <b>+ micro-frontend</b> above makes the first one from its spec.</p></div>';
-        st.board.setSize(DEFAULT_WIDTH, MIN_HEIGHT);
-        st.board.fit();
-        return;
-      }
-      st.board.content.innerHTML = list.map((c, i) => {
-        const x = (i % per) * (CARD_W + CARD_GAP);
-        const y = Math.floor(i / per) * (CARD_MIN + 70 + CARD_GAP);
-        return `<div class="mk-card" data-pin="component:${esc(c.name)}" data-card="${esc(c.name)}" style="left:${x}px;top:${y}px;width:${CARD_W}px;--mf:${c.colour}">`
-          + `<div class="mk-card-head"><b>${esc(c.name)}</b><span class="mk-card-sys">${esc(c.system || '')}</span>`
-          + `<span class="mk-card-tags">${c.variantOf ? `<i title="forked from ${esc(c.variantOf)} by this page's draft">fork of ${esc(c.variantOf)}</i>` : ''}${c.mocked ? (c.source ? '<i class="ok" title="the real code, bundled on the mock server">real code</i>' : '<i class="ok">mocked</i>') : '<i class="bad">not mocked</i>'}${c.built ? '<i class="ok">built</i>' : '<i>to build</i>'}</span></div>`
-          + `<div class="mk-card-desc">${esc(c.description || '')}</div>`
-          + `<div class="mk-card-meta">${c.needs.length ? 'needs ' + c.needs.map(esc).join(', ') : 'needs nothing'}${c.actions.length ? ' · triggers ' + c.actions.map(esc).join(', ') : ''}${c.pages.length ? ' · on ' + c.pages.map(esc).join(', ') : ' · on no page'}${c.source ? ` · from ${esc(c.source)}` : ''}</div>`
-          + (c.mocked && !c.variantOf
-            ? `<div class="mk-card-body"><iframe class="mk-preview" title="${esc(c.name)}" src="${esc(previewSrc(c.name))}" style="height:${CARD_MIN}px"></iframe><div class="mk-shield"></div></div>`
-            : c.variantOf ? '<div class="mk-card-body mk-card-none">a copy made on a page: shown there, saved with the mock-up</div>'
-              : `<div class="mk-card-body mk-card-none">no fragment yet${c.built ? ' — the Micro-UI exists under apps/, its mock does not' : ''}<br><button type="button" class="mini on" data-mock-card="${esc(c.name)}">mock it with an AI session</button></div>`)
-          + '</div>';
-      }).join('');
-      st.cards = [...st.board.content.querySelectorAll('.mk-card')].map((card) => ({ name: card.dataset.card, card, frame: card.querySelector('.mk-preview') }));
-      st.cards.forEach((c) => { if (c.frame) c.frame.addEventListener('load', measureCards); });
-      layoutCards();
-      st.board.fit();
-      st.fitted = true;
+    // ---- the micro-frontends view: a gallery, and one micro-frontend alone with its rules ----------
+    // The same rules as the design system's kit: a gallery that only scrolls
+    // down (HarnessGallery), a micro-frontend opened alone on the board —
+    // used as a visitor would, or inspected — and the gallery found where it
+    // was left. Beside it, its rules: what each actuator triggers (a
+    // DataCapability: its effect, what it sends, its invariants) and what
+    // each part shows (a Capability: what it is handed, what it returns),
+    // read from `/api/capabilities`. A part is tied to its unit by the
+    // markup's own words — `data-action="<DataCapability>"` on what writes,
+    // `data-reads="<Capability>"` on what shows (contract N) — and a kit
+    // component inside it opens on the design system's easel on a long press.
+    const MF_W = 960;
+    const LONG_PRESS = 550;
+    const lower = (s) => String(s || '').toLowerCase();
+    function mfFoot(c) {
+      const tags = [
+        c.variantOf ? `<i>fork of ${esc(c.variantOf)}</i>` : '',
+        c.mocked ? (c.source ? '<i class="acc">real code</i>' : '<i>hand-written</i>') : '<i class="bad">not mocked</i>',
+        c.actions.length ? `<i>${c.actions.length} write${c.actions.length === 1 ? '' : 's'}</i>` : '',
+        c.needs.length ? `<i>${c.needs.length} read${c.needs.length === 1 ? '' : 's'}</i>` : '',
+        c.pages.length ? '' : '<i class="bad">on no page</i>',
+      ].join('');
+      return `<b class="kt-tile-title">${esc(c.name)}</b><span class="mono kt-tile-code">${esc(c.system || '')}</span><span class="kt-tile-tags">${tags}</span>`;
     }
-    function measureCards() {
-      let changed = false;
-      st.cards.forEach((c) => {
-        if (!c.frame) return;
-        let doc = null;
-        try { doc = c.frame.contentDocument; } catch (e) { doc = null; }
-        if (!doc || !doc.body) return;
-        const h = Math.min(CARD_MAX, Math.max(CARD_MIN, doc.documentElement.scrollHeight, doc.body.scrollHeight));
-        if (Math.abs(h - (parseFloat(c.frame.style.height) || 0)) > 2) { c.frame.style.height = h + 'px'; changed = true; }
+    function ensureMfGallery() {
+      if (st.mfGallery) return st.mfGallery;
+      st.mfGallery = window.HarnessGallery.create(q('.mk-gallery-host'), {
+        placeholder: 'Find a micro-frontend — its name, its system, what it reads or writes',
+        chips: [
+          ['all', 'all'],
+          ['real', 'real code', (c) => c.mocked && !!c.source],
+          ['hand', 'hand-written', (c) => c.mocked && !c.source && !c.variantOf],
+          ['unmocked', 'not mocked', (c) => !c.mocked],
+          ['writes', 'writes', (c) => c.actions.length > 0],
+          ['unused', 'on no page', (c) => !c.pages.length],
+        ],
+        words: (c) => [c.name, c.system, c.description, ...c.needs, ...c.actions],
+        key: (c) => c.name,
+        pin: (c) => 'component:' + c.name,
+        src: (c) => (c.mocked && !c.variantOf ? previewSrc(c.name) : ''),
+        body: (c) => (c.variantOf
+          ? 'a copy made on a page: shown there, saved with the mock-up'
+          : `no fragment yet${c.built ? ' — the Micro-UI exists under apps/, its mock does not' : ''}<button type="button" class="mini on" data-mock-card="${esc(c.name)}">mock it with an AI session</button>`),
+        foot: mfFoot,
+        empty: (total, find, chip) => (total
+          ? `<h2>No micro-frontend matches</h2><p>Nothing here is named like <b>${esc(find)}</b>${chip ? ` among the <b>${esc(chip)}</b>` : ''}.</p>`
+          : '<h2>No micro-frontend yet</h2><p>A micro-frontend is a Micro-UI as the mock shows it: a fragment on a fixture shaped like what its Capabilities answer. <b>+ micro-frontend</b> above asks an AI session for one.</p>'),
+        onOpen: (c) => openMf(c.name),
       });
-      if (changed) layoutCards();
+      return st.mfGallery;
     }
-    function layoutCards() {
-      const per = Math.max(1, Math.floor((DEFAULT_WIDTH + CARD_GAP) / (CARD_W + CARD_GAP)));
-      let y = 0; let rowH = 0; let maxX = 0;
-      st.cards.forEach((c, i) => {
-        if (i % per === 0 && i) { y += rowH + CARD_GAP; rowH = 0; }
-        const x = (i % per) * (CARD_W + CARD_GAP);
-        c.card.style.left = x + 'px'; c.card.style.top = y + 'px';
-        rowH = Math.max(rowH, c.card.offsetHeight);
-        maxX = Math.max(maxX, x + CARD_W);
-      });
-      st.board.setSize(Math.max(DEFAULT_WIDTH, maxX), Math.max(MIN_HEIGHT, y + rowH + 20));
+    // Which of the view's parts are shown: the page's board, the gallery, or one micro-frontend.
+    function layoutView() {
+      const components = st.view === 'components';
+      const detail = components && !!st.mfDetail;
+      q('.mk-gallery-host').hidden = !components || detail;
+      q('.mk-board').hidden = components && !detail;
+      q('.mk-rules').hidden = !detail;
+      q('.mk-mfbar').hidden = !detail;
+      if (st.mfGallery) st.mfGallery.pause(!components || detail);
+    }
+    function mountMf() {
+      if (st.mfDetail && !componentOf(st.mfDetail)) st.mfDetail = null;
+      if (opts && opts.onPlace) opts.onPlace({ view: st.view, mf: st.mfDetail });
+      layoutView();
+      if (!st.mfDetail) { ensureMfGallery().draw(components()); return; }
+      drawMf();
+    }
+    function openMf(name) {
+      if (!componentOf(name)) return;
+      if (!st.mfDetail) st.mfTop = ensureMfGallery().top();
+      if (name !== st.mfDetail) { st.mfPicked = null; st.mfFitted = false; }
+      st.mfDetail = name;
+      st.mfMode = 'use';
+      loadCaps();
+      mountMf();
       st.board.refresh();
+    }
+    function closeMf() {
+      st.mfDetail = null;
+      st.mfPicked = null;
+      mountMf();
+      ensureMfGallery().scrollTo(st.mfTop || 0);
+    }
+    function stepMf(by) {
+      const list = ensureMfGallery().list();
+      const at = list.findIndex((c) => c.name === st.mfDetail);
+      if (list[at + by]) openMf(list[at + by].name);
+    }
+    // The units of the product, with their rules — read again now and then.
+    async function loadCaps(force) {
+      if (!force && st.caps && Date.now() - st.capsAt < 30000) return;
+      st.capsAt = Date.now();
+      try {
+        const res = await fetch('/api/capabilities');
+        const got = res.ok ? await res.json() : null;
+        st.caps = new Map(((got && got.entries) || []).map((e) => [lower(e.id), e]));
+      } catch (e) { st.caps = st.caps || new Map(); }
+      if (!st.gone && st.mfDetail) drawRules();
+    }
+    const unitOf = (id) => (st.caps ? st.caps.get(lower(id)) : null);
+
+    // ---- the stage: the micro-frontend alone, used or inspected --------------------------------
+    const mfFrame = () => q('.mk-board .mk-stage iframe');
+    const mfDoc = () => { try { const f = mfFrame(); return f && f.contentDocument; } catch (e) { return null; } };
+    function drawMf() {
+      const c = componentOf(st.mfDetail);
+      const content = st.board.content;
+      let stage = content.querySelector('.mk-stage');
+      if (!stage || stage.dataset.card !== c.name) {
+        content.innerHTML = `<div class="kt-stage mk-stage" data-pin="component:${esc(c.name)}" data-card="${esc(c.name)}" style="width:${MF_W}px">`
+          + (c.mocked && !c.variantOf ? `<iframe class="mk-preview" title="${esc(c.name)}"></iframe>` : `<div class="kt-tile-body mk-stage-none">${c.variantOf ? 'a copy made on a page: shown there' : 'no fragment yet: mock it from the gallery'}</div>`)
+          + '<div class="mk-marks"></div><div class="kt-hover" hidden></div><div class="kt-pick" hidden></div><div class="mk-shield"></div></div>';
+        stage = content.querySelector('.mk-stage');
+        armStage(stage);
+        const frame = stage.querySelector('iframe');
+        if (frame) frame.addEventListener('load', () => { sizeMf(); armLongPress(frame); drawRules(); });
+        else sizeMf();
+      }
+      const frame = stage.querySelector('iframe');
+      const src = previewSrc(c.name);
+      if (frame && frame.dataset.loaded !== src) { frame.dataset.loaded = src; frame.src = src; }
+      stage.querySelector('.mk-shield').hidden = st.mfMode !== 'inspect';
+      stage.classList.toggle('inspecting', st.mfMode === 'inspect');
+      drawMfBar();
+      drawRules();
+    }
+    function sizeMf() {
+      const frame = mfFrame();
+      let h = 240;
+      try {
+        const doc = frame && frame.contentDocument;
+        if (doc && doc.body) h = Math.min(4000, Math.max(320, doc.documentElement.scrollHeight, doc.body.scrollHeight));
+      } catch (e) { /* the frame let go */ }
+      if (h === st.mfH && st.mfFitted && (!frame || frame.style.height === h + 'px')) { drawMarks(); return; }
+      if (frame) frame.style.height = h + 'px';
+      st.mfH = h;
+      st.board.setSize(MF_W, h);
+      if (!st.mfFitted) { st.board.fit(); st.mfFitted = true; }
+      st.board.refresh();
+      drawMarks();
+    }
+    function drawMfBar() {
+      const c = componentOf(st.mfDetail);
+      if (!c) return;
+      const list = ensureMfGallery().list();
+      const at = list.findIndex((x) => x.name === c.name);
+      const html = `<div class="kt-detail-row">
+          <button type="button" class="mini" data-mf="back" title="Back to the gallery, where you left it">← all micro-frontends</button>
+          <button type="button" class="mini" data-mf="step" data-step="-1" ${at <= 0 ? 'disabled' : ''}>‹</button>
+          <span class="muted kt-detail-at">${at >= 0 ? at + 1 : '–'} / ${list.length}</span>
+          <button type="button" class="mini" data-mf="step" data-step="1" ${at < 0 || at >= list.length - 1 ? 'disabled' : ''}>›</button>
+          <b class="kt-detail-title">${esc(c.name)}</b><span class="mono muted">${esc(c.system || '')}</span><span class="kt-tile-tags">${mfFoot(c).split('<span class="kt-tile-tags">')[1] || ''}
+          <span class="spacer"></span>
+          <div class="mk-views" role="group" aria-label="mode"><button type="button" data-mf="mode" data-mode="use" class="${st.mfMode === 'use' ? 'on' : ''}" title="Click, type, open: the micro-frontend as a visitor uses it on its fixture">use it</button><button type="button" data-mf="mode" data-mode="inspect" class="${st.mfMode === 'inspect' ? 'on' : ''}" title="Pick a part: what it triggers or shows, and the rules behind it">inspect</button></div>
+        </div>
+        <div class="kt-detail-sub muted">${esc(c.description || '')}${c.pages.length ? ' · on ' + c.pages.map(esc).join(', ') : ''} · a long press on a kit component opens it on the design system's easel</div>`;
+      if (st.lastMfBar !== html) { st.lastMfBar = html; q('.mk-mfbar').innerHTML = html; }
+    }
+
+    // ---- the rules: every actuator and every view of the micro-frontend --------------------------
+    // The parts of the frame tied to a unit, by its markup's own words.
+    function partsOf(attr, id) {
+      const doc = mfDoc();
+      if (!doc) return [];
+      return [...doc.querySelectorAll(`[${attr}]`)].filter((el) => lower(el.getAttribute(attr)).split(/\s+/).includes(lower(id)));
+    }
+    function unitHtml(id, how) {
+      const u = unitOf(id);
+      const attr = how === 'writes' ? 'data-action' : 'data-reads';
+      const n = partsOf(attr, id).length;
+      const on = st.mfPicked && st.mfPicked.unit && lower(st.mfPicked.unit) === lower(id) ? ' on' : '';
+      const where = n
+        ? `<span class="mk-rule-n" title="the parts of the view tied to it — hover to see them">${n} part${n === 1 ? '' : 's'}</span>`
+        : `<span class="mk-rule-n bad" title="no part of the view carries ${attr}=&quot;${esc(id)}&quot; — contract N asks for it">not tagged</span>`;
+      if (!u) return `<section class="mk-rule${on}" data-unit="${esc(id)}" data-how="${how}"><header><b class="mono">${esc(id)}</b>${where}</header><p class="muted">${st.caps ? 'no manifest found for it on any branch' : 'reading the units…'}</p></section>`;
+      const k = u.contract || {};
+      const input = Object.entries(k.input || {}).map(([f, t]) => `<code>${esc(f)}</code> <small>${esc(t)}</small>`).join(' · ');
+      const rules = (u.rules || []).map((r) => `<li><b class="mono">${esc(r.id)}</b> ${esc(r.text)} <small class="muted">${esc(r.from)}</small></li>`).join('');
+      const head = how === 'writes'
+        ? `<span class="tag">${esc(k.effect || 'writes')}${k.target ? ' → ' + esc(k.target) : ''}</span>`
+        : `<span class="tag">reads${k.implements ? ' · ' + esc(k.implements) : ''}</span>`;
+      return `<section class="mk-rule${on}" data-unit="${esc(id)}" data-how="${how}">
+          <header><b class="mono">${esc(u.id)}</b>${head}<span class="muted">${esc(u.status || '')}</span>${where}</header>
+          ${u.role ? `<p>${esc(u.role)}</p>` : ''}
+          ${input ? `<div class="mk-rule-k"><span class="muted">${how === 'writes' ? 'sends' : 'is handed'}</span> ${input}</div>` : ''}
+          ${how === 'reads' && k.output ? `<div class="mk-rule-k"><span class="muted">returns</span> <code>${esc(k.output)}</code></div>` : ''}
+          ${how === 'writes' && (k.mode || (k.permissions || []).length) ? `<div class="mk-rule-k"><span class="muted">mode</span> ${esc(k.mode || '—')}${(k.permissions || []).length ? ` · <span class="muted">asks</span> ${k.permissions.map(esc).join(', ')}` : ''}</div>` : ''}
+          ${rules ? `<ul class="mk-rule-list">${rules}</ul>` : `<p class="muted">${how === 'writes' ? 'no invariant guards it' : 'no rule of its own'}</p>`}
+        </section>`;
+    }
+    function drawRules() {
+      const panel = q('.mk-rules');
+      const c = st.mfDetail && componentOf(st.mfDetail);
+      if (!c || panel.hidden) return;
+      const doc = mfDoc();
+      const kits = new Map();
+      if (doc) doc.querySelectorAll('[data-kit]').forEach((el) => kits.set(el.dataset.kit, (kits.get(el.dataset.kit) || 0) + 1));
+      const picked = st.mfPicked;
+      const html = `${picked ? `<div class="mk-picked"><b>${esc(picked.label)}</b>${picked.kit ? ` <button type="button" class="mini" data-mf="open-kit" data-kit="${esc(picked.kit)}">open the kit component ${esc(picked.kit)} →</button>` : ''}${picked.unit ? '' : picked.kit ? '' : ' <span class="muted">— tied to no unit: it neither triggers nor shows one</span>'}</div>` : ''}
+        <h4>Actuators <small class="muted">what it triggers</small></h4>
+        ${c.actions.length ? c.actions.map((a) => unitHtml(a, 'writes')).join('') : '<p class="muted">It writes nothing.</p>'}
+        <h4>Views <small class="muted">what it shows</small></h4>
+        ${c.needs.length ? c.needs.map((n) => unitHtml(n, 'reads')).join('') : '<p class="muted">It reads nothing.</p>'}
+        ${Object.keys(c.props || {}).length ? `<h4>Props <small class="muted">what the screen hands it</small></h4><div class="mk-rule-k">${Object.entries(c.props).map(([k, v]) => `<code>${esc(k)}</code> <small>${esc(v)}</small>`).join(' · ')}</div>` : ''}
+        <h4>Kit components <small class="muted">a long press on one opens it</small></h4>
+        ${kits.size ? `<div class="mk-kits">${[...kits].map(([name, n]) => `<button type="button" class="kt-crumb" data-mf="open-kit" data-kit="${esc(name)}">${esc(name)}${n > 1 ? ' ×' + n : ''}</button>`).join('')}</div>` : '<p class="muted">None injected with <code>data-kit</code>.</p>'}`;
+      if (st.lastRules !== html) { st.lastRules = html; panel.innerHTML = html; }
+      drawMarks();
+    }
+    // The parts outlined: those of the unit the pointer is on in the panel, and the one picked.
+    function drawMarks(unit, how) {
+      const marks = q('.mk-board .mk-marks');
+      if (!marks) return;
+      const show = unit ? partsOf(how === 'writes' ? 'data-action' : 'data-reads', unit) : [];
+      marks.innerHTML = show.map((el) => { const b = el.getBoundingClientRect(); return `<i style="left:${b.left}px;top:${b.top}px;width:${b.width}px;height:${b.height}px"></i>`; }).join('');
+      const pick = q('.mk-board .mk-stage .kt-pick');
+      const el = st.mfPicked && st.mfPicked.el && st.mfPicked.el.isConnected ? st.mfPicked.el : null;
+      if (pick) mfOutline(pick, el);
+    }
+    function mfOutline(box, el) {
+      if (!el) { box.hidden = true; return; }
+      const b = el.getBoundingClientRect();
+      Object.assign(box.style, { left: b.left + 'px', top: b.top + 'px', width: b.width + 'px', height: b.height + 'px' });
+      box.hidden = false;
+    }
+    // The part under a point of the screen, inside the micro-frontend's frame.
+    function mfAt(clientX, clientY) {
+      const frame = mfFrame();
+      const doc = mfDoc();
+      if (!frame || !doc) return null;
+      const r = frame.getBoundingClientRect();
+      const k = frame.offsetWidth ? r.width / frame.offsetWidth : 1;
+      return doc.elementFromPoint((clientX - r.left) / k, (clientY - r.top) / k);
+    }
+    // What a part is tied to: the unit it triggers or shows, the kit component it is.
+    function meaningOf(el) {
+      if (!el || !el.closest) return null;
+      const act = el.closest('[data-action]');
+      const reads = el.closest('[data-reads]');
+      const kit = el.closest('[data-kit]');
+      const tied = act || reads;
+      const unit = act ? act.getAttribute('data-action') : reads ? reads.getAttribute('data-reads') : '';
+      const target = tied || kit || el;
+      const label = act ? `triggers ${unit}` : reads ? `shows ${unit}` : kit ? `the kit component ${kit.dataset.kit}` : `<${el.tagName.toLowerCase()}>`;
+      return { el: target, unit: unit.split(/\s+/)[0] || '', how: act ? 'writes' : reads ? 'reads' : '', kit: kit ? kit.dataset.kit : '', label };
+    }
+    function armStage(stage) {
+      const shield = stage.querySelector('.mk-shield');
+      let down = null;
+      let timer = 0;
+      shield.addEventListener('pointermove', (ev) => {
+        if (st.mfMode !== 'inspect') return;
+        const m = meaningOf(mfAt(ev.clientX, ev.clientY));
+        mfOutline(stage.querySelector('.kt-hover'), m && m.el);
+        if (down && Math.hypot(ev.clientX - down[0], ev.clientY - down[1]) > 6) clearTimeout(timer);
+      });
+      shield.addEventListener('pointerleave', () => { mfOutline(stage.querySelector('.kt-hover'), null); clearTimeout(timer); });
+      shield.addEventListener('pointerdown', (ev) => {
+        down = [ev.clientX, ev.clientY];
+        const m = meaningOf(mfAt(ev.clientX, ev.clientY));
+        clearTimeout(timer);
+        if (m && m.kit) timer = setTimeout(() => { down = null; openKit(m.kit); }, LONG_PRESS);
+      });
+      shield.addEventListener('pointerup', () => clearTimeout(timer));
+      shield.addEventListener('click', (ev) => {
+        if (st.mfMode !== 'inspect' || !down || Math.hypot(ev.clientX - down[0], ev.clientY - down[1]) > 4) return;
+        st.mfPicked = meaningOf(mfAt(ev.clientX, ev.clientY));
+        drawRules();
+        const row = st.mfPicked && st.mfPicked.unit && q(`.mk-rules .mk-rule[data-unit="${CSS.escape(st.mfPicked.unit)}"]`);
+        if (row) row.scrollIntoView({ block: 'nearest' });
+      });
+    }
+    // Used as a visitor would: a long press on a kit component still opens it.
+    function armLongPress(frame) {
+      let doc = null;
+      try { doc = frame.contentDocument; } catch (e) { doc = null; }
+      if (!doc) return;
+      let timer = 0;
+      let down = null;
+      doc.addEventListener('pointerdown', (ev) => {
+        const kit = ev.target && ev.target.closest && ev.target.closest('[data-kit]');
+        clearTimeout(timer);
+        if (!kit) return;
+        down = [ev.clientX, ev.clientY];
+        timer = setTimeout(() => openKit(kit.dataset.kit), LONG_PRESS);
+      });
+      doc.addEventListener('pointermove', (ev) => { if (down && Math.hypot(ev.clientX - down[0], ev.clientY - down[1]) > 6) clearTimeout(timer); });
+      ['pointerup', 'pointercancel'].forEach((kind) => doc.addEventListener(kind, () => clearTimeout(timer)));
+      ['click', 'keyup', 'transitionend'].forEach((kind) => doc.addEventListener(kind, () => setTimeout(() => { sizeMf(); drawRules(); }, 60)));
+    }
+    // The kit component on the design system's easel, alone.
+    function openKit(name) {
+      window.dispatchEvent(new CustomEvent('harness:open-pane', { detail: { kind: 'kit', title: 'design system', tab: 'canvas', component: name } }));
     }
 
     // ---- the strip: the micro-frontends to drop on the page ------------------------------
@@ -936,7 +1189,8 @@
       drawStrip();
       const listChanged = before && JSON.stringify(before.components) + JSON.stringify(before.units) !== JSON.stringify(reply.components) + JSON.stringify(reply.units);
       const pageChanged = !before || !st.board || st.board.id !== boardOf();
-      if (pageChanged || (st.view === 'components' && listChanged)) { st.stamp = reply.stamp; mountBoard(); }
+      if (pageChanged) { st.stamp = reply.stamp; mountBoard(); }
+      else if (st.view === 'components' && (listChanged || reply.stamp !== st.stamp)) { st.stamp = reply.stamp; mountMf(); }
       else if (reply.stamp !== st.stamp && !st.drag && !st.resize) { st.stamp = reply.stamp; reloadFrame(); }
       else if (listChanged) outline();
       st.timer = setTimeout(load, POLL_MS);
@@ -964,7 +1218,7 @@
       const n = components().length;
       say(`<span class="dm-src ${s.present ? 'ok' : ''}" title="mock/pages.json on ${esc(st.branch)}">${s.present ? `${pages.length} page${pages.length === 1 ? '' : 's'} · ${n} micro-frontend${n === 1 ? '' : 's'}` : 'no mock-up yet'}</span>`
         + (st.view === 'page' && page ? ` <span class="mk-objective" title="${esc(page.objective)}">${esc(page.title)}${page.screen ? ` · screen ${esc(page.screen)}` : ''}</span>` : ''));
-      host.querySelectorAll('.mk-views button').forEach((b) => b.classList.toggle('on', b.dataset.view === st.view));
+      host.querySelectorAll('.mk-views button[data-view]').forEach((b) => b.classList.toggle('on', b.dataset.view === st.view));
       host.querySelectorAll('.mk-only-page').forEach((b) => { b.hidden = st.view !== 'page'; });
       host.querySelectorAll('.mk-only-components').forEach((b) => { b.hidden = st.view !== 'components'; });
       const label = q('.mk-page');
@@ -1005,6 +1259,7 @@
       if (view === st.view) return;
       leavePage();
       st.view = view;
+      if (opts && opts.onPlace) opts.onPlace({ view: st.view, mf: st.mfDetail });
       drawForm(false);
       q('.mk-history').hidden = true;
       if (st.state) { drawBar(); drawStrip(); mountBoard(); }
@@ -1138,6 +1393,23 @@
     };
     host.addEventListener('click', onClick);
     host.addEventListener('click', onCardMock);
+    host.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-mf]');
+      if (!b || b.disabled) return;
+      switch (b.dataset.mf) {
+        case 'back': closeMf(); break;
+        case 'step': stepMf(Number(b.dataset.step) || 0); break;
+        case 'mode': st.mfMode = b.dataset.mode; if (st.mfMode === 'use') st.mfPicked = null; drawMf(); break;
+        case 'open-kit': openKit(b.dataset.kit); break;
+        default: break;
+      }
+    });
+    // A unit pointed at in the panel outlines its parts in the frame.
+    host.addEventListener('mouseover', (e) => {
+      const row = e.target.closest && e.target.closest('.mk-rules .mk-rule');
+      if (row) drawMarks(row.dataset.unit, row.dataset.how);
+    });
+    host.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('.mk-rules') && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.mk-rules'))) drawMarks(); });
     host.addEventListener('change', onChange);
     host.addEventListener('keydown', onKey);
     host.addEventListener('keyup', onKeyUp);
@@ -1170,6 +1442,7 @@
         clearTimeout(st.timer);
         clearTimeout(st.saveTimer);
         clearInterval(measured);
+        if (st.mfGallery) st.mfGallery.destroy();
         host.removeEventListener('click', onClick);
         host.removeEventListener('click', onCardMock);
         host.removeEventListener('change', onChange);
