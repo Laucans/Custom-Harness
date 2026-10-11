@@ -29,7 +29,15 @@ re-plan the milestone (`/planner`), or build (`/code`).
 - **What blocks the issue** —
   `gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by --jq '.[]|"\(.number) \(.state) \(.title)"'`.
   An open `harness:human` issue there is the human gate, whole. You read
-  it; you never close it.
+  it; you never close it. The task's `## Architecture` says why each
+  blocker is one: its `needs` names the ids the blockers produce — the
+  manifests those tasks landed are what the plan builds against, so read
+  them as they are on the integration branch, not as the SPEC remembered
+  them.
+- **The task's `produces` and `profile`** — the plan ends with every id in
+  `produces` carried by a manifest the gates validate (name the file and
+  its required fields as a step); a `small` profile means one artifact a
+  step and a stop line the SPEC's `Non-goals` already drew.
 - **Every file named in the SPEC's `Files & interfaces touched`**, plus
   whatever else the plan actually depends on — the module a new function
   imports, the config a new script is registered in, the test that will

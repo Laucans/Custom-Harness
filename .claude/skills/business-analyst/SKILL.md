@@ -31,6 +31,16 @@ human knows where their own dashboard is.
 - The milestone's other `harness:agent` sub-issues — what the later slices
   are entitled to take:
   `gh api repos/{owner}/{repo}/issues/<milestone>/sub_issues --jq '.[]|"\(.number) \(.state) \(.title)"'`.
+- **The task's `## Architecture` section** — its `unit`, and three lines
+  that size the SPEC: `needs` (the ids it builds on — read their manifests,
+  they are the contract this task writes against: a Capability's input and
+  output, a DataCapability's payload and invariants, a Micro-UI's needs),
+  `produces` (the ids its own manifests must carry — the SPEC names each
+  manifest and its required fields), and `profile` (`strong`, `mid` or
+  `small`: how much one session holds; a `small` task gets a shorter
+  Approach, one artifact a step, and nothing the next slice could take).
+  An id in `needs` that no sibling task produces is already in the
+  repository: verify it exists before specifying against it.
 - `docs/PROJECT.md` — product intent.
 - `docs/ARCHITECTURE.md` — stack, data model, technical flows, repo
   layout.
@@ -80,6 +90,15 @@ Match the section structure already in use:
 interfaces touched` · `Edge cases` · `Out of scope` · `Verification` ·
 `Human actions`
 
+Calibrate it to the task's `profile`. A `strong` or `mid` task may hold a
+whole aggregate, Micro-UI or Capability; a `small` task was cut as one step
+of one of those and its SPEC stops at that step — the next step is a
+sibling task, named in `Non-goals`, never folded back in. Whatever the
+profile, the SPEC specifies against what `needs` names and nothing else: a
+Micro-UI's SPEC reads its Capabilities' manifests for the shape of what it
+shows, a DataCapability's SPEC reads its aggregate's invariants for what it
+refuses.
+
 Two hard rules:
 
 - **Every Approach step names a concrete artifact** — a file created, a
@@ -107,7 +126,9 @@ Re-read the draft hunting for these. Each has already bitten this project:
    Choose one.
 3. **Artifacts a later task depends on but no task creates** — read the
    milestone's remaining `harness:agent` issues and check what they assume
-   exists (a script, an env var, a table).
+   exists (a script, an env var, a table). The ids in `produces` are the
+   contract: every sibling that `needs` one of them waits on this task, so
+   a `produces` the SPEC does not deliver stalls them all.
 4. **Environment defaults that differ from the assumption** — git's default
    branch, the installed runtime version, the shell. Check, don't assume.
 5. **Stray files** — anything in the working tree that a broad `git add`

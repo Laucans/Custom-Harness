@@ -63,8 +63,11 @@ produces is already in the repository. So cut for the graph, not for
 layers — one slice per aggregate, one per DataCapability, one per
 Capability action, one per Micro-UI, the screen last — and two slices that
 share no id run in parallel. Never bundle "the data layer" into one slice:
-two aggregates are two slices. `depends_on` (0-based indexes in this array)
-is only for a wait `needs` cannot express, and should be rare.
+two aggregates are two slices. A slice that produces nothing orders
+nothing: a `tooling` scaffold a system needs first `produces` the system's
+id (`monde`) and the aggregates `need` it — or it is not a slice, and its
+work goes into the first aggregate's. `depends_on` (0-based indexes in
+this array) is only for a wait `needs` cannot express, and should be rare.
 
 {profile}
 
