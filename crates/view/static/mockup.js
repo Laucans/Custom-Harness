@@ -107,6 +107,7 @@
       + '<div class="mk-frozen" hidden></div>'
       + '<div class="mk-form" hidden></div>'
       + '<div class="mk-mfbar kt-detail-bar" hidden></div>'
+      + '<div class="mk-mfsave kt-save" hidden></div>'
       + '<div class="dm-main"><div class="mk-gallery-host kt-gallery-host" hidden></div><aside class="mk-layers" hidden></aside><div class="dm-board mk-board"></div><aside class="mk-rules" hidden></aside><aside class="mk-strip" hidden></aside><aside class="mk-panel" hidden></aside><aside class="mk-history" hidden></aside></div>'
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
@@ -119,7 +120,7 @@
       // The design system's kit, for the search field of the tools; the component picked to drop.
       kit: null, kitPick: '',
       // The micro-frontends view: its gallery, the one opened alone, its mode, the part picked, the units read.
-      gens: [], mfGallery: null, mfDetail: (opts && opts.mf) || null, mfMode: 'use', mfPicked: null, mfTop: 0, mfH: 0, mfFitted: false, caps: null, capsAt: 0 };
+      gens: [], mfDrafts: [], mfApplying: {}, mfSaveOpen: false, mfGallery: null, mfDetail: (opts && opts.mf) || null, mfMode: 'use', mfPicked: null, mfTop: 0, mfH: 0, mfFitted: false, caps: null, capsAt: 0 };
 
     // ---- what the branch knows of its micro-frontends ----------------------------------
     const components = () => {
@@ -243,7 +244,8 @@
         pages: () => (st.state && st.state.pages) || [],
         capabilities,
         dataCapabilities,
-        apply: st.view === 'page' ? (note) => applyRequests([note]) : null,
+        apply: st.view === 'page' ? (note) => applyRequests([note]) : (note) => applyMf(note.target ? note.target.slice(10).split('>')[0] : '', [note]),
+        onChange: () => { if (st.view === 'components' && st.mfDetail) drawMfBar(); },
         backlogContext: (note) => {
           const page = currentPage();
           let text = page ? `Page: ${page.title} (\`${page.path}\`) on \`${st.branch}\`${page.objective ? ' — ' + page.objective : ''}` : `Branch: ${st.branch}`;
@@ -825,6 +827,11 @@
     // `data-reads="<Capability>"` on what shows (contract N) — and a kit
     // component inside it opens on the design system's easel on a long press.
     const MF_W = 960;
+    const hasDraft = (name) => (st.mfDrafts || []).includes(name);
+    // A micro-frontend as the page shows it: its draft while it has one.
+    const mfSrc = (name) => (hasDraft(name)
+      ? `/mock/${encodeURIComponent(slugOf(st.branch))}/__preview/${encodeURIComponent(name)}?draft=1&v=${encodeURIComponent(st.stamp)}`
+      : previewSrc(name));
     const LONG_PRESS = 550;
     const lower = (s) => String(s || '').toLowerCase();
     function mfFoot(c) {
@@ -833,6 +840,8 @@
         genOf(c.name) && genBusy(genOf(c.name)) ? `<i class="acc"><span class="spin"></span> ${esc(genLabel(genOf(c.name)))}</i>` : '',
         genOf(c.name) && genOf(c.name).step === 'done' && genOf(c.name).why ? `<i class="bad" title="${esc(genOf(c.name).why)}">generated, untagged parts</i>` : '',
         c.mocked ? (c.source ? '<i class="acc">real code</i>' : genOf(c.name) && genOf(c.name).step === 'done' ? '<i class="acc">generated</i>' : '<i>hand-written</i>') : '<i class="bad">not mocked</i>',
+        hasDraft(c.name) ? '<i class="bad">draft</i>' : '',
+        mfPending(c.name).length ? `<i class="acc">${mfPending(c.name).length} request${mfPending(c.name).length === 1 ? '' : 's'}</i>` : '',
         c.actions.length ? `<i>${c.actions.length} write${c.actions.length === 1 ? '' : 's'}</i>` : '',
         c.needs.length ? `<i>${c.needs.length} read${c.needs.length === 1 ? '' : 's'}</i>` : '',
         c.pages.length ? '' : '<i class="bad">on no page</i>',
@@ -854,7 +863,7 @@
         words: (c) => [c.name, c.system, c.description, ...c.needs, ...c.actions],
         key: (c) => c.name,
         pin: (c) => 'component:' + c.name,
-        src: (c) => (c.mocked && !c.variantOf ? previewSrc(c.name) : ''),
+        src: (c) => (c.mocked && !c.variantOf ? mfSrc(c.name) : ''),
         body: (c) => (c.variantOf
           ? 'a copy made on a page: shown there, saved with the mock-up'
           : genOf(c.name) && genBusy(genOf(c.name))
@@ -876,6 +885,7 @@
       q('.mk-board').hidden = components && !detail;
       q('.mk-rules').hidden = !detail;
       q('.mk-mfbar').hidden = !detail;
+      if (!detail) q('.mk-mfsave').hidden = true;
       if (st.mfGallery) st.mfGallery.pause(!components || detail);
     }
     function mountMf() {
@@ -891,6 +901,7 @@
       if (name !== st.mfDetail) { st.mfPicked = null; st.mfFitted = false; }
       st.mfDetail = name;
       st.mfMode = 'use';
+      st.mfSaveOpen = false;
       loadCaps();
       mountMf();
       st.board.refresh();
@@ -938,7 +949,9 @@
     async function loadGens() {
       try {
         const res = await fetch('/api/mockup/generations?' + new URLSearchParams({ branch: st.branch }));
-        st.gens = res.ok ? await res.json() : [];
+        const got = res.ok ? await res.json() : { jobs: [], drafts: [] };
+        st.gens = got.jobs || [];
+        st.mfDrafts = got.drafts || [];
       } catch (e) { st.gens = st.gens || []; }
       const busy = st.gens.filter(genBusy).length;
       const failed = st.gens.filter((j) => j.step === 'failed').length;
@@ -966,7 +979,7 @@
         else sizeMf();
       }
       const frame = stage.querySelector('iframe');
-      const src = previewSrc(c.name);
+      const src = mfSrc(c.name);
       if (frame && frame.dataset.loaded !== src) { frame.dataset.loaded = src; frame.src = src; }
       stage.querySelector('.mk-shield').hidden = st.mfMode !== 'inspect';
       stage.classList.toggle('inspecting', st.mfMode === 'inspect');
@@ -1000,10 +1013,89 @@
           <button type="button" class="mini" data-mf="step" data-step="1" ${at < 0 || at >= list.length - 1 ? 'disabled' : ''}>›</button>
           <b class="kt-detail-title">${esc(c.name)}</b><span class="mono muted">${esc(c.system || '')}</span><span class="kt-tile-tags">${mfFoot(c).split('<span class="kt-tile-tags">')[1] || ''}
           <span class="spacer"></span>
+          ${mfActions(c)}
           <div class="mk-views" role="group" aria-label="mode"><button type="button" data-mf="mode" data-mode="use" class="${st.mfMode === 'use' ? 'on' : ''}" title="Click, type, open: the micro-frontend as a visitor uses it on its fixture">use it</button><button type="button" data-mf="mode" data-mode="inspect" class="${st.mfMode === 'inspect' ? 'on' : ''}" title="Pick a part: what it triggers or shows, and the rules behind it">inspect</button></div>
         </div>
         <div class="kt-detail-sub muted">${esc(c.description || '')}${c.pages.length ? ' · on ' + c.pages.map(esc).join(', ') : ''} · a long press on a kit component opens it on the design system's easel</div>`;
       if (st.lastMfBar !== html) { st.lastMfBar = html; q('.mk-mfbar').innerHTML = html; }
+      drawMfSave(c);
+    }
+
+    // ---- requests on a micro-frontend: applied to its draft, saved in place or as a fork -------------
+    // The requests waiting on it: written, not applied, not being applied.
+    const mfPending = (name) => (st.board && st.view === 'components' ? st.board.all() : []).filter((n) => n.target && (n.target === 'component:' + name || n.target.startsWith('component:' + name + '>')) && n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim() && !st.board.isApplying(n.id));
+    function mfActions(c) {
+      const pending = mfPending(c.name).length;
+      const working = st.mfApplying[c.name] || 0;
+      return `${working ? `<span class="kt-working"><span class="spin"></span> the AI rewrites it${working > 1 ? ` · ${working} in a row` : ''}</span>` : ''}`
+        + `${pending ? `<button type="button" class="mini on" data-mf="apply" title="Apply the pending requests to its draft, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : ''}`
+        + `${hasDraft(c.name) && !working ? '<button type="button" class="mini on" data-mf="save">save…</button><button type="button" class="mini" data-mf="drop-draft">drop the draft</button>' : ''}`;
+    }
+    function drawMfSave(c) {
+      const box = q('.mk-mfsave');
+      box.hidden = !(st.mfSaveOpen && hasDraft(c.name));
+      if (box.hidden) return;
+      const kept = (box.querySelector('.kt-fork-name') || {}).value || '';
+      const html = `<b>Save the draft</b><div class="kt-row"><button type="button" class="mini on" data-mf="save-replace" title="The draft takes its place: every page that injects it shows the new one">replace ${esc(c.name)}${c.pages.length ? ` (on ${c.pages.length} page${c.pages.length === 1 ? '' : 's'})` : ''}</button><input class="kt-fork-name" maxlength="60" placeholder="${esc(c.name)}2" aria-label="fork name"><button type="button" class="mini" data-mf="save-fork" title="A new micro-frontend from the draft; this one stays as it is">fork</button></div>${c.pages.length ? `<div class="muted">Replacing changes: ${c.pages.map(esc).join(', ')}</div>` : ''}`;
+      if (box.dataset.html !== html) { box.dataset.html = html; box.innerHTML = html; box.querySelector('.kt-fork-name').value = kept; }
+    }
+    // Applies requests to a micro-frontend: its draft rewritten, the pins
+    // applied go (ctrl+z on the board brings one back), the skipped stay.
+    async function applyMf(name, notes) {
+      const c = componentOf(name);
+      if (!c || !st.board) return;
+      const asked = notes.filter((n) => (n.text || '').trim()).map((n) => ({ id: n.id, text: n.text, target: n.part || '' }));
+      if (!asked.length) { toast('nothing to apply: write the request first'); return; }
+      const spec = { name: c.name, system: c.system || '', description: c.description || '', needs: c.needs || [], actions: c.actions || [], props: c.props || {} };
+      st.mfApplying[name] = (st.mfApplying[name] || 0) + 1;
+      drawMfBar();
+      const work = (async () => {
+        try {
+          const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, spec, requests: asked }) });
+          const text = await res.text();
+          if (!res.ok) throw new Error(text);
+          const skipped = (JSON.parse(text).skipped) || [];
+          asked.forEach((a) => { if (!skipped.some(([id]) => id === a.id)) st.board.drop(a.id); });
+          skipped.forEach(([id, why]) => toast(`request ${esc(id)}: ${esc(why)}`));
+        } catch (e) {
+          toast(`${esc(name)}: not applied — ${esc(String(e.message || e).split('\n')[0])}`);
+        } finally {
+          st.mfApplying[name] = Math.max(0, (st.mfApplying[name] || 1) - 1);
+          if (!st.gone) load();
+        }
+      })();
+      st.board.track(asked.map((a) => a.id), work);
+      return work;
+    }
+    async function mfCall(url, body, done) {
+      try {
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ branch: st.branch }, body || {})) });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text);
+        if (done) done(text ? JSON.parse(text) : {});
+      } catch (e) { toast(esc(String(e.message || e).split('\n')[0])); }
+      st.mfSaveOpen = false;
+      load();
+    }
+    // A part of the frame named by its path of children from the micro-frontend's root.
+    function mfPathOf(el) {
+      const doc = mfDoc();
+      const root = doc && doc.querySelector('[data-component]');
+      if (!root || !el || !root.contains(el) || el === root) return '';
+      const steps = [];
+      for (let at = el; at && at !== root; at = at.parentElement) {
+        const index = Array.prototype.indexOf.call(at.parentElement.children, at) + 1;
+        steps.unshift(`${at.tagName.toLowerCase()}${at.classList && at.classList[0] ? '.' + at.classList[0] : ''}:nth-child(${index})`);
+      }
+      return steps.join('>');
+    }
+    function pinMfPart() {
+      const picked = st.mfPicked;
+      if (!picked || !picked.el || !st.board) return;
+      const b = picked.el.getBoundingClientRect();
+      const x = b.left + Math.min(b.width / 2, 24);
+      const y = b.top + Math.min(b.height / 2, 12);
+      st.board.newNote({ kind: 'request', target: 'component:' + st.mfDetail, part: mfPathOf(picked.el), dx: x, dy: y, x, y });
     }
 
     // ---- the rules: every actuator and every view of the micro-frontend --------------------------
@@ -1045,7 +1137,7 @@
       const kits = new Map();
       if (doc) doc.querySelectorAll('[data-kit]').forEach((el) => kits.set(el.dataset.kit, (kits.get(el.dataset.kit) || 0) + 1));
       const picked = st.mfPicked;
-      const html = `${picked ? `<div class="mk-picked"><b>${esc(picked.label)}</b>${picked.kit ? ` <button type="button" class="mini" data-mf="open-kit" data-kit="${esc(picked.kit)}">open the kit component ${esc(picked.kit)} →</button>` : ''}${picked.unit ? '' : picked.kit ? '' : ' <span class="muted">— tied to no unit: it neither triggers nor shows one</span>'}</div>` : ''}
+      const html = `${picked ? `<div class="mk-picked"><b>${esc(picked.label)}</b>${picked.kit ? ` <button type="button" class="mini" data-mf="open-kit" data-kit="${esc(picked.kit)}">open the kit component ${esc(picked.kit)} →</button>` : ''}${picked.unit ? '' : picked.kit ? '' : ' <span class="muted">— tied to no unit: it neither triggers nor shows one</span>'} <button type="button" class="mini" data-mf="pin-part" title="A request pin on this very part: the AI is told which element it is about">request on this part</button></div>` : ''}
         <h4>Actuators <small class="muted">what it triggers</small></h4>
         ${c.actions.length ? c.actions.map((a) => unitHtml(a, 'writes')).join('') : '<p class="muted">It writes nothing.</p>'}
         <h4>Views <small class="muted">what it shows</small></h4>
@@ -1224,9 +1316,9 @@
       drawBar();
       drawStrip();
       if (st.view === 'components') {
-        const was = JSON.stringify(st.gens || []);
+        const was = JSON.stringify(st.gens || []) + JSON.stringify(st.mfDrafts || []);
         await loadGens();
-        if (was !== JSON.stringify(st.gens) && st.board && st.board.id === boardOf()) mountMf();
+        if (was !== JSON.stringify(st.gens) + JSON.stringify(st.mfDrafts) && st.board && st.board.id === boardOf()) mountMf();
       }
       const listChanged = before && JSON.stringify(before.components) + JSON.stringify(before.units) !== JSON.stringify(reply.components) + JSON.stringify(reply.units);
       const pageChanged = !before || !st.board || st.board.id !== boardOf();
@@ -1445,6 +1537,12 @@
         case 'mode': st.mfMode = b.dataset.mode; if (st.mfMode === 'use') st.mfPicked = null; drawMf(); break;
         case 'open-kit': openKit(b.dataset.kit); break;
         case 'generate': { const c = componentOf(b.dataset.name); if (c) generateMfs([c]); break; }
+        case 'apply': { const pins = mfPending(st.mfDetail); if (pins.length) applyMf(st.mfDetail, pins); break; }
+        case 'save': st.mfSaveOpen = !st.mfSaveOpen; drawMfBar(); break;
+        case 'save-replace': mfCall(`/api/mockup/mf/${encodeURIComponent(st.mfDetail)}/save`, { how: 'replace' }, () => toast(`${esc(st.mfDetail)} replaced: every page that injects it shows the new one`)); break;
+        case 'save-fork': { const input = q('.mk-mfsave .kt-fork-name'); mfCall(`/api/mockup/mf/${encodeURIComponent(st.mfDetail)}/save`, { how: 'fork', name: input ? input.value.trim() : '' }, (got) => toast(`forked as <b>${esc(got.saved)}</b>; ${esc(st.mfDetail)} is as it was`)); break; }
+        case 'drop-draft': mfCall(`/api/mockup/mf/${encodeURIComponent(st.mfDetail)}/draft/drop`, {}); break;
+        case 'pin-part': pinMfPart(); break;
         default: break;
       }
     });

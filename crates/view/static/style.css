@@ -1314,3 +1314,4 @@ body.picking, body.picking * { user-select: none; }
 .mk-stage .mk-marks { position: absolute; inset: 0; pointer-events: none; }
 .mk-stage .mk-marks i { position: absolute; outline: 2px solid var(--accent); background: rgba(226, 178, 64, 0.12); border-radius: 2px; }
 .mk-stage-none { height: 240px; }
+.mk-mfsave { margin: 0 16px; flex: none; }

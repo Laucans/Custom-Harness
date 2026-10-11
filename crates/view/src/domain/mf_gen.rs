@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::domain::capabilities::{Entry, Kind};
+use crate::domain::drafts::Asked;
 use harness_architecture::kit;
 
 /// The most components a plan may ask the kit for.
@@ -108,6 +109,13 @@ pub struct Generated {
 #[must_use]
 pub fn fragment_path(name: &str) -> String {
     format!("components/{name}.html")
+}
+
+/// The draft's path, relative to `mock/`: what requests applied rewrite,
+/// shown until it is saved or dropped.
+#[must_use]
+pub fn draft_path(name: &str) -> String {
+    format!("components/{name}.draft.html")
 }
 
 /// The fixture's path, relative to `mock/`: the name in kebab case.
@@ -297,6 +305,121 @@ pub fn generate_prompt(
         }
     }
     prompt
+}
+
+/// The question that applies requests to a micro-frontend: its rules, the
+/// kit's index and the tokens first, then the micro-frontend, its units, its
+/// fragment as the draft has it, and the requests — one on an element names
+/// it by its path of children from the fragment's root.
+#[must_use]
+pub fn rewrite_prompt(
+    spec: &Spec,
+    units: &str,
+    index: &str,
+    tokens: &str,
+    fragment: &str,
+    asked: &[Asked],
+) -> String {
+    let requests = asked
+        .iter()
+        .map(|a| {
+            if a.target.trim().is_empty() {
+                format!("- request `{}`: {}", a.id, a.text.trim())
+            } else {
+                format!(
+                    "- request `{}`, on the element `{}`: {}",
+                    a.id,
+                    a.target.trim(),
+                    a.text.trim()
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "You edit one micro-frontend of a product's mock-up on behalf of a human who dropped \
+         requests on it. Apply every request to the fragment below and answer the WHOLE fragment \
+         back in a ```html block — its markup and its script — no prose. Keep what the requests do \
+         not touch as it is, and keep its rules: its data from the one fetch of its fixture, no \
+         other network; `data-action` on every actuator and `data-reads` on every part that shows \
+         a read; a write checks the rules below in the page and shows the command's life; it opens \
+         at rest; the kit's components written with their classes, any other style through \
+         `var(--…)`, never a colour literal. A request that needs data or a unit the \
+         micro-frontend does not have is not a mock-up's matter: leave the fragment unchanged for \
+         it and say so after the fragment, inside it, as `<!-- skipped <id>: <why> -->`.\n\n\
+         The kit, one component a line:\n{index}\nThe tokens (variables):\n{tokens}\n\n\
+         The micro-frontend:\n{spec}\nWhat it reads and writes:\n{units}\n\
+         The requests:\n{requests}\n\n\
+         The fragment:\n<fragment>\n{fragment}\n</fragment>\n",
+        index = if index.trim().is_empty() {
+            "(the kit is empty)\n"
+        } else {
+            index
+        },
+        spec = spec.text(),
+        units = if units.trim().is_empty() {
+            "nothing\n"
+        } else {
+            units
+        },
+        fragment = fragment.trim(),
+    )
+}
+
+/// `mock/pages.json` with a fork of a micro-frontend listed: the origin's
+/// entry under a new name and fragment, everything else as it was.
+///
+/// # Errors
+///
+/// The manifest is not JSON, has no such micro-frontend, or has the name
+/// taken already.
+pub fn forked(pages: &str, from: &str, to: &str) -> Result<String, String> {
+    let mut root: Value = serde_json::from_str(pages).map_err(|e| format!("pages.json: {e}"))?;
+    let list = root
+        .get_mut("components")
+        .and_then(Value::as_array_mut)
+        .ok_or("pages.json lists no micro-frontend")?;
+    if list
+        .iter()
+        .any(|c| c.get("name").and_then(Value::as_str) == Some(to))
+    {
+        return Err(format!("{to} is a micro-frontend already"));
+    }
+    let mut entry = list
+        .iter()
+        .find(|c| c.get("name").and_then(Value::as_str) == Some(from))
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| format!("pages.json does not list {from}"))?;
+    entry.insert("name".into(), Value::String(to.to_string()));
+    entry.insert("fragment".into(), Value::String(fragment_path(to)));
+    let described = entry
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    entry.insert(
+        "description".into(),
+        Value::String(format!("{described} (a fork of {from})").trim().to_string()),
+    );
+    entry.remove("source");
+    entry.remove("builtFrom");
+    list.push(Value::Object(entry));
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?
+    ))
+}
+
+/// The name a fork takes when the human gives none: the origin's, with the
+/// first number that is free.
+#[must_use]
+pub fn fork_name(pages: &str, from: &str) -> String {
+    let taken = |name: &str| pages.contains(&format!("\"{name}\""));
+    (2..1000)
+        .map(|n| format!("{from}{n}"))
+        .find(|n| !taken(n))
+        .unwrap_or_else(|| format!("{from}Fork"))
 }
 
 /// The fragment and the fixture an answer carries.
@@ -543,6 +666,48 @@ mod tests {
             untagged("<button data-action=\"campagne.ajouterPj\">", &spec()),
             ["campagne.listerPjs"]
         );
+    }
+
+    #[test]
+    fn a_rewrite_names_the_parts_and_a_fork_is_listed_beside_its_origin() {
+        let prompt = rewrite_prompt(
+            &spec(),
+            "- units\n",
+            "- Table (Table): rows\n",
+            "--color-primary",
+            "<ul data-reads=\"campagne.listerPjs\"></ul>",
+            &[Asked {
+                id: "r1".into(),
+                text: "bolder".into(),
+                target: "ul:nth-child(1)".into(),
+            }],
+        );
+        assert!(
+            prompt.contains("- request `r1`, on the element `ul:nth-child(1)`: bolder"),
+            "{prompt}"
+        );
+        assert!(
+            prompt
+                .find("The kit, one component a line")
+                .unwrap_or(usize::MAX)
+                < prompt.find("<fragment>").unwrap_or(0)
+        );
+        let pages = r#"{"version":1,"pages":[],"components":[{"name":"Pjs","fragment":"components/Pjs.html","description":"Les PJ","source":"src/Pjs.js"}]}"#;
+        assert_eq!(fork_name(pages, "Pjs"), "Pjs2");
+        let after: Value =
+            serde_json::from_str(&forked(pages, "Pjs", "Pjs2").expect("forked")).expect("json");
+        assert_eq!(after["components"][1]["fragment"], "components/Pjs2.html");
+        assert_eq!(
+            after["components"][1]["description"],
+            "Les PJ (a fork of Pjs)"
+        );
+        assert!(
+            after["components"][1].get("source").is_none(),
+            "a fork is hand-written"
+        );
+        assert!(forked(pages, "Pjs", "Pjs").is_err());
+        assert!(forked(pages, "None", "X").is_err());
+        assert_eq!(draft_path("Pjs"), "components/Pjs.draft.html");
     }
 
     #[test]

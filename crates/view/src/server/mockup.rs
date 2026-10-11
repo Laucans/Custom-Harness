@@ -126,6 +126,7 @@ pub(super) async fn mockup_units(state: &AppState, branch: &str) -> mockup::Unit
 pub(super) async fn mock_preview(
     State(state): State<AppState>,
     Path((slug, name)): Path<(String, String)>,
+    Query(query): Query<PreviewQuery>,
 ) -> Response {
     if state.mockups.is_none() {
         return not_found(NO_MOCKUPS);
@@ -138,9 +139,20 @@ pub(super) async fn mock_preview(
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
         ],
-        mockup::preview_page(&name),
+        // A micro-frontend's draft: the same page around `<Name>.draft`, its file.
+        mockup::preview_page(&if query.draft.as_deref() == Some("1") {
+            format!("{name}.draft")
+        } else {
+            name
+        }),
     )
         .into_response()
+}
+
+/// `?draft=1`: the micro-frontend's draft rather than its fragment.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct PreviewQuery {
+    draft: Option<String>,
 }
 
 pub(super) fn branch_or_integration(state: &AppState, branch: Option<String>) -> String {
@@ -280,7 +292,109 @@ pub(super) async fn mf_generations(
         return not_found(NO_MOCKUPS);
     };
     let branch = branch_or_integration(&state, query.branch);
-    json(&desk.jobs(&branch))
+    let names = match state.mockups.clone() {
+        Some(mockups) => {
+            let at = branch.clone();
+            tokio::task::spawn_blocking(move || mockups.state(&at))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .map(|s| s.components.into_iter().map(|c| c.name).collect())
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let drafts = desk.drafts(&branch, names).await.unwrap_or_default();
+    json(&serde_json::json!({ "jobs": desk.jobs(&branch), "drafts": drafts }))
+}
+
+/// Requests applied to a micro-frontend, as the page sends them.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct MfApplyAsk {
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    spec: mf_gen::Spec,
+    #[serde(default)]
+    requests: Vec<drafts::Asked>,
+}
+
+/// Applies requests to a micro-frontend's draft, the units it reads and
+/// writes briefed as for its generation.
+pub(super) async fn mf_apply(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(desk) = state.mf.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let ask: MfApplyAsk = serde_json::from_slice(&body).unwrap_or_default();
+    if !kit::is_name(&name) || ask.spec.name != name {
+        return not_found("no such micro-frontend");
+    }
+    let branch = branch_or_integration(&state, Some(ask.branch));
+    let entries = catalogue_of(&state, false, None)
+        .await
+        .map(|c| c.entries)
+        .unwrap_or_default();
+    let units = mf_gen::units_brief(&ask.spec, &entries);
+    match desk.apply(&branch, ask.spec, units, ask.requests).await {
+        Ok(skipped) => json(&serde_json::json!({ "skipped": skipped })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
+/// A micro-frontend's draft saved, in its place or as a fork.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct MfSaveAsk {
+    #[serde(default)]
+    branch: String,
+    /// `replace` or `fork`.
+    #[serde(default)]
+    how: String,
+    /// The fork's name; empty, one is made.
+    #[serde(default)]
+    name: String,
+}
+
+pub(super) async fn mf_save(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(desk) = state.mf.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    if !kit::is_name(&name) {
+        return not_found("no such micro-frontend");
+    }
+    let ask: MfSaveAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let branch = branch_or_integration(&state, Some(ask.branch));
+    let fork = (ask.how == "fork").then_some(ask.name);
+    match desk.save(&branch, name, fork).await {
+        Ok(saved) => json(&serde_json::json!({ "saved": saved })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
+pub(super) async fn mf_drop_draft(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(desk) = state.mf.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    if !kit::is_name(&name) {
+        return not_found("no such micro-frontend");
+    }
+    let ask: MockupAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let branch = branch_or_integration(&state, Some(ask.branch));
+    match desk.drop_draft(&branch, name).await {
+        Ok(()) => json(&serde_json::json!({ "dropped": true })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
 }
 
 /// Drops what the sessions changed: the branch's mock-up as committed.

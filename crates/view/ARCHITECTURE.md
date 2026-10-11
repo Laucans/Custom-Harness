@@ -469,7 +469,15 @@ written in the branch's workspace and saved with the mock-up. The stable
 parts of each prompt come first, the micro-frontend's own last. `kit.css`
 is served derived from the design system's branch as it is now
 (`mock_file`), so a generated micro-frontend wears the kit before any
-publish. **+ micro-frontend** is a form —
+publish. On a micro-frontend alone, request pins — dropped on it, or on
+the very part picked while inspecting (`Note::part`, its path from the
+fragment's root) — are **applied** by one question to its **draft**,
+`mock/components/<Name>.draft.html` (`MfDesk::apply`, one rewrite of a
+micro-frontend at a time, each from the last one's draft); the gallery and
+the board show the draft (`__preview/<Name>?draft=1`), and **save…**
+writes it in its place — every page that injects it changes — or as a
+**fork**, a new micro-frontend listed beside it in `mock/pages.json`, the
+origin untouched; **drop the draft** goes back. **+ micro-frontend** is a form —
 name, system, description, the Capabilities it needs and the
 `DataCapabilities` it triggers, chosen among the branch's, its props — that
 becomes a design pin on that board and opens its session at once: the

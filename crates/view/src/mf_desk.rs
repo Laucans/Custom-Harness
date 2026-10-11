@@ -14,12 +14,15 @@
 //! in `spawn_blocking`; a generation is a task, and the sessions' count
 //! bounds how many ask at once.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
+use crate::domain::design;
+use crate::domain::drafts::Asked;
 use crate::domain::mf_gen::{self, Spec};
 use crate::kit_desk::{JobState, KitDesk, KitIndex};
 use crate::ports::{Mockups, Oneshot};
@@ -103,6 +106,9 @@ pub struct MfDesk {
     /// Held around every write of a branch's mock-up files.
     files: Arc<Mutex<()>>,
     tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    /// One lock per micro-frontend being rewritten: requests applied to it
+    /// at once run one after the other, each on the last one's draft.
+    rewriting: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -121,6 +127,7 @@ impl MfDesk {
             making: Arc::default(),
             files: Arc::default(),
             tasks: Arc::default(),
+            rewriting: Arc::default(),
         }
     }
 
@@ -206,6 +213,163 @@ impl MfDesk {
             }));
         }
         Ok(count)
+    }
+
+    /// Applies requests to a micro-frontend: its draft — or its fragment
+    /// the first time — rewritten by one question, kept as its draft.
+    /// Answers what was skipped, `(id, why)`.
+    ///
+    /// # Errors
+    ///
+    /// No Claude at hand, no request, no fragment yet, or the answer
+    /// carries none.
+    pub async fn apply(
+        &self,
+        branch: &str,
+        spec: Spec,
+        units: String,
+        asked: Vec<Asked>,
+    ) -> Result<Vec<(String, String)>, String> {
+        let oneshot = self.setup.oneshot.clone().ok_or(NO_CLAUDE)?;
+        if asked.is_empty() {
+            return Err("no request to apply".to_string());
+        }
+        let index = self.index().await?;
+        let model = self.setup.model.clone();
+        let mockups = Arc::clone(&self.setup.mockups);
+        let files = Arc::clone(&self.files);
+        let rewrite = {
+            let mut locks = lock(&self.rewriting);
+            Arc::clone(locks.entry(format!("{branch}/{}", spec.name)).or_default())
+        };
+        let branch = branch.to_string();
+        tokio::task::spawn_blocking(move || {
+            // Held from the read to the write: a second request on it waits, then starts from this draft.
+            let _rewriting = lock(&rewrite);
+            let text = |path: &str| -> Result<Option<String>, String> {
+                Ok(mockups
+                    .file(&branch, path)?
+                    .map(|b| String::from_utf8_lossy(&b).into_owned()))
+            };
+            let fragment = text(&mf_gen::draft_path(&spec.name))?
+                .or(text(&mf_gen::fragment_path(&spec.name))?)
+                .ok_or_else(|| format!("{} has no fragment yet: generate it first", spec.name))?;
+            let prompt = mf_gen::rewrite_prompt(
+                &spec,
+                &units,
+                &index.lines(),
+                &index.tokens.join(", "),
+                &fragment,
+                &asked,
+            );
+            let rewritten = mf_gen::generated_of(&oneshot.ask(&model, &prompt)?)?.fragment;
+            let skipped = design::skipped_in(&rewritten);
+            let _held = lock(&files);
+            mockups.write(
+                &branch,
+                &mf_gen::draft_path(&spec.name),
+                rewritten.as_bytes(),
+            )?;
+            Ok(skipped)
+        })
+        .await
+        .map_err(|e| format!("the rewrite was dropped: {e}"))?
+    }
+
+    /// The micro-frontends of a branch that have a draft, among `names`.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be read.
+    pub async fn drafts(&self, branch: &str, names: Vec<String>) -> Result<Vec<String>, String> {
+        let mockups = Arc::clone(&self.setup.mockups);
+        let branch = branch.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut with = Vec::new();
+            for name in names {
+                if mockups.file(&branch, &mf_gen::draft_path(&name))?.is_some() {
+                    with.push(name);
+                }
+            }
+            Ok(with)
+        })
+        .await
+        .map_err(|e| format!("the read was dropped: {e}"))?
+    }
+
+    /// Saves a micro-frontend's draft: in its place — every page that
+    /// injects it shows the new one — or as a fork, a new micro-frontend
+    /// listed beside it, the origin untouched. Answers the name saved as.
+    ///
+    /// # Errors
+    ///
+    /// No draft, a fork's name taken or not a name, or the workspace could
+    /// not be written.
+    pub async fn save(
+        &self,
+        branch: &str,
+        name: String,
+        fork: Option<String>,
+    ) -> Result<String, String> {
+        if let Some(wanted) = fork
+            .as_deref()
+            .filter(|w| !w.is_empty() && !harness_architecture::kit::is_name(w))
+        {
+            return Err(format!(
+                "`{wanted}` is not a micro-frontend's name: a capital, then letters and digits"
+            ));
+        }
+        let mockups = Arc::clone(&self.setup.mockups);
+        let files = Arc::clone(&self.files);
+        let branch = branch.to_string();
+        tokio::task::spawn_blocking(move || {
+            let _held = lock(&files);
+            let draft = mockups
+                .file(&branch, &mf_gen::draft_path(&name))?
+                .ok_or_else(|| format!("{name} has no draft to save"))?;
+            let saved_as = match fork {
+                None => {
+                    mockups.write(&branch, &mf_gen::fragment_path(&name), &draft)?;
+                    name.clone()
+                }
+                Some(wanted) => {
+                    let pages = mockups
+                        .file(&branch, "pages.json")?
+                        .map(|b| String::from_utf8_lossy(&b).into_owned())
+                        .ok_or("the mock-up has no pages.json to list a fork in")?;
+                    let to = if wanted.is_empty() {
+                        mf_gen::fork_name(&pages, &name)
+                    } else {
+                        wanted
+                    };
+                    let listed = mf_gen::forked(&pages, &name, &to)?;
+                    mockups.write(&branch, &mf_gen::fragment_path(&to), &draft)?;
+                    mockups.write(&branch, "pages.json", listed.as_bytes())?;
+                    to
+                }
+            };
+            mockups.remove(&branch, &mf_gen::draft_path(&name))?;
+            Ok(saved_as)
+        })
+        .await
+        .map_err(|e| format!("the save was dropped: {e}"))?
+    }
+
+    /// Drops a micro-frontend's draft: its fragment as it was.
+    ///
+    /// # Errors
+    ///
+    /// The workspace could not be written.
+    pub async fn drop_draft(&self, branch: &str, name: String) -> Result<(), String> {
+        let mockups = Arc::clone(&self.setup.mockups);
+        let files = Arc::clone(&self.files);
+        let branch = branch.to_string();
+        tokio::task::spawn_blocking(move || {
+            let _held = lock(&files);
+            mockups.remove(&branch, &mf_gen::draft_path(&name))
+        })
+        .await
+        .map_err(|e| format!("the drop was dropped: {e}"))?
     }
 
     /// Stops every generation: the view is going away.
@@ -408,6 +572,7 @@ async fn ask(oneshot: &Arc<dyn Oneshot>, model: &str, prompt: String) -> Result<
 mod tests {
     use super::*;
     use crate::adapters::mockups::DirMockups;
+    use crate::domain::drafts::Asked;
     use crate::kit_desk;
     use crate::kit_desk::tests::Shelf;
     use crate::ports::NoteStore;
@@ -426,6 +591,12 @@ mod tests {
             lock(&self.asked).push(prompt.to_string());
             if prompt.starts_with("You plan one micro-frontend") {
                 return Ok(r#"{"uses": ["Button"], "missing": [{"title": "Fiche", "what": "a character sheet"}]}"#.to_string());
+            }
+            if prompt.starts_with("You edit one micro-frontend") {
+                let n = lock(&self.asked).len();
+                return Ok(format!(
+                    "```html\n<ul data-reads=\"campagne.listerPjs\" data-v=\"{n}\"></ul>\n<!-- skipped r2: needs data it does not read -->\n```"
+                ));
             }
             if prompt.starts_with("You write one micro-frontend") {
                 return Ok("```html\n<section><button class=\"primary\" data-action=\"campagne.ajouterPj\">Ajouter</button><ul data-reads=\"campagne.listerPjs\"></ul></section>\n```\n```json\n[{\"id\": 1, \"nom\": \"Aldric\"}]\n```".to_string());
@@ -577,5 +748,112 @@ mod tests {
             "{write}"
         );
         assert!(write.contains("--color-primary") && !write.contains(".kit-button {"));
+    }
+
+    #[tokio::test]
+    async fn requests_rewrite_a_draft_saved_in_place_or_as_a_fork_or_dropped() {
+        let dir = std::env::temp_dir().join(format!("harness-mf-draft-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("main/mock/components")).expect("dir");
+        std::fs::write(
+            dir.join("main/mock/components/Pjs.html"),
+            "<ul data-reads=\"campagne.listerPjs\"></ul>",
+        )
+        .expect("fragment");
+        std::fs::write(
+            dir.join("main/mock/pages.json"),
+            r#"{"version":1,"pages":[],"components":[{"name":"Pjs","fragment":"components/Pjs.html","description":"Les PJ"}]}"#,
+        )
+        .expect("manifest");
+        let desk = MfDesk::new(Setup {
+            mockups: Arc::new(DirMockups::new(&dir)),
+            kit: None,
+            oneshot: Some(Arc::new(Model::default()) as Arc<dyn Oneshot>),
+            model: "m".into(),
+            sessions: 1,
+        });
+        let spec = Spec {
+            name: "Pjs".into(),
+            needs: vec!["campagne.listerPjs".into()],
+            ..Spec::default()
+        };
+        let asked = |id: &str| {
+            vec![Asked {
+                id: id.into(),
+                text: "bolder".into(),
+                target: "ul:nth-child(1)".into(),
+            }]
+        };
+        let read = |path: &str| {
+            std::fs::read_to_string(dir.join("main/mock").join(path)).unwrap_or_default()
+        };
+        assert!(
+            desk.apply("main", spec.clone(), String::new(), vec![])
+                .await
+                .is_err(),
+            "no request"
+        );
+        let skipped = desk
+            .apply("main", spec.clone(), String::new(), asked("r1"))
+            .await
+            .expect("applied");
+        assert_eq!(
+            skipped,
+            [("r2".to_string(), "needs data it does not read".to_string())]
+        );
+        assert!(
+            read("components/Pjs.draft.html").contains("data-v"),
+            "the draft is written"
+        );
+        assert_eq!(
+            read("components/Pjs.html"),
+            "<ul data-reads=\"campagne.listerPjs\"></ul>",
+            "the fragment untouched"
+        );
+        assert_eq!(
+            desk.drafts("main", vec!["Pjs".into(), "Other".into()])
+                .await
+                .expect("drafts"),
+            ["Pjs"]
+        );
+        // As a fork: a new micro-frontend beside it, the origin untouched.
+        assert_eq!(
+            desk.save("main", "Pjs".into(), Some(String::new()))
+                .await
+                .expect("forked"),
+            "Pjs2"
+        );
+        assert!(
+            read("components/Pjs2.html").contains("data-v")
+                && read("pages.json").contains("\"Pjs2\"")
+        );
+        assert!(
+            read("components/Pjs.draft.html").is_empty(),
+            "the draft goes once saved"
+        );
+        assert!(
+            desk.save("main", "Pjs".into(), None).await.is_err(),
+            "no draft left"
+        );
+        // In place.
+        desk.apply("main", spec.clone(), String::new(), asked("r3"))
+            .await
+            .expect("applied again");
+        assert_eq!(
+            desk.save("main", "Pjs".into(), None)
+                .await
+                .expect("replaced"),
+            "Pjs"
+        );
+        assert!(read("components/Pjs.html").contains("data-v"));
+        // Dropped.
+        desk.apply("main", spec, String::new(), asked("r4"))
+            .await
+            .expect("applied once more");
+        desk.drop_draft("main", "Pjs".into())
+            .await
+            .expect("dropped");
+        assert!(read("components/Pjs.draft.html").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
