@@ -188,6 +188,7 @@ const MOCKUP_JS: &str = include_str!("../../static/mockup.js");
 const EDIT_JS: &str = include_str!("../../static/edit.js");
 const DESIGN_JS: &str = include_str!("../../static/design.js");
 const KIT_JS: &str = include_str!("../../static/kit.js");
+const GALLERY_JS: &str = include_str!("../../static/gallery.js");
 
 /// The routes, with their state.
 // One route per line: the table is the function, and splitting it would
@@ -206,6 +207,7 @@ pub fn router(state: AppState) -> Router {
         .route("/edit.js", get(edit_js))
         .route("/design.js", get(design_js))
         .route("/kit.js", get(kit_js))
+        .route("/gallery.js", get(gallery_js))
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
         .route("/mock/{slug}/__kit/{name}", get(kit_preview))
         .route("/mock/{slug}/__showcase/contact", get(kit_showcase))
@@ -468,6 +470,10 @@ async fn kit_js(State(state): State<AppState>) -> Response {
         KIT_JS,
         "application/javascript; charset=utf-8",
     )
+}
+
+async fn gallery_js(State(state): State<AppState>) -> Response {
+    asset(&state, "gallery.js", GALLERY_JS, JS)
 }
 
 async fn design_js(State(state): State<AppState>) -> Response {

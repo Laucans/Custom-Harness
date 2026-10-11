@@ -40,13 +40,13 @@
       + '<button type="button" class="mini" data-kt="discard" hidden title="Drop the workspace: the branch as committed again">discard</button>'
       + '</div>'
       + '<div class="kt-body"><div class="kt-pane kt-system" hidden></div><div class="kt-pane kt-catalogue" hidden></div><div class="kt-canvas" hidden>'
-      + '<div class="kt-gallery"><div class="kt-gallery-top"><input type="search" class="kt-find" data-kt="find" maxlength="80" placeholder="Find a component — its name or its code name" aria-label="find a component" title="Press / to come here"><span class="kt-count"></span><div class="kt-chips" role="group" aria-label="show"></div></div><div class="kt-grid"></div><div class="mk-empty kt-none" hidden></div></div>'
+      + '<div class="kt-gallery-host"></div>'
       + '<div class="kt-detail" hidden><div class="kt-detail-bar"></div><div class="kt-detail-save kt-save" hidden></div><div class="kt-detail-body"><div class="dm-main"><div class="dm-board kt-board"></div></div><aside class="kt-inspector" hidden></aside></div></div>'
       + '</div></div>'
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', bg: kept(BG, ''), find: '', chip: 'all', notes: [], detail: null, mode: 'use', picked: null, inspectDirty: false, saveOpen: false, galleryTop: 0 };
+    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', bg: kept(BG, ''), notes: [], detail: null, mode: 'use', picked: null, inspectDirty: false, saveOpen: false, galleryTop: 0 };
 
     // ---- reading -------------------------------------------------------------------------------
     async function load(quiet) {
@@ -387,27 +387,34 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
     }
 
     // ---- the finder: every word typed in the name or the code name, and a chip --------------------
-    const CHIPS = [['all', 'all'], ['standard', 'standard'], ['custom', 'custom'], ['draft', 'drafts'], ['requests', 'with requests'], ['fails', 'fails the check']];
-    const plain = (text) => String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-    function matches(e) {
-      const words = plain(st.find).split(/\s+/).filter(Boolean);
-      const hay = [plain(e.name), plain(e.title), plain(e.title).replace(/[^a-z0-9]/g, '')];
-      if (!words.every((w) => hay.some((h) => h.includes(w)))) return false;
-      switch (st.chip) {
-        case 'standard': return !!e.base;
-        case 'custom': return !e.base;
-        case 'draft': return !!e.draft;
-        case 'requests': return pendingOf(e.name).length > 0;
-        case 'fails': return e.checks.length > 0;
-        default: return true;
-      }
+    // The gallery itself is HarnessGallery's: the kit hands it the components, their tiles, their chips.
+    function ensureGallery() {
+      if (st.gallery) return st.gallery;
+      st.gallery = window.HarnessGallery.create(q('.kt-gallery-host'), {
+        placeholder: 'Find a component — its name or its code name',
+        chips: [
+          ['all', 'all'],
+          ['standard', 'standard', (e) => !!e.base],
+          ['custom', 'custom', (e) => !e.base],
+          ['draft', 'drafts', (e) => !!e.draft],
+          ['requests', 'with requests', (e) => pendingOf(e.name).length > 0],
+          ['fails', 'fails the check', (e) => e.checks.length > 0],
+        ],
+        words: (e) => [e.name, e.title],
+        key: (e) => e.name,
+        pin: (e) => 'kit:' + e.name,
+        src: (e) => previewSrc(e.name, e.draft, versionOf(e)),
+        foot: footOf,
+        empty: (total, find, chip) => (total
+          ? `<h2>No component matches</h2><p>Nothing in the kit is named like <b>${esc(find)}</b>${chip ? ` among the <b>${esc(chip)}</b>` : ''}.</p>`
+          : '<h2>No component yet</h2><p>The canvas shows the kit once it is generated: tick the components in the <b>catalogue</b> and generate them from the validated design system.</p>'),
+        onOpen: (e) => openDetail(e.name),
+        onFrame: paint,
+      });
+      return st.gallery;
     }
-    const listed = () => shownOnCanvas().filter(matches);
-    // The list changed by the finder or a chip: the gallery starts again from the top.
-    function refind() {
-      drawGallery();
-      q('.kt-gallery').scrollTop = 0;
-    }
+    // The list as the finder and the chips leave it: what the previous and the next walk through.
+    const listed = () => (st.gallery ? st.gallery.list() : shownOnCanvas());
 
     function drawCanvas(changed) {
       if (!st.usages || changed) loadUsages();
@@ -418,7 +425,8 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         if (pin && pin.target && pin.target.startsWith('kit:') && entry(pin.target.slice(4))) st.detail = pin.target.slice(4);
       }
       if (st.detail && !entry(st.detail)) st.detail = null;
-      q('.kt-gallery').hidden = !!st.detail;
+      q('.kt-gallery-host').hidden = !!st.detail;
+      ensureGallery().pause(!!st.detail);
       q('.kt-detail').hidden = !st.detail;
       if (st.detail) drawDetail();
       else drawGallery();
@@ -439,76 +447,14 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       return `<b class="kt-tile-title">${esc(e.title || e.name)}</b><span class="mono kt-tile-code">${esc(e.name)}</span><span class="kt-tile-tags">${tags}</span>`;
     }
     function drawGallery() {
-      const all = shownOnCanvas();
-      const list = listed();
-      const grid = q('.kt-grid');
-      q('.kt-count').textContent = `${list.length} / ${all.length}`;
-      q('.kt-chips').innerHTML = CHIPS.map(([id, label]) => `<button type="button" class="kt-chip${st.chip === id ? ' on' : ''}" data-kt="chip" data-chip="${id}">${label}</button>`).join('');
-      const have = new Map([...grid.children].map((tile) => [tile.dataset.card, tile]));
-      let before = null;
-      list.forEach((e) => {
-        let tile = have.get(e.name);
-        have.delete(e.name);
-        if (!tile) {
-          tile = document.createElement('article');
-          tile.className = 'kt-tile';
-          tile.dataset.card = e.name;
-          tile.dataset.pin = 'kit:' + e.name;
-          tile.tabIndex = 0;
-          tile.innerHTML = `<div class="kt-tile-preview"><iframe class="mk-preview" tabindex="-1" scrolling="no" title="${esc(e.name)}"></iframe></div><div class="kt-tile-foot"></div>`;
-          const frame = tile.querySelector('iframe');
-          frame.addEventListener('load', () => paint(frame));
-        }
-        const frame = tile.querySelector('iframe');
-        const src = previewSrc(e.name, e.draft, versionOf(e));
-        if (frame.dataset.src !== src) {
-          frame.dataset.src = src;
-          // Shown already: the new version at once; else when it comes on the screen.
-          if (frame.dataset.loaded) { frame.dataset.loaded = src; frame.src = src; }
-        }
-        const foot = footOf(e);
-        if (tile.dataset.foot !== foot) { tile.dataset.foot = foot; tile.querySelector('.kt-tile-foot').innerHTML = foot; }
-        const next = before ? before.nextSibling : grid.firstChild;
-        if (tile !== next) grid.insertBefore(tile, next);
-        watchFrame(frame);
-        before = tile;
-      });
-      have.forEach((tile) => { if (st.seen) st.seen.unobserve(tile.querySelector('iframe')); tile.remove(); });
-      const none = q('.kt-none');
-      none.hidden = list.length > 0;
-      if (!list.length) {
-        none.innerHTML = all.length
-          ? `<h2>No component matches</h2><p>Nothing in the kit is named like <b>${esc(st.find)}</b>${st.chip !== 'all' ? ` among the <b>${esc((CHIPS.find(([id]) => id === st.chip) || ['', st.chip])[1])}</b>` : ''}.</p>`
-          : '<h2>No component yet</h2><p>The canvas shows the kit once it is generated: tick the components in the <b>catalogue</b> and generate them from the validated design system.</p>';
-      }
-    }
-    // A preview is a whole document, its scripts running: only the tiles on
-    // the screen, and a screen above and below, hold one. The gallery hidden
-    // behind a component lets nothing go.
-    function watchFrame(frame) {
-      if (!window.IntersectionObserver) { if (!frame.dataset.loaded) { frame.dataset.loaded = frame.dataset.src; frame.src = frame.dataset.src; } return; }
-      if (!st.seen) {
-        st.seen = new IntersectionObserver((entries) => {
-          if (st.detail) return;
-          entries.forEach((entry) => {
-            const f = entry.target;
-            if (entry.isIntersecting) {
-              if (f.dataset.loaded !== f.dataset.src) { f.dataset.loaded = f.dataset.src; f.src = f.dataset.src; }
-            } else if (f.dataset.loaded) {
-              delete f.dataset.loaded;
-              f.src = 'about:blank';
-            }
-          });
-        }, { root: q('.kt-gallery'), rootMargin: '100% 0px' });
-      }
-      st.seen.observe(frame);
+      ensureGallery().draw(shownOnCanvas());
     }
 
     // ---- one component alone on its board ----------------------------------------------------------
     const STAGE_W = 760;
     function openDetail(name) {
       if (!entry(name) || (st.detail && name !== st.detail && !leaveRetouch())) return;
-      if (!st.detail) st.galleryTop = q('.kt-gallery').scrollTop;
+      if (!st.detail) st.galleryTop = ensureGallery().top();
       if (name !== st.detail) { st.picked = null; st.inspectDirty = false; }
       st.detail = name;
       st.saveOpen = false;
@@ -522,7 +468,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       st.picked = null;
       st.inspectDirty = false;
       drawCanvas(false);
-      q('.kt-gallery').scrollTop = st.galleryTop || 0;
+      ensureGallery().scrollTo(st.galleryTop || 0);
     }
     function ensureBoard() {
       if (st.board) return;
@@ -876,8 +822,6 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
 
     // ---- what the human does ---------------------------------------------------------------------
     host.addEventListener('click', async (e) => {
-      const tile = e.target.closest('.kt-tile');
-      if (tile) { openDetail(tile.dataset.card); return; }
       const b = e.target.closest('[data-kt]');
       if (!b || b.disabled) return;
       const what = b.dataset.kt; const name = b.dataset.name || '';
@@ -926,7 +870,6 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         case 'pin-part': pinPart(); break;
         case 'back': closeDetail(); break;
         case 'step': step(Number(b.dataset.step) || 0); break;
-        case 'chip': st.chip = b.dataset.chip; refind(); break;
         case 'bg-reset': pickBackground(''); break;
         case 'drop-draft': act(`dropping the draft of ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/draft/drop`)); break;
         default: break;
@@ -945,18 +888,9 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       }
       if (t.matches('input[type="color"][data-token]')) { const text = host.querySelector(`.kt-token[data-token="${CSS.escape(t.dataset.token)}"]`); if (text) { text.value = t.value; keepTokens(); } }
     });
-    // `/` reaches the finder; Enter on a tile opens it.
-    const onKey = (e) => {
-      if (st.gone || st.tab !== 'canvas' || !host.isConnected) return;
-      const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable);
-      if (e.key === '/' && !typing && !st.detail) { e.preventDefault(); q('.kt-find').focus(); return; }
-      if (e.key === 'Enter' && e.target && e.target.classList && e.target.classList.contains('kt-tile')) openDetail(e.target.dataset.card);
-    };
-    document.addEventListener('keydown', onKey);
     host.addEventListener('input', (e) => {
       if (e.target.matches('.kt-token')) keepTokens();
       if (e.target.matches('[data-kt="bg"]')) pickBackground(e.target.value);
-      if (e.target.matches('[data-kt="find"]')) { st.find = e.target.value; refind(); }
     });
     function keepTokens() {
       clearTimeout(st.editTimer);
@@ -1016,9 +950,8 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       },
       destroy() {
         st.gone = true;
-        document.removeEventListener('keydown', onKey);
         clearTimeout(st.timer); clearTimeout(st.editTimer); clearTimeout(st.toastTimer);
-        if (st.seen) st.seen.disconnect();
+        if (st.gallery) st.gallery.destroy();
         if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
         host.innerHTML = '';
       },
