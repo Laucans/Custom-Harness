@@ -132,6 +132,9 @@ pub struct Creation {
     pub mocked: Option<String>,
     /// The human accepted the proof of concept.
     pub accepted: bool,
+    /// The accepted mock-up was made again of micro-frontends; what the
+    /// session said of it.
+    pub componentized: Option<String>,
     /// The roadmap task the initialization opened.
     pub issue: String,
 }
@@ -141,6 +144,8 @@ pub struct Creation {
 pub struct Facts {
     /// The design system is validated, on its branch.
     pub design_validated: bool,
+    /// The kit's components ticked and not generated yet, or generating.
+    pub kit_waiting: usize,
 }
 
 /// What a step needs done before it may be entered; `None` when nothing.
@@ -167,7 +172,15 @@ fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
             .trim()
             .is_empty()
             .then_some("settle the proof of concept's scope"),
-        Step::Mockups => (!facts.design_validated).then_some("validate the design system"),
+        Step::Mockups => {
+            if !facts.design_validated {
+                Some("validate the design system")
+            } else if facts.kit_waiting > 0 {
+                Some("let the kit's components be generated")
+            } else {
+                None
+            }
+        }
         Step::Review => c.mocked.is_none().then_some("draw the mock-ups"),
         Step::Initialize => (!c.accepted).then_some("accept the proof of concept"),
     }
@@ -285,6 +298,7 @@ impl Creation {
         self.regenerations = self.regenerations.saturating_add(1);
         self.mocked = None;
         self.accepted = false;
+        self.componentized = None;
         self.grilled = false;
         self.step = Step::Brief;
     }
@@ -497,6 +511,96 @@ pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str) -> String {
     text
 }
 
+/// The session that makes the accepted mock-up again of micro-frontends,
+/// keeping what the human saw: `rules` are the mock-up's own, `kit` the
+/// design system's components.
+#[must_use]
+pub fn componentize_prompt(c: &Creation, rules: &str, kit: &str) -> String {
+    let mut text = rules.to_string();
+    text.push_str(
+        "\nThe human accepted this proof of concept's mock-up, drawn fast: its pages may carry \
+         their markup inline. Make it again of **micro-frontends**, as the product's architecture \
+         wants it, without changing what the human sees. Read every page listed in \
+         `mock/pages.json`; cut each into the Micro-UIs it is made of — a unit a user recognises \
+         (an invoice list, an upload form, a balance), named in PascalCase, its system the bounded \
+         context it belongs to — and for each one: write its fragment \
+         `mock/components/<Name>.html` (its markup, its style on the design system's variables, its \
+         script finding its root as `document.currentScript.closest('[data-component]')`, its data \
+         read from `mock/fixtures/<Name>.json`, the kit's components kept as `data-kit` elements), \
+         and list it under `components` of `mock/pages.json` (name, system, description, fragment, \
+         fixture, props; `needs` and `actions` named as the Capabilities and DataCapabilities it \
+         would read and trigger, `<system>.<verb><Thing>`). A micro-frontend shared by several pages \
+         is written once. Then rewrite each page as layout only: its regions, and in them \
+         `<div data-component=\"<Name>\" data-props='{…}'></div>` for each micro-frontend, with \
+         `<script src=\"../mock.js\"></script>` — no business markup left inline. Keep each page's \
+         look, texts, links and example data as they are. List each page's micro-frontends under its \
+         `components` in `mock/pages.json`. Say in a few lines which micro-frontends you made.\n\n",
+    );
+    if !kit.trim().is_empty() {
+        let _ = write!(
+            text,
+            "The kit's components, one line each:\n\n{}\n\n",
+            kit.trim()
+        );
+    }
+    text.push_str(&product(c));
+    text
+}
+
+/// The micro-frontends a page injects, by name, in order, each once.
+#[must_use]
+pub fn injected(html: &str) -> Vec<String> {
+    const ATTRIBUTE: &str = "data-component=";
+    let mut names: Vec<String> = Vec::new();
+    let mut rest = html;
+    while let Some(at) = rest.find(ATTRIBUTE) {
+        rest = rest.get(at + ATTRIBUTE.len()..).unwrap_or_default();
+        let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        let value = rest.get(1..).unwrap_or_default();
+        let Some(end) = value.find(quote) else {
+            break;
+        };
+        let name = value.get(..end).unwrap_or_default().trim();
+        if !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+        rest = value.get(end..).unwrap_or_default();
+    }
+    names
+}
+
+/// What keeps a mock-up from being made of micro-frontends: a page that
+/// injects none, one that injects a micro-frontend `mock/pages.json` does
+/// not list, one listed with no fragment. `pages` are each page's path and
+/// markup; `components` each listed micro-frontend and whether its fragment
+/// is there. Empty: it is.
+#[must_use]
+pub fn not_componentized(pages: &[(String, String)], components: &[(String, bool)]) -> Vec<String> {
+    if pages.is_empty() {
+        return vec!["the mock-up has no page".to_string()];
+    }
+    let mut problems = Vec::new();
+    for (path, html) in pages {
+        let names = injected(html);
+        if names.is_empty() {
+            problems.push(format!("`{path}` injects no micro-frontend"));
+        }
+        for name in names {
+            match components.iter().find(|(n, _)| *n == name) {
+                None => problems.push(format!(
+                    "`{path}` injects `{name}`, which mock/pages.json does not list"
+                )),
+                Some((_, false)) => problems.push(format!("`{name}` has no fragment")),
+                Some((_, true)) => {}
+            }
+        }
+    }
+    problems.dedup();
+    problems
+}
+
 /// The roadmap task the factory starts on: the proof of concept as decided,
 /// with the pages that mock it.
 #[must_use]
@@ -582,6 +686,7 @@ mod tests {
 
     const DESIGNED: Facts = Facts {
         design_validated: true,
+        kit_waiting: 0,
     };
 
     fn question(id: u32, answer: &str) -> Question {
@@ -878,6 +983,81 @@ mod tests {
     }
 
     #[test]
+    fn the_mockups_wait_for_the_kit_once_the_design_is_validated() {
+        let mut c = ready();
+        c.mocked = None;
+        let waiting = Facts {
+            design_validated: true,
+            kit_waiting: 2,
+        };
+        assert_eq!(
+            c.may_enter(Step::Mockups, waiting),
+            Err("let the kit's components be generated".to_string())
+        );
+        assert_eq!(c.reachable(waiting), Step::Design);
+        assert!(c.may_enter(Step::Mockups, DESIGNED).is_ok());
+    }
+
+    #[test]
+    fn regenerating_forgets_the_micro_frontends_too() {
+        let mut c = ready();
+        c.componentized = Some("three".to_string());
+        c.regenerate();
+        assert_eq!(c.componentized, None);
+    }
+
+    #[test]
+    fn the_injected_micro_frontends_are_read_in_order_each_once() {
+        let html = r#"<div data-component="InvoiceList" data-props='{}'></div>
+            <section data-component='Balance'></section><div data-component="InvoiceList"></div>
+            <p data-component=bare></p><i data-component=""></i><b data-component="Open"#;
+        assert_eq!(injected(html), ["InvoiceList", "Balance"]);
+        assert!(injected("<main>inline</main>").is_empty());
+    }
+
+    #[test]
+    fn a_mock_up_is_made_of_listed_micro_frontends_with_their_fragments() {
+        let page = |path: &str, html: &str| (path.to_string(), html.to_string());
+        let listed = [("List".to_string(), true), ("Form".to_string(), false)];
+        assert!(
+            not_componentized(
+                &[page("pages/a.html", r#"<div data-component="List"></div>"#)],
+                &listed
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            not_componentized(
+                &[
+                    page("pages/a.html", "<main>inline</main>"),
+                    page(
+                        "pages/b.html",
+                        r#"<div data-component="Form"></div><div data-component="Ghost"></div>"#
+                    ),
+                ],
+                &listed
+            ),
+            [
+                "`pages/a.html` injects no micro-frontend",
+                "`Form` has no fragment",
+                "`pages/b.html` injects `Ghost`, which mock/pages.json does not list",
+            ]
+        );
+        assert_eq!(not_componentized(&[], &listed), ["the mock-up has no page"]);
+    }
+
+    #[test]
+    fn the_componentize_prompt_keeps_the_look_and_carries_the_kit_and_the_brief() {
+        let c = ready();
+        let text = componentize_prompt(&c, "RULES", "Button: a button");
+        assert!(text.starts_with("RULES"));
+        assert!(text.contains("without changing what the human sees"));
+        assert!(text.contains("Button: a button"));
+        assert!(text.contains("a ledger"));
+        assert!(!componentize_prompt(&c, "RULES", "  ").contains("The kit's components"));
+    }
+
+    #[test]
     fn a_publication_says_whether_the_design_system_was_carried() {
         assert_eq!(
             design_published(""),
@@ -923,6 +1103,12 @@ mod tests {
         }
 
         #[test]
+        fn reading_the_injected_names_never_panics(html in ".{0,300}") {
+            let names = injected(&html);
+            prop_assert!(names.iter().all(|n| !n.is_empty() && html.contains(n.as_str())));
+        }
+
+        #[test]
         fn a_round_written_reads_back(titles in proptest::collection::vec("[a-zA-Z ]{1,20}", 0..12)) {
             let questions: Vec<String> = titles
                 .iter()
@@ -952,7 +1138,7 @@ mod tests {
                 accepted,
                 ..Creation::default()
             };
-            let facts = Facts { design_validated: designed };
+            let facts = Facts { design_validated: designed, kit_waiting: 0 };
             let far = c.reachable(facts);
             prop_assert!(c.may_enter(far, facts).is_ok());
             if let Some(next) = Step::ALL.iter().find(|s| **s > far) {

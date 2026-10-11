@@ -31,11 +31,13 @@ fn refused(why: String) -> Response {
 /// What the page draws from: this factory's creation when there is one,
 /// the job under way, how far the gates let it go.
 async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
+    let kit = desk.kit().await;
     let facts = desk.facts().await;
     json(&serde_json::json!({
         "record": record,
         "reachable": record.as_ref().map(|r| r.reachable(facts)),
         "designValidated": facts.design_validated,
+        "kit": kit,
         "job": desk.job(),
         "branch": desk.integration_branch(),
         "steps": Step::ALL,

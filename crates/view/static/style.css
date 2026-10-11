@@ -1454,4 +1454,6 @@ body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 .cr-link { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; font: 13px var(--sans); }
 .cr-link:hover, .cr-link:focus-visible { border-color: var(--accent); outline: none; }
 .cr-link .muted { font-size: 12px; }
+.cr-kit { margin-top: 10px; }
+.cr-kit .tag { margin: 0; }
 .cr-resume { display: flex; align-items: center; gap: 12px; justify-content: space-between; margin: 0; }

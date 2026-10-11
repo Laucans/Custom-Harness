@@ -70,10 +70,18 @@
   }
 
   // ---- the polling while a job runs ------------------------------------------------
+  // The kit generating on the design step: its counts follow.
+  const kitBusy = () => C.route === 'design' && !!(C.data && C.data.kit && C.data.kit.running);
   function poll() {
     clearTimeout(C.timer);
-    if (!running()) return;
+    if (!running() && !kitBusy()) return;
     C.timer = setTimeout(async () => {
+      if (kitBusy() && !running()) {
+        await read();
+        if (C.route === 'design' && !C.busy) draw();
+        poll();
+        return;
+      }
       const before = job();
       await read();
       const after = job();
@@ -82,6 +90,7 @@
       else poll();
     }, POLL_MS);
   }
+  const generateKit = () => act('starting the kit', async () => { await call('POST', '/api/kit/generate', {}); await read(); });
   function onJobEnd(before, after) {
     if (after.work === 'found' && after.state === 'done' && after.factory) return openFactory(after.factory, 'kind');
     if (after.work === 'connect' && after.state === 'done' && after.factory) return openFactory(after.factory, null);
@@ -158,6 +167,8 @@
     if (C.route === 'grilling' && !r.questions.length) once(`grill-${r.regenerations}`, () => act('the AI prepares its questions', () => post('grill')));
     if (C.route === 'scope' && !r.scope.trim()) once(`scope-${r.regenerations}`, () => act('the AI proposes the scope', () => post('scope')));
     if (C.route === 'mockups' && !r.mocked && !running() && !(job() && job().work === 'mockups')) once(`mock-${r.regenerations}`, () => act('starting the drawing', () => start('mockups')));
+    const kit = C.data.kit;
+    if (C.route === 'design' && kit && kit.validated && kit.waiting && !kit.running && !kit.noClaude) once(`kit-${r.regenerations}`, generateKit);
     if (C.route === 'review') readPages();
   }
 
@@ -179,7 +190,8 @@
     document.body.classList.remove('easel');
     await read();
     draw();
-    if (C.route === 'review') readPages();
+    enter();
+    poll();
   });
 
   // ---- drawing --------------------------------------------------------------------
@@ -301,19 +313,24 @@
   }
 
   function stepDesign() {
-    const ok = C.data.designValidated;
-    return `<p class="muted">The design system the mock-ups and the product wear: a moodboard and the logo, a brief, the tokens an AI draws from them, validated by you — then the kit of components. It lives on the <code>design-system</code> branch.</p>
-      <div class="cr-card"><div class="cr-row"><span>${ok ? '<span class="tag ok">validated</span>' : '<span class="tag warn">not validated yet</span>'}</span>
+    const k = C.data.kit || { validated: C.data.designValidated, waiting: 0, generated: 0, failed: 0, running: false, noClaude: false };
+    const ready = k.validated && !k.waiting;
+    const kitLine = !k.validated ? '<span class="muted">The kit is generated once the design system is validated.</span>'
+      : `<span class="tag ${k.waiting ? 'warn' : 'ok'}">kit: ${k.generated} generated${k.waiting ? ` · ${k.waiting} waiting` : ''}${k.failed ? ` · ${k.failed} failed` : ''}</span>${k.running ? '<span class="cr-spin" aria-hidden="true"></span><span class="muted">generating…</span>' : ''}`;
+    return `<p class="muted">The design system the mock-ups and the product wear: a moodboard and the logo, a brief, the tokens an AI draws from them, validated by you — then the kit of components, generated from it. It lives on the <code>design-system</code> branch.</p>
+      <div class="cr-card"><div class="cr-row"><span>${k.validated ? '<span class="tag ok">validated</span>' : '<span class="tag warn">not validated yet</span>'}</span>
         <button type="button" class="cr-btn on" data-cr-easel="kit">Open the design system's easel</button></div>
-        <p class="muted">Generate the kit's components there too: the mock-ups use them.</p></div>
-      <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="scope">← Back</button><button type="button" class="cr-btn on" data-cr-next="mockups"${ok ? '' : ' disabled title="Validate the design system first"'}>Continue →</button></div>`;
+        <div class="cr-row cr-kit">${kitLine}
+          ${k.validated && (k.waiting || k.failed) && !k.running ? `<button type="button" class="cr-btn" data-cr-kit${k.noClaude ? ' disabled title="No Claude at hand"' : ''}>${k.failed ? 'Generate the missing components' : 'Generate the kit'}</button>` : ''}</div>
+        ${k.failed && !k.waiting ? '<p class="muted">Some components failed: the mock-ups do without them, or generate them again.</p>' : ''}</div>
+      <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="scope">← Back</button><button type="button" class="cr-btn on" data-cr-next="mockups"${ready ? '' : ` disabled title="${k.validated ? 'Wait for the kit' : 'Validate the design system first'}"`}>Continue →</button></div>`;
   }
 
   function stepMockups(r) {
     const j = job();
     const mine = j && j.work === 'mockups';
     const failed = mine && j.state === 'failed';
-    return `<p class="muted">A Claude Code session draws the proof of concept as interactive mock-ups: one page per screen of the scope, the journeys linked, the design system's components and tokens. It takes several minutes.</p>
+    return `<p class="muted">A Claude Code session draws the proof of concept as interactive mock-ups, fast: one page per screen of the scope, the journeys linked, the design system's components and tokens. The micro-frontends come once you accept it.</p>
       ${running('mockups') ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Drawing the proof of concept…</b></div>' : ''}
       <div data-cr-job>${mine ? jobPanel() : ''}</div>
       ${r.mocked && !running('mockups') ? `<div class="callout">${esc(r.mocked)}</div>` : ''}
@@ -339,7 +356,7 @@
       <div class="cr-choices">
         <section class="cr-card"><h3>a · Request changes</h3><p class="muted">Pin requests on the pages, apply them and save — the mock-up's easel, with its pins.</p><button type="button" class="cr-btn" data-cr-easel="mockup">Open the mock-up</button></section>
         <section class="cr-card"><h3>b · Regenerate</h3><p class="muted">Back to the brief with everything filled in; the grilling keeps its questions and their answers, and may ask more.</p><button type="button" class="cr-btn" data-cr-regenerate>${C.confirm === 'regenerate' ? 'The mock-ups go. Click again' : 'Regenerate'}</button></section>
-        <section class="cr-card"><h3>c · Accept the proof of concept</h3><p class="muted">The factory is initialized on it: the design system and the mock-ups published, the roadmap task opened, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept>Accept</button></section>
+        <section class="cr-card"><h3>c · Accept the proof of concept</h3><p class="muted">An agent makes the mock-up again of micro-frontends, keeping what you saw; then the design system and the mock-up are published, the roadmap task opened, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept>Accept</button></section>
       </div>
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="mockups">← Back</button></div>`;
   }
@@ -349,7 +366,8 @@
     const mine = j && j.work === 'initialize';
     const failed = mine && j.state === 'failed';
     const done = !!r.issue && !running('initialize');
-    return `<p class="muted">The design system and the mock-ups published on the integration branch, the proof of concept's roadmap task opened, the watch started: the planner takes it from there.</p>
+    return `<p class="muted">The accepted mock-up made again of micro-frontends — you find them in the mock-up's micro-frontends view — then the design system and the mock-up published on the integration branch, the proof of concept's roadmap task opened, the watch started: the planner takes it from there.</p>
+      ${r.componentized ? `<div class="callout">${esc(r.componentized)}</div>` : ''}
       <div data-cr-job>${mine ? jobPanel() : ''}</div>
       ${r.issue ? `<p>The roadmap task: <a href="${esc(r.issue)}" target="_blank" rel="noopener">${esc(r.issue)} ↗</a></p>` : ''}
       <div class="cr-actions"><span></span>
@@ -474,6 +492,7 @@
     if (t.dataset.crEasel === 'kit') { easel({ kind: 'kit', title: 'design system', tab: 'system' }); return; }
     if (t.dataset.crEasel === 'mockup') { easel({ kind: 'mockup', title: 'mock-up', branch: C.data.branch }); return; }
     if (t.dataset.crPage) { easel({ kind: 'mockup', title: 'mock-up', branch: C.data.branch, page: t.dataset.crPage }); return; }
+    if (t.matches('[data-cr-kit]')) { generateKit(); return; }
     if (t.matches('[data-cr-draw]')) { act('starting the drawing', () => start('mockups')); return; }
     if (t.matches('[data-cr-regenerate]')) {
       if (C.confirm !== 'regenerate') { C.confirm = 'regenerate'; draw(); return; }

@@ -16,13 +16,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::data_desk::{DataDesk, Issue};
 use crate::domain::creation::{
-    self, Creation, Edit, Facts, Step, grill_prompt, mockups_prompt, parse_round, scope_prompt,
-    unfenced,
+    self, Creation, Edit, Facts, Step, componentize_prompt, grill_prompt, mockups_prompt,
+    not_componentized, parse_round, scope_prompt, unfenced,
 };
+use crate::domain::design::Entry;
 use crate::domain::divergence;
 use crate::domain::note_session::{About, mockup_rules};
-use crate::kit_desk::KitDesk;
+use crate::kit_desk::{JobState, KitDesk};
 use crate::ports::{Foundry, Mockups, Oneshot, Plant};
+use harness_architecture::kit::{ComponentState, DesignState};
 use harness_core::domain::Slug;
 use harness_core::ports::store::factories::{Factories, id_from};
 
@@ -60,6 +62,24 @@ pub struct Setup {
     pub data: Option<DataDesk>,
     /// The watch the initialization starts.
     pub plant: Option<Arc<dyn Plant>>,
+}
+
+/// The design system and its kit, counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KitStatus {
+    /// The design system is validated.
+    pub validated: bool,
+    /// Ticked components not generated yet, or generating.
+    pub waiting: usize,
+    /// Ticked components generated.
+    pub generated: usize,
+    /// Ticked components whose last generation failed.
+    pub failed: usize,
+    /// A generation is under way.
+    pub running: bool,
+    /// Nothing can generate: no Claude at hand.
+    pub no_claude: bool,
 }
 
 /// Which long job.
@@ -184,13 +204,33 @@ impl CreationDesk {
             .ok_or_else(|| "this factory is not being created".to_string())
     }
 
-    /// What the gates read outside the record: the design system validated.
+    /// The design system and its kit, as the creation page shows them;
+    /// `None` when nothing reads the product.
+    pub async fn kit(&self) -> Option<KitStatus> {
+        let reply = self.setup.kit.as_ref()?.reply().await.ok()?;
+        let ticked: Vec<&Entry> = reply.catalog.iter().filter(|e| e.checked).collect();
+        let count =
+            |states: &[ComponentState]| ticked.iter().filter(|e| states.contains(&e.state)).count();
+        Some(KitStatus {
+            validated: reply.design.design.state == DesignState::Validated,
+            waiting: count(&[ComponentState::Pending, ComponentState::Running]),
+            generated: count(&[ComponentState::Generated]),
+            failed: count(&[ComponentState::Failed]),
+            running: reply
+                .jobs
+                .iter()
+                .any(|j| matches!(j.state, JobState::Queued | JobState::Running)),
+            no_claude: reply.no_claude,
+        })
+    }
+
+    /// What the gates read outside the record: the design system validated,
+    /// its kit generated.
     pub async fn facts(&self) -> Facts {
-        let design_validated = match &self.setup.kit {
-            Some(kit) => kit.index().await.is_ok_and(|index| index.validated),
-            None => false,
-        };
-        Facts { design_validated }
+        self.kit().await.map_or_else(Facts::default, |kit| Facts {
+            design_validated: kit.validated,
+            kit_waiting: kit.waiting,
+        })
     }
 
     /// The human's edits, and the step they go to when they name one.
@@ -552,6 +592,12 @@ impl CreationDesk {
 
     async fn initialized(&self, record: Creation) -> Result<(), String> {
         let branch = self.setup.integration_branch.clone();
+        if record.componentized.is_none()
+            && let (Some(oneshot), Some(mockups)) =
+                (self.setup.oneshot.clone(), self.setup.mockups.clone())
+        {
+            self.componentize(&record, oneshot, mockups).await?;
+        }
         if let Some(kit) = &self.setup.kit {
             self.step("publishing the design system");
             match kit
@@ -646,6 +692,62 @@ impl CreationDesk {
         Ok(())
     }
 
+    /// Makes the accepted mock-up again of micro-frontends, in the
+    /// integration branch's workspace, then checks every page is made of
+    /// listed ones: what the micro-frontends' view and the code stage read.
+    async fn componentize(
+        &self,
+        record: &Creation,
+        oneshot: Arc<dyn Oneshot>,
+        mockups: Arc<dyn Mockups>,
+    ) -> Result<(), String> {
+        let branch = self.setup.integration_branch.clone();
+        let kit = match &self.setup.kit {
+            Some(kit) => kit.index().await.map(|i| i.lines()).unwrap_or_default(),
+            None => String::new(),
+        };
+        let rules = mockup_rules(&About {
+            branch: branch.clone(),
+            ..About::default()
+        });
+        let prompt = componentize_prompt(record, &rules, &kit);
+        let model = self.setup.model.clone();
+        self.step("a Claude Code session makes the mock-up again of micro-frontends");
+        let (said, problems) = tokio::task::spawn_blocking(move || {
+            let dir = mockups.workspace(&branch)?;
+            let said = oneshot.work_in(&model, &prompt, &dir)?;
+            let state = mockups.state(&branch)?;
+            let mut pages = Vec::new();
+            for page in &state.pages {
+                let html = mockups.file(&branch, &page.path)?.unwrap_or_default();
+                pages.push((
+                    page.path.clone(),
+                    String::from_utf8_lossy(&html).into_owned(),
+                ));
+            }
+            let mut components = Vec::new();
+            for c in &state.components {
+                // An empty path is no file: the port reads nothing there.
+                let there = mockups.file(&branch, &c.fragment)?.is_some();
+                components.push((c.name.clone(), there));
+            }
+            Ok::<_, String>((said, not_componentized(&pages, &components)))
+        })
+        .await
+        .map_err(|e| format!("the session did not finish: {e}"))??;
+        if !problems.is_empty() {
+            return Err(format!(
+                "the mock-up is not made of micro-frontends yet: {}",
+                problems.join("; ")
+            ));
+        }
+        self.step("every page is made of micro-frontends");
+        let _held = self.record.lock().await;
+        let mut kept = self.existing()?;
+        kept.componentized = Some(said);
+        self.keep(&kept)
+    }
+
     /// Stops what is under way.
     pub fn shutdown(&self) {
         let task = lock(&self.task).take();
@@ -722,8 +824,12 @@ mod tests {
         }
     }
 
-    /// A session that draws one page where it is put to work.
-    struct Drawer;
+    /// A session that draws one page where it is put to work, then makes
+    /// it again of one micro-frontend — or, `lazy`, lists it and never
+    /// writes its fragment.
+    struct Drawer {
+        lazy: bool,
+    }
 
     impl Oneshot for Drawer {
         fn ask(&self, _: &str, _: &str) -> Result<String, String> {
@@ -731,15 +837,40 @@ mod tests {
         }
 
         fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
+            let write = |path: &str, text: &str| -> Result<(), String> {
+                let full = dir.join(path);
+                std::fs::create_dir_all(full.parent().ok_or("no folder")?)
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(full, text).map_err(|e| e.to_string())
+            };
+            assert!(
+                prompt.contains("the branch `main_agent`"),
+                "the branch is in the prompt"
+            );
+            if prompt.contains("Make it again of **micro-frontends**") {
+                assert!(prompt.contains("a ledger"), "the brief is in the prompt");
+                if !self.lazy {
+                    write("mock/components/Home.html", "<section>home</section>")?;
+                }
+                write(
+                    "mock/pages/home.html",
+                    r#"<div data-component="Home"></div>"#,
+                )?;
+                write(
+                    "mock/pages.json",
+                    r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","components":["Home"]}],"components":[{"name":"Home","fragment":"components/Home.html"}]}"#,
+                )?;
+                return Ok("one micro-frontend: Home".to_string());
+            }
             assert!(
                 prompt.contains("## Goal\nproof"),
                 "the scope is in the prompt"
             );
-            assert!(prompt.contains("the branch `main_agent`"), "and the branch");
-            let page = dir.join("mock/pages/home.html");
-            std::fs::create_dir_all(page.parent().ok_or("no folder")?)
-                .map_err(|e| e.to_string())?;
-            std::fs::write(&page, "<main>home</main>").map_err(|e| e.to_string())?;
+            write("mock/pages/home.html", "<main>home</main>")?;
+            write(
+                "mock/pages.json",
+                r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home"}],"components":[]}"#,
+            )?;
             Ok("one page: home".to_string())
         }
     }
@@ -849,7 +980,7 @@ mod tests {
             foundry: Arc::new(Nothing),
             factories_dir: dir.join("factories"),
             integration_branch: "main_agent".to_string(),
-            oneshot: Some(Arc::new(Drawer)),
+            oneshot: Some(Arc::new(Drawer { lazy: false })),
             model: "m".to_string(),
             mockups: Some(mockups),
             kit: Some(kit),
@@ -878,6 +1009,21 @@ mod tests {
         let job = settled(&desk).await;
         assert_eq!((job.work, job.state), (Work::Initialize, State::Failed));
         assert!(job.why.contains("board"), "{}", job.why);
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s == "every page is made of micro-frontends"),
+            "{:?}",
+            job.steps
+        );
+        assert_eq!(
+            desk.record()
+                .expect("read")
+                .expect("a record")
+                .componentized
+                .as_deref(),
+            Some("one micro-frontend: Home")
+        );
         assert!(
             job.steps
                 .iter()
@@ -974,6 +1120,72 @@ mod tests {
             stopped.job().map(|j| j.state),
             Some(State::Running),
             "aborted, the job never ends"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_micro_frontend_without_its_fragment_stops_the_initialization_before_anything_is_published()
+     {
+        let dir = product("inline");
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let book = Arc::new(Book::default());
+        let record = Creation {
+            kind: Some(Kind::Vertical),
+            brief: "a ledger".to_string(),
+            scope: "## Goal\nproof".to_string(),
+            mocked: Some("drawn".to_string()),
+            questions: vec![Question {
+                id: 1,
+                title: "who".to_string(),
+                answer: "the client".to_string(),
+                ..Question::default()
+            }],
+            ..Creation::new("alpha", "me/alpha")
+        };
+        book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: Some(Arc::new(Drawer { lazy: true })),
+            model: "m".to_string(),
+            mockups: Some(Arc::clone(&mockups)),
+            kit: Some(KitDesk::new(kit_desk::Setup {
+                mockups,
+                oneshot: None,
+                model: "m".into(),
+                sessions: 1,
+                pins: Arc::new(Shelf::default()),
+                integration_branch: "main_agent".into(),
+            })),
+            data: None,
+            plant: None,
+        });
+        let kit = desk.kit().await.expect("a kit");
+        assert!(kit.validated);
+        assert_eq!((kit.waiting, kit.generated, kit.running), (0, 0, false));
+        desk.accept().await.expect("accepted");
+        let job = settled(&desk).await;
+        assert_eq!(job.state, State::Failed);
+        assert_eq!(
+            job.why,
+            "the mock-up is not made of micro-frontends yet: `Home` has no fragment"
+        );
+        assert!(
+            !job.steps.iter().any(|s| s.starts_with("publishing")),
+            "{:?}",
+            job.steps
+        );
+        assert_eq!(
+            desk.record()
+                .expect("read")
+                .expect("a record")
+                .componentized,
+            None
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
