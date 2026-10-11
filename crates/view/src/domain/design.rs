@@ -349,7 +349,19 @@ pub fn component_prompt(component: &Component, base: Option<&Base>, tokens_css: 
 pub fn rewrite_prompt(name: &str, fragment: &str, tokens_css: &str, asked: &[Asked]) -> String {
     let requests = asked
         .iter()
-        .map(|a| format!("- request `{}`: {}", a.id, a.text.trim()))
+        .map(|a| {
+            if a.target.trim().is_empty() {
+                format!("- request `{}`: {}", a.id, a.text.trim())
+            } else {
+                // The element the human picked, as a path of children from the fragment's root.
+                format!(
+                    "- request `{}`, on the element `{}`: {}",
+                    a.id,
+                    a.target.trim(),
+                    a.text.trim()
+                )
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     format!(
@@ -639,6 +651,19 @@ mod tests {
         }];
         let rewrite = rewrite_prompt("Button", "<div></div>", "", &asked);
         assert!(rewrite.contains("request `r1`: bigger"));
+        let on_part = rewrite_prompt(
+            "Table",
+            "<table></table>",
+            "",
+            &[Asked {
+                id: "r2".into(),
+                text: "bolder".into(),
+                target: "table.kit-table:nth-child(2)>thead:nth-child(1)".into(),
+            }],
+        );
+        assert!(on_part.contains(
+            "request `r2`, on the element `table.kit-table:nth-child(2)>thead:nth-child(1)`: bolder"
+        ));
         assert_eq!(
             skipped_in("<div></div>\n<!-- skipped r1: needs data -->"),
             [("r1".to_string(), "needs data".to_string())]

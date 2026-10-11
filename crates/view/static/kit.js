@@ -41,12 +41,12 @@
       + '</div>'
       + '<div class="kt-body"><div class="kt-pane kt-system" hidden></div><div class="kt-pane kt-catalogue" hidden></div><div class="kt-canvas" hidden>'
       + '<div class="kt-gallery"><div class="kt-gallery-top"><input type="search" class="kt-find" data-kt="find" maxlength="80" placeholder="Find a component — its name or its code name" aria-label="find a component" title="Press / to come here"><span class="kt-count"></span><div class="kt-chips" role="group" aria-label="show"></div></div><div class="kt-grid"></div><div class="mk-empty kt-none" hidden></div></div>'
-      + '<div class="kt-detail" hidden><div class="kt-detail-bar"></div><div class="kt-detail-save kt-save" hidden></div><div class="dm-main"><div class="dm-board kt-board"></div></div></div>'
+      + '<div class="kt-detail" hidden><div class="kt-detail-bar"></div><div class="kt-detail-save kt-save" hidden></div><div class="kt-detail-body"><div class="dm-main"><div class="dm-board kt-board"></div></div><aside class="kt-inspector" hidden></aside></div></div>'
       + '</div></div>'
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', bg: kept(BG, ''), find: '', chip: 'all', notes: [], detail: null, pinMode: false, saveOpen: false, galleryTop: 0 };
+    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', bg: kept(BG, ''), find: '', chip: 'all', notes: [], detail: null, mode: 'use', picked: null, inspectDirty: false, saveOpen: false, galleryTop: 0 };
 
     // ---- reading -------------------------------------------------------------------------------
     async function load(quiet) {
@@ -507,16 +507,20 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
     // ---- one component alone on its board ----------------------------------------------------------
     const STAGE_W = 760;
     function openDetail(name) {
-      if (!entry(name)) return;
+      if (!entry(name) || (st.detail && name !== st.detail && !leaveRetouch())) return;
       if (!st.detail) st.galleryTop = q('.kt-gallery').scrollTop;
+      if (name !== st.detail) { st.picked = null; st.inspectDirty = false; }
       st.detail = name;
       st.saveOpen = false;
-      st.pinMode = false;
+      st.mode = 'use';
       st.fittedDetail = false;
       drawCanvas(false);
     }
     function closeDetail() {
+      if (!leaveRetouch()) return;
       st.detail = null;
+      st.picked = null;
+      st.inspectDirty = false;
       drawCanvas(false);
       q('.kt-gallery').scrollTop = st.galleryTop || 0;
     }
@@ -548,12 +552,26 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       const src = previewSrc(e.name, e.draft, versionOf(e));
       let stage = content.querySelector('.kt-stage');
       if (!stage || stage.dataset.card !== e.name) {
-        content.innerHTML = `<div class="kt-stage" data-pin="kit:${esc(e.name)}" data-card="${esc(e.name)}" style="width:${STAGE_W}px"><iframe class="mk-preview" title="${esc(e.name)}"></iframe><div class="mk-shield"></div></div>`;
+        content.innerHTML = `<div class="kt-stage" data-pin="kit:${esc(e.name)}" data-card="${esc(e.name)}" style="width:${STAGE_W}px"><iframe class="mk-preview" title="${esc(e.name)}"></iframe><div class="kt-hover" hidden></div><div class="kt-pick" hidden></div><div class="mk-shield"></div></div>`;
         stage = content.querySelector('.kt-stage');
+        // Inspecting: the part under the pointer is outlined, a click picks it (a drag pans the board).
+        const shield = stage.querySelector('.mk-shield');
+        let down = null;
+        shield.addEventListener('pointermove', (ev) => { if (st.mode === 'inspect') outline('kt-hover', pickAt(ev.clientX, ev.clientY)); });
+        shield.addEventListener('pointerleave', () => outline('kt-hover', null));
+        shield.addEventListener('pointerdown', (ev) => { down = [ev.clientX, ev.clientY]; });
+        shield.addEventListener('click', (ev) => {
+          if (st.mode !== 'inspect' || (down && Math.hypot(ev.clientX - down[0], ev.clientY - down[1]) > 4)) return;
+          const el = pickAt(ev.clientX, ev.clientY);
+          const root = el && rootOf(stageFrame());
+          st.picked = el ? pathOf(el, root) : null;
+          drawInspector();
+        });
         const frame = stage.querySelector('iframe');
         frame.addEventListener('load', () => {
           paint(frame);
           sizeStage(frame);
+          drawInspector();
           // A list opened, a modal shown: the stage grows to what the component shows now.
           try {
             const doc = frame.contentDocument;
@@ -563,9 +581,14 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       }
       const frame = stage.querySelector('iframe');
       if (frame.dataset.loaded !== src) { frame.dataset.loaded = src; frame.src = src; }
-      // Used as a visitor would by default; pinned with the shield up.
-      stage.querySelector('.mk-shield').hidden = !st.pinMode;
+      // Used as a visitor would by default; inspected or pinned with the shield up.
+      stage.querySelector('.mk-shield').hidden = st.mode === 'use';
+      stage.classList.toggle('inspecting', st.mode === 'inspect');
       drawDetailBar();
+      drawInspector();
+      // The inspector takes room beside the board: the component is fitted again into what is left.
+      const narrowed = st.mode === 'inspect';
+      if (st.narrowed !== narrowed) { st.narrowed = narrowed; requestAnimationFrame(() => { if (st.board) st.board.fit(); }); }
       st.board.refresh();
     }
     function sizeStage(frame) {
@@ -597,7 +620,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           <button type="button" class="mini" data-kt="step" data-step="1" ${at < 0 || at >= list.length - 1 ? 'disabled' : ''} title="The next one of the list">›</button>
           <b class="kt-detail-title">${esc(e.title || e.name)}</b><span class="mono muted">${esc(e.name)}</span><span class="mk-card-tags">${tags}</span>
           <span class="spacer"></span>
-          <div class="mk-views" role="group" aria-label="mode"><button type="button" data-kt="mode" data-mode="use" class="${st.pinMode ? '' : 'on'}" title="Click, type, open: the component as a visitor uses it">use it</button><button type="button" data-kt="mode" data-mode="pin" class="${st.pinMode ? 'on' : ''}" title="The component holds still: drop note and request pins on it">pin it</button></div>
+          <div class="mk-views" role="group" aria-label="mode"><button type="button" data-kt="mode" data-mode="use" class="${st.mode === 'use' ? 'on' : ''}" title="Click, type, open: the component as a visitor uses it">use it</button><button type="button" data-kt="mode" data-mode="inspect" class="${st.mode === 'inspect' ? 'on' : ''}" title="Pick a part: the tokens it wears, each to swap for another of its kind">inspect</button><button type="button" data-kt="mode" data-mode="pin" class="${st.mode === 'pin' ? 'on' : ''}" title="The component holds still: drop note and request pins on it">pin it</button></div>
           ${working ? `<span class="kt-working"><span class="spin"></span> the AI rewrites it${working > 1 ? ` · ${working} in a row` : ''}</span>` : ''}
           ${pending ? `<button type="button" class="mini on" data-kt="apply" data-name="${esc(e.name)}" title="Apply the pending requests to the fragment, in one AI call">apply ${pending} request${pending === 1 ? '' : 's'}</button>` : ''}
           ${e.draft && !working ? `<button type="button" class="mini on" data-kt="save" data-name="${esc(e.name)}">save…</button><button type="button" class="mini" data-kt="drop-draft" data-name="${esc(e.name)}">drop the draft</button>` : ''}
@@ -614,6 +637,210 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         box.querySelector('.kt-fork-name').value = kept;
       }
     }
+    // ---- the inspector: a part of the component, the tokens it wears, another one of the same kind ----
+    // Picked on the stage with the shield up; named by its path of children
+    // from the fragment's root, so it is found again after a reload. A token
+    // swapped is swapped in the frame's own style at once, and kept as the
+    // component's draft — still on the variables, so the check still passes.
+    const VISUAL = /^(color|background|border|outline|box-shadow|border-radius|padding|margin|gap|font|line-height|letter-spacing|width|height|min-|max-|opacity)/;
+    const PSEUDO = /:(hover|focus-visible|focus-within|focus|active|checked|disabled)|::?(before|after|placeholder|marker)/g;
+    const stageFrame = () => q('.kt-stage iframe');
+    const rootOf = (frame) => { try { return frame.contentDocument.querySelector('[data-kit]'); } catch (e) { return null; } };
+    function pathOf(el, root) {
+      const steps = [];
+      for (let at = el; at && at !== root; at = at.parentElement) {
+        const index = Array.prototype.indexOf.call(at.parentElement.children, at) + 1;
+        const cls = at.classList && at.classList[0] ? '.' + at.classList[0] : '';
+        steps.unshift(`${at.tagName.toLowerCase()}${cls}:nth-child(${index})`);
+      }
+      return steps.join('>');
+    }
+    function elementAt(root, path) {
+      let at = root;
+      for (const step of path.split('>')) {
+        const m = /^([a-z0-9-]+)(?:\.[^:]*)?:nth-child\((\d+)\)$/.exec(step);
+        if (!m || !at) return null;
+        const next = at.children[Number(m[2]) - 1];
+        if (!next || next.tagName.toLowerCase() !== m[1]) return null;
+        at = next;
+      }
+      return at === root ? null : at;
+    }
+    // The element under a point of the screen, inside the fragment.
+    function pickAt(clientX, clientY) {
+      const frame = stageFrame();
+      const root = frame && rootOf(frame);
+      if (!root) return null;
+      const r = frame.getBoundingClientRect();
+      const k = frame.offsetWidth ? r.width / frame.offsetWidth : 1;
+      const el = frame.contentDocument.elementFromPoint((clientX - r.left) / k, (clientY - r.top) / k);
+      return el && el !== root && root.contains(el) ? el : null;
+    }
+    function outline(cls, el) {
+      const box = q('.kt-stage .' + cls);
+      if (!box) return;
+      if (!el) { box.hidden = true; return; }
+      const b = el.getBoundingClientRect();
+      Object.assign(box.style, { left: b.left + 'px', top: b.top + 'px', width: b.width + 'px', height: b.height + 'px' });
+      box.hidden = false;
+    }
+    // A declaration list split on its own semicolons, never on one inside a function.
+    function declarations(text) {
+      const out = [];
+      let depth = 0; let start = 0;
+      for (let i = 0; i < text.length; i += 1) {
+        const c = text[i];
+        if (c === '(') depth += 1;
+        else if (c === ')') depth = Math.max(0, depth - 1);
+        else if (c === ';' && !depth) { out.push(text.slice(start, i)); start = i + 1; }
+      }
+      out.push(text.slice(start));
+      return out.map((d) => d.trim()).filter(Boolean).map((d) => {
+        const colon = d.indexOf(':');
+        return { prop: d.slice(0, colon).trim(), value: d.slice(colon + 1).trim() };
+      });
+    }
+    // Every `var(--name[, fallback])` of a value: where it starts and ends, its name.
+    function varsIn(value) {
+      const found = [];
+      let from = 0;
+      for (;;) {
+        const at = value.indexOf('var(', from);
+        if (at < 0) break;
+        let depth = 0; let end = at + 3;
+        for (; end < value.length; end += 1) {
+          if (value[end] === '(') depth += 1;
+          else if (value[end] === ')') { depth -= 1; if (!depth) break; }
+        }
+        const inner = value.slice(at + 4, end);
+        const comma = inner.indexOf(',');
+        found.push({ at, end: end + 1, name: (comma < 0 ? inner : inner.slice(0, comma)).trim() });
+        from = end + 1;
+      }
+      return found;
+    }
+    // The fragment's style rules the element wears, a pseudo-state named when it takes one.
+    function rulesOf(el, root) {
+      const out = [];
+      const walk = (rules) => [...rules].forEach((rule) => {
+        if (rule.cssRules && !rule.selectorText) { walk(rule.cssRules); return; }
+        if (!rule.selectorText) return;
+        let on = '';
+        try {
+          if (!el.matches(rule.selectorText)) {
+            const plainSel = rule.selectorText.replace(PSEUDO, '');
+            if (plainSel === rule.selectorText || !plainSel.trim() || !el.matches(plainSel)) return;
+            on = (rule.selectorText.match(PSEUDO) || []).map((p) => p.replace(/^:+/, '')).join(', ');
+          }
+        } catch (e) { return; }
+        out.push({ rule, on });
+      });
+      root.querySelectorAll('style').forEach((style) => { if (style.sheet) walk(style.sheet.cssRules); });
+      return out;
+    }
+    const varOf = (path) => '--' + path.replace(/\./g, '-');
+    // The tokens a variable may give way to: those of its family — every colour, every radius, the font sizes.
+    function familyOf(name) {
+      const tokens = design().tokens || [];
+      const own = tokens.find((t) => varOf(t.path) === name);
+      if (!own) return [];
+      const [head, rest = ''] = own.path.split('.');
+      const stem = head === 'font' ? rest.split('-')[0] : '';
+      return tokens.filter((t) => { const [h, r = ''] = t.path.split('.'); return h === head && (!stem || r.split('-')[0] === stem); });
+    }
+    function drawInspector() {
+      const panel = q('.kt-inspector');
+      panel.hidden = st.mode !== 'inspect';
+      if (panel.hidden) { outline('kt-pick', null); outline('kt-hover', null); st.lastInspector = ''; return; }
+      const frame = stageFrame();
+      const root = frame && rootOf(frame);
+      const el = root && st.picked ? elementAt(root, st.picked) : null;
+      outline('kt-pick', el);
+      if (!el) {
+        show(panel, '<h4>Inspect</h4><p class="muted">Click a part of the component: the tokens it wears show here, each to swap for another of its kind.</p>');
+        return;
+      }
+      const chain = [];
+      for (let at = el; at && at !== root; at = at.parentElement) chain.unshift(at);
+      const crumbs = chain.map((at) => `<button type="button" class="kt-crumb${at === el ? ' on' : ''}" data-kt="pick" data-path="${esc(pathOf(at, root))}">${esc(at.tagName.toLowerCase() + (at.classList[0] ? '.' + at.classList[0] : ''))}</button>`).join('<span class="muted">›</span>');
+      const rows = [];
+      const literals = [];
+      rulesOf(el, root).forEach(({ rule, on }, ri) => {
+        declarations(rule.style.cssText).forEach((d, di) => {
+          const vars = varsIn(d.value);
+          if (!vars.length) { if (VISUAL.test(d.prop)) literals.push(`${d.prop}: ${d.value}${on ? ` (${on})` : ''}`); return; }
+          vars.forEach((v, vi) => {
+            const family = familyOf(v.name);
+            const options = (family.length ? family : [{ path: v.name.slice(2), value: '' }]).map((t) => `<option value="${esc(varOf(t.path))}" ${varOf(t.path) === v.name ? 'selected' : ''}>${esc(t.path)}${t.value ? ' · ' + esc(t.value) : ''}</option>`).join('');
+            rows.push(`<div class="kt-tok"><span class="kt-tok-prop mono">${esc(d.prop)}${on ? ` <small>${esc(on)}</small>` : ''}</span><select data-kt="swap" data-rule="${ri}" data-decl="${di}" data-var="${vi}" ${family.length > 1 ? '' : 'disabled title="no other token of its kind"'}>${options}</select></div>`);
+          });
+        });
+      });
+      show(panel, `<h4>Inspect</h4>
+        <div class="kt-crumbs">${crumbs}</div>
+        <div class="kt-toks">${rows.join('') || '<p class="muted">This part wears no token of its own: pick a part around it.</p>'}</div>
+        ${literals.length ? `<details class="kt-literals"><summary class="muted">${literals.length} value${literals.length === 1 ? '' : 's'} not on a token</summary>${literals.map((l) => `<div class="mono muted">${esc(l)}</div>`).join('')}</details>` : ''}
+        <div class="kt-row">${st.inspectDirty ? '<button type="button" class="mini on" data-kt="keep-retouch" title="Keep the swapped tokens as the component\'s draft: save it or drop it from the bar">keep as draft</button><button type="button" class="mini" data-kt="undo-retouch">undo</button>' : ''}<button type="button" class="mini" data-kt="pin-part" title="A request pin on this very part: the AI is told which element it is about">request on this part</button></div>`);
+    }
+    // The panel drawn again only when it changed, and never under a list being chosen from.
+    function show(panel, html) {
+      if (st.lastInspector === html || panel.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') return;
+      st.lastInspector = html;
+      panel.innerHTML = html;
+    }
+    function swapToken(select) {
+      const frame = stageFrame();
+      const root = frame && rootOf(frame);
+      const el = root && st.picked ? elementAt(root, st.picked) : null;
+      if (!el) return;
+      const found = rulesOf(el, root)[Number(select.dataset.rule)];
+      if (!found) return;
+      const decls = declarations(found.rule.style.cssText);
+      const d = decls[Number(select.dataset.decl)];
+      const v = d && varsIn(d.value)[Number(select.dataset.var)];
+      if (!v) return;
+      const token = (design().tokens || []).find((t) => varOf(t.path) === select.value);
+      // The fallback follows the token: the value it has now.
+      d.value = d.value.slice(0, v.at) + `var(${select.value}${token && token.value ? ', ' + token.value : ''})` + d.value.slice(v.end);
+      found.rule.style.cssText = decls.map((x) => `${x.prop}: ${x.value}`).join('; ');
+      st.inspectDirty = true;
+      setTimeout(() => { sizeStage(frame); drawInspector(); }, 30);
+    }
+    // The frame's styles written back into the fragment's source, kept as the draft.
+    async function keepRetouch() {
+      const e = entry(st.detail);
+      const frame = stageFrame();
+      const root = frame && rootOf(frame);
+      if (!e || !root) return;
+      const sheets = [...root.querySelectorAll('style')].map((style) => [...style.sheet.cssRules].map((r) => r.cssText).join('\n'));
+      await act(`keeping the retouch of ${e.name}`, async () => {
+        const res = await fetch(`/mock/${SLUG}/kit/${encodeURIComponent(e.name)}${e.draft ? '.draft' : ''}.html`, { cache: 'no-store' });
+        if (!res.ok) throw new Error('the fragment could not be read');
+        let k = 0;
+        const html = (await res.text()).replace(/(<style\b[^>]*>)[\s\S]*?(<\/style>)/gi, (whole, open, close) => (k < sheets.length ? open + '\n' + sheets[k++] + '\n' + close : whole));
+        await call(`/api/kit/${encodeURIComponent(e.name)}/draft`, { html });
+        st.inspectDirty = false;
+        st.rev[e.name] = (st.rev[e.name] || 0) + 1;
+      }, () => toast(`${esc(e.name)}: the retouch is its draft — save it or drop it from the bar`));
+    }
+    function undoRetouch() {
+      const frame = stageFrame();
+      st.inspectDirty = false;
+      if (frame) frame.src = frame.dataset.loaded;
+    }
+    function pinPart() {
+      const frame = stageFrame();
+      const root = frame && rootOf(frame);
+      const el = root && st.picked ? elementAt(root, st.picked) : null;
+      if (!el || !st.board) return;
+      const b = el.getBoundingClientRect();
+      const x = b.left + Math.min(b.width / 2, 24);
+      const y = b.top + Math.min(b.height / 2, 12);
+      st.board.newNote({ kind: 'request', target: 'kit:' + st.detail, part: st.picked, dx: x, dy: y, x, y });
+    }
+    // Leaving a retouch not kept asks first.
+    const leaveRetouch = () => !st.inspectDirty || window.confirm('Leave the tokens swapped here without keeping them as a draft?');
+
     function step(by) {
       const list = listed();
       const at = list.findIndex((x) => x.name === st.detail);
@@ -625,7 +852,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
     // applied go (ctrl+z on the board brings one back), the skipped stay.
     async function applyRequests(name, notes) {
       if (!name || !st.board) return;
-      const asked = notes.filter((n) => (n.text || '').trim()).map((n) => ({ id: n.id, text: n.text, target: '' }));
+      const asked = notes.filter((n) => (n.text || '').trim()).map((n) => ({ id: n.id, text: n.text, target: n.part || '' }));
       if (!asked.length) { toast('nothing to apply: write the request first'); return; }
       const action = window.HarnessActions && window.HarnessActions.start({ key: `kit-apply:${name}:${asked.map((a) => a.id).join(',')}`, label: `apply ${asked.length} request(s) to ${name}` });
       // Several at once are fine: the server rewrites a component one request after the other.
@@ -692,13 +919,11 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         case 'save': st.saveOpen = !st.saveOpen; drawDetailBar(); break;
         case 'save-replace': act(`replacing ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'replace' }), () => { toast(`${esc(name)} replaced: every page that uses it shows the new one`); st.usages = null; }); break;
         case 'save-fork': { const input = q('.kt-detail-save .kt-fork-name'); const forkName = input ? input.value.trim() : ''; act(`forking ${name}`, () => call(`/api/kit/${encodeURIComponent(name)}/save`, { how: 'fork', name: forkName }), (entries) => { const made = (entries || []).find((x) => x.variant_of === name && x.name !== name && (!forkName || x.name === forkName)); toast(`forked as <b>${esc(made ? made.name : forkName || name + '2')}</b>; ${esc(name)} is as it was`); st.usages = null; }); break; }
-        case 'mode': {
-          st.pinMode = b.dataset.mode === 'pin';
-          const shield = q('.kt-stage .mk-shield');
-          if (shield) shield.hidden = !st.pinMode;
-          drawDetailBar();
-          break;
-        }
+        case 'mode': st.mode = b.dataset.mode; drawDetail(); break;
+        case 'pick': st.picked = b.dataset.path; drawInspector(); break;
+        case 'keep-retouch': keepRetouch(); break;
+        case 'undo-retouch': undoRetouch(); break;
+        case 'pin-part': pinPart(); break;
         case 'back': closeDetail(); break;
         case 'step': step(Number(b.dataset.step) || 0); break;
         case 'chip': st.chip = b.dataset.chip; refind(); break;
@@ -708,6 +933,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       }
     });
     host.addEventListener('change', async (e) => {
+      if (e.target.matches('select[data-kt="swap"]')) { swapToken(e.target); return; }
       const t = e.target;
       if (t.matches('[data-kt="tokens-file"]') && t.files[0]) { q('.kt-json').value = await t.files[0].text(); return; }
       if (t.matches('[data-kt="mood-files"]') && t.files.length) { const files = [...t.files]; act(`keeping ${files.length} image(s)`, async () => { for (const f of files) await upload('moodboard', f); }); return; }

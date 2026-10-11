@@ -407,6 +407,32 @@ pub(super) async fn kit_save(
     outcome(desk.save(name, how).await)
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct DraftAsk {
+    #[serde(default)]
+    html: String,
+}
+
+/// A component's draft written as the human retouched it on the easel.
+pub(super) async fn kit_write_draft(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    if !kit::is_name(&name) {
+        return not_found("no such component");
+    }
+    let ask: DraftAsk = serde_json::from_slice(&body).unwrap_or_default();
+    match desk.write_draft(name, ask.html).await {
+        Ok(()) => json(&serde_json::json!({ "written": true })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
 pub(super) async fn kit_drop_draft(
     State(state): State<AppState>,
     Path(name): Path<String>,

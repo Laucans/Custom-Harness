@@ -467,6 +467,7 @@ mod tests {
             kind,
             page: String::new(),
             component: String::new(),
+            part: String::new(),
             source: String::new(),
             state: crate::domain::annotations::RequestState::Pending,
             issue: String::new(),

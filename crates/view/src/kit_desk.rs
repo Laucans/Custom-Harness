@@ -933,6 +933,38 @@ impl KitDesk {
         .await
     }
 
+    /// Writes a component's draft as the human retouched it — a token
+    /// swapped for another on the easel — when the fragment still passes
+    /// the kit's check.
+    ///
+    /// # Errors
+    ///
+    /// No such component, a fragment empty, too heavy or failing the
+    /// check, or the workspace could not be written.
+    pub async fn write_draft(&self, name: String, html: String) -> Result<(), String> {
+        if html.trim().is_empty() || html.len() > kit::MAX_FRAGMENT {
+            return Err(format!(
+                "a fragment weighs between one and {} characters",
+                kit::MAX_FRAGMENT
+            ));
+        }
+        let broken = kit::check(&html);
+        if !broken.is_empty() {
+            return Err(format!(
+                "the draft fails the kit's check: {}",
+                broken.join("; ")
+            ));
+        }
+        self.blocking(move |mockups, files| {
+            let _held = lock(files);
+            if Self::kit_of(mockups)?.component(&name).is_none() {
+                return Err(format!("no component {name}"));
+            }
+            mockups.write(BRANCH, &draft_path(&name), html.as_bytes())
+        })
+        .await
+    }
+
     /// Saves a component's draft: in the component's place, or as a fork —
     /// a new component, the origin untouched. Answers the catalogue.
     ///
@@ -1419,6 +1451,23 @@ mod tests {
             .await
             .expect("applied");
         assert!(skipped.is_empty());
+        // A draft retouched on the easel: kept when it passes the check, refused otherwise.
+        assert!(
+            desk.write_draft(
+                "Hero".into(),
+                "<style>.kit-hero { color: #ff0000; }</style><div class=\"kit-hero\">x</div>"
+                    .into()
+            )
+            .await
+            .is_err()
+        );
+        desk.write_draft(
+            "Hero".into(),
+            "<style>.kit-hero { color: var(--color-text, #111111); }</style><div class=\"kit-hero\">x</div>".into(),
+        )
+        .await
+        .expect("a draft that passes the check");
+        assert!(desk.write_draft("Nobody".into(), "<style>.kit-x { color: var(--color-text, #111111); }</style><div class=\"kit-x\">x</div>".into()).await.is_err());
         let entries = desk
             .save(
                 "Hero".into(),

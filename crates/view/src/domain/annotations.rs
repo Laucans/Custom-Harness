@@ -166,6 +166,10 @@ pub struct Note {
     /// For a design: the micro-frontend's name, `RiskBadge`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub component: String,
+    /// The part of its target the pin is about, when the human picked one —
+    /// an element of a kit component, `table.kit-table:nth-child(2)>thead:nth-child(1)`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub part: String,
     /// A reference the session draws from: a Figma frame's link, a page
     /// elsewhere. A URL, or empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -420,6 +424,7 @@ mod tests {
             kind: Kind::Note,
             page: String::new(),
             component: String::new(),
+            part: String::new(),
             source: String::new(),
             state: RequestState::Pending,
             issue: String::new(),

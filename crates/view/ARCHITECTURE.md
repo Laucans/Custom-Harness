@@ -635,7 +635,17 @@ and the toast says why. Three tabs:
   component's pins only, `only` in `board.js`): zoomed, **used** as a
   visitor would by default, **pinned** with its shield up, the previous and
   the next of the list a click away, and the gallery found where it was
-  left. The bar's **component background** paints every preview: the design
+  left. **Inspect** picks a part of it — named by its path of children from
+  the fragment's root, found again after a reload — and lists the tokens
+  its rules wear, each swappable for another of its family (every colour,
+  every radius, the font sizes): swapped in the frame at once, then **kept
+  as the draft** (`POST /api/kit/{name}/draft`, the frame's styles written
+  back into the fragment, refused when it fails `kit::check`), saved or
+  dropped like an AI's. No Figma-like editor here on purpose: moving or
+  recolouring by hand would write literals the kit refuses and part from
+  the classes the real frontend reproduces. **Request on this part** drops
+  a request pin carrying the part (`Note::part`), which the rewrite prompt
+  names to the AI. The bar's **component background** paints every preview: the design
   system's `color.surface` by default, another colour the viewer picks kept
   in their browser. **Apply** on a component rewrites the fragment from its
   requests in one question, kept as the component's **draft**

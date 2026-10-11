@@ -1271,3 +1271,23 @@ body.picking, body.picking * { user-select: none; }
 .kt-detail-save { margin: 0 16px; }
 .kt-stage { position: absolute; left: 0; top: 0; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); background: var(--kt-bg, #fff); }
 .kt-stage iframe { width: 100%; height: 240px; border: 0; display: block; background: var(--kt-bg, #fff); }
+.kt-detail-body { flex: 1; min-height: 0; display: flex; }
+.kt-detail-body > .dm-main { flex: 1; min-width: 0; }
+.kt-inspector { width: 300px; flex: none; overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 8px; }
+.kt-inspector[hidden] { display: none; }
+.kt-inspector h4 { margin: 0; font: 600 13px var(--sans); color: var(--text); }
+.kt-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.kt-crumb { font: 11px var(--mono); padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--dim); cursor: pointer; }
+.kt-crumb.on, .kt-crumb:hover { color: var(--pin-design); border-color: var(--pin-design); }
+.kt-toks { display: flex; flex-direction: column; gap: 6px; }
+.kt-tok { display: grid; grid-template-columns: 1fr; gap: 3px; }
+.kt-tok-prop { color: var(--text); font-size: 11px; }
+.kt-tok-prop small { color: var(--dim); }
+.kt-tok select { font: 12px var(--sans); padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+.kt-literals summary { cursor: pointer; }
+.kt-literals div { font-size: 11px; padding-left: 8px; }
+.kt-stage .kt-pick, .kt-stage .kt-hover { position: absolute; pointer-events: none; box-sizing: border-box; border-radius: 2px; }
+.kt-stage .kt-pick { outline: 2px solid var(--pin-design); background: rgba(45, 212, 191, 0.10); }
+.kt-stage .kt-hover { outline: 1px dashed var(--pin-design); }
+.kt-stage .kt-pick[hidden], .kt-stage .kt-hover[hidden] { display: none; }
+.kt-stage.inspecting .mk-shield { cursor: crosshair; }

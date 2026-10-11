@@ -77,7 +77,7 @@ use design::{
     design_asset, design_asset_remove, design_discard, design_drop_candidate, design_generate,
     design_publish, design_reply, design_tokens, design_validate, kit_apply, kit_checked,
     kit_custom, kit_delete, kit_drop_draft, kit_generate, kit_preview, kit_reprompt, kit_save,
-    kit_showcase, kit_usages,
+    kit_showcase, kit_usages, kit_write_draft,
 };
 use desks::{ask_doctor, diagnose, diagnoses, doctor, doctor_term, steward, steward_term};
 use drafts::{
@@ -285,6 +285,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/kit/{name}/prompt", post(kit_reprompt))
         .route("/api/kit/{name}/apply", post(kit_apply))
         .route("/api/kit/{name}/save", post(kit_save))
+        .route("/api/kit/{name}/draft", post(kit_write_draft))
         .route("/api/kit/{name}/draft/drop", post(kit_drop_draft))
         .route("/api/notes", get(all_notes))
         .route("/api/notes/{board}", get(notes))
