@@ -110,8 +110,11 @@ Proposal, in three parts:
    aggregate as `target.aggregate` names it in the manifest. `Declaration`
    parses it; `runnable_tasks` holds back a task whose aggregate another
    running write-side task already declares. Two aggregates run together.
-   (This is the third change made alongside; the line is what `/split` must
-   now write.)
+   (Done alongside: `Declaration.aggregate`, `held_aggregate`,
+   `tasks::startable_tasks`, called by the lanes. The line is what `/split`
+   must now write — its skill names it; the plan's JSON has the field. A
+   task without the line holds nothing, so nothing changes until `/split`
+   writes it.)
 2. **`/split` cuts the data layer per aggregate, not as one task.** Today it
    opens the data layer as ONE task ("mutations are serialized behind the
    DataGuard, and so is this"). That reasoning conflated the queue's
