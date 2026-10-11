@@ -13,6 +13,7 @@
 //! thread and never held across an `.await`.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -124,6 +125,42 @@ pub struct KitDesk {
     /// component at once run one after the other, each on the last one's
     /// draft, so none is lost.
     rewriting: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
+}
+
+/// The kit as a micro-frontend's generation reads it, without its code.
+#[derive(Debug, Clone, Default)]
+pub struct KitIndex {
+    /// The design system is validated: missing components may be generated.
+    pub validated: bool,
+    /// Every generated component: its name, its index line, its skeleton.
+    pub components: Vec<(String, String, String)>,
+    /// The design system's variables, by name.
+    pub tokens: Vec<String>,
+}
+
+impl KitIndex {
+    /// The index, one line a component.
+    #[must_use]
+    pub fn lines(&self) -> String {
+        self.components
+            .iter()
+            .fold(String::new(), |mut out, (_, line, _)| {
+                let _ = writeln!(out, "{line}");
+                out
+            })
+    }
+
+    /// The skeletons of the components named, those the kit has.
+    #[must_use]
+    pub fn skeletons(&self, names: &[String]) -> String {
+        self.components
+            .iter()
+            .filter(|(name, _, _)| names.iter().any(|n| n == name))
+            .fold(String::new(), |mut out, (name, _, shape)| {
+                let _ = writeln!(out, "{name}: {shape}");
+                out
+            })
+    }
 }
 
 /// A custom component added: the name it was given, and the catalogue.
@@ -1224,6 +1261,76 @@ impl KitDesk {
         .await
     }
 
+    /// The kit as a micro-frontend's generation reads it: a line and a
+    /// skeleton per generated component, the variables by name — never the
+    /// fragments themselves.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be read.
+    pub async fn index(&self) -> Result<KitIndex, String> {
+        self.blocking(|mockups, files| {
+            let _held = lock(files);
+            let kit = Self::kit_of(mockups)?;
+            let mut components = Vec::new();
+            for c in kit
+                .components
+                .iter()
+                .filter(|c| c.state == ComponentState::Generated)
+            {
+                if let Some(fragment) = Self::text_of(mockups, &Kit::fragment_path(&c.name))? {
+                    components.push((
+                        c.name.clone(),
+                        kit::index_line(c, &fragment),
+                        kit::skeleton(&fragment),
+                    ));
+                }
+            }
+            let css = Self::text_of(mockups, design::TOKENS_CSS)?.unwrap_or_default();
+            let tokens = css
+                .split([';', '{', '\n'])
+                .filter_map(|decl| decl.trim().split_once(':'))
+                .map(|(name, _)| name.trim())
+                .filter(|name| name.starts_with("--"))
+                .map(str::to_string)
+                .collect();
+            Ok(KitIndex {
+                validated: Self::design_of(mockups)?.state == DesignState::Validated,
+                components,
+                tokens,
+            })
+        })
+        .await
+    }
+
+    /// The component a human's name stands for, whatever its state — so
+    /// what is asked twice is made once.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be read.
+    pub async fn titled(&self, title: String) -> Result<Option<String>, String> {
+        let title = title.trim().to_lowercase();
+        self.blocking(move |mockups, files| {
+            let _held = lock(files);
+            Ok(Self::kit_of(mockups)?
+                .components
+                .iter()
+                .find(|c| c.title.trim().to_lowercase() == title)
+                .map(|c| c.name.clone()))
+        })
+        .await
+    }
+
+    /// Where a component's generation stands, when one was asked.
+    #[must_use]
+    pub fn job_of(&self, name: &str) -> Option<(JobState, String)> {
+        lock(&self.jobs)
+            .iter()
+            .find(|j| j.name == name)
+            .map(|j| (j.state, j.why.clone()))
+    }
+
     /// Stops the generations: the sessions finish the component they are
     /// on and take no other. The view is going away.
     pub fn shutdown(&self) {
@@ -1243,7 +1350,7 @@ fn draft_path(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::adapters::mockups::DirMockups;
     use crate::domain::annotations::Note;
@@ -1251,7 +1358,7 @@ mod tests {
 
     /// A store in memory.
     #[derive(Default)]
-    struct Shelf {
+    pub struct Shelf {
         notes: Mutex<Vec<(String, KeptNote)>>,
     }
 

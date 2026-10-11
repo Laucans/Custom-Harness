@@ -61,6 +61,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         note_desks: None,
         mockups: None,
         kit: None,
+        mf: None,
         builds: None,
         integration_branch: "main_agent".to_string(),
         prompts: Arc::new(Book::default()),

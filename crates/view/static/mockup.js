@@ -73,7 +73,9 @@
       + '<button type="button" class="mini mk-only-page" data-mk="edit" aria-pressed="false" title="Design the page: select, drag, resize, align, insert — every change a step of the page\'s draft">edit</button>'
       + '<button type="button" class="mini mk-only-page" data-mk="interact" aria-pressed="false" title="Click through to the page itself: its links, its buttons">interact</button>'
       + '<button type="button" class="mini" data-mk="full" aria-pressed="false" title="The mock-up over the whole window (Esc leaves)">⛶</button>'
-      + '<button type="button" class="mini mk-only-components" data-mk="design" hidden title="A new micro-frontend, made by an AI session from its spec">+ micro-frontend</button>'
+      + '<button type="button" class="mini mk-only-components" data-mk="design" hidden title="A new micro-frontend, from its spec: generated, or made with an AI session">+ micro-frontend</button>'
+      + '<button type="button" class="mini on mk-only-components" data-mk="generate-all" hidden title="Generate every micro-frontend not mocked yet, several at once — the kit makes what they lack first">generate</button>'
+      + '<span class="mk-gens mk-only-components" hidden></span>'
       + '<span class="spacer"></span>'
       + '<span class="mk-state"></span>'
       + '<input class="mk-name" maxlength="80" placeholder="name of the mock-up" hidden aria-label="name of the mock-up">'
@@ -117,7 +119,7 @@
       // The design system's kit, for the search field of the tools; the component picked to drop.
       kit: null, kitPick: '',
       // The micro-frontends view: its gallery, the one opened alone, its mode, the part picked, the units read.
-      mfGallery: null, mfDetail: (opts && opts.mf) || null, mfMode: 'use', mfPicked: null, mfTop: 0, mfH: 0, mfFitted: false, caps: null, capsAt: 0 };
+      gens: [], mfGallery: null, mfDetail: (opts && opts.mf) || null, mfMode: 'use', mfPicked: null, mfTop: 0, mfH: 0, mfFitted: false, caps: null, capsAt: 0 };
 
     // ---- what the branch knows of its micro-frontends ----------------------------------
     const components = () => {
@@ -828,7 +830,9 @@
     function mfFoot(c) {
       const tags = [
         c.variantOf ? `<i>fork of ${esc(c.variantOf)}</i>` : '',
-        c.mocked ? (c.source ? '<i class="acc">real code</i>' : '<i>hand-written</i>') : '<i class="bad">not mocked</i>',
+        genOf(c.name) && genBusy(genOf(c.name)) ? `<i class="acc"><span class="spin"></span> ${esc(genLabel(genOf(c.name)))}</i>` : '',
+        genOf(c.name) && genOf(c.name).step === 'done' && genOf(c.name).why ? `<i class="bad" title="${esc(genOf(c.name).why)}">generated, untagged parts</i>` : '',
+        c.mocked ? (c.source ? '<i class="acc">real code</i>' : genOf(c.name) && genOf(c.name).step === 'done' ? '<i class="acc">generated</i>' : '<i>hand-written</i>') : '<i class="bad">not mocked</i>',
         c.actions.length ? `<i>${c.actions.length} write${c.actions.length === 1 ? '' : 's'}</i>` : '',
         c.needs.length ? `<i>${c.needs.length} read${c.needs.length === 1 ? '' : 's'}</i>` : '',
         c.pages.length ? '' : '<i class="bad">on no page</i>',
@@ -853,7 +857,9 @@
         src: (c) => (c.mocked && !c.variantOf ? previewSrc(c.name) : ''),
         body: (c) => (c.variantOf
           ? 'a copy made on a page: shown there, saved with the mock-up'
-          : `no fragment yet${c.built ? ' — the Micro-UI exists under apps/, its mock does not' : ''}<button type="button" class="mini on" data-mock-card="${esc(c.name)}">mock it with an AI session</button>`),
+          : genOf(c.name) && genBusy(genOf(c.name))
+            ? `<span class="spin"></span> ${esc(genLabel(genOf(c.name)))}`
+            : `no fragment yet${c.built ? ' — the Micro-UI exists under apps/, its mock does not' : ''}${genOf(c.name) && genOf(c.name).step === 'failed' ? `<span class="bad">${esc(genOf(c.name).why)}</span>` : ''}<span><button type="button" class="mini on" data-mf="generate" data-name="${esc(c.name)}">generate it</button> <button type="button" class="mini" data-mock-card="${esc(c.name)}">AI session</button></span>`),
         foot: mfFoot,
         empty: (total, find, chip) => (total
           ? `<h2>No micro-frontend matches</h2><p>Nothing here is named like <b>${esc(find)}</b>${chip ? ` among the <b>${esc(chip)}</b>` : ''}.</p>`
@@ -912,6 +918,35 @@
       if (!st.gone && st.mfDetail) drawRules();
     }
     const unitOf = (id) => (st.caps ? st.caps.get(lower(id)) : null);
+
+    // ---- the generations: on the kit's model, the kit making what they lack first ------------------
+    const genOf = (name) => (st.gens || []).find((j) => j.name === name) || null;
+    const genBusy = (j) => ['queued', 'planning', 'kit', 'writing'].includes(j.step);
+    const genLabel = (j) => ({ queued: 'waiting for a session', planning: 'planning its components', kit: `the kit makes ${(j.made || []).join(', ') || 'what it lacks'}`, writing: 'writing it' }[j.step] || j.step);
+    async function generateMfs(list) {
+      const items = list.map((c) => ({ name: c.name, system: c.system || '', description: c.description || '', needs: c.needs || [], actions: c.actions || [], props: c.props || {} }));
+      if (!items.length) { toast('nothing to generate: every micro-frontend is mocked'); return; }
+      try {
+        const res = await fetch('/api/mockup/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, items }) });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text);
+        toast(`${items.length === 1 ? esc(items[0].name) : items.length + ' micro-frontends'}: generating — the kit makes what they lack first`);
+        await loadGens();
+        mountMf();
+      } catch (e) { toast(esc(String(e.message || e).split('\n')[0])); }
+    }
+    async function loadGens() {
+      try {
+        const res = await fetch('/api/mockup/generations?' + new URLSearchParams({ branch: st.branch }));
+        st.gens = res.ok ? await res.json() : [];
+      } catch (e) { st.gens = st.gens || []; }
+      const busy = st.gens.filter(genBusy).length;
+      const failed = st.gens.filter((j) => j.step === 'failed').length;
+      const span = q('.mk-gens');
+      if (span) span.innerHTML = busy ? `<span class="spin"></span> ${busy} generating` : failed ? `<span class="bad" title="${esc(st.gens.filter((j) => j.step === 'failed').map((j) => `${j.name}: ${j.why}`).join('\n'))}">${failed} failed</span>` : '';
+      const all = q('[data-mk="generate-all"]');
+      if (all) { const n = components().filter((c) => !c.mocked && !c.variantOf && !(genOf(c.name) && genBusy(genOf(c.name)))).length; all.textContent = n ? `generate ${n}` : 'generate'; all.disabled = !n; }
+    }
 
     // ---- the stage: the micro-frontend alone, used or inspected --------------------------------
     const mfFrame = () => q('.mk-board .mk-stage iframe');
@@ -1135,10 +1170,10 @@
         : '<span class="hb-empty">none declared on this branch</span>');
       form.innerHTML = '<div class="mk-form-row"><input name="name" maxlength="80" placeholder="Name, like RiskBadge" aria-label="name"><input name="system" maxlength="40" placeholder="system" aria-label="system"><input name="description" maxlength="300" placeholder="What it shows and lets the user do" aria-label="description"></div>'
         + `<div class="mk-form-row"><div class="mk-form-pick"><b>needs</b>${pick('needs', capabilities())}</div><div class="mk-form-pick"><b>actions</b>${pick('actions', dataCapabilities())}</div><textarea name="props" rows="2" placeholder="props, one per line: customerId: ID"></textarea></div>`
-        + '<div class="mk-form-row"><span class="mk-form-state"></span><span class="spacer"></span><button type="button" class="mini" data-mk="form-cancel">cancel</button><button type="button" class="mini on" data-mk="form-make">Make it with an AI session</button></div>';
+        + '<div class="mk-form-row"><span class="mk-form-state"></span><span class="spacer"></span><button type="button" class="mini" data-mk="form-cancel">cancel</button><button type="button" class="mini" data-mk="form-make" title="An interactive session writes it with you">make it with an AI session</button><button type="button" class="mini on" data-mk="form-generate" title="Generated in one go, as the kit\'s components are: the kit makes what it lacks first">generate it</button></div>';
       form.querySelector('[name="name"]').focus();
     }
-    function makeFromForm() {
+    function makeFromForm(generate) {
       const form = q('.mk-form');
       const v = (n) => (form.querySelector(`[name="${n}"]`) || {}).value || '';
       const name = v('name').trim();
@@ -1151,6 +1186,7 @@
       };
       drawForm(false);
       if (st.view !== 'components') { setView('components'); }
+      if (generate) { generateMfs([spec]); return; }
       const id = st.board.newNote({ kind: 'design', component: name, text: specOf(spec), target: '' });
       st.board.session(id);
     }
@@ -1187,6 +1223,11 @@
       }
       drawBar();
       drawStrip();
+      if (st.view === 'components') {
+        const was = JSON.stringify(st.gens || []);
+        await loadGens();
+        if (was !== JSON.stringify(st.gens) && st.board && st.board.id === boardOf()) mountMf();
+      }
       const listChanged = before && JSON.stringify(before.components) + JSON.stringify(before.units) !== JSON.stringify(reply.components) + JSON.stringify(reply.units);
       const pageChanged = !before || !st.board || st.board.id !== boardOf();
       if (pageChanged) { st.stamp = reply.stamp; mountBoard(); }
@@ -1354,7 +1395,9 @@
       if (mk.dataset.mk === 'full') setFull(!st.full);
       if (mk.dataset.mk === 'design') drawForm(q('.mk-form').hidden);
       if (mk.dataset.mk === 'form-cancel') drawForm(false);
-      if (mk.dataset.mk === 'form-make') makeFromForm();
+      if (mk.dataset.mk === 'form-make') makeFromForm(false);
+      if (mk.dataset.mk === 'form-generate') makeFromForm(true);
+      if (mk.dataset.mk === 'generate-all') generateMfs(components().filter((c) => !c.mocked && !c.variantOf && !genOf(c.name)));
       if (mk.dataset.mk === 'save') save();
       if (mk.dataset.mk === 'discard') discard();
     };
@@ -1401,6 +1444,7 @@
         case 'step': stepMf(Number(b.dataset.step) || 0); break;
         case 'mode': st.mfMode = b.dataset.mode; if (st.mfMode === 'use') st.mfPicked = null; drawMf(); break;
         case 'open-kit': openKit(b.dataset.kit); break;
+        case 'generate': { const c = componentOf(b.dataset.name); if (c) generateMfs([c]); break; }
         default: break;
       }
     });

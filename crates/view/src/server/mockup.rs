@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::annotations;
 use crate::domain::drafts::{self};
+use crate::domain::mf_gen;
 use crate::domain::mockup;
 use crate::ports::MockState;
 use harness_architecture::kit;
 
+use super::capabilities::catalogue_of;
 use super::drafts::draft_board;
 use super::notes::NO_SESSIONS;
 use super::{AppState, json, not_found};
@@ -38,6 +40,10 @@ pub(super) async fn mock_file(
     }
     let wanted = path.clone();
     let read = tokio::task::spawn_blocking(move || {
+        // The kit's look, as the design system's branch has its components now — published or not.
+        if wanted == kit::KIT_CSS {
+            return Ok(Some(kit_stylesheet(mockups.as_ref())?.into_bytes()));
+        }
         let found = mockups.file(&branch, &wanted)?;
         // The kit and the tokens live on the design system's branch: a page
         // of any branch finds them beside itself. A loader older than the
@@ -206,6 +212,75 @@ pub(super) async fn mockup_save(State(state): State<AppState>, body: Bytes) -> R
         Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the save was dropped").into_response(),
     }
+}
+
+/// `kit.css` derived from the design system's branch: every generated
+/// component's style.
+fn kit_stylesheet(mockups: &dyn crate::ports::Mockups) -> Result<String, String> {
+    let text = |path: &str| -> Result<Option<String>, String> {
+        Ok(mockups
+            .file(kit::DESIGN_BRANCH, path)?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    let catalogue = kit::Kit::parse(text("kit/kit.json")?.as_deref())?;
+    let mut parts = Vec::new();
+    for c in catalogue
+        .components
+        .iter()
+        .filter(|c| c.state == kit::ComponentState::Generated)
+    {
+        if let Some(fragment) = text(&kit::Kit::fragment_path(&c.name))? {
+            parts.push((c.name.clone(), fragment));
+        }
+    }
+    Ok(kit::stylesheet(&parts))
+}
+
+/// The micro-frontends to generate on a branch, as the page asks for them.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct GenerateAsk {
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    items: Vec<mf_gen::Spec>,
+}
+
+/// Queues micro-frontends' generations on a branch, each with the brief of
+/// the units it reads and writes — their contracts and rules, on every branch.
+pub(super) async fn mf_generate(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(desk) = state.mf.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let ask: GenerateAsk = serde_json::from_slice(&body).unwrap_or_default();
+    let branch = branch_or_integration(&state, Some(ask.branch));
+    let entries = catalogue_of(&state, false, None)
+        .await
+        .map(|c| c.entries)
+        .unwrap_or_default();
+    let items = ask
+        .items
+        .into_iter()
+        .map(|spec| {
+            let brief = mf_gen::units_brief(&spec, &entries);
+            (spec, brief)
+        })
+        .collect();
+    match desk.start(&branch, items) {
+        Ok(queued) => json(&serde_json::json!({ "queued": queued })),
+        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    }
+}
+
+/// The micro-frontends' generations asked on a branch.
+pub(super) async fn mf_generations(
+    State(state): State<AppState>,
+    Query(query): Query<MockupQuery>,
+) -> Response {
+    let Some(desk) = state.mf.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let branch = branch_or_integration(&state, query.branch);
+    json(&desk.jobs(&branch))
 }
 
 /// Drops what the sessions changed: the branch's mock-up as committed.

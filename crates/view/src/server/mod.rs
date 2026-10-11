@@ -56,6 +56,7 @@ use crate::domain::limits::Read;
 use crate::domain::snapshot::Snapshot;
 use crate::janitor::Janitor;
 use crate::kit_desk::KitDesk;
+use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
     BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Plant, Prompts, Traces, Trials,
@@ -86,8 +87,8 @@ use drafts::{
 };
 use janitor::{janitor, janitor_diagnose, janitor_settings, janitor_sweep};
 use mockup::{
-    apply_requests, mock_file, mock_preview, mockup_discard, mockup_save, mockup_state,
-    mockup_write,
+    apply_requests, mf_generate, mf_generations, mock_file, mock_preview, mockup_discard,
+    mockup_save, mockup_state, mockup_write,
 };
 use notes::{
     all_notes, backlog_note, close_session, delete_note, notes, open_session, put_note,
@@ -155,6 +156,8 @@ pub struct AppState {
     pub mockups: Option<Arc<dyn Mockups>>,
     /// The design system's easel — `None` when nothing can read the product.
     pub kit: Option<KitDesk>,
+    /// The micro-frontends' generations — `None` when nothing can read the product.
+    pub mf: Option<MfDesk>,
     /// The prompt book, read only, and the drafts the human leaves for the
     /// next start.
     pub prompts: Arc<dyn Prompts>,
@@ -250,6 +253,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model/issue", post(data_issue))
         .route("/api/mockup", get(mockup_state))
         .route("/api/mockup/save", post(mockup_save))
+        .route("/api/mockup/generate", post(mf_generate))
+        .route("/api/mockup/generations", get(mf_generations))
         .route("/api/mockup/discard", post(mockup_discard))
         .route("/api/capabilities", get(capability_list))
         .route("/api/capabilities/fusion", post(capability_fusion))

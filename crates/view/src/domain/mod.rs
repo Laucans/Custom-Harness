@@ -18,6 +18,7 @@ pub mod gates;
 pub mod history;
 pub mod journal;
 pub mod limits;
+pub mod mf_gen;
 pub mod mockup;
 pub mod note_session;
 pub mod observe;

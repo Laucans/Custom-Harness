@@ -1074,6 +1074,204 @@ pub fn used_in(html: &str) -> Vec<String> {
     names
 }
 
+/// The most a skeleton weighs, in characters: a few lines of a prompt.
+pub const MAX_SKELETON: usize = 1_200;
+
+/// The elements that never close.
+const VOID: [&str; 8] = ["input", "br", "img", "hr", "meta", "link", "source", "wbr"];
+
+/// The attributes a skeleton keeps: what says which part is which.
+const KEPT: [&str; 4] = ["class", "type", "role", "aria-checked"];
+
+/// A fragment as a model needs it to reuse the component, and no more.
+///
+/// Its elements and their classes, the `<style>`, the `<script>` and the
+/// comments gone, a sibling repeated kept once, every text an ellipsis —
+/// `<table class="kit-table"><thead><tr><th>…</th></tr></thead>…`. What a
+/// micro-frontend's generation reads of the kit instead of its code: the
+/// look is `kit.css`'s, the micro-frontend writes the markup with its data.
+#[must_use]
+pub fn skeleton(fragment: &str) -> String {
+    let text = without_blocks(fragment);
+    let mut out = String::new();
+    // Per depth, the signatures of the siblings already written.
+    let mut seen: Vec<Vec<String>> = vec![Vec::new()];
+    let mut skipping: Option<usize> = None;
+    let mut depth = 0usize;
+    let mut texted = false;
+    let mut rest = text.as_str();
+    while let Some(lt) = rest.find('<') {
+        let words = rest.get(..lt).unwrap_or_default();
+        if skipping.is_none() && !words.trim().is_empty() && !texted {
+            out.push('…');
+            texted = true;
+        }
+        let after = rest.get(lt.saturating_add(1)..).unwrap_or_default();
+        let Some(gt) = after.find('>') else {
+            break;
+        };
+        let tag = after.get(..gt).unwrap_or_default().trim();
+        rest = after.get(gt.saturating_add(1)..).unwrap_or_default();
+        if let Some(closing) = tag.strip_prefix('/') {
+            depth = depth.saturating_sub(1);
+            seen.truncate(depth.saturating_add(1));
+            if skipping == Some(depth) {
+                skipping = None;
+            } else if skipping.is_none() {
+                let _ = write!(out, "</{}>", closing.trim().to_ascii_lowercase());
+                texted = false;
+            }
+            continue;
+        }
+        let (name, attributes) = tag_of(tag);
+        if name.is_empty() || name.starts_with('!') {
+            continue;
+        }
+        let void = VOID.contains(&name.as_str()) || tag.ends_with('/');
+        if skipping.is_none() {
+            let class = attributes
+                .iter()
+                .find(|(k, _)| k == "class")
+                .map(|(_, v)| v.as_str())
+                .unwrap_or_default();
+            let signature = format!("{name}.{class}");
+            let siblings = seen.last_mut();
+            if siblings.as_ref().is_some_and(|s| s.contains(&signature)) {
+                if !void {
+                    skipping = Some(depth);
+                }
+            } else {
+                if let Some(siblings) = siblings {
+                    siblings.push(signature);
+                }
+                out.push('<');
+                out.push_str(&name);
+                for (key, value) in attributes
+                    .iter()
+                    .filter(|(k, _)| KEPT.contains(&k.as_str()))
+                {
+                    let _ = write!(out, " {key}=\"{value}\"");
+                }
+                out.push('>');
+                texted = false;
+            }
+        }
+        if !void {
+            depth = depth.saturating_add(1);
+            seen.push(Vec::new());
+        }
+    }
+    if out.chars().count() > MAX_SKELETON {
+        out = out.chars().take(MAX_SKELETON).collect();
+        out.push('…');
+    }
+    out
+}
+
+/// A fragment without its `<style>`, `<script>` and comments.
+fn without_blocks(fragment: &str) -> String {
+    let mut out = String::with_capacity(fragment.len());
+    let mut rest = fragment;
+    loop {
+        let next = [
+            ("<style", "</style>"),
+            ("<script", "</script>"),
+            ("<!--", "-->"),
+        ]
+        .iter()
+        .filter_map(|(open, close)| rest.find(open).map(|at| (at, *close)))
+        .min_by_key(|(at, _)| *at);
+        let Some((at, close)) = next else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(rest.get(..at).unwrap_or_default());
+        let after = rest.get(at..).unwrap_or_default();
+        rest = after
+            .find(close)
+            .and_then(|end| after.get(end.saturating_add(close.len())..))
+            .unwrap_or_default();
+    }
+    out
+}
+
+/// An opening tag's name, lower case, and its attributes in order.
+fn tag_of(tag: &str) -> (String, Vec<(String, String)>) {
+    let tag = tag.trim_end_matches('/').trim();
+    let name_end = tag.find(char::is_whitespace).unwrap_or(tag.len());
+    let name = tag.get(..name_end).unwrap_or_default().to_ascii_lowercase();
+    let mut attributes = Vec::new();
+    let mut rest = tag.get(name_end..).unwrap_or_default().trim_start();
+    while !rest.is_empty() {
+        let key_end = rest
+            .find(|c: char| c == '=' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let key = rest.get(..key_end).unwrap_or_default().to_ascii_lowercase();
+        rest = rest.get(key_end..).unwrap_or_default().trim_start();
+        let mut value = String::new();
+        if let Some(after) = rest.strip_prefix('=') {
+            let after = after.trim_start();
+            let quote = after.chars().next().filter(|c| *c == '"' || *c == '\'');
+            if let Some(q) = quote {
+                let inner = after.get(1..).unwrap_or_default();
+                let end = inner.find(q).unwrap_or(inner.len());
+                value = inner.get(..end).unwrap_or_default().to_string();
+                rest = inner.get(end.saturating_add(1)..).unwrap_or_default();
+            } else {
+                let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                value = after.get(..end).unwrap_or_default().to_string();
+                rest = after.get(end..).unwrap_or_default();
+            }
+        }
+        if !key.is_empty() {
+            attributes.push((key, value));
+        }
+        rest = rest.trim_start();
+    }
+    (name, attributes)
+}
+
+/// One component as a line of the kit's index: its name, what it is, its
+/// root class and the variants its markup shows —
+/// `- Button (Button): primary, secondary… — kit-button: primary, secondary, ghost`.
+#[must_use]
+pub fn index_line(component: &Component, fragment: &str) -> String {
+    let base = base(&component.base);
+    let title = if component.title.is_empty() {
+        base.map_or("custom", |b| b.title)
+    } else {
+        &component.title
+    };
+    let what = if component.what.is_empty() {
+        base.map_or(component.prompt.as_str(), |b| b.what)
+    } else {
+        &component.what
+    };
+    let mut classes: Vec<String> = Vec::new();
+    let shape = skeleton(fragment);
+    let mut rest = shape.as_str();
+    while let Some(at) = rest.find("class=\"") {
+        let after = rest.get(at.saturating_add(7)..).unwrap_or_default();
+        let end = after.find('"').unwrap_or(after.len());
+        for class in after.get(..end).unwrap_or_default().split_whitespace() {
+            if !classes.iter().any(|c| c == class) && classes.len() < 12 {
+                classes.push(class.to_string());
+            }
+        }
+        rest = after.get(end..).unwrap_or_default();
+    }
+    let what: String = what.chars().take(140).collect();
+    match classes.split_first() {
+        Some((root, variants)) if !variants.is_empty() => format!(
+            "- {} ({title}): {what} — {root}: {}",
+            component.name,
+            variants.join(", ")
+        ),
+        Some((root, _)) => format!("- {} ({title}): {what} — {root}", component.name),
+        None => format!("- {} ({title}): {what}", component.name),
+    }
+}
+
 /// The kit's stylesheet: the `<style>` of every fragment given, as
 /// `(name, fragment)`, in that order, under a header saying it is derived.
 ///
@@ -1321,37 +1519,6 @@ mod tests {
         assert!(uses(page, "Carousel") && uses(page, "Menu") && !uses(page, "Card"));
         assert_eq!(used_in(page), ["Carousel", "Menu"]);
         assert!(preview_page("Carousel").contains("data-kit=\"Carousel\""));
-        // A human's title names the component.
-        assert_eq!(name_for("Hero frame", &[]).as_deref(), Some("HeroFrame"));
-        assert_eq!(
-            name_for("Portrait du héros", &[]).as_deref(),
-            Some("PortraitDuHeros")
-        );
-        assert_eq!(
-            name_for("bouton d'état", &[]).as_deref(),
-            Some("BoutonDEtat")
-        );
-        assert_eq!(name_for("3 colonnes", &[]).as_deref(), Some("Kit3Colonnes"));
-        assert_eq!(
-            name_for("hero frame", &["HeroFrame", "heroframe2"]).as_deref(),
-            Some("HeroFrame3")
-        );
-        assert_eq!(name_for("!!! ???", &[]), None);
-        // The kit's stylesheet: each fragment's style, the markup and the scripts left out.
-        let css = stylesheet(&[
-            (
-                "Table".to_string(),
-                base("table").expect("table").fragment.to_string(),
-            ),
-            ("Plain".to_string(), "<p>no style</p>".to_string()),
-            (
-                "Two".to_string(),
-                "<style>.a{}</style><b></b><style media=\"x\">.b{}</style>".to_string(),
-            ),
-        ]);
-        assert!(css.contains("/* Table */") && css.contains(".kit-table"));
-        assert!(!css.contains("/* Plain */") && !css.contains("<table") && !css.contains("<style"));
-        assert!(css.contains(".a{}\n.b{}"));
         // The showcase is made of bases only, each a default the human starts with.
         let uses = showcase_uses();
         assert!(uses.len() >= 8);
@@ -1384,6 +1551,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_title_names_a_component_and_a_fragment_is_read_without_its_code() {
+        // A human's title names the component.
+        assert_eq!(name_for("Hero frame", &[]).as_deref(), Some("HeroFrame"));
+        assert_eq!(
+            name_for("Portrait du héros", &[]).as_deref(),
+            Some("PortraitDuHeros")
+        );
+        assert_eq!(
+            name_for("bouton d'état", &[]).as_deref(),
+            Some("BoutonDEtat")
+        );
+        assert_eq!(name_for("3 colonnes", &[]).as_deref(), Some("Kit3Colonnes"));
+        assert_eq!(
+            name_for("hero frame", &["HeroFrame", "heroframe2"]).as_deref(),
+            Some("HeroFrame3")
+        );
+        assert_eq!(name_for("!!! ???", &[]), None);
+        // A skeleton: the markup's shape, its classes, a repeated sibling once, no style, no script, no text.
+        let table = base("table").expect("table").fragment;
+        let shape = skeleton(table);
+        assert_eq!(
+            shape,
+            "<table class=\"kit-table\"><thead><tr><th>…</th><th class=\"num\">…</th></tr></thead><tbody><tr><td>…</td><td class=\"num\">…</td></tr></tbody></table>"
+        );
+        assert_eq!(
+            shape.matches("<tr>").count(),
+            2,
+            "one header row, one body row: {shape}"
+        );
+        assert!(
+            !shape.contains("<style") && !shape.contains("Jane") && !shape.contains("kit-table {")
+        );
+        assert!(shape.len() < table.len() / 3);
+        let button = base("button").expect("button");
+        let line = index_line(
+            &Component {
+                name: "Button".into(),
+                base: "button".into(),
+                ..Component::default()
+            },
+            button.fragment,
+        );
+        assert!(line.starts_with("- Button (Button): "), "{line}");
+        assert!(
+            line.contains("kit-button: primary, secondary, ghost, danger"),
+            "{line}"
+        );
+        assert_eq!(
+            skeleton("<p>a<br>b</p><!-- x --><input type=\"text\" class=\"f\"/>"),
+            "<p>…<br>…</p><input type=\"text\" class=\"f\">"
+        );
+        // The kit's stylesheet: each fragment's style, the markup and the scripts left out.
+        let css = stylesheet(&[
+            (
+                "Table".to_string(),
+                base("table").expect("table").fragment.to_string(),
+            ),
+            ("Plain".to_string(), "<p>no style</p>".to_string()),
+            (
+                "Two".to_string(),
+                "<style>.a{}</style><b></b><style media=\"x\">.b{}</style>".to_string(),
+            ),
+        ]);
+        assert!(css.contains("/* Table */") && css.contains(".kit-table"));
+        assert!(!css.contains("/* Plain */") && !css.contains("<table") && !css.contains("<style"));
+        assert!(css.contains(".a{}\n.b{}"));
+    }
+
     proptest! {
         #[test]
         fn stripping_fallbacks_never_panics_and_keeps_the_names(text in "\\PC{0,200}") {
@@ -1404,6 +1640,11 @@ mod tests {
             if let Some(name) = name_for(&title, &["Button"]) {
                 prop_assert!(is_name(&name), "{name}");
             }
+        }
+
+        #[test]
+        fn a_skeleton_never_panics_and_stays_light(text in "(\\PC|<[a-z/!]{0,6}|>| class=\"[a-z ]{0,8}\"){0,120}") {
+            prop_assert!(skeleton(&text).chars().count() <= MAX_SKELETON + 1);
         }
 
         #[test]

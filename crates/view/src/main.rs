@@ -26,6 +26,7 @@ mod desk;
 mod domain;
 mod janitor;
 mod kit_desk;
+mod mf_desk;
 mod note_desks;
 mod ports;
 mod server;
@@ -76,6 +77,7 @@ use crate::domain::snapshot::{Project, Snapshot};
 use crate::domain::steward;
 use crate::janitor::Janitor;
 use crate::kit_desk::KitDesk;
+use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
     Board, BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
@@ -129,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
     let (data, data_task) = data_for(product);
     let (units, mockups) = product_readers(&cli, &root, &project);
     let kit = kit_for(&cli, mockups.clone(), &pins);
+    let mf = mf_for(&cli, mockups.clone(), kit.clone());
 
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
     let (board_tx, board_rx) = watch::channel(None);
@@ -162,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
         units,
         mockups,
         kit: kit.clone(),
+        mf: mf.clone(),
         zone: TimeZone::system(),
     };
 
@@ -214,6 +218,9 @@ async fn main() -> anyhow::Result<()> {
             }
             if let Some(kit) = kit {
                 kit.shutdown();
+            }
+            if let Some(mf) = mf {
+                mf.shutdown();
             }
             Ok(())
         })
@@ -782,6 +789,21 @@ fn kit_for(
         sessions: cli.kit_sessions,
         pins: Arc::clone(pins),
         integration_branch: cli.integration_branch.clone(),
+    }))
+}
+
+/// The micro-frontends' generations, when the product's mock-up can be
+/// read: on the kit's model, the kit making what they lack first.
+fn mf_for(cli: &Cli, mockups: Option<Arc<dyn Mockups>>, kit: Option<KitDesk>) -> Option<MfDesk> {
+    let mockups = mockups?;
+    let oneshot = claude_bin::newest()
+        .map(|(path, _)| Arc::new(ClaudeOneshot::new(path)) as Arc<dyn Oneshot>);
+    Some(MfDesk::new(mf_desk::Setup {
+        mockups,
+        kit,
+        oneshot,
+        model: cli.kit_model.clone(),
+        sessions: cli.kit_sessions,
     }))
 }
 

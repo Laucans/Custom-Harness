@@ -450,7 +450,26 @@ they are outlined; picked in the frame, their unit is shown; a unit no part
 names is marked *not tagged*. A **long press** on a kit component inside it
 opens that component alone on the design system's easel, and the pane's
 back arrow returns to the micro-frontend (`onPlace` keeps the view and the
-one opened). **+ micro-frontend** is a form —
+one opened). A micro-frontend not mocked yet is **generated** on the
+design system's model (`mf_desk.rs`, `domain::mf_gen`): from its tile, from
+**generate N** in the bar, or from the form's *generate it*, several at
+once (the kit's sessions). One generation is three steps — **plan**: a
+light question reads the kit's index (`kit::index_line`, a line a
+component, never its code) and answers the components it uses and those it
+lacks; **kit**: the missing ones are added as custom components and
+generated on the easel first (`KitDesk::custom`, `start_generation`, one
+maker at a time so two plans lacking the same component make it once);
+**write**: a question reads the skeletons of the components used
+(`kit::skeleton`: elements and classes, no style, no script, no text), the
+units' contracts and rules, the fixture when there is one, and answers the
+fragment — tagged `data-action`/`data-reads`, at rest, falling back on the
+fixture when a prop is missing — and a fixture when there was none; the
+fragment, the fixture and the manifest's entry (`mock/pages.json`) are
+written in the branch's workspace and saved with the mock-up. The stable
+parts of each prompt come first, the micro-frontend's own last. `kit.css`
+is served derived from the design system's branch as it is now
+(`mock_file`), so a generated micro-frontend wears the kit before any
+publish. **+ micro-frontend** is a form —
 name, system, description, the Capabilities it needs and the
 `DataCapabilities` it triggers, chosen among the branch's, its props — that
 becomes a design pin on that board and opens its session at once: the
