@@ -29,6 +29,10 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The mutants rotation files what no test caught as an issue.
+      issues: write
     services:
       postgres:
         image: postgres:16
@@ -86,6 +90,23 @@ jobs:
         run: |
           cargo machete
           if [ -f scripts/dead-code.sh ]; then bash scripts/dead-code.sh; fi
+      # The code no change touches is judged too, a bucket of files per run
+      # (scripts/mutants-rotation.sh: the run number picks the bucket, so
+      # runs in parallel judge disjoint files). Never red: what it misses
+      # becomes a `harness:test-debt` issue (scripts/test-debt.sh).
+      - name: Mutants rotation
+        if: hashFiles('Cargo.toml') != '' && hashFiles('scripts/mutants-rotation.sh') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/mutants-rotation.sh ${{ github.run_number }} -- --in-place --output rotation
+          bash scripts/test-debt.sh rotation/mutants.out "run ${{ github.run_number }} (${{ github.sha }})"
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('Cargo.toml') != ''
+        with:
+          name: mutants-rotation.out
+          path: rotation/mutants.out
+          if-no-files-found: ignore
       # The tests are judged too: a function cargo-mutants can rewrite
       # without a test failing was never tested. Only the functions the
       # change touches (.cargo/mutants.toml says what is never mutated).

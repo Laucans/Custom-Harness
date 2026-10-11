@@ -233,6 +233,11 @@ the rules a diff is checked against:
   (`.cargo/mutants.toml`). A mutant no test catches fails the CI — the
   answer is a test, not a weaker mutant. Locally:
   `git diff main > change.diff && cargo mutants --workspace --in-diff change.diff`.
+  The rest of the code is judged in rotation, a bucket of files per CI run
+  (`scripts/mutants-rotation.sh`, bucket = hash of the path, so parallel
+  runs judge disjoint files); what it misses is never red, it becomes a
+  `harness:test-debt` issue per file (`scripts/test-debt.sh`) for
+  `/create-test`.
 - `cargo update` is a deliberate action with its own PR — never bundled
   with feature work.
 - Add `default-features = false` on a dependency when only some of its

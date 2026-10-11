@@ -733,8 +733,12 @@ through — a dependency no crate uses (`cargo machete`), a `pub` item no
 crate of the workspace calls (`scripts/dead-code.sh`); and the tests
 themselves, by mutation — every function the change touches is rewritten
 wrong by `cargo mutants`, and a rewrite no test catches fails the build
-(`.cargo/mutants.toml` says what is never mutated). Dead code is removed,
-not allowed; a missed mutant is answered with a test.
+(`.cargo/mutants.toml` says what is never mutated). The code no change
+touches is judged in rotation: each run mutates one bucket of files, the
+bucket a hash of the path, so runs in parallel judge disjoint files
+(`scripts/mutants-rotation.sh`); what it misses never fails the build, it
+becomes a `harness:test-debt` issue per file (`scripts/test-debt.sh`).
+Dead code is removed, not allowed; a missed mutant is answered with a test.
 
 ## Organisation of the agents
 

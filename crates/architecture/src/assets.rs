@@ -4,10 +4,10 @@
 //! architecture from the same source: the architecture document, the rules
 //! section of `CLAUDE.md`, the fifteen contracts, the CI gates, the project's
 //! CI for its stack, the script that scopes its tests, the one that finds the
-//! dead code the compiler cannot see, the mutation gate's configuration, the
-//! script that dumps its schema, an empty data model to grow, an empty list
-//! of mock pages and the
-//! mock-up's loader, screen host, mock server and build. The kit's base
+//! dead code the compiler cannot see, the mutation gate's configuration and
+//! its rotation with the script that files what it misses, the script that
+//! dumps its schema, an empty data model to grow, an empty list of mock pages
+//! and the mock-up's loader, screen host, mock server and build. The kit's base
 //! fragments are not installed: the harness keeps them and writes the styled
 //! ones (`kit`). What to write of them in a given
 //! checkout, and what to keep, is `init-repo`'s decision, not this module's.
@@ -36,9 +36,9 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// The files installed as they are.
 ///
 /// The document, the gates, the CI, the test scope, the dead-code script,
-/// the mutants configuration, the schema dump, the data model, the mock-up's
-/// files, the contracts A–O.
-pub const FILES: [Asset; 33] = [
+/// the mutants configuration, rotation and test-debt filing, the schema
+/// dump, the data model, the mock-up's files, the contracts A–O.
+pub const FILES: [Asset; 35] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -62,6 +62,14 @@ pub const FILES: [Asset; 33] = [
     Asset {
         path: ".cargo/mutants.toml",
         content: include_str!("../assets/mutants.toml"),
+    },
+    Asset {
+        path: "scripts/mutants-rotation.sh",
+        content: include_str!("../assets/mutants-rotation.sh"),
+    },
+    Asset {
+        path: "scripts/test-debt.sh",
+        content: include_str!("../assets/test-debt.sh"),
     },
     Asset {
         path: "scripts/dump-schema.sh",

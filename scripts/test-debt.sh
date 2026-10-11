@@ -1,0 +1,1 @@
+../crates/architecture/assets/test-debt.sh

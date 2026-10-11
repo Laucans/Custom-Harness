@@ -71,6 +71,35 @@ jobs:
           name: mutants.out
           path: mutants.out
 
+  # The code no change touches is judged too, a bucket of files per run
+  # (scripts/mutants-rotation.sh: the run number picks the bucket, so runs in
+  # parallel judge disjoint files). Never red: what it misses becomes a
+  # `harness:test-debt` issue (scripts/test-debt.sh) an agent closes.
+  mutants-rotation:
+    name: mutants-rotation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - run: bash scripts/mutants-rotation.sh ${{ github.run_number }} -- --in-place --output rotation
+      - name: File what no test caught
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/test-debt.sh rotation/mutants.out "run ${{ github.run_number }} (${{ github.sha }})"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants-rotation.out
+          path: rotation/mutants.out
+          if-no-files-found: ignore
+
   # The pinned `rust-version` means nothing unless something builds with it.
   msrv:
     name: msrv

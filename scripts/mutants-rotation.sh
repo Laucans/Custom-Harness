@@ -1,0 +1,1 @@
+../crates/architecture/assets/mutants-rotation.sh

@@ -146,6 +146,15 @@ pub const DATA_LAYER: &str = "harness:data-layer";
 /// next poll trades this label for [`WAITING_MERGE`].
 pub const REVIEW_PENDING: &str = "harness:review-pending";
 
+/// An issue of **test debt**: code `cargo mutants` can break without a test
+/// failing.
+///
+/// Opened by the CI's mutants rotation (`scripts/test-debt.sh`), one issue
+/// per source file, titled `Test debt: <file>`, never twice for the same
+/// file while one is open. `/create-test` closes it with the tests that
+/// catch the mutants it lists. Not in [`LOOP`]: the loop does not pick it.
+pub const TEST_DEBT: &str = "harness:test-debt";
+
 /// The eleven the loop requires.
 ///
 /// `REFINEMENT` is not among them: the loop does not read it, and its
@@ -176,12 +185,12 @@ pub struct Label {
     pub description: &'static str,
 }
 
-/// The eighteen labels `init-repo` creates when they are missing.
+/// The nineteen labels `init-repo` creates when they are missing.
 ///
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 18] = [
+pub const ALL: [Label; 19] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -272,6 +281,11 @@ pub const ALL: [Label; 18] = [
         color: "b60205",
         description: "A milestone's data layer — aggregates, invariants, migrations — on the strongest model",
     },
+    Label {
+        name: TEST_DEBT,
+        color: "5319e7",
+        description: "Code cargo-mutants can break without a test failing",
+    },
 ];
 
 #[cfg(test)]
@@ -333,6 +347,7 @@ mod tests {
             READ_SIDE,
             WRITE_SIDE,
             REVIEW_PENDING,
+            TEST_DEBT,
         ];
         for label in all {
             assert!(label.starts_with("harness:"), "{label} outside namespace");
