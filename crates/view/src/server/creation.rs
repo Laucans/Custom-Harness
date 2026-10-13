@@ -37,6 +37,7 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "record": record,
         "reachable": record.as_ref().map(|r| r.reachable(facts)),
         "scopeStale": record.as_ref().is_some_and(Creation::scope_stale),
+        "mockupStale": record.as_ref().is_some_and(Creation::mockup_stale),
         "designValidated": facts.design_validated,
         "kit": kit,
         "job": desk.job(),
@@ -226,6 +227,23 @@ pub(super) async fn mockups(State(state): State<AppState>) -> Response {
         Err(r) => return *r,
     };
     match desk.draw_mockups().await {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job": desk.job() })),
+        )
+            .into_response(),
+        Err(why) => refused(why),
+    }
+}
+
+/// The proof of concept drawn ahead, once its scope is settled: answers
+/// at once, the job follows.
+pub(super) async fn ahead(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.draw_ahead().await {
         Ok(()) => (
             StatusCode::ACCEPTED,
             Json(serde_json::json!({ "job": desk.job() })),

@@ -76,7 +76,8 @@
   const running = (work) => { const j = job(); return !!j && j.state === 'running' && (!work || j.work === work); };
   // The kit generates in the background from the brief step on: followed on every step.
   const kitBusy = () => { const k = C.data && C.data.kit; return !!k && (k.running || (k.waiting > 0 && !k.noClaude && k.validated)); };
-  const drawn = () => { const r = record(); return !!r && !!r.mocked && !running('mockups'); };
+  // Drawn, and not rewritten as micro-frontends at this very moment: the easel may open.
+  const drawn = () => { const r = record(); return !!r && !!r.mocked && !running('mockups') && !running('componentize'); };
 
   // ---- the route, in the hash ---------------------------------------------------
   function routeFromHash() {
@@ -257,6 +258,10 @@
     // A scope not written, or proposed before the grilling moved the decisions and
     // not retouched: proposed (again) by itself; a retouched one waits for the human.
     if (C.route === 'scope' && (!r.scope.trim() || (C.data.scopeStale && !r.scope_edited))) once(`scope-${r.regenerations}-${r.scope_from}`, () => act(PROPOSING, () => post('scope')));
+    // The scope settled: the proof of concept draws ahead while the human
+    // settles the design system — mock-ups, micro-frontends, requirements.
+    const ahead = !r.mocked && r.scope.trim() && indexOf(r.step) >= indexOf('design') && C.route !== 'mockups';
+    if (ahead && !running() && !(job() && job().work === 'mockups')) once(`ahead-${r.regenerations}`, () => start('ahead').then(draw, () => { /* another job runs, or nothing can draw: the mock-up step says */ }));
     if (C.route === 'mockups' && !r.mocked && !running() && !(job() && job().work === 'mockups')) once(`mock-${r.regenerations}`, () => act('starting the drawing', () => start('mockups')));
     const kit = C.data.kit;
     if ((C.route === 'design' || C.route === 'brief') && kit && kit.validated && kit.waiting && !kit.running && !kit.noClaude) once(`kit-${r.regenerations}`, generateKit);
@@ -296,6 +301,12 @@
     if (id === 'scope') {
       if (C.busy === PROPOSING && !r.scope.trim()) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> proposing</span>';
       if (C.data.scopeStale) return '<span class="cr-chip warn" title="The decisions moved since the scope was proposed">to redo</span>';
+    }
+    if (id === 'mockups') {
+      if (running('mockups')) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> drawing</span>';
+      if (running('componentize')) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> micro-frontends</span>';
+      if (C.data.mockupStale) return '<span class="cr-chip warn" title="The scope moved since the mock-ups were drawn: draw them again">to redraw</span>';
+      if (r.mocked && indexOf(C.route) < indexOf('mockups')) return '<span class="cr-chip">ready</span>';
     }
     if (id === 'design' && k) {
       if (k.running || (running('prepare') && !k.validated && !k.generated)) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> generating</span>';
@@ -338,7 +349,7 @@
     const j = job();
     const host = page.querySelector('[data-cr-preview]');
     const stage = host && host.querySelector('.cr-draw-stage');
-    if (!j || !stage || (j.work !== 'mockups' && j.work !== 'initialize')) return;
+    if (!j || !stage || (j.work !== 'mockups' && j.work !== 'componentize' && j.work !== 'initialize')) return;
     const seen = Number(stage.dataset.steps || 0);
     if (j.steps.length <= seen) return;
     stage.dataset.steps = String(j.steps.length);
@@ -707,13 +718,17 @@
     const j = job();
     const mine = j && j.work === 'mockups';
     const failed = mine && j.state === 'failed';
+    // Drawn ahead, it may still be cut into micro-frontends: the easel waits for it.
+    const making = !DEMO && running('componentize');
     // While it draws: the checklist and a live preview. Drawn: the easel takes the room (see EMBEDS).
-    const split = DEMO ? mine : running('mockups');
-    const spinner = !DEMO && running('mockups') ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Drawing the proof of concept…</b></div>' : '';
+    const split = DEMO ? mine : running('mockups') || making;
+    const spinner = !DEMO && running('mockups') ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Drawing the proof of concept…</b></div>'
+      : making ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Making the micro-frontends…</b></div>' : '';
     return `<p class="muted">A Claude Code session draws the proof of concept as interactive mock-ups, fast: one page per screen of the scope, the journeys linked, the design system's components and tokens. Drawn, it is yours to rework here — <b>edit</b> the page by hand, drop a <b>request</b> pin and apply it, add a page — before the review ties the requirements to it.</p>
-      ${split ? drawSplit(C.data.branch, spinner + '<div data-cr-job>' + (mine ? jobPanel() : '') + '</div>') : ''}
+      ${split ? drawSplit(C.data.branch, spinner + '<div data-cr-job>' + (mine || making ? jobPanel() : '') + '</div>') : ''}
       ${!split && mine && !r.mocked ? `<div data-cr-job>${jobPanel()}</div>` : ''}
       ${failed ? `<div class="cr-error" role="alert">${esc(j.why)}</div>` : ''}
+      ${C.data.mockupStale && !running() ? '<div class="callout">Drawn from an earlier scope: the scope moved since — draw them again to follow it.</div>' : ''}
       ${r.mocked && !running('mockups') ? `<div class="callout">${esc(r.mocked)}</div>` : ''}
       ${embedFor('mockups') ? '' : mockupsFoot()}`;
   }
@@ -724,7 +739,7 @@
     const failed = mine && j.state === 'failed';
     return `<div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="design"${running('mockups') ? ' disabled' : ''}>← Back</button>
         <span class="cr-gap"></span>
-        ${!running('mockups') && (failed || !mine || r.mocked) ? `<button type="button" class="cr-btn" data-cr-draw>${r.mocked || failed ? 'Draw again' : 'Draw the mock-ups'}</button>` : ''}
+        ${!running() && (failed || !mine || r.mocked) ? `<button type="button" class="cr-btn" data-cr-draw>${r.mocked || failed ? 'Draw again' : 'Draw the mock-ups'}</button>` : ''}
         <button type="button" class="cr-btn on" data-cr-next="review"${r.mocked && !running('mockups') ? '' : ' disabled'}>Review →</button></div>`;
   }
 

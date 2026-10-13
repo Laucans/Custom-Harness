@@ -2076,6 +2076,24 @@ async fn the_preparation_starts_from_the_brief_and_a_gate_refuses_without_one() 
 }
 
 #[tokio::test]
+async fn the_drawing_ahead_waits_for_the_scope() {
+    let roll = Arc::new(Roll::default());
+    let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
+    record.kind = Some(crate::domain::creation::Kind::Vertical);
+    record.brief = "a ledger".to_string();
+    record.grilled = true;
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state.clone(), "/api/creation/ahead", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "settle the proof of concept's scope");
+    let (_, body) = get(state, "/api/creation").await;
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["mockupStale"], false);
+    assert!(view["job"].is_null(), "a refused drawing starts nothing");
+}
+
+#[tokio::test]
 async fn the_micro_frontends_and_the_requirements_wait_for_the_mock_up() {
     let roll = Arc::new(Roll::default());
     being_created(
