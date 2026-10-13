@@ -380,6 +380,13 @@ pub fn router(state: AppState) -> Router {
             post(creation::validate_rules),
         )
         .route("/api/creation/audit", post(creation::audit))
+        .route(
+            "/api/creation/data",
+            post(creation::data).put(creation::data_edit),
+        )
+        .route("/api/creation/data/change", post(creation::data_change))
+        .route("/api/creation/data/validate", post(creation::data_validate))
+        .route("/api/creation/data-model", get(creation::data_model))
         .route("/api/creation/audit/{id}/{how}", post(creation::finding))
         .route("/api/creation/mockups", post(creation::mockups))
         .route("/api/creation/ahead", post(creation::ahead))

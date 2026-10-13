@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 use super::audit::Audit;
+use super::data_draft::{DataDraft, rules_print};
 
 /// The most questions one grilling round may bring.
 pub const ROUND_MAX: usize = 8;
@@ -40,13 +41,16 @@ pub enum Step {
     /// or accepted. Once called the review.
     #[serde(alias = "review")]
     Rules,
+    /// The data model the proof of concept needs: drafted by the AI off
+    /// the rules, reviewed, validated; the proof of concept accepted.
+    Data,
     /// The factory initialized: the roadmap task opened, the watch started.
     Initialize,
 }
 
 impl Step {
     /// Every step, in order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Repository,
         Self::Kind,
         Self::Brief,
@@ -55,6 +59,7 @@ impl Step {
         Self::Design,
         Self::Mockups,
         Self::Rules,
+        Self::Data,
         Self::Initialize,
     ];
 }
@@ -166,6 +171,8 @@ pub struct Creation {
     pub rules_for: String,
     /// What the architecture's guard found on the cut, once asked.
     pub audit: Option<Audit>,
+    /// The data model drafted for the proof of concept, once asked.
+    pub data: Option<DataDraft>,
     /// How many times the mock-ups were sent back to the brief.
     pub regenerations: u32,
     /// The mock-ups were drawn; what the session said of them.
@@ -271,7 +278,7 @@ pub enum Mark {
 
 /// The steps each made from the one before it: a step to review makes
 /// every later one of them to review too.
-const CHAIN: [Step; 3] = [Step::Scope, Step::Mockups, Step::Rules];
+const CHAIN: [Step; 4] = [Step::Scope, Step::Mockups, Step::Rules, Step::Data];
 
 /// What a step needs done before it may be entered; `None` when nothing.
 fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
@@ -309,6 +316,7 @@ fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
             }
         }
         Step::Rules => c.mocked.is_none().then_some("draw the mock-ups"),
+        Step::Data => (!c.rules_validated).then_some("validate the rules"),
         Step::Initialize => (!c.accepted).then_some("accept the proof of concept"),
     }
 }
@@ -364,6 +372,7 @@ impl Creation {
                     Step::Scope => self.scope_stale(),
                     Step::Mockups => self.mockup_stale(),
                     Step::Rules => self.rules_stale(),
+                    Step::Data => self.data_stale(),
                     _ => false,
                 };
                 let chained = CHAIN.contains(&step);
@@ -591,6 +600,45 @@ impl Creation {
         }
         self.rules_validated = true;
         Ok(())
+    }
+
+    /// The data model was drafted from rules that moved since.
+    #[must_use]
+    pub fn data_stale(&self) -> bool {
+        self.data
+            .as_ref()
+            .is_some_and(|d| d.from != rules_print(self))
+    }
+
+    /// What keeps the data model from validation; one gap when none is
+    /// drafted yet.
+    #[must_use]
+    pub fn data_gaps(&self) -> Vec<String> {
+        self.data
+            .as_ref()
+            .map_or_else(|| vec!["no data model yet".to_string()], |d| d.gaps(self))
+    }
+
+    /// The data model validated, when nothing keeps it from it.
+    ///
+    /// # Errors
+    ///
+    /// What keeps it, every gap.
+    pub fn validate_data(&mut self) -> Result<(), String> {
+        let gaps = self.data_gaps();
+        if !gaps.is_empty() {
+            return Err(gaps.join("; "));
+        }
+        if let Some(data) = self.data.as_mut() {
+            data.validated = true;
+        }
+        Ok(())
+    }
+
+    /// The data model validated and drafted from the rules as they are.
+    #[must_use]
+    pub fn data_validated(&self) -> bool {
+        self.data.as_ref().is_some_and(|d| d.validated) && !self.data_stale()
     }
 
     /// The architecture's guard looked at a cut that moved since.
@@ -1246,6 +1294,11 @@ pub struct Context {
 pub const RECORD_JSON: &str = "proof-of-concept.json";
 /// The same, written for a human.
 pub const RECORD_MD: &str = "proof-of-concept.md";
+/// The data model drafted at creation, beside the mock-up (contract M):
+/// the write side installs it at `data/model.json`.
+pub const DATA_MODEL: &str = "data/model.json";
+/// The aggregates' integrity rules drafted at creation (after contract I).
+pub const DATA_AGGREGATES: &str = "data/aggregates.json";
 
 /// The record and its context, as one JSON document for the repository.
 ///
@@ -1374,6 +1427,7 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
         }
     }
     body.push_str(&rules_section(c));
+    body.push_str(&data_section(c));
     if !ctx.pages.is_empty() {
         let _ = write!(
             body,
@@ -1425,6 +1479,32 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
         }
     }
     (title, body)
+}
+
+/// The data model, as the roadmap task names it: where it lies, its tables
+/// and aggregates, the invariants. Empty when none was drafted.
+fn data_section(c: &Creation) -> String {
+    let mut body = String::new();
+    let Some(d) = &c.data else {
+        return body;
+    };
+    let invariants: usize = d.aggregates.iter().map(|a| a.invariants.len()).sum();
+    let _ = write!(
+        body,
+        "\n## Data\n\nDrafted and validated at creation, beside the mock-up: `mock/{DATA_MODEL}` \
+         (contract M, {} tables) and `mock/{DATA_AGGREGATES}` (contract I, {} aggregates, \
+         {invariants} invariants) — the write side installs them at `data/model.json` and \
+         `crates/dataguard/aggregates/`.\n\n",
+        d.tables.len(),
+        d.aggregates.len()
+    );
+    for a in &d.aggregates {
+        let _ = writeln!(body, "- **{}** — {}", a.name, a.tables.join(", "));
+        for i in &a.invariants {
+            let _ = writeln!(body, "  - {} — {}", i.id, i.rule.trim());
+        }
+    }
+    body
 }
 
 /// The rules, as the roadmap task lists them: each with its family, what it
@@ -1610,6 +1690,7 @@ mod tests {
             questions: vec![question(1, "yes")],
             scope: "## Goal".to_string(),
             mocked: Some("two pages".to_string()),
+            rules_validated: true,
             accepted: true,
             ..Creation::new("app", "me/app")
         }
@@ -1631,8 +1712,13 @@ mod tests {
         assert_eq!(marks.len(), Step::ALL.len());
         assert_eq!(mark(&c, Step::Kind), Mark::Done);
         assert_eq!(mark(&c, Step::Mockups), Mark::Done);
-        assert_eq!(mark(&c, Step::Rules), Mark::Open);
+        assert_eq!(mark(&c, Step::Rules), Mark::Done);
+        assert_eq!(mark(&c, Step::Data), Mark::Open);
         assert_eq!(mark(&c, Step::Initialize), Mark::Locked);
+        c.rules_validated = false;
+        assert_eq!(mark(&c, Step::Rules), Mark::Open);
+        assert_eq!(mark(&c, Step::Data), Mark::Locked);
+        c.rules_validated = true;
         c.accepted = true;
         assert_eq!(mark(&c, Step::Initialize), Mark::Open);
         c.issue = "https://github.com/me/app/issues/1".to_string();
@@ -1643,6 +1729,7 @@ mod tests {
     fn a_stale_scope_makes_every_step_drawn_from_it_stale_and_no_other() {
         let mut c = ready();
         c.accepted = false;
+        c.rules_validated = false;
         c.mocked_scope.clone_from(&c.scope);
         c.scope_from = c.fingerprint();
         assert_eq!(mark(&c, Step::Scope), Mark::Done);
@@ -1709,6 +1796,7 @@ mod tests {
     #[test]
     fn rules_are_validated_only_with_a_criterion_and_a_support_each() {
         let mut c = ready();
+        c.rules_validated = false;
         assert_eq!(c.rule_gaps(), vec!["no rule yet".to_string()]);
         c.requirements = vec![rule(1, "", &["pages/a.html"]), rule(2, "given x", &[])];
         assert_eq!(
@@ -1807,7 +1895,11 @@ mod tests {
         assert!(!c.rules_stale());
         c.componentized = Some("cut two".to_string());
         assert!(c.rules_stale());
+        assert!(!c.rules_validated, "read again: to validate again");
+        assert_eq!(mark(&c, Step::Rules), Mark::Open);
+        c.rules_validated = true;
         assert_eq!(mark(&c, Step::Rules), Mark::Stale);
+        assert_eq!(mark(&c, Step::Data), Mark::Stale, "drawn from the rules");
         c.rules_for.clear();
         assert!(!c.rules_stale(), "read before the cut was noted");
         c.rules_for = "cut one".to_string();
@@ -1897,7 +1989,7 @@ mod tests {
     fn each_gate_names_what_is_missing_first() {
         let full = ready();
         assert_eq!(full.reachable(DESIGNED), Step::Initialize);
-        let cases: [(Spoil, Step, &str); 7] = [
+        let cases: [(Spoil, Step, &str); 8] = [
             (|c| c.kind = None, Step::Brief, "choose the kind of factory"),
             (
                 |c| c.brief = "  ".to_string(),
@@ -1920,6 +2012,11 @@ mod tests {
                 "settle the proof of concept's scope",
             ),
             (|c| c.mocked = None, Step::Rules, "draw the mock-ups"),
+            (
+                |c| c.rules_validated = false,
+                Step::Data,
+                "validate the rules",
+            ),
             (
                 |c| c.accepted = false,
                 Step::Initialize,

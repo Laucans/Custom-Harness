@@ -1781,13 +1781,13 @@ async fn without_a_register_there_is_no_creation_to_read() {
 }
 
 #[tokio::test]
-async fn a_factory_not_being_created_reads_no_record_and_the_nine_steps() {
+async fn a_factory_not_being_created_reads_no_record_and_the_ten_steps() {
     let state = state_creating(Arc::default(), Arc::default(), "");
     let (status, body) = get(state, "/api/creation").await;
     assert_eq!(status, StatusCode::OK);
     let view: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert!(view["record"].is_null(), "{body}");
-    assert_eq!(view["steps"].as_array().map(Vec::len), Some(9));
+    assert_eq!(view["steps"].as_array().map(Vec::len), Some(10));
     assert_eq!(view["branch"], "main_agent");
 }
 
@@ -2163,6 +2163,88 @@ async fn the_rules_are_validated_once_complete_and_read_again_behind_their_gate(
     let view: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(view["record"]["rules_validated"], true);
     assert_eq!(view["ruleGaps"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn the_data_step_draws_its_draft_takes_retouches_and_keeps_its_gates() {
+    use crate::domain::creation::Creation;
+    use crate::domain::data_draft::{Aggregate, DataDraft, Field, FieldRule, Table};
+    let roll = Arc::new(Roll::default());
+    let mut record = Creation::new("alpha", "me/alpha");
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (_, body) = get(state.clone(), "/api/creation/data-model").await;
+    let reply: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(reply["enabled"], true);
+    assert!(reply["model"].is_null());
+    assert_eq!(reply["error"], "no data model drafted yet");
+    let (status, body) = post(state.clone(), "/api/creation/data", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "choose the kind of factory");
+    let (status, body) = post(state.clone(), "/api/creation/data/validate", "").await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::BAD_REQUEST, "no data model yet")
+    );
+    let (status, body) = json_call(state.clone(), "PUT", "/api/creation/data", "{}").await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::BAD_REQUEST, "no data model yet")
+    );
+    let (status, _) = post(
+        state.clone(),
+        "/api/creation/data/change",
+        r#"{"request": "more"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    record.data = Some(DataDraft {
+        tables: vec![Table {
+            name: "line".to_string(),
+            fields: vec![Field {
+                name: "id".to_string(),
+                kind: "uuid".to_string(),
+                ..Field::default()
+            }],
+            ..Table::default()
+        }],
+        aggregates: vec![Aggregate {
+            name: "Line".to_string(),
+            fields: std::collections::BTreeMap::from([(
+                "line.id".to_string(),
+                FieldRule::default(),
+            )]),
+            ..Aggregate::default()
+        }],
+        from: crate::domain::data_draft::rules_print(&record),
+        ..DataDraft::default()
+    });
+    being_created(&roll, &record);
+    let (_, body) = get(state.clone(), "/api/creation/data-model").await;
+    let reply: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert!(reply["error"].is_null());
+    assert_eq!(reply["model"]["tables"][0]["name"], "line", "{body}");
+    let (_, body) = get(state.clone(), "/api/creation").await;
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        view["dataGaps"],
+        serde_json::json!(["Line: line.id has no criticality"])
+    );
+    assert_eq!(view["dataStale"], false);
+    let (status, body) = json_call(
+        state.clone(),
+        "PUT",
+        "/api/creation/data",
+        r#"{"criticalities": [{"aggregate": "Line", "field": "line.id", "criticality": "critical"}]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(state, "/api/creation/data/validate", "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["record"]["data"]["validated"], true);
+    assert_eq!(view["dataGaps"], serde_json::json!([]));
 }
 
 /// A `Usage` kept in memory, for a test to read back.

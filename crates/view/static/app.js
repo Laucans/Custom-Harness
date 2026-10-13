@@ -635,6 +635,8 @@
     data_model: (el, p) => (window.DataModelPane ? window.DataModelPane.mount(el, {
       branch: p.branch,
       dir: p.dir,
+      // Where the model is read when it is not the product's: the creation's draft.
+      source: p.source,
       pin: p.pin,
       onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, dir: s.dir }),
     }) : null),

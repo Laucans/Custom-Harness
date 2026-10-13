@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::creation_desk::{CreationDesk, Founding};
 use crate::domain::creation::{BRIEF_PARTS, Creation, Edit, Step};
+use crate::domain::data_draft::DataEdit;
 
 use super::{AppState, json};
 
@@ -41,6 +42,8 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "marks": record.as_ref().map(|r| r.marks(facts)),
         "ruleGaps": record.as_ref().map(Creation::rule_gaps),
         "auditStale": record.as_ref().is_some_and(Creation::audit_stale),
+        "dataStale": record.as_ref().is_some_and(Creation::data_stale),
+        "dataGaps": record.as_ref().map(Creation::data_gaps),
         "designValidated": facts.design_validated,
         "kit": kit,
         "job": desk.job(),
@@ -265,6 +268,97 @@ pub(super) async fn finding(
         Ok(record) => view(desk, Some(record)).await,
         Err(why) => refused(why),
     }
+}
+
+/// The data model drafted.
+pub(super) async fn data(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.draft_data().await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// What the human asks the data model's structure to become.
+#[derive(Deserialize)]
+pub(super) struct Change {
+    request: String,
+}
+
+/// The data model's structure changed by the AI.
+pub(super) async fn data_change(
+    State(state): State<AppState>,
+    Json(ask): Json<Change>,
+) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.change_data(&ask.request).await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The human's retouches of the data model.
+pub(super) async fn data_edit(
+    State(state): State<AppState>,
+    Json(edit): Json<DataEdit>,
+) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.edit_data(edit).await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The data model validated.
+pub(super) async fn data_validate(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.validate_data().await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The drafted data model as the data pane draws it: its tables merged
+/// with no database side.
+pub(super) async fn data_model(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let record = match desk.record() {
+        Ok(record) => record,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let model = match record.as_ref().and_then(|r| r.data.as_ref()) {
+        Some(d) => match d.model_json() {
+            Ok(text) => Some(harness_architecture::model::build(
+                "creation",
+                &Ok(None),
+                &Ok(Some(text)),
+            )),
+            Err(why) => return refused(why),
+        },
+        None => None,
+    };
+    json(&serde_json::json!({
+        "enabled": true,
+        "model": model,
+        "branch": "",
+        "dir": "",
+        "error": if model.is_none() { Some("no data model drafted yet") } else { None },
+    }))
 }
 
 /// The rules validated: nothing is published.

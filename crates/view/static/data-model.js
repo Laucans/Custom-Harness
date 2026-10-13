@@ -51,6 +51,8 @@
     const st = { model: null, body: '', open: remembered(), sel: null, boxes: new Map(), bounds: null, timer: null, fitted: false, gone: false,
       // Which version is shown: a branch and a folder of the archive; empty, the server's default.
       versions: null, branch: (opts && opts.branch) || '', dir: (opts && opts.dir) || '', newest: !(opts && opts.dir),
+      // A model read from elsewhere than the product (the creation's draft): no versions, no builds, no usage.
+      source: (opts && opts.source) || '',
       // A build the page started: polled until it ends; a model's asks a second click.
       fresh: false, building: null, armed: null, buildTimer: null, said: '',
       // Who uses each table and field: the version it was read for, and when.
@@ -122,7 +124,7 @@
       if (st.gone) return;
       let reply = null;
       try {
-        const [versions, model, diff] = await Promise.all([
+        const [versions, model, diff] = st.source ? [null, await fetch(st.source).then((r) => (r.ok ? r.json() : null)), null] : await Promise.all([
           fetch('/api/data-model/versions').then((r) => (r.ok ? r.json() : null)),
           fetch('/api/data-model?' + new URLSearchParams({ branch: st.branch, dir: st.newest ? '' : st.dir, fresh: st.fresh ? '1' : '' })).then((r) => (r.ok ? r.json() : null)),
           st.compare
@@ -492,6 +494,7 @@
     const USAGE_MS = 60000;
     // Read again for another version, or once a minute: manifests move.
     async function readUsage() {
+      if (st.source) return;
       const key = `${st.branch}|${st.newest ? '' : st.dir}`;
       if (key === st.usage.key && Date.now() - st.usage.at < USAGE_MS) return;
       st.usage.key = key;
@@ -716,7 +719,7 @@
 
     load();
     // A build started before this pane opened is followed too.
-    fetch('/api/data-model/builds').then((r) => r.json()).then((all) => {
+    if (!st.source) fetch('/api/data-model/builds').then((r) => r.json()).then((all) => {
       const running = all.find((x) => x.state === 'running');
       if (running) {
         const file = running.what === 'schema' ? 'schema.sql' : 'model.json';
@@ -733,7 +736,7 @@
       }
     }).catch(() => {});
     return {
-      reload: () => board.reload(),
+      reload: () => { st.body = ''; board.reload(); return load(); },
       // What a desk is told of the part under the pointer: a table, a field.
       contextAt(clientX, clientY, el) {
         const part = el && el.closest ? el.closest('[data-pin]') : null;

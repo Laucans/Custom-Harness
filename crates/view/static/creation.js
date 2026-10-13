@@ -1,5 +1,5 @@
 // The factory-creation page: connect an existing repository, or initialize
-// a factory through nine steps under a breadcrumb — the repository, the kind
+// a factory through ten steps under a breadcrumb — the repository, the kind
 // of factory, the brief (with the design system's material: logo, moodboard,
 // design brief), the grilling (the tokens and the kit draw meanwhile), the
 // proof of concept's scope (proposed once the grilling is over), the design
@@ -43,6 +43,7 @@
     ['design', 'Design system'],
     ['mockups', 'Mock-ups'],
     ['rules', 'Rules'],
+    ['data', 'Data'],
     ['initialize', 'Initialize'],
   ];
   const KINDS = [
@@ -259,11 +260,16 @@
     if (C.route === 'mockups' && !r.mocked && !running() && !(job() && job().work === 'mockups')) once(`mock-${r.regenerations}`, () => act('starting the drawing', () => start('mockups')));
     const kit = C.data.kit;
     if ((C.route === 'design' || C.route === 'brief') && kit && kit.validated && kit.waiting && !kit.running && !kit.noClaude) once(`kit-${r.regenerations}`, generateKit);
+    if (C.route === 'data') {
+      if (!C.mock) loadMock();
+      if (!r.data && r.rules_validated && !running()) once(`data-${r.regenerations}`, () => act('the AI drafts the data model', async () => { await post('data'); reloadEmbed(); }));
+    }
     if (C.route === 'rules') {
       if (!C.mock) loadMock();
       if (!r.componentized && !running()) once(`mf-${r.regenerations}`, () => act('starting the micro-frontends', () => start('componentize')));
       else if (r.componentized && !r.requirements.length && !running()) once(`req-${r.regenerations}`, () => act('the AI reads the rules', async () => { await post('requirements'); await loadMock(); }));
       // The guard reads the cut once by itself; again only when asked.
+      // (The data step drafts its model by itself the same way, below.)
       else if (r.componentized && r.requirements.length && !r.audit && !running()) once(`audit-${r.regenerations}`, () => act('the guard reads the architecture', () => post('audit')));
     }
   }
@@ -517,7 +523,7 @@
       </section>
       <section class="cr-card">
         <h2>Initialize a factory</h2>
-        <p class="muted">A new repository, then nine steps: what the application does, the AI's questions, the proof of concept's scope, its design system and its mock-ups — up to the factory's first roadmap task.</p>
+        <p class="muted">A new repository, then nine steps: what the application does, the AI's questions, the proof of concept's scope, its design system, its mock-ups, its rules and its data — up to the factory's first roadmap task.</p>
         <div class="cr-row"><button type="button" class="cr-btn on" data-cr-go="${FOUND}">Start</button></div>
       </section>
     </div>`;
@@ -886,9 +892,77 @@
           ? '<p><span class="tag ok">validated</span> Nothing is published: changing a rule takes it back.</p>'
           : `<p class="muted">Every rule with its criterion and carried by the mock-up. Nothing is published.</p>${gaps.length ? `<ul class="cr-gaps">${shown}</ul>` : ''}<button type="button" class="cr-btn on" data-cr-validate${lock || (gaps.length ? ' disabled title="Complete the rules first"' : '')}>Validate</button>`}</section>
         <section class="cr-card"><h3>b · Regenerate</h3><p class="muted">Back to the brief with everything filled in; the grilling keeps its questions and their answers, and may ask more.</p><button type="button" class="cr-btn" data-cr-regenerate${lock}>${C.confirm === 'regenerate' ? 'The mock-ups go. Click again' : 'Regenerate'}</button></section>
-        <section class="cr-card"><h3>c · Accept the proof of concept</h3><p class="muted">The record — brief, decisions, scope, rules, pages, micro-frontends, the pins left — is written in the repository beside the mock-up; the mock-up and the design system are published, the roadmap task opened with all of it, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept${lock || (validated ? '' : ' disabled title="Validate the rules first"')}>Accept</button></section>
+        <section class="cr-card"><h3>c · The data</h3><p class="muted">The data model the rules need, drafted by the AI — the business rules become its invariants.</p><button type="button" class="cr-btn on" data-cr-next="data"${validated && !waiting ? '' : ' disabled title="Validate the rules first"'}>Data →</button></section>
       </div>
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="mockups">← Back to the mock-up</button></div>`;
+  }
+
+  // ---- the data step ------------------------------------------------------------
+  // The steps whose body sits beside their easel.
+  const SPLIT = ['rules', 'data'];
+  const CRITICALITY = ['low', 'normal', 'critical'];
+  const ON_DELETE = ['restrict', 'cascade', 'nullify', 'archive', 'review'];
+  const ON_UPDATE = ['propagate', 'restrict'];
+  const options = (all, on) => `<option value=""${on ? '' : ' selected'}>—</option>` + all.map((v) => `<option value="${v}"${v === on ? ' selected' : ''}>${v}</option>`).join('');
+  function stepData(r) {
+    const d = r.data;
+    const gaps = (C.data && C.data.dataGaps) || [];
+    const head = `<p class="muted">The data model the proof of concept needs, drafted by the AI off the rules, the micro-frontends and the mock-up's example data: the tables (drawn beside), then each aggregate's integrity rules — what each field's criticality is, the invariants that carry the business rules, what a link does when the row it points at goes. Ask the AI to change the structure; retouch the words and pick the policies here.</p>`;
+    if (!d) return head + (C.busy ? '' : '<div class="cr-actions"><span></span><button type="button" class="cr-btn on" data-cr-data-draft>Draft the data model</button></div>');
+    const business = new Map(rules().filter((q) => q.family === 'business').map((q) => [q.id, q]));
+    const status = d.validated && !C.data.dataStale ? '<span class="tag ok">validated</span>' : gaps.length ? `<span class="tag bad">${gaps.length} gap${gaps.length > 1 ? 's' : ''}</span>` : '<span class="tag">ready to validate</span>';
+    const aggregates = (d.aggregates || []).map((a) => `<section class="cr-agg" data-agg="${esc(a.aggregate)}"><h3>${esc(a.aggregate)} <small>${esc((a.tables || []).join(', '))}</small></h3>
+        <div class="cr-agg-fields">${Object.entries(a.fields || {}).map(([field, rule]) => `<label class="${rule.criticality ? '' : 'bad'}"><code>${esc(field)}</code><span class="muted">${esc(rule.kind || '')}</span><select data-cr-crit="${esc(field)}" aria-label="${esc(field)} criticality">${options(CRITICALITY, rule.criticality)}</select></label>`).join('') || '<span class="tag bad">no field</span>'}</div>
+        ${(a.invariants || []).length ? `<ul class="cr-agg-inv">${a.invariants.map((i) => `<li><code>${esc(i.id)}</code> ${esc(i.rule)}${(i.rules || []).length ? ` <span class="muted">carries ${i.rules.map((n) => `<span title="${esc((business.get(n) || {}).title || '')}">R${n}</span>`).join(', ')}</span>` : ''}</li>`).join('')}</ul>` : ''}
+        ${(a.relations || []).map((rel) => `<div class="cr-agg-rel${rel.onDelete && rel.onUpdate ? '' : ' bad'}" data-rel="${esc(rel.from)}"><code>${esc(rel.from)}</code> on delete <select data-cr-rel="onDelete" aria-label="${esc(rel.from)} on delete">${options(ON_DELETE, rel.onDelete)}</select> on update <select data-cr-rel="onUpdate" aria-label="${esc(rel.from)} on update">${options(ON_UPDATE, rel.onUpdate)}</select></div>`).join('')}
+      </section>`).join('');
+    const tables = (d.tables || []).map((t) => `<details class="cr-table"><summary><code>${esc(t.name)}</code> <span class="muted">${(t.fields || []).length} fields</span></summary>
+        <input type="text" data-cr-purpose="${esc(t.name)}" data-field="" value="${esc(t.purpose)}" placeholder="what the table is for" aria-label="${esc(t.name)}, purpose">
+        ${(t.fields || []).map((f) => `<label><code>${esc(f.name)}</code> <span class="muted">${esc(f.type)}${f.references ? ' → ' + esc(f.references) : ''}</span><input type="text" data-cr-purpose="${esc(t.name)}" data-field="${esc(f.name)}" value="${esc(f.purpose)}" placeholder="what it is for" aria-label="${esc(t.name)}.${esc(f.name)}, purpose"></label>`).join('')}</details>`).join('');
+    return head + `<div class="cr-rules-head">${status}${C.data.dataStale ? ' <span class="cr-chip warn" title="The rules moved since the model was drafted">to redo</span>' : ''}<span class="spacer"></span><button type="button" class="cr-btn" data-cr-data-draft${C.busy ? ' disabled' : ''} title="The AI drafts the whole model again off the rules as they are">Draft again</button></div>
+      <div class="cr-data-ask"><textarea rows="2" data-cr="data-request" placeholder="Ask the AI to change the structure: a table, a field, a link, an aggregate…" aria-label="what to change in the data model"></textarea><button type="button" class="cr-btn" data-cr-data-change${C.busy ? ' disabled' : ''}>Ask the AI</button></div>
+      <h3 class="cr-sub">Aggregates</h3>${aggregates || '<p class="muted">No aggregate.</p>'}
+      <h3 class="cr-sub">Tables</h3>${tables}`;
+  }
+  // What the volume of the proof of concept is, before it is accepted.
+  function volumes(r) {
+    const mock = C.mock || { pages: [], components: [] };
+    const comps = mock.components || [];
+    const d = r.data || { tables: [], aggregates: [] };
+    const count = (n, one) => `<b>${n}</b> ${one}${n === 1 ? '' : 's'}`;
+    return [
+      count((mock.pages || []).length, 'page'),
+      count(comps.length, 'micro-frontend'),
+      count(new Set(comps.flatMap((c) => c.needs || [])).size, 'Capability').replace('Capabilitys', 'Capabilities'),
+      count(new Set(comps.flatMap((c) => c.actions || [])).size, 'DataCapability').replace('DataCapabilitys', 'DataCapabilities'),
+      count((d.tables || []).length, 'table'),
+      count((d.aggregates || []).length, 'aggregate'),
+      count((d.aggregates || []).reduce((n, a) => n + (a.invariants || []).length, 0), 'invariant'),
+    ].join(' · ');
+  }
+  function dataFoot() {
+    const r = record();
+    const gaps = (C.data && C.data.dataGaps) || [];
+    const waiting = !r || running() || !!C.busy;
+    const lock = DEMO ? ' disabled title="Disabled in the demo"' : waiting ? ' disabled title="Wait for the AI"' : '';
+    const validated = !!(r && r.data && r.data.validated && !C.data.dataStale);
+    const shown = gaps.slice(0, 4).map((g) => `<li>${esc(g)}</li>`).join('') + (gaps.length > 4 ? `<li>and ${gaps.length - 4} more</li>` : '');
+    return `<div class="cr-choices">
+        <section class="cr-card"><h3>a · Validate the data model</h3>${validated
+          ? '<p><span class="tag ok">validated</span> Nothing is published: changing it takes it back.</p>'
+          : `<p class="muted">Every business rule carried, every link with its policies, every write on a field the model has, every field with its criticality.</p>${gaps.length ? `<ul class="cr-gaps">${shown}</ul>` : ''}<button type="button" class="cr-btn on" data-cr-data-validate${lock || (gaps.length ? ' disabled title="Close the gaps first"' : '')}>Validate</button>`}</section>
+        <section class="cr-card"><h3>b · Regenerate</h3><p class="muted">Back to the brief with everything filled in; the grilling keeps its questions and their answers, and may ask more.</p><button type="button" class="cr-btn" data-cr-regenerate${lock}>${C.confirm === 'regenerate' ? 'The mock-ups go. Click again' : 'Regenerate'}</button></section>
+        <section class="cr-card"><h3>c · Accept the proof of concept</h3><p class="muted">${r ? volumes(r) : ''}</p><p class="muted">The record — brief, decisions, scope, rules, pages, micro-frontends, the data model, the pins left — is written in the repository beside the mock-up; the mock-up and the design system are published, the roadmap task opened with all of it, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept${lock || (validated ? '' : ' disabled title="Validate the data model first"')}>Accept</button></section>
+      </div>
+      <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="rules">← Back to the rules</button></div>`;
+  }
+  // A retouch of the data model, kept at once.
+  function editData(edit) {
+    act('saving', async () => { C.data = await call('PUT', '/api/creation/data', edit); reloadEmbed(); });
+  }
+  function reloadEmbed() {
+    const canvas = C.embed && C.embed.canvas;
+    if (canvas && typeof canvas.reload === 'function') canvas.reload();
   }
 
   function stepInitialize(r) {
@@ -909,7 +983,7 @@
         <button type="button" class="cr-btn on" data-cr-finish${done ? '' : ' disabled'}>Open the plant →</button></div>`;
   }
 
-  const BODIES = { kind: stepKind, brief: stepBrief, grilling: stepGrilling, scope: stepScope, design: stepDesign, mockups: stepMockups, rules: stepRules, initialize: stepInitialize };
+  const BODIES = { kind: stepKind, brief: stepBrief, grilling: stepGrilling, scope: stepScope, design: stepDesign, mockups: stepMockups, rules: stepRules, data: stepData, initialize: stepInitialize };
 
   function draw() {
     if (page.hidden) { unmountEmbed(); return; }
@@ -937,8 +1011,8 @@
       ${C.route === 'landing' ? '' : crumbs(fresh)}
       ${C.busy ? `<div class="cr-busy" role="status"><span class="cr-spin" aria-hidden="true"></span>${esc(C.busy)}…</div>` : ''}
       ${C.error ? `<div class="cr-error" role="alert">${esc(C.error)}</div>` : ''}
-      ${C.route === 'rules' && embed ? '<div class="cr-rules-split">' : ''}<div class="cr-body">${body}</div>
-      ${embed ? `<div class="cr-embed" id="cr-embed" data-cr-fullable data-cr-keep="${esc(embed.face)}"><div class="cr-embed-bar"><b>${esc(embed.title)}</b><button type="button" class="cr-btn" data-cr-full title="Fill the screen (Esc to leave)">⛶ Full screen</button></div><div class="cr-embed-host" id="cr-embed-host"></div></div>${C.route === 'rules' ? '</div>' : ''}${embed.foot()}` : ''}
+      ${SPLIT.includes(C.route) && embed ? '<div class="cr-rules-split">' : ''}<div class="cr-body">${body}</div>
+      ${embed ? `<div class="cr-embed" id="cr-embed" data-cr-fullable data-cr-keep="${esc(embed.face)}"><div class="cr-embed-bar"><b>${esc(embed.title)}</b><button type="button" class="cr-btn" data-cr-full title="Fill the screen (Esc to leave)">⛶ Full screen</button></div><div class="cr-embed-host" id="cr-embed-host"></div></div>${SPLIT.includes(C.route) ? '</div>' : ''}${embed.foot()}` : ''}
     </div>`;
     paint(html);
     if (embed) mountEmbed(embed);
@@ -988,6 +1062,7 @@
     design: { kind: 'kit', face: 'kit', title: "The design system's easel", foot: designFoot, opts: () => ({ kind: 'kit', tab: 'system' }) },
     // The mock-ups step reworks the pages: no micro-frontends' list beside them.
     mockups: { kind: 'mockup', face: 'mockup-pages', title: "The mock-up — rework it: edit, pin a request, add a page", foot: mockupsFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO, strip: false }) },
+    data: { kind: 'data_model', face: 'data-draft', title: 'The data model drafted for the proof of concept', foot: dataFoot, opts: () => ({ kind: 'data_model', source: '/api/creation/data-model' }) },
     rules: { kind: 'mockup', face: 'mockup', title: "The mock-up — pick a rule to see what carries it", foot: rulesFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
   };
   // The easel a step mounts right now: the mock-up's only once it is drawn.
@@ -1213,6 +1288,14 @@
       return;
     }
     if (t.dataset.crTab) { C.rulesTab = t.dataset.crTab; draw(); return; }
+    if (t.matches('[data-cr-data-draft]')) { act('the AI drafts the data model', async () => { await post('data'); reloadEmbed(); }); return; }
+    if (t.matches('[data-cr-data-change]')) {
+      const field = page.querySelector('[data-cr="data-request"]');
+      const request = field ? field.value : '';
+      act('the AI changes the data model', async () => { C.data = await call('POST', '/api/creation/data/change', { request }); delete C.dirty['data-request']; if (field) field.value = ''; reloadEmbed(); });
+      return;
+    }
+    if (t.matches('[data-cr-data-validate]')) { act('validating the data model', () => post('data/validate')); return; }
     if (t.matches('[data-cr-audit]')) { act('the guard reads the architecture', () => post('audit')); return; }
     if (t.dataset.crFinding) {
       const how = t.dataset.how;
@@ -1316,6 +1399,20 @@
   }
   page.addEventListener('change', (e) => {
     if (e.target.closest('[data-q]')) keepAnswers();
+    if (e.target.dataset.crCrit !== undefined && e.target.value) {
+      const agg = e.target.closest('[data-agg]');
+      editData({ criticalities: [{ aggregate: agg.dataset.agg, field: e.target.dataset.crCrit, criticality: e.target.value }] });
+      return;
+    }
+    if (e.target.dataset.crRel && e.target.value) {
+      const rel = e.target.closest('[data-rel]');
+      editData({ relations: [{ from: rel.dataset.rel, [e.target.dataset.crRel]: e.target.value }] });
+      return;
+    }
+    if (e.target.dataset.crPurpose !== undefined) {
+      editData({ texts: [{ table: e.target.dataset.crPurpose, field: e.target.dataset.field || '', purpose: e.target.value }] });
+      return;
+    }
     if (e.target.matches('[data-cr-simple]')) {
       try { localStorage.setItem(SIMPLE, e.target.checked ? '1' : '0'); } catch (err) { /* a preference, not a record */ }
       draw();

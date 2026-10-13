@@ -25,6 +25,7 @@ use crate::domain::creation::{
     not_componentized, parse_brief, parse_requirements, parse_round, requirements_prompt,
     rule_prompt, scope_prompt, unfenced,
 };
+use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
 use crate::domain::design::Entry;
 use crate::domain::divergence;
 use crate::domain::note_session::{About, mockup_rules};
@@ -543,6 +544,110 @@ impl CreationDesk {
         Ok(record)
     }
 
+    /// The data model drafted by the AI off the rules, the cut and the
+    /// mock-up's example data; a draft before it is replaced.
+    ///
+    /// # Errors
+    ///
+    /// No creation, the rules are not validated, no Claude, or an answer
+    /// with no table.
+    pub async fn draft_data(&self) -> Result<Creation, String> {
+        let asked = self.existing()?;
+        asked.may_enter(Step::Data, self.facts().await)?;
+        let ctx = self.context(&asked).await;
+        let fixtures = self.fixtures().await;
+        let answer = self.ask(data_prompt(&asked, &ctx, &fixtures)).await?;
+        let draft = parse_data(&answer, &rules_print(&asked))?;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.data = Some(draft);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The data model's structure changed by the AI as the human asks.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no draft yet, no Claude, or an answer with no table.
+    pub async fn change_data(&self, request: &str) -> Result<Creation, String> {
+        let asked = self.existing()?;
+        let draft = asked.data.as_ref().ok_or("no data model yet")?;
+        if request.trim().is_empty() {
+            return Err("say what to change".to_string());
+        }
+        let answer = self.ask(change_prompt(&asked, draft, request)?).await?;
+        let changed = parse_data(&answer, &draft.from)?;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.data = Some(changed);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The human's retouches of the data model: words and policies.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no draft yet, or the register refused.
+    pub async fn edit_data(&self, edit: DataEdit) -> Result<Creation, String> {
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.data.as_mut().ok_or("no data model yet")?.edit(edit);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The data model validated: the four gates pass. Nothing is published.
+    ///
+    /// # Errors
+    ///
+    /// No creation, what keeps it, or the register refused.
+    pub async fn validate_data(&self) -> Result<Creation, String> {
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.validate_data()?;
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The example data the mock-up's micro-frontends read, a dozen files
+    /// at most, each cut short: what the data model is drafted from.
+    async fn fixtures(&self) -> Vec<(String, String)> {
+        const FILES: usize = 12;
+        const CHARS: usize = 1500;
+        let Some(mockups) = self.setup.mockups.clone() else {
+            return Vec::new();
+        };
+        let branch = self.setup.integration_branch.clone();
+        tokio::task::spawn_blocking(move || {
+            let Ok(state) = mockups.state(&branch) else {
+                return Vec::new();
+            };
+            let mut paths: Vec<String> = state
+                .components
+                .into_iter()
+                .flat_map(|c| c.fixture)
+                .collect();
+            paths.sort();
+            paths.dedup();
+            paths
+                .into_iter()
+                .filter_map(|path| {
+                    let bytes = mockups.file(&branch, &path).ok().flatten()?;
+                    let text: String = String::from_utf8_lossy(&bytes)
+                        .chars()
+                        .take(CHARS)
+                        .collect();
+                    Some((path, text))
+                })
+                .take(FILES)
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     /// The rules validated: each has its criterion and is carried by the
     /// mock-up. Nothing is published.
     ///
@@ -914,6 +1019,9 @@ impl CreationDesk {
         if !record.rules_validated {
             return Err("validate the rules first".to_string());
         }
+        if !record.data_validated() {
+            return Err("validate the data model first".to_string());
+        }
         // The job first: an acceptance nothing starts is not kept.
         self.begin(Work::Initialize)?;
         self.keep(&record)?;
@@ -1128,10 +1236,21 @@ impl CreationDesk {
         ));
         let json = creation::record_json(record, ctx)?;
         let (_, md) = creation::roadmap_issue(record, ctx);
+        let data = match &record.data {
+            Some(d) => Some((
+                d.model_json()?,
+                serde_json::to_string_pretty(&d.aggregates).map_err(|e| e.to_string())?,
+            )),
+            None => None,
+        };
         let at = branch.clone();
         let wrote = mockups.clone();
         tokio::task::spawn_blocking(move || {
             wrote.write(&at, creation::RECORD_JSON, json.as_bytes())?;
+            if let Some((model, aggregates)) = data {
+                wrote.write(&at, creation::DATA_MODEL, model.as_bytes())?;
+                wrote.write(&at, creation::DATA_AGGREGATES, aggregates.as_bytes())?;
+            }
             wrote.write(&at, creation::RECORD_MD, md.as_bytes())
         })
         .await
@@ -1489,6 +1608,17 @@ mod tests {
                 assert!(prompt.contains("- `Home` —"), "the cut is in the prompt");
                 return Ok(r#"{"findings":[{"check":"write_as_read","units":["ledger.saveLine"],"why":"it saves","fix":"move it to actions"}],"effects":{}}"#.to_string());
             }
+            if prompt.contains("You draft the data model") {
+                assert!(
+                    prompt.contains("`fixtures/Home.json`"),
+                    "the example data is in the prompt"
+                );
+                return Ok(r#"{"tables":[{"name":"line","purpose":"a line","fields":[{"name":"id","type":"uuid"}]}],"aggregates":[{"aggregate":"Line","fields":{"line.id":{"kind":"authoritative"}},"invariants":[{"id":"every-line","rule":"shown","onViolation":"reject","rules":[1]}]}]}"#.to_string());
+            }
+            if prompt.contains("You keep the data model") {
+                assert!(prompt.contains("The change asked:\n\nadd a total"));
+                return Ok(r#"{"tables":[{"name":"line","fields":[{"name":"id","type":"uuid"},{"name":"total","type":"numeric"}]}],"aggregates":[{"aggregate":"Line","fields":{"line.id":{"kind":"authoritative"}},"invariants":[{"id":"every-line","rule":"shown","rules":[1]}]}]}"#.to_string());
+            }
             if prompt.contains("Read again this one requirement only") {
                 return Ok(r#"{"requirements":[{"title":"See every line","family":"business","criterion":"given lines, when opened, then all show","pages":["pages/home.html"]}]}"#.to_string());
             }
@@ -1522,9 +1652,10 @@ mod tests {
                     "mock/pages/home.html",
                     r#"<div data-component="Home"></div>"#,
                 )?;
+                write("mock/fixtures/Home.json", r#"[{"line": 1}]"#)?;
                 write(
                     "mock/pages.json",
-                    r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","components":["Home"]}],"components":[{"name":"Home","fragment":"components/Home.html"}]}"#,
+                    r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","components":["Home"]}],"components":[{"name":"Home","fragment":"components/Home.html","fixture":"fixtures/Home.json"}]}"#,
                 )?;
                 return Ok("one micro-frontend: Home".to_string());
             }
@@ -1857,6 +1988,7 @@ mod tests {
             "a micro-frontend the mock-up has not is dropped"
         );
         rules_read_again_and_guarded(&desk, read.requirements[0].id).await;
+        data_drafted_and_retouched(&desk).await;
         initialized_up_to_the_board(&desk, &dir).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2061,9 +2193,70 @@ mod tests {
         assert!(fixed.audit.expect("kept").findings.is_empty());
     }
 
-    /// The rules the acceptance waits for, validated: those read given a
-    /// criterion and a support where they lack one, or one of its own.
+    /// The data step of the flow above: drafted, its structure changed by
+    /// the AI, its criticality picked by the human, validated.
+    async fn data_drafted_and_retouched(desk: &CreationDesk) {
+        use crate::domain::data_draft::{Criticality, CriticalityEdit, DataEdit, TextEdit};
+        assert!(
+            desk.draft_data().await.is_err(),
+            "the rules are not validated yet"
+        );
+        assert!(
+            desk.change_data("anything").await.is_err(),
+            "no data model yet"
+        );
+        let mut record = desk.existing().expect("a creation");
+        record.requirements[0].criterion = "given lines, when opened, then all show".to_string();
+        record.validate_rules().expect("valid");
+        desk.keep(&record).expect("kept");
+
+        let drafted = desk.draft_data().await.expect("drafted");
+        let data = drafted.data.as_ref().expect("a draft");
+        assert_eq!(data.tables[0].name, "line");
+        assert_eq!(data.from, rules_print(&drafted));
+        assert_eq!(
+            drafted.data_gaps(),
+            vec!["Line: line.id has no criticality".to_string()]
+        );
+        assert!(desk.validate_data().await.is_err());
+        assert!(desk.change_data("  ").await.is_err(), "nothing asked");
+
+        let changed = desk.change_data("add a total").await.expect("changed");
+        assert_eq!(
+            changed.data.as_ref().expect("a draft").tables[0]
+                .fields
+                .len(),
+            2
+        );
+        let edited = desk
+            .edit_data(DataEdit {
+                texts: vec![TextEdit {
+                    table: "line".to_string(),
+                    field: "total".to_string(),
+                    purpose: "the sum".to_string(),
+                }],
+                criticalities: vec![CriticalityEdit {
+                    aggregate: "Line".to_string(),
+                    field: "line.id".to_string(),
+                    criticality: Criticality::Normal,
+                }],
+                ..DataEdit::default()
+            })
+            .await
+            .expect("edited");
+        assert_eq!(
+            edited.data.as_ref().expect("a draft").tables[0].fields[1].purpose,
+            "the sum"
+        );
+        let valid = desk.validate_data().await.expect("validated");
+        assert!(valid.data_validated());
+    }
+
+    /// The rules and the data model the acceptance waits for, validated:
+    /// the rules read given a criterion and a support where they lack one,
+    /// or one of its own; a data model of one table.
     fn rules_validated(desk: &CreationDesk) {
+        use crate::domain::data_draft::{Aggregate, Criticality, DataDraft, FieldRule, Table};
         let mut record = desk.existing().expect("a creation");
         if record.requirements.is_empty() {
             record.requirements.push(creation::Requirement {
@@ -2081,6 +2274,33 @@ mod tests {
             }
         }
         record.validate_rules().expect("nothing keeps them");
+        let business: Vec<u32> = record
+            .requirements
+            .iter()
+            .filter(|r| r.family == creation::Family::Business)
+            .map(|r| r.id)
+            .collect();
+        record.data = Some(DataDraft {
+            tables: vec![Table {
+                name: "line".to_string(),
+                ..Table::default()
+            }],
+            aggregates: vec![Aggregate {
+                name: "Line".to_string(),
+                fields: std::collections::BTreeMap::from([(
+                    "line.total".to_string(),
+                    FieldRule {
+                        criticality: Some(Criticality::Normal),
+                        rules: business,
+                        ..FieldRule::default()
+                    },
+                )]),
+                ..Aggregate::default()
+            }],
+            from: rules_print(&record),
+            ..DataDraft::default()
+        });
+        record.validate_data().expect("nothing keeps it");
         desk.keep(&record).expect("kept");
     }
 
@@ -2103,6 +2323,15 @@ mod tests {
             job.steps
         );
         // The record is in the repository beside the mock-up, with its context.
+        let model = std::fs::read_to_string(dir.join("main_agent/mock/data/model.json"))
+            .expect("the data model is written beside the mock-up");
+        assert!(model.contains("\"name\": \"line\""), "{model}");
+        let aggregates = std::fs::read_to_string(dir.join("main_agent/mock/data/aggregates.json"))
+            .expect("the aggregates are written beside the mock-up");
+        assert!(
+            aggregates.contains("\"aggregate\": \"Line\""),
+            "{aggregates}"
+        );
         let kept = std::fs::read_to_string(dir.join("main_agent/mock/proof-of-concept.json"))
             .expect("the record is written");
         let kept: serde_json::Value = serde_json::from_str(&kept).expect("json");
