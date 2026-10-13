@@ -212,6 +212,7 @@ async fn main() -> anyhow::Result<()> {
             kit: kit.clone(),
             data: data.clone(),
             plant: plant.clone(),
+            pins: Arc::clone(&pins),
         },
         usage.clone(),
     );
@@ -441,6 +442,7 @@ struct Hold {
     kit: Option<KitDesk>,
     data: Option<DataDesk>,
     plant: Option<Arc<dyn Plant>>,
+    pins: Arc<dyn NoteStore>,
 }
 
 /// The factory-creation desk — none without a register (`--demo`). New
@@ -472,6 +474,7 @@ fn creation_for(
         kit: hold.kit,
         data: hold.data,
         plant: hold.plant,
+        pins: Some(hold.pins),
     }))
 }
 

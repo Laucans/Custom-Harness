@@ -32,10 +32,11 @@ fn refused(why: String) -> Response {
 /// the job under way, how far the gates let it go.
 async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
     let kit = desk.kit().await;
-    let facts = desk.facts().await;
+    let facts = CreationDesk::facts_of(kit);
     json(&serde_json::json!({
         "record": record,
         "reachable": record.as_ref().map(|r| r.reachable(facts)),
+        "scopeStale": record.as_ref().is_some_and(Creation::scope_stale),
         "designValidated": facts.design_validated,
         "kit": kit,
         "job": desk.job(),
@@ -145,6 +146,52 @@ pub(super) async fn scope(State(state): State<AppState>) -> Response {
         Err(r) => return *r,
     };
     match desk.propose_scope().await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// What the brief allows, drawn while the human answers the grilling:
+/// answers at once, the job follows.
+pub(super) async fn prepare(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.prepare().await {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job": desk.job() })),
+        )
+            .into_response(),
+        Err(why) => refused(why),
+    }
+}
+
+/// The accepted mock-up made again of micro-frontends, before the review:
+/// answers at once, the job follows — `200` when it is done already.
+pub(super) async fn componentize(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.componentize_now().await {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job": desk.job() })),
+        )
+            .into_response(),
+        Err(why) => refused(why),
+    }
+}
+
+/// The requirements, read off the scope and the mock-up.
+pub(super) async fn requirements(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.read_requirements().await {
         Ok(record) => view(desk, Some(record)).await,
         Err(why) => refused(why),
     }

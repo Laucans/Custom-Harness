@@ -409,14 +409,17 @@ impl KitDesk {
             let _held = lock(files);
             Self::ensure(mockups, &from)?;
             if edit {
-                // A hand edit of the validated tokens changes them in place:
-                // the human is the validation.
-                let design = Self::design_of(mockups)?;
+                // A hand edit of the validated tokens changes them in place
+                // and cancels the validation: the human validates again.
+                let mut design = Self::design_of(mockups)?;
                 if design.state == DesignState::Validated {
                     let (done, _) = kit::completed(&json)?;
                     mockups.write(BRANCH, design::TOKENS_JSON, done.as_bytes())?;
                     let tokens = kit::tokens_of(&done)?;
                     mockups.write(BRANCH, design::TOKENS_CSS, kit::css_of(&tokens).as_bytes())?;
+                    design.state = DesignState::Candidate;
+                    design.validated_at = String::new();
+                    Self::write_json(mockups, design::DESIGN_JSON, &design)?;
                     return Self::view_of(mockups);
                 }
             }
@@ -1698,6 +1701,26 @@ pub mod tests {
             draft.contains("<i>r1</i>") && draft.contains("<i>r2</i>"),
             "the second started from the first's draft: {draft}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_hand_edit_of_validated_tokens_cancels_the_validation() {
+        let (desk, dir) = desk(false);
+        desk.inject(kit::default_tokens_json(), false)
+            .await
+            .expect("injected");
+        let view = desk.validate().await.expect("validated");
+        assert_eq!(view.design.state, DesignState::Validated);
+        assert!(!view.design.validated_at.is_empty());
+        let view = desk
+            .inject(kit::default_tokens_json(), true)
+            .await
+            .expect("edited");
+        assert_eq!(view.design.state, DesignState::Candidate);
+        assert!(view.design.validated_at.is_empty());
+        let view = desk.validate().await.expect("validated again");
+        assert_eq!(view.design.state, DesignState::Validated);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

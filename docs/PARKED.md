@@ -128,3 +128,5 @@ What is already known:
   from the same probe; today the watch is stopped first.
 - The port would sit with the others (`harness-view`'s `ports`, an adapter
   next to `foundry`), since `gh` is the only thing that speaks to GitHub.
+
+Auto amelioration des formulaires de l'usine. Quand je clique sur valider si il y a une erreur statique je peux demander a en faire une regle de formulaire sur un bouton qui apparait avec l'erreur, dans ce cas une IA verifie que ca fait sens et emet une alerte si elle conclu que non, dans ce cas il faut une deuxieme validation. si ca fait du sens ca modifie directement le code de la vue.
