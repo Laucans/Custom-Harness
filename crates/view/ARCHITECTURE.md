@@ -166,9 +166,13 @@ It has two sections:
   3. **brief** — what the application does, in four guiding questions (the
      problem, the users, their journeys, the data and integrations; the
      record keeps one text, a `###` heading per answered question), and
-     under them the
-     design system's easel on its *system* tab: the logo, the moodboard,
-     the design brief, the components ticked. *Continue* saves and starts
+     under them the design system's easel on its **material** face
+     (`material: true`): the sources the design system is generated from —
+     inject a tokens file, or the logo, the moodboard and the design brief
+     — and the kit's catalogue, the components ticked. Not its sheet, not
+     the simulated page, not the canvas, and nothing published from here:
+     what the material draws is read and validated at step 6, which mounts
+     the easel whole. *Continue* saves and starts
      the **preparation** (`POST /api/creation/prepare`, `Work::Prepare`):
      the tokens drawn from that material when there is some and none yet
      (`KitDesk::generate`, the ticked kit components queued behind them),
@@ -859,7 +863,9 @@ else, pushed, read again and spliced again when the branch moved). The
 branches in progress find it on their next sync; the product's gate
 `design-system-single-writer` keeps every pull request off those folders,
 so no merge meets them. A carry refused leaves the publication standing,
-and the toast says why. Three tabs:
+and the toast says why. Three tabs — two of them, and the sources alone,
+when the easel is mounted with `material` (the creation's brief step, where
+the design system is given its material, not looked at):
 
 - **design system** — the **tokens** (`mock/design/tokens.json`, the W3C
   design tokens format; `tokens.css` derived from it by the harness, one CSS

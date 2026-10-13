@@ -7,7 +7,9 @@
 // (a draft, saved as a fork or a replacement, never on the roadmap), with
 // who uses it on which branch. Everything lives on the product's
 // `design-system` branch, read and written through `/api/design` and
-// `/api/kit`, published from the bar.
+// `/api/kit`, published from the bar. Mounted with `material`, the easel is
+// the input alone — the sources the tokens are generated from and the kit's
+// catalogue, no sheet, no canvas, nothing published from it.
 (() => {
   'use strict';
 
@@ -46,7 +48,16 @@
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', bg: kept(BG, ''), notes: [], detail: null, mode: 'use', picked: null, inspectDirty: false, saveOpen: false, galleryTop: 0 };
+    const st = { material: !!(opts && opts.material), tab: (opts && opts.tab) || kept(TAB, 'system') || 'system', reply: null, usages: null, board: null, cards: [], stamp: '', timer: null, gone: false, sketch: null, busy: false, pinned: false, rev: {}, applying: {}, custom: (opts && opts.custom) || null, editTimer: null, lastDrawn: '', bg: kept(BG, ''), notes: [], detail: null, mode: 'use', picked: null, inspectDirty: false, saveOpen: false, galleryTop: 0 };
+
+    // In *material* mode the easel is the design system's input only — the
+    // material it is drawn from and the kit's catalogue, no sheet, no
+    // canvas, nothing published from here: the creation's brief step mounts
+    // it that way, the design system's own step mounts it whole.
+    if (st.material) {
+      if (st.tab === 'canvas') st.tab = 'system';
+      host.querySelector('[data-kt="tab"][data-tab="canvas"]').hidden = true;
+    }
 
     // ---- reading -------------------------------------------------------------------------------
     async function load(quiet) {
@@ -107,9 +118,9 @@
       q('.kt-state').innerHTML = `${state} <span class="muted">· ${n} component${n === 1 ? '' : 's'} in the kit${r.edited ? ' · <b class="warn">edited, not published</b>' : ''}${r.no_claude ? ' · <span class="bad">no Claude: nothing generates</span>' : ''}</span>`;
       q('.kt-bg').hidden = st.tab !== 'canvas';
       drawBackground();
-      q('.kt-message').hidden = !r.edited;
-      q('[data-kt="publish"]').hidden = !r.edited;
-      q('[data-kt="discard"]').hidden = !r.edited;
+      q('.kt-message').hidden = st.material || !r.edited;
+      q('[data-kt="publish"]').hidden = st.material || !r.edited;
+      q('[data-kt="discard"]').hidden = st.material || !r.edited;
       if (!q('.kt-origin').innerHTML.includes('spin')) say(`branch <b>${SLUG}</b> · ${esc(r.model)} · ${r.sessions} session${r.sessions === 1 ? '' : 's'} at once`);
     }
     // ---- the components' background: the design system's surface, or the viewer's pick ----------
@@ -137,7 +148,8 @@
       drawBackground();
     }
     function setTab(tab) {
-      st.tab = tab; keep(TAB, tab);
+      st.tab = tab;
+      if (!st.material) keep(TAB, tab);
       draw(true);
     }
     function draw(changed) {
@@ -216,6 +228,15 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           <div class="kt-row"><button type="button" class="mini on" data-kt="generate" ${r.no_claude ? 'disabled' : ''}>${d.source === 'generated' ? 'generate again' : 'generate'}</button><span class="kt-hint muted">${r.no_claude ? 'no Claude at hand' : 'one question, a minute or two'}</span></div>
         </section>
       </div>`;
+      // Material mode: the sources alone. What they draw is read at the
+      // design system's step, which mounts the easel whole.
+      if (st.material) {
+        pane.innerHTML = `${sources}
+        <div class="callout">${none
+          ? 'The tokens are drawn from this material. You find them at the design system\'s step, on their sheet, to validate.'
+          : 'A design system is already drawn from this material: generate again and it waits as a candidate, validated at the design system\'s step.'}</div>`;
+        return;
+      }
       const open = new Set([...pane.querySelectorAll('details[data-keep]')].filter((x) => x.open).map((x) => x.dataset.keep));
       pane.innerHTML = `${none ? sources : ''}
       ${none ? '<div class="callout">No design system yet: inject a tokens file, or generate one from a moodboard. The kit is generated from it once it is validated.</div>' : ''}

@@ -5,9 +5,10 @@
 // meanwhile), the proof of concept's scope, the design system, the mock-ups
 // (drawn, then reworked in the easel), their review (the requirements tied
 // to the pages and the micro-frontends), the initialization. Steps 2 to 9
-// run in the new factory's own view; the design system's easel (brief and
-// design steps) and the mock-up's (mock-ups and review steps) are mounted in
-// the page itself, never in a pane over it. Driven by factories.js through
+// run in the new factory's own view; the design system's easel (on the brief
+// step its material face: the sources it is generated from, no sheet and no
+// canvas; whole on the design step) and the mock-up's (mock-ups and review
+// steps) are mounted in the page itself, never in a pane over it. Driven by factories.js through
 // `window.HarnessCreation`.
 (() => {
   'use strict';
@@ -743,7 +744,7 @@
   function paint(html) {
     const live = page.querySelector('.cr');
     const want = embedFor(C.route);
-    if (!C.embed || !live || !live.contains(C.embed.wrap) || !want || want.kind !== C.embed.kind) { unmountEmbed(); page.innerHTML = html; return; }
+    if (!C.embed || !live || !live.contains(C.embed.wrap) || !want || want.face !== C.embed.face) { unmountEmbed(); page.innerHTML = html; return; }
     const fresh = document.createElement('div');
     fresh.innerHTML = html;
     const next = fresh.firstElementChild;
@@ -756,11 +757,14 @@
     live.className = next.className;
   }
   // The easels that live in a step: the design system's, the mock-up's.
+  // `face` tells two mountings of the same pane apart — the brief's easel is
+  // the material only, the design step's is the whole one — so moving from
+  // one step to the other mounts it again instead of keeping the other face.
   const EMBEDS = {
-    brief: { kind: 'kit', title: "The design system's material — logo, moodboard, design brief", foot: briefFoot, opts: () => ({ kind: 'kit', tab: 'system' }) },
-    design: { kind: 'kit', title: "The design system's easel", foot: designFoot, opts: () => ({ kind: 'kit', tab: 'system' }) },
-    mockups: { kind: 'mockup', title: "The mock-up — rework it: edit, pin a request, add a page", foot: mockupsFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
-    review: { kind: 'mockup', title: "The mock-up's easel", foot: reviewFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
+    brief: { kind: 'kit', face: 'kit-material', title: "The design system's material — logo, moodboard, design brief", foot: briefFoot, opts: () => ({ kind: 'kit', tab: 'system', material: true }) },
+    design: { kind: 'kit', face: 'kit', title: "The design system's easel", foot: designFoot, opts: () => ({ kind: 'kit', tab: 'system' }) },
+    mockups: { kind: 'mockup', face: 'mockup', title: "The mock-up — rework it: edit, pin a request, add a page", foot: mockupsFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
+    review: { kind: 'mockup', face: 'mockup', title: "The mock-up's easel", foot: reviewFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
   };
   // The easel a step mounts right now: the mock-up's only once it is drawn.
   function embedFor(route) {
@@ -774,13 +778,13 @@
     if (C.embed && C.embed.canvas && typeof C.embed.canvas.flush === 'function') await C.embed.canvas.flush();
   }
   function mountEmbed(embed) {
-    if (C.embed && C.embed.kind === embed.kind) return;
+    if (C.embed && C.embed.face === embed.face) return;
     unmountEmbed();
     const wrap = $('cr-embed');
     const host = $('cr-embed-host');
     if (!host || !window.HarnessPanes) return;
     const canvas = window.HarnessPanes.mount(embed.kind, host, embed.opts());
-    if (canvas) C.embed = { kind: embed.kind, wrap, canvas };
+    if (canvas) C.embed = { kind: embed.kind, face: embed.face, wrap, canvas };
   }
   function unmountEmbed() {
     if (!C.embed) return;

@@ -638,6 +638,7 @@
     }) : null),
     kit: (el, p) => (window.KitPane ? window.KitPane.mount(el, {
       tab: p.tab,
+      material: p.material,
       pin: p.pin,
       custom: p.custom,
       component: p.component,
