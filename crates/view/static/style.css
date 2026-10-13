@@ -1465,6 +1465,12 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-crumb button:not(:disabled):hover, .cr-crumb button:focus-visible { border-color: var(--accent); outline: none; }
 .cr-n { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--panel-2); color: var(--text); font: 11px var(--mono); }
 .cr-crumb.done .cr-n { background: var(--ok); color: var(--bg); }
+.cr-crumb.stale button { color: var(--text); border-color: #e2b240; }
+.cr-crumb.stale .cr-n { background: #e2b240; color: var(--bg); }
+.cr-crumb.blocked button { color: var(--text); border-color: var(--bad, #e5534b); }
+.cr-crumb.blocked .cr-n { background: var(--bad, #e5534b); color: var(--bg); }
+.cr-crumb.here.stale .cr-n { background: #e2b240; color: var(--bg); }
+.cr-crumb.here.blocked .cr-n { background: var(--bad, #e5534b); color: var(--bg); }
 .cr-crumb.here .cr-n { background: var(--bg); color: var(--accent); }
 .cr-landing { display: flex; flex-direction: column; gap: 16px; }
 .cr-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }

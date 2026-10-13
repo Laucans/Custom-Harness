@@ -279,16 +279,26 @@
   }
 
   // ---- drawing --------------------------------------------------------------------
+  // Each crumb wears its step's mark, read from the server: green done,
+  // yellow to review (what it was made from moved), red blocked (a gate
+  // before where the human went fails), grey locked; a spinner chip says
+  // what draws for it.
+  const MARK_SIGN = { done: '✓', stale: '↻', blocked: '!' };
+  const MARK_TITLE = { stale: 'To review: what it was made from moved since', blocked: 'Blocked: a gate before where you went fails here', locked: 'Not reachable yet' };
   function crumbs(fresh) {
     const r = fresh ? null : record();
     const at = fresh ? 0 : indexOf(C.route);
+    const marks = r && C.data.marks ? Object.fromEntries(C.data.marks) : null;
+    // The demo's frozen record has no marks: how far it reaches says them.
     const far = r ? indexOf(C.data.reachable || 'kind') : 0;
+    const guess = (i) => (i < far ? 'done' : i === far ? 'open' : 'locked');
     return `<ol class="cr-crumbs" aria-label="creation steps">${STEPS.map(([id, label], i) => {
-      const state = i === at ? 'here' : (i < far || (r && i <= far && i !== at) ? 'done' : 'locked');
+      const mark = fresh ? (i === 0 ? 'open' : 'locked') : (marks ? marks[id] || 'locked' : guess(i));
       const open = reachable(id, fresh);
       // While founding, the first crumb is the founding itself.
       const go = fresh && id === 'repository' ? FOUND : id;
-      return `<li class="cr-crumb ${state}"><button type="button" data-cr-go="${go}"${open ? '' : ' disabled'}${i === at ? ' aria-current="step"' : ''}><span class="cr-n">${i < far && i !== at ? '✓' : i + 1}</span><span class="cr-l">${esc(label)}</span>${fresh ? '' : chip(id)}</button></li>`;
+      const title = MARK_TITLE[mark] ? ` title="${MARK_TITLE[mark]}"` : '';
+      return `<li class="cr-crumb ${mark}${i === at ? ' here' : ''}"><button type="button" data-cr-go="${go}"${open ? '' : ' disabled'}${i === at ? ' aria-current="step"' : ''}${title}><span class="cr-n">${i !== at && MARK_SIGN[mark] ? MARK_SIGN[mark] : i + 1}</span><span class="cr-l">${esc(label)}</span>${fresh ? '' : chip(id)}</button></li>`;
     }).join('')}</ol>`;
   }
 

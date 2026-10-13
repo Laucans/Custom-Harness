@@ -117,6 +117,9 @@ pub struct Creation {
     pub slug: String,
     /// The step the human is on.
     pub step: Step,
+    /// The furthest step the human ever entered: a gate failing before it
+    /// marks its step blocked.
+    pub visited: Step,
     /// What kind of factory it is, once chosen.
     pub kind: Option<Kind>,
     /// What the application does, told at large: the brief is sorted out
@@ -199,6 +202,26 @@ pub struct Facts {
     pub kit_waiting: usize,
 }
 
+/// How a step's crumb reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mark {
+    /// Made, and made from what is upstream now.
+    Done,
+    /// Made from something upstream that moved since: to review.
+    Stale,
+    /// The gate the human cannot pass any more to go back where they were.
+    Blocked,
+    /// The step to do now.
+    Open,
+    /// Not reachable yet.
+    Locked,
+}
+
+/// The steps each made from the one before it: a step to review makes
+/// every later one of them to review too.
+const CHAIN: [Step; 3] = [Step::Scope, Step::Mockups, Step::Review];
+
 /// What a step needs done before it may be entered; `None` when nothing.
 fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
     match step {
@@ -274,6 +297,44 @@ impl Creation {
             .unwrap_or_default()
     }
 
+    /// Each step's mark, in order. Before the furthest step reachable, a
+    /// step is done — or stale when what it was made from moved, or when a
+    /// step it follows in [`CHAIN`] is stale; the furthest one is open, or
+    /// blocked when the human had gone beyond it; the rest are locked.
+    #[must_use]
+    pub fn marks(&self, facts: Facts) -> Vec<(Step, Mark)> {
+        let far = self.reachable(facts);
+        let visited = self.visited.max(self.step);
+        let mut upstream_stale = false;
+        Step::ALL
+            .iter()
+            .map(|&step| {
+                let own = match step {
+                    Step::Scope => self.scope_stale(),
+                    Step::Mockups => self.mockup_stale(),
+                    _ => false,
+                };
+                let chained = CHAIN.contains(&step);
+                let stale = own || (chained && upstream_stale);
+                if chained {
+                    upstream_stale = stale;
+                }
+                let mark = if step < far || (step == Step::Initialize && !self.issue.is_empty()) {
+                    if stale { Mark::Stale } else { Mark::Done }
+                } else if step == far {
+                    if visited > far {
+                        Mark::Blocked
+                    } else {
+                        Mark::Open
+                    }
+                } else {
+                    Mark::Locked
+                };
+                (step, mark)
+            })
+            .collect()
+    }
+
     /// Goes to `step`, when it may be entered.
     ///
     /// # Errors
@@ -285,6 +346,7 @@ impl Creation {
         }
         self.may_enter(step, facts)?;
         self.step = step;
+        self.visited = self.visited.max(step);
         Ok(())
     }
 
@@ -1357,6 +1419,87 @@ mod tests {
             accepted: true,
             ..Creation::new("app", "me/app")
         }
+    }
+
+    fn mark(c: &Creation, step: Step) -> Mark {
+        c.marks(DESIGNED)
+            .into_iter()
+            .find(|(s, _)| *s == step)
+            .map(|(_, m)| m)
+            .expect("every step has a mark")
+    }
+
+    #[test]
+    fn the_steps_before_the_furthest_are_done_the_furthest_open_the_rest_locked() {
+        let mut c = ready();
+        c.accepted = false;
+        let marks = c.marks(DESIGNED);
+        assert_eq!(marks.len(), Step::ALL.len());
+        assert_eq!(mark(&c, Step::Kind), Mark::Done);
+        assert_eq!(mark(&c, Step::Mockups), Mark::Done);
+        assert_eq!(mark(&c, Step::Review), Mark::Open);
+        assert_eq!(mark(&c, Step::Initialize), Mark::Locked);
+        c.accepted = true;
+        assert_eq!(mark(&c, Step::Initialize), Mark::Open);
+        c.issue = "https://github.com/me/app/issues/1".to_string();
+        assert_eq!(mark(&c, Step::Initialize), Mark::Done);
+    }
+
+    #[test]
+    fn a_stale_scope_makes_every_step_drawn_from_it_stale_and_no_other() {
+        let mut c = ready();
+        c.accepted = false;
+        c.mocked_scope.clone_from(&c.scope);
+        c.scope_from = c.fingerprint();
+        assert_eq!(mark(&c, Step::Scope), Mark::Done);
+        c.questions[0].answer = "no".to_string();
+        assert!(c.scope_stale());
+        assert_eq!(mark(&c, Step::Scope), Mark::Stale);
+        assert_eq!(mark(&c, Step::Mockups), Mark::Stale);
+        assert_eq!(
+            mark(&c, Step::Design),
+            Mark::Done,
+            "not drawn from the scope"
+        );
+        assert_eq!(mark(&c, Step::Grilling), Mark::Done);
+        assert_eq!(
+            mark(&c, Step::Review),
+            Mark::Open,
+            "not made yet: nothing to review"
+        );
+    }
+
+    #[test]
+    fn a_scope_moved_since_the_drawing_makes_the_mock_ups_stale_not_the_scope() {
+        let mut c = ready();
+        c.mocked_scope = "## Older goal".to_string();
+        assert_eq!(mark(&c, Step::Scope), Mark::Done);
+        assert_eq!(mark(&c, Step::Mockups), Mark::Stale);
+        assert_eq!(mark(&c, Step::Review), Mark::Stale);
+    }
+
+    #[test]
+    fn a_gate_failing_before_where_the_human_went_blocks_its_step() {
+        let mut c = ready();
+        c.go(Step::Initialize, DESIGNED).expect("open");
+        assert_eq!(c.visited, Step::Initialize);
+        c.go(Step::Brief, DESIGNED).expect("back is open");
+        assert_eq!(
+            c.visited,
+            Step::Initialize,
+            "going back keeps how far it went"
+        );
+        c.accepted = false;
+        c.mocked = None;
+        assert_eq!(mark(&c, Step::Mockups), Mark::Blocked);
+        assert_eq!(mark(&c, Step::Review), Mark::Locked);
+        let mut fresh = ready();
+        fresh.mocked = None;
+        assert_eq!(
+            mark(&fresh, Step::Mockups),
+            Mark::Open,
+            "never went beyond it"
+        );
     }
 
     #[test]

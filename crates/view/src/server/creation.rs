@@ -38,6 +38,7 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "reachable": record.as_ref().map(|r| r.reachable(facts)),
         "scopeStale": record.as_ref().is_some_and(Creation::scope_stale),
         "mockupStale": record.as_ref().is_some_and(Creation::mockup_stale),
+        "marks": record.as_ref().map(|r| r.marks(facts)),
         "designValidated": facts.design_validated,
         "kit": kit,
         "job": desk.job(),
