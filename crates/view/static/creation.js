@@ -25,6 +25,9 @@
   // `/?demo=1#new-factory/mockups`) over a factory whose mock-up is already
   // drawn on disk, so the right-hand preview is real, navigable content.
   const DEMO = new URLSearchParams(location.search).get('demo') === '1';
+  // What the page shows while a grilling round is asked.
+  const GRILL_FIRST = 'the AI prepares its questions';
+  const GRILL_NEXT = 'the AI prepares the next round';
   const DEMO_PAGES = ['Accueil de la maquette', 'Campagnes', 'Joueurs', 'Éléments de campagne', 'Image et grille hex', 'Préparation de séance', 'Vue MJ — mode séance', 'Vue joueur'];
   const DEMO_BRANCH = 'main_agent';
   let demoTimer = null;
@@ -250,7 +253,7 @@
     if (!r || C.busy) return;
     const once = (key, fn) => { if (C.auto_started[key]) return; C.auto_started[key] = true; fn(); };
     // The first round asks itself; every question deleted later does not bring one back.
-    if (C.route === 'grilling' && !r.questions.length && !r.rounds) once(`grill-${r.regenerations}`, () => act('the AI prepares its questions', () => post('grill')));
+    if (C.route === 'grilling' && !r.questions.length && !r.rounds) once(`grill-${r.regenerations}`, () => act(GRILL_FIRST, () => post('grill')));
     // A scope not written, or proposed before the grilling moved the decisions and
     // not retouched: proposed (again) by itself; a retouched one waits for the human.
     if (C.route === 'scope' && (!r.scope.trim() || (C.data.scopeStale && !r.scope_edited))) once(`scope-${r.regenerations}-${r.scope_from}`, () => act(PROPOSING, () => post('scope')));
@@ -634,6 +637,8 @@
 
   function stepGrilling(r) {
     const qs = r.questions;
+    // While a round is asked, its button spins.
+    const asking = C.busy === GRILL_FIRST || C.busy === GRILL_NEXT;
     const open = qs.filter((q) => !q.answer.trim()).length;
     // The last round's questions stand out until answered; an answered one greys.
     const typed = (q) => C.dirty[`q${q.id}`] ?? q.answer;
@@ -662,7 +667,9 @@
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="brief">← Back</button>
         <span class="cr-gap"></span>
         ${open ? `<button type="button" class="cr-btn" data-cr-take-all title="Every open question takes its recommended answer">Use the ${open} recommendation${open === 1 ? '' : 's'}</button>` : ''}
-        <button type="button" class="cr-btn" data-cr-grill title="${open ? 'Answer the open questions first' : 'Ask the next round of questions'}"${open || C.busy ? ' disabled' : ''}>${qs.length ? 'Continue grilling' : 'Start the grilling'}</button>
+        ${asking
+    ? '<button type="button" class="cr-btn busy" data-cr-grill disabled><span class="cr-spin" aria-hidden="true"></span> Generating the round…</button>'
+    : `<button type="button" class="cr-btn" data-cr-grill title="${open ? 'Answer the open questions first' : 'Ask the next round of questions'}"${open || C.busy ? ' disabled' : ''}>${qs.length ? 'Continue grilling' : 'Start the grilling'}</button>`}
         <button type="button" class="cr-btn on" data-cr-next="scope"${!qs.length && !r.grilled ? ' disabled' : ''}>Continue →</button></div>`;
   }
 
@@ -962,7 +969,7 @@
   function askGrill() {
     const body = fields();
     // The new round lands in any topic: the page goes to its first open question.
-    act('the AI prepares the next round', async () => { await save(body); await post('grill'); })
+    act(GRILL_NEXT, async () => { await save(body); await post('grill'); })
       .then(() => { if (!C.error) firstOpen()?.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
   }
   function firstOpen() {

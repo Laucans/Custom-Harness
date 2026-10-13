@@ -31,6 +31,9 @@ real model is unverified.
 - [ ] *Continue grilling*: once the round lands, the page scrolls to the
       first open question (just under its topic's header); a new topic card
       may appear.
+- [ ] While a round is asked (first one or *Continue grilling*), the button
+      spins and reads *Generating the round…*; back to normal once it lands
+      or fails.
 - [ ] Scrolling down a topic, its header stays stuck at the pane's top edge,
       then gives way to the next topic's.
 - [ ] The new round's questions are yellow; typing in one (or *use it*,

@@ -1488,6 +1488,7 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-btn.on { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 .cr-btn:hover:not(:disabled), .cr-btn:focus-visible { border-color: var(--accent); outline: none; }
 .cr-btn:disabled { opacity: .45; cursor: default; }
+.cr-btn.busy:disabled { opacity: 1; cursor: progress; border-color: var(--accent); display: inline-flex; align-items: center; gap: 8px; }
 /* Back/Continue stay at the wizard's usual narrow column regardless of how
    wide the current step's own content is (the mock-up's preview, the
    kit's easel…) — their position on the page does not change step to step. */
