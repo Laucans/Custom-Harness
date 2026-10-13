@@ -152,6 +152,8 @@
   function subscribe() {
     const es = new EventSource('/api/events');
     es.addEventListener('snapshot', (e) => { S.snap = JSON.parse(e.data); if (!reloadIfRebuilt(S.snap)) onSnapshot(); });
+    // The product's workspace or a desk's job moved: the creation page reads again.
+    es.addEventListener('pulse', () => window.dispatchEvent(new Event('harness:pulse')));
     es.onerror = () => { $('watch-dot').className = 'dot warn'; $('watch-text').textContent = 'reconnecting…'; };
   }
   function onSnapshot() {

@@ -66,6 +66,7 @@ use crate::ports::{
     BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Plant, Prompts, Traces, Trials,
     Usage,
 };
+use crate::pulse::Pulse;
 use crate::removal::Removal;
 use crate::units_desk::UnitsDesk;
 use harness_core::domain::quota::Reading;
@@ -121,6 +122,9 @@ use runs::{issue, line_of, locate_run, run_file, run_graph, run_stages};
 pub struct AppState {
     /// The latest picture.
     pub snapshot: watch::Receiver<Arc<Snapshot>>,
+    /// Beaten whenever the product's workspace or a desk's job moved: what
+    /// the creation page follows instead of asking on a timer.
+    pub pulse: Pulse,
     /// The latest board, bodies included — `None` until GitHub answered.
     pub board: watch::Receiver<Option<Arc<BoardReading>>>,
     /// The traces, for the live tails.
@@ -212,6 +216,7 @@ const APP: &str = include_str!("../../static/app.js");
 const XTERM_JS: &str = include_str!("../../static/vendor/xterm.js");
 const XTERM_CSS: &str = include_str!("../../static/vendor/xterm.css");
 const XTERM_FIT: &str = include_str!("../../static/vendor/addon-fit.js");
+const MORPHDOM_JS: &str = include_str!("../../static/vendor/morphdom.js");
 const CLOCK_JS: &str = include_str!("../../static/clock.js");
 const BOARD_JS: &str = include_str!("../../static/board.js");
 const ACTIONS_JS: &str = include_str!("../../static/actions.js");
@@ -254,6 +259,7 @@ pub fn router(state: AppState) -> Router {
         .route("/vendor/xterm.js", get(xterm_js))
         .route("/vendor/xterm.css", get(xterm_css))
         .route("/vendor/addon-fit.js", get(xterm_fit))
+        .route("/vendor/morphdom.js", get(morphdom_js))
         .route("/api/snapshot", get(snapshot))
         .route("/api/events", get(events))
         .route("/api/runs/{workflow}/locate", get(locate_run))
@@ -485,20 +491,28 @@ async fn xterm_fit(State(state): State<AppState>) -> Response {
     asset(&state, "vendor/addon-fit.js", XTERM_FIT, JS)
 }
 
+async fn morphdom_js(State(state): State<AppState>) -> Response {
+    asset(&state, "vendor/morphdom.js", MORPHDOM_JS, JS)
+}
+
 async fn snapshot(State(state): State<AppState>) -> Response {
     let current = state.snapshot.borrow().clone();
     json(&*current)
 }
 
-/// One `snapshot` event per change, the current picture first.
+/// One `snapshot` event per change, the current picture first; one
+/// `pulse` event per beat, the current count first — a page that hears it
+/// after a reconnection reads again, so a beat lost meanwhile costs nothing.
 async fn events(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let stream = WatchStream::new(state.snapshot).map(|snap| {
+    let pictures = WatchStream::new(state.snapshot).map(|snap| {
         let body = serde_json::to_string(&*snap).unwrap_or_default();
         Ok(Event::default().event("snapshot").data(body))
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    let pulses = WatchStream::new(state.pulse.subscribe())
+        .map(|count| Ok(Event::default().event("pulse").data(count.to_string())));
+    Sse::new(pictures.merge(pulses)).keep_alive(KeepAlive::default())
 }
 
 /// A log folder name: lowercase words joined by dashes, nothing a path

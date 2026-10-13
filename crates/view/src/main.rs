@@ -30,6 +30,7 @@ mod kit_desk;
 mod mf_desk;
 mod note_desks;
 mod ports;
+mod pulse;
 mod removal;
 mod server;
 mod units_desk;
@@ -90,6 +91,7 @@ use crate::ports::{
     Board, BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
     TerminalFactory, Traces, Trials, Units, Usage, Yard,
 };
+use crate::pulse::{Pulse, PulsingMockups};
 use crate::removal::{PlantOf, Removal};
 use crate::server::{AppState, router};
 use crate::units_desk::UnitsDesk;
@@ -199,8 +201,14 @@ async fn main() -> anyhow::Result<()> {
     let claude_read = Arc::default();
     let diagnoses: server::Diagnoses = Arc::default();
     let (data, data_task) = data_for(product);
+    let pulse = Pulse::default();
     let (units, mockups) = product_readers(&cli, &root, &project, usage.clone());
-    let kit = kit_for(&cli, mockups.clone(), &pins, usage.clone());
+    // Every write to the product's workspace beats the pulse the creation
+    // page follows, whoever writes it.
+    let mockups = mockups
+        .map(|inner| Arc::new(PulsingMockups::new(inner, pulse.clone())) as Arc<dyn Mockups>);
+    let kit = kit_for(&cli, mockups.clone(), &pins, usage.clone())
+        .map(|kit| kit.with_pulse(pulse.clone()));
     let mf = mf_for(&cli, mockups.clone(), kit.clone(), usage.clone());
     let creation = creation_for(
         &cli,
@@ -215,7 +223,8 @@ async fn main() -> anyhow::Result<()> {
             pins: Arc::clone(&pins),
         },
         usage.clone(),
-    );
+    )
+    .map(|desk| desk.with_pulse(pulse.clone()));
 
     let removal = removal_for(&cli, &root, factories.clone(), &factory);
     if let (Some(removal), Ok(left)) = (&removal, std::env::var(relaunch::LEAVING))
@@ -228,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
     let (board_tx, board_rx) = watch::channel(None);
     let state = AppState {
         snapshot: snapshot_rx,
+        pulse,
         board: board_rx.clone(),
         traces: Arc::clone(&traces),
         static_dir: cli.static_dir.clone(),

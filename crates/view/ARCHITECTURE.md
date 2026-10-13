@@ -247,7 +247,7 @@ It has two sections:
      chips (`PUT /api/creation`, `Edit::requirements`; one the human touched
      is `human` and survives a new reading). The mock-up's easel and its
      pins sit under them (the same persistent host as the mock-ups step: a
-     redraw weaves the page around it, so its iframes and canvas keep their
+     redraw leaves it as it is, so its iframes and canvas keep their
      place), then two ways: **regenerate** (back to the brief, everything
      kept; the grilling keeps its questions, editable and deletable, and
      may ask more; the workspace starts again from the branch), **accept**
@@ -271,9 +271,29 @@ It has two sections:
 The record is the register's (`Factories::creation`, `keep_creation`): the
 creation survives a reload, a switch and a restart. One long job at a time
 (`creation_desk.rs`: found, connect, prepare, mock-ups, componentize,
-initialize), followed by the page every two seconds — the grilling's
+initialize), followed by the page through the **pulse** — the grilling's
 rounds and the scope's proposals are calls, not jobs, so they run beside
-the preparation. An acceptance another job refuses is not kept. The AI is `--creation-model` (`CREATION_MODEL`,
+the preparation.
+
+The page is not asked on a timer. `pulse.rs` keeps a counter the view beats
+whenever what the page draws from may have moved: every write to the
+product's workspace (`PulsingMockups`, wrapped around the `Mockups` port in
+`main.rs`, so whoever writes — the design system's easel, the mock-up's, a
+creation job — is heard without beating it themselves; reads never beat),
+the creation desk's record kept and its job begun, stepped or ended, the
+kit's generation jobs queued, taken and ended. `/api/events` streams it as
+a `pulse` event, the current count first, so a page that reconnects reads
+again. The page then reads `/api/creation` — one reading at a time, a
+burst of beats read at most every 250 ms — and redraws only what the
+reading changed: nothing when it is the same, the job's panel and the
+preview when only the job moved. A redraw **morphs** the page into the new
+markup (`vendor/morphdom.js`) rather than rewriting it: an element that did
+not change stays the same node, and two are never touched — the field the
+human is typing in (its text, its caret, its focus), and an element marked
+`data-cr-keep` whose mark did not change (the easel mounted in the step,
+by its face; the preview's frame, by its branch), whose live state is the
+script's. Until a pulse is heard — a view built before it — the page asks
+every two seconds instead while something moves. An acceptance another job refuses is not kept. The AI is `--creation-model` (`CREATION_MODEL`,
 `claude-opus-5-5`). A factory's folder is a worktree of the harness the view
 runs from, not an empty folder: the watch lends the harness's
 `.claude/skills` from the checkout it runs in, and `init-repo`'s
@@ -1106,6 +1126,7 @@ src/units_desk.rs      the capabilities list's reading, kept a minute; the fusio
 src/data_desk.rs       the data desk: one task owning the Product port, versions cached, the handlers answered by channel
 src/creation_desk.rs   a factory's creation at work: the record in the register, the AI's rounds, scope and requirements, the context gathered for the roadmap task and the record kept in the repository, the long jobs (found, connect, prepare, mock-ups, componentize, initialize)
 src/removal.rs         a factory taken down: delink or destroy, the confirmation checked, the watch, the repository, the folder and the register in that order
+src/pulse.rs           the pulse: a counter beaten when the product's workspace is written or a desk's job moves, streamed on /api/events; `PulsingMockups`, the port wrapped so every write beats it
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
 src/domain/            the inside — no disk, no subprocess, no clock (`switch.rs`: the command line and the environment a view starts again with in another factory; `creation.rs`: a factory's creation, its gates, the AI's prompts and the reading of its answers)
@@ -1149,7 +1170,7 @@ src/adapters/
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
 src/server/            axum, one file per pane: `mod.rs` the state, the route table, the page's assets; `runs`, `desks`, `plant`, `janitor`, `data_model`, `mockup`, `drafts` (a page's draft and its versions), `design` (the design system's easel), `capabilities`, `notes`, `prompts` the handlers of each; `tests.rs` the router driven with fakes. The routes: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart, /api/factories, POST /api/factories/{id}/open, /api/creation, POST /api/creation/…
-static/                index.html, style.css, viewport.js (the viewport picker the mock-up's easel and the creation page's preview share), clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, the draft, the requests, the forks), edit.js (the draft engine: a page as source + operations, undo, materialization), design.js (the designer's hands: selection, handles, guides, marquee, layers, properties, tools, menu, keys), vendor/ (xterm.js), render/ (built, not committed)
+static/                index.html, style.css, viewport.js (the viewport picker the mock-up's easel and the creation page's preview share), clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, the draft, the requests, the forks), edit.js (the draft engine: a page as source + operations, undo, materialization), design.js (the designer's hands: selection, handles, guides, marquee, layers, properties, tools, menu, keys), vendor/ (xterm.js; morphdom.js, the creation page's redraws), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```
 
@@ -1197,7 +1218,9 @@ echoing terminal (`desk::fake::Echoing`) — never a mock at the call site.
 - **One picture, pushed.** The pollers assemble a `Snapshot`; the server
   streams it on `/api/events` whenever it changed (compared before it is
   stamped, so a clock alone wakes nobody). The page asks for nothing else
-  except a log tail and an issue body, on demand and bounded.
+  except a log tail and an issue body, on demand and bounded — and the
+  creation page's `/api/creation`, when the same stream's `pulse` says
+  the product or a desk's job moved.
 - **The blueprint is declared, not derived.** `harness-workflows`' stage tables
   are built against ports and boxed actions; what a stage *looks like* is a
   fact of the view. The stage names in `blueprint.rs` are the ones the runs

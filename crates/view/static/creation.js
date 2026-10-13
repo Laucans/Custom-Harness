@@ -17,6 +17,8 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const HASH = '#new-factory';
   const POLL_MS = 2000;
+  // A burst of beats (several kit components generating at once) reads at most this often.
+  const SETTLE_MS = 250;
   // A frozen, looping replay of the mock-ups/initialize split view, with no
   // server poll and no AI call — `?demo=1` (before the hash, e.g.
   // `/?demo=1#new-factory/mockups`) over a factory whose mock-up is already
@@ -49,7 +51,7 @@
   // desk belongs to the factory open here, never to the one being founded.
   const FOUND = 'found';
 
-  const C = { dirty: {}, loaded: false, data: null, route: 'landing', auto: false, busy: '', error: '', owners: null, ownersWhy: '', timer: null, embed: null, view: { width: null, height: null }, trackHidden: false, auto_started: {}, confirm: '', opening: '', pages: null, mock: null, reqTimer: null };
+  const C = { dirty: {}, loaded: false, data: null, route: 'landing', auto: false, busy: '', error: '', owners: null, ownersWhy: '', timer: null, embed: null, view: { width: null, height: null }, trackHidden: false, auto_started: {}, confirm: '', opening: '', pages: null, mock: null, reqTimer: null, pulsed: false, reading: false, again: false };
   const page = $('factory-page');
 
   async function call(method, url, body) {
@@ -92,31 +94,53 @@
     return indexOf(step) <= indexOf(C.data.reachable || 'kind');
   }
 
-  // ---- the polling while a job runs ------------------------------------------------
-  // The design step follows the easel mounted in it: validating the design
-  // system, then the kit generating, change the counts and the gate.
+  // ---- following the server ---------------------------------------------------------
+  // The server beats a pulse on the event stream whenever the product's
+  // workspace or a desk's job moved (`harness:pulse`, from app.js): the page
+  // reads again then, and redraws only what the reading changed. Until a
+  // pulse is heard — a view built before it, a stream not up yet — the page
+  // asks every POLL_MS instead, while something moves: a job, the kit, the
+  // design system the brief and the design step follow.
   const designOpen = () => (C.route === 'design' || C.route === 'brief') && !!record();
+  window.addEventListener('harness:pulse', () => {
+    C.pulsed = true;
+    follow();
+  });
   function poll() {
-    if (DEMO) return;
+    if (DEMO || C.pulsed) return;
     clearTimeout(C.timer);
     if (!running() && !designOpen() && !kitBusy()) return;
-    C.timer = setTimeout(async () => {
-      if (!running()) {
-        const was = kitBusy();
-        await read();
-        // The kit's chip on the crumbs follows; the design step and the brief's easel too.
-        if (!C.busy && (designOpen() || was !== kitBusy())) { draw(); enter(); }
-        poll();
-        return;
-      }
-      const before = job();
-      await read();
-      const after = job();
-      drawJob();
-      drawPreview();
-      if (after && after.state !== 'running') onJobEnd(before, after);
-      else poll();
-    }, POLL_MS);
+    C.timer = setTimeout(follow, POLL_MS);
+  }
+  // One reading at a time, never under an action: a beat heard meanwhile
+  // reads once more after it (`resume`).
+  async function follow() {
+    if (DEMO || page.hidden || !C.loaded) return;
+    if (C.reading || C.busy) { C.again = true; return; }
+    C.reading = true;
+    try {
+      await refresh();
+    } finally {
+      setTimeout(() => { C.reading = false; resume(); }, SETTLE_MS);
+    }
+  }
+  function resume() {
+    if (C.again) { C.again = false; follow(); } else poll();
+  }
+  // What was read is compared with what is drawn: the same, nothing is
+  // redrawn; only the job moved, only the job's panel and the preview are.
+  async function refresh() {
+    const before = C.data;
+    const was = job();
+    await read();
+    const outside = (data) => JSON.stringify(data && { ...data, job: null });
+    if (JSON.stringify(C.data) === JSON.stringify(before)) return;
+    const now = job();
+    if (was && was.state === 'running' && now && now.state !== 'running') { onJobEnd(was, now); return; }
+    if (outside(C.data) === outside(before)) { drawJob(); drawPreview(); return; }
+    draw();
+    drawPreview();
+    if (!running()) enter();
   }
   const generateKit = () => act('starting the kit', async () => { await call('POST', '/api/kit/generate', {}); await read(); });
   function onJobEnd(before, after) {
@@ -153,7 +177,7 @@
     try { await fn(); } catch (e) { C.error = e.message || String(e); }
     C.busy = '';
     draw();
-    poll();
+    resume();
   }
   // What was typed and not saved yet, by field: a redraw puts it back.
   const save = async (body) => { C.data = await call('PUT', '/api/creation', body); C.dirty = {}; };
@@ -202,7 +226,7 @@
       try { await call('POST', '/api/creation/prepare'); await read(); draw(); } catch (e) { /* another job runs, or no brief: the steps say */ }
     }
     enter();
-    poll();
+    resume();
   }
 
   // What a step starts on its own the first time it is entered.
@@ -297,17 +321,19 @@
   // same /mock/{branch}/{*path} route the review step's easel reads pages
   // through, which already serves whatever is on disk — committed or still
   // mid-session — with no gate on the job being done. Only reloaded when
-  // job.steps actually grew (kept on the host's own dataset, so a freshly
-  // drawn pane starts correctly whatever ran before it existed), and at
+  // job.steps actually grew (counted on the frame's stage, which a redraw
+  // keeps, so a freshly drawn pane starts correctly whatever ran before it
+  // existed), and at
   // its *current* path rather than forced back to the index, so clicking
   // into another page survives the next tick.
   function drawPreview() {
     const j = job();
     const host = page.querySelector('[data-cr-preview]');
-    if (!j || !host || (j.work !== 'mockups' && j.work !== 'initialize')) return;
-    const seen = Number(host.dataset.steps || 0);
+    const stage = host && host.querySelector('.cr-draw-stage');
+    if (!j || !stage || (j.work !== 'mockups' && j.work !== 'initialize')) return;
+    const seen = Number(stage.dataset.steps || 0);
     if (j.steps.length <= seen) return;
-    host.dataset.steps = String(j.steps.length);
+    stage.dataset.steps = String(j.steps.length);
     const frame = host.querySelector('.cr-draw-frame');
     if (!frame) return;
     if (frame.hidden) {
@@ -332,8 +358,8 @@
         <div class="cr-draw-head"><h3>Taking shape</h3>
           ${window.Viewport.markup({ fit: true })}
           <button type="button" class="cr-btn" data-cr-full title="Fill the screen (Esc to leave)">⛶ Full screen</button></div>
-        <p class="muted cr-draw-empty">Nothing drawn yet — the first page appears here once it is written.</p>
-        <div class="cr-draw-stage"><div class="cr-draw-sizer"${C.view.width || C.view.height ? ` style="${C.view.width ? `width:${C.view.width}px;` : ''}${C.view.height ? `height:${C.view.height}px;` : ''}"` : ''}>
+        <p class="muted cr-draw-empty" data-cr-keep="${esc(branch)}">Nothing drawn yet — the first page appears here once it is written.</p>
+        <div class="cr-draw-stage" data-cr-keep="${esc(branch)}"><div class="cr-draw-sizer"${C.view.width || C.view.height ? ` style="${C.view.width ? `width:${C.view.width}px;` : ''}${C.view.height ? `height:${C.view.height}px;` : ''}"` : ''}>
           <iframe class="cr-draw-frame" title="the proof of concept, as it is drawn" hidden></iframe>
           <div class="cr-draw-handle" title="drag to resize"></div></div></div>
       </div>
@@ -425,7 +451,8 @@
     const start = DEMO_PRELUDE[work].length;
     const host = page.querySelector('[data-cr-preview]');
     if (host) {
-      host.dataset.steps = '0';
+      const stage = host.querySelector('.cr-draw-stage');
+      if (stage) stage.dataset.steps = '0';
       const frame = host.querySelector('.cr-draw-frame');
       if (frame) frame.hidden = true;
       host.querySelector('.cr-draw-empty')?.removeAttribute('hidden');
@@ -719,7 +746,7 @@
       ${C.busy ? `<div class="cr-busy" role="status"><span class="cr-spin" aria-hidden="true"></span>${esc(C.busy)}…</div>` : ''}
       ${C.error ? `<div class="cr-error" role="alert">${esc(C.error)}</div>` : ''}
       <div class="cr-body">${body}</div>
-      ${embed ? `<div class="cr-embed" id="cr-embed" data-cr-fullable><div class="cr-embed-bar"><b>${esc(embed.title)}</b><button type="button" class="cr-btn" data-cr-full title="Fill the screen (Esc to leave)">⛶ Full screen</button></div><div class="cr-embed-host" id="cr-embed-host"></div></div>${embed.foot()}` : ''}
+      ${embed ? `<div class="cr-embed" id="cr-embed" data-cr-fullable data-cr-keep="${esc(embed.face)}"><div class="cr-embed-bar"><b>${esc(embed.title)}</b><button type="button" class="cr-btn" data-cr-full title="Fill the screen (Esc to leave)">⛶ Full screen</button></div><div class="cr-embed-host" id="cr-embed-host"></div></div>${embed.foot()}` : ''}
     </div>`;
     paint(html);
     if (embed) mountEmbed(embed);
@@ -738,23 +765,26 @@
     host.querySelector('.cr-draw-empty')?.setAttribute('hidden', '');
     frame.src = `/mock/${encodeURIComponent((host.dataset.crPreview || '').replace(/\//g, '__'))}/index.html`;
   }
-  // The page is rewritten whole, except the easel mounted in it: its
-  // iframes would reload and its canvas lose its place, so the new page is
-  // woven around the element that stays.
+  // The page is morphed into the new markup, not rewritten (morphdom): an
+  // element that did not change stays the same node, so a field keeps its
+  // focus, its caret and its scroll. Two are left exactly as they are: the
+  // field being typed in, and an element marked `data-cr-keep` whose mark
+  // did not change — the easel mounted in the step (its iframes would
+  // reload, its canvas lose its place), the preview's frame — whose live
+  // state is the script's, not the markup's.
+  const TYPED = 'textarea, select, input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"])';
   function paint(html) {
-    const live = page.querySelector('.cr');
     const want = embedFor(C.route);
-    if (!C.embed || !live || !live.contains(C.embed.wrap) || !want || want.face !== C.embed.face) { unmountEmbed(); page.innerHTML = html; return; }
-    const fresh = document.createElement('div');
-    fresh.innerHTML = html;
-    const next = fresh.firstElementChild;
-    const kids = [...next.children];
-    const at = kids.findIndex((k) => k.id === 'cr-embed');
-    if (at < 0) { unmountEmbed(); page.innerHTML = html; return; }
-    for (const child of [...live.children]) if (child !== C.embed.wrap) child.remove();
-    for (const k of kids.slice(0, at)) live.insertBefore(k, C.embed.wrap);
-    for (const k of kids.slice(at + 1)) live.append(k);
-    live.className = next.className;
+    if (C.embed && (!want || want.face !== C.embed.face || !page.contains(C.embed.wrap))) unmountEmbed();
+    // Without the vendor script the page is rewritten whole, the easel mounted again.
+    if (!window.morphdom) { unmountEmbed(); page.innerHTML = html; return; }
+    const next = document.createElement('div');
+    next.innerHTML = html;
+    window.morphdom(page, next, { childrenOnly: true, onBeforeElUpdated: (from, to) => !kept(from, to) });
+  }
+  function kept(from, to) {
+    if (from.dataset.crKeep !== undefined && from.dataset.crKeep === to.dataset.crKeep) return true;
+    return from === document.activeElement && from.matches(TYPED);
   }
   // The easels that live in a step: the design system's, the mock-up's.
   // `face` tells two mountings of the same pane apart — the brief's easel is
@@ -805,7 +835,7 @@
   function restore() {
     for (const [key, value] of Object.entries(C.dirty)) {
       const field = key.startsWith('q') ? page.querySelector(`[data-q="${key.slice(1)}"] textarea`) : page.querySelector(`[data-cr="${key}"]`);
-      if (field) field.value = value;
+      if (field && field.value !== value) field.value = value;
     }
   }
   page.addEventListener('input', (e) => {
@@ -1103,7 +1133,7 @@
     if (r && auto && C.route === 'landing') C.route = r.step;
     setRoute(C.route);
     enter();
-    poll();
+    resume();
   }
   function close() {
     clearTimeout(C.timer);
@@ -1112,7 +1142,7 @@
   }
   function route() {
     const to = routeFromHash();
-    if (to !== C.route) { C.route = to; draw(); enter(); poll(); }
+    if (to !== C.route) { C.route = to; draw(); enter(); resume(); }
   }
   // Whether this factory is being created: the page opens by itself then.
   async function pending() {

@@ -41,6 +41,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
     let (_, board) = watch::channel(None);
     AppState {
         snapshot,
+        pulse: crate::pulse::Pulse::default(),
         board,
         traces: Arc::new(shelf),
         static_dir: None,
@@ -905,6 +906,43 @@ async fn get(state: AppState, uri: &str) -> (StatusCode, String) {
         .await
         .expect("body");
     (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The event stream's text until every one of `until` shows in it, in any
+/// order: the stream merges two sources.
+async fn heard_until(body: &mut axum::body::BodyDataStream, until: &[&str]) -> String {
+    let mut heard = String::new();
+    while !until.iter().all(|u| heard.contains(u)) {
+        let chunk = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .unwrap_or_else(|_| panic!("not all of {until:?} in time; heard {heard:?}"))
+            .expect("the stream goes on")
+            .expect("bytes");
+        heard.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    heard
+}
+
+#[tokio::test]
+async fn the_event_stream_carries_the_pulse_its_count_first_then_each_beat() {
+    let st = state(Shelf::default(), None);
+    let pulse = st.pulse.clone();
+    pulse.beat();
+    pulse.beat();
+    let response = router(st)
+        .oneshot(
+            Request::builder()
+                .uri("/api/events")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    heard_until(&mut body, &["event: snapshot\n", "event: pulse\ndata: 2\n"]).await;
+    pulse.beat();
+    heard_until(&mut body, &["event: pulse\ndata: 3\n"]).await;
 }
 
 #[tokio::test]

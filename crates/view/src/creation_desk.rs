@@ -28,6 +28,7 @@ use crate::domain::divergence;
 use crate::domain::note_session::{About, mockup_rules};
 use crate::kit_desk::{JobState, KitDesk};
 use crate::ports::{Foundry, Mockups, NoteStore, Oneshot, Plant};
+use crate::pulse::Pulse;
 use harness_architecture::kit::{ComponentState, DesignState};
 use harness_core::domain::Slug;
 use harness_core::ports::store::factories::{Factories, id_from};
@@ -161,6 +162,9 @@ pub struct CreationDesk {
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Held across every read-modify-write of the record.
     record: Arc<tokio::sync::Mutex<()>>,
+    /// Beaten whenever the record is kept or the job moves: the page reads
+    /// again.
+    pulse: Pulse,
 }
 
 impl CreationDesk {
@@ -172,7 +176,15 @@ impl CreationDesk {
             job: Arc::default(),
             task: Arc::default(),
             record: Arc::default(),
+            pulse: Pulse::default(),
         }
+    }
+
+    /// The same desk, its record and its jobs heard on `pulse`.
+    #[must_use]
+    pub fn with_pulse(mut self, pulse: Pulse) -> Self {
+        self.pulse = pulse;
+        self
     }
 
     /// The job under way or the last one.
@@ -206,10 +218,13 @@ impl CreationDesk {
 
     fn keep(&self, record: &Creation) -> Result<(), String> {
         let text = serde_json::to_string(record).map_err(|e| e.to_string())?;
-        self.setup
+        let kept = self
+            .setup
             .register
             .keep_creation(&self.setup.factory, &text)
-            .map_err(|why| why.reason().to_string())
+            .map_err(|why| why.reason().to_string());
+        self.pulse.beat();
+        kept
     }
 
     fn existing(&self) -> Result<Creation, String> {
@@ -464,6 +479,7 @@ impl CreationDesk {
             factory: String::new(),
             report: String::new(),
         });
+        self.pulse.beat();
         Ok(())
     }
 
@@ -471,6 +487,7 @@ impl CreationDesk {
         if let Some(job) = lock(&self.job).as_mut() {
             change(job);
         }
+        self.pulse.beat();
     }
 
     fn step(&self, line: &str) {
@@ -1594,6 +1611,55 @@ mod tests {
         assert_eq!(desk.draw_mockups().await, none);
         assert!(desk.job().is_none());
         assert!(desk.owners().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_kept_record_and_a_moving_job_beat_the_pulse() {
+        let book = Arc::new(Book::default());
+        let record = Creation {
+            step: Step::Brief,
+            ..Creation::new("alpha", "me/alpha")
+        };
+        book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        let pulse = Pulse::default();
+        let mut ears = pulse.subscribe();
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: PathBuf::from("/factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: None,
+            model: "m".to_string(),
+            mockups: None,
+            kit: None,
+            data: None,
+            plant: None,
+            pins: None,
+        })
+        .with_pulse(pulse);
+        let mut heard = || {
+            let moved = ears.has_changed().expect("the pulse lives");
+            ears.mark_unchanged();
+            moved
+        };
+        assert!(desk.record().is_ok());
+        assert!(!heard(), "a read wakes nobody");
+
+        let edit = Edit {
+            brief: Some("a ledger".to_string()),
+            ..Edit::default()
+        };
+        desk.save(edit, None).await.expect("saved");
+        assert!(heard(), "a kept record");
+
+        desk.begin(Work::Mockups).expect("nothing under way");
+        assert!(heard(), "a job begun");
+        desk.step("the first page");
+        assert!(heard(), "a job's step");
+        desk.end(Ok(()));
+        assert!(heard(), "a job ended");
     }
 
     #[tokio::test]

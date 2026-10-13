@@ -26,6 +26,7 @@ use serde::Serialize;
 use crate::domain::design::{self, DesignView, Entry, Usage};
 use crate::domain::drafts::Asked;
 use crate::ports::{Mockups, NoteStore, Oneshot};
+use crate::pulse::Pulse;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -125,6 +126,9 @@ pub struct KitDesk {
     /// component at once run one after the other, each on the last one's
     /// draft, so none is lost.
     rewriting: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
+    /// Beaten whenever a generation job moves: the page that follows the
+    /// kit reads it again.
+    pulse: Pulse,
 }
 
 /// The kit as a micro-frontend's generation reads it, without its code.
@@ -221,7 +225,15 @@ impl KitDesk {
             stopping: Arc::default(),
             workers: Arc::default(),
             rewriting: Arc::default(),
+            pulse: Pulse::default(),
         }
+    }
+
+    /// The same easel, its jobs heard on `pulse`.
+    #[must_use]
+    pub fn with_pulse(mut self, pulse: Pulse) -> Self {
+        self.pulse = pulse;
+        self
     }
 
     /// The lock of the component `name`'s rewrites, made on first use.
@@ -827,6 +839,7 @@ impl KitDesk {
                 ended: String::new(),
             }));
         }
+        self.pulse.beat();
         self.stopping.store(false, Ordering::SeqCst);
         let wanted = self.setup.sessions.max(1);
         let mut spawned = Vec::new();
@@ -861,6 +874,9 @@ impl KitDesk {
                         job.name.clone()
                     });
                 drop(jobs);
+                if taken.is_some() {
+                    self.pulse.beat();
+                }
                 taken
             };
             let Some(next) = next else {
@@ -878,6 +894,8 @@ impl KitDesk {
                     }
                 }
             }
+            drop(jobs);
+            self.pulse.beat();
         }
         self.running.fetch_sub(1, Ordering::SeqCst);
     }
@@ -1455,6 +1473,44 @@ pub mod tests {
             integration_branch: "main".into(),
         });
         (desk, dir)
+    }
+
+    #[tokio::test]
+    async fn every_move_of_a_generation_beats_the_pulse_the_last_one_included() {
+        let (desk, _dir) = desk(true);
+        let pulse = Pulse::default();
+        let mut ears = pulse.subscribe();
+        let desk = desk.with_pulse(pulse);
+        desk.inject(kit::default_tokens_json(), false)
+            .await
+            .expect("injected");
+        desk.validate().await.expect("validated");
+        desk.set_checked(vec!["button".into()])
+            .await
+            .expect("checked");
+        assert!(
+            !ears.has_changed().expect("the pulse lives"),
+            "a file written is the port's to beat, not the desk's"
+        );
+        desk.start_generation(vec![]).await.expect("started");
+        assert!(ears.has_changed().expect("the pulse lives"), "queued");
+        // Read the way the page reads: after each beat. Without a beat once
+        // the last job ended, the page would keep it running forever.
+        let settled = |desk: &KitDesk| {
+            desk.jobs()
+                .iter()
+                .all(|j| matches!(j.state, JobState::Done | JobState::Failed))
+        };
+        loop {
+            ears.mark_unchanged();
+            if settled(&desk) {
+                break;
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), ears.changed())
+                .await
+                .expect("a beat in time")
+                .expect("the pulse lives");
+        }
     }
 
     // One story, end to end: the easel's states are what the test reads.
