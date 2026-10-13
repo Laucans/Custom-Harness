@@ -402,7 +402,7 @@ pub fn data_prompt(c: &Creation, ctx: &Context, fixtures: &[(String, String)]) -
             "- R{} — {family} — {} — {}",
             r.id,
             r.title.trim(),
-            r.criterion.trim()
+            r.criterion.line()
         );
     }
     text.push_str("\nThe micro-frontends (name — system — needs — actions):\n\n");
@@ -491,7 +491,7 @@ mod tests {
             id,
             title: format!("rule {id}"),
             family: Family::Business,
-            criterion: "given".to_string(),
+            criterion: crate::domain::creation::Criterion::from_sentence("given a, when b, then c"),
             ..Requirement::default()
         }
     }
@@ -695,7 +695,7 @@ mod tests {
         let print = rules_print(&c);
         c.brief = "another brief".to_string();
         assert_eq!(rules_print(&c), print);
-        c.requirements[0].criterion = "given more".to_string();
+        c.requirements[0].criterion.given = "more".to_string();
         assert_ne!(rules_print(&c), print);
         let again = rules_print(&c);
         c.requirements[2].family = Family::Business;

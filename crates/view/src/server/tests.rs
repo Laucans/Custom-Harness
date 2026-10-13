@@ -2156,7 +2156,8 @@ async fn the_rules_are_validated_once_complete_and_read_again_behind_their_gate(
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body, "choose the kind of factory");
 
-    record.requirements[0].criterion = "given a debt, when paid, then settled".to_string();
+    record.requirements[0].criterion =
+        crate::domain::creation::Criterion::from_sentence("given a debt, when paid, then settled");
     being_created(&roll, &record);
     let (status, body) = post(state, "/api/creation/rules/validate", "").await;
     assert_eq!(status, StatusCode::OK);

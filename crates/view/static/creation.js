@@ -833,7 +833,7 @@
   function rulesPanel(r) {
     const mock = C.mock || { pages: [], components: [] };
     const list = rules();
-    const gaps = (q) => [!q.criterion.trim() ? 'no criterion' : '', !(q.pages.length || q.components.length) ? 'carried by nothing' : ''].filter(Boolean);
+    const gaps = (q) => [critMissing(q).length ? 'criterion to complete' : '', !(q.pages.length || q.components.length) ? 'carried by nothing' : ''].filter(Boolean);
     const lacking = list.filter((q) => gaps(q).length).length;
     const group = ([family, label, hint]) => {
       const items = list.filter((q) => (q.family || 'journey') === family);
@@ -846,6 +846,33 @@
         <button type="button" class="cr-btn" data-cr-reqs title="The AI reads the rules again off the scope and the mock-up as it stands; yours are kept"${C.busy ? ' disabled' : ''}>${list.length ? 'Read all again' : 'Read the rules'}</button></div>
       <div class="cr-rules">${list.length ? FAMILIES.map(group).join('') : (C.busy ? '' : '<p class="muted">No rule yet.</p>')}</div>`;
   }
+  // A criterion's three parts, and those still to write.
+  const PARTS = [['given', 'Given'], ['when', 'When'], ['then', 'Then']];
+  const critOf = (q) => Object.assign({ given: '', when: '', then: '' }, typeof q.criterion === 'object' && q.criterion ? q.criterion : {});
+  const critMissing = (q) => { const c = critOf(q); return PARTS.filter(([k]) => !String(c[k] || '').trim()).map(([k]) => k); };
+  // The criterion: read in full on a folded card, three fields on the open one.
+  function criterionBox(q, open) {
+    const c = critOf(q);
+    const missing = critMissing(q);
+    if (!open) {
+      return `<div class="cr-crit${missing.length ? ' bad' : ''}">${PARTS.map(([k, label]) => `<div class="cr-crit-line"><b>${label}</b><span>${c[k] ? esc(c[k]) : '<i class="muted">to write</i>'}</span></div>`).join('')}</div>`;
+    }
+    return `<div class="cr-crit open${missing.length ? ' bad' : ''}">${PARTS.map(([k, label]) => `<label class="cr-crit-line"><b>${label}</b><textarea rows="1" class="cr-fit${missing.includes(k) ? ' bad' : ''}" data-cr-rule-field="criterion.${k}" placeholder="${k === 'given' ? 'the situation before' : k === 'when' ? 'what happens' : 'what must then be true'}" aria-label="rule ${q.id}, ${k}">${esc(c[k])}</textarea></label>`).join('')}</div>`;
+  }
+  // The parts tied to a rule, and a + that lists the others to add.
+  function ties(q, kind, all, keyOf, labelOf, extra) {
+    const on = kind === 'page' ? q.pages : q.components;
+    const chips = on.map((key) => {
+      const it = all.find((x) => keyOf(x) === key);
+      const label = it ? labelOf(it) : key;
+      const pick = kind === 'page' ? ` data-cr-rule-page="${esc(key)}" title="Show this page"` : '';
+      return `<span class="cr-tie${kind === 'page' && C.rulePage === key ? ' on' : ''}"><button type="button" class="cr-tie-name"${pick}>${esc(label)}</button>${extra ? extra(key) : ''}<button type="button" class="mini" data-cr-untie="${kind}" data-key="${esc(key)}" title="Not carried by it" aria-label="untie ${esc(label)}">✕</button></span>`;
+    }).join('');
+    const rest = all.filter((x) => !on.includes(keyOf(x)));
+    const open = C.addOpen && C.addOpen.rule === q.id && C.addOpen.kind === kind;
+    const add = rest.length ? `<span class="cr-add"><button type="button" class="cr-tie-add" data-cr-add="${kind}" aria-expanded="${open}">+ ${kind === 'page' ? 'page' : 'micro-frontend'}</button>${open ? `<div class="cr-add-list" role="menu">${rest.map((x) => `<button type="button" role="menuitem" data-cr-tie="${kind}" data-key="${esc(keyOf(x))}">${esc(labelOf(x))}</button>`).join('')}</div>` : ''}</span>` : '';
+    return `<div class="cr-chips"><span class="muted">${kind === 'page' ? 'pages' : 'micro-frontends'}</span>${chips || '<span class="muted">none yet</span>'}${add}</div>`;
+  }
   function ruleCard(q, gaps, mock) {
     const sel = C.ruleSel === q.id;
     const titleOf = (path) => (mock.pages.find((p) => p.path === path) || {}).title || path.replace(/^pages\//, '');
@@ -854,21 +881,21 @@
       ? `${pages}<span class="muted">${q.components.length} micro-frontend${q.components.length === 1 ? '' : 's'}</span>`
       : '<span class="tag bad">carried by nothing</span>';
     const family = FAMILIES.map(([id, label]) => `<option value="${id}"${(q.family || 'journey') === id ? ' selected' : ''}>${label}</option>`).join('');
-    const ties = sel ? `<textarea rows="2" class="cr-req-body" data-cr-rule-field="body" placeholder="what it asks for" aria-label="rule ${q.id}, what it asks for">${esc(q.body)}</textarea>
-        <div class="cr-chips"><span class="muted">pages</span>${mock.pages.map((p) => `<label class="cr-chip-toggle${q.pages.includes(p.path) ? ' on' : ''}" title="${esc(p.objective || p.title)}"><input type="checkbox" data-cr-rule-tie="page" value="${esc(p.path)}"${q.pages.includes(p.path) ? ' checked' : ''}>${esc(p.title || p.path)}</label>`).join('') || '<span class="muted">none yet</span>'}</div>
-        <div class="cr-chips"><span class="muted">micro-frontends</span>${q.components.map((name) => `<span class="cr-rule-mf">${esc(name)}<button type="button" class="mini" data-cr-mf-redo="${esc(name)}" title="Generate this micro-frontend again from its spec">↻</button><button type="button" class="mini" data-cr-rule-untie="${esc(name)}" title="Not carried by it" aria-label="untie ${esc(name)}">✕</button></span>`).join('')}
-          <select data-cr-rule-tie="component" aria-label="tie a micro-frontend"><option value="">+ micro-frontend…</option>${mock.components.filter((c) => !q.components.includes(c.name)).map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.system ? ' · ' + esc(c.system) : ''}</option>`).join('')}</select></div>` : '';
+    const open = sel ? `<textarea rows="1" class="cr-req-body cr-fit" data-cr-rule-field="body" placeholder="what it asks for" aria-label="rule ${q.id}, what it asks for">${esc(q.body)}</textarea>
+        ${criterionBox(q, true)}
+        ${ties(q, 'page', mock.pages, (p) => p.path, (p) => p.title || p.path)}
+        ${ties(q, 'component', mock.components, (c) => c.name, (c) => c.name, (name) => `<button type="button" class="mini" data-cr-mf-redo="${esc(name)}" title="Generate this micro-frontend again from its spec">↻</button>`)}` : `${criterionBox(q, false)}<div class="cr-rule-cover">${cover}</div>`;
     return `<article class="cr-rule${sel ? ' sel' : ''}${q.human ? ' mine' : ''}${gaps.length ? ' gap' : ''}" data-rule="${q.id}">
         <header><span class="cr-qn">R${q.id}</span><input type="text" class="cr-req-title" data-cr-rule-field="title" value="${esc(q.title)}" placeholder="the rule, in a few words" aria-label="rule ${q.id}">
           <select data-cr-rule-field="family" aria-label="rule ${q.id}, family">${family}</select>
           ${q.human ? '<span class="tag" title="Yours: a new reading keeps it">yours</span>' : ''}
           <button type="button" class="mini" data-cr-rule-redo="${q.id}" title="The AI reads this rule again off its supports"${C.busy ? ' disabled' : ''}>↻</button>
           <button type="button" class="mini cr-del" data-cr-req-del="${q.id}" title="Delete this rule" aria-label="delete rule ${q.id}">✕</button></header>
-        <input type="text" class="cr-rule-criterion${q.criterion.trim() ? '' : ' bad'}" data-cr-rule-field="criterion" value="${esc(q.criterion)}" placeholder="given …, when …, then …" aria-label="rule ${q.id}, criterion">
-        <div class="cr-rule-cover">${cover}</div>
-        ${ties}
+        ${open}
       </article>`;
   }
+  // A textarea as tall as what it holds.
+  function fit(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
   // The rule picked, shown on the easel.
   function syncFocus() {
     const canvas = C.embed && C.embed.canvas;
@@ -1018,6 +1045,7 @@
     if (embed) mountEmbed(embed);
     else unmountEmbed();
     syncFocus();
+    page.querySelectorAll('.cr-rule.sel textarea.cr-fit').forEach(fit);
     syncPreview();
     showDrawn();
     restore();
@@ -1193,6 +1221,8 @@
   });
   // A rule's card clicked outside its fields: picked, or let go.
   page.addEventListener('click', (e) => {
+    // A + list left open closes on a click anywhere else.
+    if (C.addOpen && !e.target.closest('.cr-add')) { C.addOpen = null; draw(); return; }
     const card = e.target.closest('[data-rule]');
     if (!card || e.target.closest('button, input, select, textarea, label')) return;
     const id = Number(card.dataset.rule);
@@ -1276,11 +1306,26 @@
       return;
     }
     if (t.matches('[data-cr-req-add]')) {
-      editRules((list) => list.push({ id: 0, title: 'New rule', body: '', family: 'journey', criterion: '', pages: [], components: [] }), true);
+      editRules((list) => list.push({ id: 0, title: 'New rule', body: '', family: 'journey', criterion: { given: '', when: '', then: '' }, pages: [], components: [] }), true);
       return;
     }
     if (t.dataset.crRuleRedo) { const id = Number(t.dataset.crRuleRedo); act(`the AI reads R${id} again`, async () => { await flushRules(); await post(`rules/${id}/reread`); }); return; }
-    if (t.dataset.crRuleUntie) { const name = t.dataset.crRuleUntie; editRules((list) => { const q = list.find((x) => x.id === C.ruleSel); if (q) q.components = q.components.filter((c) => c !== name); }, true); draw(); return; }
+    if (t.dataset.crUntie || t.dataset.crTie) {
+      const kind = t.dataset.crUntie || t.dataset.crTie;
+      const key = t.dataset.key;
+      const field = kind === 'page' ? 'pages' : 'components';
+      const tie = !!t.dataset.crTie;
+      C.addOpen = null;
+      editRules((list) => { const q = list.find((x) => x.id === C.ruleSel); if (q) q[field] = tie ? [...q[field].filter((k) => k !== key), key] : q[field].filter((k) => k !== key); }, true);
+      draw();
+      return;
+    }
+    if (t.dataset.crAdd) {
+      const open = C.addOpen && C.addOpen.rule === C.ruleSel && C.addOpen.kind === t.dataset.crAdd;
+      C.addOpen = open ? null : { rule: C.ruleSel, kind: t.dataset.crAdd };
+      draw();
+      return;
+    }
     if (t.dataset.crRulePage) { const card = t.closest('[data-rule]'); C.ruleSel = Number(card.dataset.rule); C.rulePage = t.dataset.crRulePage; draw(); return; }
     if (t.dataset.crMfRedo) {
       const canvas = C.embed && C.embed.canvas;
@@ -1421,9 +1466,6 @@
     const card = e.target.closest('[data-rule]');
     if (card) {
       const id = Number(card.dataset.rule);
-      const tie = e.target.dataset.crRuleTie;
-      if (tie === 'page') { editRules((list) => { const q = list.find((x) => x.id === id); if (q) q.pages = e.target.checked ? [...q.pages, e.target.value] : q.pages.filter((p) => p !== e.target.value); }, true); draw(); }
-      if (tie === 'component' && e.target.value) { const name = e.target.value; editRules((list) => { const q = list.find((x) => x.id === id); if (q && !q.components.includes(name)) q.components = [...q.components, name]; }, true); draw(); }
       if (e.target.dataset.crRuleField === 'family') { editRules((list) => { const q = list.find((x) => x.id === id); if (q) q.family = e.target.value; }, true); draw(); }
     }
     if (e.target.closest('.cr-draw-head')) window.Viewport.change(e, setPreviewWidth);
@@ -1478,8 +1520,15 @@
     const card = e.target.closest('[data-rule]');
     if (card && field && field !== 'family') {
       const id = Number(card.dataset.rule);
-      editRules((list) => { const q = list.find((x) => x.id === id); if (q) q[field] = e.target.value; }, false);
-      if (field === 'criterion') e.target.classList.toggle('bad', !e.target.value.trim());
+      const part = field.startsWith('criterion.') ? field.slice(10) : '';
+      editRules((list) => {
+        const q = list.find((x) => x.id === id);
+        if (!q) return;
+        if (part) q.criterion = Object.assign(critOf(q), { [part]: e.target.value });
+        else q[field] = e.target.value;
+      }, false);
+      if (part) e.target.classList.toggle('bad', !e.target.value.trim());
+      if (e.target.classList.contains('cr-fit')) fit(e.target);
     }
   });
 

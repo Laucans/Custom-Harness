@@ -1600,6 +1600,23 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-rule-page.on, .cr-rule-page:hover { border-color: #4ea3f0; }
 .cr-rule-mf { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 8px; border: 1px solid var(--line); border-radius: 999px; font: 11px var(--mono); }
 .cr-rule-mf .mini { padding: 0 4px; }
+.cr-crit { border: 1px dashed var(--line); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.cr-crit.bad { border-color: var(--bad); }
+.cr-crit-line { display: grid; grid-template-columns: 44px 1fr; gap: 6px; align-items: start; }
+.cr-crit-line b { font: 600 11px var(--sans); color: var(--dim); text-transform: uppercase; letter-spacing: .03em; padding-top: 3px; }
+.cr-crit-line span { white-space: pre-wrap; overflow-wrap: anywhere; }
+.cr-crit textarea, .cr-rule textarea.cr-fit { width: 100%; resize: none; overflow: hidden; font: 12px/1.45 var(--sans); min-height: 0; }
+.cr-crit textarea.bad { border-color: var(--bad); }
+.cr-tie { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 2px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); }
+.cr-tie.on { border-color: #4ea3f0; }
+.cr-tie-name { background: transparent; border: 0; color: var(--text); font: 12px var(--sans); padding: 1px 4px 1px 8px; cursor: pointer; }
+.cr-tie .mini { padding: 0 4px; }
+.cr-add { position: relative; display: inline-block; }
+.cr-tie-add { background: transparent; border: 1px dashed var(--line); border-radius: 999px; color: var(--dim); font: 12px var(--sans); padding: 2px 10px; cursor: pointer; }
+.cr-tie-add:hover, .cr-tie-add[aria-expanded="true"] { border-color: var(--accent); color: var(--text); }
+.cr-add-list { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 220px; max-height: 260px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); display: flex; flex-direction: column; padding: 4px; }
+.cr-add-list button { background: transparent; border: 0; color: var(--text); text-align: left; font: 12px var(--sans); padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+.cr-add-list button:hover { background: var(--panel-2); }
 .cr-gaps { margin: 4px 0 8px; padding-left: 18px; color: var(--bad); font-size: 12px; }
 .cr-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); margin: 8px 0 6px; }
 .cr-tabs .spacer { flex: 1; }

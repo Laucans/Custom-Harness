@@ -218,7 +218,132 @@ pub struct Requirement {
     /// A step of a journey, or a business rule.
     pub family: Family,
     /// How to tell it is met: given…, when…, then….
-    pub criterion: String,
+    pub criterion: Criterion,
+}
+
+/// How a test tells a rule is met, in its three parts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct Criterion {
+    /// The situation before.
+    pub given: String,
+    /// What happens.
+    pub when: String,
+    /// What must then be true.
+    pub then: String,
+}
+
+/// The words that open each part of a criterion written as one sentence,
+/// in the languages a brief is written in.
+const MARKERS: [(&str, &str, &str); 2] =
+    [("given", "when", "then"), ("étant donné", "quand", "alors")];
+
+impl Criterion {
+    /// None of its parts is written.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.given.trim().is_empty() && self.when.trim().is_empty() && self.then.trim().is_empty()
+    }
+
+    /// The parts not written yet, by name.
+    #[must_use]
+    pub fn missing(&self) -> Vec<&'static str> {
+        [
+            ("given", &self.given),
+            ("when", &self.when),
+            ("then", &self.then),
+        ]
+        .into_iter()
+        .filter(|(_, part)| part.trim().is_empty())
+        .map(|(name, _)| name)
+        .collect()
+    }
+
+    /// The three parts in one line, for a prompt or a task.
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!(
+            "given {}; when {}; then {}",
+            self.given.trim(),
+            self.when.trim(),
+            self.then.trim()
+        )
+    }
+
+    /// The same, each part trimmed.
+    fn trimmed(self) -> Self {
+        Self {
+            given: self.given.trim().to_string(),
+            when: self.when.trim().to_string(),
+            then: self.then.trim().to_string(),
+        }
+    }
+
+    /// A criterion written as one sentence — "given …, when …, then …",
+    /// or its French words — cut into its parts; one that does not read so
+    /// is kept whole as its `given`, the rest left to write.
+    #[must_use]
+    pub fn from_sentence(text: &str) -> Self {
+        let text = text.trim();
+        let lower = text.to_lowercase();
+        // Lowercase must keep every byte where it was, or the cuts drift.
+        if lower.len() == text.len() {
+            for (given, when, then) in MARKERS {
+                let Some(start) = lower.strip_prefix(given).map(|_| given.len()) else {
+                    continue;
+                };
+                let when_at = lower
+                    .get(start..)
+                    .and_then(|rest| rest.find(&format!(", {when} ")));
+                let Some(when_at) = when_at.map(|i| i + start) else {
+                    continue;
+                };
+                let after_when = when_at + 2 + when.len();
+                let then_at = lower
+                    .get(after_when..)
+                    .and_then(|rest| rest.find(&format!(", {then} ")));
+                let Some(then_at) = then_at.map(|i| i + after_when) else {
+                    continue;
+                };
+                let part = |from: usize, to: usize| {
+                    text.get(from..to).unwrap_or_default().trim().to_string()
+                };
+                return Self {
+                    given: part(start, when_at),
+                    when: part(after_when, then_at),
+                    then: part(then_at + 2 + then.len(), text.len()),
+                };
+            }
+        }
+        Self {
+            given: text.to_string(),
+            ..Self::default()
+        }
+    }
+}
+
+/// A criterion as it was kept or answered: three parts, or one sentence
+/// (the records before the parts, an AI that writes it so).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Written {
+    Sentence(String),
+    Parts {
+        #[serde(default)]
+        given: String,
+        #[serde(default)]
+        when: String,
+        #[serde(default)]
+        then: String,
+    },
+}
+
+impl<'de> Deserialize<'de> for Criterion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Written::deserialize(deserializer)? {
+            Written::Sentence(text) => Self::from_sentence(&text),
+            Written::Parts { given, when, then } => Self { given, when, then },
+        })
+    }
 }
 
 /// What a rule is about.
@@ -575,8 +700,14 @@ impl Creation {
             }
         }
         for r in &self.requirements {
-            if r.criterion.trim().is_empty() {
+            if r.criterion.is_empty() {
                 gaps.push(format!("R{} has no criterion", r.id));
+            } else if !r.criterion.missing().is_empty() {
+                gaps.push(format!(
+                    "R{}'s criterion has no {}",
+                    r.id,
+                    r.criterion.missing().join(" and no ")
+                ));
             }
             if !r.covered() {
                 gaps.push(format!(
@@ -785,7 +916,7 @@ pub struct Read {
     /// A step of a journey, or a business rule.
     pub family: Family,
     /// How to tell it is met.
-    pub criterion: String,
+    pub criterion: Criterion,
 }
 
 /// The requirements, as the AI answers them.
@@ -814,7 +945,7 @@ pub fn parse_requirements(
     for mut r in read.requirements {
         r.title = r.title.trim().to_string();
         r.body = r.body.trim().to_string();
-        r.criterion = r.criterion.trim().to_string();
+        r.criterion = r.criterion.trimmed();
         if r.title.is_empty() {
             continue;
         }
@@ -1524,11 +1655,11 @@ fn rules_section(c: &Creation) -> String {
         if !r.body.trim().is_empty() {
             let _ = write!(body, " — {}", r.body.trim().replace('\n', " "));
         }
-        if !r.criterion.trim().is_empty() {
+        if !r.criterion.is_empty() {
             let _ = write!(
                 body,
                 " — criterion: {}",
-                r.criterion.trim().replace('\n', " ")
+                r.criterion.line().replace('\n', " ")
             );
         }
         let mut on = Vec::new();
@@ -1553,14 +1684,16 @@ pub fn requirements_prompt(c: &Creation, ctx: &Context) -> String {
          keeps, a proof the human expects — never a page or a component as such. Each is of a \
          family: `journey` (a step of a user's journey: what the user does and sees) or \
          `business` (an invariant, a computation, a thing the application keeps — what the data \
-         must hold true). Each carries its criterion: how a test tells it is met, written \
-         \"given …, when …, then …\". Write each in the language of the human's brief, and tie \
-         it to the pages and the micro-frontends of the mock-up that carry it, by the exact \
-         paths and names listed below. Answer with one JSON object and nothing else: \
-         {\"requirements\": [{\"title\": \"the requirement in a few words\", \"body\": \
+         must hold true). Each carries its criterion: how a test tells it is met, in three \
+         parts — `given` the situation before, `when` what happens, `then` what must then be \
+         true — each a clause, none left empty. Write each in the language of the human's \
+         brief, and tie it to the pages and the micro-frontends of the mock-up that carry it, \
+         by the exact paths and names listed below. Answer with one JSON object and nothing \
+         else: {\"requirements\": [{\"title\": \"the requirement in a few words\", \"body\": \
          \"what it asks for, one or two sentences\", \"family\": \"journey\", \"criterion\": \
-         \"given …, when …, then …\", \"pages\": [\"pages/….html\"], \"components\": \
-         [\"Name\"]}]}. Between eight and twenty-five requirements, the scope's order.\n\n",
+         {\"given\": \"…\", \"when\": \"…\", \"then\": \"…\"}, \"pages\": [\"pages/….html\"], \
+         \"components\": [\"Name\"]}]}. Between eight and twenty-five requirements, the \
+         scope's order.\n\n",
     );
     text.push_str(&product(c));
     let _ = write!(text, "\nThe scope:\n\n{}\n", c.scope.trim());
@@ -1783,14 +1916,92 @@ mod tests {
         );
     }
 
+    /// A complete criterion opening on `given`; none when it is empty.
+    fn crit(given: &str) -> Criterion {
+        if given.is_empty() {
+            return Criterion::default();
+        }
+        Criterion {
+            given: given.to_string(),
+            when: "it is used".to_string(),
+            then: "it holds".to_string(),
+        }
+    }
+
     fn rule(id: u32, criterion: &str, pages: &[&str]) -> Requirement {
         Requirement {
             id,
             title: format!("rule {id}"),
-            criterion: criterion.to_string(),
+            criterion: crit(criterion),
             pages: pages.iter().map(ToString::to_string).collect(),
             ..Requirement::default()
         }
+    }
+
+    #[test]
+    fn a_criterion_written_as_one_sentence_is_cut_into_its_three_parts() {
+        let english = Criterion::from_sentence(
+            " Given a debt, when the client pays, then it is settled, and kept ",
+        );
+        assert_eq!(
+            (
+                english.given.as_str(),
+                english.when.as_str(),
+                english.then.as_str()
+            ),
+            ("a debt", "the client pays", "it is settled, and kept")
+        );
+        let french = Criterion::from_sentence(
+            "Étant donné une campagne exportée alors qu'elle existe, quand l'import se termine, alors une copie est créée",
+        );
+        assert_eq!(
+            (
+                french.given.as_str(),
+                french.when.as_str(),
+                french.then.as_str()
+            ),
+            (
+                "une campagne exportée alors qu'elle existe",
+                "l'import se termine",
+                "une copie est créée"
+            )
+        );
+        for loose in [
+            "given a debt",
+            "given a debt, when paid",
+            "when paid, then settled",
+            "a debt, when paid, then settled",
+        ] {
+            let kept = Criterion::from_sentence(loose);
+            assert_eq!(
+                (kept.given.as_str(), kept.when.as_str(), kept.then.as_str()),
+                (loose, "", ""),
+                "{loose}"
+            );
+        }
+        assert!(Criterion::from_sentence("  ").is_empty());
+        let old: Criterion =
+            serde_json::from_str(r#""given a, when b, then c""#).expect("a sentence reads");
+        assert_eq!(old.line(), "given a; when b; then c");
+        let parts: Criterion = serde_json::from_str(r#"{"given": "a"}"#).expect("parts read");
+        assert_eq!(parts.missing(), vec!["when", "then"]);
+        assert!(!parts.is_empty());
+    }
+
+    #[test]
+    fn a_criterion_with_a_part_missing_keeps_the_rules_from_validation() {
+        let mut c = ready();
+        c.requirements = vec![rule(1, "y", &["pages/a.html"])];
+        c.requirements[0].criterion.when.clear();
+        assert_eq!(
+            c.rule_gaps(),
+            vec!["R1's criterion has no when".to_string()]
+        );
+        c.requirements[0].criterion.then = " ".to_string();
+        assert_eq!(
+            c.rule_gaps(),
+            vec!["R1's criterion has no when and no then".to_string()]
+        );
     }
 
     #[test]
@@ -1808,7 +2019,7 @@ mod tests {
         );
         assert!(c.validate_rules().is_err());
         assert!(!c.rules_validated);
-        c.requirements[0].criterion = "given y".to_string();
+        c.requirements[0].criterion = crit("y");
         c.requirements[1].components = vec!["Card".to_string()];
         assert!(c.requirements[1].covered());
         c.validate_rules().expect("nothing keeps them");
@@ -1870,7 +2081,7 @@ mod tests {
         c.validate_data().expect("no gap");
         assert!(c.data_validated());
         assert_eq!(mark(&c, Step::Data), Mark::Done);
-        c.requirements[0].criterion = "given z".to_string();
+        c.requirements[0].criterion = crit("z");
         assert!(c.data_stale());
         assert!(!c.data_validated(), "validated, but from other rules");
         assert_eq!(
@@ -1945,12 +2156,12 @@ mod tests {
         c.add_requirements(vec![Read {
             title: "Pay".to_string(),
             family: Family::Business,
-            criterion: "given".to_string(),
+            criterion: crit("given"),
             ..Read::default()
         }]);
         assert_eq!(c.rules_for, "cut one");
         assert_eq!(c.requirements[0].family, Family::Business);
-        assert_eq!(c.requirements[0].criterion, "given");
+        assert_eq!(c.requirements[0].criterion, crit("given"));
         assert!(!c.rules_stale());
         c.componentized = Some("cut two".to_string());
         assert!(c.rules_stale());
@@ -1977,7 +2188,7 @@ mod tests {
             pages: vec!["pages/a.html".to_string()],
             components: vec!["Card".to_string()],
             family: Family::Business,
-            criterion: "given a debt".to_string(),
+            criterion: crit("a debt"),
         };
         c.reread(4, read).expect("known");
         let r = &c.requirements[0];
@@ -1986,15 +2197,15 @@ mod tests {
                 r.id,
                 r.title.as_str(),
                 r.body.as_str(),
-                r.criterion.as_str()
+                r.criterion.given.as_str()
             ),
-            (4, "Pay", "pays", "given a debt")
+            (4, "Pay", "pays", "a debt")
         );
         assert_eq!(
             (r.pages.len(), r.components.len(), r.family),
             (1, 1, Family::Business)
         );
-        assert_eq!(c.requirements[1].criterion, "kept");
+        assert_eq!(c.requirements[1].criterion, crit("kept"));
         assert!(!c.rules_validated);
         assert!(c.reread(9, Read::default()).is_err());
     }
@@ -2027,7 +2238,20 @@ mod tests {
         let answer = r#"{"requirements": [{"title": " Pay ", "family": "business", "criterion": " given a debt ", "pages": ["pages/a.html"]}]}"#;
         let read = parse_requirements(answer, &["pages/a.html".to_string()], &[]).expect("read");
         assert_eq!(read[0].family, Family::Business);
-        assert_eq!(read[0].criterion, "given a debt");
+        assert_eq!(
+            read[0].criterion.given, "given a debt",
+            "a sentence that does not cut stays whole"
+        );
+        let parts = r#"{"requirements": [{"title": "Pay", "criterion": {"given": " a debt ", "when": "paid", "then": "settled"}}]}"#;
+        let read = parse_requirements(parts, &[], &[]).expect("read");
+        assert_eq!(
+            read[0].criterion,
+            Criterion {
+                given: "a debt".to_string(),
+                when: "paid".to_string(),
+                then: "settled".to_string()
+            }
+        );
         let plain =
             parse_requirements(r#"{"requirements": [{"title": "Pay"}]}"#, &[], &[]).expect("read");
         assert_eq!(plain[0].family, Family::Journey, "a journey unless said");
@@ -2343,7 +2567,9 @@ mod tests {
             components: vec!["InvoiceList".to_string()],
             human: true,
             family: Family::Business,
-            criterion: "given an invoice due, when the client pays, then it is settled".to_string(),
+            criterion: Criterion::from_sentence(
+                "given an invoice due, when the client pays, then it is settled",
+            ),
         });
         c.mockup_at = "main_agent@abcdef0123".to_string();
         c.design_at = "0123456789".to_string();
@@ -2375,7 +2601,7 @@ mod tests {
         let (title, body) = roadmap_issue(&c, &ctx);
         assert_eq!(title, "Proof of concept — app");
         assert!(body.contains("- **q1** — yes\n  (asked: the client or the bank?)"));
-        assert!(body.contains("- **R3 Pay an invoice** (business) — The client pays from its list — criterion: given an invoice due, when the client pays, then it is settled — on `mock/pages/home.html`, `InvoiceList`"));
+        assert!(body.contains("- **R3 Pay an invoice** (business) — The client pays from its list — criterion: given an invoice due; when the client pays; then it is settled — on `mock/pages/home.html`, `InvoiceList`"));
         assert!(body.contains("- Home — `mock/pages/home.html` — see the invoices"));
         assert!(body.contains("- **InvoiceList** (billing) — the invoices — needs billing.listInvoices — actions billing.payInvoice"));
         assert!(body.contains("(`main_agent@abcdef0123`)"));

@@ -2206,7 +2206,8 @@ mod tests {
             "no data model yet"
         );
         let mut record = desk.existing().expect("a creation");
-        record.requirements[0].criterion = "given lines, when opened, then all show".to_string();
+        record.requirements[0].criterion =
+            creation::Criterion::from_sentence("given lines, when opened, then all show");
         record.validate_rules().expect("valid");
         desk.keep(&record).expect("kept");
 
@@ -2267,7 +2268,8 @@ mod tests {
         }
         for r in &mut record.requirements {
             if r.criterion.is_empty() {
-                r.criterion = "given a debt, when paid, then settled".to_string();
+                r.criterion =
+                    creation::Criterion::from_sentence("given a debt, when paid, then settled");
             }
             if !r.covered() {
                 r.components.push("InvoiceList".to_string());
