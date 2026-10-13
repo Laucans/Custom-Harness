@@ -43,6 +43,10 @@
     { id: 'hexagonal', label: 'Hexagonal architecture development factory', text: 'Ports and adapters around a domain core.', soon: true },
   ];
   const indexOf = (step) => STEPS.findIndex(([id]) => id === step);
+  // Founding another factory from a factory that has a creation of its own:
+  // the repository step, read as if there were no record — the record on the
+  // desk belongs to the factory open here, never to the one being founded.
+  const FOUND = 'found';
 
   const C = { dirty: {}, loaded: false, data: null, route: 'landing', auto: false, busy: '', error: '', owners: null, ownersWhy: '', timer: null, embed: null, view: { width: null, height: null }, trackHidden: false, auto_started: {}, confirm: '', opening: '', pages: null, mock: null, reqTimer: null };
   const page = $('factory-page');
@@ -68,6 +72,7 @@
   // ---- the route, in the hash ---------------------------------------------------
   function routeFromHash() {
     const m = /^#new-factory(?:\/([a-z]+))?$/.exec(location.hash);
+    if (m && m[1] === FOUND) return FOUND;
     return m && m[1] && indexOf(m[1]) >= 0 ? m[1] : 'landing';
   }
   function setRoute(route) {
@@ -78,9 +83,10 @@
     draw();
   }
 
-  // A step is open when the gates reach it; without a record only the first is.
-  function reachable(step) {
-    const r = record();
+  // A step is open when the gates reach it; without a record only the first
+  // is — and a founding reads no record, so it stops at the first too.
+  function reachable(step, fresh) {
+    const r = fresh ? null : record();
     if (!r) return step === 'repository';
     return indexOf(step) <= indexOf(C.data.reachable || 'kind');
   }
@@ -235,14 +241,16 @@
   }
 
   // ---- drawing --------------------------------------------------------------------
-  function crumbs() {
-    const r = record();
-    const at = indexOf(C.route);
+  function crumbs(fresh) {
+    const r = fresh ? null : record();
+    const at = fresh ? 0 : indexOf(C.route);
     const far = r ? indexOf(C.data.reachable || 'kind') : 0;
     return `<ol class="cr-crumbs" aria-label="creation steps">${STEPS.map(([id, label], i) => {
       const state = i === at ? 'here' : (i < far || (r && i <= far && i !== at) ? 'done' : 'locked');
-      const open = reachable(id);
-      return `<li class="cr-crumb ${state}"><button type="button" data-cr-go="${id}"${open ? '' : ' disabled'}${i === at ? ' aria-current="step"' : ''}><span class="cr-n">${i < far && i !== at ? '✓' : i + 1}</span><span class="cr-l">${esc(label)}</span>${chip(id)}</button></li>`;
+      const open = reachable(id, fresh);
+      // While founding, the first crumb is the founding itself.
+      const go = fresh && id === 'repository' ? FOUND : id;
+      return `<li class="cr-crumb ${state}"><button type="button" data-cr-go="${go}"${open ? '' : ' disabled'}${i === at ? ' aria-current="step"' : ''}><span class="cr-n">${i < far && i !== at ? '✓' : i + 1}</span><span class="cr-l">${esc(label)}</span>${fresh ? '' : chip(id)}</button></li>`;
     }).join('')}</ol>`;
   }
 
@@ -455,7 +463,7 @@
       <section class="cr-card">
         <h2>Initialize a factory</h2>
         <p class="muted">A new repository, then nine steps: what the application does, the AI's questions, the proof of concept's scope, its design system and its mock-ups — up to the factory's first roadmap task.</p>
-        <div class="cr-row"><button type="button" class="cr-btn on" data-cr-go="repository">Start</button></div>
+        <div class="cr-row"><button type="button" class="cr-btn on" data-cr-go="${FOUND}">Start</button></div>
       </section>
     </div>`;
   }
@@ -466,11 +474,20 @@
       return `<p>The repository <a href="https://github.com/${esc(r.slug)}" target="_blank" rel="noopener">${esc(r.slug)} ↗</a> is created, prepared by <code>init-repo</code>, and this factory runs in its own folder.</p>
         <div class="cr-actions"><span></span><button type="button" class="cr-btn on" data-cr-next="kind">Continue →</button></div>`;
     }
+    return foundForm();
+  }
+
+  // The repository of the factory being founded. Shown whatever the factory
+  // open here is doing: its own creation, when it has one, is left alone —
+  // the view switches to the new factory once `init-repo` is done.
+  function foundForm() {
     const j = job();
     const founding = j && j.work === 'found';
     if (C.owners === null && !C.ownersWhy) loadOwners();
     const owners = C.owners || [];
-    return `<p class="muted">The factory's repository on GitHub. The harness creates it with a first commit, makes the factory's folder beside the register (<code>~/.harness/factories/</code>), runs <code>init-repo</code> there, then opens the new factory.</p>
+    const beside = record();
+    return `${beside ? `<div class="callout">This founds a factory beside <code>${esc(beside.slug)}</code>, the one open here: its creation stays where it is, and the view moves to the new factory once <code>init-repo</code> is done.</div>` : ''}
+      <p class="muted">The factory's repository on GitHub. The harness creates it with a first commit, makes the factory's folder beside the register (<code>~/.harness/factories/</code>), runs <code>init-repo</code> there, then opens the new factory.</p>
       <form class="cr-form" data-cr-form="found">
         <label>Name<input type="text" name="name" required autocomplete="off" placeholder="my-application" pattern="[A-Za-z0-9._-]+"></label>
         <label>Owner<select name="owner" required>${owners.length ? owners.map((o) => `<option>${esc(o)}</option>`).join('') : `<option value="">${C.ownersWhy ? 'cannot read the accounts' : 'reading the accounts…'}</option>`}</select></label>
@@ -680,19 +697,24 @@
     const r = record();
     // A step the gates do not reach yet falls back on the furthest they do
     // — except in the demo, which fabricates its own record after this.
-    if (!DEMO && C.route !== 'landing' && !reachable(C.route)) C.route = r ? C.data.reachable || r.step : 'repository';
-    const title = C.route === 'landing' ? 'New factory' : `${indexOf(C.route) + 1} · ${STEPS[indexOf(C.route)][1]}`;
+    // A founding is read as a factory with nothing done yet, whatever the
+    // record on the desk holds: the steps ahead are the new factory's.
+    const fresh = C.route === FOUND;
+    if (!DEMO && C.route !== 'landing' && !fresh && !reachable(C.route)) C.route = r ? C.data.reachable || r.step : 'repository';
+    const at = fresh ? 0 : indexOf(C.route);
+    const title = C.route === 'landing' ? 'New factory' : `${at + 1} · ${STEPS[at][1]}`;
     const body = C.route === 'landing' ? landing()
-      : C.route === 'repository' ? stepRepository()
-        : r ? BODIES[C.route](r) : '<p class="muted">Reading the creation…</p>';
+      : fresh ? foundForm()
+        : C.route === 'repository' ? stepRepository()
+          : r ? BODIES[C.route](r) : '<p class="muted">Reading the creation…</p>';
     const lead = C.auto && !r ? '<p class="muted">This factory is not linked to a GitHub repository.</p>' : '';
-    const embed = r ? embedFor(C.route) : undefined;
+    const embed = fresh ? undefined : r ? embedFor(C.route) : undefined;
     // The split view (mockups/initialize) wants the same room as an embed.
     const drawing = C.route === 'mockups' || C.route === 'initialize';
     const html = `<div class="cr${embed ? ' cr-wide' : ''}${drawing ? ' cr-wider' : ''}">
       <div class="cr-top"><h1>${esc(title)}</h1><button type="button" class="fp-back" data-cr-leave>${C.auto ? '← open the plant anyway' : '← back to the plant'}</button></div>
       ${lead}
-      ${C.route === 'landing' ? '' : crumbs()}
+      ${C.route === 'landing' ? '' : crumbs(fresh)}
       ${C.busy ? `<div class="cr-busy" role="status"><span class="cr-spin" aria-hidden="true"></span>${esc(C.busy)}…</div>` : ''}
       ${C.error ? `<div class="cr-error" role="alert">${esc(C.error)}</div>` : ''}
       <div class="cr-body">${body}</div>
@@ -858,7 +880,7 @@
     if (!t || t.disabled) return;
     if (t.matches('[data-cr-leave]')) { window.HarnessFactories.leave(); return; }
     if (t.dataset.crGo) {
-      if (t.dataset.crGo !== 'landing' && t.dataset.crGo !== C.route && record()) {
+      if (t.dataset.crGo !== 'landing' && t.dataset.crGo !== FOUND && t.dataset.crGo !== C.route && record()) {
         // Moving keeps what the fields hold.
         const body = fields();
         const to = t.dataset.crGo;

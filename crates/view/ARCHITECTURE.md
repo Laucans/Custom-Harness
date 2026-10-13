@@ -153,7 +153,14 @@ It has two sections:
   1. **repository** — name, owner (`gh api user`, `user/orgs`), visibility:
      `gh repo create --add-readme`, the folder, `harness init-repo`, the
      register, a creation record; then the view switches to the new factory,
-     where steps 2 to 9 run — a factory like any, so the easels serve it;
+     where steps 2 to 9 run — a factory like any, so the easels serve it.
+     *Start* on the landing goes to `#new-factory/found`, the same form read
+     as a factory with nothing done yet: the record on the desk is the
+     factory open here, never the one being founded, so a factory whose own
+     creation is half-done can found another one — its steps stay locked,
+     its record untouched, and the view moves on once `init-repo` is done.
+     `#new-factory/repository` stays the record's own step (the repository
+     created, *Continue*);
   2. **kind** — *vertical architecture development factory*, the one there
      is (*hexagonal* shown, not selectable);
   3. **brief** — what the application does, in four guiding questions (the
