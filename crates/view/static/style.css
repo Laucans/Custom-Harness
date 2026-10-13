@@ -901,6 +901,9 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .mk-strip-head small { font: 11px var(--sans); color: var(--dim); }
 .mk-chip { display: grid; grid-template-columns: 10px 1fr; grid-template-rows: auto auto; gap: 0 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-left: 3px solid var(--mf, var(--pin-design)); border-radius: 8px; background: var(--bg); cursor: grab; user-select: none; touch-action: none; }
 .mk-chip:hover { border-color: var(--mf, var(--pin-design)); }
+.mk-chip.hot { border-color: #e2b240; box-shadow: 0 0 0 1px #e2b240; }
+.mk-strip-sec { font: 600 11px var(--sans); color: var(--dim); text-transform: uppercase; letter-spacing: .04em; margin-top: 8px; display: flex; justify-content: space-between; }
+.mk-strip-sec small { font: 11px var(--mono); }
 .mk-chip i { grid-row: span 2; width: 10px; height: 10px; border-radius: 50%; background: var(--mf, var(--pin-design)); }
 .mk-chip b { font: 600 12px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mk-chip small { font: 11px var(--sans); color: var(--dim); }

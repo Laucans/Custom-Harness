@@ -886,7 +886,8 @@
   const EMBEDS = {
     brief: { kind: 'kit', face: 'kit-material', title: "The design system's material — logo, moodboard, design brief", foot: briefFoot, opts: () => ({ kind: 'kit', tab: 'system', material: true }) },
     design: { kind: 'kit', face: 'kit', title: "The design system's easel", foot: designFoot, opts: () => ({ kind: 'kit', tab: 'system' }) },
-    mockups: { kind: 'mockup', face: 'mockup', title: "The mock-up — rework it: edit, pin a request, add a page", foot: mockupsFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
+    // The mock-ups step reworks the pages: no micro-frontends' list beside them.
+    mockups: { kind: 'mockup', face: 'mockup-pages', title: "The mock-up — rework it: edit, pin a request, add a page", foot: mockupsFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO, strip: false }) },
     review: { kind: 'mockup', face: 'mockup', title: "The mock-up's easel", foot: reviewFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
   };
   // The easel a step mounts right now: the mock-up's only once it is drawn.

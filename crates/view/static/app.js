@@ -655,6 +655,8 @@
       view: p.view,
       mf: p.mf,
       readOnly: !!p.readOnly,
+      // false hides the micro-frontends' list beside the page.
+      strip: p.strip,
       // Where the pane stands — its view, the micro-frontend opened — so going back finds it there.
       onPlace: (place) => Object.assign(p, place),
       onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page }),
