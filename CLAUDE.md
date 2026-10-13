@@ -219,6 +219,13 @@ the rules a diff is checked against:
 - Hooks live in `.githooks/` (tracked) — `git config core.hooksPath
   .githooks` once per clone to enable them. `pre-commit` runs
   `rustfmt --check` on the staged `.rs` files only.
+- **What is not yet verified in real conditions goes in `docs/toBeCheck/`.**
+  Green tests and gates are not a real run. When a change ships without
+  being exercised for real (a live `watch`, a real refinement, a real
+  product), add one `.md` there: the context, what shipped (commits),
+  and the checklist of what to verify, with expected numbers when there
+  are some. Read the folder before starting related work; delete the file
+  once every point is checked.
 - `cargo check --workspace --all-targets` before `cargo build` — faster,
   same type errors. Configure the editor to run it on save.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
