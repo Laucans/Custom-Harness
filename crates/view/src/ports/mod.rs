@@ -908,9 +908,12 @@ pub struct MockComponent {
     /// Its markup and script, relative to `mock/`.
     #[serde(default)]
     pub fragment: String,
-    /// What its Capabilities would answer, relative to `mock/`.
-    #[serde(default)]
-    pub fixture: String,
+    /// What its Capabilities would answer, relative to `mock/`: one file,
+    /// or several when it reads several — written `"fixtures/a.json"` or
+    /// `["fixtures/a.json", "fixtures/b.json"]` (contract N), one written
+    /// back as one.
+    #[serde(default, with = "one_or_many", skip_serializing_if = "Vec::is_empty")]
+    pub fixture: Vec<String>,
     /// The Capabilities it reads.
     #[serde(default)]
     pub needs: Vec<String>,
@@ -930,6 +933,35 @@ pub struct MockComponent {
         skip_serializing_if = "String::is_empty"
     )]
     pub built_from: String,
+}
+
+/// A field contract N writes as one string or a list of them.
+mod one_or_many {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Written {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(read: D) -> Result<Vec<String>, D::Error> {
+        Ok(match Written::deserialize(read)? {
+            Written::One(one) if one.trim().is_empty() => Vec::new(),
+            Written::One(one) => vec![one],
+            Written::Many(many) => many,
+        })
+    }
+
+    // serde hands `serialize_with` a reference to the field, whatever its type.
+    #[allow(clippy::ptr_arg)]
+    pub fn serialize<S: Serializer>(values: &Vec<String>, write: S) -> Result<S::Ok, S::Error> {
+        match values.as_slice() {
+            [one] => one.serialize(write),
+            many => many.serialize(write),
+        }
+    }
 }
 
 /// The mock-up of one branch, as it is right now: what the committed branch

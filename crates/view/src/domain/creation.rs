@@ -848,6 +848,23 @@ pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str) -> String {
     text
 }
 
+/// The session that repairs a `mock/pages.json` the view cannot read:
+/// `rules` are the mock-up's own (the manifest's shape among them), `why`
+/// what the reading said.
+#[must_use]
+pub fn manifest_repair_prompt(rules: &str, why: &str) -> String {
+    let mut text = rules.to_string();
+    let _ = write!(
+        text,
+        "\nThe factory view cannot read the mock-up: `{}`. Repair `mock/pages.json` so it reads \
+         as the shape above — keep every page and micro-frontend it lists; where a field holds \
+         several values and the shape wants one, keep the main one. Change no other file. Say in \
+         one line what you repaired.\n",
+        why.trim()
+    );
+    text
+}
+
 /// The session that makes the accepted mock-up again of micro-frontends,
 /// keeping what the human saw: `rules` are the mock-up's own, `kit` the
 /// design system's components.
@@ -1875,6 +1892,17 @@ mod tests {
         );
         assert_eq!(c.reachable(waiting), Step::Design);
         assert!(c.may_enter(Step::Mockups, DESIGNED).is_ok());
+    }
+
+    #[test]
+    fn a_manifest_repair_names_what_does_not_read_and_touches_nothing_else() {
+        let text = manifest_repair_prompt("RULES", " mock/pages.json: invalid type \n");
+        assert!(
+            text.starts_with("RULES"),
+            "the rules first: the shape is in them"
+        );
+        assert!(text.contains("`mock/pages.json: invalid type`"), "{text}");
+        assert!(text.contains("Change no other file"), "{text}");
     }
 
     #[test]

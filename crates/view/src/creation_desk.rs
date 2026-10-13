@@ -20,14 +20,15 @@ use crate::data_desk::{DataDesk, Issue};
 use crate::domain::annotations::Kind as PinKind;
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
-    componentize_prompt, decompose_prompt, grill_prompt, mockups_prompt, not_componentized,
-    parse_brief, parse_requirements, parse_round, requirements_prompt, scope_prompt, unfenced,
+    componentize_prompt, decompose_prompt, grill_prompt, manifest_repair_prompt, mockups_prompt,
+    not_componentized, parse_brief, parse_requirements, parse_round, requirements_prompt,
+    scope_prompt, unfenced,
 };
 use crate::domain::design::Entry;
 use crate::domain::divergence;
 use crate::domain::note_session::{About, mockup_rules};
 use crate::kit_desk::{JobState, KitDesk};
-use crate::ports::{Foundry, Mockups, NoteStore, Oneshot, Plant};
+use crate::ports::{Foundry, MockState, Mockups, NoteStore, Oneshot, Plant};
 use crate::pulse::Pulse;
 use harness_architecture::kit::{ComponentState, DesignState};
 use harness_core::domain::Slug;
@@ -732,14 +733,16 @@ impl CreationDesk {
         });
         let prompt = mockups_prompt(&record, &rules, &kit);
         let model = self.setup.model.clone();
+        let desk = self.clone();
         self.step("opening the integration branch's mock-up");
         let poll_mockups = mockups.clone();
         let poll_branch = branch.clone();
+        let (opened, at) = (mockups.clone(), branch.clone());
         let dir = tokio::task::spawn_blocking(move || {
             // A drawing starts from the branch as committed: one sent back
             // leaves nothing of the last behind.
-            let _ = mockups.discard(&branch);
-            mockups.workspace(&branch)
+            let _ = opened.discard(&at);
+            opened.workspace(&at)
         })
         .await
         .map_err(|e| format!("the step did not finish: {e}"))??;
@@ -747,9 +750,19 @@ impl CreationDesk {
         // The workspace was just discarded above: nothing of a page is
         // there yet, so the poller starts from an empty `seen`.
         let poll = tokio::spawn(poll_mockup_pages(self.clone(), poll_mockups, poll_branch));
-        let said = tokio::task::spawn_blocking(move || oneshot.work_in(&model, &prompt, &dir))
-            .await
-            .map_err(|e| format!("the session did not finish: {e}"));
+        let said = tokio::task::spawn_blocking(move || {
+            let said = oneshot.work_in(&model, &prompt, &dir)?;
+            let at = Session {
+                oneshot: oneshot.as_ref(),
+                model: &model,
+                rules: &rules,
+                dir: &dir,
+            };
+            read_back(&desk, &at, mockups.as_ref(), &branch)?;
+            Ok::<_, String>(said)
+        })
+        .await
+        .map_err(|e| format!("the session did not finish: {e}"));
         poll.abort();
         let said = said??;
         self.step("the mock-up is drawn");
@@ -1103,10 +1116,17 @@ impl CreationDesk {
             branch.clone(),
             seen,
         ));
+        let desk = self.clone();
         let said = tokio::task::spawn_blocking(move || {
             let dir = mockups.workspace(&branch)?;
             let said = oneshot.work_in(&model, &prompt, &dir)?;
-            let state = mockups.state(&branch)?;
+            let at = Session {
+                oneshot: oneshot.as_ref(),
+                model: &model,
+                rules: &rules,
+                dir: &dir,
+            };
+            let state = read_back(&desk, &at, mockups.as_ref(), &branch)?;
             let mut pages = Vec::new();
             for page in &state.pages {
                 let html = mockups.file(&branch, &page.path)?.unwrap_or_default();
@@ -1145,6 +1165,45 @@ impl CreationDesk {
         let task = lock(&self.task).take();
         if let Some(task) = task {
             task.abort();
+        }
+    }
+}
+
+/// How many times a session is asked to repair a `mock/pages.json` the
+/// view cannot read before the job stops on it.
+const MANIFEST_REPAIRS: u32 = 2;
+
+/// The session a job put to work, as a repair asks it again.
+struct Session<'a> {
+    oneshot: &'a dyn Oneshot,
+    model: &'a str,
+    rules: &'a str,
+    dir: &'a std::path::Path,
+}
+
+/// `branch`'s mock-up read back after a session: a `mock/pages.json` that
+/// does not read goes back to a session to repair, `MANIFEST_REPAIRS` times
+/// at most — a job never ends done on a mock-up the view cannot show.
+fn read_back(
+    desk: &CreationDesk,
+    session: &Session<'_>,
+    mockups: &dyn Mockups,
+    branch: &str,
+) -> Result<MockState, String> {
+    let mut repairs = 0;
+    loop {
+        match mockups.state(branch) {
+            Ok(state) => return Ok(state),
+            Err(why) if repairs < MANIFEST_REPAIRS => {
+                repairs += 1;
+                desk.step(&format!("{why} — a session repairs it"));
+                session.oneshot.work_in(
+                    session.model,
+                    &manifest_repair_prompt(session.rules, &why),
+                    session.dir,
+                )?;
+            }
+            Err(why) => return Err(why),
         }
     }
 }
@@ -1665,6 +1724,97 @@ mod tests {
 
         initialized_up_to_the_board(&desk, &dir).await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session that draws like [`Drawer`] but writes a micro-frontend's
+    /// Capabilities as one string where the contract wants a list — and,
+    /// `repairs`, puts it right when asked.
+    struct Sloppy {
+        repairs: bool,
+    }
+
+    const UNREAD: &str = r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home"}],"components":[{"name":"Home","needs":"ledger.lines"}]}"#;
+
+    impl Oneshot for Sloppy {
+        fn ask(&self, model: &str, prompt: &str) -> Result<String, String> {
+            Drawer { lazy: false }.ask(model, prompt)
+        }
+
+        fn work_in(&self, model: &str, prompt: &str, dir: &Path) -> Result<String, String> {
+            let manifest = dir.join("mock/pages.json");
+            if prompt.contains("cannot read the mock-up") {
+                assert!(
+                    prompt.contains("invalid type"),
+                    "the error is in the prompt"
+                );
+                if self.repairs {
+                    std::fs::write(
+                        &manifest,
+                        UNREAD.replace(r#""ledger.lines""#, r#"["ledger.lines"]"#),
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                return Ok("repaired".to_string());
+            }
+            let said = Drawer { lazy: false }.work_in(model, prompt, dir)?;
+            if !prompt.contains("Make it again of **micro-frontends**") {
+                std::fs::write(&manifest, UNREAD).map_err(|e| e.to_string())?;
+            }
+            Ok(said)
+        }
+    }
+
+    // A manifest the view cannot read goes back to a session: repaired, the
+    // job goes on; never repaired, it stops on it instead of ending done.
+    #[tokio::test]
+    async fn a_manifest_that_does_not_read_is_repaired_or_stops_the_job() {
+        for repairs in [true, false] {
+            let dir = product(if repairs { "repaired" } else { "unrepaired" });
+            let book = Arc::new(Book::default());
+            let record = Creation {
+                kind: Some(Kind::Vertical),
+                brief: "a ledger".to_string(),
+                grilled: true,
+                scope: "## Goal\nproof".to_string(),
+                step: Step::Design,
+                ..Creation::new("alpha", "me/alpha")
+            };
+            book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+                .expect("kept");
+            let desk = CreationDesk::new(Setup {
+                register: book,
+                factory: "alpha".to_string(),
+                foundry: Arc::new(Nothing),
+                factories_dir: dir.join("factories"),
+                integration_branch: "main_agent".to_string(),
+                oneshot: Some(Arc::new(Sloppy { repairs })),
+                model: "m".to_string(),
+                mockups: Some(Arc::new(DirMockups::new(&dir))),
+                kit: None,
+                data: None,
+                plant: None,
+                pins: Some(Arc::new(Pins)),
+            });
+            desk.draw_ahead().await.expect("started");
+            let job = settled(&desk).await;
+            let asked = job
+                .steps
+                .iter()
+                .filter(|s| s.ends_with("a session repairs it"))
+                .count();
+            let kept = desk.record().expect("read").expect("a record");
+            if repairs {
+                assert_eq!(job.state, State::Done, "{}", job.why);
+                assert_eq!(asked, 1, "{:?}", job.steps);
+                assert!(kept.mocked.is_some());
+            } else {
+                assert_eq!((job.work, job.state), (Work::Mockups, State::Failed));
+                assert!(job.why.contains("invalid type"), "{}", job.why);
+                assert_eq!(asked, MANIFEST_REPAIRS as usize, "{:?}", job.steps);
+                assert_eq!(kept.mocked, None, "an unreadable drawing is not kept");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     // The scope settled, the proof of concept draws ahead while the human is

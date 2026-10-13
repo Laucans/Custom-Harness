@@ -426,7 +426,12 @@ pub fn mockup_rules(about: &About) -> String {
          stable `id`; relative links only, so a page works from any file server; no build step, no \
          framework that must compile, no network call. Do not commit, do not push, do not branch: \
          the human saves the mock-up from the view when they are satisfied. Say in one line what \
-         you changed when you are done.\n",
+         you changed when you are done.\n\n\
+         `mock/pages.json` has exactly this shape — a field is a string unless it is a list or an \
+         object here, except a micro-frontend's `fixture`: one file, or a list of files when it \
+         reads several; no other field is read:\n\n\
+         ```json\n{shape}\n```\n",
+        shape = crate::domain::mockup::manifest_shape(),
         branch = if about.branch.is_empty() {
             "shown"
         } else {
@@ -668,6 +673,16 @@ mod tests {
     use harness_core::domain::Issue;
 
     use super::*;
+
+    #[test]
+    fn the_mockup_rules_show_the_manifest_shape() {
+        let rules = mockup_rules(&About::default());
+        assert!(
+            rules.contains(&crate::domain::mockup::manifest_shape()),
+            "{rules}"
+        );
+        assert!(rules.contains("or a list of files"), "{rules}");
+    }
     use proptest::prelude::*;
 
     fn turn(role: &str, text: &str) -> Turn {

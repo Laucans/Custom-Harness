@@ -52,7 +52,7 @@ pub fn is_safe_path(path: &str) -> bool {
 }
 
 /// What a `mock/pages.json` lists: its pages and its micro-frontends.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Manifest {
     /// The pages.
     #[serde(default)]
@@ -69,6 +69,36 @@ pub struct Manifest {
 /// The text is not the manifest contract N describes.
 pub fn manifest_of(json: &str) -> Result<Manifest, String> {
     serde_json::from_str::<Manifest>(json).map_err(|e| format!("mock/pages.json: {e}"))
+}
+
+/// The shape of `mock/pages.json`, one page and one micro-frontend of
+/// it, written from the very types [`manifest_of`] reads — what a session
+/// is shown so it never guesses the contract.
+#[must_use]
+pub fn manifest_shape() -> String {
+    let props = [("status".to_string(), "\"open\" | \"paid\"".to_string())];
+    let sample = Manifest {
+        pages: vec![MockPage {
+            path: "pages/invoices.html".to_string(),
+            title: "Invoices".to_string(),
+            objective: "The accountant finds an unpaid invoice and marks it paid".to_string(),
+            screen: String::new(),
+            components: vec!["InvoiceList".to_string()],
+            hash: String::new(),
+        }],
+        components: vec![MockComponent {
+            name: "InvoiceList".to_string(),
+            system: "billing".to_string(),
+            description: "The invoices, filtered by status".to_string(),
+            fragment: "components/InvoiceList.html".to_string(),
+            fixture: vec!["fixtures/InvoiceList.json".to_string()],
+            needs: vec!["billing.listInvoices".to_string()],
+            actions: vec!["billing.markInvoicePaid".to_string()],
+            props: props.into_iter().collect(),
+            ..MockComponent::default()
+        }],
+    };
+    serde_json::to_string_pretty(&sample).unwrap_or_default()
 }
 
 /// What the manifests of a branch say that the micro-frontend designer
@@ -123,7 +153,7 @@ pub fn units_of(files: &[UnitFile]) -> Units {
                         system: text("system").unwrap_or_default(),
                         description: text("description").unwrap_or_default(),
                         fragment: String::new(),
-                        fixture: String::new(),
+                        fixture: Vec::new(),
                         needs: list("needs"),
                         actions: list("actions"),
                         source: String::new(),
@@ -217,6 +247,56 @@ pub fn save_branch(name: &str) -> String {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn the_manifest_shape_shown_to_a_session_reads_back() {
+        let shape = manifest_shape();
+        let read = manifest_of(&shape).expect("the shape is the contract");
+        assert_eq!((read.pages.len(), read.components.len()), (1, 1));
+        let c = &read.components[0];
+        assert_eq!(c.fixture, vec!["fixtures/InvoiceList.json".to_string()]);
+        assert_eq!(c.props.len(), 1);
+        assert!(
+            shape.contains("\"fixture\": \"fixtures/InvoiceList.json\""),
+            "one fixture is written as one: {shape}"
+        );
+        assert!(
+            !shape.contains("\"hash\""),
+            "what a session never writes is not shown"
+        );
+    }
+
+    #[test]
+    fn a_fixture_is_one_file_or_a_list_of_them() {
+        let read = |fixture: &str| {
+            manifest_of(&format!(
+                r#"{{"pages":[],"components":[{{"name":"Map","fixture":{fixture}}}]}}"#
+            ))
+            .map(|m| m.components[0].fixture.clone())
+        };
+        let files = |f: &[&str]| f.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            read(r#""fixtures/a.json""#),
+            Ok(files(&["fixtures/a.json"]))
+        );
+        assert_eq!(
+            read(r#"["fixtures/a.json","fixtures/b.json"]"#),
+            Ok(files(&["fixtures/a.json", "fixtures/b.json"]))
+        );
+        assert_eq!(read(r#""""#), Ok(Vec::new()), "none written: none");
+        assert!(read("3").is_err(), "neither a file nor a list");
+        let many = MockComponent {
+            fixture: files(&["fixtures/a.json", "fixtures/b.json"]),
+            ..MockComponent::default()
+        };
+        let written = serde_json::to_value(&many).expect("json");
+        assert_eq!(
+            written["fixture"],
+            serde_json::json!(["fixtures/a.json", "fixtures/b.json"])
+        );
+        let none = serde_json::to_value(MockComponent::default()).expect("json");
+        assert!(none.get("fixture").is_none(), "no fixture, no field");
+    }
 
     #[test]
     fn a_branch_travels_as_a_slug_and_comes_back() {

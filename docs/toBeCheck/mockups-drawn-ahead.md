@@ -29,3 +29,16 @@ human works on the design system.
       callout on the mock-up step; *Draw again* follows the new scope.
 - [ ] Time saved: from design validation to review, compare with a creation
       before this change.
+
+## The mock-up's manifest (contract N)
+Shipped: the exact `mock/pages.json` shape in the mock-up rules (written
+from the view's own types), a repair session when it does not read (2 at
+most, then the job stops instead of ending done), and `fixture` as one
+file or a list (schema N and `MockComponent`).
+
+- [ ] A drawing whose micro-frontend reads several fixtures: listed, the
+      easel reads it, the product's gate `validate n-mock-pages` passes.
+- [ ] A drawing that leaves `pages.json` unreadable: the job's steps show
+      "… — a session repairs it", then the easel opens.
+- [ ] Products installed before: `init-repo` refreshes the schema
+      (`contracts/n-mock-pages.schema.json`) — check the product gets it.
