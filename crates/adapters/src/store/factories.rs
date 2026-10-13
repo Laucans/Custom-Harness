@@ -214,6 +214,24 @@ impl Factories for SqliteFactories {
             .map(|_| ())
             .map_err(|e| failed("cannot be written", e))
     }
+
+    // The transaction borrows the connection until it commits, which is the
+    // last thing the write does: the guard cannot go sooner.
+    #[allow(clippy::significant_drop_tightening)]
+    fn forget(&self, id: &str) -> Outcome<()> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| failed("is poisoned", "a writer panicked"))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| failed("cannot be written", e))?;
+        for table in ["creations", "factories"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE id = ?1"), params![id])
+                .map_err(|e| failed("cannot be written", e))?;
+        }
+        tx.commit().map_err(|e| failed("cannot be written", e))
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +350,53 @@ mod tests {
             register(&dir).creation("beta").expect("read").as_deref(),
             Some("other")
         );
+    }
+
+    #[test]
+    fn a_forgotten_factory_leaves_the_register_with_its_creation_and_no_other() {
+        let dir = Dir::new("forget");
+        let store = register(&dir);
+        let alpha = store
+            .enroll(Path::new("/work/a"), "alpha", "me/alpha", "main_agent")
+            .expect("enrolled");
+        let beta = store
+            .enroll(Path::new("/work/b"), "beta", "", "main_agent")
+            .expect("enrolled");
+        store.keep_creation(&alpha.id, "one").expect("kept");
+        store.keep_creation(&beta.id, "other").expect("kept");
+
+        store.forget(&alpha.id).expect("forgotten");
+
+        assert_eq!(store.get(&alpha.id).expect("read"), None);
+        assert_eq!(store.creation(&alpha.id).expect("read"), None);
+        assert_eq!(store.get(&beta.id).expect("read"), Some(beta.clone()));
+        assert_eq!(
+            store.creation(&beta.id).expect("read").as_deref(),
+            Some("other")
+        );
+        // Gone for good: a reopened register does not bring it back.
+        assert_eq!(register(&dir).list().expect("read"), vec![beta]);
+    }
+
+    #[test]
+    fn forgetting_a_factory_nobody_knows_is_not_an_error() {
+        let dir = Dir::new("forget-none");
+        register(&dir).forget("ghost").expect("nothing to forget");
+    }
+
+    #[test]
+    fn a_forgotten_folder_can_be_enrolled_again_under_a_fresh_id() {
+        let dir = Dir::new("forget-again");
+        let store = register(&dir);
+        let first = store
+            .enroll(Path::new("/work/a"), "alpha", "", "main_agent")
+            .expect("enrolled");
+        store.forget(&first.id).expect("forgotten");
+        let again = store
+            .enroll(Path::new("/work/a"), "alpha", "", "main_agent")
+            .expect("enrolled");
+        assert_eq!(again.id, "alpha");
+        assert_eq!(store.list().expect("read").len(), 1);
     }
 
     #[test]

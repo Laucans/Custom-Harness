@@ -908,6 +908,11 @@ mod tests {
             lock(&self.0).remove(id);
             Ok(())
         }
+
+        fn forget(&self, id: &str) -> Outcome<()> {
+            lock(&self.0).remove(id);
+            Ok(())
+        }
     }
 
     /// A foundry that makes nothing.

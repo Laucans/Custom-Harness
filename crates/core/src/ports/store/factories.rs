@@ -103,6 +103,15 @@ pub trait Factories {
     ///
     /// The register could not be written.
     fn end_creation(&self, id: &str) -> Outcome<()>;
+
+    /// Takes the factory `id` out of the register, with the record of its
+    /// creation. A factory the register does not know is already forgotten:
+    /// not an error.
+    ///
+    /// # Errors
+    ///
+    /// The register could not be written.
+    fn forget(&self, id: &str) -> Outcome<()>;
 }
 
 #[cfg(test)]

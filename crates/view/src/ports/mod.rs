@@ -610,6 +610,28 @@ pub struct Initialized {
     pub report: String,
 }
 
+/// What taking a factory down touches outside the register: its repository
+/// on GitHub, its folder on this machine. Blocking — a handler runs it on a
+/// blocking thread.
+pub trait Teardown: Send + Sync {
+    /// Deletes `slug` (`owner/name`) on GitHub, for good.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused: no right to delete it, or `gh` lacks the
+    /// `delete_repo` scope.
+    fn delete_repository(&self, slug: &str) -> Result<(), String>;
+
+    /// Removes the factory's folder `root`: a worktree of the harness
+    /// checkout, with its `.llocal/`. A folder already gone is removed.
+    ///
+    /// # Errors
+    ///
+    /// `root` is the checkout the view runs from, or `git` and the disk both
+    /// refused.
+    fn remove_folder(&self, root: &std::path::Path) -> Result<(), String>;
+}
+
 /// One `claude -p` call the view itself paid for — never a dev-loop run,
 /// which has its own ledger (`LedgerRow`): a question the view asked on its
 /// own account (the design system's tokens, a factory's grilling, a

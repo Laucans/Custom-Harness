@@ -66,6 +66,7 @@ use crate::ports::{
     BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Plant, Prompts, Traces, Trials,
     Usage,
 };
+use crate::removal::Removal;
 use crate::units_desk::UnitsDesk;
 use harness_core::domain::quota::Reading;
 use harness_core::ports::store::events::EventLog;
@@ -95,7 +96,10 @@ use drafts::{
     all_drafts, draft_history, keep_draft, open_draft, put_draft, reset_draft, restore_draft,
     unvalidate_draft, validate_draft,
 };
-use factories::{list as factory_list, open as factory_open};
+use factories::{
+    delink as factory_delink, destroy as factory_destroy, list as factory_list,
+    open as factory_open,
+};
 use janitor::{janitor, janitor_diagnose, janitor_settings, janitor_sweep};
 use mockup::{
     apply_requests, mf_apply, mf_drop_draft, mf_generate, mf_generations, mf_save, mock_file,
@@ -195,6 +199,9 @@ pub struct AppState {
     pub usage: Option<Arc<dyn Usage>>,
     /// The id of the factory this view is on; empty without a register.
     pub factory: String,
+    /// Takes a factory down — delinked, or destroyed — `None` without a
+    /// register.
+    pub removal: Option<Arc<Removal>>,
     /// Where a switch to another factory is put for `main` to act on.
     pub switching: Switching,
 }
@@ -344,6 +351,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/restart", post(restart))
         .route("/api/factories", get(factory_list))
         .route("/api/factories/{id}/open", post(factory_open))
+        .route("/api/factories/{id}/delink", post(factory_delink))
+        .route("/api/factories/{id}/destroy", post(factory_destroy))
         .route("/api/creation", get(creation::creation).put(creation::save))
         .route("/api/creation/owners", get(creation::owners))
         .route("/api/creation/found", post(creation::found))
