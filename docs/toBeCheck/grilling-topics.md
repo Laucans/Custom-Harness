@@ -28,8 +28,11 @@ real model is unverified.
       under *General*, and answering still saves.
 - [ ] Answering, *use it*, delete and *use the N recommendations* work inside
       the cards; the record order after a save follows the cards.
-- [ ] *Continue grilling*: the page scrolls back to the top once the round
-      lands; a new topic card may appear.
+- [ ] *Continue grilling*: once the round lands, the page scrolls to the
+      first open question (just under its topic's header); a new topic card
+      may appear.
+- [ ] Scrolling down a topic, its header stays stuck at the pane's top edge,
+      then gives way to the next topic's.
 - [ ] The new round's questions are yellow; typing in one (or *use it*,
       *use the N recommendations*) greys it at once; after a reload the
       answered ones stay grey.

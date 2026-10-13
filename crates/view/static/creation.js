@@ -961,9 +961,12 @@
   // The next grilling round, asked.
   function askGrill() {
     const body = fields();
-    // The new round may open new topics anywhere: back to the top to read it through.
+    // The new round lands in any topic: the page goes to its first open question.
     act('the AI prepares the next round', async () => { await save(body); await post('grill'); })
-      .then(() => { if (!C.error) page.scrollIntoView({ block: 'start' }); });
+      .then(() => { if (!C.error) firstOpen()?.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+  }
+  function firstOpen() {
+    return [...page.querySelectorAll('[data-q]')].find((el) => !el.querySelector('textarea')?.value.trim());
   }
 
   // ---- gestures -------------------------------------------------------------------

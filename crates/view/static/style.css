@@ -1579,7 +1579,10 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-chip-toggle.on { border-color: var(--accent); color: var(--text); background: var(--bg); }
 .cr-chip-toggle:hover { border-color: var(--accent); }
 .cr-topic { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 4px; margin-bottom: 14px; }
-.cr-topic > header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+/* The topic stays in sight while its questions scroll: stuck at the pane's
+   very edge, above #factory-page's 40px top padding. */
+.cr-topic > header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; position: sticky; top: -40px; z-index: 1; background: var(--bg); padding: 8px 0; }
+.cr-topic .cr-q { scroll-margin-top: 50px; }
 .cr-topic > header b { flex: 1; font-size: 15px; }
 .cr-topic > header .tag { margin: 0; }
 .cr-q { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
