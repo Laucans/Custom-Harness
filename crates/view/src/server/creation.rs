@@ -40,6 +40,7 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "mockupStale": record.as_ref().is_some_and(Creation::mockup_stale),
         "marks": record.as_ref().map(|r| r.marks(facts)),
         "ruleGaps": record.as_ref().map(Creation::rule_gaps),
+        "auditStale": record.as_ref().is_some_and(Creation::audit_stale),
         "designValidated": facts.design_validated,
         "kit": kit,
         "job": desk.job(),
@@ -229,6 +230,38 @@ pub(super) async fn reread_rule(State(state): State<AppState>, Path(id): Path<u3
         Err(r) => return *r,
     };
     match desk.reread_rule(id).await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The architecture's guard asked about the cut.
+pub(super) async fn audit(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.audit().await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// One finding of the guard: its fix applied, or dismissed.
+pub(super) async fn finding(
+    State(state): State<AppState>,
+    Path((id, how)): Path<(u32, String)>,
+) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let apply = match how.as_str() {
+        "apply" => true,
+        "dismiss" => false,
+        _ => return refused(format!("`{how}`: apply or dismiss")),
+    };
+    match desk.resolve_finding(id, apply).await {
         Ok(record) => view(desk, Some(record)).await,
         Err(why) => refused(why),
     }

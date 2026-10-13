@@ -1601,6 +1601,25 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-rule-mf { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 8px; border: 1px solid var(--line); border-radius: 999px; font: 11px var(--mono); }
 .cr-rule-mf .mini { padding: 0 4px; }
 .cr-gaps { margin: 4px 0 8px; padding-left: 18px; color: var(--bad); font-size: 12px; }
+.cr-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); margin: 8px 0 6px; }
+.cr-tabs .spacer { flex: 1; }
+.cr-tabs [role="tab"] { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--dim); padding: 6px 10px; font: 600 12px var(--sans); cursor: pointer; }
+.cr-tabs [role="tab"].on { color: var(--text); border-bottom-color: var(--accent); }
+.cr-tabs .tag { margin-left: 4px; }
+.cr-simple { font: 12px var(--sans); color: var(--dim); display: inline-flex; align-items: center; gap: 4px; }
+.cr-findings { display: flex; flex-direction: column; gap: 8px; }
+.cr-finding { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.cr-finding.bad { border-color: var(--bad); }
+.cr-finding header { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.cr-finding header .spacer { flex: 1; }
+.cr-finding p { margin: 4px 0 0; font-size: 12px; }
+.cr-sub { font: 600 12px var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 14px 0 6px; }
+.cr-slices { display: flex; flex-direction: column; gap: 10px; }
+.cr-slice h3 { font: 600 12px var(--mono); margin: 0 0 4px; }
+.cr-slice h3 small { color: var(--dim); }
+.cr-slice-mf { border-left: 2px solid var(--line); padding: 2px 0 4px 8px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.cr-slice-mf code, .cr-finding code { font: 11px var(--mono); }
+.cr-slice-mf .tag { margin: 0 4px 0 2px; font-size: 10px; }
 .cr-reqs { display: flex; flex-direction: column; gap: 10px; max-height: 46vh; overflow: auto; padding-right: 4px; }
 .cr-req { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
 .cr-req.mine { border-left: 3px solid var(--accent); }

@@ -10,6 +10,8 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+use super::audit::Audit;
+
 /// The most questions one grilling round may bring.
 pub const ROUND_MAX: usize = 8;
 
@@ -162,6 +164,8 @@ pub struct Creation {
     /// What the rules were read off: the micro-frontends' cut as it was
     /// said then (`componentized`). Differs from it now: the cut moved.
     pub rules_for: String,
+    /// What the architecture's guard found on the cut, once asked.
+    pub audit: Option<Audit>,
     /// How many times the mock-ups were sent back to the brief.
     pub regenerations: u32,
     /// The mock-ups were drawn; what the session said of them.
@@ -556,6 +560,11 @@ impl Creation {
             return vec!["no rule yet".to_string()];
         }
         let mut gaps = Vec::new();
+        if let Some(audit) = &self.audit {
+            for f in audit.blocking() {
+                gaps.push(format!("architecture: {}", f.why.trim()));
+            }
+        }
         for r in &self.requirements {
             if r.criterion.trim().is_empty() {
                 gaps.push(format!("R{} has no criterion", r.id));
@@ -582,6 +591,16 @@ impl Creation {
         }
         self.rules_validated = true;
         Ok(())
+    }
+
+    /// The architecture's guard looked at a cut that moved since.
+    #[must_use]
+    pub fn audit_stale(&self) -> bool {
+        self.audit.as_ref().is_some_and(|a| {
+            self.componentized
+                .as_deref()
+                .is_some_and(|now| now != a.from)
+        })
     }
 
     /// The rules were read off a cut into micro-frontends that moved since.
@@ -1706,6 +1725,43 @@ mod tests {
         assert!(c.requirements[1].covered());
         c.validate_rules().expect("nothing keeps them");
         assert!(c.rules_validated);
+    }
+
+    #[test]
+    fn a_write_passed_off_as_a_read_keeps_the_rules_from_validation_until_fixed() {
+        use super::super::audit::{Check, Finding};
+        let mut c = ready();
+        c.requirements = vec![rule(1, "given y", &["pages/a.html"])];
+        c.componentized = Some("cut one".to_string());
+        c.audit = Some(Audit {
+            findings: vec![
+                Finding {
+                    id: 1,
+                    check: Some(Check::Naming),
+                    why: "a name".to_string(),
+                    ..Finding::default()
+                },
+                Finding {
+                    id: 2,
+                    check: Some(Check::WriteAsRead),
+                    why: " it creates ".to_string(),
+                    ..Finding::default()
+                },
+            ],
+            from: "cut one".to_string(),
+            ..Audit::default()
+        });
+        assert_eq!(c.rule_gaps(), vec!["architecture: it creates".to_string()]);
+        assert!(c.validate_rules().is_err());
+        assert!(!c.audit_stale());
+        c.componentized = Some("cut two".to_string());
+        assert!(c.audit_stale());
+        if let Some(a) = c.audit.as_mut() {
+            a.resolve(2, true).expect("fixed");
+        }
+        c.validate_rules().expect("only a warning left");
+        c.audit = None;
+        assert!(!c.audit_stale());
     }
 
     #[test]

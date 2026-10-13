@@ -263,6 +263,8 @@
       if (!C.mock) loadMock();
       if (!r.componentized && !running()) once(`mf-${r.regenerations}`, () => act('starting the micro-frontends', () => start('componentize')));
       else if (r.componentized && !r.requirements.length && !running()) once(`req-${r.regenerations}`, () => act('the AI reads the rules', async () => { await post('requirements'); await loadMock(); }));
+      // The guard reads the cut once by itself; again only when asked.
+      else if (r.componentized && r.requirements.length && !r.audit && !running()) once(`audit-${r.regenerations}`, () => act('the guard reads the architecture', () => post('audit')));
     }
   }
   // The mock-up as it stands: its pages and micro-frontends, for the review's requirements.
@@ -755,6 +757,11 @@
   // page, its first page shown.
   const FAMILIES = [['journey', 'Journey', 'A step of a user\'s journey: what the user does and sees'], ['business', 'Business', 'An invariant, a computation, what the application keeps — the data step makes invariants of them']];
   const rules = () => C.rules || (record() ? record().requirements : []);
+  // The simple view, for a client who is no developer: no architecture tab,
+  // the blocking findings said in the rules tab. A per-viewer preference.
+  const SIMPLE = 'harness.creation.simple';
+  const simple = () => { try { return localStorage.getItem(SIMPLE) === '1'; } catch (e) { return false; } };
+  const CHECKS = { duplicate: 'Duplicate', naming: 'Naming', system_size: 'System size', mixed_systems: 'Reaches into another system', write_as_read: 'A write passed off as a read', capability_calls: 'A Capability leaning on another' };
   // A change to the rules: made on the page's copy, kept a moment later.
   function editRules(fn, now) {
     C.rules = C.rules || JSON.parse(JSON.stringify(record().requirements));
@@ -769,7 +776,53 @@
     const head = `<p class="muted">The rules the proof of concept must meet, read off the scope and the mock-up: each a step of a <b>journey</b> or a <b>business</b> rule, each with the criterion a test checks, each carried by pages and micro-frontends. Pick one to see what carries it on the mock-up.</p>
       ${making && j.state !== 'done' ? `<div data-cr-job>${jobPanel()}</div>` : ''}
       ${making && j.state === 'failed' ? '<div class="cr-actions"><span></span><button type="button" class="cr-btn" data-cr-mf>Make the micro-frontends again</button></div>' : ''}`;
-    return head + (r.componentized ? rulesPanel(r) : '<p class="muted">The rules come once the mock-up is made of micro-frontends: they are tied to them.</p>');
+    if (!r.componentized) return head + '<p class="muted">The rules come once the mock-up is made of micro-frontends: they are tied to them.</p>';
+    const blocking = r.audit ? r.audit.findings.filter((f) => f.check === 'write_as_read').length : 0;
+    const architecture = C.rulesTab === 'architecture' && !simple();
+    const tabs = `<div class="cr-tabs" role="tablist">
+        <button type="button" role="tab" class="${architecture ? '' : 'on'}" data-cr-tab="rules" aria-selected="${!architecture}">Rules</button>
+        ${simple() ? '' : `<button type="button" role="tab" class="${architecture ? 'on' : ''}" data-cr-tab="architecture" aria-selected="${architecture}">Architecture${r.audit && r.audit.findings.length ? ` <span class="tag${blocking ? ' bad' : ''}">${r.audit.findings.length}</span>` : ''}</button>`}
+        <span class="spacer"></span>
+        <label class="cr-simple" title="For a client who is no developer: the architecture tab hidden, only what blocks said in plain words"><input type="checkbox" data-cr-simple${simple() ? ' checked' : ''}> simple view</label></div>`;
+    return head + tabs + (architecture ? architecturePanel(r) : (simple() ? plainBlockers(r) : '') + rulesPanel(r));
+  }
+  // What blocks, in plain words, for the simple view.
+  function plainBlockers(r) {
+    const list = r.audit ? r.audit.findings.filter((f) => f.check === 'write_as_read') : [];
+    return list.map((f) => `<div class="cr-error" role="alert">${esc(f.why)} <button type="button" class="cr-btn" data-cr-finding="${f.id}" data-how="apply"${C.busy ? ' disabled' : ''}>Fix it</button></div>`).join('');
+  }
+  // The architecture's guard: what it found, then the cut, system by system.
+  function architecturePanel(r) {
+    const mock = C.mock || { pages: [], components: [] };
+    const audit = r.audit;
+    const effects = (audit && audit.effects) || {};
+    const comps = mock.components || [];
+    const systems = [...new Set(comps.map((c) => c.system || '—'))].sort();
+    const reads = new Set(comps.flatMap((c) => c.needs || []));
+    const writes = new Set(comps.flatMap((c) => c.actions || []));
+    const parallel = [...writes].filter((w) => effects[w] === 'insert').length;
+    const sequential = [...writes].filter((w) => effects[w] && effects[w] !== 'insert').length;
+    const head = `<div class="cr-rules-head">
+        <span class="muted">${systems.length} systems · ${comps.length} micro-frontends · ${reads.size} Capabilities · ${writes.size} DataCapabilities${audit ? ` (${parallel} parallel · ${sequential} sequential)` : ''}</span>
+        <span class="spacer"></span>
+        ${C.data.auditStale ? '<span class="cr-chip warn" title="The cut into micro-frontends moved since the guard read it">to redo</span>' : ''}
+        <button type="button" class="cr-btn" data-cr-audit${C.busy ? ' disabled' : ''} title="The architecture's guard reads the cut: names, systems, duplicates, writes passed off as reads">${audit ? 'Audit again' : 'Audit'}</button></div>`;
+    const findings = audit
+      ? (audit.findings.length ? audit.findings.map((f) => `<article class="cr-finding${f.check === 'write_as_read' ? ' bad' : ''}">
+          <header><b>${esc(CHECKS[f.check] || f.check || 'finding')}</b>${f.check === 'write_as_read' ? ' <span class="tag bad">blocks</span>' : ''}<span class="spacer"></span>
+            <button type="button" class="mini" data-cr-finding="${f.id}" data-how="apply"${C.busy ? ' disabled' : ''} title="A Claude Code session applies the fix to the mock-up">apply</button>
+            ${f.check === 'write_as_read' ? '' : `<button type="button" class="mini" data-cr-finding="${f.id}" data-how="dismiss"${C.busy ? ' disabled' : ''} title="Keep it as it is">dismiss</button>`}</header>
+          <div class="cr-chips">${(f.units || []).map((u) => `<code>${esc(u)}</code>`).join(' ')}</div>
+          <p>${esc(f.why)}</p>${f.fix ? `<p class="muted">→ ${esc(f.fix)}</p>` : ''}</article>`).join('') : '<p class="muted">The guard found nothing to say.</p>')
+      : '<p class="muted">The guard has not read the cut yet.</p>';
+    const tagOf = (w) => (effects[w] ? (effects[w] === 'insert' ? '<span class="tag ok" title="A pure addition: its task runs beside the others">parallel</span>' : `<span class="tag" title="${esc(effects[w])}: its task runs alone">sequential</span>`) : '');
+    const slices = systems.map((system) => {
+      const own = comps.filter((c) => (c.system || '—') === system);
+      return `<section class="cr-slice"><h3>${esc(system)} <small>${own.length}</small></h3>${own.map((c) => `<div class="cr-slice-mf"><b>${esc(c.name)}</b>
+          ${(c.needs || []).length ? `<div><span class="muted">reads</span> ${c.needs.map((n) => `<code>${esc(n)}</code>`).join(' ')}</div>` : ''}
+          ${(c.actions || []).length ? `<div><span class="muted">writes</span> ${c.actions.map((a) => `<code>${esc(a)}</code>${tagOf(a)}`).join(' ')}</div>` : ''}</div>`).join('')}</section>`;
+    }).join('');
+    return head + `<div class="cr-findings">${findings}</div><h3 class="cr-sub">The cut</h3><div class="cr-slices">${slices}</div>`;
   }
   function rulesPanel(r) {
     const mock = C.mock || { pages: [], components: [] };
@@ -1159,6 +1212,13 @@
       if (canvas && typeof canvas.regenerate === 'function') canvas.regenerate(t.dataset.crMfRedo);
       return;
     }
+    if (t.dataset.crTab) { C.rulesTab = t.dataset.crTab; draw(); return; }
+    if (t.matches('[data-cr-audit]')) { act('the guard reads the architecture', () => post('audit')); return; }
+    if (t.dataset.crFinding) {
+      const how = t.dataset.how;
+      act(how === 'apply' ? 'a session applies the fix to the mock-up' : 'dismissing', async () => { await post(`audit/${t.dataset.crFinding}/${how}`); await loadMock(); if (C.embed && C.embed.canvas && C.embed.canvas.reload) C.embed.canvas.reload(); });
+      return;
+    }
     if (t.matches('[data-cr-validate]')) { act('validating the rules', async () => { await flushRules(); await post('rules/validate'); }); return; }
     if (t.matches('[data-cr-reqs]')) {
       const body = fields();
@@ -1256,6 +1316,11 @@
   }
   page.addEventListener('change', (e) => {
     if (e.target.closest('[data-q]')) keepAnswers();
+    if (e.target.matches('[data-cr-simple]')) {
+      try { localStorage.setItem(SIMPLE, e.target.checked ? '1' : '0'); } catch (err) { /* a preference, not a record */ }
+      draw();
+      return;
+    }
     const card = e.target.closest('[data-rule]');
     if (card) {
       const id = Number(card.dataset.rule);

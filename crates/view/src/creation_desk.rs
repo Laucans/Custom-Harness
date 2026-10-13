@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::data_desk::{DataDesk, Issue};
 use crate::domain::annotations::Kind as PinKind;
+use crate::domain::audit::{audit_of, audit_prompt, fix_prompt};
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
     componentize_prompt, decompose_prompt, grill_prompt, manifest_repair_prompt, mockups_prompt,
@@ -463,6 +464,81 @@ impl CreationDesk {
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
         record.reread(id, read)?;
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The architecture's guard asked about the cut as it stands: the
+    /// checks read off it, then the AI's.
+    ///
+    /// # Errors
+    ///
+    /// No creation, its gate is closed, the mock-up is not cut yet, no
+    /// Claude, or an answer that does not read.
+    pub async fn audit(&self) -> Result<Creation, String> {
+        let asked = self.existing()?;
+        asked.may_enter(Step::Rules, self.facts().await)?;
+        let from = asked
+            .componentized
+            .clone()
+            .ok_or("the mock-up is not made of micro-frontends yet")?;
+        let ctx = self.context(&asked).await;
+        let answer = self
+            .ask(audit_prompt(
+                &ctx,
+                "the language the micro-frontends are described in",
+            ))
+            .await?;
+        let audit = audit_of(&answer, &ctx.components, &from)?;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.audit = Some(audit);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// One finding taken away: its fix applied to the mock-up by a Claude
+    /// Code session in the branch's workspace, or dismissed.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no audit or no such finding, a blocking one dismissed,
+    /// nothing can write, or the session failed.
+    pub async fn resolve_finding(&self, id: u32, apply: bool) -> Result<Creation, String> {
+        let asked = self.existing()?;
+        let finding = asked
+            .audit
+            .as_ref()
+            .and_then(|a| a.findings.iter().find(|f| f.id == id))
+            .cloned()
+            .ok_or_else(|| format!("no finding {id}"))?;
+        if apply {
+            let (Some(oneshot), Some(mockups)) =
+                (self.setup.oneshot.clone(), self.setup.mockups.clone())
+            else {
+                return Err("nothing can write the mock-up here".to_string());
+            };
+            let branch = self.setup.integration_branch.clone();
+            let rules = mockup_rules(&About {
+                branch: branch.clone(),
+                ..About::default()
+            });
+            let prompt = fix_prompt(&rules, &finding);
+            let model = self.setup.model.clone();
+            tokio::task::spawn_blocking(move || {
+                let dir = mockups.workspace(&branch)?;
+                oneshot.work_in(&model, &prompt, &dir)
+            })
+            .await
+            .map_err(|e| format!("the session did not finish: {e}"))??;
+        }
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record
+            .audit
+            .as_mut()
+            .ok_or("no audit")?
+            .resolve(id, apply)?;
         self.keep(&record)?;
         Ok(record)
     }
@@ -1409,6 +1485,13 @@ mod tests {
 
     impl Oneshot for Drawer {
         fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
+            if prompt.contains("You guard a vertical-slice architecture") {
+                assert!(prompt.contains("- `Home` —"), "the cut is in the prompt");
+                return Ok(r#"{"findings":[{"check":"write_as_read","units":["ledger.saveLine"],"why":"it saves","fix":"move it to actions"}],"effects":{}}"#.to_string());
+            }
+            if prompt.contains("Read again this one requirement only") {
+                return Ok(r#"{"requirements":[{"title":"See every line","family":"business","criterion":"given lines, when opened, then all show","pages":["pages/home.html"]}]}"#.to_string());
+            }
             if prompt.contains("read the requirements") {
                 return Ok(r#"{"requirements":[{"title":"See the ledger","body":"the lines","pages":["pages/home.html"],"components":["Home","Ghost"]}]}"#.to_string());
             }
@@ -1426,6 +1509,10 @@ mod tests {
                 prompt.contains("the branch `main_agent`"),
                 "the branch is in the prompt"
             );
+            if prompt.contains("The architecture's guard found this") {
+                assert!(prompt.contains("- about: ledger.saveLine"));
+                return Ok("moved ledger.saveLine to actions".to_string());
+            }
             if prompt.contains("Make it again of **micro-frontends**") {
                 assert!(prompt.contains("a ledger"), "the brief is in the prompt");
                 if !self.lazy {
@@ -1769,7 +1856,7 @@ mod tests {
             vec!["Home".to_string()],
             "a micro-frontend the mock-up has not is dropped"
         );
-
+        rules_read_again_and_guarded(&desk, read.requirements[0].id).await;
         initialized_up_to_the_board(&desk, &dir).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1941,6 +2028,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The third quarter of the flow above: one rule read again, then the
+    /// architecture's guard — a write passed off as a read blocks the
+    /// rules until its fix is applied.
+    async fn rules_read_again_and_guarded(desk: &CreationDesk, id: u32) {
+        let again = desk.reread_rule(id).await.expect("read again");
+        let rule = &again.requirements[0];
+        assert_eq!((rule.id, rule.title.as_str()), (id, "See every line"));
+        assert_eq!(rule.family, creation::Family::Business);
+        assert!(desk.reread_rule(id + 7).await.is_err(), "no such rule");
+
+        let audited = desk.audit().await.expect("audited");
+        let audit = audited.audit.as_ref().expect("an audit");
+        assert_eq!(audit.from, "one micro-frontend: Home");
+        assert_eq!(audit.blocking().len(), 1);
+        assert!(
+            audited
+                .rule_gaps()
+                .iter()
+                .any(|g| g == "architecture: it saves")
+        );
+        let blocking = audit.findings[0].id;
+        assert!(
+            desk.resolve_finding(blocking, false).await.is_err(),
+            "fixed, not dismissed"
+        );
+        assert!(
+            desk.resolve_finding(blocking + 9, true).await.is_err(),
+            "no such finding"
+        );
+        let fixed = desk.resolve_finding(blocking, true).await.expect("applied");
+        assert!(fixed.audit.expect("kept").findings.is_empty());
+    }
+
     /// The rules the acceptance waits for, validated: those read given a
     /// criterion and a support where they lack one, or one of its own.
     fn rules_validated(desk: &CreationDesk) {
@@ -1986,7 +2106,8 @@ mod tests {
         let kept = std::fs::read_to_string(dir.join("main_agent/mock/proof-of-concept.json"))
             .expect("the record is written");
         let kept: serde_json::Value = serde_json::from_str(&kept).expect("json");
-        assert_eq!(kept["requirements"][0]["title"], "See the ledger");
+        assert_eq!(kept["requirements"][0]["title"], "See every line");
+        assert_eq!(kept["requirements"][0]["family"], "business");
         assert_eq!(kept["components"][0]["name"], "Home");
         assert_eq!(kept["pins"][0]["text"], "the total above the lines");
         assert_eq!(

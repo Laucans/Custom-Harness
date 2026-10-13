@@ -3,6 +3,7 @@
 
 pub mod annotations;
 pub mod assemble;
+pub mod audit;
 pub mod blueprint;
 pub mod builds;
 pub mod capabilities;
