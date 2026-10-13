@@ -15,8 +15,9 @@
 //! not only by the page.
 //!
 //! The folder goes whole when the view made it — a direct child of the
-//! factories' folder — and only its `.llocal/` and `.env.local` otherwise: a
-//! checkout someone else keeps stays. The factory this view is on is taken
+//! factories' folder — and only its `.llocal/` otherwise: a checkout
+//! someone else keeps stays, `.env.local` included — those settings are the
+//! checkout's, not the factory's. The factory this view is on is taken
 //! down too, but its folder is the view's working directory: the view moves
 //! to another factory, and *that* process removes the folder it left
 //! (`Removal::finish`). The register is forgotten last, so a step that failed

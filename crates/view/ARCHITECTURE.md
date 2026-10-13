@@ -117,8 +117,10 @@ Rules that keep it from taking more than it should:
 - **Only a folder the view made goes whole**: a direct child of
   `~/.harness/factories/` (`Removal::is_ours`, which the list answers as
   `owned`). A factory enrolled from a checkout somebody keeps — the harness
-  itself, say — loses its register entry, its watch, its harness data and
-  (destroy) its repository, never its checkout.
+  itself, say — loses its register entry, its watch, its harness data
+  (`.llocal/` alone) and (destroy) its repository, never its checkout and
+  never its `.env.local`: those settings belong to the checkout, not to the
+  factory, and a `watch` or a view of someone else's may be reading them.
 - **The factory this view is on can be taken down**, and its folder is the
   view's working directory. The view moves to another factory (the first
   other one whose folder exists — `409` when there is none, nothing touched)

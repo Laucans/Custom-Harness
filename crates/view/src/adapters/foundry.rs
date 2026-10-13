@@ -268,9 +268,7 @@ impl Teardown for Cli {
             _ => Ok(()),
         };
         let data = root.join(".llocal");
-        gone(std::fs::remove_dir_all(&data), &data)?;
-        let env = root.join(".env.local");
-        gone(std::fs::remove_file(&env), &env)
+        gone(std::fs::remove_dir_all(&data), &data)
     }
 }
 
@@ -543,7 +541,9 @@ mod tests {
         let cli = Cli::new(dir.clone(), Vec::new());
         assert_eq!(cli.wipe_harness_data(&dir), Ok(()));
         assert!(!dir.join(".llocal").exists());
-        assert!(!dir.join(".env.local").exists());
+        // The checkout's settings are the checkout's, not the factory's: a
+        // `.env.local` serves whoever keeps the folder, and stays.
+        assert!(dir.join(".env.local").exists());
         assert!(dir.join("code.rs").exists());
         // Nothing there is not an error: the gesture can be repeated.
         assert_eq!(cli.wipe_harness_data(&dir), Ok(()));

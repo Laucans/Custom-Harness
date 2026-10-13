@@ -647,9 +647,11 @@ pub trait Teardown: Send + Sync {
     /// refused.
     fn remove_folder(&self, root: &std::path::Path) -> Result<(), String>;
 
-    /// Removes what the harness keeps in the checkout `root` (`.llocal/`,
-    /// `.env.local`) and leaves the checkout itself, which somebody else
-    /// keeps. Nothing there is removed too.
+    /// Removes what the harness keeps in the checkout `root` (`.llocal/`)
+    /// and leaves the checkout itself, which somebody else keeps. Nothing
+    /// else there is removed — `.env.local` least of all: it is the
+    /// checkout's own settings, not a factory's, and another process may be
+    /// reading it right now.
     ///
     /// # Errors
     ///
