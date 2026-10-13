@@ -72,6 +72,22 @@ use harness_core::ports::shell::process::{Ran, last_line};
 /// The called binary. Named here so a test can read it.
 const BINARY: &str = "claude";
 
+/// Flags that keep the operator's own profile out of a robot's session.
+///
+/// Every byte a session carries in its first message is a prompt-cache write
+/// (1-hour TTL, twice the input price), paid again by every fresh session.
+/// The operator's claude.ai MCP servers, user plugins and user skills are of
+/// no use to a robot. Project settings stay, so the repository's skills still
+/// load. The per-machine sections (cwd, git status) leave the system prompt,
+/// so lanes in different directories share its cache. Measured: about 2.4k
+/// fewer tokens written per session.
+const LEAN: [&str; 4] = [
+    "--strict-mcp-config",
+    "--setting-sources",
+    "project,local",
+    "--exclude-dynamic-system-prompt-sections",
+];
+
 /// How long one turn may run, and how long it may stay silent.
 ///
 /// The silence is what says a turn hung: a working session reports every
@@ -251,6 +267,7 @@ impl ClaudeCli {
             "--permission-mode".to_string(),
             self.permission_mode.clone(),
         ];
+        args.extend(LEAN.iter().map(ToString::to_string));
         if let Some(id) = &self.session_id {
             args.push("--resume".to_string());
             args.push(id.clone());
@@ -694,6 +711,16 @@ mod tests {
         assert!(args.contains("--output-format stream-json"));
         // The CLI refuses the stream without it.
         assert!(args.contains("--verbose"));
+    }
+
+    #[test]
+    fn a_robot_carries_no_part_of_the_operator_profile() {
+        let args = cli().argv("x");
+        let at = args.iter().position(|a| a == "--").expect("--");
+        let options = args[..at].join(" ");
+        assert!(options.contains("--strict-mcp-config"));
+        assert!(options.contains("--setting-sources project,local"));
+        assert!(options.contains("--exclude-dynamic-system-prompt-sections"));
     }
 
     // --- parse --------------------------------------------------------------
