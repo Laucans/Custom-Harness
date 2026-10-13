@@ -2064,7 +2064,10 @@ async fn the_preparation_starts_from_the_brief_and_a_gate_refuses_without_one() 
     assert_eq!(status, StatusCode::OK, "{body}");
     let view: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(view["job"]["state"], "done", "{body}");
-    assert_eq!(view["record"]["scope"], "## Goal\nfirst");
+    assert_eq!(
+        view["record"]["scope"], "",
+        "the scope waits for the grilling"
+    );
     assert_eq!(
         view["record"]["step"], "kind",
         "a preparation moves no step"

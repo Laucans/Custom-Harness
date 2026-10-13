@@ -184,10 +184,9 @@ It has two sections:
      the **preparation** (`POST /api/creation/prepare`, `Work::Prepare`):
      the tokens drawn from that material when there is some and none yet
      (`KitDesk::generate`, the ticked kit components queued behind them),
-     then a first scope proposed from the brief and the decisions so far —
-     both while the human answers the grilling, followed on the crumbs
-     (*proposing*, *generating*, *to validate*). A scope the human wrote
-     is never proposed over;
+     while the human answers the grilling, followed on the crumbs
+     (*generating*, *to validate*). No scope is drawn here: it waits for
+     the grilling's decisions (step 5);
   4. **grilling** — rounds of questions (`grill_prompt`: the grilling skill's
      frontier, each question with its recommended answer, JSON), answered,
      retouched or deleted. Each question carries a `topic`, the part of the
@@ -202,7 +201,8 @@ It has two sections:
      itself; the scope opens once every question is answered, or when the
      AI had nothing to ask or every question was deleted (`grilled`);
   5. **scope** — the proof of concept as the AI proposes it (Markdown),
-     edited freely, proposed again on demand. The record keeps what it was
+     first proposed on entering the step, once the grilling is over
+     (`propose_scope`), edited freely, proposed again on demand. The record keeps what it was
      proposed from (`scope_from`, `Creation::fingerprint`: the kind, the
      brief, the decisions): decisions moved since make it **stale** (*to
      redo* on the crumb) — proposed again by itself when the human did not

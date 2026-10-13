@@ -1,8 +1,9 @@
 // The factory-creation page: connect an existing repository, or initialize
 // a factory through nine steps under a breadcrumb — the repository, the kind
 // of factory, the brief (with the design system's material: logo, moodboard,
-// design brief), the grilling (the tokens, the kit and a first scope draw
-// meanwhile), the proof of concept's scope, the design system, the mock-ups
+// design brief), the grilling (the tokens and the kit draw meanwhile), the
+// proof of concept's scope (proposed once the grilling is over), the design
+// system, the mock-ups
 // (drawn, then reworked in the easel), their review (the requirements tied
 // to the pages and the micro-frontends), the initialization. Steps 2 to 9
 // run in the new factory's own view; the design system's easel (on the brief
@@ -51,6 +52,8 @@
   // desk belongs to the factory open here, never to the one being founded.
   const FOUND = 'found';
 
+  // The busy label while the AI proposes the scope.
+  const PROPOSING = 'the AI proposes the scope';
   const C = { dirty: {}, loaded: false, data: null, route: 'landing', auto: false, busy: '', error: '', owners: null, ownersWhy: '', timer: null, embed: null, view: { width: null, height: null }, trackHidden: false, auto_started: {}, confirm: '', parts: false, opening: '', pages: null, mock: null, reqTimer: null, pulsed: false, reading: false, again: false };
   const page = $('factory-page');
 
@@ -223,7 +226,7 @@
       C.route = step;
       setRoute(step);
     });
-    // The brief closed: what it allows draws meanwhile — the tokens, the kit, a first scope.
+    // The brief closed: what it allows draws meanwhile — the tokens, the kit.
     if (from === 'brief' && step === 'grilling' && !DEMO) {
       try { await call('POST', '/api/creation/prepare'); await read(); draw(); } catch (e) { /* another job runs, or no brief: the steps say */ }
     }
@@ -250,7 +253,7 @@
     if (C.route === 'grilling' && !r.questions.length && !r.rounds) once(`grill-${r.regenerations}`, () => act('the AI prepares its questions', () => post('grill')));
     // A scope not written, or proposed before the grilling moved the decisions and
     // not retouched: proposed (again) by itself; a retouched one waits for the human.
-    if (C.route === 'scope' && !running('prepare') && (!r.scope.trim() || (C.data.scopeStale && !r.scope_edited))) once(`scope-${r.regenerations}-${r.scope_from}`, () => act('the AI proposes the scope', () => post('scope')));
+    if (C.route === 'scope' && (!r.scope.trim() || (C.data.scopeStale && !r.scope_edited))) once(`scope-${r.regenerations}-${r.scope_from}`, () => act(PROPOSING, () => post('scope')));
     if (C.route === 'mockups' && !r.mocked && !running() && !(job() && job().work === 'mockups')) once(`mock-${r.regenerations}`, () => act('starting the drawing', () => start('mockups')));
     const kit = C.data.kit;
     if ((C.route === 'design' || C.route === 'brief') && kit && kit.validated && kit.waiting && !kit.running && !kit.noClaude) once(`kit-${r.regenerations}`, generateKit);
@@ -288,7 +291,7 @@
     if (!r || DEMO) return '';
     const k = C.data.kit;
     if (id === 'scope') {
-      if (running('prepare') && !r.scope.trim()) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> proposing</span>';
+      if (C.busy === PROPOSING && !r.scope.trim()) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> proposing</span>';
       if (C.data.scopeStale) return '<span class="cr-chip warn" title="The decisions moved since the scope was proposed">to redo</span>';
     }
     if (id === 'design' && k) {
@@ -303,7 +306,7 @@
   function jobPanel() {
     const j = job();
     if (!j) return '';
-    const title = { found: 'Founding the factory', connect: 'Connecting the repository', prepare: 'Preparing the design system and a first scope', mockups: 'Drawing the mock-ups', componentize: 'Making the micro-frontends', initialize: 'Initializing the factory' }[j.work] || j.work;
+    const title = { found: 'Founding the factory', connect: 'Connecting the repository', prepare: 'Preparing the design system', mockups: 'Drawing the mock-ups', componentize: 'Making the micro-frontends', initialize: 'Initializing the factory' }[j.work] || j.work;
     const state = j.state === 'running' ? '<span class="cr-spin" aria-hidden="true"></span> under way' : j.state === 'done' ? '<span class="tag ok">done</span>' : '<span class="tag bad">stopped</span>';
     // Every step but the last one of a still-running job is done — the
     // last is whatever is under way right now, so it stays plain.
@@ -584,7 +587,7 @@
       <div class="cr-actions">${button}</div>
       ${shown ? '' : `<p class="muted">Left for another part of the page — the design system's material below — for ${AUTO_SPLIT_MS / 1000} seconds, the description is split on its own.</p>`}
       ${shown ? parts.map((q, i) => `<label class="cr-field cr-brief-q"><b>${i + 1} · ${esc(q.title)}</b><span class="muted">${esc(q.hint)}</span><textarea data-cr="brief-${q.id}" rows="4">${esc(answers[q.id])}</textarea></label>`).join('') : ''}
-      <p class="muted">Below, the design system's material — the logo, the moodboard, a design brief. On <b>Continue</b>, the tokens and the kit draw from it, and a first scope from the brief, while you answer the grilling; you find them generated at their steps.</p>`;
+      <p class="muted">Below, the design system's material — the logo, the moodboard, a design brief. On <b>Continue</b>, the tokens and the kit draw from it while you answer the grilling; you find them generated at their step. The scope waits for the grilling's decisions.</p>`;
   }
   function briefFoot() {
     const j = job();
@@ -649,8 +652,8 @@
     }).join('');
     const j = job();
     return `<p class="muted">The AI grills the brief round after round: every decision it can ask now, each with its recommended answer. Answer, retouch, or delete a question — or take the recommendations as they are.</p>
-      ${j && j.work === 'prepare' && j.state === 'running' ? '<div class="callout cr-aside"><span class="cr-spin" aria-hidden="true"></span> Meanwhile: the design system\'s tokens, the kit and a first scope draw in the background.</div>' : ''}
-      ${j && j.work === 'prepare' && j.state === 'failed' ? `<div class="callout cr-aside">The preparation stopped: ${esc(j.why)} — the scope and the design system wait at their steps.</div>` : ''}
+      ${j && j.work === 'prepare' && j.state === 'running' ? '<div class="callout cr-aside"><span class="cr-spin" aria-hidden="true"></span> Meanwhile: the design system\'s tokens and the kit draw in the background.</div>' : ''}
+      ${j && j.work === 'prepare' && j.state === 'failed' ? `<div class="callout cr-aside">The preparation stopped: ${esc(j.why)} — the design system waits at its step.</div>` : ''}
       ${list || (C.busy ? '' : '<p class="muted">No question yet.</p>')}
       ${r.grilled ? '<div class="callout">The AI has no more questions.</div>' : ''}
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="brief">← Back</button>
@@ -663,7 +666,7 @@
   function stepScope(r) {
     const stale = C.data.scopeStale && !C.busy;
     return `<p class="muted">The smallest proof of concept that shows the application's value, as the AI reads the brief and the decisions. Edit it freely.</p>
-      ${running('prepare') && !r.scope.trim() ? '<div class="callout"><span class="cr-spin" aria-hidden="true"></span> A first scope is being proposed from the brief.</div>' : ''}
+      ${C.busy === PROPOSING && !r.scope.trim() ? '<div class="callout"><span class="cr-spin" aria-hidden="true"></span> The scope is being proposed from the brief and the grilling\'s decisions.</div>' : ''}
       ${stale ? `<div class="callout">The decisions moved since this scope was proposed${r.scope_edited ? ' — and you retouched it: <b>Propose again</b> replaces your edits with a scope read from the decisions as they are now' : ': it is proposed again from them'}.</div>` : ''}
       <label class="cr-field">Scope of the proof of concept<textarea data-cr="scope" class="mono" rows="22">${esc(r.scope)}</textarea></label>
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="grilling">← Back</button>
@@ -1071,7 +1074,7 @@
       const edited = page.querySelector('[data-cr="scope"]').value !== record().scope;
       if (edited && C.confirm !== 'scope') { C.confirm = 'scope'; draw(); return; }
       C.confirm = '';
-      act('the AI proposes the scope', () => post('scope'));
+      act(PROPOSING, () => post('scope'));
       return;
     }
     if (t.matches('[data-cr-full]')) { toggleFull(t.closest('[data-cr-fullable]')); return; }

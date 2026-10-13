@@ -99,8 +99,7 @@ pub enum Work {
     /// An existing repository connected as a factory.
     Connect,
     /// What the brief alone allows, drawn while the human answers the
-    /// grilling: the design system's tokens (the kit follows), a first
-    /// scope.
+    /// grilling: the design system's tokens (the kit follows).
     Prepare,
     /// The proof of concept drawn as mock-ups.
     Mockups,
@@ -359,10 +358,10 @@ impl CreationDesk {
     /// What the brief allows before the grilling is over, as one job while
     /// the human answers: the design system's tokens drawn from the
     /// moodboard, the logo and the design brief when there is material and
-    /// no tokens yet — the ticked kit components queue behind them — then a
-    /// first scope, proposed from the brief and the decisions taken so far
-    /// unless the human wrote one already. Nothing here closes a gate: the
-    /// scope is proposed again once the grilling moved the decisions.
+    /// no tokens yet — the ticked kit components queue behind them. The
+    /// scope is not drawn here: it waits for the grilling's decisions
+    /// (`propose_scope`, on entering the scope step). Nothing here closes a
+    /// gate.
     ///
     /// # Errors
     ///
@@ -372,11 +371,11 @@ impl CreationDesk {
         record.may_enter(Step::Grilling, self.facts().await)?;
         self.begin(Work::Prepare)?;
         let desk = self.clone();
-        self.spawn(async move { desk.prepared(record).await });
+        self.spawn(async move { desk.prepared().await });
         Ok(())
     }
 
-    async fn prepared(&self, record: Creation) -> Result<(), String> {
+    async fn prepared(&self) -> Result<(), String> {
         if let Some(kit) = &self.setup.kit {
             let reply = kit.reply().await?;
             let design = &reply.design.design;
@@ -404,30 +403,6 @@ impl CreationDesk {
                 ));
             }
         }
-        if record.scope_edited || !record.scope.trim().is_empty() && !record.scope_stale() {
-            self.step("the scope is written already");
-            return Ok(());
-        }
-        if self.setup.oneshot.is_none() {
-            self.step(NO_CLAUDE);
-            return Ok(());
-        }
-        self.step("proposing a first scope from the brief");
-        let scope = unfenced(&self.ask(scope_prompt(&record)).await?);
-        let _held = self.record.lock().await;
-        let mut kept = self.existing()?;
-        if kept.scope_edited {
-            self.step("the human wrote the scope meanwhile: the proposal is dropped");
-            return Ok(());
-        }
-        kept.propose(scope);
-        // The fingerprint is the brief's as it was when the job started, so
-        // decisions taken meanwhile show the scope as stale, as they should.
-        kept.scope_from = record.fingerprint();
-        self.keep(&kept)?;
-        self.step(
-            "a first scope is proposed; it is proposed again once the grilling moved the decisions",
-        );
         Ok(())
     }
 
@@ -1775,7 +1750,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preparing_proposes_a_first_scope_and_says_what_the_design_system_waits_for() {
+    async fn preparing_leaves_the_scope_to_the_grilling_and_says_what_the_design_system_waits_for()
+    {
         let dir = product("prepare");
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
         let kit = KitDesk::new(kit_desk::Setup {
@@ -1825,54 +1801,12 @@ mod tests {
             job.steps
         );
         let prepared = desk.record().expect("read").expect("a record");
-        assert_eq!(prepared.scope, "## Goal\nfirst");
-        assert!(!prepared.scope_stale() && !prepared.scope_edited);
+        assert!(
+            prepared.scope.is_empty() && prepared.scope_from.is_empty(),
+            "the scope waits for the grilling: {:?}",
+            prepared.scope
+        );
         assert_eq!(prepared.step, Step::Brief, "a preparation moves no step");
-
-        // Written already and not stale: proposed again by nothing.
-        desk.prepare().await.expect("started");
-        let job = settled(&desk).await;
-        assert!(
-            job.steps
-                .iter()
-                .any(|s| s == "the scope is written already"),
-            "{:?}",
-            job.steps
-        );
-
-        // A decision taken: the scope is stale, and a preparation proposes again.
-        desk.save(
-            Edit {
-                questions: None,
-                brief: Some("a ledger for two".to_string()),
-                ..Edit::default()
-            },
-            None,
-        )
-        .await
-        .expect("saved");
-        assert!(
-            desk.record()
-                .expect("read")
-                .expect("a record")
-                .scope_stale()
-        );
-        desk.prepare().await.expect("started");
-        let job = settled(&desk).await;
-        assert!(
-            job.steps
-                .iter()
-                .any(|s| s.starts_with("a first scope is proposed")),
-            "{:?}",
-            job.steps
-        );
-        assert!(
-            !desk
-                .record()
-                .expect("read")
-                .expect("a record")
-                .scope_stale()
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1890,14 +1824,11 @@ mod tests {
         assert_eq!(CreationDesk::boards_of(""), "mockup--integration--");
     }
 
-    /// Claude for the preparation: the scope, the tokens, a component.
+    /// Claude for the preparation: the tokens, a component.
     struct Prepared;
 
     impl Oneshot for Prepared {
         fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
-            if prompt.contains("You scope the proof of concept") {
-                return Ok("## Goal\nfirst".to_string());
-            }
             if prompt.contains("design tokens") {
                 return Ok(harness_architecture::kit::default_tokens_json());
             }
