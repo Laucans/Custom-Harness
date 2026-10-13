@@ -293,7 +293,8 @@
   }
 
   // What draws in the background, on the crumb of the step it is for: the
-  // scope proposed, the tokens and the kit generating, a scope to redo.
+  // scope proposed, the tokens and the kit generating, a scope to redo, the
+  // mock-ups drawing, the micro-frontends made for the review.
   function chip(id) {
     const r = record();
     if (!r || DEMO) return '';
@@ -304,10 +305,11 @@
     }
     if (id === 'mockups') {
       if (running('mockups')) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> drawing</span>';
-      if (running('componentize')) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> micro-frontends</span>';
       if (C.data.mockupStale) return '<span class="cr-chip warn" title="The scope moved since the mock-ups were drawn: draw them again">to redraw</span>';
       if (r.mocked && indexOf(C.route) < indexOf('mockups')) return '<span class="cr-chip">ready</span>';
     }
+    // The micro-frontends and the requirements are the review's: their spinner sits on its crumb.
+    if (id === 'review' && running('componentize')) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> micro-frontends</span>';
     if (id === 'design' && k) {
       if (k.running || (running('prepare') && !k.validated && !k.generated)) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> generating</span>';
       if (k.failed) return `<span class="cr-chip warn">${k.failed} failed</span>`;

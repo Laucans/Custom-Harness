@@ -17,7 +17,8 @@ human works on the design system.
 
 ## To verify in a real creation
 - [ ] Scope → *Continue*: within seconds the mockups crumb shows *drawing*,
-      then *micro-frontends*, then *ready*; the human stays on the design step.
+      then *ready* while the review's crumb shows *micro-frontends*; the human
+      stays on the design step.
 - [ ] Preparation still running at that moment: the drawing starts once it ends.
 - [ ] Mock-ups drawn before the kit is generated: pages pick up the tokens
       once validated (`var(--…)`); note which kit components are missing.
