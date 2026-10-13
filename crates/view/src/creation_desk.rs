@@ -17,15 +17,17 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::data_desk::{DataDesk, Issue};
+use crate::domain::annotations::Kind as PinKind;
 use crate::domain::creation::{
-    self, Creation, Edit, Facts, Step, componentize_prompt, grill_prompt, mockups_prompt,
-    not_componentized, parse_round, scope_prompt, unfenced,
+    self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
+    componentize_prompt, grill_prompt, mockups_prompt, not_componentized, parse_requirements,
+    parse_round, requirements_prompt, scope_prompt, unfenced,
 };
 use crate::domain::design::Entry;
 use crate::domain::divergence;
 use crate::domain::note_session::{About, mockup_rules};
 use crate::kit_desk::{JobState, KitDesk};
-use crate::ports::{Foundry, Mockups, Oneshot, Plant};
+use crate::ports::{Foundry, Mockups, NoteStore, Oneshot, Plant};
 use harness_architecture::kit::{ComponentState, DesignState};
 use harness_core::domain::Slug;
 use harness_core::ports::store::factories::{Factories, id_from};
@@ -64,6 +66,9 @@ pub struct Setup {
     pub data: Option<DataDesk>,
     /// The watch the initialization starts.
     pub plant: Option<Arc<dyn Plant>>,
+    /// The pins left on the mock-up: those no backlog issue carries go in
+    /// the roadmap task.
+    pub pins: Option<Arc<dyn NoteStore>>,
 }
 
 /// The design system and its kit, counted.
@@ -92,8 +97,14 @@ pub enum Work {
     Found,
     /// An existing repository connected as a factory.
     Connect,
+    /// What the brief alone allows, drawn while the human answers the
+    /// grilling: the design system's tokens (the kit follows), a first
+    /// scope.
+    Prepare,
     /// The proof of concept drawn as mock-ups.
     Mockups,
+    /// The accepted mock-up made again of micro-frontends.
+    Componentize,
     /// The factory initialized.
     Initialize,
 }
@@ -229,7 +240,13 @@ impl CreationDesk {
     /// What the gates read outside the record: the design system validated,
     /// its kit generated.
     pub async fn facts(&self) -> Facts {
-        self.kit().await.map_or_else(Facts::default, |kit| Facts {
+        Self::facts_of(self.kit().await)
+    }
+
+    /// The same, from a kit status read already.
+    #[must_use]
+    pub fn facts_of(kit: Option<KitStatus>) -> Facts {
+        kit.map_or_else(Facts::default, |kit| Facts {
             design_validated: kit.validated,
             kit_waiting: kit.waiting,
         })
@@ -287,7 +304,104 @@ impl CreationDesk {
         let scope = unfenced(&self.ask(scope_prompt(&asked)).await?);
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
-        record.scope = scope;
+        record.propose(scope);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// What the brief allows before the grilling is over, as one job while
+    /// the human answers: the design system's tokens drawn from the
+    /// moodboard, the logo and the design brief when there is material and
+    /// no tokens yet — the ticked kit components queue behind them — then a
+    /// first scope, proposed from the brief and the decisions taken so far
+    /// unless the human wrote one already. Nothing here closes a gate: the
+    /// scope is proposed again once the grilling moved the decisions.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no brief, or another job under way.
+    pub async fn prepare(&self) -> Result<(), String> {
+        let record = self.existing()?;
+        record.may_enter(Step::Grilling, self.facts().await)?;
+        self.begin(Work::Prepare)?;
+        let desk = self.clone();
+        self.spawn(async move { desk.prepared(record).await });
+        Ok(())
+    }
+
+    async fn prepared(&self, record: Creation) -> Result<(), String> {
+        if let Some(kit) = &self.setup.kit {
+            let reply = kit.reply().await?;
+            let design = &reply.design.design;
+            let material = !design.moodboard.is_empty()
+                || !design.logo.is_empty()
+                || !design.brief.trim().is_empty();
+            let drawn = design.state != DesignState::None || design.candidate;
+            if reply.no_claude {
+                self.step("no Claude at hand: the design system waits for its tokens");
+            } else if !material {
+                self.step("no moodboard, logo or design brief yet: the tokens wait for them");
+            } else if drawn {
+                self.step("the design system has its tokens already");
+                let queued = kit.start_generation(Vec::new()).await.unwrap_or(0);
+                if queued > 0 {
+                    self.step(&format!("{queued} kit component(s) queued"));
+                }
+            } else {
+                self.step("drawing the design system's tokens from the moodboard, the logo and the design brief");
+                let brief = design.brief.clone();
+                kit.generate(brief).await?;
+                let queued = kit.start_generation(Vec::new()).await.unwrap_or(0);
+                self.step(&format!(
+                    "the tokens are drawn; {queued} kit component(s) queued — look at the sheet, retouch, validate"
+                ));
+            }
+        }
+        if record.scope_edited || !record.scope.trim().is_empty() && !record.scope_stale() {
+            self.step("the scope is written already");
+            return Ok(());
+        }
+        if self.setup.oneshot.is_none() {
+            self.step(NO_CLAUDE);
+            return Ok(());
+        }
+        self.step("proposing a first scope from the brief");
+        let scope = unfenced(&self.ask(scope_prompt(&record)).await?);
+        let _held = self.record.lock().await;
+        let mut kept = self.existing()?;
+        if kept.scope_edited {
+            self.step("the human wrote the scope meanwhile: the proposal is dropped");
+            return Ok(());
+        }
+        kept.propose(scope);
+        // The fingerprint is the brief's as it was when the job started, so
+        // decisions taken meanwhile show the scope as stale, as they should.
+        kept.scope_from = record.fingerprint();
+        self.keep(&kept)?;
+        self.step(
+            "a first scope is proposed; it is proposed again once the grilling moved the decisions",
+        );
+        Ok(())
+    }
+
+    /// The requirements, read by the AI off the scope and the mock-up as it
+    /// stands — the human's own kept.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no mock-up drawn, no Claude, or an answer with no
+    /// requirements.
+    pub async fn read_requirements(&self) -> Result<Creation, String> {
+        let asked = self.existing()?;
+        asked.may_enter(Step::Review, self.facts().await)?;
+        let ctx = self.context(&asked).await;
+        let pages: Vec<String> = ctx.pages.iter().map(|p| p.path.clone()).collect();
+        let components: Vec<String> = ctx.components.iter().map(|c| c.name.clone()).collect();
+        let answer = self.ask(requirements_prompt(&asked, &ctx)).await?;
+        let read = parse_requirements(&answer, &pages, &components)?;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.add_requirements(read);
         self.keep(&record)?;
         Ok(record)
     }
@@ -584,106 +698,188 @@ impl CreationDesk {
     /// No mock-up yet, or another job under way.
     pub async fn accept(&self) -> Result<Creation, String> {
         let facts = self.facts().await;
-        let record = {
-            let _held = self.record.lock().await;
-            let mut record = self.existing()?;
-            record.accepted = true;
-            record.go(Step::Initialize, facts)?;
-            self.keep(&record)?;
-            record
-        };
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.accepted = true;
+        record.go(Step::Initialize, facts)?;
+        // The job first: an acceptance nothing starts is not kept.
         self.begin(Work::Initialize)?;
+        self.keep(&record)?;
         let desk = self.clone();
         let kept = record.clone();
         self.spawn(async move { desk.initialized(kept).await });
         Ok(record)
     }
 
-    async fn initialized(&self, record: Creation) -> Result<(), String> {
+    /// The mock-up made again of micro-frontends, as its own job — before
+    /// the review, so the requirements can be tied to them. Done already:
+    /// nothing runs.
+    ///
+    /// # Errors
+    ///
+    /// No mock-up drawn, nothing can write, or another job under way.
+    pub async fn componentize_now(&self) -> Result<(), String> {
+        let record = self.existing()?;
+        record.may_enter(Step::Review, self.facts().await)?;
+        if record.componentized.is_some() {
+            return Ok(());
+        }
+        let oneshot = self.setup.oneshot.clone().ok_or(NO_CLAUDE)?;
+        let mockups = self.setup.mockups.clone().ok_or(NO_PRODUCT)?;
+        self.begin(Work::Componentize)?;
+        let desk = self.clone();
+        self.spawn(async move { desk.componentize(&record, oneshot, mockups).await });
+        Ok(())
+    }
+
+    /// The boards of `branch`'s mock-up, as the easel names them.
+    fn boards_of(branch: &str) -> String {
+        let mut plain = String::new();
+        for c in branch.chars() {
+            if c.is_ascii_alphanumeric() {
+                plain.push(c.to_ascii_lowercase());
+            } else if !plain.ends_with('-') {
+                plain.push('-');
+            }
+        }
+        let plain = plain.trim_matches('-');
+        format!(
+            "mockup--{}--",
+            if plain.is_empty() {
+                "integration"
+            } else {
+                plain
+            }
+        )
+    }
+
+    /// What surrounds the record: the mock-up's pages and micro-frontends,
+    /// the pins no backlog issue carries, the design system. Read as it
+    /// stands; what cannot be read is left empty.
+    async fn context(&self, record: &Creation) -> Context {
         let branch = self.setup.integration_branch.clone();
+        let mut ctx = Context::default();
+        if let Some(mockups) = self.setup.mockups.clone() {
+            let at = branch.clone();
+            if let Ok(Ok(state)) = tokio::task::spawn_blocking(move || mockups.state(&at)).await {
+                ctx.pages = state
+                    .pages
+                    .iter()
+                    .map(|p| PageRef {
+                        title: p.title.clone(),
+                        path: p.path.clone(),
+                        objective: p.objective.clone(),
+                    })
+                    .collect();
+                ctx.components = state
+                    .components
+                    .iter()
+                    .map(|c| ComponentRef {
+                        name: c.name.clone(),
+                        system: c.system.clone(),
+                        description: c.description.clone(),
+                        needs: c.needs.clone(),
+                        actions: c.actions.clone(),
+                    })
+                    .collect();
+            }
+        }
+        if let Some(pins) = self.setup.pins.clone() {
+            let prefix = Self::boards_of(&branch);
+            let read = tokio::task::spawn_blocking(move || {
+                let mut left = Vec::new();
+                for board in pins
+                    .boards()?
+                    .into_iter()
+                    .filter(|b| b.starts_with(&prefix))
+                {
+                    for kept in pins.notes(&board)? {
+                        let note = kept.note;
+                        let carried = kept.deleted_at.is_some()
+                            || !note.issue.is_empty()
+                            || note.text.trim().is_empty()
+                            || matches!(note.kind, PinKind::Note | PinKind::Brainstorm);
+                        if carried {
+                            continue;
+                        }
+                        left.push(PinRef {
+                            kind: note.kind.name().to_string(),
+                            board: board.clone(),
+                            target: note.target.clone(),
+                            text: note.text.clone(),
+                        });
+                    }
+                }
+                Ok::<_, String>(left)
+            })
+            .await;
+            if let Ok(Ok(left)) = read {
+                ctx.pins = left;
+            }
+        }
+        if let Some(kit) = &self.setup.kit
+            && let Ok(reply) = kit.reply().await
+        {
+            ctx.design = DesignRef {
+                validated_at: reply.design.design.validated_at.clone(),
+                tokens: reply.design.tokens.len(),
+                components: reply
+                    .catalog
+                    .iter()
+                    .filter(|e| e.state == ComponentState::Generated)
+                    .map(|e| e.name.clone())
+                    .collect(),
+            };
+        }
+        let _ = record;
+        ctx
+    }
+
+    async fn initialized(&self, record: Creation) -> Result<(), String> {
         if record.componentized.is_none()
             && let (Some(oneshot), Some(mockups)) =
                 (self.setup.oneshot.clone(), self.setup.mockups.clone())
         {
             self.componentize(&record, oneshot, mockups).await?;
         }
+        let record = self.existing()?;
+        let ctx = self.context(&record).await;
         // The mock-up is published first: `carry` always reads the
         // integration branch's latest head before splicing the design
         // system onto it, so it lands on top of the mock-up's commit — the
         // other way around, the mock-up's own push would meet a branch the
         // carry already moved, and be refused as not a fast-forward.
-        let pages = match self.setup.mockups.clone() {
-            Some(mockups) => {
-                self.step("publishing the mock-up on the integration branch");
-                let message = format!("mock: the proof of concept of {}", record.name);
-                let at = branch.clone();
-                let (pages, said) = tokio::task::spawn_blocking(move || {
-                    let state = mockups.state(&at)?;
-                    let pages: Vec<(String, String)> = state
-                        .pages
+        self.publish_mockup(&record, &ctx).await?;
+        self.publish_design(&record).await?;
+        let record = self.existing()?;
+        if record.issue.is_empty() {
+            let data = self
+                .setup
+                .data
+                .clone()
+                .ok_or("this factory's board cannot be reached: no roadmap task")?;
+            self.step("opening the roadmap task");
+            let (title, body) = creation::roadmap_issue(&record, &ctx);
+            let url = data
+                .open_issue(Issue {
+                    title,
+                    body,
+                    labels: divergence::ISSUE_LABELS
                         .iter()
-                        .map(|p| (p.title.clone(), p.path.clone()))
-                        .collect();
-                    if !state.edited {
-                        // Saved from the easel already: the code stage reads a `mockup/*` branch.
-                        let said = if state.saved.is_empty() {
-                            "nothing new to publish".to_string()
-                        } else {
-                            format!("saved on {} from the easel", state.saved)
-                        };
-                        return Ok::<_, String>((pages, said));
-                    }
-                    let said = match mockups.publish(&at, &message) {
-                        Ok(commit) => {
-                            format!("published ({})", commit.get(..10).unwrap_or(&commit))
-                        }
-                        // A protected branch: the code stage reads a `mockup/*` branch too.
-                        Err(why) => mockups
-                            .save(&at, "proof-of-concept")
-                            .map(|saved| format!("kept on {saved} ({why})"))?,
-                    };
-                    Ok((pages, said))
+                        .map(|l| (*l).to_string())
+                        .collect(),
                 })
-                .await
-                .map_err(|e| format!("the step did not finish: {e}"))??;
-                self.step(&format!("the mock-up: {said}"));
-                pages
-            }
-            None => Vec::new(),
-        };
-        if let Some(kit) = &self.setup.kit {
-            self.step("publishing the design system");
-            match kit
-                .publish(format!("design: the design system of {}", record.name))
-                .await
-            {
-                Ok(published) => self.step(&creation::design_published(&published.refused)),
-                Err(why) => self.step(&format!("the design system stays as it is: {why}")),
-            }
-        }
-        let data = self
-            .setup
-            .data
-            .clone()
-            .ok_or("this factory's board cannot be reached: no roadmap task")?;
-        self.step("opening the roadmap task");
-        let (title, body) = creation::roadmap_issue(&record, &pages);
-        let url = data
-            .open_issue(Issue {
-                title,
-                body,
-                labels: divergence::ISSUE_LABELS
-                    .iter()
-                    .map(|l| (*l).to_string())
-                    .collect(),
-            })
-            .await?;
-        self.step(&format!("the roadmap task: {url}"));
-        {
+                .await?;
+            self.step(&format!("the roadmap task: {url}"));
             let _held = self.record.lock().await;
             let mut kept = self.existing()?;
             kept.issue = url;
             self.keep(&kept)?;
+        } else {
+            self.step(&format!(
+                "the roadmap task is open already: {}",
+                record.issue
+            ));
         }
         if let Some(plant) = self.setup.plant.clone() {
             self.step("starting the watch");
@@ -704,6 +900,92 @@ impl CreationDesk {
             }
         }
         Ok(())
+    }
+
+    /// The record written in the repository beside the mock-up, then the
+    /// mock-up published on the integration branch — or kept on a
+    /// `mockup/*` branch when it refuses — and where it went kept.
+    async fn publish_mockup(&self, record: &Creation, ctx: &Context) -> Result<(), String> {
+        let Some(mockups) = self.setup.mockups.clone() else {
+            return Ok(());
+        };
+        let branch = self.setup.integration_branch.clone();
+        self.step(&format!(
+            "writing the record of the creation (mock/{})",
+            creation::RECORD_JSON
+        ));
+        let json = creation::record_json(record, ctx)?;
+        let (_, md) = creation::roadmap_issue(record, ctx);
+        let at = branch.clone();
+        let wrote = mockups.clone();
+        tokio::task::spawn_blocking(move || {
+            wrote.write(&at, creation::RECORD_JSON, json.as_bytes())?;
+            wrote.write(&at, creation::RECORD_MD, md.as_bytes())
+        })
+        .await
+        .map_err(|e| format!("the step did not finish: {e}"))??;
+        self.step("publishing the mock-up on the integration branch");
+        let message = format!("mock: the proof of concept of {}", record.name);
+        let (place, said) = tokio::task::spawn_blocking(move || {
+            let state = mockups.state(&branch)?;
+            if !state.edited {
+                // Saved from the easel already: the code stage reads a `mockup/*` branch.
+                // Nothing saved either: the branch carries it as committed.
+                return Ok::<_, String>(if state.saved.is_empty() {
+                    (branch, "nothing new to publish".to_string())
+                } else {
+                    let said = format!("saved on {} from the easel", state.saved);
+                    (state.saved, said)
+                });
+            }
+            Ok(match mockups.publish(&branch, &message) {
+                Ok(commit) => {
+                    let short = commit.get(..10).unwrap_or(&commit);
+                    (format!("{branch}@{short}"), format!("published ({short})"))
+                }
+                // A protected branch: the code stage reads a `mockup/*` branch too.
+                Err(why) => {
+                    let saved = mockups.save(&branch, "proof-of-concept")?;
+                    let said = format!("kept on {saved} ({why})");
+                    (saved, said)
+                }
+            })
+        })
+        .await
+        .map_err(|e| format!("the step did not finish: {e}"))??;
+        self.step(&format!("the mock-up: {said}"));
+        let _held = self.record.lock().await;
+        let mut kept = self.existing()?;
+        kept.mockup_at = place;
+        self.keep(&kept)
+    }
+
+    /// The design system published on its branch and carried onto the
+    /// integration branch; its commit and a refused carry kept.
+    async fn publish_design(&self, record: &Creation) -> Result<(), String> {
+        let Some(kit) = &self.setup.kit else {
+            return Ok(());
+        };
+        self.step("publishing the design system");
+        let (at, refused) = match kit
+            .publish(format!("design: the design system of {}", record.name))
+            .await
+        {
+            Ok(published) => {
+                self.step(&creation::design_published(&published.refused));
+                let short = published.commit.get(..10).unwrap_or(&published.commit);
+                (short.to_string(), published.refused)
+            }
+            Err(why) => {
+                self.step(&format!("the design system stays as it is: {why}"));
+                (String::new(), String::new())
+            }
+        };
+        let _held = self.record.lock().await;
+        let mut kept = self.existing()?;
+        kept.design_at = at;
+        kept.design_refused = refused;
+        self.keep(&kept)
     }
 
     /// Makes the accepted mock-up again of micro-frontends, in the
@@ -939,8 +1221,11 @@ mod tests {
     }
 
     impl Oneshot for Drawer {
-        fn ask(&self, _: &str, _: &str) -> Result<String, String> {
-            Ok(String::new())
+        fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
+            if prompt.contains("read the requirements") {
+                return Ok(r#"{"requirements":[{"title":"See the ledger","body":"the lines","pages":["pages/home.html"],"components":["Home","Ghost"]}]}"#.to_string());
+            }
+            Ok("## Goal\nfirst".to_string())
         }
 
         fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
@@ -979,6 +1264,71 @@ mod tests {
                 r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home"}],"components":[]}"#,
             )?;
             Ok("one page: home".to_string())
+        }
+    }
+
+    /// Pins on the mock-up's boards: one request left, one on the backlog
+    /// already, one deleted.
+    struct Pins;
+
+    impl NoteStore for Pins {
+        fn boards(&self) -> Result<Vec<String>, String> {
+            Ok(vec![
+                "mockup--main-agent--home".to_string(),
+                "mockup--other-branch--home".to_string(),
+                "data-model".to_string(),
+            ])
+        }
+        fn notes(&self, board: &str) -> Result<Vec<crate::ports::KeptNote>, String> {
+            use crate::domain::annotations::Note;
+            // Another branch's mock-up and the data model carry pins too:
+            // none of them belongs to this factory's mock-up.
+            if board == "mockup--other-branch--home" || board == "data-model" {
+                return Ok(vec![crate::ports::KeptNote {
+                    note: Note {
+                        id: "foreign".to_string(),
+                        text: "another board's request".to_string(),
+                        kind: PinKind::Request,
+                        ..Note::default()
+                    },
+                    deleted_at: None,
+                }]);
+            }
+            if board != "mockup--main-agent--home" {
+                return Ok(Vec::new());
+            }
+            let pin = |kind: PinKind, text: &str, issue: &str, gone: bool| crate::ports::KeptNote {
+                note: Note {
+                    id: text.to_string(),
+                    target: "p1".to_string(),
+                    text: text.to_string(),
+                    kind,
+                    issue: issue.to_string(),
+                    ..Note::default()
+                },
+                deleted_at: gone.then(|| "now".to_string()),
+            };
+            Ok(vec![
+                pin(PinKind::Request, "the total above the lines", "", false),
+                pin(PinKind::Request, "on the backlog", "https://x/1", false),
+                pin(PinKind::Request, "deleted", "", true),
+                pin(PinKind::Note, "a note", "", false),
+            ])
+        }
+        fn put(&self, _: &str, _: &crate::domain::annotations::Note) -> Result<(), String> {
+            Ok(())
+        }
+        fn mark_deleted(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
+        fn destroy(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn conversation(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn save_conversation(&self, _: &str, _: &str, _: &str, _: usize) -> Result<(), String> {
+            Ok(())
         }
     }
 
@@ -1093,9 +1443,12 @@ mod tests {
             kit: Some(kit),
             data: None,
             plant: None,
+            pins: Some(Arc::new(Pins)),
         });
         assert!(desk.facts().await.design_validated);
         assert!(desk.accept().await.is_err(), "nothing drawn yet");
+        assert!(desk.componentize_now().await.is_err(), "nothing drawn yet");
+        assert!(desk.job().is_none(), "a refused acceptance starts nothing");
 
         desk.draw_mockups().await.expect("started");
         let job = settled(&desk).await;
@@ -1110,12 +1463,15 @@ mod tests {
         assert_eq!(drawn.mocked.as_deref(), Some("one page: home"));
         assert_eq!(drawn.step, Step::Review);
 
-        let accepted = desk.accept().await.expect("accepted");
-        assert!(accepted.accepted);
-        assert_eq!(accepted.step, Step::Initialize);
+        // The micro-frontends before the review, so the requirements tie to them.
+        desk.componentize_now().await.expect("started");
         let job = settled(&desk).await;
-        assert_eq!((job.work, job.state), (Work::Initialize, State::Failed));
-        assert!(job.why.contains("board"), "{}", job.why);
+        assert_eq!(
+            (job.work, job.state),
+            (Work::Componentize, State::Done),
+            "{}",
+            job.why
+        );
         assert!(
             job.steps
                 .iter()
@@ -1131,6 +1487,69 @@ mod tests {
                 .as_deref(),
             Some("one micro-frontend: Home")
         );
+        desk.componentize_now()
+            .await
+            .expect("done already: nothing runs");
+        let read = desk.read_requirements().await.expect("read");
+        assert_eq!(read.requirements.len(), 1);
+        assert_eq!(read.requirements[0].title, "See the ledger");
+        assert_eq!(
+            read.requirements[0].pages,
+            vec!["pages/home.html".to_string()]
+        );
+        assert_eq!(
+            read.requirements[0].components,
+            vec!["Home".to_string()],
+            "a micro-frontend the mock-up has not is dropped"
+        );
+
+        initialized_up_to_the_board(&desk, &dir).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The second half of the flow above: accepted, the record is kept in
+    /// the repository, the mock-up and the design system published, and
+    /// the initialization stops at the board it has not.
+    async fn initialized_up_to_the_board(desk: &CreationDesk, dir: &Path) {
+        let accepted = desk.accept().await.expect("accepted");
+        assert!(accepted.accepted);
+        assert_eq!(accepted.step, Step::Initialize);
+        let job = settled(desk).await;
+        assert_eq!((job.work, job.state), (Work::Initialize, State::Failed));
+        assert!(job.why.contains("board"), "{}", job.why);
+        assert!(
+            !job.steps
+                .iter()
+                .any(|s| s == "every page is made of micro-frontends"),
+            "made already, not made again: {:?}",
+            job.steps
+        );
+        // The record is in the repository beside the mock-up, with its context.
+        let kept = std::fs::read_to_string(dir.join("main_agent/mock/proof-of-concept.json"))
+            .expect("the record is written");
+        let kept: serde_json::Value = serde_json::from_str(&kept).expect("json");
+        assert_eq!(kept["requirements"][0]["title"], "See the ledger");
+        assert_eq!(kept["components"][0]["name"], "Home");
+        assert_eq!(kept["pins"][0]["text"], "the total above the lines");
+        assert_eq!(
+            kept["pins"].as_array().map(Vec::len),
+            Some(1),
+            "{}",
+            kept["pins"]
+        );
+        assert_eq!(kept["decisions"][0]["title"], "who");
+        assert_eq!(
+            kept["design"]["components"].as_array().map(Vec::len),
+            Some(0),
+            "no component is generated: {}",
+            kept["design"]
+        );
+        assert!(dir.join("main_agent/mock/proof-of-concept.md").is_file());
+        let after = desk.record().expect("read").expect("a record");
+        assert!(
+            !after.mockup_at.is_empty(),
+            "where the mock-up went is kept"
+        );
         assert!(
             job.steps
                 .iter()
@@ -1145,7 +1564,6 @@ mod tests {
             desk.finish().await,
             Err("initialize the factory first".to_string())
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1162,6 +1580,7 @@ mod tests {
             kit: None,
             data: None,
             plant: None,
+            pins: None,
         });
         assert!(!desk.facts().await.design_validated);
         assert_eq!(desk.record(), Ok(None));
@@ -1170,6 +1589,321 @@ mod tests {
         assert_eq!(desk.draw_mockups().await, none);
         assert!(desk.job().is_none());
         assert!(desk.owners().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn preparing_proposes_a_first_scope_and_says_what_the_design_system_waits_for() {
+        let dir = product("prepare");
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let kit = KitDesk::new(kit_desk::Setup {
+            mockups: Arc::clone(&mockups),
+            oneshot: None,
+            model: "m".into(),
+            sessions: 1,
+            pins: Arc::new(Shelf::default()),
+            integration_branch: "main_agent".into(),
+        });
+        let book = Arc::new(Book::default());
+        let record = Creation {
+            kind: Some(Kind::Vertical),
+            brief: "a ledger".to_string(),
+            step: Step::Brief,
+            ..Creation::new("alpha", "me/alpha")
+        };
+        book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: Some(Arc::new(Drawer { lazy: false })),
+            model: "m".to_string(),
+            mockups: Some(mockups),
+            kit: Some(kit),
+            data: None,
+            plant: None,
+            pins: None,
+        });
+        desk.prepare().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(
+            (job.work, job.state),
+            (Work::Prepare, State::Done),
+            "{}",
+            job.why
+        );
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.starts_with("no Claude at hand: the design system")),
+            "{:?}",
+            job.steps
+        );
+        let prepared = desk.record().expect("read").expect("a record");
+        assert_eq!(prepared.scope, "## Goal\nfirst");
+        assert!(!prepared.scope_stale() && !prepared.scope_edited);
+        assert_eq!(prepared.step, Step::Brief, "a preparation moves no step");
+
+        // Written already and not stale: proposed again by nothing.
+        desk.prepare().await.expect("started");
+        let job = settled(&desk).await;
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s == "the scope is written already"),
+            "{:?}",
+            job.steps
+        );
+
+        // A decision taken: the scope is stale, and a preparation proposes again.
+        desk.save(
+            Edit {
+                questions: None,
+                brief: Some("a ledger for two".to_string()),
+                ..Edit::default()
+            },
+            None,
+        )
+        .await
+        .expect("saved");
+        assert!(
+            desk.record()
+                .expect("read")
+                .expect("a record")
+                .scope_stale()
+        );
+        desk.prepare().await.expect("started");
+        let job = settled(&desk).await;
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.starts_with("a first scope is proposed")),
+            "{:?}",
+            job.steps
+        );
+        assert!(
+            !desk
+                .record()
+                .expect("read")
+                .expect("a record")
+                .scope_stale()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_boards_of_a_branchs_mock_up_share_a_prefix_named_after_it() {
+        assert_eq!(
+            CreationDesk::boards_of("main_agent"),
+            "mockup--main-agent--"
+        );
+        assert_eq!(
+            CreationDesk::boards_of("feature/Login Form"),
+            "mockup--feature-login-form--"
+        );
+        assert_eq!(CreationDesk::boards_of("--"), "mockup--integration--");
+        assert_eq!(CreationDesk::boards_of(""), "mockup--integration--");
+    }
+
+    /// Claude for the preparation: the scope, the tokens, a component.
+    struct Prepared;
+
+    impl Oneshot for Prepared {
+        fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
+            if prompt.contains("You scope the proof of concept") {
+                return Ok("## Goal\nfirst".to_string());
+            }
+            if prompt.contains("design tokens") {
+                return Ok(harness_architecture::kit::default_tokens_json());
+            }
+            let name = prompt.split('`').nth(1).unwrap_or("X").to_string();
+            Ok(format!("<div class=\"kit-x\">{name}</div>"))
+        }
+    }
+
+    /// A creation at its brief, over a design system as `design` and `kit`
+    /// say, with a Claude at hand: the job a *Continue* on the brief starts.
+    async fn prepared_over(tag: &str, design: &str, kit: &str) -> (CreationDesk, PathBuf, Job) {
+        let dir = product(tag);
+        let write = |path: &str, text: &[u8]| {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().expect("a folder")).expect("folder");
+            std::fs::write(full, text).expect("write");
+        };
+        write("design-system/mock/design/design.json", design.as_bytes());
+        write("design-system/mock/kit/kit.json", kit.as_bytes());
+        write("design-system/mock/design/logo.png", b"png");
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let oneshot: Arc<dyn Oneshot> = Arc::new(Prepared);
+        let book = Arc::new(Book::default());
+        let record = Creation {
+            kind: Some(Kind::Vertical),
+            brief: "a ledger".to_string(),
+            step: Step::Brief,
+            ..Creation::new("alpha", "me/alpha")
+        };
+        book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: Some(Arc::clone(&oneshot)),
+            model: "m".to_string(),
+            mockups: Some(Arc::clone(&mockups)),
+            kit: Some(KitDesk::new(kit_desk::Setup {
+                mockups,
+                oneshot: Some(oneshot),
+                model: "m".into(),
+                sessions: 1,
+                pins: Arc::new(Shelf::default()),
+                integration_branch: "main_agent".into(),
+            })),
+            data: None,
+            plant: None,
+            pins: None,
+        });
+        desk.prepare().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(
+            (job.work, job.state),
+            (Work::Prepare, State::Done),
+            "{}",
+            job.why
+        );
+        // The kit's components generate in the background: let them finish.
+        for _ in 0..200 {
+            if desk
+                .kit()
+                .await
+                .is_some_and(|k| !k.running && k.waiting == 0)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        (desk, dir, job)
+    }
+
+    const NONE: &str = r#"{"version":1,"state":"none"}"#;
+    const ONE_TICKED: &str = r#"{"version":1,"checked":["button"],"components":[]}"#;
+    const NONE_TICKED: &str = r#"{"version":1,"checked":[],"components":[]}"#;
+
+    fn said(job: &Job, what: &str) -> bool {
+        job.steps.iter().any(|s| s.contains(what))
+    }
+
+    #[tokio::test]
+    async fn the_preparation_draws_the_tokens_only_from_some_material_and_only_once() {
+        // Nothing to draw from: the tokens wait, the kit does not start.
+        let (desk, dir, job) = prepared_over("prep-none", NONE, ONE_TICKED).await;
+        assert!(
+            said(&job, "no moodboard, logo or design brief yet"),
+            "{:?}",
+            job.steps
+        );
+        assert!(
+            !said(&job, "drawing the design system's tokens"),
+            "{:?}",
+            job.steps
+        );
+        assert!(
+            desk.kit()
+                .await
+                .is_some_and(|k| !k.validated && k.generated == 0)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+
+        // A design brief alone is material: the tokens are drawn, the ticked
+        // component queues behind them and is generated, from the candidate.
+        let (desk, dir, job) = prepared_over(
+            "prep-brief",
+            r#"{"version":1,"state":"none","brief":"calm and warm"}"#,
+            ONE_TICKED,
+        )
+        .await;
+        assert!(
+            said(&job, "drawing the design system's tokens"),
+            "{:?}",
+            job.steps
+        );
+        assert!(said(&job, "1 kit component(s) queued"), "{:?}", job.steps);
+        assert!(!said(&job, "no moodboard"), "{:?}", job.steps);
+        let kit = desk.kit().await.expect("a kit");
+        assert_eq!((kit.validated, kit.generated, kit.waiting), (false, 1, 0));
+        // What the roadmap will carry of it: the tokens, and the generated components only.
+        let record = desk.record().expect("read").expect("a record");
+        let ctx = desk.context(&record).await;
+        assert!(ctx.design.tokens > 0, "{:?}", ctx.design);
+        assert_eq!(ctx.design.components, vec!["Button".to_string()]);
+        let _ = std::fs::remove_dir_all(dir);
+
+        // A logo alone is material too.
+        let (_, dir, job) = prepared_over(
+            "prep-logo",
+            r#"{"version":1,"state":"none","logo":"logo.png"}"#,
+            ONE_TICKED,
+        )
+        .await;
+        assert!(
+            said(&job, "drawing the design system's tokens"),
+            "{:?}",
+            job.steps
+        );
+        let _ = std::fs::remove_dir_all(dir);
+
+        // A moodboard alone, as well.
+        let (_, dir, job) = prepared_over(
+            "prep-mood",
+            r#"{"version":1,"state":"none","moodboard":["logo.png"]}"#,
+            ONE_TICKED,
+        )
+        .await;
+        assert!(
+            said(&job, "drawing the design system's tokens"),
+            "{:?}",
+            job.steps
+        );
+        let _ = std::fs::remove_dir_all(dir);
+
+        // Tokens there already: never drawn again, the kit queues behind them.
+        let (_, dir, job) = prepared_over(
+            "prep-drawn",
+            r#"{"version":1,"state":"validated","brief":"calm"}"#,
+            ONE_TICKED,
+        )
+        .await;
+        assert!(
+            said(&job, "the design system has its tokens already"),
+            "{:?}",
+            job.steps
+        );
+        assert!(
+            !said(&job, "drawing the design system's tokens"),
+            "{:?}",
+            job.steps
+        );
+        assert!(said(&job, "1 kit component(s) queued"), "{:?}", job.steps);
+        let _ = std::fs::remove_dir_all(dir);
+
+        // A candidate that waits counts as drawn too — and nothing ticked, nothing queued.
+        let (_, dir, job) = prepared_over(
+            "prep-candidate",
+            r#"{"version":1,"state":"none","candidate":true,"brief":"calm"}"#,
+            NONE_TICKED,
+        )
+        .await;
+        assert!(
+            said(&job, "the design system has its tokens already"),
+            "{:?}",
+            job.steps
+        );
+        assert!(!said(&job, "queued"), "{:?}", job.steps);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -1211,6 +1945,7 @@ mod tests {
                 })),
                 data: None,
                 plant: None,
+                pins: None,
             })
         };
         let left = make();
@@ -1271,6 +2006,7 @@ mod tests {
             })),
             data: None,
             plant: None,
+            pins: None,
         });
         let kit = desk.kit().await.expect("a kit");
         assert!(kit.validated);
@@ -1372,6 +2108,7 @@ mod tests {
             kit: Some(kit),
             data: None,
             plant: None,
+            pins: None,
         });
         desk.draw_mockups().await.expect("started");
         // The first page's own line shows up while the session is still
@@ -1503,6 +2240,7 @@ mod tests {
             kit: Some(kit),
             data: None,
             plant: None,
+            pins: None,
         });
         desk.accept().await.expect("accepted");
         let mut seen_new = false;

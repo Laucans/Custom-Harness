@@ -1437,6 +1437,7 @@ fn state_creating(roll: Arc<Roll>, forge: Arc<Forge>, says: &str) -> AppState {
         kit: None,
         data: None,
         plant: None,
+        pins: None,
     });
     AppState {
         factories: Some(roll),
@@ -1685,6 +1686,70 @@ async fn the_page_carries_the_creation_script() {
     let (status, script) = get(state_without_plant(), "/creation.js").await;
     assert_eq!(status, StatusCode::OK);
     assert!(script.contains("HarnessCreation"), "{script}");
+    // The viewport picker the creation page and the mock-up's easel share.
+    assert!(page.contains("/viewport.js"), "{page}");
+    let (status, script) = get(state_without_plant(), "/viewport.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(script.contains("Viewport"), "{script}");
+}
+
+#[tokio::test]
+async fn the_preparation_starts_from_the_brief_and_a_gate_refuses_without_one() {
+    let roll = Arc::new(Roll::default());
+    being_created(
+        &roll,
+        &crate::domain::creation::Creation::new("alpha", "me/alpha"),
+    );
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "## Goal\nfirst");
+    let (status, body) = post(state.clone(), "/api/creation/prepare", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "choose the kind of factory");
+
+    let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
+    record.kind = Some(crate::domain::creation::Kind::Vertical);
+    record.brief = "a ledger".to_string();
+    being_created(&roll, &record);
+    let (status, body) = post(state.clone(), "/api/creation/prepare", "").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let answered: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(answered["job"]["work"], "prepare");
+    // One job at a time: the second is refused while the first runs.
+    let desk = state.creation.clone().expect("a desk");
+    for _ in 0..200 {
+        if desk
+            .job()
+            .is_some_and(|j| j.state != crate::creation_desk::State::Running)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let (status, body) = get(state, "/api/creation").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["job"]["state"], "done", "{body}");
+    assert_eq!(view["record"]["scope"], "## Goal\nfirst");
+    assert_eq!(
+        view["record"]["step"], "kind",
+        "a preparation moves no step"
+    );
+    assert_eq!(view["scopeStale"], false);
+}
+
+#[tokio::test]
+async fn the_micro_frontends_and_the_requirements_wait_for_the_mock_up() {
+    let roll = Arc::new(Roll::default());
+    being_created(
+        &roll,
+        &crate::domain::creation::Creation::new("alpha", "me/alpha"),
+    );
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state.clone(), "/api/creation/componentize", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "choose the kind of factory");
+    let (status, body) = post(state, "/api/creation/requirements", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "choose the kind of factory");
 }
 
 #[tokio::test]

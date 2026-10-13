@@ -651,6 +651,7 @@
       edit: !!p.edit,
       view: p.view,
       mf: p.mf,
+      readOnly: !!p.readOnly,
       // Where the pane stands — its view, the micro-frontend opened — so going back finds it there.
       onPlace: (place) => Object.assign(p, place),
       onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page }),
@@ -3076,8 +3077,9 @@
     if (row) openPane(JSON.parse(row.dataset.openPin));
   });
 
-  // The panes, for the components beside this file (actions.js opens the doctor).
-  window.HarnessPanes = { open: (p) => openPane(p) };
+  // The panes, for the components beside this file (actions.js opens the doctor;
+  // the creation page mounts the design system's easel in its own step).
+  window.HarnessPanes = { open: (p) => openPane(p), mount: (kind, el, p) => (CANVASES[kind] ? CANVASES[kind](el, p) : null) };
 
   // A page left with a pin's session open still keeps its turns.
   window.addEventListener('pagehide', () => { if (S.term && S.term.close) S.term.close(); if (S.talk && S.talk.close) S.talk.close(); });

@@ -214,6 +214,7 @@ const EDIT_JS: &str = include_str!("../../static/edit.js");
 const DESIGN_JS: &str = include_str!("../../static/design.js");
 const KIT_JS: &str = include_str!("../../static/kit.js");
 const GALLERY_JS: &str = include_str!("../../static/gallery.js");
+const VIEWPORT_JS: &str = include_str!("../../static/viewport.js");
 const FACTORIES_JS: &str = include_str!("../../static/factories.js");
 const CREATION_JS: &str = include_str!("../../static/creation.js");
 
@@ -235,6 +236,7 @@ pub fn router(state: AppState) -> Router {
         .route("/design.js", get(design_js))
         .route("/kit.js", get(kit_js))
         .route("/gallery.js", get(gallery_js))
+        .route("/viewport.js", get(viewport_js))
         .route("/factories.js", get(factories_js))
         .route("/creation.js", get(creation_js))
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
@@ -350,6 +352,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/creation/connect", post(creation::connect))
         .route("/api/creation/grill", post(creation::grill))
         .route("/api/creation/scope", post(creation::scope))
+        .route("/api/creation/prepare", post(creation::prepare))
+        .route("/api/creation/componentize", post(creation::componentize))
+        .route("/api/creation/requirements", post(creation::requirements))
         .route("/api/creation/mockups", post(creation::mockups))
         .route("/api/creation/regenerate", post(creation::regenerate))
         .route("/api/creation/accept", post(creation::accept))
@@ -525,6 +530,10 @@ async fn factories_js(State(state): State<AppState>) -> Response {
 
 async fn creation_js(State(state): State<AppState>) -> Response {
     asset(&state, "creation.js", CREATION_JS, JS)
+}
+
+async fn viewport_js(State(state): State<AppState>) -> Response {
+    asset(&state, "viewport.js", VIEWPORT_JS, JS)
 }
 
 async fn gallery_js(State(state): State<AppState>) -> Response {

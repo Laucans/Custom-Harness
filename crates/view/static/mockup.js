@@ -30,8 +30,7 @@
 (() => {
   'use strict';
 
-  const DEFAULT_WIDTH = 1280;
-  const PRESETS = [['Mobile', 390], ['Tablet', 768], ['Laptop', 1280], ['Large', 1536]];
+  const { DEFAULT_WIDTH, clamp: clampWidth } = window.Viewport;
   const MIN_HEIGHT = 480;
   const POLL_MS = 3000;
   const SAVE_DELAY = 500;
@@ -67,6 +66,7 @@
       + '<div class="dm-bar">'
       + '<div class="mk-views" role="group" aria-label="view"><button type="button" class="on" data-mk="view" data-view="page">frontend</button><button type="button" data-mk="view" data-view="components">micro-frontends</button></div>'
       + '<span class="dm-origin mk-origin">reading the mock-up…</span>'
+      + '<span class="mk-readonly" hidden>read-only · demo</span>'
       + '<label class="mk-page" hidden>page <select class="mk-pages" aria-label="page"></select></label>'
       + '<button type="button" class="mini mk-only-page" data-mk="new" title="A new page of the mock-up, drawn by an AI session from its objective">+ page</button>'
       + '<button type="button" class="mini mk-only-page" data-mk="mf" aria-pressed="false" title="Outline every micro-frontend in its own colour; pins and edits then take hold of micro-frontends">micro-frontends ◧</button>'
@@ -98,7 +98,7 @@
       + '<span class="mk-sep"></span>'
       + '<button type="button" class="mini" data-ed="apply-all" title="Apply every pending request of the page to the draft, in one go">simulate requests</button>'
       + '<span class="spacer"></span>'
-      + '<label class="mk-vp" title="the width the page is shown at"><select class="mk-presets" aria-label="viewport">' + PRESETS.map(([n, w]) => `<option value="${w}">${n} · ${w}</option>`).join('') + '<option value="0">custom</option></select><input class="mk-width" type="number" min="320" max="3000" step="10" aria-label="width in pixels" hidden></label>'
+      + window.Viewport.markup()
       + '<span class="mk-draft-state"></span>'
       + '<button type="button" class="mini" data-ed="keep" title="Close this version into the history; the next change opens a new one">keep</button>'
       + '<button type="button" class="mini" data-ed="validate" title="Close this version as the next round of development">validate</button>'
@@ -112,7 +112,17 @@
       + '<div class="mk-toast" hidden></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
-    const st = { branch: (opts && opts.branch) || '', page: (opts && opts.page) || '', view: (opts && opts.view) || 'page', versions: null, state: null, stamp: '', pinned: false,
+    // The demo never writes or spends a session: every mutating call this
+    // pane makes (apply, save, discard, drafts, generate…) goes through
+    // `fetch`, so shadowing it here — for this closure only — is the one
+    // place that catches all of them, including the drag-to-edit autosave
+    // timer and the unload `keepalive` calls, without touching each call site.
+    const realFetch = window.fetch.bind(window);
+    function fetch(url, init) {
+      if (st.readOnly && init && init.method && init.method !== 'GET') return Promise.resolve(new Response('', { status: 403, statusText: 'read-only in the demo' }));
+      return realFetch(url, init);
+    }
+    const st = { branch: (opts && opts.branch) || '', page: (opts && opts.page) || '', view: (opts && opts.view) || 'page', versions: null, state: null, stamp: '', pinned: false, readOnly: !!(opts && opts.readOnly),
       timer: null, gone: false, interact: false, mf: !!kept(MF_ON, false), board: null, frame: null, shield: null, doc: null, armed: null, proxies: new WeakMap(), fitted: false, saving: false,
       cards: [],
       // Edit mode: the page's source, its draft engine, the versions, the selection, a gesture under way.
@@ -121,6 +131,27 @@
       kit: null, kitPick: '',
       // The micro-frontends view: its gallery, the one opened alone, its mode, the part picked, the units read.
       gens: [], mfDrafts: [], mfApplying: {}, mfSaveOpen: false, mfGallery: null, mfDetail: (opts && opts.mf) || null, mfMode: 'use', mfPicked: null, mfTop: 0, mfH: 0, mfFitted: false, caps: null, capsAt: 0 };
+    if (st.readOnly) {
+      const ro = q('.mk-readonly');
+      if (ro) ro.hidden = false;
+      // The toolbar redraws parts of itself (the micro-frontends gallery's
+      // own "+ micro-frontend" card, "save" appearing once something is
+      // edited…) — a one-time pass would miss whatever it builds later, so
+      // the lock re-applies on every change under the pane instead. The
+      // fetch shim above is the actual safety net either way; this is the
+      // UI telling the human the same thing before they click.
+      const LOCK = '[data-mk="new"], [data-mk="design"], [data-mk="generate-all"], [data-mk="save"], [data-mk="discard"], [data-mk="edit"], [data-ed="apply-all"], [data-ed="keep"], [data-ed="validate"]';
+      const lock = () => host.querySelectorAll(LOCK).forEach((b) => { b.disabled = true; });
+      lock();
+      new MutationObserver(lock).observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'hidden'] });
+      // Belt and braces: this pane's own async bootstrap (fetching the
+      // branch's state, drawing the bar, the micro-frontends strip) sets
+      // some of these buttons' disabled/hidden state itself, after this
+      // mount() call returns — a poll for the pane's short lifetime catches
+      // whatever that first render overwrites that the observer missed.
+      let ticks = 0;
+      const poll = setInterval(() => { lock(); if ((ticks += 1) > 20) clearInterval(poll); }, 300);
+    }
 
     // ---- what the branch knows of its micro-frontends ----------------------------------
     const components = () => {
@@ -741,13 +772,10 @@
       if (bar.hidden) return;
       bar.querySelector('[data-ed="undo"]').disabled = !st.engine.canUndo() || !!st.viewing;
       bar.querySelector('[data-ed="redo"]').disabled = !st.engine.canRedo() || !!st.viewing;
-      const presets = bar.querySelector('.mk-presets');
-      presets.value = PRESETS.some(([, w]) => w === st.width) ? String(st.width) : '0';
-      bar.querySelector('.mk-width').value = st.width;
+      window.Viewport.sync(bar, st.width);
       const current = st.history && st.history.current;
       const pending = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && (n.state || 'pending') !== 'simulated').length;
       bar.querySelector('[data-ed="apply-all"]').textContent = `simulate requests${pending ? ` (${pending})` : ''}`;
-      bar.querySelector('.mk-width').hidden = presets.value !== '0';
       bar.querySelector('[data-ed="apply-all"]').disabled = !pending || !!st.viewing;
       bar.querySelector('.mk-draft-state').innerHTML = st.viewing
         ? `<span class="dm-src">viewing v${st.viewing.version} · read only</span>`
@@ -759,7 +787,7 @@
       drawStrip();
     }
     function setWidth(w) {
-      st.width = Math.max(320, Math.min(3000, Math.round(w)));
+      st.width = clampWidth(w);
       const widths = kept(WIDTHS, {}) || {};
       widths[boardOf()] = st.width;
       keep(WIDTHS, widths);
@@ -1529,8 +1557,7 @@
     };
     const onChange = (e) => {
       if (e.target.classList.contains('mk-pages')) show(e.target.value);
-      if (e.target.classList.contains('mk-presets')) { if (e.target.value !== '0') setWidth(Number(e.target.value)); else { q('.mk-width').hidden = false; q('.mk-width').focus(); } }
-      if (e.target.classList.contains('mk-width')) setWidth(Number(e.target.value) || DEFAULT_WIDTH);
+      window.Viewport.change(e, setWidth);
       if (e.target.classList.contains('mk-version-name') && st.history && st.history.current) { st.history.current.name = e.target.value.slice(0, 80); persist(); }
       if (e.target.classList.contains('mk-fork-name')) renameForkTo(e.target.dataset.from, e.target.value);
     };
@@ -1585,6 +1612,10 @@
         return { what: describe(target), text: context(target) };
       },
       reload() { st.state = null; return load(); },
+      // The draft's steps written into the workspace, so what the human
+      // sees is what the server reads next — the creation page calls it
+      // before it moves on or accepts.
+      async flush() { if (st.engine && st.engine.ops.length && !st.readOnly) await materialize(); },
       destroy() {
         leavePage();
         design.detach();

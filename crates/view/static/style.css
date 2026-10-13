@@ -544,6 +544,7 @@ svg.process .name { fill: var(--dim); pointer-events: none; }
 .dm-src.ok { color: var(--ok); border-color: rgba(126, 224, 129, 0.5); }
 .dm-src.bad { color: var(--bad); border-color: var(--bad); }
 .dm-src.off { text-decoration: line-through; }
+.mk-readonly { font: 600 11px var(--mono); padding: 2px 8px; border-radius: 10px; background: var(--warn, #ffd166); color: #222; }
 .dm-div { font: 12px var(--sans); padding: 2px 9px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--dim); }
 .dm-div.bad { color: var(--warn); border-color: var(--warn); cursor: pointer; }
 .dm-div.ok { color: var(--ok); border-color: rgba(126, 224, 129, 0.5); }
@@ -1371,10 +1372,6 @@ body.picking, body.picking * { user-select: none; }
 #factory-page[hidden] { display: none; }
 #factory-page { grid-area: work; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px 64px; }
 body.creating > #stage, body.creating > #pane { display: none; }
-/* An easel opened from the creation page takes its place, full width. */
-body.creating.easel { grid-template-columns: 1fr; grid-template-areas: "hud" "work"; }
-body.creating.easel > #factory-page { display: none; }
-body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 .fp-back {
   align-self: flex-start; background: transparent; color: var(--text); font: 13px var(--mono); cursor: pointer;
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px;
@@ -1388,6 +1385,17 @@ body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 
 /* ---- the factory-creation page (creation.js) ---- */
 .cr { width: min(860px, 100%); display: flex; flex-direction: column; gap: 16px; }
+/* The design and review steps hold an easel: the page is wider, the easel as tall as the screen allows. */
+.cr.cr-wide { width: min(1500px, 100%); }
+/* The mock-up's own preview wants more than the kit's embed does — almost
+   the full window, not capped at 1500px. */
+.cr.cr-wider { width: min(2200px, 100%); }
+.cr-embed { display: flex; flex-direction: column; height: max(560px, calc(100vh - 360px)); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); }
+.cr-embed-bar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+.cr-embed-host { flex: 1; min-height: 0; display: flex; }
+/* A part of the page that fills the screen (Esc leaves); under the AI sessions' window. */
+.cr-full { position: fixed; inset: 0; z-index: 90; height: auto; border-radius: 0; background: var(--bg); }
+body.cr-fullscreen { overflow: hidden; }
 .cr h1 { margin: 0; font-size: 22px; }
 .cr h2 { margin: 0 0 6px; font-size: 16px; }
 .cr h3 { margin: 0 0 6px; font-size: 14px; }
@@ -1430,7 +1438,10 @@ body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 .cr-btn.on { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
 .cr-btn:hover:not(:disabled), .cr-btn:focus-visible { border-color: var(--accent); outline: none; }
 .cr-btn:disabled { opacity: .45; cursor: default; }
-.cr-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+/* Back/Continue stay at the wizard's usual narrow column regardless of how
+   wide the current step's own content is (the mock-up's preview, the
+   kit's easel…) — their position on the page does not change step to step. */
+.cr-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px auto 0; width: min(860px, 100%); }
 .cr-actions > :first-child { margin-right: auto; }
 .cr-gap { display: none; }
 .cr-busy { display: flex; align-items: center; gap: 8px; color: var(--accent); }
@@ -1450,13 +1461,47 @@ body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 .cr-job pre { max-height: 280px; overflow: auto; font: 11px var(--mono); white-space: pre-wrap; }
 /* The drawing steps, in two columns: the checklist, and the mock-up taking shape. */
 .cr-draw-split { display: grid; grid-template-columns: 1fr 2fr; gap: 14px; align-items: start; }
+.cr-draw-split.cr-track-hidden { grid-template-columns: 1fr; }
+.cr-draw-split.cr-track-hidden .cr-draw-track { display: none; }
 .cr-draw-track { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.cr-draw-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.cr-draw-preview h3 { margin: 0; font: 600 14px var(--sans); color: var(--text); }
+/* "Hide" sits right above "Drawing the mock-ups" — its own row, the same
+   shape as "Taking shape" opposite it, so both boxes still start level. */
+.cr-draw-track-head { display: flex; align-items: center; }
+.cr-draw-preview { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cr-draw-head h3 { margin: 0; font: 600 14px var(--sans); color: var(--text); }
+.cr-draw-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cr-draw-head > .cr-btn, .cr-embed-bar > .cr-btn { margin-left: auto; }
+/* The checklist can give up its column entirely; this square sits over the
+   preview's own top-left corner (where the checklist used to be) to bring
+   it back — never part of the grid, so the preview keeps the full width. */
+.cr-draw-show { display: flex; position: absolute; top: 10px; left: 10px; z-index: 5; width: 30px; height: 30px; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; font-size: 14px; }
+.cr-draw-show + .cr-draw-head h3 { margin-left: 46px; }
+.cr-draw-stage { overflow: auto; }
+/* The default size is dynamic — the window's own available room, not a
+   flat box — until a drag (or the picker) pins a custom width/height via
+   inline style on this element, which wins over the rule below. */
+/* At most 80% of the room below the page's own header — the rest stays
+   free so Back/Continue never sit right under the preview's own edge. */
+.cr-draw-sizer { position: relative; margin: 0 auto; max-width: none; height: calc((100vh - 320px) * 0.8); min-height: 420px; }
+.cr-draw-sizer.cr-dragging iframe { pointer-events: none; }
+/* A visible corner grip, not a hover-only sliver: drag it to set a custom
+   width and height together, growing the window from its center outward
+   on the width (see pointermove below) while height follows the pointer
+   directly. */
+.cr-draw-handle { position: absolute; right: -9px; bottom: -9px; width: 20px; height: 20px; z-index: 4; cursor: nwse-resize; border-radius: 5px; background: var(--accent); border: 2px solid var(--bg); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }
+.cr-draw-handle:hover, .cr-dragging .cr-draw-handle { filter: brightness(1.12); }
+.cr-draw-frame[hidden] ~ .cr-draw-handle { display: none; }
+.cr-draw-preview.cr-full { display: flex; flex-direction: column; padding: 12px 24px; }
+.cr-draw-preview.cr-full .cr-draw-stage { flex: 1; min-height: 0; }
+.cr-draw-preview.cr-full .cr-draw-sizer { height: calc(100vh - 90px) !important; }
 .cr-draw-empty { border: 1px dashed var(--line); border-radius: 8px; padding: 16px; text-align: center; }
-.cr-draw-frame { width: 100%; min-height: 560px; height: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.cr-draw-frame { width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
 .cr-draw-frame[hidden] { display: none; }
-@media (max-width: 900px) { .cr-draw-split { grid-template-columns: 1fr; } .cr-draw-frame { min-height: 420px; } }
+@media (max-width: 900px) { .cr-draw-split { grid-template-columns: 1fr; } .cr-draw-sizer { height: calc(100vh - 380px); min-height: 360px; } }
+/* ?demo=1 only: a floating replay button, never part of a step's own markup. */
+.cr-demo-float { position: fixed; right: 16px; bottom: 16px; z-index: 60; background: var(--accent); color: #111; border: none; border-radius: 999px; padding: 10px 18px; font: 600 13px var(--sans); box-shadow: 0 4px 16px rgba(0, 0, 0, .35); cursor: pointer; }
+.cr-demo-float[hidden] { display: none; }
+.cr-demo-float:disabled { opacity: .6; cursor: default; }
 .cr-kinds { display: grid; gap: 10px; }
 .cr-kind { display: grid; grid-template-columns: 22px 1fr auto; grid-template-rows: auto auto; gap: 2px 8px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; }
 .cr-kind input { grid-row: 1 / 3; }
@@ -1464,6 +1509,25 @@ body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 .cr-kind .tag { grid-row: 1; grid-column: 3; }
 .cr-kind:has(input:checked) { border-color: var(--accent); }
 .cr-kind.soon { opacity: .55; cursor: default; }
+/* What draws in the background, on a crumb: the scope proposed, the kit generating. */
+.cr-chip { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--panel-2); color: var(--dim); font: 10px var(--mono); }
+.cr-chip.warn { background: var(--warn, #b8860b); color: var(--bg); }
+.cr-crumb.here .cr-chip { background: var(--bg); color: var(--accent); }
+.cr-aside { display: flex; align-items: center; gap: 8px; }
+/* The review's requirements, each tied to pages and micro-frontends by chips. */
+.cr-reqs { display: flex; flex-direction: column; gap: 10px; max-height: 46vh; overflow: auto; padding-right: 4px; }
+.cr-req { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+.cr-req.mine { border-left: 3px solid var(--accent); }
+.cr-req header { display: flex; align-items: center; gap: 8px; }
+.cr-req .tag { margin: 0; }
+.cr-req-title { flex: 1; font: 600 13px var(--sans); }
+.cr-req-body { font: 13px var(--sans); resize: vertical; }
+.cr-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.cr-chips > .muted { min-width: 92px; }
+.cr-chip-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); color: var(--dim); cursor: pointer; font: 12px var(--sans); }
+.cr-chip-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.cr-chip-toggle.on { border-color: var(--accent); color: var(--text); background: var(--bg); }
+.cr-chip-toggle:hover { border-color: var(--accent); }
 .cr-q { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
 .cr-q header { display: flex; align-items: center; gap: 8px; }
 .cr-q header b { flex: 1; }
@@ -1476,7 +1540,6 @@ body.creating.easel > #pane:not([hidden]) { display: flex; grid-area: work; }
 @media (max-width: 760px) { .cr-choices { grid-template-columns: 1fr; } }
 .cr-choices .cr-card { display: flex; flex-direction: column; }
 .cr-choices .cr-card .cr-btn { margin-top: auto; align-self: flex-start; }
-.cr-pages { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .cr-link { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; font: 13px var(--sans); }
 .cr-link:hover, .cr-link:focus-visible { border-color: var(--accent); outline: none; }
 .cr-link .muted { font-size: 12px; }
