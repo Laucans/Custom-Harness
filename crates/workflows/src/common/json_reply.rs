@@ -17,6 +17,20 @@ impl std::fmt::Display for ParseError {
     }
 }
 
+/// The second ask, in the same session, after a reply whose array did not
+/// parse.
+///
+/// Only the correction: the session already holds the first prompt, and
+/// sending it again re-wrote all of it into the prompt cache, at twice the
+/// input price.
+#[must_use]
+pub fn retry_prompt(error: &ParseError) -> String {
+    format!(
+        "Your previous answer's JSON did not parse: {error}. Reply again, with \
+         ONLY the JSON array this time — no prose before or after it."
+    )
+}
+
 /// Extracts a JSON array of `T` from a reply's text.
 ///
 /// Tolerant of prose around it and of a fenced ` ```json ` block — a model
@@ -79,6 +93,13 @@ fn extract(text: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde::Deserialize;
+
+    #[test]
+    fn a_retry_names_the_error_and_asks_for_the_array_alone() {
+        let said = retry_prompt(&ParseError("no JSON array found".to_string()));
+        assert!(said.contains("did not parse: no JSON array found."));
+        assert!(said.contains("ONLY the JSON array"));
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
     struct Item {

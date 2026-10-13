@@ -381,10 +381,7 @@ impl SessionAction<SplitState> for AskForSlice {
             return Ok(Verdict::Continue);
         }
         let error = plan::parse(&reply.text).expect_err("just failed above");
-        let retry_prompt = format!(
-            "{prompt}\n\nYour previous answer's JSON did not parse: {error}. Reply \
-             again, with ONLY the JSON array this time — no prose before or after it."
-        );
+        let retry_prompt = crate::common::json_reply::retry_prompt(&error);
         ask_and_record(
             open,
             &retry_prompt,
