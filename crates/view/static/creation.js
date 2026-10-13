@@ -583,12 +583,21 @@
   function stepGrilling(r) {
     const qs = r.questions;
     const open = qs.filter((q) => !q.answer.trim()).length;
-    const list = qs.map((q) => `<article class="cr-q" data-q="${q.id}">
+    const card = (q) => `<article class="cr-q" data-q="${q.id}">
         <header><span class="cr-qn">Q${q.id}</span><b>${esc(q.title)}</b>${q.round ? `<span class="tag">round ${q.round}</span>` : ''}<button type="button" class="mini cr-del" data-cr-del="${q.id}" title="Delete this question" aria-label="delete question ${q.id}">✕</button></header>
         ${q.body ? `<p class="cr-qb">${esc(q.body)}</p>` : ''}
         ${q.recommended ? `<p class="cr-rec">➡️ ${esc(q.recommended)} <button type="button" class="mini" data-cr-take="${q.id}">use it</button></p>` : ''}
         <textarea rows="3" aria-label="answer to question ${q.id}" placeholder="Your answer">${esc(q.answer)}</textarea>
-      </article>`).join('');
+      </article>`;
+    // One card per topic the AI filed its questions under, the general one first.
+    const topics = [''];
+    for (const q of qs) if (!topics.includes(q.topic || '')) topics.push(q.topic || '');
+    const list = topics.map((t) => {
+      const under = qs.filter((q) => (q.topic || '') === t);
+      if (!under.length) return '';
+      const left = under.filter((q) => !q.answer.trim()).length;
+      return `<section class="cr-topic"><header><b>${t ? esc(t) : 'General'}</b><span class="tag">${left ? `${left} open · ` : ''}${under.length} question${under.length === 1 ? '' : 's'}</span></header>${under.map(card).join('')}</section>`;
+    }).join('');
     const j = job();
     return `<p class="muted">The AI grills the brief round after round: every decision it can ask now, each with its recommended answer. Answer, retouch, or delete a question — or take the recommendations as they are.</p>
       ${j && j.work === 'prepare' && j.state === 'running' ? '<div class="callout cr-aside"><span class="cr-spin" aria-hidden="true"></span> Meanwhile: the design system\'s tokens, the kit and a first scope draw in the background.</div>' : ''}

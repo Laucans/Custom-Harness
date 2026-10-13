@@ -184,7 +184,13 @@ It has two sections:
      is never proposed over;
   4. **grilling** — rounds of questions (`grill_prompt`: the grilling skill's
      frontier, each question with its recommended answer, JSON), answered,
-     retouched or deleted; *continue grilling* asks the next round once
+     retouched or deleted. Each question carries a `topic`, the part of the
+     product it decides (empty for the product as a whole): the page shows
+     one card per topic, *General* first. Still one call per round — the
+     prompt lists the topics in use, asks to reuse them, and forbids one
+     decision under two topics; `add_round` folds a topic differing only by
+     case onto the one already given, and the roadmap issue's decisions
+     follow the same topics; *continue grilling* asks the next round once
      every open one is answered; *use the N recommendations* fills the open
      ones; *Continue* with open ones offers the same. The first round asks
      itself; the scope opens once every question is answered, or when the
