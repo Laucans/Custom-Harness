@@ -396,7 +396,22 @@ mod tests {
             of(&local_findings(&cut), Check::Naming),
             vec!["Campagne.Lire", "campagne", "campagne.creer-campagne"]
         );
+        let naming = local_findings(&cut);
+        let first = naming
+            .iter()
+            .find(|f| f.units == ["Campagne.Lire"])
+            .expect("found");
+        assert_eq!(
+            first.why,
+            "`Campagne.Lire` is not named `<system>.<verbThing>`"
+        );
+        assert_eq!(
+            first.fix,
+            "rename `Campagne.Lire` as `<system>.<verbThing>` wherever it is listed"
+        );
         assert!(well_named("ia.choisirFournisseur"));
+        assert!(well_named("sauve-garde.exporter"));
+        assert!(!well_named("sauve garde.exporter"));
         assert!(well_named("sauve_garde.exporter2"));
         assert!(!well_named(".lire"));
         assert!(!well_named("ia."));
@@ -413,6 +428,24 @@ mod tests {
         cut.push(mf("B", "fit", &[], &[]));
         let found = local_findings(&cut);
         assert_eq!(of(&found, Check::SystemSize), vec!["big", "thin"]);
+        let said: Vec<(&str, &str)> = found
+            .iter()
+            .filter(|f| f.check == Some(Check::SystemSize))
+            .map(|f| (f.why.as_str(), f.fix.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                (
+                    "`big` holds 9 micro-frontends: more than one bounded context",
+                    "split `big` into the bounded contexts it holds"
+                ),
+                (
+                    "`thin` holds one micro-frontend only",
+                    "keep `thin` if it is a context of its own, else fold it into the system it serves"
+                ),
+            ]
+        );
         let exactly: Vec<ComponentRef> = (0..SYSTEM_MAX)
             .map(|i| mf(&format!("M{i}"), "big", &[], &[]))
             .collect();
@@ -445,7 +478,16 @@ mod tests {
             .find(|f| f.check == Some(Check::MixedSystems))
             .expect("found")
             .why;
-        assert!(why.contains("campagne, journal"), "{why}");
+        assert_eq!(why, "`Table` (table) reaches into campagne, journal");
+        let fix = &found
+            .iter()
+            .find(|f| f.check == Some(Check::MixedSystems))
+            .expect("found")
+            .fix;
+        assert_eq!(
+            fix,
+            "move `Table` to the system it serves, or give `table` the units it needs"
+        );
     }
 
     #[test]

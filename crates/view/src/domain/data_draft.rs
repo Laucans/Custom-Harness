@@ -357,14 +357,7 @@ pub fn rules_print(c: &Creation) -> String {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     for r in &c.requirements {
-        (
-            r.id,
-            &r.title,
-            &r.body,
-            &r.criterion,
-            r.family == Family::Business,
-        )
-            .hash(&mut hasher);
+        (r.id, &r.title, &r.body, &r.criterion, r.family).hash(&mut hasher);
     }
     format!("{:016x}", hasher.finish())
 }

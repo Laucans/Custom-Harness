@@ -222,7 +222,7 @@ pub struct Requirement {
 }
 
 /// What a rule is about.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Family {
     /// A step of a user's journey: what the user does and sees.
@@ -1850,6 +1850,65 @@ mod tests {
         c.validate_rules().expect("only a warning left");
         c.audit = None;
         assert!(!c.audit_stale());
+    }
+
+    #[test]
+    fn a_data_model_drafted_from_rules_that_moved_is_stale_and_not_validated() {
+        use super::super::data_draft::{DataDraft, Table};
+        let mut c = ready();
+        c.requirements = vec![rule(1, "given y", &["pages/a.html"])];
+        c.data = Some(DataDraft {
+            tables: vec![Table {
+                name: "line".to_string(),
+                ..Table::default()
+            }],
+            from: rules_print(&c),
+            ..DataDraft::default()
+        });
+        assert!(!c.data_stale());
+        assert!(!c.data_validated(), "drafted, not validated");
+        c.validate_data().expect("no gap");
+        assert!(c.data_validated());
+        assert_eq!(mark(&c, Step::Data), Mark::Done);
+        c.requirements[0].criterion = "given z".to_string();
+        assert!(c.data_stale());
+        assert!(!c.data_validated(), "validated, but from other rules");
+        assert_eq!(
+            mark(&c, Step::Rules),
+            Mark::Done,
+            "the rules themselves are not stale"
+        );
+        assert_eq!(mark(&c, Step::Data), Mark::Stale);
+        c.data = None;
+        assert!(!c.data_stale() && !c.data_validated());
+        assert_eq!(c.data_gaps(), vec!["no data model yet".to_string()]);
+    }
+
+    #[test]
+    fn the_roadmap_issue_names_the_data_model_and_its_invariants() {
+        use super::super::data_draft::{Aggregate, DataDraft, Invariant, Table};
+        let mut c = ready();
+        assert!(!roadmap_issue(&c, &Context::default()).1.contains("## Data"));
+        c.data = Some(DataDraft {
+            tables: vec![Table::default(), Table::default()],
+            aggregates: vec![Aggregate {
+                name: "Line".to_string(),
+                tables: vec!["line".to_string(), "total".to_string()],
+                invariants: vec![Invariant {
+                    id: "positive".to_string(),
+                    rule: " above zero ".to_string(),
+                    ..Invariant::default()
+                }],
+                ..Aggregate::default()
+            }],
+            ..DataDraft::default()
+        });
+        let (_, body) = roadmap_issue(&c, &Context::default());
+        assert!(body.contains("\n## Data\n\nDrafted and validated at creation, beside the mock-up: `mock/data/model.json` (contract M, 2 tables) and `mock/data/aggregates.json` (contract I, 1 aggregates, 1 invariants)"), "{body}");
+        assert!(
+            body.contains("- **Line** — line, total\n  - positive — above zero\n"),
+            "{body}"
+        );
     }
 
     #[test]

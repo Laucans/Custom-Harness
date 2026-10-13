@@ -2166,6 +2166,34 @@ async fn the_rules_are_validated_once_complete_and_read_again_behind_their_gate(
 }
 
 #[tokio::test]
+async fn the_guard_waits_for_its_gate_and_a_finding_is_applied_or_dismissed() {
+    let roll = Arc::new(Roll::default());
+    being_created(
+        &roll,
+        &crate::domain::creation::Creation::new("alpha", "me/alpha"),
+    );
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state.clone(), "/api/creation/audit", "").await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::BAD_REQUEST, "choose the kind of factory")
+    );
+    for how in ["apply", "dismiss"] {
+        let (status, body) = post(state.clone(), &format!("/api/creation/audit/1/{how}"), "").await;
+        assert_eq!(
+            (status, body.as_str()),
+            (StatusCode::BAD_REQUEST, "no finding 1"),
+            "{how}"
+        );
+    }
+    let (status, body) = post(state, "/api/creation/audit/1/burn", "").await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::BAD_REQUEST, "`burn`: apply or dismiss")
+    );
+}
+
+#[tokio::test]
 async fn the_data_step_draws_its_draft_takes_retouches_and_keeps_its_gates() {
     use crate::domain::creation::Creation;
     use crate::domain::data_draft::{Aggregate, DataDraft, Field, FieldRule, Table};
