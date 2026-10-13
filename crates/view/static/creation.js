@@ -820,7 +820,8 @@
     try {
       C.owners = (await call('GET', '/api/creation/owners')).owners || [];
     } catch (e) { C.owners = null; C.ownersWhy = e.message; }
-    if (C.route !== 'repository' || record()) return;
+    // Only the two forms that hold the owner select: a founding, or the first step without a record.
+    if (C.route !== FOUND && (C.route !== 'repository' || record())) return;
     // The list alone changes: what the human typed meanwhile stays.
     const select = page.querySelector('select[name="owner"]');
     if (select && C.owners && C.owners.length) select.innerHTML = C.owners.map((o) => `<option>${esc(o)}</option>`).join('');
