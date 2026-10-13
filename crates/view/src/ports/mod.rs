@@ -870,6 +870,16 @@ pub trait Builds: Send + Sync {
     fn log(&self, id: &str) -> Option<String>;
 }
 
+/// One file of a mock-up, and when it was last written.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct MockFile {
+    /// Its path under `mock/`.
+    pub path: String,
+    /// When it was last written, in seconds since the epoch; 0 when it is
+    /// read as committed.
+    pub at: u64,
+}
+
 /// One page of the product's mock-up, as `mock/pages.json` lists it
 /// (contract N).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1068,6 +1078,15 @@ pub trait Mockups: Send + Sync {
     ///
     /// The repository cannot be read.
     fn branches(&self) -> Result<Vec<String>, String>;
+
+    /// Every file of the mock-up of `branch`, oldest written first: from
+    /// its workspace when one exists — what a session is writing — else as
+    /// committed.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be read.
+    fn files(&self, branch: &str) -> Result<Vec<MockFile>, String>;
 
     /// Makes `branch` exist, from `from` when it does not yet — the design
     /// system's branch is born on the first visit — and pushes it.

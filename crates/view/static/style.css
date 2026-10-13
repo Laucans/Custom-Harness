@@ -1619,6 +1619,12 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-add-list { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 220px; max-height: 260px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.35); display: flex; flex-direction: column; padding: 4px; }
 .cr-add-list button { background: transparent; border: 0; color: var(--text); text-align: left; font: 12px var(--sans); padding: 5px 8px; border-radius: 6px; cursor: pointer; }
 .cr-add-list button:hover { background: var(--panel-2); }
+.cr-files-head { font: 12px var(--mono); color: var(--dim); margin: 8px 0; display: flex; align-items: center; gap: 6px; }
+.cr-files-group h4 { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 10px 0 4px; }
+.cr-files-group h4 small { font: 11px var(--mono); }
+.cr-files-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.cr-files-group li { display: flex; align-items: baseline; gap: 6px; }
+.cr-files-group li small { margin-left: auto; color: var(--dim); font: 10px var(--mono); }
 .cr-gaps { margin: 4px 0 8px; padding-left: 18px; color: var(--bad); font-size: 12px; }
 .cr-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); margin: 8px 0 6px; }
 .cr-tabs .spacer { flex: 1; }

@@ -198,6 +198,21 @@ pub fn preview_page(name: &str) -> String {
     )
 }
 
+/// What a file of the mock-up is, by where it lies under `mock/`: what
+/// the page counts while a session draws.
+#[must_use]
+pub fn kind_of(path: &str) -> &'static str {
+    match path.split('/').next().unwrap_or_default() {
+        "pages" => "page",
+        "components" => "micro-frontend",
+        "fixtures" => "fixture",
+        "kit" => "kit",
+        "design" => "design",
+        _ if path == "pages.json" => "manifest",
+        _ => "other",
+    }
+}
+
 /// The media type a file is served with, by its extension.
 #[must_use]
 pub fn content_type(path: &str) -> &'static str {
@@ -246,6 +261,21 @@ pub fn save_branch(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_s_kind_is_where_it_lies() {
+        for (path, kind) in [
+            ("pages/home.html", "page"),
+            ("components/List.html", "micro-frontend"),
+            ("fixtures/media/a.svg", "fixture"),
+            ("kit/Button.html", "kit"),
+            ("design/tokens.css", "design"),
+            ("pages.json", "manifest"),
+            ("mock.js", "other"),
+        ] {
+            assert_eq!(kind_of(path), kind, "{path}");
+        }
+    }
     use proptest::prelude::*;
 
     #[test]

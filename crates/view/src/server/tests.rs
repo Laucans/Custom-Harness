@@ -320,6 +320,18 @@ impl crate::ports::Mockups for FakeMockups {
     fn restore(&self, _branch: &str) -> Result<(), String> {
         Ok(())
     }
+    fn files(&self, _branch: &str) -> Result<Vec<crate::ports::MockFile>, String> {
+        Ok(vec![
+            crate::ports::MockFile {
+                path: "fixtures/a.json".into(),
+                at: 5,
+            },
+            crate::ports::MockFile {
+                path: "pages/home.html".into(),
+                at: 9,
+            },
+        ])
+    }
     fn write(&self, _branch: &str, path: &str, _bytes: &[u8]) -> Result<(), String> {
         if path.contains("..") {
             Err("refused".into())
@@ -543,6 +555,14 @@ async fn the_easel_serves_the_branch_s_pages_previews_and_saves() {
         (status, body.as_str()),
         (StatusCode::OK, r#"{"restored":true}"#)
     );
+    let (status, body) = get(with(), "/api/mockup/files?branch=main").await;
+    assert_eq!(status, StatusCode::OK);
+    let files: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        files["files"][0],
+        serde_json::json!({"path": "fixtures/a.json", "kind": "fixture", "at": 5})
+    );
+    assert_eq!(files["files"][1]["kind"], "page");
 }
 
 #[derive(Default)]

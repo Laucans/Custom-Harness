@@ -25,7 +25,7 @@ use std::time::UNIX_EPOCH;
 use crate::adapters::git_units::{Mirror, run};
 use crate::domain::drafts::fingerprint;
 use crate::domain::mockup;
-use crate::ports::{MockPage, MockState, Mockups};
+use crate::ports::{MockFile, MockPage, MockState, Mockups};
 
 /// The mock-up read through `git`, edited in a worktree.
 pub struct GitMockups {
@@ -159,6 +159,36 @@ fn write_under(dir: &Path, path: &str, bytes: &[u8]) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
     fs::write(&full, bytes).map_err(|e| format!("{}: {e}", full.display()))
+}
+
+/// The files under `dir/mock`, oldest written first.
+fn files_of(dir: &Path) -> Vec<MockFile> {
+    fn walk(root: &Path, at: &Path, found: &mut Vec<MockFile>) {
+        let Ok(entries) = fs::read_dir(at) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, found);
+            } else if let (Ok(meta), Ok(rel)) = (entry.metadata(), path.strip_prefix(root)) {
+                let at = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs());
+                found.push(MockFile {
+                    path: rel.to_string_lossy().replace('\\', "/"),
+                    at,
+                });
+            }
+        }
+    }
+    let root = dir.join("mock");
+    let mut found = Vec::new();
+    walk(&root, &root, &mut found);
+    found.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.path.cmp(&b.path)));
+    found
 }
 
 /// Reads `dir/mock/<path>`; `None` when it is not there.
@@ -396,6 +426,35 @@ impl Mockups for GitMockups {
     fn branches(&self) -> Result<Vec<String>, String> {
         self.mirror.refresh()?;
         self.mirror.branches()
+    }
+
+    fn files(&self, branch: &str) -> Result<Vec<MockFile>, String> {
+        if let Some(folder) = self.worktree(branch) {
+            return Ok(files_of(&folder));
+        }
+        self.mirror.refresh()?;
+        if self.mirror.head_of(branch)?.is_none() {
+            return Ok(Vec::new());
+        }
+        let out = self.mirror.git(
+            &[
+                "ls-tree",
+                "-r",
+                "--name-only",
+                &format!("refs/heads/{branch}"),
+                "--",
+                "mock/",
+            ],
+            None,
+        )?;
+        Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|line| line.strip_prefix("mock/"))
+            .map(|path| MockFile {
+                path: path.to_string(),
+                at: 0,
+            })
+            .collect())
     }
 
     fn ensure_branch(&self, branch: &str, from: &str) -> Result<(), String> {
@@ -693,6 +752,10 @@ impl Mockups for DirMockups {
         Ok(found)
     }
 
+    fn files(&self, branch: &str) -> Result<Vec<MockFile>, String> {
+        Ok(files_of(&self.folder(branch)))
+    }
+
     fn ensure_branch(&self, branch: &str, _from: &str) -> Result<(), String> {
         // The sample is tracked: a branch is a folder it already has, never
         // one made on a visit.
@@ -721,6 +784,79 @@ impl Mockups for DirMockups {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The real thing: a workspace's files are listed with their time, the
+    /// committed ones without, a branch that is not there with none.
+    #[test]
+    fn a_workspace_s_files_are_listed_with_their_time() {
+        let dir = std::env::temp_dir().join(format!("harness-view-files-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let work = dir.join("work");
+        fs::create_dir_all(work.join("mock")).expect("dir");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main_agent"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "empty",
+        ]);
+        fs::write(work.join("mock/pages.json"), "{}").expect("write");
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ]);
+        git(&["checkout", "-q", "--detach"]);
+        let mockups = GitMockups::new(Arc::new(Mirror::local(&work)), &dir.join("ws"));
+        assert_eq!(
+            mockups.files("main_agent").expect("listed"),
+            vec![MockFile {
+                path: "pages.json".to_string(),
+                at: 0
+            }],
+            "as committed: no time"
+        );
+        assert!(mockups.files("nowhere").expect("listed").is_empty());
+        mockups
+            .write("main_agent", "pages/home.html", b"<main>home</main>")
+            .expect("written");
+        let edited = mockups.files("main_agent").expect("listed");
+        let page = edited
+            .iter()
+            .find(|f| f.path == "pages/home.html")
+            .expect("the page written is listed");
+        assert!(page.at > 0, "a workspace's file has its time");
+        assert!(edited.iter().any(|f| f.path == "pages.json"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// The real thing: a workspace's changes discarded are kept aside, and
     /// brought back uncommitted; a workspace being edited refuses it.
@@ -967,6 +1103,17 @@ mod tests {
         fs::create_dir_all(dir.join("main/mock/pages")).expect("temp dir");
         let sample = DirMockups::new(&dir);
         assert!(sample.restore("main").is_err(), "a sample keeps no discard");
+        fs::write(dir.join("main/mock/pages/a.html"), "a").expect("page");
+        assert_eq!(
+            sample
+                .files("main")
+                .expect("listed")
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pages/a.html"]
+        );
+        fs::remove_file(dir.join("main/mock/pages/a.html")).expect("rm");
         let none = sample.state("main").expect("read");
         assert!(!none.present && none.pages.is_empty());
         fs::write(

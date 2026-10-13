@@ -79,6 +79,10 @@ impl Mockups for PulsingMockups {
         self.beating(self.inner.restore(branch))
     }
 
+    fn files(&self, branch: &str) -> Result<Vec<crate::ports::MockFile>, String> {
+        self.inner.files(branch)
+    }
+
     fn write(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
         self.beating(self.inner.write(branch, path, bytes))
     }
@@ -141,6 +145,12 @@ mod tests {
         fn restore(&self, _branch: &str) -> Result<(), String> {
             Err("nothing discarded".to_string())
         }
+        fn files(&self, _branch: &str) -> Result<Vec<crate::ports::MockFile>, String> {
+            Ok(vec![crate::ports::MockFile {
+                path: "pages/a.html".to_string(),
+                at: 7,
+            }])
+        }
         fn write(&self, _branch: &str, _path: &str, _bytes: &[u8]) -> Result<(), String> {
             Err("refused".to_string())
         }
@@ -201,6 +211,7 @@ mod tests {
         let _ = mockups.file("b", "pages/x.html");
         let _ = mockups.workspace("b");
         let _ = mockups.branches();
+        let _ = mockups.files("b");
         let _ = mockups.ensure_branch("b", "main");
         assert!(!heard(&mut ears), "a read wakes nobody");
 
@@ -229,6 +240,7 @@ mod tests {
     fn the_wrapped_answers_go_through_untouched() {
         let mockups = PulsingMockups::new(Arc::new(Blank), Pulse::default());
         assert_eq!(mockups.save("b", "n").as_deref(), Ok("mockup/n"));
+        assert_eq!(mockups.files("b").map(|l| l.len()), Ok(1));
         assert_eq!(mockups.publish("b", "m").as_deref(), Ok("abc"));
         assert_eq!(mockups.write("b", "x", b""), Err("refused".to_string()));
         assert_eq!(mockups.state("b").map(|s| s.branch).as_deref(), Ok("b"));

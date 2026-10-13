@@ -738,13 +738,46 @@
     const split = DEMO ? mine : running('mockups') || making;
     const spinner = !DEMO && running('mockups') ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Drawing the proof of concept…</b></div>'
       : making ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Making the micro-frontends…</b></div>' : '';
-    return `<p class="muted">A Claude Code session draws the proof of concept as interactive mock-ups, fast: one page per screen of the scope, the journeys linked, the design system's components and tokens. Drawn, it is yours to rework here — <b>edit</b> the page by hand, drop a <b>request</b> pin and apply it, add a page — before the rules step ties the rules to it.</p>
-      ${split ? drawSplit(C.data.branch, spinner + '<div data-cr-job>' + (mine || making ? jobPanel() : '') + '</div>') : ''}
-      ${!split && mine && !r.mocked ? `<div data-cr-job>${jobPanel()}</div>` : ''}
+    const track = `${spinner}<div data-cr-job>${mine || making ? jobPanel() : ''}</div><div data-cr-files>${filesPanel()}</div>`;
+    return `${split ? drawSplit(C.data.branch, track) : `${mine && !r.mocked ? `<div data-cr-job>${jobPanel()}</div>` : ''}<div data-cr-files>${filesPanel()}</div>`}
       ${failed ? `<div class="cr-error" role="alert">${esc(j.why)}</div>` : ''}
       ${C.data.mockupStale && !running() ? '<div class="callout">Drawn from an earlier scope: the scope moved since — draw them again to follow it.</div>' : ''}
       ${r.mocked && !running('mockups') ? `<div class="callout">${esc(r.mocked)}</div>` : ''}
       ${embedFor('mockups') ? '' : mockupsFoot()}`;
+  }
+  // What the mock-up holds, as a session writes it: pages, micro-frontends,
+  // fixtures, each ticked with when it landed — read every few seconds while
+  // the step is open, whatever started the drawing.
+  const FILE_KINDS = [['page', 'Pages'], ['micro-frontend', 'Micro-frontends'], ['fixture', 'Fixtures']];
+  const FILES_MS = 4000;
+  const clock = (at) => (at ? new Date(at * 1000).toTimeString().slice(0, 5) : '');
+  function filesPanel() {
+    const files = C.files || [];
+    const last = files.reduce((m, f) => Math.max(m, f.at || 0), 0);
+    // A file written in the last minute and a half: a session is at work.
+    const writing = running('mockups') || running('componentize') || (last && Date.now() / 1000 - last < 90);
+    const notice = writing ? '<div class="callout">Drawing the mock-up takes <b>several tens of minutes</b>: the fixtures and the micro-frontends come first, the pages last. You may leave this page — the work goes on.</div>' : '';
+    if (!files.length) return notice + (writing ? '<p class="muted">Nothing written yet.</p>' : '');
+    const name = (path) => path.split('/').pop().replace(/\.(html|json)$/, '');
+    const group = ([kind, label]) => {
+      const items = files.filter((f) => f.kind === kind);
+      if (!items.length) return `<section class="cr-files-group"><h4>${label} <small>0</small></h4><p class="muted">none yet</p></section>`;
+      return `<section class="cr-files-group"><h4>${label} <small>${items.length}</small></h4><ul>${items.map((f) => `<li title="mock/${esc(f.path)}"><span class="cr-ok">✓</span> ${esc(kind === 'fixture' ? f.path.replace(/^fixtures\//, '') : name(f.path))}${f.at ? `<small>${clock(f.at)}</small>` : ''}</li>`).join('')}</ul></section>`;
+    };
+    const head = `<div class="cr-files-head">${writing ? '<span class="cr-spin" aria-hidden="true"></span> ' : ''}${files.length} files${last ? ` · last written ${clock(last)}` : ''}</div>`;
+    return notice + head + FILE_KINDS.map(group).join('');
+  }
+  async function loadFiles() {
+    if (C.route !== 'mockups' || !C.data || !C.data.branch) { clearInterval(C.filesTimer); C.filesTimer = null; return; }
+    try {
+      const got = await call('GET', `/api/mockup/files?branch=${encodeURIComponent(C.data.branch)}`);
+      C.files = got.files || [];
+    } catch (e) { /* no mock-up read here: nothing to list */ }
+    const host = page.querySelector('[data-cr-files]');
+    if (host) host.innerHTML = filesPanel();
+  }
+  function followFiles() {
+    if (C.route === 'mockups' && !C.filesTimer && !DEMO) { loadFiles(); C.filesTimer = setInterval(loadFiles, FILES_MS); }
   }
   function mockupsFoot() {
     const r = record();
@@ -941,7 +974,7 @@
 
   // ---- the data step ------------------------------------------------------------
   // The steps whose body sits beside their easel.
-  const SPLIT = ['rules', 'data'];
+  const SPLIT = ['mockups', 'rules', 'data'];
   const CRITICALITY = ['low', 'normal', 'critical'];
   const ON_DELETE = ['restrict', 'cascade', 'nullify', 'archive', 'review'];
   const ON_UPDATE = ['propagate', 'restrict'];
@@ -1060,6 +1093,7 @@
     if (embed) mountEmbed(embed);
     else unmountEmbed();
     syncFocus();
+    followFiles();
     page.querySelectorAll('.cr-rule.sel textarea.cr-fit').forEach(fit);
     syncPreview();
     showDrawn();

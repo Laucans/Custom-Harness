@@ -412,6 +412,29 @@ pub(super) async fn mockup_discard(State(state): State<AppState>, body: Bytes) -
     }
 }
 
+/// The mock-up's files, oldest written first, each with its kind: what
+/// the creation's mock-ups step lists while a session draws.
+pub(super) async fn mockup_files(
+    State(state): State<AppState>,
+    Query(query): Query<MockupQuery>,
+) -> Response {
+    let Some(mockups) = state.mockups.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let branch = branch_or_integration(&state, query.branch);
+    match tokio::task::spawn_blocking(move || mockups.files(&branch)).await {
+        Ok(Ok(files)) => {
+            let files: Vec<serde_json::Value> = files
+                .into_iter()
+                .map(|f| serde_json::json!({ "path": f.path, "kind": mockup::kind_of(&f.path), "at": f.at }))
+                .collect();
+            json(&serde_json::json!({ "files": files }))
+        }
+        Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the listing was dropped").into_response(),
+    }
+}
+
 /// The last discarded workspace brought back.
 pub(super) async fn mockup_restore(State(state): State<AppState>, body: Bytes) -> Response {
     let Some(mockups) = state.mockups.clone() else {
