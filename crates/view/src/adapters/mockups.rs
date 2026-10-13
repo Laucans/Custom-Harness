@@ -966,6 +966,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("main/mock/pages")).expect("temp dir");
         let sample = DirMockups::new(&dir);
+        assert!(sample.restore("main").is_err(), "a sample keeps no discard");
         let none = sample.state("main").expect("read");
         assert!(!none.present && none.pages.is_empty());
         fs::write(

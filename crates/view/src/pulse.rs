@@ -139,7 +139,7 @@ mod tests {
             Ok(())
         }
         fn restore(&self, _branch: &str) -> Result<(), String> {
-            Ok(())
+            Err("nothing discarded".to_string())
         }
         fn write(&self, _branch: &str, _path: &str, _bytes: &[u8]) -> Result<(), String> {
             Err("refused".to_string())
@@ -208,6 +208,12 @@ mod tests {
         assert!(heard(&mut ears), "save");
         let _ = mockups.discard("b");
         assert!(heard(&mut ears), "discard");
+        assert_eq!(
+            mockups.restore("b"),
+            Err("nothing discarded".to_string()),
+            "passed through"
+        );
+        assert!(heard(&mut ears), "restore, refused");
         let _ = mockups.remove("b", "x");
         assert!(heard(&mut ears), "remove");
         let _ = mockups.publish("b", "m");
