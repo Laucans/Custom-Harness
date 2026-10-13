@@ -733,7 +733,8 @@ pub fn grill_prompt(c: &Creation) -> String {
          File each question under a topic: the part of the product it decides (the human sees \
          one card per topic), a short name of a few words. A decision about the product as a \
          whole takes the empty topic, \"\", the general card. Reuse a topic already in use, \
-         spelled the same, rather than a near-synonym. One decision is asked once, under one \
+         spelled the same, rather than a near-synonym; open a new topic when a round reaches a \
+         part of the product no topic covers yet. One decision is asked once, under one \
          topic: never the same decision, or one overlapping it, under two topics — the topics \
          sort the questions, they do not split the interview.\n\n\
          Answer with one JSON object and nothing else: \
@@ -1998,6 +1999,7 @@ mod tests {
         assert!(grill.contains("- [Combat] **q1** — yes"));
         assert!(grill.contains("do not ask them again:\n\n- [Campaign] q2"));
         assert!(grill.contains("Topics in use: Combat, Campaign."));
+        assert!(grill.contains("open a new topic when a round reaches"));
         assert!(grill.contains("never the same decision, or one overlapping it, under two topics"));
         assert!(grill.contains("\"topic\""));
     }

@@ -1586,6 +1586,9 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-q header { display: flex; align-items: center; gap: 8px; }
 .cr-q header b { flex: 1; }
 .cr-q .tag { margin: 0; }
+.cr-q.new { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--panel)); }
+.cr-q.done { border-color: var(--line); background: var(--bg); }
+.cr-q.done header b, .cr-q.done .cr-qb, .cr-q.done .cr-qn { color: var(--dim); }
 .cr-qn { font: 12px var(--mono); color: var(--accent); }
 .cr-qb { white-space: pre-wrap; color: var(--text); }
 .cr-rec { color: var(--dim); font-size: 13px; white-space: pre-wrap; }

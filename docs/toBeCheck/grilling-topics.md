@@ -28,5 +28,10 @@ real model is unverified.
       under *General*, and answering still saves.
 - [ ] Answering, *use it*, delete and *use the N recommendations* work inside
       the cards; the record order after a save follows the cards.
+- [ ] *Continue grilling*: the page scrolls back to the top once the round
+      lands; a new topic card may appear.
+- [ ] The new round's questions are yellow; typing in one (or *use it*,
+      *use the N recommendations*) greys it at once; after a reload the
+      answered ones stay grey.
 - [ ] The roadmap issue opened at the end shows `### General` then one
       `### <topic>` per topic with decisions.

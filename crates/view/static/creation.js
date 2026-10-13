@@ -635,7 +635,10 @@
   function stepGrilling(r) {
     const qs = r.questions;
     const open = qs.filter((q) => !q.answer.trim()).length;
-    const card = (q) => `<article class="cr-q" data-q="${q.id}">
+    // The last round's questions stand out until answered; an answered one greys.
+    const typed = (q) => C.dirty[`q${q.id}`] ?? q.answer;
+    const look = (q) => (typed(q).trim() ? ' done' : q.round === r.rounds ? ' new' : '');
+    const card = (q) => `<article class="cr-q${look(q)}" data-q="${q.id}">
         <header><span class="cr-qn">Q${q.id}</span><b>${esc(q.title)}</b>${q.round ? `<span class="tag">round ${q.round}</span>` : ''}<button type="button" class="mini cr-del" data-cr-del="${q.id}" title="Delete this question" aria-label="delete question ${q.id}">✕</button></header>
         ${q.body ? `<p class="cr-qb">${esc(q.body)}</p>` : ''}
         ${q.recommended ? `<p class="cr-rec">➡️ ${esc(q.recommended)} <button type="button" class="mini" data-cr-take="${q.id}">use it</button></p>` : ''}
@@ -903,8 +906,15 @@
     const named = e.target.closest('[data-cr]');
     if (named) C.dirty[named.dataset.cr] = named.value;
     const q = e.target.closest('[data-q]');
-    if (q && e.target.tagName === 'TEXTAREA') C.dirty[`q${q.dataset.q}`] = e.target.value;
+    if (q && e.target.tagName === 'TEXTAREA') { C.dirty[`q${q.dataset.q}`] = e.target.value; markAnswered(); }
   });
+  // A question with text in its answer greys at once, before any save.
+  function markAnswered() {
+    for (const el of page.querySelectorAll('[data-q]')) {
+      const field = el.querySelector('textarea');
+      if (field) el.classList.toggle('done', field.value.trim() !== '');
+    }
+  }
 
   async function loadOwners() {
     C.owners = [];
@@ -951,7 +961,9 @@
   // The next grilling round, asked.
   function askGrill() {
     const body = fields();
-    act('the AI prepares the next round', async () => { await save(body); await post('grill'); });
+    // The new round may open new topics anywhere: back to the top to read it through.
+    act('the AI prepares the next round', async () => { await save(body); await post('grill'); })
+      .then(() => { if (!C.error) page.scrollIntoView({ block: 'start' }); });
   }
 
   // ---- gestures -------------------------------------------------------------------
@@ -1028,6 +1040,7 @@
       const q = page.querySelector(`[data-q="${t.dataset.crTake}"]`);
       const rec = record().questions.find((x) => String(x.id) === t.dataset.crTake);
       if (q && rec) { q.querySelector('textarea').value = rec.recommended; C.dirty[`q${rec.id}`] = rec.recommended; }
+      markAnswered();
       keepAnswers();
       return;
     }
@@ -1037,7 +1050,7 @@
       act('saving', () => save(body));
       return;
     }
-    if (t.matches('[data-cr-take-all]')) { takeAll(); keepAnswers(); return; }
+    if (t.matches('[data-cr-take-all]')) { takeAll(); markAnswered(); keepAnswers(); return; }
     if (t.dataset.crReqDel) {
       page.querySelector(`[data-req="${t.dataset.crReqDel}"]`)?.remove();
       const body = fields();

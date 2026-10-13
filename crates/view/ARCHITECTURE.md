@@ -192,8 +192,10 @@ It has two sections:
      retouched or deleted. Each question carries a `topic`, the part of the
      product it decides (empty for the product as a whole): the page shows
      one card per topic, *General* first. Still one call per round — the
-     prompt lists the topics in use, asks to reuse them, and forbids one
-     decision under two topics; `add_round` folds a topic differing only by
+     prompt lists the topics in use, asks to reuse them (a new one only for
+     a part no topic covers), and forbids one decision under two topics.
+     The last round's open questions are yellow, an answered one greys as
+     soon as its field has text, and a new round scrolls back to the top; `add_round` folds a topic differing only by
      case onto the one already given, and the roadmap issue's decisions
      follow the same topics; *continue grilling* asks the next round once
      every open one is answered; *use the N recommendations* fills the open
