@@ -216,6 +216,34 @@ What would flip to **A**: if in real use stages get stuck and we want to resume
 without killing the run, or if predictive quotas become necessary to avoid wasting
 rounds. Both plausible — hence "destination", not "never".
 
+## Prompt cache — what C pays, and how a round shares a prefix
+
+Measured on Claude Code 2.1.292, sonnet, 2026-10-13:
+
+- A fresh `claude -p` re-reads only the system prompt and tools (~21k
+  tokens). Its whole first message (CLAUDE.md, skills, the harness's
+  prompt) is a cache **write**, at the 1-hour TTL: twice the input price.
+  Claude Code sets its cache breakpoint at the end of the message, so two
+  sessions opening on the same repo map share nothing past the system.
+- `--resume <base> --fork-session` is the only way for a session to start
+  from another's prefix. A step forked from a base holding a 31k context
+  cost $0.037 against $0.129 fresh.
+- A fork reports `total_cost_usd` for the **whole** conversation, base
+  included: the adapter takes the base's cost out (`net_of_base`).
+- The operator's profile (claude.ai MCP servers, user plugins and skills)
+  is kept out of every robot session (`LEAN` flags): 2.4k fewer tokens
+  written per session.
+
+How it is wired: `SessionFactory::fork` opens a branch of a `Base`; a
+workflow that sets `Context::base` makes every later session stage of the
+round a branch. Refinement does, in its `prime` stage — the map and the
+hierarchy told once, right after `explore` — and its steps then send only
+their own template. A carrier that reports no session (a dry-run) leaves no
+base, and the steps carry the context themselves, as before.
+
+Measure it with `scripts/cache-report.sh`: per stage, the share of cache
+writes and the write per session.
+
 ## Sources
 
 - [Monitoring — Claude Code Docs](https://code.claude.com/docs/en/monitoring-usage) — `claude_code.cost.usage` (USD), `claude_code.token.usage`, exporteurs locaux

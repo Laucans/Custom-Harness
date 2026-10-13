@@ -22,7 +22,7 @@ use harness_core::execution::{Gate, Stage, StageBody, Unpaid};
 use harness_core::ports::agent::SessionSpec;
 
 use crate::prompts;
-use crate::refinement::action::actions::{AskRefine, RecordWantedSections};
+use crate::refinement::action::actions::{AskRefine, Prime, RecordWantedSections};
 use crate::refinement::action::publish::Write;
 use crate::refinement::checks::gates::{
     IssueIsATask, NothingIsWritten, RouterIsOff, RouterNamedSections, SectionIsWanted,
@@ -34,6 +34,8 @@ use crate::refinement::data::state::RefinementState;
 use crate::refinement::orchestration::prompts as text;
 use crate::refinement::ports::Ports;
 
+/// The prime stage name: the base every later step branches from.
+pub const PRIME: &str = "prime";
 /// The router stage name.
 pub const ROUTER: &str = "router";
 /// The coherence stage name.
@@ -97,6 +99,31 @@ fn paid(
                 merged_body: stage == COHERENCE || stage == ADVICE,
                 phase,
                 context: config.context.clone(),
+                artifacts_dir: config.artifacts_dir.clone(),
+                explore: config.explore,
+                disk: Rc::clone(&ports.disk),
+                spending: Rc::clone(&ports.spending),
+            })],
+        },
+    }
+}
+
+/// The base: the map and the hierarchy, told once, before any step.
+///
+/// Not in [`table`]: it reads the map, which the round puts first, so the
+/// round puts this right after it.
+#[must_use]
+pub fn prime(ports: &Ports, config: &Config) -> Stage<RefinementState> {
+    Stage {
+        name: PRIME.to_string(),
+        pre: None,
+        post: None,
+        body: StageBody::Session {
+            spec: config.prime.clone(),
+            sessions: Rc::clone(&ports.sessions),
+            actions: vec![Box::new(Prime {
+                stage: PRIME.to_string(),
+                ask: text::PRIME_PROMPT.to_string(),
                 artifacts_dir: config.artifacts_dir.clone(),
                 explore: config.explore,
                 disk: Rc::clone(&ports.disk),

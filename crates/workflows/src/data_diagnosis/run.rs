@@ -49,7 +49,7 @@ mod tests {
     use async_trait::async_trait;
     use harness_core::domain::{Outcome, Spend};
     use harness_core::execution::{Context, Guarded, Settings};
-    use harness_core::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
+    use harness_core::ports::agent::{Base, Reply, Session, SessionFactory, SessionSpec};
     use harness_core::ports::store::spending::{Entry, Spending};
     use harness_core::traces::{Logbook, Sink, Verbosity};
 
@@ -78,6 +78,10 @@ mod tests {
         async fn open(&self, spec: &SessionSpec) -> Outcome<Box<dyn Session>> {
             assert_eq!(spec.model, "opus");
             Ok(Box::new(Answers(self.0.clone(), Rc::clone(&self.1))))
+        }
+
+        async fn fork(&self, spec: &SessionSpec, _base: &Base) -> Outcome<Box<dyn Session>> {
+            self.open(spec).await
         }
     }
 

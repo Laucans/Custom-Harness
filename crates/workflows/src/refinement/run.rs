@@ -90,6 +90,10 @@ mod tests {
         );
         assert_eq!(built.issue_key, "25");
         assert_eq!(built.remaining.get(), 1, "a run is one round");
-        assert_eq!(built.round.stages.len(), 9, "the map, then the table");
+        assert_eq!(
+            built.round.stages.len(),
+            10,
+            "the map, the base, then the table"
+        );
     }
 }

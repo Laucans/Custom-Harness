@@ -529,6 +529,16 @@ fn refinement_line() -> Line {
                 None,
             ),
             paid(
+                "prime",
+                "tell the context once",
+                Kind::Printer,
+                "sonnet",
+                "Tells the map and the hierarchy once, in the session every later stage \
+                 branches from, so each stage pays only for its own question.",
+                None,
+                None,
+            ),
+            paid(
                 "router",
                 "route the sections",
                 Kind::Inspector,

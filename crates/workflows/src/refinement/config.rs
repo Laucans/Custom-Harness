@@ -23,6 +23,9 @@ pub struct Config {
     pub context: String,
     /// `--explore`: no map, each step re-reads the repository.
     pub explore: bool,
+    /// Model and effort for the base every step branches from — the
+    /// steps' own, or their branches miss the base's cache.
+    pub prime: SessionSpec,
     /// Model and effort for the "Business Goal" section.
     pub goal: SessionSpec,
     /// Model and effort for the "Technical" section.
@@ -74,6 +77,7 @@ pub(crate) mod fake {
             refinement_dir,
             context: context.to_string(),
             explore: false,
+            prime: spec(),
             goal: spec(),
             technical: spec(),
             criteria: spec(),

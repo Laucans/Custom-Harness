@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::ports::agent::{Reply, SessionSpec};
+use crate::ports::agent::{Base, Reply, SessionSpec};
 use crate::traces::Logbook;
 
 /// What execution holds during a run, generic over `S` — the workflow-specific
@@ -31,6 +31,10 @@ pub struct Context<S> {
     /// (the dev loop, on a task labelled for its strongest model), the
     /// stage runner reads it. `None`: each stage keeps its own.
     pub session_spec: Option<SessionSpec>,
+    /// The conversation every session of the round branches from, once a
+    /// workflow has built one (refinement, after its map). `None`: each
+    /// stage opens a fresh session.
+    pub base: Option<Base>,
 }
 
 impl<S> Context<S> {
@@ -43,6 +47,7 @@ impl<S> Context<S> {
             traces,
             results: HashMap::new(),
             session_spec: None,
+            base: None,
         }
     }
 }

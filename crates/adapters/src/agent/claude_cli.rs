@@ -66,7 +66,7 @@ use serde::Deserialize;
 use crate::agent::stream_log;
 use crate::shell::process::{self, Limits};
 use harness_core::domain::{Halt, Outcome, Spend, Tokens, markers};
-use harness_core::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
+use harness_core::ports::agent::{Base, Reply, Session, SessionFactory, SessionSpec};
 use harness_core::ports::shell::process::{Ran, last_line};
 
 /// The called binary. Named here so a test can read it.
@@ -190,6 +190,8 @@ pub struct ClaudeCli {
     /// Learned from the first turn's response. `None` = conversation does not
     /// yet exist, so no `--resume` to pass.
     session_id: Option<String>,
+    /// The conversation the first turn branches from, if any.
+    base: Option<Base>,
     /// The run's folder, where this session's traces are appended.
     /// `None` = nothing kept.
     traces: Option<PathBuf>,
@@ -215,8 +217,24 @@ impl ClaudeCli {
             effort: spec.effort.clone(),
             permission_mode: permission_mode.to_string(),
             session_id: None,
+            base: None,
             traces,
             turn: 0,
+        }
+    }
+
+    /// A conversation whose first turn continues a copy of `base`.
+    #[must_use]
+    pub fn forked(
+        cwd: PathBuf,
+        spec: &SessionSpec,
+        permission_mode: &str,
+        traces: Option<PathBuf>,
+        base: Base,
+    ) -> Self {
+        Self {
+            base: Some(base),
+            ..Self::new(cwd, spec, permission_mode, traces)
         }
     }
 
@@ -268,9 +286,19 @@ impl ClaudeCli {
             self.permission_mode.clone(),
         ];
         args.extend(LEAN.iter().map(ToString::to_string));
-        if let Some(id) = &self.session_id {
-            args.push("--resume".to_string());
-            args.push(id.clone());
+        match (&self.session_id, &self.base) {
+            (Some(id), _) => {
+                args.push("--resume".to_string());
+                args.push(id.clone());
+            }
+            // The first turn of a branch: a copy of the base under a new
+            // identifier, which the reply teaches like any first turn's.
+            (None, Some(base)) => {
+                args.push("--resume".to_string());
+                args.push(base.session.clone());
+                args.push("--fork-session".to_string());
+            }
+            (None, None) => {}
         }
         args.push("--".to_string());
         args.push(prompt.to_string());
@@ -566,13 +594,26 @@ impl ClaudeCli {
             return Err(failed_process(&out));
         }
 
-        let (reply, session_id) = parse(&out.stdout, now_seconds())?;
+        let (mut reply, session_id) = parse(&out.stdout, now_seconds())?;
+        reply.spend.cost_usd = net_of_base(reply.spend.cost_usd, self.base.as_ref());
         // The first turn learns the identifier; later turns return it as-is,
         // and rewriting it costs nothing.
         if !session_id.is_empty() {
             self.session_id = Some(session_id);
         }
         Ok(reply)
+    }
+}
+
+/// What a turn cost on its own, once the base it branched from is taken out.
+///
+/// A branch reports the whole conversation's cost, its base's included
+/// (measured on 2.1.292): left as is, the ledger would count the base once
+/// per branch.
+fn net_of_base(total: Option<f64>, base: Option<&Base>) -> Option<f64> {
+    match (total, base.and_then(|b| b.cost_usd)) {
+        (Some(total), Some(paid)) => Some((total - paid).max(0.0)),
+        (total, _) => total,
     }
 }
 
@@ -612,6 +653,16 @@ impl SessionFactory for ClaudeCliFactory {
             spec,
             &self.permission_mode,
             self.traces.clone(),
+        )))
+    }
+
+    async fn fork(&self, spec: &SessionSpec, base: &Base) -> Outcome<Box<dyn Session>> {
+        Ok(Box::new(ClaudeCli::forked(
+            self.cwd.clone(),
+            spec,
+            &self.permission_mode,
+            self.traces.clone(),
+            base.clone(),
         )))
     }
 }
@@ -711,6 +762,56 @@ mod tests {
         assert!(args.contains("--output-format stream-json"));
         // The CLI refuses the stream without it.
         assert!(args.contains("--verbose"));
+    }
+
+    fn base() -> Base {
+        Base {
+            session: "base-1".to_string(),
+            cost_usd: Some(0.14),
+        }
+    }
+
+    #[test]
+    fn a_branch_first_turn_copies_its_base_under_a_new_identifier() {
+        let c = ClaudeCli::forked(
+            PathBuf::from("/tmp/workspace"),
+            &SessionSpec {
+                model: "sonnet".to_string(),
+                effort: "high".to_string(),
+            },
+            "bypassPermissions",
+            None,
+            base(),
+        );
+        let args = c.argv("x").join(" ");
+        assert!(args.contains("--resume base-1 --fork-session"));
+        assert!(args.contains("--model sonnet"));
+    }
+
+    #[test]
+    fn a_branch_later_turn_resumes_its_own_copy_not_the_base() {
+        let mut c = cli();
+        c.base = Some(base());
+        c.session_id = Some("branch-2".to_string());
+        let args = c.argv("x").join(" ");
+        assert!(args.contains("--resume branch-2"));
+        assert!(!args.contains("base-1"));
+        assert!(!args.contains("--fork-session"));
+    }
+
+    #[test]
+    fn a_branch_cost_leaves_its_base_out() {
+        let said = net_of_base(Some(0.1779), Some(&base())).expect("cost");
+        assert!((said - 0.0379).abs() < 1e-9);
+        // Never below zero, whatever the carrier rounded.
+        assert_eq!(net_of_base(Some(0.1), Some(&base())), Some(0.0));
+        assert_eq!(net_of_base(Some(0.1), None), Some(0.1));
+        assert_eq!(net_of_base(None, Some(&base())), None);
+        let unpriced = Base {
+            cost_usd: None,
+            ..base()
+        };
+        assert_eq!(net_of_base(Some(0.1), Some(&unpriced)), Some(0.1));
     }
 
     #[test]

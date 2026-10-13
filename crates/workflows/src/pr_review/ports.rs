@@ -47,7 +47,7 @@ pub(crate) mod fake {
 
     use async_trait::async_trait;
     use harness_core::domain::{Halt, Outcome};
-    use harness_core::ports::agent::{Session, SessionFactory, SessionSpec};
+    use harness_core::ports::agent::{Base, Session, SessionFactory, SessionSpec};
     use harness_core::ports::store::review::ReviewCosts;
     use harness_core::ports::store::spending::{Entry, Spending};
 
@@ -65,6 +65,10 @@ pub(crate) mod fake {
             Err(Halt::Failed(
                 "no session should open in this test".to_string(),
             ))
+        }
+
+        async fn fork(&self, spec: &SessionSpec, _base: &Base) -> Outcome<Box<dyn Session>> {
+            self.open(spec).await
         }
     }
 

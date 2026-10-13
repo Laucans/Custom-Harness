@@ -6,7 +6,8 @@
 //!
 //! **This is where the map goes in front of the sequence.** `stages::table`
 //! has nothing to read the repo with, and has no business having it; the round
-//! is what owns the order, so the two shared entries are prepended here.
+//! is what owns the order, so the two shared entries are prepended here, and
+//! the base that tells the map to every later step right after them.
 
 use harness_core::execution::{Round, Stage};
 
@@ -29,6 +30,7 @@ pub fn build(
 ) -> Round<RefinementState> {
     let mut sequence: Vec<Stage<RefinementState>> =
         explore::entries::<RefinementState>(explore_ports, explore_config).into();
+    sequence.push(stages::prime(ports, config));
     sequence.extend(stages::table(ports, config, phase));
     Round::plain(sequence)
 }
@@ -52,8 +54,16 @@ mod tests {
             Phase::Business,
         );
         let names: Vec<&str> = round.stages.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(&names[..2], [explore::GROUND, explore::SKILL]);
-        assert_eq!(names.len(), 9, "the two entries, then the seven steps");
+        assert_eq!(
+            &names[..3],
+            [explore::GROUND, explore::SKILL, stages::PRIME],
+            "the base follows the map it tells"
+        );
+        assert_eq!(
+            names.len(),
+            10,
+            "the two entries, the base, then the seven steps"
+        );
         assert!(round.tolerance.is_none(), "refinement tolerates nothing");
     }
 }

@@ -76,7 +76,7 @@ One module per external component, traits only (plus the few values those
 traits exchange). **A port decides, an adapter calls.**
 
 ```
-agent         Session, SessionFactory, SessionSpec, Reply
+agent         Session, SessionFactory (open, fork), SessionSpec, Reply, Base — a fork branches from a Base the round holds in `Context::base`
 shell/git     Repo, Repos — reads answer, setup verbs return `Ran`
 shell/github  GitHub — a failed read is never an empty list
 shell/disk    Disk — exists so deletion is testable

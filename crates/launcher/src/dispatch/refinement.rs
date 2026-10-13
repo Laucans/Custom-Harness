@@ -94,6 +94,7 @@ pub async fn run(
         refinement_dir,
         context: String::new(),
         explore: false,
+        prime: spec(),
         goal: spec(),
         technical: spec(),
         criteria: spec(),

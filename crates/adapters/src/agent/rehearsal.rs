@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 
 use harness_core::domain::{Outcome, Spend};
-use harness_core::ports::agent::{Reply, Session, SessionFactory, SessionSpec};
+use harness_core::ports::agent::{Base, Reply, Session, SessionFactory, SessionSpec};
 use harness_core::traces::Logbook;
 
 /// Opens sessions that are not really sessions.
@@ -34,6 +34,16 @@ impl SessionFactory for Rehearsal {
         self.log.say(&format!(
             "dry-run — no session opened (would have been {}, effort {})",
             spec.model, spec.effort
+        ));
+        Ok(Box::new(Transcript {
+            log: self.log.clone(),
+        }))
+    }
+
+    async fn fork(&self, spec: &SessionSpec, base: &Base) -> Outcome<Box<dyn Session>> {
+        self.log.say(&format!(
+            "dry-run — no session opened (would have branched from {}, on {}, effort {})",
+            base.session, spec.model, spec.effort
         ));
         Ok(Box::new(Transcript {
             log: self.log.clone(),

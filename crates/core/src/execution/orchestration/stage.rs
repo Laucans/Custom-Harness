@@ -76,7 +76,10 @@ impl<S> Executable<S> for Stage<S> {
             } => {
                 ctx.traces.say(&crate::traces::session_opens(&self.name));
                 let spec = ctx.session_spec.as_ref().unwrap_or(spec);
-                let mut backend = sessions.open(spec).await?;
+                let mut backend = match &ctx.base {
+                    Some(base) => sessions.fork(spec, base).await?,
+                    None => sessions.open(spec).await?,
+                };
                 let mut open = Open {
                     ctx,
                     session: &mut *backend,
@@ -97,16 +100,23 @@ mod tests {
     use crate::execution::checks::gate::Gate;
     use crate::execution::data::context::Settings;
     use crate::execution::traits::{Guarded, Verification};
-    use crate::ports::agent::Reply;
+    use crate::ports::agent::{Base, Reply};
     use crate::traces::Logbook;
 
-    struct FakeSession;
+    /// A session that says which base it branched from, if any.
+    struct FakeSession {
+        from: Option<String>,
+    }
 
     #[async_trait(?Send)]
     impl crate::ports::agent::Session for FakeSession {
         async fn ask(&mut self, prompt: &str) -> Outcome<Reply> {
+            let text = self.from.as_ref().map_or_else(
+                || format!("answered {prompt}"),
+                |base| format!("{base} answered {prompt}"),
+            );
             Ok(Reply {
-                text: format!("answered {prompt}"),
+                text,
                 stop_line: None,
                 spend: crate::domain::Spend {
                     cost_usd: Some(0.01),
@@ -124,7 +134,17 @@ mod tests {
             &self,
             _spec: &SessionSpec,
         ) -> Outcome<Box<dyn crate::ports::agent::Session>> {
-            Ok(Box::new(FakeSession))
+            Ok(Box::new(FakeSession { from: None }))
+        }
+
+        async fn fork(
+            &self,
+            _spec: &SessionSpec,
+            base: &Base,
+        ) -> Outcome<Box<dyn crate::ports::agent::Session>> {
+            Ok(Box::new(FakeSession {
+                from: Some(base.session.clone()),
+            }))
         }
     }
 
@@ -202,6 +222,30 @@ mod tests {
                 "answered /code".to_string()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_session_stage_branches_from_the_base_the_round_holds() {
+        let stage = Stage {
+            name: "coherence".into(),
+            pre: None,
+            post: None,
+            body: StageBody::Session {
+                spec: SessionSpec {
+                    model: "sonnet".into(),
+                    effort: "high".into(),
+                },
+                sessions: Rc::new(FakeFactory),
+                actions: vec![Box::new(Ask { prompt: "/check" })],
+            },
+        };
+        let mut context = ctx();
+        context.base = Some(Base {
+            session: "base-1".into(),
+            cost_usd: Some(0.1),
+        });
+        stage.execute(&mut context).await.unwrap();
+        assert_eq!(context.state, vec!["base-1 answered /check".to_string()]);
     }
 
     #[tokio::test]

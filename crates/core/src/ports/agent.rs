@@ -55,6 +55,23 @@ pub struct SessionSpec {
     pub effort: String,
 }
 
+/// A finished conversation that later sessions branch from.
+///
+/// Why it exists: the prompt cache. A fresh session re-writes every byte of
+/// its first message, while a branch re-reads the conversation it starts
+/// from — so stages that share a long context (the repo map, the hierarchy)
+/// hear it once, in the base, and each branch adds only its own question.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Base {
+    /// The identifier the carrier reported for the base conversation.
+    pub session: String,
+    /// What the base cost, as its carrier reported it.
+    ///
+    /// A carrier that reports a branch's cost as the whole conversation's
+    /// subtracts this, so the ledger never counts the base twice.
+    pub cost_usd: Option<f64>,
+}
+
 /// Builds a [`Session`].
 ///
 /// The only thing `harness-core` knows about a concrete carrier: that one
@@ -64,4 +81,10 @@ pub struct SessionSpec {
 pub trait SessionFactory {
     /// Opens a new session for this `spec`.
     async fn open(&self, spec: &SessionSpec) -> Outcome<Box<dyn Session>>;
+
+    /// Opens a session that continues a copy of `base`, leaving `base` as is.
+    ///
+    /// The session already holds everything `base` was told: a caller sends
+    /// it only what is new.
+    async fn fork(&self, spec: &SessionSpec, base: &Base) -> Outcome<Box<dyn Session>>;
 }

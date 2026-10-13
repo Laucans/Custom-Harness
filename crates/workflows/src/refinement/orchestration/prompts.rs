@@ -1,6 +1,17 @@
-//! The text of each refinement stage: the router, the five sections,
+//! The text of each refinement stage.
+//!
+//! The base every step branches from, the router, the five sections,
 //! coherence, the advice on the technical refinement, and the graph pass
 //! that closes the technical half.
+
+/// What the base is asked once it holds the shared context.
+///
+/// Nothing to do yet: every step arrives later, each in its own branch of
+/// this conversation. One word keeps the base cheap and the branches clean.
+pub const PRIME_PROMPT: &str = "The context above is shared by the refinement steps \
+that follow; each one arrives as its own message, in its own copy of this \
+conversation. Do not act on it yet: read no file, use no tool, and reply with \
+the single word OK.";
 
 /// The router prompt: which sections this round reopens.
 pub const ROUTER_PROMPT: &str =
