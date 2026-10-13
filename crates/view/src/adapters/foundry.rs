@@ -551,6 +551,33 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_that_cannot_be_wiped_says_so() {
+        let dir = folder("stuck");
+        std::fs::create_dir_all(dir.join(".llocal")).expect("llocal");
+        // A read-only parent: nothing in it can be removed.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).expect("mode");
+        let why = Cli::new(dir.clone(), Vec::new()).wipe_harness_data(&dir);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(why.expect_err("stuck").contains("cannot be removed"));
+    }
+
+    #[test]
+    fn the_checkout_the_view_runs_from_is_never_removed_whatever_its_spelling() {
+        let dir = folder("self");
+        std::fs::create_dir_all(dir.join("sub")).expect("sub");
+        let cli = Cli::new(dir.clone(), Vec::new());
+        for spelling in [dir.clone(), dir.join("sub").join("..")] {
+            let why = cli
+                .remove_folder(&spelling)
+                .expect_err("the checkout itself");
+            assert!(why.contains("checkout this view runs from"), "{why}");
+        }
+        assert!(dir.join("sub").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_repository_is_deleted_by_its_slug_and_a_missing_scope_says_how_to_grant_it() {
         let dir = folder("delete");
         let said = dir.join("said");

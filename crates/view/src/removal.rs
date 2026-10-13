@@ -881,6 +881,87 @@ mod tests {
         assert_eq!(*asked.lock().expect("held"), [PathBuf::from("/f/made")]);
     }
 
+    /// A watch that refuses every signal from the `ok`th on.
+    struct Stubborn {
+        ok: usize,
+        sent: Mutex<usize>,
+    }
+
+    impl Plant for Stubborn {
+        fn processes(&self) -> Vec<Process> {
+            running_watch().processes
+        }
+
+        fn works_here(&self, _pid: u32) -> bool {
+            true
+        }
+
+        fn start(&self, _lanes: Option<usize>) -> Result<u32, String> {
+            Err("never started".to_string())
+        }
+
+        fn output_tail(&self) -> String {
+            String::new()
+        }
+
+        fn send(
+            &self,
+            _signal: crate::ports::Signal,
+            _target: crate::ports::Target,
+        ) -> Result<(), String> {
+            let mut sent = self.sent.lock().expect("held");
+            *sent += 1;
+            if *sent > self.ok {
+                Err("no such process".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn removal_over(plant: Stubborn) -> (Removal, Arc<Book>) {
+        let book = Arc::new(Book {
+            known: vec![factory("made", "/f/made", "me/made")],
+            forgotten: Mutex::default(),
+        });
+        let plant = Arc::new(plant);
+        let removal = Removal::new(
+            book.clone(),
+            Arc::new(Wreck::default()),
+            Arc::new(move |_| Arc::clone(&plant) as Arc<dyn Plant>),
+            PathBuf::from("/f"),
+            "here",
+        );
+        (removal, book)
+    }
+
+    #[test]
+    fn a_first_signal_that_does_not_land_stops_the_take_down_where_it_is() {
+        for degree in [Degree::Delink, Degree::Destroy] {
+            let (removal, book) = removal_over(Stubborn {
+                ok: 0,
+                sent: Mutex::default(),
+            });
+            assert_eq!(
+                removal.take_down("made", degree, "me/made"),
+                Err(Refusal::Failed("no such process".to_string()))
+            );
+            assert!(forgotten(&book).is_empty());
+        }
+    }
+
+    #[test]
+    fn the_signals_after_the_first_may_find_the_watch_gone() {
+        for degree in [Degree::Delink, Degree::Destroy] {
+            let (removal, book) = removal_over(Stubborn {
+                ok: 1,
+                sent: Mutex::default(),
+            });
+            assert!(removal.take_down("made", degree, "me/made").is_ok());
+            assert_eq!(forgotten(&book), ["made"]);
+        }
+    }
+
     #[test]
     fn the_reason_of_each_refusal_reads_as_a_sentence() {
         assert!(
