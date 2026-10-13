@@ -148,14 +148,18 @@ It has two sections:
 
 - **Connect an existing repository** — a URL; the view makes the factory's
   folder, runs `init-repo` there, enrolls it, and opens its plant.
-- **Initialize a factory** — nine steps under a breadcrumb
+- **Initialize a factory** — ten steps under a breadcrumb
   (`#new-factory/<step>`), each gated (`domain::creation`, `Creation::may_enter`:
-  a step opens once every step before it has what it needs):
+  a step opens once every step before it has what it needs). Each crumb
+  wears its step's mark (`Creation::marks`, served as `marks`): green done,
+  yellow stale — made from something upstream that moved, carried down the
+  scope → mock-ups → rules → data chain — red blocked — a gate before where
+  the human went (`Creation::visited`) fails — grey locked:
 
   1. **repository** — name, owner (`gh api user`, `user/orgs`), visibility:
      `gh repo create --add-readme`, the folder, `harness init-repo`, the
      register, a creation record; then the view switches to the new factory,
-     where steps 2 to 9 run — a factory like any, so the easels serve it.
+     where steps 2 to 10 run — a factory like any, so the easels serve it.
      *Start* on the landing goes to `#new-factory/found`, the same form read
      as a factory with nothing done yet: the record on the desk is the
      factory open here, never the one being founded, so a factory whose own
@@ -256,8 +260,11 @@ It has two sections:
      discussed, pages added — before the review; *draw again* asks first
      (the pages go, the pins stay), and moving on **flushes** the draft's
      steps into the workspace (`MockupPane.flush`, `materialize`) so the
-     server reads what the human saw;
-  8. **review** — first the accepted mock-up made again of
+     server reads what the human saw. The easel's micro-frontends list is
+     hidden here (`strip: false`); elsewhere it reads in two sections — on
+     this page, the rest (each saying where it is used) — and pointing at
+     an entry lights its parts on the page, and the reverse;
+  8. **rules** (once the review; `Step::Rules`, serde alias `review`) — first the accepted mock-up made again of
      **micro-frontends** (`POST /api/creation/componentize`,
      `Work::Componentize`, started by the step itself; `componentize_prompt`:
      a fragment, a fixture and a `pages.json` entry per Micro-UI, the pages
@@ -266,26 +273,57 @@ It has two sections:
      branch already had — this call has no `discard()`, components persist
      across a retry, so one already there is never reported as just made),
      and a gate refusing a page that injects none or one unlisted or
-     without a fragment (`not_componentized`). Then the **requirements**:
-     read by the AI off the scope and the mock-up (`requirements_prompt`,
-     `parse_requirements`, `POST /api/creation/requirements`), each tied to
-     the pages and the micro-frontends that carry it — with the
-     Capabilities they `need` and the DataCapabilities they `action`, read
-     from `GET /api/mockup?branch=` — retouched, added, deleted, re-tied by
-     chips (`PUT /api/creation`, `Edit::requirements`; one the human touched
-     is `human` and survives a new reading). The mock-up's easel and its
-     pins sit under them (the same persistent host as the mock-ups step: a
-     redraw leaves it as it is, so its iframes and canvas keep their
-     place), then two ways: **regenerate** (back to the brief, everything
-     kept; the grilling keeps its questions, editable and deletable, and
-     may ask more; the workspace starts again from the branch), **accept**
-     (the draft flushed, the requirements saved first);
-  9. **initialize** — the **record** of the creation written in the
+     without a fragment (`not_componentized`). Then the **rules**
+     (`Requirement` in the code): read by the AI off the scope and the
+     mock-up (`requirements_prompt`, `parse_requirements`,
+     `POST /api/creation/requirements`), each a step of a `journey` or a
+     `business` rule (`Family`) with its criterion (given…, when…,
+     then…), tied to the pages and the micro-frontends that carry it —
+     retouched, added, deleted, re-tied (`PUT /api/creation`,
+     `Edit::requirements`; one the human touched is `human` and survives a
+     new reading); one is read again alone (`rule_prompt`,
+     `POST /api/creation/rules/{id}/reread`). They sit beside the mock-up's
+     easel: a rule picked filters the easel's list to its micro-frontends,
+     marks them on the page and shows its page (`MockupPane.focus`); a
+     micro-frontend is generated again from there (`MockupPane.regenerate`).
+     Validated (`Creation::validate_rules`, `POST /api/creation/rules/validate`)
+     once each has its criterion and a support and no blocking finding is
+     left; any change takes it back; read off a cut that moved, they are
+     stale (`rules_for`). An **Architecture** tab holds the guard
+     (`domain::audit`, `POST /api/creation/audit`, run once by itself):
+     names, systems' sizes and micro-frontends reaching into another
+     system read off the cut; duplicates, writes passed off as reads and
+     Capabilities leaning on another read by an AI, with every write's
+     effect (parallel when an insert); a finding is applied by a session in
+     the workspace or dismissed (`/api/creation/audit/{id}/{apply|dismiss}`),
+     and only a write passed off as a read blocks. A *simple view* (a
+     per-viewer preference, for a client who is no developer) hides the tab
+     and says what blocks in plain words. Then **regenerate** (back to the
+     brief, everything kept; the grilling keeps its questions, editable and
+     deletable, and may ask more; the workspace starts again from the
+     branch), or on to the data;
+  9. **data** — the data model drafted by the AI off the rules, the cut and
+     the mock-up's fixtures (`domain::data_draft`, `POST /api/creation/data`):
+     tables (contract M) and aggregates (after contract I — criticality,
+     invariants carrying the business rules, relation policies), with the
+     fields each DataCapability writes; drawn in the data pane, which reads
+     it from `GET /api/creation/data-model` (`source`). The structure
+     changes through the AI (`/api/creation/data/change`); the human
+     retouches purposes and picks criticalities and policies
+     (`PUT /api/creation/data`, `DataEdit`). Four gates keep it from
+     validation (`DataDraft::gaps`): a business rule carried by nothing, a
+     foreign key with no policy, a write on a field the model has not, a
+     field with no criticality; drafted from rules that moved, it is stale.
+     Then **accept** (the volumes said first; waits for the rules and the
+     data model validated);
+  10. **initialize** — the **record** of the creation written in the
      repository beside the mock-up (`mock/proof-of-concept.json` and `.md`,
      `creation::record_json`, `RECORD_JSON`: the brief, the decisions with
-     the questions asked, the scope, the requirements, the pages with their
+     the questions asked, the scope, the rules, the pages with their
      objectives, the micro-frontends with their `needs` and `actions`, the
-     pins no backlog issue carries, the design system), then the mock-up
+     pins no backlog issue carries, the design system, the data model — and
+     the data model itself, `mock/data/model.json` and
+     `mock/data/aggregates.json`, for the write side to install), then the mock-up
      published on the integration branch (else saved on
      `mockup/proof-of-concept`) and **where it went kept**
      (`Creation::mockup_at`), the design system published and carried
