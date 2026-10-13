@@ -779,7 +779,12 @@
     // Both choices call the real backend (regenerate scraps the mock-up,
     // accept publishes and opens a roadmap task) — disabled in the demo,
     // the same read-only stance as the embedded mock-up pane above.
-    const lock = DEMO ? ' disabled title="Disabled in the demo"' : '';
+    // Neither choice before the micro-frontends and the requirements are
+    // there to be judged: the review is of them too.
+    const r = record();
+    const waiting = !r || !r.componentized || running() || !!C.busy;
+    const lock = DEMO ? ' disabled title="Disabled in the demo"'
+      : waiting ? ' disabled title="Wait for the micro-frontends and the requirements"' : '';
     return `<div class="cr-choices">
         <section class="cr-card"><h3>a · Regenerate</h3><p class="muted">Back to the brief with everything filled in; the grilling keeps its questions and their answers, and may ask more.</p><button type="button" class="cr-btn" data-cr-regenerate${lock}>${C.confirm === 'regenerate' ? 'The mock-ups go. Click again' : 'Regenerate'}</button></section>
         <section class="cr-card"><h3>b · Accept the proof of concept</h3><p class="muted">The record — brief, decisions, scope, requirements, pages, micro-frontends, the pins left — is written in the repository beside the mock-up; the mock-up and the design system are published, the roadmap task opened with all of it, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept${lock}>Accept</button></section>
