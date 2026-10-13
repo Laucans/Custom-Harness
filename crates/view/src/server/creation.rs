@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::creation_desk::{CreationDesk, Founding};
-use crate::domain::creation::{Creation, Edit, Step};
+use crate::domain::creation::{BRIEF_PARTS, Creation, Edit, Step};
 
 use super::{AppState, json};
 
@@ -42,6 +42,7 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "job": desk.job(),
         "branch": desk.integration_branch(),
         "steps": Step::ALL,
+        "briefParts": BRIEF_PARTS,
     }))
 }
 
@@ -123,6 +124,27 @@ pub(super) async fn connect(State(state): State<AppState>, Json(ask): Json<Conne
             Json(serde_json::json!({ "job": desk.job() })),
         )
             .into_response(),
+        Err(why) => refused(why),
+    }
+}
+
+/// The description the human wrote at large.
+#[derive(Debug, Deserialize)]
+pub(super) struct Described {
+    description: String,
+}
+
+/// The description kept, and sorted by the AI into the brief's parts.
+pub(super) async fn decompose(
+    State(state): State<AppState>,
+    Json(said): Json<Described>,
+) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.decompose(said.description).await {
+        Ok(record) => view(desk, Some(record)).await,
         Err(why) => refused(why),
     }
 }

@@ -1916,6 +1916,37 @@ async fn a_step_opens_only_through_its_gate() {
 }
 
 #[tokio::test]
+async fn a_description_is_split_by_the_ai_into_the_brief_parts_the_page_reads() {
+    let roll = Arc::new(Roll::default());
+    let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
+    record.kind = Some(crate::domain::creation::Kind::Vertical);
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), r#"{"who":"bakers"}"#);
+    let (status, body) = json_call(
+        state.clone(),
+        "POST",
+        "/api/creation/decompose",
+        r#"{"description":"a ledger for bakers"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["record"]["description"], "a ledger for bakers");
+    assert_eq!(view["record"]["brief"], "### Who uses it?\n\nbakers");
+    assert_eq!(view["briefParts"][1]["id"], "who");
+    assert_eq!(view["reachable"], "grilling");
+    let (status, body) = json_call(
+        state,
+        "POST",
+        "/api/creation/decompose",
+        r#"{"description":" "}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "describe the application first");
+}
+
+#[tokio::test]
 async fn a_grilling_round_and_a_scope_are_asked_of_the_ai_and_kept() {
     let roll = Arc::new(Roll::default());
     let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");

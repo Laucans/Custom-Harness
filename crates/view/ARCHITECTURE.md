@@ -165,9 +165,15 @@ It has two sections:
      created, *Continue*);
   2. **kind** — *vertical architecture development factory*, the one there
      is (*hexagonal* shown, not selectable);
-  3. **brief** — what the application does, in four guiding questions (the
-     problem, the users, their journeys, the data and integrations; the
-     record keeps one text, a `###` heading per answered question), and
+  3. **brief** — what the application does, first told at large
+     (`Creation::description`), then split by the AI into four parts
+     (`BRIEF_PARTS`: the problem, the users, their journeys, the data and
+     integrations; `POST /api/creation/decompose`, `CreationDesk::decompose`)
+     the human rereads and retouches — or fills alone (*Fill them myself*).
+     The split is a button, or happens on its own once the description has
+     been left for another part of the page for 10 s, before the first split
+     only and never while the page lost the focus to another tab or window.
+     The record keeps one text, a `###` heading per answered part. Then,
      under them the design system's easel on its **material** face
      (`material: true`): the sources the design system is generated from —
      inject a tokens file, or the logo, the moodboard and the design brief

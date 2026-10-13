@@ -51,7 +51,7 @@
   // desk belongs to the factory open here, never to the one being founded.
   const FOUND = 'found';
 
-  const C = { dirty: {}, loaded: false, data: null, route: 'landing', auto: false, busy: '', error: '', owners: null, ownersWhy: '', timer: null, embed: null, view: { width: null, height: null }, trackHidden: false, auto_started: {}, confirm: '', opening: '', pages: null, mock: null, reqTimer: null, pulsed: false, reading: false, again: false };
+  const C = { dirty: {}, loaded: false, data: null, route: 'landing', auto: false, busy: '', error: '', owners: null, ownersWhy: '', timer: null, embed: null, view: { width: null, height: null }, trackHidden: false, auto_started: {}, confirm: '', parts: false, opening: '', pages: null, mock: null, reqTimer: null, pulsed: false, reading: false, again: false };
   const page = $('factory-page');
 
   async function call(method, url, body) {
@@ -191,6 +191,8 @@
   // What the current step's fields hold, as the record takes it.
   function fields() {
     const body = {};
+    const description = page.querySelector('[data-cr="description"]');
+    if (description) body.description = description.value;
     if (page.querySelector('[data-cr^="brief-"]')) body.brief = composeBrief((id) => page.querySelector(`[data-cr="brief-${id}"]`).value);
     const scope = page.querySelector('[data-cr="scope"]');
     if (scope) body.scope = scope.value;
@@ -538,17 +540,13 @@
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="repository">← Back</button><button type="button" class="cr-btn on" data-cr-kind>Continue →</button></div>`;
   }
 
-  // The brief, asked as a few guiding questions. The record keeps one text:
-  // the answered questions, each under its own heading.
-  const BRIEF_QUESTIONS = [
-    { id: 'what', title: 'What is the application, and what problem does it solve?', hint: 'The idea in a few sentences: the need, and what goes wrong today without it.' },
-    { id: 'who', title: 'Who uses it?', hint: 'The kinds of users, their roles, what each may see or do.' },
-    { id: 'journeys', title: 'What do they do with it?', hint: 'The main journeys, start to finish: what a user comes to do, and what they get out of it.' },
-    { id: 'data', title: 'What does it keep, and what does it connect to?', hint: 'The information it stores, the tools or services it talks to, the constraints (devices, languages, offline…).' },
-  ];
+  // The brief: a description told at large, which the AI sorts into a few
+  // parts the human then rereads (`briefParts`, as the server names them).
+  // The record keeps one text: the parts answered, each under its heading.
+  const briefParts = () => (C.data && C.data.briefParts) || [];
   const briefHeading = (q) => `### ${q.title}`;
   function composeBrief(answer) {
-    return BRIEF_QUESTIONS
+    return briefParts()
       .map((q) => [q, answer(q.id).trim()])
       .filter(([, text]) => text)
       .map(([q, text]) => `${briefHeading(q)}\n\n${text}`)
@@ -557,28 +555,79 @@
   // Back from the record's text to one answer per question; a brief written
   // before the questions, without their headings, goes whole to the first.
   function splitBrief(text) {
-    const answers = Object.fromEntries(BRIEF_QUESTIONS.map((q) => [q.id, []]));
-    let current = BRIEF_QUESTIONS[0].id;
+    const parts = briefParts();
+    const answers = Object.fromEntries(parts.map((q) => [q.id, []]));
+    if (!parts.length) return answers;
+    let current = parts[0].id;
     for (const line of (text || '').split('\n')) {
-      const q = BRIEF_QUESTIONS.find((b) => line.trim() === briefHeading(b));
+      const q = parts.find((b) => line.trim() === briefHeading(b));
       if (q) current = q.id;
       else answers[current].push(line);
     }
     return Object.fromEntries(Object.entries(answers).map(([id, lines]) => [id, lines.join('\n').trim()]));
   }
 
+  // The parts show once the description was split, or the human chose to
+  // fill them alone.
+  const split = (r) => !!r.brief.trim() || C.parts;
   function stepBrief(r) {
+    const parts = briefParts();
     const answers = splitBrief(r.brief);
-    return `<p class="muted">What the application does, in four questions. Answer what you know — the more context, the better the AI's questions, the scope and the mock-ups.</p>
+    const shown = split(r);
+    const sorting = C.busy === SORTING;
+    const button = shown
+      ? `<button type="button" class="cr-btn" data-cr-decompose${sorting ? ' disabled' : ''}>${C.confirm === 'decompose' ? 'The parts are replaced. Click again' : 'Split again'}</button>`
+      : `<button type="button" class="cr-btn on" data-cr-decompose${sorting ? ' disabled' : ''}>Split into the ${parts.length} parts</button><button type="button" class="cr-btn" data-cr-parts>Fill them myself</button>`;
+    return `<p class="muted">What the application does, told at large: the need, who uses it, what they do with it, what it keeps. The AI then splits it into ${parts.length} parts you reread — the more context, the better its questions, the scope and the mock-ups.</p>
       ${r.regenerations ? '<div class="callout">Sent back from the review: everything written is still here — change what the mock-ups got wrong.</div>' : ''}
-      ${BRIEF_QUESTIONS.map((q, i) => `<label class="cr-field cr-brief-q"><b>${i + 1} · ${esc(q.title)}</b><span class="muted">${esc(q.hint)}</span><textarea data-cr="brief-${q.id}" rows="4">${esc(answers[q.id])}</textarea></label>`).join('')}
+      <label class="cr-field cr-brief-q"><b>The application, in your words</b><textarea data-cr="description" rows="${shown ? 4 : 10}">${esc(r.description)}</textarea></label>
+      <div class="cr-actions">${button}</div>
+      ${shown ? '' : `<p class="muted">Left for another part of the page — the design system's material below — for ${AUTO_SPLIT_MS / 1000} seconds, the description is split on its own.</p>`}
+      ${shown ? parts.map((q, i) => `<label class="cr-field cr-brief-q"><b>${i + 1} · ${esc(q.title)}</b><span class="muted">${esc(q.hint)}</span><textarea data-cr="brief-${q.id}" rows="4">${esc(answers[q.id])}</textarea></label>`).join('') : ''}
       <p class="muted">Below, the design system's material — the logo, the moodboard, a design brief. On <b>Continue</b>, the tokens and the kit draw from it, and a first scope from the brief, while you answer the grilling; you find them generated at their steps.</p>`;
   }
   function briefFoot() {
     const j = job();
     return `${j && j.work === 'prepare' ? `<div data-cr-job>${jobPanel()}</div>` : ''}
-      <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="kind">← Back</button><button type="button" class="cr-btn on" data-cr-next="grilling">Continue →</button></div>`;
+      <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="kind">← Back</button>${record() && split(record()) ? '<button type="button" class="cr-btn on" data-cr-next="grilling">Continue →</button>' : ''}</div>`;
   }
+  // The description sent to the AI, its parts written back in their fields.
+  const SORTING = 'the AI splits the description into its parts';
+  function decompose() {
+    const field = page.querySelector('[data-cr="description"]');
+    const description = field ? field.value : '';
+    if (!description.trim()) { C.error = 'describe the application first'; draw(); return; }
+    disarmSplit();
+    act(SORTING, async () => {
+      C.data = await call('POST', '/api/creation/decompose', { description });
+      for (const q of briefParts()) delete C.dirty[`brief-${q.id}`];
+      if (C.dirty.description === description) delete C.dirty.description;
+    });
+  }
+  // The description left for another part of the page — the design
+  // system's material, a field — splits on its own after AUTO_SPLIT_MS,
+  // before the first split only: a later one would overwrite the human's
+  // rereading. Counted only while this page keeps the focus: another tab or
+  // another window cancels it (a frame of the page keeps it, so the easel's
+  // own fields count as the page).
+  const AUTO_SPLIT_MS = 10000;
+  let splitTimer = null;
+  function disarmSplit() { clearInterval(splitTimer); splitTimer = null; }
+  function armSplit() {
+    disarmSplit();
+    const since = Date.now();
+    splitTimer = setInterval(() => {
+      if (document.hidden || !document.hasFocus() || C.route !== 'brief' || page.hidden) { disarmSplit(); return; }
+      if (Date.now() - since < AUTO_SPLIT_MS) return;
+      disarmSplit();
+      const r = record();
+      const field = page.querySelector('[data-cr="description"]');
+      if (!r || split(r) || C.busy || !field || !field.value.trim() || document.activeElement === field) return;
+      decompose();
+    }, 500);
+  }
+  page.addEventListener('focusout', (e) => { if (e.target.matches('[data-cr="description"]')) armSplit(); });
+  page.addEventListener('focusin', (e) => { if (e.target.matches('[data-cr="description"]')) disarmSplit(); });
 
   function stepGrilling(r) {
     const qs = r.questions;
@@ -949,6 +998,14 @@
       next(t.dataset.crNext);
       return;
     }
+    if (t.matches('[data-cr-decompose]')) {
+      const edited = [...page.querySelectorAll('[data-cr^="brief-"]')].some((x) => x.value.trim());
+      if (edited && C.confirm !== 'decompose') { C.confirm = 'decompose'; draw(); return; }
+      C.confirm = '';
+      decompose();
+      return;
+    }
+    if (t.matches('[data-cr-parts]')) { C.parts = true; draw(); return; }
     if (t.matches('[data-cr-kind]')) {
       const kind = page.querySelector('input[name="kind"]:checked');
       if (!kind) return;

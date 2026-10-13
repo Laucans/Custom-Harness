@@ -5,6 +5,7 @@
 //! The record is what the register keeps beside a factory being created
 //! (`Factories::creation`, opaque to `core`): its shape is decided here.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -114,7 +115,10 @@ pub struct Creation {
     pub step: Step,
     /// What kind of factory it is, once chosen.
     pub kind: Option<Kind>,
-    /// What the application does.
+    /// What the application does, told at large: the brief is sorted out
+    /// of it.
+    pub description: String,
+    /// What the application does, under the headings of [`BRIEF_PARTS`].
     pub brief: String,
     /// Every question asked, in order, the deleted ones gone.
     pub questions: Vec<Question>,
@@ -283,6 +287,9 @@ impl Creation {
         if let Some(kind) = edit.kind {
             self.kind = Some(kind);
         }
+        if let Some(description) = edit.description {
+            self.description = description;
+        }
         if let Some(brief) = edit.brief {
             self.brief = brief;
         }
@@ -419,6 +426,8 @@ impl Creation {
 pub struct Edit {
     /// The kind of factory chosen.
     pub kind: Option<Kind>,
+    /// What the application does, told at large.
+    pub description: Option<String>,
     /// What the application does.
     pub brief: Option<String>,
     /// The questions kept, in order, with their answers.
@@ -556,6 +565,89 @@ pub fn unfenced(answer: &str) -> String {
     };
     let body = rest.split_once('\n').map_or("", |(_, body)| body);
     body.strip_suffix("```").unwrap_or(body).trim().to_string()
+}
+
+/// One part of the brief: the question it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct BriefPart {
+    /// Its key, in the AI's answer and the page's fields.
+    pub id: &'static str,
+    /// The question, and the brief's heading.
+    pub title: &'static str,
+    /// What an answer covers.
+    pub hint: &'static str,
+}
+
+/// The brief's parts, in order: the page asks them, the AI sorts the
+/// description into them.
+pub const BRIEF_PARTS: [BriefPart; 4] = [
+    BriefPart {
+        id: "what",
+        title: "What is the application, and what problem does it solve?",
+        hint: "The idea in a few sentences: the need, and what goes wrong today without it.",
+    },
+    BriefPart {
+        id: "who",
+        title: "Who uses it?",
+        hint: "The kinds of users, their roles, what each may see or do.",
+    },
+    BriefPart {
+        id: "journeys",
+        title: "What do they do with it?",
+        hint: "The main journeys, start to finish: what a user comes to do, and what they get out of it.",
+    },
+    BriefPart {
+        id: "data",
+        title: "What does it keep, and what does it connect to?",
+        hint: "The information it stores, the tools or services it talks to, the constraints (devices, languages, offline…).",
+    },
+];
+
+/// The question that sorts the human's description into the brief's parts.
+#[must_use]
+pub fn decompose_prompt(description: &str) -> String {
+    let mut text = String::from(
+        "A human described an application they want a development factory to build. Sort what \
+         they wrote into the parts of a brief below. Keep their words, their details and their \
+         examples; reword only to make a part read on its own; invent nothing — a part the \
+         description says nothing about is an empty string. Answer with one JSON object and \
+         nothing else, one key per part, each value Markdown text: {",
+    );
+    let keys: Vec<String> = BRIEF_PARTS
+        .iter()
+        .map(|p| format!("\"{}\": \"…\"", p.id))
+        .collect();
+    text.push_str(&keys.join(", "));
+    text.push_str("}. Write in the language of the description.\n\nThe parts:\n\n");
+    for p in &BRIEF_PARTS {
+        let _ = writeln!(text, "- `{}` — {} {}", p.id, p.title, p.hint);
+    }
+    let _ = write!(text, "\nThe description:\n\n{}\n", description.trim());
+    text
+}
+
+/// The brief out of the AI's answer: each part under its heading, the empty
+/// ones left out — the text the page splits back into its fields.
+///
+/// # Errors
+///
+/// The answer carries no object, or every part is empty.
+pub fn parse_brief(answer: &str) -> Result<String, String> {
+    let object = object_in(answer).ok_or("the AI answered no brief")?;
+    let parts: HashMap<String, String> =
+        serde_json::from_str(object).map_err(|e| format!("the AI's brief is not readable: {e}"))?;
+    let brief = BRIEF_PARTS
+        .iter()
+        .filter_map(|p| {
+            let text = parts.get(p.id).map_or("", |t| t.trim());
+            (!text.is_empty()).then(|| format!("### {}\n\n{text}", p.title))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if brief.is_empty() {
+        return Err("the AI found nothing to sort in the description".to_string());
+    }
+    Ok(brief)
 }
 
 /// What the human wants built: the kind, the brief, the decisions taken.
@@ -1265,6 +1357,7 @@ mod tests {
                     answer: "unknown".to_string(),
                 },
             ]),
+            description: Some("told".to_string()),
             brief: Some("new".to_string()),
             ..Edit::default()
         });
@@ -1275,6 +1368,7 @@ mod tests {
             .collect();
         assert_eq!(kept, [(3, "three"), (1, "one")]);
         assert_eq!(c.brief, "new");
+        assert_eq!(c.description, "told");
         assert_eq!(c.scope, "");
         assert_eq!(c.kind, None);
     }
@@ -1373,6 +1467,38 @@ mod tests {
         );
         assert!(parse_round("no json here").is_err());
         assert!(parse_round("{not json}").is_err());
+    }
+
+    #[test]
+    fn the_decompose_prompt_carries_the_description_and_every_part() {
+        let prompt = decompose_prompt("  a ledger for a bakery  ");
+        assert!(prompt.ends_with("The description:\n\na ledger for a bakery\n"));
+        assert!(prompt.contains(r#"{"what": "…", "who": "…", "journeys": "…", "data": "…"}"#));
+        for p in &BRIEF_PARTS {
+            assert!(prompt.contains(&format!("- `{}` — {} {}", p.id, p.title, p.hint)));
+        }
+    }
+
+    #[test]
+    fn a_brief_is_sorted_under_its_headings_the_empty_parts_left_out() {
+        let answer = "Sorted:\n```json\n{\"who\": \" bakers \", \"what\": \"a ledger\", \"journeys\": \"  \", \"other\": \"x\"}\n```";
+        assert_eq!(
+            parse_brief(answer),
+            Ok(
+                "### What is the application, and what problem does it solve?\n\na ledger\n\n\
+                ### Who uses it?\n\nbakers"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            parse_brief(r#"{"what": " ", "data": ""}"#),
+            Err("the AI found nothing to sort in the description".to_string())
+        );
+        assert_eq!(
+            parse_brief("nothing"),
+            Err("the AI answered no brief".to_string())
+        );
+        assert!(parse_brief(r#"{"what": 3}"#).is_err());
     }
 
     #[test]
@@ -1755,6 +1881,23 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn a_sorted_brief_keeps_every_part_said_in_order(parts in proptest::collection::vec(".{0,40}", 4)) {
+            let object: HashMap<&str, &String> = BRIEF_PARTS.iter().map(|p| p.id).zip(&parts).collect();
+            let brief = parse_brief(&serde_json::to_string(&object).expect("json"));
+            let said: Vec<String> = BRIEF_PARTS
+                .iter()
+                .zip(&parts)
+                .filter(|(_, t)| !t.trim().is_empty())
+                .map(|(p, t)| format!("### {}\n\n{}", p.title, t.trim()))
+                .collect();
+            if said.is_empty() {
+                prop_assert!(brief.is_err());
+            } else {
+                prop_assert_eq!(brief, Ok(said.join("\n\n")));
+            }
+        }
+
         #[test]
         fn reading_a_round_never_panics_and_never_exceeds_the_cap(answer in ".{0,400}") {
             if let Ok(round) = parse_round(&answer) {

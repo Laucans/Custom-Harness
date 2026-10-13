@@ -20,8 +20,8 @@ use crate::data_desk::{DataDesk, Issue};
 use crate::domain::annotations::Kind as PinKind;
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
-    componentize_prompt, grill_prompt, mockups_prompt, not_componentized, parse_requirements,
-    parse_round, requirements_prompt, scope_prompt, unfenced,
+    componentize_prompt, decompose_prompt, grill_prompt, mockups_prompt, not_componentized,
+    parse_brief, parse_requirements, parse_round, requirements_prompt, scope_prompt, unfenced,
 };
 use crate::domain::design::Entry;
 use crate::domain::divergence;
@@ -290,6 +290,38 @@ impl CreationDesk {
         tokio::task::spawn_blocking(move || oneshot.ask(&model, &prompt))
             .await
             .map_err(|e| format!("the question did not finish: {e}"))?
+    }
+
+    /// The human's description kept, then sorted by the AI into the brief's
+    /// parts — the brief written before is replaced.
+    ///
+    /// # Errors
+    ///
+    /// No creation, the brief's gate is closed, no description, no Claude,
+    /// or an answer with no brief.
+    pub async fn decompose(&self, description: String) -> Result<Creation, String> {
+        if description.trim().is_empty() {
+            return Err("describe the application first".to_string());
+        }
+        let facts = self.facts().await;
+        let edit = |description: Option<String>, brief: Option<String>| Edit {
+            description,
+            brief,
+            ..Edit::default()
+        };
+        {
+            let _held = self.record.lock().await;
+            let mut record = self.existing()?;
+            record.may_enter(Step::Brief, facts)?;
+            record.edit(edit(Some(description.clone()), None));
+            self.keep(&record)?;
+        }
+        let brief = parse_brief(&self.ask(decompose_prompt(&description)).await?)?;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.edit(edit(None, Some(brief)));
+        self.keep(&record)?;
+        Ok(record)
     }
 
     /// The next grilling round, asked and added.
@@ -1375,6 +1407,86 @@ mod tests {
         fn ask(&self, _: &str, _: &str) -> Result<String, String> {
             Ok(String::new())
         }
+    }
+
+    /// An AI that sorts a description into the brief, saying the
+    /// description it was given back as the first part.
+    struct Sorter;
+
+    impl Oneshot for Sorter {
+        fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
+            let (_, said) = prompt
+                .split_once("The description:\n\n")
+                .ok_or("no description")?;
+            Ok(serde_json::json!({ "what": said.trim(), "who": "bakers" }).to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_description_is_kept_then_sorted_into_the_brief() {
+        let book = Arc::new(Book::default());
+        let record = Creation {
+            brief: "### Who uses it?\n\nold".to_string(),
+            step: Step::Brief,
+            ..Creation::new("alpha", "me/alpha")
+        };
+        book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        let desk = |oneshot: Option<Arc<dyn Oneshot>>| {
+            CreationDesk::new(Setup {
+                register: Arc::clone(&book) as Arc<dyn Factories + Send + Sync>,
+                factory: "alpha".to_string(),
+                foundry: Arc::new(Nothing),
+                factories_dir: PathBuf::from("/factories"),
+                integration_branch: "main_agent".to_string(),
+                oneshot,
+                model: "m".to_string(),
+                mockups: None,
+                kit: None,
+                data: None,
+                plant: None,
+                pins: None,
+            })
+        };
+        let closed = desk(Some(Arc::new(Sorter)))
+            .decompose("a ledger".to_string())
+            .await;
+        assert_eq!(
+            closed.map(|_| ()),
+            Err("choose the kind of factory".to_string())
+        );
+
+        let kind = Edit {
+            kind: Some(Kind::Vertical),
+            ..Edit::default()
+        };
+        desk(None).save(kind, None).await.expect("saved");
+        let blank = desk(Some(Arc::new(Sorter)))
+            .decompose(" ".to_string())
+            .await;
+        assert_eq!(
+            blank.map(|_| ()),
+            Err("describe the application first".to_string())
+        );
+        let mute = desk(None).decompose("a ledger".to_string()).await;
+        assert_eq!(mute.map(|_| ()), Err(NO_CLAUDE.to_string()));
+        let kept = desk(None).record().expect("read").expect("a record");
+        assert_eq!(
+            (kept.description.as_str(), kept.brief.as_str()),
+            ("a ledger", "### Who uses it?\n\nold"),
+            "the description kept even when nothing sorts it"
+        );
+
+        let sorted = desk(Some(Arc::new(Sorter)))
+            .decompose("a bakery's ledger".to_string())
+            .await
+            .expect("sorted");
+        assert_eq!(sorted.description, "a bakery's ledger");
+        assert_eq!(
+            sorted.brief,
+            "### What is the application, and what problem does it solve?\n\na bakery's ledger\n\n### Who uses it?\n\nbakers"
+        );
+        assert_eq!(desk(None).record().expect("read"), Some(sorted));
     }
 
     #[test]

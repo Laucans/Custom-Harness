@@ -365,6 +365,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/creation/owners", get(creation::owners))
         .route("/api/creation/found", post(creation::found))
         .route("/api/creation/connect", post(creation::connect))
+        .route("/api/creation/decompose", post(creation::decompose))
         .route("/api/creation/grill", post(creation::grill))
         .route("/api/creation/scope", post(creation::scope))
         .route("/api/creation/prepare", post(creation::prepare))
