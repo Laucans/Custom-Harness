@@ -1953,13 +1953,15 @@ async fn a_grilling_round_and_a_scope_are_asked_of_the_ai_and_kept() {
     record.kind = Some(crate::domain::creation::Kind::Vertical);
     record.brief = "a ledger".to_string();
     being_created(&roll, &record);
-    let round = r#"{"questions":[{"title":"Who pays?","recommended":"the client"}]}"#;
+    let round =
+        r#"{"questions":[{"title":"Who pays?","recommended":"the client","topic":"Billing"}]}"#;
     let state = state_creating(Arc::clone(&roll), Arc::default(), round);
     let (status, body) = post(state.clone(), "/api/creation/grill", "").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let view: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(view["record"]["questions"][0]["title"], "Who pays?");
     assert_eq!(view["record"]["questions"][0]["id"], 1);
+    assert_eq!(view["record"]["questions"][0]["topic"], "Billing");
     // An open question closes the scope's gate.
     let (status, body) = post(state.clone(), "/api/creation/scope", "").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

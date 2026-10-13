@@ -93,6 +93,10 @@ pub struct Question {
     /// The round that asked it, counted from 1.
     #[serde(default)]
     pub round: u32,
+    /// The part of the product it decides; empty for the product as a
+    /// whole — the page shows one card per topic.
+    #[serde(default)]
+    pub topic: String,
 }
 
 impl Question {
@@ -395,6 +399,7 @@ impl Creation {
             .max(self.last_id);
         for asked in round.questions.into_iter().take(ROUND_MAX) {
             next = next.saturating_add(1);
+            let topic = self.known_topic(&asked.topic);
             self.questions.push(Question {
                 id: next,
                 title: asked.title,
@@ -402,10 +407,34 @@ impl Creation {
                 recommended: asked.recommended,
                 answer: String::new(),
                 round: self.rounds,
+                topic,
             });
         }
         self.last_id = next;
         self.grilled = round.done;
+    }
+
+    /// The topics the questions carry, each once, in the order first
+    /// asked; the product as a whole (no topic) is not one.
+    #[must_use]
+    pub fn topics(&self) -> Vec<String> {
+        let mut topics: Vec<String> = Vec::new();
+        for q in &self.questions {
+            if !q.topic.is_empty() && !topics.contains(&q.topic) {
+                topics.push(q.topic.clone());
+            }
+        }
+        topics
+    }
+
+    /// A topic as the AI wrote it, spelled as an earlier question already
+    /// does when only the case differs: one card, not two.
+    fn known_topic(&self, topic: &str) -> String {
+        self.questions
+            .iter()
+            .map(|q| &q.topic)
+            .find(|known| known.to_lowercase() == topic.to_lowercase())
+            .map_or_else(|| topic.to_string(), Clone::clone)
     }
 
     /// Back to the brief to draw the mock-ups again: everything written is
@@ -459,6 +488,8 @@ pub struct Asked {
     pub body: String,
     /// What the AI would answer.
     pub recommended: String,
+    /// The part of the product it decides; empty for the whole product.
+    pub topic: String,
 }
 
 /// One requirement as the AI reads it off the scope and the mock-up.
@@ -549,6 +580,7 @@ pub fn parse_round(answer: &str) -> Result<Round, String> {
         q.title = q.title.trim().to_string();
         q.body = q.body.trim().to_string();
         q.recommended = q.recommended.trim().to_string();
+        q.topic = q.topic.trim().to_string();
     }
     // A round that asks something is not the last, whatever it says.
     round.done = round.done && round.questions.is_empty();
@@ -662,10 +694,26 @@ fn product(c: &Creation) -> String {
     if !answered.is_empty() {
         text.push_str("\nDecisions already taken (question → the human's answer):\n\n");
         for q in answered {
-            let _ = writeln!(text, "- **{}** — {}", q.title, q.answer.trim());
+            let _ = writeln!(
+                text,
+                "- {}**{}** — {}",
+                in_topic(q),
+                q.title,
+                q.answer.trim()
+            );
         }
     }
     text
+}
+
+/// A question's topic as a prefix, `[Combat] `; nothing for the product as
+/// a whole.
+fn in_topic(q: &Question) -> String {
+    if q.topic.is_empty() {
+        String::new()
+    } else {
+        format!("[{}] ", q.topic)
+    }
 }
 
 /// The question that asks the next grilling round.
@@ -682,9 +730,16 @@ pub fn grill_prompt(c: &Creation) -> String {
          why, what they do with it step by step, the data it keeps, the rules it enforces, what \
          is out of scope, and what would prove it works. Ask decisions, never facts a developer \
          can look up. Give each question your recommended answer.\n\n\
+         File each question under a topic: the part of the product it decides (the human sees \
+         one card per topic), a short name of a few words. A decision about the product as a \
+         whole takes the empty topic, \"\", the general card. Reuse a topic already in use, \
+         spelled the same, rather than a near-synonym. One decision is asked once, under one \
+         topic: never the same decision, or one overlapping it, under two topics — the topics \
+         sort the questions, they do not split the interview.\n\n\
          Answer with one JSON object and nothing else: \
-         {\"questions\": [{\"title\": \"the decision in a few words\", \"body\": \"the question, \
-         the choices it offers\", \"recommended\": \"your recommended answer\"}], \"done\": false}. \
+         {\"questions\": [{\"topic\": \"the part of the product, or empty\", \"title\": \"the \
+         decision in a few words\", \"body\": \"the question, the choices it offers\", \
+         \"recommended\": \"your recommended answer\"}], \"done\": false}. \
          At most ",
     );
     let _ = write!(
@@ -697,8 +752,12 @@ pub fn grill_prompt(c: &Creation) -> String {
     if !open.is_empty() {
         text.push_str("\nAlready asked, waiting for an answer — do not ask them again:\n\n");
         for q in open {
-            let _ = writeln!(text, "- {}", q.title);
+            let _ = writeln!(text, "- {}{}", in_topic(q), q.title);
         }
+    }
+    let topics = c.topics();
+    if !topics.is_empty() {
+        let _ = write!(text, "\nTopics in use: {}.\n", topics.join(", "));
     }
     text
 }
@@ -1040,11 +1099,24 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
     );
     let answered: Vec<&Question> = c.questions.iter().filter(|q| q.answered()).collect();
     if !answered.is_empty() {
-        body.push_str("\n## Decisions\n\n");
-        for q in answered {
-            let _ = writeln!(body, "- **{}** — {}", q.title, q.answer.trim());
-            if !q.body.trim().is_empty() {
-                let _ = writeln!(body, "  (asked: {})", q.body.trim().replace('\n', " "));
+        body.push_str("\n## Decisions\n");
+        let topics = c.topics();
+        // The product as a whole first, then each topic as first asked.
+        for topic in std::iter::once(String::new()).chain(topics.iter().cloned()) {
+            let under: Vec<&&Question> = answered.iter().filter(|q| q.topic == topic).collect();
+            if under.is_empty() {
+                continue;
+            }
+            if !topics.is_empty() {
+                let heading = if topic.is_empty() { "General" } else { &topic };
+                let _ = write!(body, "\n### {heading}\n");
+            }
+            body.push('\n');
+            for q in under {
+                let _ = writeln!(body, "- **{}** — {}", q.title, q.answer.trim());
+                if !q.body.trim().is_empty() {
+                    let _ = writeln!(body, "  (asked: {})", q.body.trim().replace('\n', " "));
+                }
             }
         }
     }
@@ -1880,6 +1952,81 @@ mod tests {
         );
     }
 
+    fn asked(topic: &str, title: &str) -> Asked {
+        Asked {
+            topic: topic.to_string(),
+            title: title.to_string(),
+            ..Asked::default()
+        }
+    }
+
+    #[test]
+    fn a_round_files_its_questions_under_topics_one_spelling_each() {
+        let answer = "{\"questions\": [{\"topic\": \" Combat \", \"title\": \"Initiative\"}, \
+                      {\"title\": \"One-shots\"}]}";
+        let round = parse_round(answer).expect("read");
+        let topics: Vec<&str> = round.questions.iter().map(|q| q.topic.as_str()).collect();
+        assert_eq!(topics, ["Combat", ""]);
+        let mut c = ready();
+        c.add_round(round);
+        c.add_round(Round {
+            questions: vec![asked("combat", "Tokens"), asked("Campaign", "Calendar")],
+            done: false,
+        });
+        let topics: Vec<&str> = c.questions.iter().map(|q| q.topic.as_str()).collect();
+        assert_eq!(topics, ["", "Combat", "", "Combat", "Campaign"]);
+        assert_eq!(c.topics(), ["Combat", "Campaign"]);
+    }
+
+    #[test]
+    fn a_question_kept_before_topics_reads_as_the_general_one() {
+        let q: Question = serde_json::from_str("{\"id\": 4, \"title\": \"Who\"}").expect("read");
+        assert_eq!(q.topic, "");
+        assert!(ready().topics().is_empty());
+    }
+
+    #[test]
+    fn the_grilling_prompt_names_the_topics_in_use_and_forbids_overlaps() {
+        let mut c = ready();
+        assert!(!grill_prompt(&c).contains("Topics in use"));
+        c.questions[0].topic = "Combat".to_string();
+        c.questions.push(Question {
+            topic: "Campaign".to_string(),
+            ..question(2, "")
+        });
+        let grill = grill_prompt(&c);
+        assert!(grill.contains("- [Combat] **q1** — yes"));
+        assert!(grill.contains("do not ask them again:\n\n- [Campaign] q2"));
+        assert!(grill.contains("Topics in use: Combat, Campaign."));
+        assert!(grill.contains("never the same decision, or one overlapping it, under two topics"));
+        assert!(grill.contains("\"topic\""));
+    }
+
+    #[test]
+    fn the_roadmap_issue_sorts_the_decisions_by_topic_the_general_ones_first() {
+        let mut c = ready();
+        c.questions.push(Question {
+            topic: "Combat".to_string(),
+            ..question(2, "no")
+        });
+        c.questions.push(question(3, "solo"));
+        c.questions.push(Question {
+            topic: "Campaign".to_string(),
+            ..question(4, " ")
+        });
+        let (_, body) = roadmap_issue(&c, &Context::default());
+        assert!(body.contains(
+            "## Decisions\n\n### General\n\n- **q1** — yes\n- **q3** — solo\n\n### Combat\n\n- **q2** — no\n"
+        ));
+        assert!(
+            !body.contains("### Campaign"),
+            "a topic with no decision taken"
+        );
+        let (_, flat) = roadmap_issue(&ready(), &Context::default());
+        assert!(flat.contains("## Decisions\n\n- **q1** — yes\n"));
+        assert!(!flat.contains("###"));
+    }
+
     proptest! {
         #[test]
         fn a_sorted_brief_keeps_every_part_said_in_order(parts in proptest::collection::vec(".{0,40}", 4)) {
@@ -1921,6 +2068,16 @@ mod tests {
             let round = parse_round(&format!("{{\"questions\": [{}]}}", questions.join(","))).expect("read");
             let kept: Vec<String> = titles.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).take(ROUND_MAX).collect();
             prop_assert_eq!(round.questions.iter().map(|q| q.title.clone()).collect::<Vec<_>>(), kept);
+        }
+
+        #[test]
+        fn a_topic_reads_back_trimmed(topic in "[a-zA-Z ]{0,20}") {
+            let answer = format!(
+                "{{\"questions\": [{{\"topic\": {}, \"title\": \"q\"}}]}}",
+                serde_json::to_string(&topic).expect("json")
+            );
+            let round = parse_round(&answer).expect("read");
+            prop_assert_eq!(round.questions.first().map(|q| q.topic.clone()), Some(topic.trim().to_string()));
         }
 
         #[test]
