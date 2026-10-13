@@ -1766,6 +1766,8 @@ fn state_creating(roll: Arc<Roll>, forge: Arc<Forge>, says: &str) -> AppState {
         integration_branch: "main_agent".to_string(),
         oneshot: Some(Arc::new(Says(says.to_string()))),
         model: "m".to_string(),
+        exec_model: "s".to_string(),
+        exec_sessions: 2,
         mockups: None,
         kit: None,
         data: None,

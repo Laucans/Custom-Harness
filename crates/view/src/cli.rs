@@ -55,6 +55,15 @@ pub struct Cli {
     #[arg(long, env = "CREATION_MODEL", default_value = "claude-opus-5-5")]
     pub creation_model: String,
 
+    /// The model that writes what the creation's model planned: the
+    /// mock-up's micro-frontends and pages, several at once.
+    #[arg(long, env = "CREATION_EXEC_MODEL", default_value = "claude-sonnet-5-5")]
+    pub creation_exec_model: String,
+
+    /// How many of those writers ask at once: one `claude -p` each.
+    #[arg(long, env = "CREATION_SESSIONS", default_value_t = 6)]
+    pub creation_sessions: usize,
+
     /// Never call `gh`: the sign and the store stay empty.
     #[arg(long)]
     pub no_board: bool,

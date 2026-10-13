@@ -240,7 +240,12 @@ mod tests {
     fn the_wrapped_answers_go_through_untouched() {
         let mockups = PulsingMockups::new(Arc::new(Blank), Pulse::default());
         assert_eq!(mockups.save("b", "n").as_deref(), Ok("mockup/n"));
-        assert_eq!(mockups.files("b").map(|l| l.len()), Ok(1));
+        assert_eq!(
+            mockups
+                .files("b")
+                .map(|l| l.into_iter().map(|f| (f.path, f.at)).collect::<Vec<_>>()),
+            Ok(vec![("pages/a.html".to_string(), 7)])
+        );
         assert_eq!(mockups.publish("b", "m").as_deref(), Ok("abc"));
         assert_eq!(mockups.write("b", "x", b""), Err("refused".to_string()));
         assert_eq!(mockups.state("b").map(|s| s.branch).as_deref(), Ok("b"));

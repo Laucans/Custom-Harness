@@ -490,6 +490,8 @@ fn creation_for(
         integration_branch: cli.integration_branch.clone(),
         oneshot,
         model: cli.creation_model.clone(),
+        exec_model: cli.creation_exec_model.clone(),
+        exec_sessions: cli.creation_sessions,
         mockups: hold.mockups,
         kit: hold.kit,
         data: hold.data,
