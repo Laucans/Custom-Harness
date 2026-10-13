@@ -10,6 +10,8 @@
   const PAGE_HASH = '#new-factory';
 
   const F = { list: [], current: '', query: '', opening: '', checked: false, deciding: false };
+  // The confirmation dialog: which factory, delink or destroy, what must be typed, a call under way.
+  const C = { f: null, kind: '', must: '', busy: false };
 
   // ---- the menu ---------------------------------------------------------------
   const menu = $('factory-menu');
@@ -19,11 +21,21 @@
     const q = F.query.trim().toLowerCase();
     return F.list.filter((f) => !q || `${f.name} ${f.slug} ${f.id}`.toLowerCase().includes(q));
   }
+  function row(f) {
+    const here = f.id === F.current;
+    const off = F.opening || C.busy ? ' disabled' : '';
+    const act = (kind, icon, tip) => `<button type="button" class="fm-act${kind === 'destroy' ? ' danger' : ''}" data-${kind}="${esc(f.id)}"`
+      + ` title="${esc(tip)}" aria-label="${esc(`${kind} ${f.name}`)}"${off}>${icon}</button>`;
+    return '<div class="fm-item">'
+      + `<button type="button" role="option" class="fm-row${here ? ' current' : ''}" data-factory="${esc(f.id)}" aria-selected="${here}"${off}>`
+      + `<b>${here ? '✓ ' : ''}${esc(f.name)}</b><small>${f.slug ? esc(f.slug) : 'not linked to a GitHub repository'}</small></button>`
+      + `<span class="fm-acts">${act('delink', '⛓', 'Delink — the harness lets go, the GitHub repository stays')}`
+      + `${act('destroy', '🗑', 'Destroy — the GitHub repository is deleted')}</span></div>`;
+  }
   function draw() {
     const shown = rows();
     $('fm-list').innerHTML = shown.length
-      ? shown.map((f) => `<button type="button" role="option" class="fm-row${f.id === F.current ? ' current' : ''}" data-factory="${esc(f.id)}" aria-selected="${f.id === F.current}"${F.opening ? ' disabled' : ''}>`
-        + `<b>${f.id === F.current ? '✓ ' : ''}${esc(f.name)}</b><small>${f.slug ? esc(f.slug) : 'not linked to a GitHub repository'}</small></button>`).join('')
+      ? shown.map(row).join('')
       : `<div class="fm-empty">${F.list.length ? 'No factory matches.' : 'No factory known yet.'}</div>`;
   }
   function note(text, bad) {
@@ -75,8 +87,133 @@
     }
   }
 
+  // ---- taking a factory down -----------------------------------------------------
+  // Delink: the harness lets go (watch, its data, register), the repository stays.
+  // Destroy: the same, and the repository is deleted. Both need the name typed, and the
+  // server checks it again. The factory the view is on can be taken down too: the view
+  // then moves to another one.
+  const dialog = $('factory-confirm');
+  const dialogOpen = () => !dialog.hidden;
+  const must = (f) => f.slug || f.name;
+  const folderLine = (f) => (f.owned
+    ? `Its folder <code>${esc(f.root)}</code> is removed, with the traces and the clones in it.`
+    : `Its folder <code>${esc(f.root)}</code> stays on disk, someone else keeps it: only what the harness keeps in it (<code>.llocal/</code>, <code>.env.local</code>) is removed.`);
+
+  function dialogNote(text, bad) {
+    const el = $('fc-note');
+    el.hidden = !text;
+    el.textContent = text || '';
+    el.classList.toggle('bad', !!bad);
+  }
+  function dialogReady() {
+    const typed = $('fc-input').value === C.must;
+    $('fc-go').disabled = C.busy || !typed;
+    $('fc-cancel').disabled = C.busy;
+    $('fc-input').disabled = C.busy;
+  }
+  function askToTakeDown(kind, id) {
+    const f = F.list.find((x) => x.id === id);
+    if (!f || F.opening || C.busy) return;
+    Object.assign(C, { f, kind, must: must(f), busy: false });
+    const destroy = kind === 'destroy';
+    const box = dialog.querySelector('.fc-box');
+    box.classList.toggle('danger', destroy);
+    $('fc-title').textContent = `${destroy ? 'Destroy' : 'Delink'} ${f.name}?`;
+    const repo = f.slug ? `<code>${esc(f.slug)}</code>` : 'no GitHub repository';
+    $('fc-text').innerHTML = destroy
+      ? (f.slug
+        ? `This permanently deletes the GitHub repository ${repo}: its code, issues and pull requests. It cannot be undone.`
+        : `${esc(f.name)} is linked to no GitHub repository: only the harness's side of it is destroyed. It cannot be undone.`)
+      : `The harness lets go of ${esc(f.name)}. Its GitHub repository (${repo}) is not touched.`;
+    $('fc-list').innerHTML = [
+      destroy ? 'Its watch is killed now.' : 'Its watch is asked to stop: the running tasks finish, none starts.',
+      folderLine(f),
+      'It leaves the list of factories.',
+      ...(f.id === F.current ? ['This view is on it: it starts again in another factory.'] : []),
+      ...(destroy ? [] : [f.slug ? 'Connect the repository again from “+ new factory” whenever you want.' : '']),
+    ].filter(Boolean).map((l) => `<li>${l}</li>`).join('');
+    $('fc-typed').hidden = $('fc-input').hidden = false;
+    $('fc-name').textContent = C.must;
+    $('fc-input').value = '';
+    $('fc-go').textContent = destroy ? 'Destroy this factory' : 'Delink';
+    $('fc-go').classList.toggle('danger', destroy);
+    dialogNote('');
+    dialogReady();
+    close();
+    dialog.hidden = false;
+    (destroy ? $('fc-input') : $('fc-cancel')).focus();
+  }
+  function closeDialog() {
+    if (C.busy) return;
+    dialog.hidden = true;
+    C.f = null;
+    document.querySelector('#crumbs [data-factory]')?.focus();
+  }
+  async function takeDown() {
+    if (!C.f || C.busy) return;
+    const { f, kind } = C;
+    if ($('fc-input').value !== C.must) return;
+    C.busy = true;
+    dialogReady();
+    dialogNote(kind === 'destroy' ? `Destroying ${f.name}…` : `Delinking ${f.name}…`);
+    try {
+      const r = await fetch(`/api/factories/${encodeURIComponent(f.id)}/${kind}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirm: $('fc-input').value }),
+      });
+      if (!r.ok) throw new Error((await r.text()) || r.statusText);
+      const done = await r.json();
+      if (done.reopening) {
+        // The view starts again in another factory; the page reloads on its own
+        // when the event stream comes back with a new build (as in `switchTo`).
+        dialogNote(`${summary(f, done)} Moving to ${done.reopening}…`);
+        return;
+      }
+      C.busy = false;
+      dialog.hidden = true;
+      C.f = null;
+      await open();
+      note(summary(f, done));
+    } catch (e) {
+      C.busy = false;
+      dialogReady();
+      dialogNote(e.message || `cannot ${kind} that factory`, true);
+    }
+  }
+  function summary(f, done) {
+    const parts = [];
+    if (done.watch === 'draining') parts.push('its watch drains');
+    if (done.watch === 'killed') parts.push('its watch is killed');
+    if (done.repository === 'deleted') parts.push('the GitHub repository is deleted');
+    if (done.repository === 'kept') parts.push('the GitHub repository stays');
+    parts.push(done.folder === 'removed' ? 'its folder is removed' : 'its harness data is removed, its folder stays');
+    const text = `${f.name} ${done.repository === 'kept' ? 'delinked' : 'destroyed'}: ${parts.join(', ')}.`;
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  $('fc-input').addEventListener('input', dialogReady);
+  $('fc-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('fc-go').disabled) takeDown(); });
+  $('fc-go').addEventListener('click', takeDown);
+  $('fc-cancel').addEventListener('click', closeDialog);
+  dialog.addEventListener('mousedown', (e) => { if (e.target === dialog) closeDialog(); });
+  // Escape closes the dialog before anything behind it hears it; Tab stays inside.
+  window.addEventListener('keydown', (e) => {
+    if (!dialogOpen()) return;
+    if (e.key === 'Escape') { e.stopImmediatePropagation(); e.preventDefault(); closeDialog(); return; }
+    if (e.key !== 'Tab') return;
+    const stops = [...dialog.querySelectorAll('input, button')].filter((el) => !el.hidden && !el.disabled);
+    if (!stops.length) return;
+    const at = stops.indexOf(document.activeElement);
+    const next = stops[(at + (e.shiftKey ? -1 : 1) + stops.length) % stops.length];
+    e.preventDefault();
+    next.focus();
+  }, true);
+
   $('fm-search').addEventListener('input', (e) => { F.query = e.target.value; draw(); });
   $('fm-list').addEventListener('click', (e) => {
+    const gesture = e.target.closest('[data-delink], [data-destroy]');
+    if (gesture) { askToTakeDown(gesture.dataset.delink ? 'delink' : 'destroy', gesture.dataset.delink || gesture.dataset.destroy); return; }
     const row = e.target.closest('[data-factory]');
     if (row) switchTo(row.dataset.factory);
   });
@@ -154,5 +291,11 @@
     else window.dispatchEvent(new CustomEvent('harness:factory-page', { detail: { open: false } }));
   }
 
-  window.HarnessFactories = { toggle, onSnapshot, creating, leave: leavePage };
+  // The janitor's way in: the factory this view is on.
+  async function takeDownCurrent(kind) {
+    await read();
+    askToTakeDown(kind, F.current);
+  }
+
+  window.HarnessFactories = { toggle, onSnapshot, creating, leave: leavePage, takeDownCurrent };
 })();

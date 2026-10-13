@@ -30,6 +30,7 @@ mod kit_desk;
 mod mf_desk;
 mod note_desks;
 mod ports;
+mod removal;
 mod server;
 mod units_desk;
 
@@ -89,6 +90,7 @@ use crate::ports::{
     Board, BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
     TerminalFactory, Traces, Trials, Units, Usage, Yard,
 };
+use crate::removal::{PlantOf, Removal};
 use crate::server::{AppState, router};
 use crate::units_desk::UnitsDesk;
 use harness_adapters::store::events::SqliteEvents;
@@ -215,6 +217,13 @@ async fn main() -> anyhow::Result<()> {
         usage.clone(),
     );
 
+    let removal = removal_for(&cli, &root, factories.clone(), &factory);
+    if let (Some(removal), Ok(left)) = (&removal, std::env::var(relaunch::LEAVING))
+        && let Err(why) = removal.finish(&left, &root)
+    {
+        tracing::warn!("the folder the previous view left stays: {why}");
+    }
+
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
     let (board_tx, board_rx) = watch::channel(None);
     let state = AppState {
@@ -254,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
         usage,
         factory,
         switching: Arc::clone(&switching),
+        removal: removal.clone(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -326,12 +336,17 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     if let Some(factory) = next {
         // Only comes back when it failed: the view is replaced otherwise.
-        return Err(
-            anyhow::Error::new(relaunch::into(&factory)).context(format!(
-                "starting the view again in {}",
-                factory.root.display()
-            )),
-        );
+        return Err(anyhow::Error::new(relaunch::into(
+            &factory,
+            removal
+                .as_ref()
+                .and_then(|removal| removal.leaving())
+                .as_deref(),
+        ))
+        .context(format!(
+            "starting the view again in {}",
+            factory.root.display()
+        )));
     }
     Ok(())
 }
@@ -401,6 +416,34 @@ fn harness_candidates(cli: &Cli, root: &Path) -> Vec<PathBuf> {
         || beside.into_iter().chain(watched).collect(),
         |chosen| vec![chosen],
     )
+}
+
+/// What takes a factory down — none without a register (`--demo`). Only the
+/// folders under `factories/`, beside the register, are the view's to remove.
+fn removal_for(
+    cli: &Cli,
+    root: &Path,
+    register: Option<Arc<dyn Factories + Send + Sync>>,
+    factory: &str,
+) -> Option<Arc<Removal>> {
+    let register = register?;
+    let factories_dir = register_path(cli)?.parent()?.join("factories");
+    let watch_command = cli.watch_command.clone();
+    // Whose watch to stop is the folder's: not this view's own.
+    let plant_of: PlantOf = Arc::new(move |folder| {
+        Arc::new(WatchProcess::new(Workspace::new(folder), &watch_command)) as Arc<dyn Plant>
+    });
+    let teardown = Arc::new(foundry::Cli::new(
+        root.to_path_buf(),
+        harness_candidates(cli, root),
+    ));
+    Some(Arc::new(Removal::new(
+        register,
+        teardown,
+        plant_of,
+        factories_dir,
+        factory,
+    )))
 }
 
 /// What the creation desk acts through, besides the register.

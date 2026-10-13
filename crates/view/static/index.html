@@ -33,6 +33,20 @@
   <nav id="dock" aria-label="notifications"></nav>
 </main>
 <section id="factory-page" hidden aria-label="factory creation"></section>
+<div id="factory-confirm" hidden>
+  <div class="fc-box" role="alertdialog" aria-modal="true" aria-labelledby="fc-title" aria-describedby="fc-text">
+    <h2 id="fc-title"></h2>
+    <p id="fc-text"></p>
+    <ul id="fc-list"></ul>
+    <label id="fc-typed" for="fc-input" hidden>Type <code id="fc-name"></code> to confirm</label>
+    <input id="fc-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" hidden aria-label="type the name to confirm">
+    <div id="fc-note" class="note" hidden></div>
+    <div class="fc-actions">
+      <button id="fc-cancel" type="button">Cancel</button>
+      <button id="fc-go" type="button"></button>
+    </div>
+  </div>
+</div>
 <div id="action-errors" aria-live="assertive"></div>
 <div id="action-log" hidden role="dialog" aria-label="an action's log">
   <div class="act-log-head"><b class="act-log-title"></b><span class="act-log-state"></span><button type="button" data-action-close aria-label="close" title="Close (Esc)">×</button></div>

@@ -76,6 +76,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         usage: None,
         factory: String::new(),
         switching: Arc::new(watch::channel(None).0),
+        removal: None,
     }
 }
 
@@ -1208,6 +1209,7 @@ struct Roll {
     known: Vec<Factory>,
     enrolled: std::sync::Mutex<Vec<Factory>>,
     creations: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
+    forgotten: std::sync::Mutex<Vec<String>>,
 }
 
 impl Roll {
@@ -1222,11 +1224,23 @@ impl Roll {
 impl Factories for Roll {
     fn list(&self) -> harness_core::domain::Outcome<Vec<Factory>> {
         let enrolled = self.enrolled.lock().expect("held").clone();
-        Ok(self.known.iter().cloned().chain(enrolled).collect())
+        let gone = self.forgotten.lock().expect("held").clone();
+        Ok(self
+            .known
+            .iter()
+            .cloned()
+            .chain(enrolled)
+            .filter(|f| !gone.contains(&f.id))
+            .collect())
     }
 
     fn get(&self, id: &str) -> harness_core::domain::Outcome<Option<Factory>> {
-        Ok(self.known.iter().find(|f| f.id == id).cloned())
+        let gone = self
+            .forgotten
+            .lock()
+            .expect("held")
+            .contains(&id.to_string());
+        Ok(self.known.iter().find(|f| f.id == id && !gone).cloned())
     }
 
     fn enroll(
@@ -1261,6 +1275,12 @@ impl Factories for Roll {
 
     fn end_creation(&self, id: &str) -> harness_core::domain::Outcome<()> {
         self.creations.lock().expect("held").remove(id);
+        Ok(())
+    }
+
+    fn forget(&self, id: &str) -> harness_core::domain::Outcome<()> {
+        self.creations.lock().expect("held").remove(id);
+        self.forgotten.lock().expect("held").push(id.to_string());
         Ok(())
     }
 }
@@ -1350,6 +1370,251 @@ async fn an_unknown_factory_or_a_folder_gone_is_refused() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(body.contains("/nonexistent/factory"), "{body}");
     assert!(!asked.has_changed().expect("sender alive"));
+}
+
+/// A teardown that deletes nothing and says what it was asked.
+#[derive(Default)]
+struct Salvage {
+    said: std::sync::Mutex<Vec<String>>,
+    missing_right: bool,
+}
+
+impl crate::ports::Teardown for Salvage {
+    fn delete_right(&self) -> crate::ports::Rights {
+        if self.missing_right {
+            crate::ports::Rights::Missing
+        } else {
+            crate::ports::Rights::Granted
+        }
+    }
+
+    fn wipe_harness_data(&self, root: &std::path::Path) -> Result<(), String> {
+        self.said
+            .lock()
+            .expect("held")
+            .push(format!("wipe {}", root.display()));
+        Ok(())
+    }
+
+    fn delete_repository(&self, slug: &str) -> Result<(), String> {
+        self.said.lock().expect("held").push(format!("repo {slug}"));
+        Ok(())
+    }
+
+    fn remove_folder(&self, root: &std::path::Path) -> Result<(), String> {
+        self.said
+            .lock()
+            .expect("held")
+            .push(format!("folder {}", root.display()));
+        Ok(())
+    }
+}
+
+/// A view on `alpha`, which knows `alpha` and `beta` — both under `/f`, the
+/// folder the view makes factories in — and can take one down.
+fn state_taking_down() -> (AppState, Arc<Salvage>) {
+    taking_down(std::path::Path::new("/f/beta"), Salvage::default())
+}
+
+/// As `state_taking_down`, with `beta` in `beta_root` and the given teardown.
+fn taking_down(beta_root: &std::path::Path, salvage: Salvage) -> (AppState, Arc<Salvage>) {
+    let known = vec![
+        factory_in("alpha", std::path::Path::new("/f/alpha")),
+        factory_in("beta", beta_root),
+    ];
+    let register = Arc::new(Roll::of(known));
+    let salvage = Arc::new(salvage);
+    let removal = crate::removal::Removal::new(
+        register.clone(),
+        salvage.clone(),
+        Arc::new(|_| Arc::new(crate::domain::plant::fake::Switch::default()) as Arc<dyn Plant>),
+        std::path::PathBuf::from("/f"),
+        "alpha",
+    );
+    let state = AppState {
+        factories: Some(register),
+        factory: "alpha".to_string(),
+        removal: Some(Arc::new(removal)),
+        ..state_without_plant()
+    };
+    (state, salvage)
+}
+
+fn ids_of(listing: &str) -> Vec<String> {
+    let listed: serde_json::Value = serde_json::from_str(listing).expect("json");
+    listed["factories"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .map(|f| f["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_delinked_factory_leaves_the_list_and_its_repository_is_not_touched() {
+    let (state, salvage) = state_taking_down();
+    let (status, body) = post(
+        state.clone(),
+        "/api/factories/beta/delink",
+        r#"{"confirm":"me/beta"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let report: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(report["factory"], "beta");
+    assert_eq!(report["repository"], "kept");
+    assert_eq!(report["folder"], "removed");
+    assert_eq!(report["watch"], "none");
+    assert_eq!(*salvage.said.lock().expect("held"), ["folder /f/beta"]);
+    let (_, listing) = get(state, "/api/factories").await;
+    assert_eq!(ids_of(&listing), ["alpha"]);
+}
+
+#[tokio::test]
+async fn a_take_down_is_refused_until_the_repository_name_is_typed() {
+    let (state, salvage) = state_taking_down();
+    for typed in [
+        r"{}",
+        r#"{"confirm":""}"#,
+        r#"{"confirm":"beta"}"#,
+        r#"{"confirm":"me/BETA"}"#,
+        "",
+    ] {
+        for kind in ["delink", "destroy"] {
+            let path = format!("/api/factories/beta/{kind}");
+            let (status, body) = post(state.clone(), &path, typed).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{kind} {typed}: {body}");
+        }
+    }
+    let (status, body) = post(state.clone(), "/api/factories/beta/destroy", r"{}").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.contains("me/beta"),
+        "the page is told what to type: {body}"
+    );
+    assert!(salvage.said.lock().expect("held").is_empty());
+    let (_, listing) = get(state, "/api/factories").await;
+    assert_eq!(ids_of(&listing), ["alpha", "beta"]);
+}
+
+#[tokio::test]
+async fn a_destroyed_factory_loses_its_repository_its_folder_and_its_place() {
+    let (state, salvage) = state_taking_down();
+    let (status, body) = post(
+        state.clone(),
+        "/api/factories/beta/destroy",
+        r#"{"confirm":"me/beta"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let report: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(report["repository"], "deleted");
+    assert_eq!(report["folder"], "removed");
+    assert_eq!(
+        *salvage.said.lock().expect("held"),
+        ["repo me/beta", "folder /f/beta"]
+    );
+    let (_, listing) = get(state, "/api/factories").await;
+    assert_eq!(ids_of(&listing), ["alpha"]);
+}
+
+#[tokio::test]
+async fn the_only_factory_cannot_be_taken_down_from_inside_and_an_unknown_one_is_not_found() {
+    // `beta`'s folder is not on the disk: nothing could take the view's place.
+    let (state, salvage) = state_taking_down();
+    let (status, body) = post(
+        state.clone(),
+        "/api/factories/alpha/delink",
+        r#"{"confirm":"me/alpha"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body.contains("create or connect another one"), "{body}");
+    let (status, _) = post(
+        state.clone(),
+        "/api/factories/alpha/destroy",
+        r#"{"confirm":"me/alpha"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = post(state.clone(), "/api/factories/nobody/delink", r"{}").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(salvage.said.lock().expect("held").is_empty());
+    let (_, listing) = get(state, "/api/factories").await;
+    assert_eq!(ids_of(&listing), ["alpha", "beta"]);
+}
+
+#[tokio::test]
+async fn taking_down_the_factory_the_view_is_on_moves_the_view_to_another_one() {
+    let (state, salvage) = taking_down(&std::env::temp_dir(), Salvage::default());
+    let asked = state.switching.subscribe();
+    let (status, body) = post(
+        state.clone(),
+        "/api/factories/alpha/destroy",
+        r#"{"confirm":"me/alpha"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let report: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(report["reopening"], "beta");
+    assert_eq!(report["repository"], "deleted");
+    // The repository goes now; the folder is the next view's to remove.
+    assert_eq!(*salvage.said.lock().expect("held"), ["repo me/alpha"]);
+    assert_eq!(
+        asked.borrow().as_ref().map(|f| f.id.clone()),
+        Some("beta".to_string())
+    );
+    assert_eq!(
+        state.removal.as_ref().and_then(|r| r.leaving()),
+        Some("remove:/f/alpha".to_string())
+    );
+    let (_, listing) = get(state, "/api/factories").await;
+    assert_eq!(ids_of(&listing), ["beta"]);
+}
+
+#[tokio::test]
+async fn a_token_without_the_right_to_delete_changes_nothing_and_is_told_what_to_run() {
+    let (state, salvage) = taking_down(
+        std::path::Path::new("/f/beta"),
+        Salvage {
+            missing_right: true,
+            ..Salvage::default()
+        },
+    );
+    let (status, body) = post(
+        state.clone(),
+        "/api/factories/beta/destroy",
+        r#"{"confirm":"me/beta"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        body.contains("gh auth refresh -h github.com -s delete_repo"),
+        "{body}"
+    );
+    assert!(body.contains("gh repo delete me/beta --yes"), "{body}");
+    assert!(salvage.said.lock().expect("held").is_empty());
+    // A delink asks nothing of GitHub, so the missing right does not matter.
+    let (status, _) = post(
+        state.clone(),
+        "/api/factories/beta/delink",
+        r#"{"confirm":"me/beta"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn without_a_register_nothing_is_taken_down() {
+    let (status, _) = post(state_without_plant(), "/api/factories/alpha/delink", r"{}").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = post(
+        state_without_plant(),
+        "/api/factories/alpha/destroy",
+        r#"{"confirm":"x"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

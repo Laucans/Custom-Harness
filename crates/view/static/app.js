@@ -1007,6 +1007,17 @@
     }
     $('janitor-lists').innerHTML = h;
   }
+  // Taking this factory down: the dialog is factories.js's, the name is typed there.
+  const JANITOR_FACTORY = '<div id="janitor-factory" class="danger-zone"><h3>This factory</h3>'
+    + '<div class="muted">The view then starts again in another factory. Both ask for the name to be typed.</div>'
+    + '<div class="janitor-actions">'
+    + '<button class="act" data-factory-down="delink" title="the harness lets go of this factory and removes its data; the GitHub repository stays">⛓ Delink…</button>'
+    + '<button class="act danger" data-factory-down="destroy" title="as a delink, and the GitHub repository is deleted for good">🗑 Destroy…</button>'
+    + '</div></div>';
+  $('pane-body').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-factory-down]');
+    if (b && S.pane && S.pane.kind === 'janitor') window.HarnessFactories.takeDownCurrent(b.dataset.factoryDown);
+  });
   async function janitorPost(path, body) {
     const r = await fetch('/api/janitor/' + path, { method: 'POST', body, headers: body ? { 'content-type': 'application/json' } : {} });
     if (!r.ok) throw new Error(await r.text());
@@ -2891,7 +2902,7 @@
     },
 
     janitor() {
-      const html = '<div id="janitor-live"><div class="muted">The janitor is looking at the yard…</div></div><div id="janitor-settings"></div><div id="janitor-lists"></div>';
+      const html = '<div id="janitor-live"><div class="muted">The janitor is looking at the yard…</div></div><div id="janitor-settings"></div><div id="janitor-lists"></div>' + JANITOR_FACTORY;
       // A refresh of the plant leaves the janitor's pane as it is: its numbers
       // come from his own route, and a limit being typed is not wiped.
       return ['The janitor · the yard', html, (refresh) => { if (!refresh) janitorLoad(true); }, true];

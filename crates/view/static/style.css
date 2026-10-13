@@ -1359,6 +1359,19 @@ body.picking, body.picking * { user-select: none; }
 .fm-row:hover, .fm-row:focus-visible { background: var(--panel-2); border-color: var(--line); outline: none; }
 .fm-row.current b { color: var(--accent); }
 .fm-row:disabled { opacity: .5; cursor: default; }
+/* A row and its two gestures: delink, destroy. Shown on hover or focus, always reachable by keyboard. */
+.fm-item { flex: none; display: flex; align-items: center; gap: 2px; border-radius: 6px; }
+.fm-item .fm-row { flex: 1; min-width: 0; }
+.fm-item:hover { background: var(--panel-2); }
+.fm-acts { display: flex; gap: 2px; opacity: 0; }
+.fm-item:hover .fm-acts, .fm-item:focus-within .fm-acts { opacity: 1; }
+.fm-act {
+  background: transparent; color: var(--dim); font: 13px var(--mono); line-height: 1; cursor: pointer;
+  border: 1px solid transparent; border-radius: 6px; padding: 6px 7px;
+}
+.fm-act:hover, .fm-act:focus-visible { color: var(--text); border-color: var(--line); outline: none; }
+.fm-act.danger:hover, .fm-act.danger:focus-visible { color: var(--bad); border-color: var(--bad); }
+.fm-act:disabled { opacity: .35; cursor: default; border-color: transparent; color: var(--dim); }
 .fm-empty { color: var(--dim); padding: 12px 10px; }
 #fm-note { color: var(--dim); padding: 2px 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 #fm-note.bad { color: var(--bad); }
@@ -1367,6 +1380,41 @@ body.picking, body.picking * { user-select: none; }
   border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
 }
 #fm-new:hover, #fm-new:focus-visible { background: var(--panel-2); border-color: var(--accent); outline: none; }
+
+/* The confirmation of a delink or a destruction (factories.js). */
+#factory-confirm {
+  position: fixed; inset: 0; z-index: 120; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0, 0, 0, .55);
+}
+#factory-confirm[hidden] { display: none; }
+.fc-box {
+  width: min(480px, 100%); display: flex; flex-direction: column; gap: 10px; padding: 18px 20px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .5); font: 13px/1.45 var(--mono);
+}
+.fc-box.danger { border-color: var(--bad); }
+.fc-box h2 { margin: 0; font-size: 15px; }
+.fc-box.danger h2 { color: var(--bad); }
+.fc-box p { margin: 0; overflow-wrap: anywhere; }
+.fc-box ul { margin: 0; padding-left: 18px; color: var(--dim); overflow-wrap: anywhere; }
+.fc-box code { color: var(--accent); background: var(--panel-2); border-radius: 4px; padding: 1px 5px; user-select: all; }
+#fc-input {
+  background: var(--panel-2); color: var(--text); font: inherit;
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+}
+#fc-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fc-box.danger #fc-input:focus-visible { outline-color: var(--bad); }
+#fc-note { color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+#fc-note.bad { color: var(--bad); }
+.fc-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.fc-actions button {
+  background: transparent; color: var(--text); font: inherit; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 14px;
+}
+.fc-actions button:hover:not(:disabled), .fc-actions button:focus-visible { border-color: var(--accent); outline: none; }
+#fc-go.danger { color: var(--bad); border-color: var(--bad); }
+#fc-go.danger:hover:not(:disabled), #fc-go.danger:focus-visible { background: var(--bad); color: var(--bg); border-color: var(--bad); }
+.fc-actions button:disabled { opacity: .4; cursor: default; }
 
 #crumbs button[data-factory] .caret { font-size: 10px; opacity: .7; margin-left: 4px; }
 #factory-page[hidden] { display: none; }
@@ -1559,3 +1607,9 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-modal h3 { margin: 0; font-size: 16px; }
 .cr-modal p { margin: 0; color: var(--dim); }
 .cr-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+
+/* The janitor's last section: taking this factory down. */
+.danger-zone { margin-top: 18px; padding-top: 4px; border-top: 1px solid var(--bad); }
+.danger-zone h3 { color: var(--bad); }
+.act.danger { color: var(--bad); border-color: var(--bad); }
+.act.danger:hover:not(:disabled), .act.danger:focus-visible { background: var(--bad); color: var(--bg); border-color: var(--bad); }

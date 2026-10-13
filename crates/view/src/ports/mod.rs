@@ -610,6 +610,53 @@ pub struct Initialized {
     pub report: String,
 }
 
+/// Whether the account `gh` is signed in with may delete a repository,
+/// as far as a read-only look can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rights {
+    /// The token lists the `delete_repo` scope.
+    Granted,
+    /// The token lists its scopes and `delete_repo` is not among them.
+    Missing,
+    /// Nothing says: a fine-grained token lists no scopes, or `gh` did not answer.
+    Unknown,
+}
+
+/// What taking a factory down touches outside the register: its repository
+/// on GitHub, its folder on this machine. Blocking — a handler runs it on a
+/// blocking thread.
+pub trait Teardown: Send + Sync {
+    /// Whether the token may delete a repository, asked of GitHub without
+    /// deleting anything.
+    fn delete_right(&self) -> Rights;
+
+    /// Deletes `slug` (`owner/name`) on GitHub, for good.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused: no right to delete it, or `gh` lacks the
+    /// `delete_repo` scope.
+    fn delete_repository(&self, slug: &str) -> Result<(), String>;
+
+    /// Removes the factory's folder `root`: a worktree of the harness
+    /// checkout, with its `.llocal/`. A folder already gone is removed.
+    ///
+    /// # Errors
+    ///
+    /// `root` is the checkout the view runs from, or `git` and the disk both
+    /// refused.
+    fn remove_folder(&self, root: &std::path::Path) -> Result<(), String>;
+
+    /// Removes what the harness keeps in the checkout `root` (`.llocal/`,
+    /// `.env.local`) and leaves the checkout itself, which somebody else
+    /// keeps. Nothing there is removed too.
+    ///
+    /// # Errors
+    ///
+    /// The disk refused.
+    fn wipe_harness_data(&self, root: &std::path::Path) -> Result<(), String>;
+}
+
 /// One `claude -p` call the view itself paid for — never a dev-loop run,
 /// which has its own ledger (`LedgerRow`): a question the view asked on its
 /// own account (the design system's tokens, a factory's grilling, a

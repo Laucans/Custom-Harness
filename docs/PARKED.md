@@ -90,4 +90,43 @@ lines. What remains:
   exist yet** — the task that creates it carries the same line; the
   refinement gates may want to tell "creates" from "writes".
 
+## A settings page for the GitHub token, and a page that tests its rights
+
+*Parked 2026-10-13, by the human, while building delink and destroy.*
+
+The view uses whatever `gh` is signed in with. Nothing on the page says
+which account that is nor what its token may do, so a missing right shows up
+late, as a `gh` refusal in the middle of a gesture. The one seen so far:
+**destroy** deletes a repository with `gh repo delete`, which needs the
+`delete_repo` scope; without it the refusal carries the command to run
+(`gh auth refresh -h github.com -s delete_repo`), but only after the watch
+was killed.
+
+Two pages are wanted:
+
+- **A configuration page** where the human gives a GitHub token, instead of
+  relying on `gh`'s own sign-in.
+- **A page that tests the rights**: for the signed-in account (or the token
+  given), which of what the harness does would be refused — create a
+  repository (and under which owners), delete one, open issues and pull
+  requests, push to the integration branch, merge, read the rate limits.
+
+What is already known:
+
+- Where a token would live is the open part. The harness's secrets sit in
+  `.env.local` per factory; a token for the whole machine would sit beside
+  the register, in `~/.harness/`. Never in the register's database, never
+  in a log, never echoed back to the page (`CLAUDE.md`, *Security
+  Invariants*).
+- The test is read-only by construction: ask GitHub what the token is
+  (`gh api user`, the `X-OAuth-Scopes` header of any call, `gh api
+  user/orgs`), and never perform the gesture to see whether it works. A
+  fine-grained token does not list its scopes, so the page can only say
+  "refused" after a harmless probe — which is a reason to keep each probe
+  named and listed.
+- The destroy gesture could check the right *before* it kills the watch,
+  from the same probe; today the watch is stopped first.
+- The port would sit with the others (`harness-view`'s `ports`, an adapter
+  next to `foundry`), since `gh` is the only thing that speaks to GitHub.
+
 Auto amelioration des formulaires de l'usine. Quand je clique sur valider si il y a une erreur statique je peux demander a en faire une regle de formulaire sur un bouton qui apparait avec l'erreur, dans ce cas une IA verifie que ca fait sens et emet une alerte si elle conclu que non, dans ce cas il faut une deuxieme validation. si ca fait du sens ca modifie directement le code de la vue.
