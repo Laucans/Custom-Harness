@@ -33,8 +33,11 @@ pub enum Step {
     Design,
     /// The proof of concept drawn as interactive mock-ups.
     Mockups,
-    /// The mock-ups reviewed: changed, regenerated, or accepted.
-    Review,
+    /// The rules the proof of concept must meet, tied to the mock-up's
+    /// pages and micro-frontends, then validated; the mock-up regenerated
+    /// or accepted. Once called the review.
+    #[serde(alias = "review")]
+    Rules,
     /// The factory initialized: the roadmap task opened, the watch started.
     Initialize,
 }
@@ -49,7 +52,7 @@ impl Step {
         Self::Scope,
         Self::Design,
         Self::Mockups,
-        Self::Review,
+        Self::Rules,
         Self::Initialize,
     ];
 }
@@ -108,6 +111,10 @@ impl Question {
 }
 
 /// Where a factory's creation stands.
+// Each bool is a fact of its own a gate reads (grilled, scope retouched,
+// rules validated, accepted), kept as the register stores it: no state
+// machine hides behind them.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Creation {
@@ -149,6 +156,12 @@ pub struct Creation {
     pub requirements: Vec<Requirement>,
     /// The highest number a requirement was ever given.
     pub last_requirement: u32,
+    /// The human validated the rules: each has its criterion and is
+    /// carried by the mock-up. Any change to them takes it back.
+    pub rules_validated: bool,
+    /// What the rules were read off: the micro-frontends' cut as it was
+    /// said then (`componentized`). Differs from it now: the cut moved.
+    pub rules_for: String,
     /// How many times the mock-ups were sent back to the brief.
     pub regenerations: u32,
     /// The mock-ups were drawn; what the session said of them.
@@ -191,6 +204,40 @@ pub struct Requirement {
     pub components: Vec<String>,
     /// Written or retouched by the human: a new reading keeps it.
     pub human: bool,
+    /// A step of a journey, or a business rule.
+    pub family: Family,
+    /// How to tell it is met: given…, when…, then….
+    pub criterion: String,
+}
+
+/// What a rule is about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Family {
+    /// A step of a user's journey: what the user does and sees.
+    #[default]
+    Journey,
+    /// A business rule: an invariant, a computation, what the application
+    /// keeps — the data step turns these into invariants.
+    Business,
+}
+
+impl Requirement {
+    /// Carried by at least one page or micro-frontend of the mock-up.
+    #[must_use]
+    pub const fn covered(&self) -> bool {
+        !self.pages.is_empty() || !self.components.is_empty()
+    }
+
+    /// The same rule, `human` and `id` aside.
+    fn same(&self, other: &Self) -> bool {
+        self.title == other.title
+            && self.body == other.body
+            && self.pages == other.pages
+            && self.components == other.components
+            && self.family == other.family
+            && self.criterion == other.criterion
+    }
 }
 
 /// What a gate reads that the record does not hold.
@@ -220,7 +267,7 @@ pub enum Mark {
 
 /// The steps each made from the one before it: a step to review makes
 /// every later one of them to review too.
-const CHAIN: [Step; 3] = [Step::Scope, Step::Mockups, Step::Review];
+const CHAIN: [Step; 3] = [Step::Scope, Step::Mockups, Step::Rules];
 
 /// What a step needs done before it may be entered; `None` when nothing.
 fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
@@ -257,7 +304,7 @@ fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
                 None
             }
         }
-        Step::Review => c.mocked.is_none().then_some("draw the mock-ups"),
+        Step::Rules => c.mocked.is_none().then_some("draw the mock-ups"),
         Step::Initialize => (!c.accepted).then_some("accept the proof of concept"),
     }
 }
@@ -312,6 +359,7 @@ impl Creation {
                 let own = match step {
                     Step::Scope => self.scope_stale(),
                     Step::Mockups => self.mockup_stale(),
+                    Step::Rules => self.rules_stale(),
                     _ => false,
                 };
                 let chained = CHAIN.contains(&step);
@@ -402,6 +450,14 @@ impl Creation {
                 r.human = true;
                 kept.push(r);
             }
+            let moved = kept.len() != self.requirements.len()
+                || kept
+                    .iter()
+                    .zip(&self.requirements)
+                    .any(|(a, b)| a.id != b.id || !a.same(b));
+            if moved {
+                self.rules_validated = false;
+            }
             self.requirements = kept;
         }
     }
@@ -450,6 +506,8 @@ impl Creation {
     /// them.
     pub fn add_requirements(&mut self, read: Vec<Read>) {
         self.requirements.retain(|r| r.human);
+        self.rules_validated = false;
+        self.rules_for = self.componentized.clone().unwrap_or_default();
         for r in read {
             if r.title.trim().is_empty() {
                 continue;
@@ -462,8 +520,80 @@ impl Creation {
                 pages: r.pages,
                 components: r.components,
                 human: false,
+                family: r.family,
+                criterion: r.criterion,
             });
         }
+    }
+
+    /// One rule read again by the AI off its supports: its number kept, the
+    /// rest as read. Unknown: nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// No rule has that number.
+    pub fn reread(&mut self, id: u32, read: Read) -> Result<(), String> {
+        let rule = self
+            .requirements
+            .iter_mut()
+            .find(|r| r.id == id)
+            .ok_or_else(|| format!("no rule R{id}"))?;
+        rule.title = read.title;
+        rule.body = read.body;
+        rule.pages = read.pages;
+        rule.components = read.components;
+        rule.family = read.family;
+        rule.criterion = read.criterion;
+        self.rules_validated = false;
+        Ok(())
+    }
+
+    /// What keeps the rules from being validated, in words: a rule with no
+    /// criterion, a rule nothing in the mock-up carries. Empty: they may.
+    #[must_use]
+    pub fn rule_gaps(&self) -> Vec<String> {
+        if self.requirements.is_empty() {
+            return vec!["no rule yet".to_string()];
+        }
+        let mut gaps = Vec::new();
+        for r in &self.requirements {
+            if r.criterion.trim().is_empty() {
+                gaps.push(format!("R{} has no criterion", r.id));
+            }
+            if !r.covered() {
+                gaps.push(format!(
+                    "R{} is carried by no page and no micro-frontend",
+                    r.id
+                ));
+            }
+        }
+        gaps
+    }
+
+    /// The rules validated, when nothing keeps them from it.
+    ///
+    /// # Errors
+    ///
+    /// What keeps them, first gap first.
+    pub fn validate_rules(&mut self) -> Result<(), String> {
+        let gaps = self.rule_gaps();
+        if !gaps.is_empty() {
+            return Err(gaps.join("; "));
+        }
+        self.rules_validated = true;
+        Ok(())
+    }
+
+    /// The rules were read off a cut into micro-frontends that moved since.
+    /// Rules read before the cut was noted (`rules_for` empty) are not.
+    #[must_use]
+    pub fn rules_stale(&self) -> bool {
+        !self.requirements.is_empty()
+            && !self.rules_for.is_empty()
+            && self
+                .componentized
+                .as_deref()
+                .is_some_and(|now| now != self.rules_for)
     }
 
     /// A grilling round, added: its questions numbered after the last ever
@@ -585,6 +715,10 @@ pub struct Read {
     pub pages: Vec<String>,
     /// The micro-frontends that carry it, by name.
     pub components: Vec<String>,
+    /// A step of a journey, or a business rule.
+    pub family: Family,
+    /// How to tell it is met.
+    pub criterion: String,
 }
 
 /// The requirements, as the AI answers them.
@@ -613,6 +747,7 @@ pub fn parse_requirements(
     for mut r in read.requirements {
         r.title = r.title.trim().to_string();
         r.body = r.body.trim().to_string();
+        r.criterion = r.criterion.trim().to_string();
         if r.title.is_empty() {
             continue;
         }
@@ -1219,22 +1354,7 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
             }
         }
     }
-    if !c.requirements.is_empty() {
-        body.push_str("\n## Requirements\n\n");
-        for r in &c.requirements {
-            let _ = write!(body, "- **R{} {}**", r.id, r.title.trim());
-            if !r.body.trim().is_empty() {
-                let _ = write!(body, " — {}", r.body.trim().replace('\n', " "));
-            }
-            let mut on = Vec::new();
-            on.extend(r.pages.iter().map(|p| format!("`mock/{p}`")));
-            on.extend(r.components.iter().map(|m| format!("`{m}`")));
-            if !on.is_empty() {
-                let _ = write!(body, " — on {}", on.join(", "));
-            }
-            body.push('\n');
-        }
-    }
+    body.push_str(&rules_section(c));
     if !ctx.pages.is_empty() {
         let _ = write!(
             body,
@@ -1288,6 +1408,41 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
     (title, body)
 }
 
+/// The rules, as the roadmap task lists them: each with its family, what it
+/// asks for, its criterion and what carries it. Empty when there is none.
+fn rules_section(c: &Creation) -> String {
+    let mut body = String::new();
+    if c.requirements.is_empty() {
+        return body;
+    }
+    body.push_str("\n## Rules\n\n");
+    for r in &c.requirements {
+        let family = match r.family {
+            Family::Journey => "journey",
+            Family::Business => "business",
+        };
+        let _ = write!(body, "- **R{} {}** ({family})", r.id, r.title.trim());
+        if !r.body.trim().is_empty() {
+            let _ = write!(body, " — {}", r.body.trim().replace('\n', " "));
+        }
+        if !r.criterion.trim().is_empty() {
+            let _ = write!(
+                body,
+                " — criterion: {}",
+                r.criterion.trim().replace('\n', " ")
+            );
+        }
+        let mut on = Vec::new();
+        on.extend(r.pages.iter().map(|p| format!("`mock/{p}`")));
+        on.extend(r.components.iter().map(|m| format!("`{m}`")));
+        if !on.is_empty() {
+            let _ = write!(body, " — on {}", on.join(", "));
+        }
+        body.push('\n');
+    }
+    body
+}
+
 /// The question that reads the requirements off the scope and the mock-up:
 /// each tied to the pages and the micro-frontends that carry it.
 #[must_use]
@@ -1296,13 +1451,17 @@ pub fn requirements_prompt(c: &Creation, ctx: &Context) -> String {
         "You read the requirements of a proof of concept off its scope and its mock-up, for \
          the human to retouch before the development starts. A requirement is one thing the \
          application must do or keep: a user journey's step, a rule it enforces, a thing it \
-         keeps, a proof the human expects — never a page or a component as such. Write each \
-         in the language of the human's brief, and tie it to the pages and the micro-frontends \
-         of the mock-up that carry it, by the exact paths and names listed below. Answer with \
-         one JSON object and nothing else: {\"requirements\": [{\"title\": \"the requirement \
-         in a few words\", \"body\": \"what it asks for, one or two sentences\", \"pages\": \
-         [\"pages/….html\"], \"components\": [\"Name\"]}]}. Between eight and twenty-five \
-         requirements, the scope's order.\n\n",
+         keeps, a proof the human expects — never a page or a component as such. Each is of a \
+         family: `journey` (a step of a user's journey: what the user does and sees) or \
+         `business` (an invariant, a computation, a thing the application keeps — what the data \
+         must hold true). Each carries its criterion: how a test tells it is met, written \
+         \"given …, when …, then …\". Write each in the language of the human's brief, and tie \
+         it to the pages and the micro-frontends of the mock-up that carry it, by the exact \
+         paths and names listed below. Answer with one JSON object and nothing else: \
+         {\"requirements\": [{\"title\": \"the requirement in a few words\", \"body\": \
+         \"what it asks for, one or two sentences\", \"family\": \"journey\", \"criterion\": \
+         \"given …, when …, then …\", \"pages\": [\"pages/….html\"], \"components\": \
+         [\"Name\"]}]}. Between eight and twenty-five requirements, the scope's order.\n\n",
     );
     text.push_str(&product(c));
     let _ = write!(text, "\nThe scope:\n\n{}\n", c.scope.trim());
@@ -1340,6 +1499,22 @@ pub fn requirements_prompt(c: &Creation, ctx: &Context) -> String {
             let _ = writeln!(text, "- {}", r.title.trim());
         }
     }
+    text
+}
+
+/// The question that reads one rule again off the scope and the mock-up as
+/// it stands: the same reading, for that rule alone.
+#[must_use]
+pub fn rule_prompt(c: &Creation, ctx: &Context, rule: &Requirement) -> String {
+    let mut text = requirements_prompt(c, ctx);
+    let _ = write!(
+        text,
+        "\nRead again this one requirement only, and answer it as the only entry of \
+         `requirements`: keep its meaning, tie it to what carries it in the mock-up as it stands, \
+         settle its family and write its criterion.\n\n- title: {}\n- what it asks for: {}\n",
+        rule.title.trim(),
+        rule.body.trim().replace('\n', " ")
+    );
     text
 }
 
@@ -1437,7 +1612,7 @@ mod tests {
         assert_eq!(marks.len(), Step::ALL.len());
         assert_eq!(mark(&c, Step::Kind), Mark::Done);
         assert_eq!(mark(&c, Step::Mockups), Mark::Done);
-        assert_eq!(mark(&c, Step::Review), Mark::Open);
+        assert_eq!(mark(&c, Step::Rules), Mark::Open);
         assert_eq!(mark(&c, Step::Initialize), Mark::Locked);
         c.accepted = true;
         assert_eq!(mark(&c, Step::Initialize), Mark::Open);
@@ -1463,7 +1638,7 @@ mod tests {
         );
         assert_eq!(mark(&c, Step::Grilling), Mark::Done);
         assert_eq!(
-            mark(&c, Step::Review),
+            mark(&c, Step::Rules),
             Mark::Open,
             "not made yet: nothing to review"
         );
@@ -1475,7 +1650,7 @@ mod tests {
         c.mocked_scope = "## Older goal".to_string();
         assert_eq!(mark(&c, Step::Scope), Mark::Done);
         assert_eq!(mark(&c, Step::Mockups), Mark::Stale);
-        assert_eq!(mark(&c, Step::Review), Mark::Stale);
+        assert_eq!(mark(&c, Step::Rules), Mark::Stale);
     }
 
     #[test]
@@ -1492,7 +1667,7 @@ mod tests {
         c.accepted = false;
         c.mocked = None;
         assert_eq!(mark(&c, Step::Mockups), Mark::Blocked);
-        assert_eq!(mark(&c, Step::Review), Mark::Locked);
+        assert_eq!(mark(&c, Step::Rules), Mark::Locked);
         let mut fresh = ready();
         fresh.mocked = None;
         assert_eq!(
@@ -1500,6 +1675,155 @@ mod tests {
             Mark::Open,
             "never went beyond it"
         );
+    }
+
+    fn rule(id: u32, criterion: &str, pages: &[&str]) -> Requirement {
+        Requirement {
+            id,
+            title: format!("rule {id}"),
+            criterion: criterion.to_string(),
+            pages: pages.iter().map(ToString::to_string).collect(),
+            ..Requirement::default()
+        }
+    }
+
+    #[test]
+    fn rules_are_validated_only_with_a_criterion_and_a_support_each() {
+        let mut c = ready();
+        assert_eq!(c.rule_gaps(), vec!["no rule yet".to_string()]);
+        c.requirements = vec![rule(1, "", &["pages/a.html"]), rule(2, "given x", &[])];
+        assert_eq!(
+            c.rule_gaps(),
+            vec![
+                "R1 has no criterion".to_string(),
+                "R2 is carried by no page and no micro-frontend".to_string()
+            ]
+        );
+        assert!(c.validate_rules().is_err());
+        assert!(!c.rules_validated);
+        c.requirements[0].criterion = "given y".to_string();
+        c.requirements[1].components = vec!["Card".to_string()];
+        assert!(c.requirements[1].covered());
+        c.validate_rules().expect("nothing keeps them");
+        assert!(c.rules_validated);
+    }
+
+    #[test]
+    fn a_rule_changed_takes_the_validation_back_the_same_rules_do_not() {
+        let mut c = ready();
+        c.requirements = vec![rule(1, "given y", &["pages/a.html"])];
+        c.validate_rules().expect("valid");
+        let same = c.requirements.clone();
+        c.edit(Edit {
+            requirements: Some(same.clone()),
+            ..Edit::default()
+        });
+        assert!(c.rules_validated, "sent back unchanged");
+        let mut changed = same;
+        changed[0].family = Family::Business;
+        c.edit(Edit {
+            requirements: Some(changed),
+            ..Edit::default()
+        });
+        assert!(!c.rules_validated);
+        c.validate_rules().expect("valid");
+        c.edit(Edit {
+            requirements: Some(Vec::new()),
+            ..Edit::default()
+        });
+        assert!(!c.rules_validated, "one deleted");
+    }
+
+    #[test]
+    fn rules_read_off_a_cut_that_moved_are_stale() {
+        let mut c = ready();
+        c.componentized = Some("cut one".to_string());
+        c.validate_rules().expect_err("no rule");
+        c.add_requirements(vec![Read {
+            title: "Pay".to_string(),
+            family: Family::Business,
+            criterion: "given".to_string(),
+            ..Read::default()
+        }]);
+        assert_eq!(c.rules_for, "cut one");
+        assert_eq!(c.requirements[0].family, Family::Business);
+        assert_eq!(c.requirements[0].criterion, "given");
+        assert!(!c.rules_stale());
+        c.componentized = Some("cut two".to_string());
+        assert!(c.rules_stale());
+        assert_eq!(mark(&c, Step::Rules), Mark::Stale);
+        c.rules_for.clear();
+        assert!(!c.rules_stale(), "read before the cut was noted");
+        c.rules_for = "cut one".to_string();
+        c.requirements.clear();
+        assert!(!c.rules_stale(), "nothing read: nothing to review");
+    }
+
+    #[test]
+    fn a_rule_read_again_keeps_its_number_and_takes_the_reading() {
+        let mut c = ready();
+        c.requirements = vec![rule(4, "", &[]), rule(5, "kept", &[])];
+        c.rules_validated = true;
+        let read = Read {
+            title: "Pay".to_string(),
+            body: "pays".to_string(),
+            pages: vec!["pages/a.html".to_string()],
+            components: vec!["Card".to_string()],
+            family: Family::Business,
+            criterion: "given a debt".to_string(),
+        };
+        c.reread(4, read).expect("known");
+        let r = &c.requirements[0];
+        assert_eq!(
+            (
+                r.id,
+                r.title.as_str(),
+                r.body.as_str(),
+                r.criterion.as_str()
+            ),
+            (4, "Pay", "pays", "given a debt")
+        );
+        assert_eq!(
+            (r.pages.len(), r.components.len(), r.family),
+            (1, 1, Family::Business)
+        );
+        assert_eq!(c.requirements[1].criterion, "kept");
+        assert!(!c.rules_validated);
+        assert!(c.reread(9, Read::default()).is_err());
+    }
+
+    #[test]
+    fn the_rules_prompt_asks_a_family_and_a_criterion_and_one_rule_alone() {
+        let c = ready();
+        let ctx = Context::default();
+        let all = requirements_prompt(&c, &ctx);
+        assert!(
+            all.contains("`journey`")
+                && all.contains("`business`")
+                && all.contains("\"criterion\"")
+        );
+        let one = rule_prompt(
+            &c,
+            &ctx,
+            &Requirement {
+                title: "Pay an invoice".to_string(),
+                body: "from\nthe list".to_string(),
+                ..Requirement::default()
+            },
+        );
+        assert!(one.starts_with(&all));
+        assert!(one.contains("- title: Pay an invoice\n- what it asks for: from the list"));
+    }
+
+    #[test]
+    fn a_rule_s_family_and_criterion_are_read_off_the_answer() {
+        let answer = r#"{"requirements": [{"title": " Pay ", "family": "business", "criterion": " given a debt ", "pages": ["pages/a.html"]}]}"#;
+        let read = parse_requirements(answer, &["pages/a.html".to_string()], &[]).expect("read");
+        assert_eq!(read[0].family, Family::Business);
+        assert_eq!(read[0].criterion, "given a debt");
+        let plain =
+            parse_requirements(r#"{"requirements": [{"title": "Pay"}]}"#, &[], &[]).expect("read");
+        assert_eq!(plain[0].family, Family::Journey, "a journey unless said");
     }
 
     #[test]
@@ -1539,7 +1863,7 @@ mod tests {
                 Step::Design,
                 "settle the proof of concept's scope",
             ),
-            (|c| c.mocked = None, Step::Review, "draw the mock-ups"),
+            (|c| c.mocked = None, Step::Rules, "draw the mock-ups"),
             (
                 |c| c.accepted = false,
                 Step::Initialize,
@@ -1687,7 +2011,7 @@ mod tests {
     fn regenerating_goes_back_to_the_brief_keeping_what_was_written() {
         let mut c = ready();
         c.grilled = true;
-        c.step = Step::Review;
+        c.step = Step::Rules;
         c.regenerate();
         assert_eq!(c.step, Step::Brief);
         assert_eq!(
@@ -1806,6 +2130,8 @@ mod tests {
             pages: vec!["pages/home.html".to_string()],
             components: vec!["InvoiceList".to_string()],
             human: true,
+            family: Family::Business,
+            criterion: "given an invoice due, when the client pays, then it is settled".to_string(),
         });
         c.mockup_at = "main_agent@abcdef0123".to_string();
         c.design_at = "0123456789".to_string();
@@ -1837,7 +2163,7 @@ mod tests {
         let (title, body) = roadmap_issue(&c, &ctx);
         assert_eq!(title, "Proof of concept — app");
         assert!(body.contains("- **q1** — yes\n  (asked: the client or the bank?)"));
-        assert!(body.contains("- **R3 Pay an invoice** — The client pays from its list — on `mock/pages/home.html`, `InvoiceList`"));
+        assert!(body.contains("- **R3 Pay an invoice** (business) — The client pays from its list — criterion: given an invoice due, when the client pays, then it is settled — on `mock/pages/home.html`, `InvoiceList`"));
         assert!(body.contains("- Home — `mock/pages/home.html` — see the invoices"));
         assert!(body.contains("- **InvoiceList** (billing) — the invoices — needs billing.listInvoices — actions billing.payInvoice"));
         assert!(body.contains("(`main_agent@abcdef0123`)"));
@@ -1855,7 +2181,7 @@ mod tests {
         ));
         let (_, bare) = roadmap_issue(&Creation::new("app", "me/app"), &Context::default());
         assert!(!bare.contains("## Decisions") && !bare.contains("## Mock-ups"));
-        assert!(!bare.contains("## Requirements") && !bare.contains("## Requests left"));
+        assert!(!bare.contains("## Rules") && !bare.contains("## Requests left"));
         let json = record_json(&c, &ctx).expect("written");
         let read: serde_json::Value = serde_json::from_str(&json).expect("json");
         assert_eq!(read["requirements"][0]["title"], "Pay an invoice");

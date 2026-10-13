@@ -1575,6 +1575,32 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-crumb.here .cr-chip { background: var(--bg); color: var(--accent); }
 .cr-aside { display: flex; align-items: center; gap: 8px; }
 /* The review's requirements, each tied to pages and micro-frontends by chips. */
+.cr-rules-split { display: grid; grid-template-columns: minmax(360px, 34%) 1fr; gap: 14px; align-items: start; }
+.cr-rules-split > .cr-body { max-height: calc(100vh - 160px); overflow: auto; padding-right: 4px; }
+.cr-rules-split > .cr-embed { position: sticky; top: 8px; min-width: 0; }
+@media (max-width: 900px) { .cr-rules-split { grid-template-columns: 1fr; } .cr-rules-split > .cr-embed { position: static; } }
+.cr-rules-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 10px; }
+.cr-rules-head .spacer { flex: 1; }
+.cr-rules { display: flex; flex-direction: column; gap: 14px; }
+.cr-rule-group h3 { font: 600 12px var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 0 0 6px; cursor: help; }
+.cr-rule-group h3 small { font: 11px var(--mono); }
+.cr-rule-group > .cr-rule + .cr-rule { margin-top: 8px; }
+.cr-rule { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+.cr-rule.mine { border-left: 3px solid var(--accent); }
+.cr-rule.gap { border-color: var(--bad); }
+.cr-rule.sel { border-color: #4ea3f0; box-shadow: 0 0 0 1px #4ea3f0; cursor: default; }
+.cr-rule header { display: flex; align-items: center; gap: 6px; }
+.cr-rule header select { font: 12px var(--sans); width: auto; flex: none; }
+.cr-rule header .cr-req-title { flex: 1; min-width: 0; width: auto; }
+.cr-rule .tag { margin: 0; }
+.cr-rule-criterion { font: 12px var(--sans); }
+.cr-rule-criterion.bad { border-color: var(--bad); }
+.cr-rule-cover { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.cr-rule-page { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--text); font: 11px var(--sans); cursor: pointer; }
+.cr-rule-page.on, .cr-rule-page:hover { border-color: #4ea3f0; }
+.cr-rule-mf { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 8px; border: 1px solid var(--line); border-radius: 999px; font: 11px var(--mono); }
+.cr-rule-mf .mini { padding: 0 4px; }
+.cr-gaps { margin: 4px 0 8px; padding-left: 18px; color: var(--bad); font-size: 12px; }
 .cr-reqs { display: flex; flex-direction: column; gap: 10px; max-height: 46vh; overflow: auto; padding-right: 4px; }
 .cr-req { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
 .cr-req.mine { border-left: 3px solid var(--accent); }

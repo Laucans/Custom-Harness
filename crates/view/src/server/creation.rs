@@ -4,7 +4,7 @@
 //! review, the initialization.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -39,6 +39,7 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "scopeStale": record.as_ref().is_some_and(Creation::scope_stale),
         "mockupStale": record.as_ref().is_some_and(Creation::mockup_stale),
         "marks": record.as_ref().map(|r| r.marks(facts)),
+        "ruleGaps": record.as_ref().map(Creation::rule_gaps),
         "designValidated": facts.design_validated,
         "kit": kit,
         "job": desk.job(),
@@ -216,6 +217,30 @@ pub(super) async fn requirements(State(state): State<AppState>) -> Response {
         Err(r) => return *r,
     };
     match desk.read_requirements().await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// One rule read again off the scope and the mock-up.
+pub(super) async fn reread_rule(State(state): State<AppState>, Path(id): Path<u32>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.reread_rule(id).await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The rules validated: nothing is published.
+pub(super) async fn validate_rules(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.validate_rules().await {
         Ok(record) => view(desk, Some(record)).await,
         Err(why) => refused(why),
     }

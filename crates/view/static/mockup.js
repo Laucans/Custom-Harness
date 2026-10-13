@@ -125,7 +125,9 @@
     const st = { branch: (opts && opts.branch) || '', page: (opts && opts.page) || '', view: (opts && opts.view) || 'page', versions: null, state: null, stamp: '', pinned: false, readOnly: !!(opts && opts.readOnly),
       timer: null, gone: false, interact: false, mf: !!kept(MF_ON, false),
       // The micro-frontends' list beside the page (off where a step hides it); the one pointed at, on the page and in the list.
-      strip: !(opts && opts.strip === false), hot: '', board: null, frame: null, shield: null, doc: null, armed: null, proxies: new WeakMap(), fitted: false, saving: false,
+      strip: !(opts && opts.strip === false), hot: '',
+      // A rule picked on the creation's rules step: only its micro-frontends listed, its parts marked on the page.
+      focus: null, board: null, frame: null, shield: null, doc: null, armed: null, proxies: new WeakMap(), fitted: false, saving: false,
       cards: [],
       // Edit mode: the page's source, its draft engine, the versions, the selection, a gesture under way.
       edit: !!(opts && opts.edit), source: '', engine: null, history: null, sel: '', hover: null, drag: null, resize: null, space: false, saveTimer: null, viewing: null, width: DEFAULT_WIDTH, lastLoadedPage: '', toastTimer: null,
@@ -376,6 +378,7 @@
       injectStyle(doc);
       outline();
       st.hot = '';
+      marksFocus();
       // In interact mode the pointer is in the frame itself: the part under it lights its entry.
       doc.addEventListener('pointermove', (ev) => { const el = ev.target && ev.target.closest ? ev.target.closest('[data-component]') : null; setHot(el ? el.dataset.component : ''); });
       doc.addEventListener('pointerleave', () => setHot(''));
@@ -392,6 +395,7 @@
       style.textContent = '.hb-target{outline:2px dashed #e2b240 !important;outline-offset:2px}'
         + '.mf-on[data-component]{outline:2px solid var(--mf,#4ea3f0) !important;outline-offset:4px;position:relative}'
         + '.mf-on[data-component]::before{content:attr(data-component);position:absolute;left:-2px;top:-22px;background:var(--mf,#4ea3f0);color:#101418;font:600 11px/1 ui-monospace,monospace;padding:4px 7px;border-radius:4px 4px 0 0;letter-spacing:.03em;z-index:2147483000}'
+        + '.mf-focus[data-component]{outline:2px dashed #4ea3f0 !important;outline-offset:3px}'
         + '.mf-hot[data-component]{outline:3px solid #e2b240 !important;outline-offset:4px;box-shadow:0 0 0 4px rgba(226,178,64,.18),0 0 24px rgba(226,178,64,.35) !important}'
         + '[data-layout="static"]{outline:1px dashed rgba(43,192,200,.5)}'
         + '.mk-added{outline:1px dotted #2bc0c8}';
@@ -979,7 +983,7 @@
         if (!res.ok) throw new Error(text);
         toast(`${items.length === 1 ? esc(items[0].name) : items.length + ' micro-frontends'}: generating — the kit makes what they lack first`);
         await loadGens();
-        mountMf();
+        if (st.view === 'components') mountMf();
       } catch (e) { toast(esc(String(e.message || e).split('\n')[0])); }
     }
     async function loadGens() {
@@ -1291,7 +1295,7 @@
       const strip = q('.mk-strip');
       strip.hidden = !st.strip || st.view !== 'page' || !st.state || (editing() && !q('.mk-panel').hidden);
       if (strip.hidden) return;
-      const list = components();
+      const list = st.focus ? components().filter((c) => st.focus.includes(c.name)) : components();
       const here = new Set(onPage());
       const chip = (c) => {
         const used = c.pages.length ? 'used on: ' + c.pages.join(', ') : 'on no page';
@@ -1300,10 +1304,14 @@
       };
       const section = (title, items, empty) => `<div class="mk-strip-sec">${title} <small>${items.length}</small></div>`
         + (items.length ? items.map(chip).join('') : `<div class="hb-empty">${empty}</div>`);
-      strip.innerHTML = '<div class="mk-strip-head">micro-frontends <small>drag one onto the page</small></div>'
+      strip.innerHTML = `<div class="mk-strip-head">micro-frontends <small>${st.focus ? "the rule's only" : 'drag one onto the page'}</small></div>`
         + section('on this page', list.filter((c) => here.has(c.name)), 'none on this page')
         + section('the rest', list.filter((c) => !here.has(c.name)), 'none')
         + '<button type="button" class="mini" data-mk="design">+ micro-frontend</button>';
+    }
+    // The picked rule's micro-frontends, marked on the page.
+    function marksFocus() {
+      if (st.doc) st.doc.querySelectorAll('[data-component]').forEach((el) => el.classList.toggle('mf-focus', !!st.focus && st.focus.includes(el.dataset.component)));
     }
     // One micro-frontend pointed at — from the list or on the page — lit in both.
     function setHot(name) {
@@ -1653,6 +1661,16 @@
         return { what: describe(target), text: context(target) };
       },
       reload() { st.state = null; return load(); },
+      // A rule picked elsewhere: its micro-frontends alone in the list and
+      // marked on the page, the page shown when one is given; null lets go.
+      focus(sel) {
+        st.focus = sel ? [...(sel.names || [])] : null;
+        if (sel && sel.page && st.view === 'page' && (st.state && st.state.pages || []).some((p) => p.path === sel.page)) show(sel.page);
+        marksFocus();
+        drawStrip();
+      },
+      // One micro-frontend's fragment generated again from its spec.
+      async regenerate(name) { const c = componentOf(name); if (c) await generateMfs([c]); },
       // The draft's steps written into the workspace, so what the human
       // sees is what the server reads next — the creation page calls it
       // before it moves on or accepts.

@@ -2004,7 +2004,7 @@ async fn regenerating_sends_the_creation_back_to_the_brief() {
     let roll = Arc::new(Roll::default());
     let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
     record.mocked = Some("two pages".to_string());
-    record.step = crate::domain::creation::Step::Review;
+    record.step = crate::domain::creation::Step::Rules;
     being_created(&roll, &record);
     let state = state_creating(Arc::clone(&roll), Arc::default(), "");
     let (status, body) = post(state, "/api/creation/regenerate", "").await;
@@ -2130,6 +2130,39 @@ async fn the_mockups_and_the_acceptance_wait_for_their_gates() {
     let (status, body) = post(state, "/api/creation/accept", "").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body, "validate the design system");
+}
+
+#[tokio::test]
+async fn the_rules_are_validated_once_complete_and_read_again_behind_their_gate() {
+    use crate::domain::creation::{Creation, Requirement};
+    let roll = Arc::new(Roll::default());
+    let mut record = Creation::new("alpha", "me/alpha");
+    record.requirements = vec![Requirement {
+        id: 1,
+        title: "Pay".to_string(),
+        components: vec!["InvoiceList".to_string()],
+        ..Requirement::default()
+    }];
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state.clone(), "/api/creation/rules/validate", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "R1 has no criterion");
+    let (_, body) = get(state.clone(), "/api/creation").await;
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["ruleGaps"], serde_json::json!(["R1 has no criterion"]));
+    assert_eq!(view["marks"][1], serde_json::json!(["kind", "open"]));
+    let (status, body) = post(state.clone(), "/api/creation/rules/1/reread", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "choose the kind of factory");
+
+    record.requirements[0].criterion = "given a debt, when paid, then settled".to_string();
+    being_created(&roll, &record);
+    let (status, body) = post(state, "/api/creation/rules/validate", "").await;
+    assert_eq!(status, StatusCode::OK);
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["record"]["rules_validated"], true);
+    assert_eq!(view["ruleGaps"], serde_json::json!([]));
 }
 
 /// A `Usage` kept in memory, for a test to read back.

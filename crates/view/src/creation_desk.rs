@@ -22,7 +22,7 @@ use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
     componentize_prompt, decompose_prompt, grill_prompt, manifest_repair_prompt, mockups_prompt,
     not_componentized, parse_brief, parse_requirements, parse_round, requirements_prompt,
-    scope_prompt, unfenced,
+    rule_prompt, scope_prompt, unfenced,
 };
 use crate::domain::design::Entry;
 use crate::domain::divergence;
@@ -416,7 +416,7 @@ impl CreationDesk {
     /// requirements.
     pub async fn read_requirements(&self) -> Result<Creation, String> {
         self.existing()?
-            .may_enter(Step::Review, self.facts().await)?;
+            .may_enter(Step::Rules, self.facts().await)?;
         self.requirements_read().await
     }
 
@@ -432,6 +432,51 @@ impl CreationDesk {
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
         record.add_requirements(read);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// One rule read again by the AI off the scope and the mock-up as it
+    /// stands; the others unchanged.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no rule with that number, no Claude, or an answer with
+    /// no rule.
+    pub async fn reread_rule(&self, id: u32) -> Result<Creation, String> {
+        let asked = self.existing()?;
+        asked.may_enter(Step::Rules, self.facts().await)?;
+        let rule = asked
+            .requirements
+            .iter()
+            .find(|r| r.id == id)
+            .cloned()
+            .ok_or_else(|| format!("no rule R{id}"))?;
+        let ctx = self.context(&asked).await;
+        let pages: Vec<String> = ctx.pages.iter().map(|p| p.path.clone()).collect();
+        let components: Vec<String> = ctx.components.iter().map(|c| c.name.clone()).collect();
+        let answer = self.ask(rule_prompt(&asked, &ctx, &rule)).await?;
+        let read = parse_requirements(&answer, &pages, &components)?
+            .into_iter()
+            .next()
+            .ok_or("the AI read the rule into nothing")?;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.reread(id, read)?;
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The rules validated: each has its criterion and is carried by the
+    /// mock-up. Nothing is published.
+    ///
+    /// # Errors
+    ///
+    /// No creation, what keeps the rules from it, or the register refused.
+    pub async fn validate_rules(&self) -> Result<Creation, String> {
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.validate_rules()?;
         self.keep(&record)?;
         Ok(record)
     }
@@ -772,7 +817,7 @@ impl CreationDesk {
         record.drawn(said);
         // Drawn ahead, the human is still before the mock-up step: left there.
         if record.step >= Step::Mockups {
-            record.go(Step::Review, facts)?;
+            record.go(Step::Rules, facts)?;
         }
         self.keep(&record)
     }
@@ -790,6 +835,9 @@ impl CreationDesk {
         let mut record = self.existing()?;
         record.accepted = true;
         record.go(Step::Initialize, facts)?;
+        if !record.rules_validated {
+            return Err("validate the rules first".to_string());
+        }
         // The job first: an acceptance nothing starts is not kept.
         self.begin(Work::Initialize)?;
         self.keep(&record)?;
@@ -808,7 +856,7 @@ impl CreationDesk {
     /// No mock-up drawn, nothing can write, or another job under way.
     pub async fn componentize_now(&self) -> Result<(), String> {
         let record = self.existing()?;
-        record.may_enter(Step::Review, self.facts().await)?;
+        record.may_enter(Step::Rules, self.facts().await)?;
         if record.componentized.is_some() {
             return Ok(());
         }
@@ -1680,7 +1728,7 @@ mod tests {
         assert!(dir.join("main_agent/mock/pages/home.html").is_file());
         let drawn = desk.record().expect("read").expect("a record");
         assert_eq!(drawn.mocked.as_deref(), Some("one page: home"));
-        assert_eq!(drawn.step, Step::Review);
+        assert_eq!(drawn.step, Step::Rules);
 
         // The micro-frontends before the review, so the requirements tie to them.
         desk.componentize_now().await.expect("started");
@@ -1893,10 +1941,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The rules the acceptance waits for, validated: those read given a
+    /// criterion and a support where they lack one, or one of its own.
+    fn rules_validated(desk: &CreationDesk) {
+        let mut record = desk.existing().expect("a creation");
+        if record.requirements.is_empty() {
+            record.requirements.push(creation::Requirement {
+                id: 1,
+                title: "Pay".to_string(),
+                ..creation::Requirement::default()
+            });
+        }
+        for r in &mut record.requirements {
+            if r.criterion.is_empty() {
+                r.criterion = "given a debt, when paid, then settled".to_string();
+            }
+            if !r.covered() {
+                r.components.push("InvoiceList".to_string());
+            }
+        }
+        record.validate_rules().expect("nothing keeps them");
+        desk.keep(&record).expect("kept");
+    }
+
     /// The second half of the flow above: accepted, the record is kept in
     /// the repository, the mock-up and the design system published, and
     /// the initialization stops at the board it has not.
     async fn initialized_up_to_the_board(desk: &CreationDesk, dir: &Path) {
+        rules_validated(desk);
         let accepted = desk.accept().await.expect("accepted");
         assert!(accepted.accepted);
         assert_eq!(accepted.step, Step::Initialize);
@@ -2402,6 +2474,7 @@ mod tests {
         let kit = desk.kit().await.expect("a kit");
         assert!(kit.validated);
         assert_eq!((kit.waiting, kit.generated, kit.running), (0, 0, false));
+        rules_validated(&desk);
         desk.accept().await.expect("accepted");
         let job = settled(&desk).await;
         assert_eq!(job.state, State::Failed);
@@ -2633,6 +2706,7 @@ mod tests {
             plant: None,
             pins: None,
         });
+        rules_validated(&desk);
         desk.accept().await.expect("accepted");
         let mut seen_new = false;
         for _ in 0..80 {

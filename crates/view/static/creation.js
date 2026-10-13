@@ -42,7 +42,7 @@
     ['scope', 'POC scope'],
     ['design', 'Design system'],
     ['mockups', 'Mock-ups'],
-    ['review', 'Review'],
+    ['rules', 'Rules'],
     ['initialize', 'Initialize'],
   ];
   const KINDS = [
@@ -83,7 +83,9 @@
   function routeFromHash() {
     const m = /^#new-factory(?:\/([a-z]+))?$/.exec(location.hash);
     if (m && m[1] === FOUND) return FOUND;
-    return m && m[1] && indexOf(m[1]) >= 0 ? m[1] : 'landing';
+    // The rules step was called the review: an old link still lands on it.
+    const step = m && m[1] === 'review' ? 'rules' : m && m[1];
+    return step && indexOf(step) >= 0 ? step : 'landing';
   }
   function setRoute(route) {
     C.route = route;
@@ -207,16 +209,8 @@
     if (qs.length || (C.route === 'grilling' && record())) {
       body.questions = [...qs].map((q) => ({ id: Number(q.dataset.q), answer: q.querySelector('textarea').value }));
     }
-    const reqs = page.querySelectorAll('[data-req]');
-    if (reqs.length || (C.route === 'review' && record() && page.querySelector('.cr-reqs'))) {
-      body.requirements = [...reqs].map((el) => ({
-        id: Number(el.dataset.req) || 0,
-        title: el.querySelector('.cr-req-title').value,
-        body: el.querySelector('.cr-req-body').value,
-        pages: [...el.querySelectorAll('input[data-page]:checked')].map((i) => i.dataset.page),
-        components: [...el.querySelectorAll('input[data-component]:checked')].map((i) => i.dataset.component),
-      }));
-    }
+    // The rules are kept as the page edits them, not read back off the cards.
+    if (C.route === 'rules' && C.rules) body.requirements = C.rules;
     return body;
   }
 
@@ -246,7 +240,7 @@
       else if (!want) { clearInterval(demoTimer); demoTimer = null; demoWork = null; demoPlaying = false; }
       // Review has no job to animate — just the real pages, read-only (see
       // EMBEDS.review.opts and mockup.js's own readOnly guard).
-      if (C.route === 'review' && (!record() || C.data.branch !== DEMO_BRANCH)) { C.data = demoBase('review'); draw(); }
+      if (C.route === 'rules' && (!record() || C.data.branch !== DEMO_BRANCH)) { C.data = demoBase('rules'); draw(); }
       drawDemoButton();
       return;
     }
@@ -265,17 +259,17 @@
     if (C.route === 'mockups' && !r.mocked && !running() && !(job() && job().work === 'mockups')) once(`mock-${r.regenerations}`, () => act('starting the drawing', () => start('mockups')));
     const kit = C.data.kit;
     if ((C.route === 'design' || C.route === 'brief') && kit && kit.validated && kit.waiting && !kit.running && !kit.noClaude) once(`kit-${r.regenerations}`, generateKit);
-    if (C.route === 'review') {
+    if (C.route === 'rules') {
       if (!C.mock) loadMock();
       if (!r.componentized && !running()) once(`mf-${r.regenerations}`, () => act('starting the micro-frontends', () => start('componentize')));
-      else if (r.componentized && !r.requirements.length && !running()) once(`req-${r.regenerations}`, () => act('the AI reads the requirements', async () => { await post('requirements'); await loadMock(); }));
+      else if (r.componentized && !r.requirements.length && !running()) once(`req-${r.regenerations}`, () => act('the AI reads the rules', async () => { await post('requirements'); await loadMock(); }));
     }
   }
   // The mock-up as it stands: its pages and micro-frontends, for the review's requirements.
   async function loadMock() {
     if (!C.data || !C.data.branch) return;
     try { C.mock = await call('GET', `/api/mockup?branch=${encodeURIComponent(C.data.branch)}`); } catch (e) { C.mock = { pages: [], components: [] }; }
-    if (C.route === 'review') draw();
+    if (C.route === 'rules') draw();
   }
 
   // ---- drawing --------------------------------------------------------------------
@@ -319,7 +313,7 @@
       if (r.mocked && indexOf(C.route) < indexOf('mockups')) return '<span class="cr-chip">ready</span>';
     }
     // The micro-frontends and the requirements are the review's: their spinner sits on its crumb.
-    if (id === 'review' && running('componentize')) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> micro-frontends</span>';
+    if (id === 'rules' && running('componentize')) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> micro-frontends</span>';
     if (id === 'design' && k) {
       if (k.running || (running('prepare') && !k.validated && !k.generated)) return '<span class="cr-chip"><span class="cr-spin" aria-hidden="true"></span> generating</span>';
       if (k.failed) return `<span class="cr-chip warn">${k.failed} failed</span>`;
@@ -736,7 +730,7 @@
     const split = DEMO ? mine : running('mockups') || making;
     const spinner = !DEMO && running('mockups') ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Drawing the proof of concept…</b></div>'
       : making ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Making the micro-frontends…</b></div>' : '';
-    return `<p class="muted">A Claude Code session draws the proof of concept as interactive mock-ups, fast: one page per screen of the scope, the journeys linked, the design system's components and tokens. Drawn, it is yours to rework here — <b>edit</b> the page by hand, drop a <b>request</b> pin and apply it, add a page — before the review ties the requirements to it.</p>
+    return `<p class="muted">A Claude Code session draws the proof of concept as interactive mock-ups, fast: one page per screen of the scope, the journeys linked, the design system's components and tokens. Drawn, it is yours to rework here — <b>edit</b> the page by hand, drop a <b>request</b> pin and apply it, add a page — before the rules step ties the rules to it.</p>
       ${split ? drawSplit(C.data.branch, spinner + '<div data-cr-job>' + (mine || making ? jobPanel() : '') + '</div>') : ''}
       ${!split && mine && !r.mocked ? `<div data-cr-job>${jobPanel()}</div>` : ''}
       ${failed ? `<div class="cr-error" role="alert">${esc(j.why)}</div>` : ''}
@@ -752,52 +746,94 @@
     return `<div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="design"${running('mockups') ? ' disabled' : ''}>← Back</button>
         <span class="cr-gap"></span>
         ${!running() && (failed || !mine || r.mocked) ? `<button type="button" class="cr-btn" data-cr-draw>${r.mocked || failed ? 'Draw again' : 'Draw the mock-ups'}</button>` : ''}
-        <button type="button" class="cr-btn on" data-cr-next="review"${r.mocked && !running('mockups') ? '' : ' disabled'}>Review →</button></div>`;
+        <button type="button" class="cr-btn on" data-cr-next="rules"${r.mocked && !running('mockups') ? '' : ' disabled'}>Rules →</button></div>`;
   }
 
-  // The step's head; the mock-up's easel is mounted under it (`mountEmbed`), the choices close the step (`reviewFoot`).
-  function stepReview(r) {
+  // The rules step: the rules beside the mock-up's easel (`mountEmbed`),
+  // the choices under them (`rulesFoot`). A rule picked shows what carries
+  // it on the easel: its micro-frontends alone in the list, marked on the
+  // page, its first page shown.
+  const FAMILIES = [['journey', 'Journey', 'A step of a user\'s journey: what the user does and sees'], ['business', 'Business', 'An invariant, a computation, what the application keeps — the data step makes invariants of them']];
+  const rules = () => C.rules || (record() ? record().requirements : []);
+  // A change to the rules: made on the page's copy, kept a moment later.
+  function editRules(fn, now) {
+    C.rules = C.rules || JSON.parse(JSON.stringify(record().requirements));
+    fn(C.rules);
+    C.rulesRev = (C.rulesRev || 0) + 1;
+    keepRequirements(now);
+  }
+  const ruleOf = (id) => rules().find((q) => q.id === id);
+  function stepRules(r) {
     const j = job();
     const making = j && j.work === 'componentize';
-    return `<p class="muted">The requirements the proof of concept must meet, read off the scope and the mock-up, each tied to the pages and the micro-frontends that carry it. Retouch them, add yours, tie them to the right parts; click through the mock-up below and pin what you still want changed — then decide.</p>
+    const head = `<p class="muted">The rules the proof of concept must meet, read off the scope and the mock-up: each a step of a <b>journey</b> or a <b>business</b> rule, each with the criterion a test checks, each carried by pages and micro-frontends. Pick one to see what carries it on the mock-up.</p>
       ${making && j.state !== 'done' ? `<div data-cr-job>${jobPanel()}</div>` : ''}
-      ${making && j.state === 'failed' ? '<div class="cr-actions"><span></span><button type="button" class="cr-btn" data-cr-mf>Make the micro-frontends again</button></div>' : ''}
-      ${r.componentized ? requirementsPanel(r) : '<p class="muted">The requirements come once the mock-up is made of micro-frontends: they are tied to them.</p>'}`;
+      ${making && j.state === 'failed' ? '<div class="cr-actions"><span></span><button type="button" class="cr-btn" data-cr-mf>Make the micro-frontends again</button></div>' : ''}`;
+    return head + (r.componentized ? rulesPanel(r) : '<p class="muted">The rules come once the mock-up is made of micro-frontends: they are tied to them.</p>');
   }
-  function requirementsPanel(r) {
+  function rulesPanel(r) {
     const mock = C.mock || { pages: [], components: [] };
-    const pages = mock.pages || [];
-    const comps = mock.components || [];
-    const chips = (kind, chosen, all, label) => all.map((it) => {
-      const key = kind === 'page' ? it.path : it.name;
-      const on = chosen.includes(key);
-      const title = kind === 'page' ? (it.objective || it.title) : [it.description, it.needs && it.needs.length ? `needs ${it.needs.join(', ')}` : '', it.actions && it.actions.length ? `actions ${it.actions.join(', ')}` : ''].filter(Boolean).join(' — ');
-      return `<label class="cr-chip-toggle${on ? ' on' : ''}" title="${esc(title)}"><input type="checkbox" data-${kind}="${esc(key)}"${on ? ' checked' : ''}>${esc(label(it))}</label>`;
-    }).join('');
-    const list = r.requirements.map((q) => `<article class="cr-req${q.human ? ' mine' : ''}" data-req="${q.id}">
-        <header><span class="cr-qn">R${q.id}</span><input type="text" class="cr-req-title" value="${esc(q.title)}" placeholder="the requirement, in a few words" aria-label="requirement ${q.id}">${q.human ? '<span class="tag" title="Yours: a new reading keeps it">yours</span>' : ''}<button type="button" class="mini cr-del" data-cr-req-del="${q.id}" title="Delete this requirement" aria-label="delete requirement ${q.id}">✕</button></header>
-        <textarea rows="2" class="cr-req-body" placeholder="what it asks for" aria-label="requirement ${q.id}, what it asks for">${esc(q.body)}</textarea>
-        <div class="cr-chips"><span class="muted">pages</span>${chips('page', q.pages, pages, (p) => p.title || p.path) || '<span class="muted">none yet</span>'}</div>
-        <div class="cr-chips"><span class="muted">micro-frontends</span>${chips('component', q.components, comps, (c) => c.name) || '<span class="muted">none yet</span>'}</div>
-      </article>`).join('');
-    return `<div class="cr-reqs">${list || (C.busy ? '' : '<p class="muted">No requirement yet.</p>')}</div>
-      <div class="cr-actions"><span></span>
-        <button type="button" class="cr-btn" data-cr-req-add>+ requirement</button>
-        <button type="button" class="cr-btn" data-cr-reqs title="The AI reads the requirements again off the scope and the mock-up as it stands; yours are kept"${C.busy ? ' disabled' : ''}>${r.requirements.length ? 'Read again' : 'Read the requirements'}</button></div>`;
+    const list = rules();
+    const gaps = (q) => [!q.criterion.trim() ? 'no criterion' : '', !(q.pages.length || q.components.length) ? 'carried by nothing' : ''].filter(Boolean);
+    const lacking = list.filter((q) => gaps(q).length).length;
+    const group = ([family, label, hint]) => {
+      const items = list.filter((q) => (q.family || 'journey') === family);
+      return `<section class="cr-rule-group"><h3 title="${esc(hint)}">${label} <small>${items.length}</small></h3>${items.map((q) => ruleCard(q, gaps(q), mock)).join('') || '<p class="muted">none</p>'}</section>`;
+    };
+    return `<div class="cr-rules-head">
+        ${r.rules_validated ? '<span class="tag ok">validated</span>' : lacking ? `<span class="tag bad">${lacking} rule${lacking > 1 ? 's' : ''} to complete</span>` : list.length ? '<span class="tag">ready to validate</span>' : ''}
+        <span class="spacer"></span>
+        <button type="button" class="cr-btn" data-cr-req-add>+ rule</button>
+        <button type="button" class="cr-btn" data-cr-reqs title="The AI reads the rules again off the scope and the mock-up as it stands; yours are kept"${C.busy ? ' disabled' : ''}>${list.length ? 'Read all again' : 'Read the rules'}</button></div>
+      <div class="cr-rules">${list.length ? FAMILIES.map(group).join('') : (C.busy ? '' : '<p class="muted">No rule yet.</p>')}</div>`;
   }
-  function reviewFoot() {
-    // Both choices call the real backend (regenerate scraps the mock-up,
-    // accept publishes and opens a roadmap task) — disabled in the demo,
-    // the same read-only stance as the embedded mock-up pane above.
-    // Neither choice before the micro-frontends and the requirements are
-    // there to be judged: the review is of them too.
+  function ruleCard(q, gaps, mock) {
+    const sel = C.ruleSel === q.id;
+    const titleOf = (path) => (mock.pages.find((p) => p.path === path) || {}).title || path.replace(/^pages\//, '');
+    const pages = q.pages.map((path) => `<button type="button" class="cr-rule-page${sel && C.rulePage === path ? ' on' : ''}" data-cr-rule-page="${esc(path)}" title="Show this page">${esc(titleOf(path))}</button>`).join('');
+    const cover = q.pages.length || q.components.length
+      ? `${pages}<span class="muted">${q.components.length} micro-frontend${q.components.length === 1 ? '' : 's'}</span>`
+      : '<span class="tag bad">carried by nothing</span>';
+    const family = FAMILIES.map(([id, label]) => `<option value="${id}"${(q.family || 'journey') === id ? ' selected' : ''}>${label}</option>`).join('');
+    const ties = sel ? `<textarea rows="2" class="cr-req-body" data-cr-rule-field="body" placeholder="what it asks for" aria-label="rule ${q.id}, what it asks for">${esc(q.body)}</textarea>
+        <div class="cr-chips"><span class="muted">pages</span>${mock.pages.map((p) => `<label class="cr-chip-toggle${q.pages.includes(p.path) ? ' on' : ''}" title="${esc(p.objective || p.title)}"><input type="checkbox" data-cr-rule-tie="page" value="${esc(p.path)}"${q.pages.includes(p.path) ? ' checked' : ''}>${esc(p.title || p.path)}</label>`).join('') || '<span class="muted">none yet</span>'}</div>
+        <div class="cr-chips"><span class="muted">micro-frontends</span>${q.components.map((name) => `<span class="cr-rule-mf">${esc(name)}<button type="button" class="mini" data-cr-mf-redo="${esc(name)}" title="Generate this micro-frontend again from its spec">↻</button><button type="button" class="mini" data-cr-rule-untie="${esc(name)}" title="Not carried by it" aria-label="untie ${esc(name)}">✕</button></span>`).join('')}
+          <select data-cr-rule-tie="component" aria-label="tie a micro-frontend"><option value="">+ micro-frontend…</option>${mock.components.filter((c) => !q.components.includes(c.name)).map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.system ? ' · ' + esc(c.system) : ''}</option>`).join('')}</select></div>` : '';
+    return `<article class="cr-rule${sel ? ' sel' : ''}${q.human ? ' mine' : ''}${gaps.length ? ' gap' : ''}" data-rule="${q.id}">
+        <header><span class="cr-qn">R${q.id}</span><input type="text" class="cr-req-title" data-cr-rule-field="title" value="${esc(q.title)}" placeholder="the rule, in a few words" aria-label="rule ${q.id}">
+          <select data-cr-rule-field="family" aria-label="rule ${q.id}, family">${family}</select>
+          ${q.human ? '<span class="tag" title="Yours: a new reading keeps it">yours</span>' : ''}
+          <button type="button" class="mini" data-cr-rule-redo="${q.id}" title="The AI reads this rule again off its supports"${C.busy ? ' disabled' : ''}>↻</button>
+          <button type="button" class="mini cr-del" data-cr-req-del="${q.id}" title="Delete this rule" aria-label="delete rule ${q.id}">✕</button></header>
+        <input type="text" class="cr-rule-criterion${q.criterion.trim() ? '' : ' bad'}" data-cr-rule-field="criterion" value="${esc(q.criterion)}" placeholder="given …, when …, then …" aria-label="rule ${q.id}, criterion">
+        <div class="cr-rule-cover">${cover}</div>
+        ${ties}
+      </article>`;
+  }
+  // The rule picked, shown on the easel.
+  function syncFocus() {
+    const canvas = C.embed && C.embed.canvas;
+    if (!canvas || typeof canvas.focus !== 'function') return;
+    const q = C.route === 'rules' && C.ruleSel ? ruleOf(C.ruleSel) : null;
+    canvas.focus(q ? { names: q.components, page: C.rulePage || q.pages[0] || '' } : null);
+  }
+  function rulesFoot() {
+    // Both outward choices call the real backend (regenerate scraps the
+    // mock-up, accept publishes and opens a roadmap task) — disabled in the
+    // demo, the same read-only stance as the embedded mock-up pane above.
     const r = record();
     const waiting = !r || !r.componentized || running() || !!C.busy;
+    const gaps = (C.data && C.data.ruleGaps) || [];
     const lock = DEMO ? ' disabled title="Disabled in the demo"'
-      : waiting ? ' disabled title="Wait for the micro-frontends and the requirements"' : '';
+      : waiting ? ' disabled title="Wait for the micro-frontends and the rules"' : '';
+    const validated = !!(r && r.rules_validated);
+    const shown = gaps.slice(0, 4).map((g) => `<li>${esc(g)}</li>`).join('') + (gaps.length > 4 ? `<li>and ${gaps.length - 4} more</li>` : '');
     return `<div class="cr-choices">
-        <section class="cr-card"><h3>a · Regenerate</h3><p class="muted">Back to the brief with everything filled in; the grilling keeps its questions and their answers, and may ask more.</p><button type="button" class="cr-btn" data-cr-regenerate${lock}>${C.confirm === 'regenerate' ? 'The mock-ups go. Click again' : 'Regenerate'}</button></section>
-        <section class="cr-card"><h3>b · Accept the proof of concept</h3><p class="muted">The record — brief, decisions, scope, requirements, pages, micro-frontends, the pins left — is written in the repository beside the mock-up; the mock-up and the design system are published, the roadmap task opened with all of it, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept${lock}>Accept</button></section>
+        <section class="cr-card"><h3>a · Validate the rules</h3>${validated
+          ? '<p><span class="tag ok">validated</span> Nothing is published: changing a rule takes it back.</p>'
+          : `<p class="muted">Every rule with its criterion and carried by the mock-up. Nothing is published.</p>${gaps.length ? `<ul class="cr-gaps">${shown}</ul>` : ''}<button type="button" class="cr-btn on" data-cr-validate${lock || (gaps.length ? ' disabled title="Complete the rules first"' : '')}>Validate</button>`}</section>
+        <section class="cr-card"><h3>b · Regenerate</h3><p class="muted">Back to the brief with everything filled in; the grilling keeps its questions and their answers, and may ask more.</p><button type="button" class="cr-btn" data-cr-regenerate${lock}>${C.confirm === 'regenerate' ? 'The mock-ups go. Click again' : 'Regenerate'}</button></section>
+        <section class="cr-card"><h3>c · Accept the proof of concept</h3><p class="muted">The record — brief, decisions, scope, rules, pages, micro-frontends, the pins left — is written in the repository beside the mock-up; the mock-up and the design system are published, the roadmap task opened with all of it, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept${lock || (validated ? '' : ' disabled title="Validate the rules first"')}>Accept</button></section>
       </div>
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="mockups">← Back to the mock-up</button></div>`;
   }
@@ -820,7 +856,7 @@
         <button type="button" class="cr-btn on" data-cr-finish${done ? '' : ' disabled'}>Open the plant →</button></div>`;
   }
 
-  const BODIES = { kind: stepKind, brief: stepBrief, grilling: stepGrilling, scope: stepScope, design: stepDesign, mockups: stepMockups, review: stepReview, initialize: stepInitialize };
+  const BODIES = { kind: stepKind, brief: stepBrief, grilling: stepGrilling, scope: stepScope, design: stepDesign, mockups: stepMockups, rules: stepRules, initialize: stepInitialize };
 
   function draw() {
     if (page.hidden) { unmountEmbed(); return; }
@@ -848,12 +884,13 @@
       ${C.route === 'landing' ? '' : crumbs(fresh)}
       ${C.busy ? `<div class="cr-busy" role="status"><span class="cr-spin" aria-hidden="true"></span>${esc(C.busy)}…</div>` : ''}
       ${C.error ? `<div class="cr-error" role="alert">${esc(C.error)}</div>` : ''}
-      <div class="cr-body">${body}</div>
-      ${embed ? `<div class="cr-embed" id="cr-embed" data-cr-fullable data-cr-keep="${esc(embed.face)}"><div class="cr-embed-bar"><b>${esc(embed.title)}</b><button type="button" class="cr-btn" data-cr-full title="Fill the screen (Esc to leave)">⛶ Full screen</button></div><div class="cr-embed-host" id="cr-embed-host"></div></div>${embed.foot()}` : ''}
+      ${C.route === 'rules' && embed ? '<div class="cr-rules-split">' : ''}<div class="cr-body">${body}</div>
+      ${embed ? `<div class="cr-embed" id="cr-embed" data-cr-fullable data-cr-keep="${esc(embed.face)}"><div class="cr-embed-bar"><b>${esc(embed.title)}</b><button type="button" class="cr-btn" data-cr-full title="Fill the screen (Esc to leave)">⛶ Full screen</button></div><div class="cr-embed-host" id="cr-embed-host"></div></div>${C.route === 'rules' ? '</div>' : ''}${embed.foot()}` : ''}
     </div>`;
     paint(html);
     if (embed) mountEmbed(embed);
     else unmountEmbed();
+    syncFocus();
     syncPreview();
     showDrawn();
     restore();
@@ -898,7 +935,7 @@
     design: { kind: 'kit', face: 'kit', title: "The design system's easel", foot: designFoot, opts: () => ({ kind: 'kit', tab: 'system' }) },
     // The mock-ups step reworks the pages: no micro-frontends' list beside them.
     mockups: { kind: 'mockup', face: 'mockup-pages', title: "The mock-up — rework it: edit, pin a request, add a page", foot: mockupsFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO, strip: false }) },
-    review: { kind: 'mockup', face: 'mockup', title: "The mock-up's easel", foot: reviewFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
+    rules: { kind: 'mockup', face: 'mockup', title: "The mock-up — pick a rule to see what carries it", foot: rulesFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
   };
   // The easel a step mounts right now: the mock-up's only once it is drawn.
   function embedFor(route) {
@@ -1026,6 +1063,15 @@
       }));
     }
   });
+  // A rule's card clicked outside its fields: picked, or let go.
+  page.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-rule]');
+    if (!card || e.target.closest('button, input, select, textarea, label')) return;
+    const id = Number(card.dataset.rule);
+    C.ruleSel = C.ruleSel === id ? null : id;
+    C.rulePage = '';
+    draw();
+  });
   page.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t || t.disabled) return;
@@ -1095,20 +1141,28 @@
     }
     if (t.matches('[data-cr-take-all]')) { takeAll(); markAnswered(); keepAnswers(); return; }
     if (t.dataset.crReqDel) {
-      page.querySelector(`[data-req="${t.dataset.crReqDel}"]`)?.remove();
-      const body = fields();
-      act('saving', () => save(body));
+      const id = Number(t.dataset.crReqDel);
+      if (C.ruleSel === id) C.ruleSel = null;
+      editRules((list) => list.splice(list.findIndex((q) => q.id === id), 1), true);
+      draw();
       return;
     }
     if (t.matches('[data-cr-req-add]')) {
-      const body = fields();
-      body.requirements = [...(body.requirements || []), { id: 0, title: 'New requirement', body: '', pages: [], components: [] }];
-      act('saving', () => save(body));
+      editRules((list) => list.push({ id: 0, title: 'New rule', body: '', family: 'journey', criterion: '', pages: [], components: [] }), true);
       return;
     }
+    if (t.dataset.crRuleRedo) { const id = Number(t.dataset.crRuleRedo); act(`the AI reads R${id} again`, async () => { await flushRules(); await post(`rules/${id}/reread`); }); return; }
+    if (t.dataset.crRuleUntie) { const name = t.dataset.crRuleUntie; editRules((list) => { const q = list.find((x) => x.id === C.ruleSel); if (q) q.components = q.components.filter((c) => c !== name); }, true); draw(); return; }
+    if (t.dataset.crRulePage) { const card = t.closest('[data-rule]'); C.ruleSel = Number(card.dataset.rule); C.rulePage = t.dataset.crRulePage; draw(); return; }
+    if (t.dataset.crMfRedo) {
+      const canvas = C.embed && C.embed.canvas;
+      if (canvas && typeof canvas.regenerate === 'function') canvas.regenerate(t.dataset.crMfRedo);
+      return;
+    }
+    if (t.matches('[data-cr-validate]')) { act('validating the rules', async () => { await flushRules(); await post('rules/validate'); }); return; }
     if (t.matches('[data-cr-reqs]')) {
       const body = fields();
-      act('the AI reads the requirements', async () => { await save(body); await post('requirements'); await loadMock(); });
+      act('the AI reads the rules', async () => { await save(body); C.rules = null; await post('requirements'); await loadMock(); });
       return;
     }
     if (t.matches('[data-cr-mf]')) { act('starting the micro-frontends', () => start('componentize')); return; }
@@ -1184,8 +1238,16 @@
   // A requirement retouched is kept a moment after the last keystroke; a chip at once.
   function keepRequirements(now) {
     clearTimeout(C.reqTimer);
-    const keep = async () => { if (!record() || C.busy) return; try { await save(fields()); } catch (err) { C.error = err.message; draw(); } };
-    if (now) keep(); else C.reqTimer = setTimeout(keep, 800);
+    if (now) flushRules(true); else C.reqTimer = setTimeout(() => flushRules(true), 800);
+  }
+  // The page's copy of the rules saved; let go once the record holds them
+  // and nothing changed meanwhile. `redraw` paints what the save answered.
+  async function flushRules(redraw) {
+    clearTimeout(C.reqTimer);
+    if (!record() || !C.rules) return;
+    const sent = C.rulesRev;
+    try { await save(fields()); if (C.rulesRev === sent) C.rules = null; } catch (err) { C.error = err.message; }
+    if (redraw && !C.busy) draw();
   }
   async function keepAnswers() {
     answersOpen();
@@ -1194,7 +1256,14 @@
   }
   page.addEventListener('change', (e) => {
     if (e.target.closest('[data-q]')) keepAnswers();
-    if (e.target.closest('[data-req]')) { const chip = e.target.closest('.cr-chip-toggle'); if (chip) chip.classList.toggle('on', e.target.checked); keepRequirements(!!chip); }
+    const card = e.target.closest('[data-rule]');
+    if (card) {
+      const id = Number(card.dataset.rule);
+      const tie = e.target.dataset.crRuleTie;
+      if (tie === 'page') { editRules((list) => { const q = list.find((x) => x.id === id); if (q) q.pages = e.target.checked ? [...q.pages, e.target.value] : q.pages.filter((p) => p !== e.target.value); }, true); draw(); }
+      if (tie === 'component' && e.target.value) { const name = e.target.value; editRules((list) => { const q = list.find((x) => x.id === id); if (q && !q.components.includes(name)) q.components = [...q.components, name]; }, true); draw(); }
+      if (e.target.dataset.crRuleField === 'family') { editRules((list) => { const q = list.find((x) => x.id === id); if (q) q.family = e.target.value; }, true); draw(); }
+    }
     if (e.target.closest('.cr-draw-head')) window.Viewport.change(e, setPreviewWidth);
   });
   // The preview's corner, dragged: width grows from the center (the sizer
@@ -1243,7 +1312,13 @@
   });
   page.addEventListener('input', (e) => {
     if (e.target.closest('[data-q]')) answersOpen();
-    if (e.target.closest('[data-req]')) keepRequirements(false);
+    const field = e.target.dataset && e.target.dataset.crRuleField;
+    const card = e.target.closest('[data-rule]');
+    if (card && field && field !== 'family') {
+      const id = Number(card.dataset.rule);
+      editRules((list) => { const q = list.find((x) => x.id === id); if (q) q[field] = e.target.value; }, false);
+      if (field === 'criterion') e.target.classList.toggle('bad', !e.target.value.trim());
+    }
   });
 
   // ---- the page's life ----------------------------------------------------------------
