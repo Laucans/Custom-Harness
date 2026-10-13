@@ -372,6 +372,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/creation/componentize", post(creation::componentize))
         .route("/api/creation/requirements", post(creation::requirements))
         .route("/api/creation/mockups", post(creation::mockups))
+        .route("/api/creation/ahead", post(creation::ahead))
         .route("/api/creation/regenerate", post(creation::regenerate))
         .route("/api/creation/accept", post(creation::accept))
         .route("/api/creation/finish", post(creation::finish))

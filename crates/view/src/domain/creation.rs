@@ -150,6 +150,9 @@ pub struct Creation {
     pub regenerations: u32,
     /// The mock-ups were drawn; what the session said of them.
     pub mocked: Option<String>,
+    /// The scope the mock-ups were drawn from; differs from the scope now:
+    /// it moved since.
+    pub mocked_scope: String,
     /// The human accepted the proof of concept.
     pub accepted: bool,
     /// The accepted mock-up was made again of micro-frontends; what the
@@ -358,6 +361,21 @@ impl Creation {
         !self.scope_from.is_empty() && self.scope_from != self.fingerprint()
     }
 
+    /// The mock-ups were drawn from a scope that moved since.
+    #[must_use]
+    pub fn mockup_stale(&self) -> bool {
+        let from = self.mocked_scope.trim();
+        self.mocked.is_some() && !from.is_empty() && from != self.scope.trim()
+    }
+
+    /// The mock-ups drawn from the scope as it is now: a new drawing is not
+    /// made of micro-frontends yet.
+    pub fn drawn(&mut self, said: String) {
+        self.mocked = Some(said);
+        self.mocked_scope.clone_from(&self.scope);
+        self.componentized = None;
+    }
+
     /// The scope as the AI proposed it, from the decisions as they are now.
     pub fn propose(&mut self, scope: String) {
         self.scope = scope;
@@ -442,6 +460,7 @@ impl Creation {
     pub fn regenerate(&mut self) {
         self.regenerations = self.regenerations.saturating_add(1);
         self.mocked = None;
+        self.mocked_scope.clear();
         self.accepted = false;
         self.componentized = None;
         self.grilled = false;
@@ -836,7 +855,7 @@ pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str) -> String {
 pub fn componentize_prompt(c: &Creation, rules: &str, kit: &str) -> String {
     let mut text = rules.to_string();
     text.push_str(
-        "\nThe human accepted this proof of concept's mock-up, drawn fast: its pages may carry \
+        "\nThis proof of concept's mock-up was drawn fast: its pages may carry \
          their markup inline. Make it again of **micro-frontends**, as the product's architecture \
          wants it, without changing what the human sees. Read every page listed in \
          `mock/pages.json`; cut each into the Micro-UIs it is made of — a unit a user recognises \
@@ -1856,6 +1875,32 @@ mod tests {
         );
         assert_eq!(c.reachable(waiting), Step::Design);
         assert!(c.may_enter(Step::Mockups, DESIGNED).is_ok());
+    }
+
+    #[test]
+    fn a_drawing_keeps_its_scope_and_is_stale_once_the_scope_moves() {
+        let mut c = Creation {
+            scope: "## Goal\nfirst".to_string(),
+            componentized: Some("earlier".to_string()),
+            ..Creation::default()
+        };
+        assert!(!c.mockup_stale(), "nothing drawn: nothing stale");
+        c.drawn("two pages".to_string());
+        assert_eq!(c.mocked.as_deref(), Some("two pages"));
+        assert_eq!(c.componentized, None, "a new drawing is not cut yet");
+        assert!(!c.mockup_stale());
+        c.scope = "  ## Goal\nfirst\n".to_string();
+        assert!(!c.mockup_stale(), "spaces around do not move it");
+        c.scope = "## Goal\nsecond".to_string();
+        assert!(c.mockup_stale());
+        c.mocked_scope.clear();
+        assert!(
+            !c.mockup_stale(),
+            "a record drawn before the scope was kept"
+        );
+        c.mocked_scope = "## Goal\nfirst".to_string();
+        c.regenerate();
+        assert!(!c.mockup_stale() && c.mocked_scope.is_empty());
     }
 
     #[test]
