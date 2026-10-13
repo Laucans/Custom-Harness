@@ -296,6 +296,7 @@ impl crate::ports::Mockups for FakeMockups {
             components: Vec::new(),
             edited: false,
             saved: String::new(),
+            discarded: false,
             stamp: "s1".into(),
         })
     }
@@ -313,6 +314,10 @@ impl crate::ports::Mockups for FakeMockups {
         }
     }
     fn discard(&self, _branch: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn restore(&self, _branch: &str) -> Result<(), String> {
         Ok(())
     }
     fn write(&self, _branch: &str, path: &str, _bytes: &[u8]) -> Result<(), String> {
@@ -533,6 +538,11 @@ async fn the_easel_serves_the_branch_s_pages_previews_and_saves() {
     assert!(body.contains("mockup/home"), "{body}");
     let (status, _) = post(with(), "/api/mockup/discard", r#"{"branch":"main"}"#).await;
     assert_eq!(status, StatusCode::OK);
+    let (status, body) = post(with(), "/api/mockup/restore", r#"{"branch":"main"}"#).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::OK, r#"{"restored":true}"#)
+    );
 }
 
 #[derive(Default)]

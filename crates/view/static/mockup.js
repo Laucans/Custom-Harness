@@ -81,6 +81,7 @@
       + '<input class="mk-name" maxlength="80" placeholder="name of the mock-up" hidden aria-label="name of the mock-up">'
       + '<button type="button" class="mini" data-mk="save" hidden>save the mock-up</button>'
       + '<button type="button" class="mini" data-mk="discard" hidden>discard</button>'
+      + '<button type="button" class="mini" data-mk="restore" hidden title="Bring back the mock-up as it was before the last discard">undo discard</button>'
       + '</div>'
       + '<div class="mk-editbar" hidden>'
       + '<button type="button" class="mini" data-ed="undo" title="Undo the last step (ctrl+z)">↶ undo</button>'
@@ -144,7 +145,7 @@
       // the lock re-applies on every change under the pane instead. The
       // fetch shim above is the actual safety net either way; this is the
       // UI telling the human the same thing before they click.
-      const LOCK = '[data-mk="new"], [data-mk="design"], [data-mk="generate-all"], [data-mk="save"], [data-mk="discard"], [data-mk="edit"], [data-ed="apply-all"], [data-ed="keep"], [data-ed="validate"]';
+      const LOCK = '[data-mk="new"], [data-mk="design"], [data-mk="generate-all"], [data-mk="save"], [data-mk="discard"], [data-mk="restore"], [data-mk="edit"], [data-ed="apply-all"], [data-ed="keep"], [data-ed="validate"]';
       const lock = () => host.querySelectorAll(LOCK).forEach((b) => { b.disabled = true; });
       lock();
       new MutationObserver(lock).observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'hidden'] });
@@ -780,7 +781,7 @@
       host.classList.toggle('mk-editing', editing());
       if (editing() && !st.designOn) { st.designOn = true; design.attach(); } else if (!editing() && st.designOn) { st.designOn = false; design.detach(); }
       const slot = bar.hidden ? q('.dm-bar') : bar;
-      if (q('.mk-name').parentElement !== slot) ['.mk-name', '[data-mk="save"]', '[data-mk="discard"]'].forEach((sel) => slot.appendChild(q(sel)));
+      if (q('.mk-name').parentElement !== slot) ['.mk-name', '[data-mk="save"]', '[data-mk="discard"]', '[data-mk="restore"]'].forEach((sel) => slot.appendChild(q(sel)));
       if (bar.hidden) return;
       bar.querySelector('[data-ed="undo"]').disabled = !st.engine.canUndo() || !!st.viewing;
       bar.querySelector('[data-ed="redo"]').disabled = !st.engine.canRedo() || !!st.viewing;
@@ -1444,6 +1445,7 @@
       q('[data-mk="save"]').disabled = !dirty;
       q('[data-mk="discard"]').hidden = !(s.edited || s.saved);
       q('[data-mk="discard"]').textContent = st.armed === 'discard' ? 'discard — sure?' : 'discard';
+      q('[data-mk="restore"]').hidden = !(s.discarded && !s.edited);
       drawEditBar();
     }
     function leavePage() {
@@ -1514,9 +1516,24 @@
         const res = await fetch('/api/mockup/discard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch }) });
         if (!res.ok) throw new Error(await res.text());
         if (action) action.ok('the mock-up is as committed again');
+        toast('mock-up discarded — <b>undo</b>', restore);
       } catch (e) {
         if (action) action.fail(e.message || e);
       } finally {
+        load();
+      }
+    }
+    // The last discard taken back: the workspace as it was, uncommitted.
+    async function restore() {
+      const action = window.HarnessActions && window.HarnessActions.start({ key: `mockup:restore:${st.branch}`, label: `bring back the discarded mock-up of ${st.branch}`, button: q('[data-mk="restore"]') });
+      try {
+        const res = await fetch('/api/mockup/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch }) });
+        if (!res.ok) throw new Error(await res.text());
+        if (action) action.ok('the discarded mock-up is back');
+      } catch (e) {
+        if (action) action.fail(e.message || e); else toast(esc(String(e.message || e)));
+      } finally {
+        st.state = null;
         load();
       }
     }
@@ -1568,11 +1585,13 @@
       if (mk.dataset.mk === 'generate-all') generateMfs(components().filter((c) => !c.mocked && !c.variantOf && !genOf(c.name)));
       if (mk.dataset.mk === 'save') save();
       if (mk.dataset.mk === 'discard') discard();
+      if (mk.dataset.mk === 'restore') restore();
     };
     function onEdit(b, e) {
       const what = b.dataset.ed;
       const version = Number(b.dataset.version);
-      if (what === 'undo' && st.engine.undo()) afterChange();
+      // Nothing left to undo on the page: the last discard is what goes back.
+      if (what === 'undo') { if (st.engine && st.engine.undo()) afterChange(); else if (st.state && st.state.discarded && !st.state.edited) restore(); }
       if (what === 'redo' && st.engine.redo()) afterChange();
       if (what === 'apply-all') applyAll();
       if (what === 'keep') keepVersion();

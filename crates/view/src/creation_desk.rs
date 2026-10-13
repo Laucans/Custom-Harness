@@ -649,14 +649,30 @@ impl CreationDesk {
     }
 
     /// The rules validated: each has its criterion and is carried by the
-    /// mock-up. Nothing is published.
+    /// mock-up, none tied to what the mock-up has not. Nothing is published.
     ///
     /// # Errors
     ///
     /// No creation, what keeps the rules from it, or the register refused.
     pub async fn validate_rules(&self) -> Result<Creation, String> {
+        // A tie to a page or a micro-frontend the mock-up has not is a gap
+        // too, where there is a mock-up to read.
+        let dangling = match &self.setup.mockups {
+            Some(_) => {
+                let ctx = self.context(&self.existing()?).await;
+                let pages: Vec<String> = ctx.pages.iter().map(|p| p.path.clone()).collect();
+                let components: Vec<String> =
+                    ctx.components.iter().map(|c| c.name.clone()).collect();
+                self.existing()?.dangling(&pages, &components)
+            }
+            None => Vec::new(),
+        };
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
+        let gaps: Vec<String> = record.rule_gaps().into_iter().chain(dangling).collect();
+        if !gaps.is_empty() {
+            return Err(gaps.join("; "));
+        }
         record.validate_rules()?;
         self.keep(&record)?;
         Ok(record)
@@ -2208,8 +2224,26 @@ mod tests {
         let mut record = desk.existing().expect("a creation");
         record.requirements[0].criterion =
             creation::Criterion::from_sentence("given lines, when opened, then all show");
-        record.validate_rules().expect("valid");
+        record.requirements[0]
+            .pages
+            .push("pages/gone.html".to_string());
         desk.keep(&record).expect("kept");
+        let refused = desk
+            .validate_rules()
+            .await
+            .expect_err("a tie to a page gone");
+        assert!(
+            refused.contains("R1 points at pages/gone.html, which the mock-up has not"),
+            "{refused}"
+        );
+        record.requirements[0].pages.pop();
+        desk.keep(&record).expect("kept");
+        assert!(
+            desk.validate_rules()
+                .await
+                .expect("validated")
+                .rules_validated
+        );
 
         let drafted = desk.draft_data().await.expect("drafted");
         let data = drafted.data.as_ref().expect("a draft");

@@ -104,7 +104,7 @@ use factories::{
 use janitor::{janitor, janitor_diagnose, janitor_settings, janitor_sweep};
 use mockup::{
     apply_requests, mf_apply, mf_drop_draft, mf_generate, mf_generations, mf_save, mock_file,
-    mock_preview, mockup_discard, mockup_save, mockup_state, mockup_write,
+    mock_preview, mockup_discard, mockup_restore, mockup_save, mockup_state, mockup_write,
 };
 use notes::{
     all_notes, backlog_note, close_session, delete_note, notes, open_session, put_note,
@@ -300,6 +300,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mockup/mf/{name}/save", post(mf_save))
         .route("/api/mockup/mf/{name}/draft/drop", post(mf_drop_draft))
         .route("/api/mockup/discard", post(mockup_discard))
+        .route("/api/mockup/restore", post(mockup_restore))
         .route("/api/capabilities", get(capability_list))
         .route("/api/capabilities/fusion", post(capability_fusion))
         .route("/api/drafts", get(all_drafts))

@@ -719,6 +719,28 @@ impl Creation {
         gaps
     }
 
+    /// The rules' ties to what the mock-up has not — a page or a
+    /// micro-frontend gone with a discard or a new drawing — in words.
+    #[must_use]
+    pub fn dangling(&self, pages: &[String], components: &[String]) -> Vec<String> {
+        let mut found = Vec::new();
+        for r in &self.requirements {
+            for page in r.pages.iter().filter(|p| !pages.contains(p)) {
+                found.push(format!(
+                    "R{} points at {page}, which the mock-up has not",
+                    r.id
+                ));
+            }
+            for name in r.components.iter().filter(|c| !components.contains(c)) {
+                found.push(format!(
+                    "R{} is tied to {name}, which the mock-up has not",
+                    r.id
+                ));
+            }
+        }
+        found
+    }
+
     /// The rules validated, when nothing keeps them from it.
     ///
     /// # Errors
@@ -2120,6 +2142,25 @@ mod tests {
             body.contains("- **Line** — line, total\n  - positive — above zero\n"),
             "{body}"
         );
+    }
+
+    #[test]
+    fn a_tie_to_what_the_mock_up_has_not_is_named() {
+        let mut c = ready();
+        c.requirements = vec![rule(1, "y", &["pages/a.html", "pages/gone.html"])];
+        c.requirements[0].components = vec!["Card".to_string(), "Ghost".to_string()];
+        let pages = ["pages/a.html".to_string()];
+        let components = ["Card".to_string()];
+        assert_eq!(
+            c.dangling(&pages, &components),
+            vec![
+                "R1 points at pages/gone.html, which the mock-up has not".to_string(),
+                "R1 is tied to Ghost, which the mock-up has not".to_string()
+            ]
+        );
+        c.requirements[0].pages.pop();
+        c.requirements[0].components.pop();
+        assert!(c.dangling(&pages, &components).is_empty());
     }
 
     #[test]

@@ -75,6 +75,10 @@ impl Mockups for PulsingMockups {
         self.beating(self.inner.discard(branch))
     }
 
+    fn restore(&self, branch: &str) -> Result<(), String> {
+        self.beating(self.inner.restore(branch))
+    }
+
     fn write(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
         self.beating(self.inner.write(branch, path, bytes))
     }
@@ -132,6 +136,9 @@ mod tests {
             Ok(format!("mockup/{name}"))
         }
         fn discard(&self, _branch: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn restore(&self, _branch: &str) -> Result<(), String> {
             Ok(())
         }
         fn write(&self, _branch: &str, _path: &str, _bytes: &[u8]) -> Result<(), String> {

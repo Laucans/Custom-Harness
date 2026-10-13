@@ -833,7 +833,8 @@
   function rulesPanel(r) {
     const mock = C.mock || { pages: [], components: [] };
     const list = rules();
-    const gaps = (q) => [critMissing(q).length ? 'criterion to complete' : '', !(q.pages.length || q.components.length) ? 'carried by nothing' : ''].filter(Boolean);
+    const gaps = (q) => { const d = danglingOf(q); return [critMissing(q).length ? 'criterion to complete' : '', !(q.pages.length || q.components.length) ? 'carried by nothing' : '', d.pages.length + d.components.length ? 'broken links' : ''].filter(Boolean); };
+    const broken = danglingGaps().length;
     const lacking = list.filter((q) => gaps(q).length).length;
     const group = ([family, label, hint]) => {
       const items = list.filter((q) => (q.family || 'journey') === family);
@@ -842,10 +843,21 @@
     return `<div class="cr-rules-head">
         ${r.rules_validated ? '<span class="tag ok">validated</span>' : lacking ? `<span class="tag bad">${lacking} rule${lacking > 1 ? 's' : ''} to complete</span>` : list.length ? '<span class="tag">ready to validate</span>' : ''}
         <span class="spacer"></span>
+        ${broken ? `<button type="button" class="cr-btn" data-cr-unbreak title="Untie every rule from the pages and micro-frontends the mock-up has not">Remove ${broken} broken link${broken > 1 ? 's' : ''}</button>` : ''}
         <button type="button" class="cr-btn" data-cr-req-add>+ rule</button>
         <button type="button" class="cr-btn" data-cr-reqs title="The AI reads the rules again off the scope and the mock-up as it stands; yours are kept"${C.busy ? ' disabled' : ''}>${list.length ? 'Read all again' : 'Read the rules'}</button></div>
       <div class="cr-rules">${list.length ? FAMILIES.map(group).join('') : (C.busy ? '' : '<p class="muted">No rule yet.</p>')}</div>`;
   }
+  // A rule's ties to what the mock-up has not (gone with a discard or a new
+  // drawing): shown red, counted as gaps, removed on a click.
+  function danglingOf(q) {
+    const mock = C.mock;
+    if (!mock) return { pages: [], components: [] };
+    const pages = new Set((mock.pages || []).map((p) => p.path));
+    const comps = new Set((mock.components || []).map((c) => c.name));
+    return { pages: q.pages.filter((p) => !pages.has(p)), components: q.components.filter((c) => !comps.has(c)) };
+  }
+  const danglingGaps = () => rules().flatMap((q) => { const d = danglingOf(q); return [...d.pages.map((p) => `R${q.id} points at ${p}, which the mock-up has not`), ...d.components.map((c) => `R${q.id} is tied to ${c}, which the mock-up has not`)]; });
   // A criterion's three parts, and those still to write.
   const PARTS = [['given', 'Given'], ['when', 'When'], ['then', 'Then']];
   const critOf = (q) => Object.assign({ given: '', when: '', then: '' }, typeof q.criterion === 'object' && q.criterion ? q.criterion : {});
@@ -865,8 +877,8 @@
     const chips = on.map((key) => {
       const it = all.find((x) => keyOf(x) === key);
       const label = it ? labelOf(it) : key;
-      const pick = kind === 'page' ? ` data-cr-rule-page="${esc(key)}" title="Show this page"` : '';
-      return `<span class="cr-tie${kind === 'page' && C.rulePage === key ? ' on' : ''}"><button type="button" class="cr-tie-name"${pick}>${esc(label)}</button>${extra ? extra(key) : ''}<button type="button" class="mini" data-cr-untie="${kind}" data-key="${esc(key)}" title="Not carried by it" aria-label="untie ${esc(label)}">✕</button></span>`;
+      const pick = !it ? ' title="The mock-up has not this any more"' : kind === 'page' ? ` data-cr-rule-page="${esc(key)}" title="Show this page"` : '';
+      return `<span class="cr-tie${kind === 'page' && C.rulePage === key ? ' on' : ''}${it ? '' : ' dangling'}"><button type="button" class="cr-tie-name"${pick}>${esc(label)}</button>${extra && it ? extra(key) : ''}<button type="button" class="mini" data-cr-untie="${kind}" data-key="${esc(key)}" title="Not carried by it" aria-label="untie ${esc(label)}">✕</button></span>`;
     }).join('');
     const rest = all.filter((x) => !on.includes(keyOf(x)));
     const open = C.addOpen && C.addOpen.rule === q.id && C.addOpen.kind === kind;
@@ -876,9 +888,12 @@
   function ruleCard(q, gaps, mock) {
     const sel = C.ruleSel === q.id;
     const titleOf = (path) => (mock.pages.find((p) => p.path === path) || {}).title || path.replace(/^pages\//, '');
-    const pages = q.pages.map((path) => `<button type="button" class="cr-rule-page${sel && C.rulePage === path ? ' on' : ''}" data-cr-rule-page="${esc(path)}" title="Show this page">${esc(titleOf(path))}</button>`).join('');
+    const lost = danglingOf(q);
+    const pages = q.pages.map((path) => (lost.pages.includes(path)
+      ? `<span class="cr-rule-page dangling" title="The mock-up has no such page any more">${esc(path)}</span>`
+      : `<button type="button" class="cr-rule-page${sel && C.rulePage === path ? ' on' : ''}" data-cr-rule-page="${esc(path)}" title="Show this page">${esc(titleOf(path))}</button>`)).join('');
     const cover = q.pages.length || q.components.length
-      ? `${pages}<span class="muted">${q.components.length} micro-frontend${q.components.length === 1 ? '' : 's'}</span>`
+      ? `${pages}<span class="muted">${q.components.length} micro-frontend${q.components.length === 1 ? '' : 's'}</span>${lost.components.length ? `<span class="tag bad" title="${esc(lost.components.join(', '))}">${lost.components.length} missing</span>` : ''}`
       : '<span class="tag bad">carried by nothing</span>';
     const family = FAMILIES.map(([id, label]) => `<option value="${id}"${(q.family || 'journey') === id ? ' selected' : ''}>${label}</option>`).join('');
     const open = sel ? `<textarea rows="1" class="cr-req-body cr-fit" data-cr-rule-field="body" placeholder="what it asks for" aria-label="rule ${q.id}, what it asks for">${esc(q.body)}</textarea>
@@ -909,7 +924,7 @@
     // demo, the same read-only stance as the embedded mock-up pane above.
     const r = record();
     const waiting = !r || !r.componentized || running() || !!C.busy;
-    const gaps = (C.data && C.data.ruleGaps) || [];
+    const gaps = [...((C.data && C.data.ruleGaps) || []), ...danglingGaps()];
     const lock = DEMO ? ' disabled title="Disabled in the demo"'
       : waiting ? ' disabled title="Wait for the micro-frontends and the rules"' : '';
     const validated = !!(r && r.rules_validated);
@@ -1317,6 +1332,11 @@
       const tie = !!t.dataset.crTie;
       C.addOpen = null;
       editRules((list) => { const q = list.find((x) => x.id === C.ruleSel); if (q) q[field] = tie ? [...q[field].filter((k) => k !== key), key] : q[field].filter((k) => k !== key); }, true);
+      draw();
+      return;
+    }
+    if (t.matches('[data-cr-unbreak]')) {
+      editRules((list) => list.forEach((q) => { const d = danglingOf(q); q.pages = q.pages.filter((p) => !d.pages.includes(p)); q.components = q.components.filter((c) => !d.components.includes(c)); }), true);
       draw();
       return;
     }

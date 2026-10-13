@@ -54,6 +54,30 @@ impl GitMockups {
         folder.join(".git").exists().then_some(folder)
     }
 
+    /// Where a discarded workspace of `branch` is kept: a ref beside the
+    /// branches, which the mirror's fetch never prunes.
+    fn discarded_ref(branch: &str) -> String {
+        format!("refs/harness/discarded/{branch}")
+    }
+
+    /// The commit a discarded workspace of `branch` was kept as, if any.
+    fn discarded(&self, branch: &str) -> Option<String> {
+        let out = self
+            .mirror
+            .git(
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &Self::discarded_ref(branch),
+                ],
+                None,
+            )
+            .ok()?;
+        let commit = String::from_utf8_lossy(&out).trim().to_string();
+        (!commit.is_empty()).then_some(commit)
+    }
+
     fn at(folder: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         run(Command::new("git").arg("-C").arg(folder).args(args), None)
     }
@@ -168,6 +192,7 @@ fn state_of_folder(branch: &str, folder: &Path) -> Result<MockState, String> {
         components: found.components,
         edited: false,
         saved: String::new(),
+        discarded: false,
         stamp: stamp_of(&folder.join("mock")),
     })
 }
@@ -178,6 +203,7 @@ impl Mockups for GitMockups {
             let mut state = state_of_folder(branch, &folder)?;
             state.edited = Self::dirty(&folder)?;
             state.saved = Self::saved_as(&folder);
+            state.discarded = self.discarded(branch).is_some();
             return Ok(state);
         }
         self.mirror.refresh()?;
@@ -202,6 +228,7 @@ impl Mockups for GitMockups {
             components: found.components,
             edited: false,
             saved: String::new(),
+            discarded: self.discarded(branch).is_some(),
             stamp: self.mirror.head_of(branch)?.unwrap_or_default(),
         })
     }
@@ -288,11 +315,73 @@ impl Mockups for GitMockups {
 
     fn discard(&self, branch: &str) -> Result<(), String> {
         if let Some(folder) = self.worktree(branch) {
+            // What the workspace changed is committed aside first, so the
+            // discard can be taken back.
+            if Self::dirty(&folder)? {
+                Self::at(&folder, &["add", "-A", "--", "mock"])?;
+                Self::at(
+                    &folder,
+                    &[
+                        "-c",
+                        "user.name=harness",
+                        "-c",
+                        "user.email=harness@localhost",
+                        "-c",
+                        "commit.gpgsign=false",
+                        "commit",
+                        "--quiet",
+                        "--no-verify",
+                        "-m",
+                        &format!("mockup: discarded from {branch}"),
+                    ],
+                )?;
+                let head = Self::at(&folder, &["rev-parse", "HEAD"])?;
+                let head = String::from_utf8_lossy(&head).trim().to_string();
+                self.mirror
+                    .git(&["update-ref", &Self::discarded_ref(branch), &head], None)?;
+            }
             let at = folder.to_string_lossy().into_owned();
             self.mirror
                 .git(&["worktree", "remove", "--force", &at], None)?;
         }
         let _ = self.mirror.git(&["worktree", "prune"], None);
+        Ok(())
+    }
+
+    fn restore(&self, branch: &str) -> Result<(), String> {
+        let kept = self
+            .discarded(branch)
+            .ok_or_else(|| format!("nothing discarded on `{branch}` to bring back"))?;
+        if let Some(folder) = self.worktree(branch) {
+            if Self::dirty(&folder)? {
+                return Err("the mock-up is being edited: save or discard it first".to_string());
+            }
+            let at = folder.to_string_lossy().into_owned();
+            self.mirror
+                .git(&["worktree", "remove", "--force", &at], None)?;
+        }
+        fs::create_dir_all(&self.workspaces)
+            .map_err(|e| format!("{}: {e}", self.workspaces.display()))?;
+        let folder = self.folder(branch);
+        let _ = fs::remove_dir_all(&folder);
+        let _ = self.mirror.git(&["worktree", "prune"], None);
+        let at = folder.to_string_lossy().into_owned();
+        self.mirror.git(
+            &["worktree", "add", "--detach", "--quiet", &at, &kept],
+            None,
+        )?;
+        // Back on the branch, the kept changes uncommitted again.
+        Self::at(
+            &folder,
+            &[
+                "reset",
+                "--quiet",
+                "--mixed",
+                &format!("refs/heads/{branch}"),
+            ],
+        )?;
+        self.mirror
+            .git(&["update-ref", "-d", &Self::discarded_ref(branch)], None)?;
         Ok(())
     }
 
@@ -581,6 +670,10 @@ impl Mockups for DirMockups {
         Err("the sample is not a checkout: nothing to discard".to_string())
     }
 
+    fn restore(&self, _branch: &str) -> Result<(), String> {
+        Err("the sample is not a checkout: nothing to restore".to_string())
+    }
+
     fn remove(&self, branch: &str, path: &str) -> Result<(), String> {
         if !mockup::is_safe_path(path) {
             return Err(format!("not a path under mock/: {path}"));
@@ -628,6 +721,107 @@ impl Mockups for DirMockups {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The real thing: a workspace's changes discarded are kept aside, and
+    /// brought back uncommitted; a workspace being edited refuses it.
+    #[test]
+    fn a_discarded_workspace_is_brought_back() {
+        let dir = std::env::temp_dir().join(format!("harness-view-restore-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let work = dir.join("work");
+        fs::create_dir_all(work.join("mock/pages")).expect("dir");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main_agent"]);
+        for (key, value) in [
+            ("user.name", "t"),
+            ("user.email", "t@t"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git(&["config", key, value]);
+        }
+        fs::write(work.join("mock/pages.json"), r#"{"version":1,"pages":[]}"#).expect("write");
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "base"]);
+        git(&["checkout", "-q", "--detach"]);
+        let mockups = GitMockups::new(Arc::new(Mirror::local(&work)), &dir.join("ws"));
+
+        assert!(
+            mockups.restore("main_agent").is_err(),
+            "nothing discarded yet"
+        );
+        mockups
+            .write("main_agent", "pages/home.html", b"<main>home</main>")
+            .expect("written");
+        mockups.discard("main_agent").expect("discarded");
+        let gone = mockups.state("main_agent").expect("state");
+        assert!(gone.discarded && !gone.edited);
+        assert_eq!(
+            mockups.file("main_agent", "pages/home.html").expect("read"),
+            None
+        );
+
+        mockups.workspace("main_agent").expect("a clean workspace");
+        mockups
+            .restore("main_agent")
+            .expect("brought back over a clean workspace");
+        let back = mockups.state("main_agent").expect("state");
+        assert!(back.edited && !back.discarded);
+        assert_eq!(
+            mockups
+                .file("main_agent", "pages/home.html")
+                .expect("read")
+                .as_deref(),
+            Some(&b"<main>home</main>"[..])
+        );
+        mockups.discard("main_agent").expect("discarded again");
+        mockups
+            .write("main_agent", "pages/other.html", b"other")
+            .expect("written");
+        assert!(
+            mockups.restore("main_agent").is_err(),
+            "a workspace being edited"
+        );
+        mockups
+            .discard("main_agent")
+            .expect("the edit discarded, kept in its turn");
+        mockups
+            .restore("main_agent")
+            .expect("the last discard comes back");
+        assert!(
+            mockups
+                .file("main_agent", "pages/other.html")
+                .expect("read")
+                .is_some()
+        );
+        assert_eq!(
+            mockups.file("main_agent", "pages/home.html").expect("read"),
+            None,
+            "only the last discard is kept"
+        );
+        mockups.discard("main_agent").expect("clean up");
+        let clean = mockups.workspace("main_agent").expect("workspace");
+        mockups
+            .discard("main_agent")
+            .expect("a clean workspace keeps nothing aside");
+        assert!(!clean.join(".git").exists());
+        assert!(
+            mockups.state("main_agent").expect("state").discarded,
+            "the earlier discard stays kept"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// The real thing, against throwaway repositories: the design system's
     /// folders carried onto an integration branch that moved since the

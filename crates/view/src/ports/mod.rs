@@ -982,6 +982,9 @@ pub struct MockState {
     /// The `mockup/*` branch the workspace was saved to, if it was.
     #[serde(default)]
     pub saved: String,
+    /// A discarded workspace is kept: `restore` brings it back.
+    #[serde(default)]
+    pub discarded: bool,
     /// Changes whenever a file of the mock-up changes: what the page reloads on.
     pub stamp: String,
 }
@@ -1026,12 +1029,22 @@ pub trait Mockups: Send + Sync {
     fn save(&self, branch: &str, name: &str) -> Result<String, String>;
 
     /// Drops the workspace and what it changed: the branch's mock-up is
-    /// shown as committed again.
+    /// shown as committed again. What it changed is kept aside, the last
+    /// discard only, for `restore`.
     ///
     /// # Errors
     ///
-    /// The workspace could not be removed.
+    /// The workspace could not be kept aside or removed.
     fn discard(&self, branch: &str) -> Result<(), String>;
+
+    /// Brings the last discarded workspace back, its changes uncommitted
+    /// again over the branch as it is now.
+    ///
+    /// # Errors
+    ///
+    /// Nothing was discarded, a workspace edits the branch already, or the
+    /// checkout failed.
+    fn restore(&self, branch: &str) -> Result<(), String>;
 
     /// Writes `mock/<path>` in the branch's workspace — made first if it is
     /// not there — with `bytes`: a page as the draft shows it, a forked
