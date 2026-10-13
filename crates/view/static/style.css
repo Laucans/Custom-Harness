@@ -1607,3 +1607,9 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-modal h3 { margin: 0; font-size: 16px; }
 .cr-modal p { margin: 0; color: var(--dim); }
 .cr-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+
+/* The janitor's last section: taking this factory down. */
+.danger-zone { margin-top: 18px; padding-top: 4px; border-top: 1px solid var(--bad); }
+.danger-zone h3 { color: var(--bad); }
+.act.danger { color: var(--bad); border-color: var(--bad); }
+.act.danger:hover:not(:disabled), .act.danger:focus-visible { background: var(--bad); color: var(--bg); border-color: var(--bad); }

@@ -75,17 +75,23 @@ pub(super) async fn open(State(state): State<AppState>, Path(id): Path<String>) 
         .into_response()
 }
 
-/// What a destruction carries: the name the human typed to confirm it.
+/// What a take-down carries: the name the human typed to confirm it.
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct Confirmed {
     #[serde(default)]
     confirm: String,
 }
 
-/// Lets the harness go of the factory `id`: its watch asked to stop, its
-/// folder removed, the register forgetting it. Its repository stays.
-pub(super) async fn delink(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    take_down(&state, id, Degree::Delink, String::new()).await
+/// Lets the harness go of the factory `id`: its watch asked to stop, what the
+/// harness keeps in its folder removed, the register forgetting it. Its
+/// repository stays. Only when the body carries the name, typed.
+pub(super) async fn delink(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Option<Json<Confirmed>>,
+) -> Response {
+    let Json(Confirmed { confirm }) = body.unwrap_or_default();
+    take_down(&state, id, Degree::Delink, confirm).await
 }
 
 /// Destroys the factory `id`: as a delink, and its repository deleted from
@@ -105,12 +111,21 @@ async fn take_down(state: &AppState, id: String, degree: Degree, confirm: String
     };
     // `ps`, `kill`, `gh` and `git` run to the end: not on the server's thread.
     match tokio::task::spawn_blocking(move || removal.take_down(&id, degree, &confirm)).await {
-        Ok(Ok(report)) => json(&report),
+        Ok(Ok(report)) => {
+            // The view was on that factory: it starts again in another one,
+            // which removes the folder left (`Removal::finish`).
+            let status = report.next.clone().map_or(StatusCode::OK, |next| {
+                state.switching.send_replace(Some(next));
+                StatusCode::ACCEPTED
+            });
+            (status, json(&report)).into_response()
+        }
         Ok(Err(refusal)) => {
             let status = match refusal {
                 Refusal::Unknown(_) => StatusCode::NOT_FOUND,
-                Refusal::Current => StatusCode::CONFLICT,
+                Refusal::Alone => StatusCode::CONFLICT,
                 Refusal::Confirmation(_) => StatusCode::BAD_REQUEST,
+                Refusal::Rights(_) => StatusCode::FORBIDDEN,
                 Refusal::Failed(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (status, refusal.reason()).into_response()

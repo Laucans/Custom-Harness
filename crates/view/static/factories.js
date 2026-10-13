@@ -21,13 +21,11 @@
     const q = F.query.trim().toLowerCase();
     return F.list.filter((f) => !q || `${f.name} ${f.slug} ${f.id}`.toLowerCase().includes(q));
   }
-  // The view runs in the current factory's folder: it can be taken down from another one only.
-  const HERE = 'open another factory first';
   function row(f) {
     const here = f.id === F.current;
     const off = F.opening || C.busy ? ' disabled' : '';
     const act = (kind, icon, tip) => `<button type="button" class="fm-act${kind === 'destroy' ? ' danger' : ''}" data-${kind}="${esc(f.id)}"`
-      + ` title="${esc(here ? `${tip} — ${HERE}` : tip)}" aria-label="${esc(`${kind} ${f.name}`)}"${here || off ? ' disabled' : ''}>${icon}</button>`;
+      + ` title="${esc(tip)}" aria-label="${esc(`${kind} ${f.name}`)}"${off}>${icon}</button>`;
     return '<div class="fm-item">'
       + `<button type="button" role="option" class="fm-row${here ? ' current' : ''}" data-factory="${esc(f.id)}" aria-selected="${here}"${off}>`
       + `<b>${here ? '✓ ' : ''}${esc(f.name)}</b><small>${f.slug ? esc(f.slug) : 'not linked to a GitHub repository'}</small></button>`
@@ -90,15 +88,16 @@
   }
 
   // ---- taking a factory down -----------------------------------------------------
-  // Delink: the harness lets go (watch, folder, register), the repository stays.
-  // Destroy: the same, and the repository is deleted — the name must be typed, and the
-  // server checks it again.
+  // Delink: the harness lets go (watch, its data, register), the repository stays.
+  // Destroy: the same, and the repository is deleted. Both need the name typed, and the
+  // server checks it again. The factory the view is on can be taken down too: the view
+  // then moves to another one.
   const dialog = $('factory-confirm');
   const dialogOpen = () => !dialog.hidden;
   const must = (f) => f.slug || f.name;
   const folderLine = (f) => (f.owned
     ? `Its folder <code>${esc(f.root)}</code> is removed, with the traces and the clones in it.`
-    : `Its folder <code>${esc(f.root)}</code> stays on disk: the view did not make it.`);
+    : `Its folder <code>${esc(f.root)}</code> stays on disk, someone else keeps it: only what the harness keeps in it (<code>.llocal/</code>, <code>.env.local</code>) is removed.`);
 
   function dialogNote(text, bad) {
     const el = $('fc-note');
@@ -107,14 +106,14 @@
     el.classList.toggle('bad', !!bad);
   }
   function dialogReady() {
-    const typed = C.kind !== 'destroy' || $('fc-input').value === C.must;
+    const typed = $('fc-input').value === C.must;
     $('fc-go').disabled = C.busy || !typed;
     $('fc-cancel').disabled = C.busy;
     $('fc-input').disabled = C.busy;
   }
   function askToTakeDown(kind, id) {
     const f = F.list.find((x) => x.id === id);
-    if (!f || f.id === F.current || F.opening || C.busy) return;
+    if (!f || F.opening || C.busy) return;
     Object.assign(C, { f, kind, must: must(f), busy: false });
     const destroy = kind === 'destroy';
     const box = dialog.querySelector('.fc-box');
@@ -130,9 +129,10 @@
       destroy ? 'Its watch is killed now.' : 'Its watch is asked to stop: the running tasks finish, none starts.',
       folderLine(f),
       'It leaves the list of factories.',
+      ...(f.id === F.current ? ['This view is on it: it starts again in another factory.'] : []),
       ...(destroy ? [] : [f.slug ? 'Connect the repository again from “+ new factory” whenever you want.' : '']),
     ].filter(Boolean).map((l) => `<li>${l}</li>`).join('');
-    $('fc-typed').hidden = $('fc-input').hidden = !destroy;
+    $('fc-typed').hidden = $('fc-input').hidden = false;
     $('fc-name').textContent = C.must;
     $('fc-input').value = '';
     $('fc-go').textContent = destroy ? 'Destroy this factory' : 'Delink';
@@ -152,7 +152,7 @@
   async function takeDown() {
     if (!C.f || C.busy) return;
     const { f, kind } = C;
-    if (kind === 'destroy' && $('fc-input').value !== C.must) return;
+    if ($('fc-input').value !== C.must) return;
     C.busy = true;
     dialogReady();
     dialogNote(kind === 'destroy' ? `Destroying ${f.name}…` : `Delinking ${f.name}…`);
@@ -164,6 +164,12 @@
       });
       if (!r.ok) throw new Error((await r.text()) || r.statusText);
       const done = await r.json();
+      if (done.reopening) {
+        // The view starts again in another factory; the page reloads on its own
+        // when the event stream comes back with a new build (as in `switchTo`).
+        dialogNote(`${summary(f, done)} Moving to ${done.reopening}…`);
+        return;
+      }
       C.busy = false;
       dialog.hidden = true;
       C.f = null;
@@ -181,7 +187,7 @@
     if (done.watch === 'killed') parts.push('its watch is killed');
     if (done.repository === 'deleted') parts.push('the GitHub repository is deleted');
     if (done.repository === 'kept') parts.push('the GitHub repository stays');
-    parts.push(done.folder === 'removed' ? 'its folder is removed' : 'its folder stays');
+    parts.push(done.folder === 'removed' ? 'its folder is removed' : 'its harness data is removed, its folder stays');
     const text = `${f.name} ${done.repository === 'kept' ? 'delinked' : 'destroyed'}: ${parts.join(', ')}.`;
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
@@ -285,5 +291,11 @@
     else window.dispatchEvent(new CustomEvent('harness:factory-page', { detail: { open: false } }));
   }
 
-  window.HarnessFactories = { toggle, onSnapshot, creating, leave: leavePage };
+  // The janitor's way in: the factory this view is on.
+  async function takeDownCurrent(kind) {
+    await read();
+    askToTakeDown(kind, F.current);
+  }
+
+  window.HarnessFactories = { toggle, onSnapshot, creating, leave: leavePage, takeDownCurrent };
 })();

@@ -218,6 +218,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let removal = removal_for(&cli, &root, factories.clone(), &factory);
+    if let (Some(removal), Ok(left)) = (&removal, std::env::var(relaunch::LEAVING))
+        && let Err(why) = removal.finish(&left, &root)
+    {
+        tracing::warn!("the folder the previous view left stays: {why}");
+    }
 
     let (snapshot_tx, snapshot_rx) = watch::channel(Arc::new(first_picture(&project, cli.demo)));
     let (board_tx, board_rx) = watch::channel(None);
@@ -258,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
         usage,
         factory,
         switching: Arc::clone(&switching),
-        removal,
+        removal: removal.clone(),
     };
 
     let listener = tokio::net::TcpListener::bind((cli.bind.as_str(), cli.port))
@@ -331,12 +336,17 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     if let Some(factory) = next {
         // Only comes back when it failed: the view is replaced otherwise.
-        return Err(
-            anyhow::Error::new(relaunch::into(&factory)).context(format!(
-                "starting the view again in {}",
-                factory.root.display()
-            )),
-        );
+        return Err(anyhow::Error::new(relaunch::into(
+            &factory,
+            removal
+                .as_ref()
+                .and_then(|removal| removal.leaving())
+                .as_deref(),
+        ))
+        .context(format!(
+            "starting the view again in {}",
+            factory.root.display()
+        )));
     }
     Ok(())
 }

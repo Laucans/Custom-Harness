@@ -12,7 +12,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ports::{Foundry, Initialized, Teardown};
+use crate::ports::{Foundry, Initialized, Rights, Teardown};
 
 /// The program's output, or why it failed — its own words.
 fn output(command: &mut Command, what: &str) -> Result<String, String> {
@@ -176,7 +176,39 @@ impl Foundry for Cli {
 /// out: the scope is granted once, by the human.
 const SCOPE_HINT: &str = "run `gh auth refresh -h github.com -s delete_repo` once, then try again";
 
+/// What the `X-OAuth-Scopes` header of a `gh api -i` answer says about the
+/// right to delete a repository. No such header (a fine-grained token, an
+/// answer that is not HTTP) says nothing.
+fn rights_in(answer: &str) -> Rights {
+    let headers = answer.split("\n\n").next().unwrap_or_default();
+    headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("x-oauth-scopes")
+                .then_some(value)
+        })
+        .map_or(Rights::Unknown, |scopes| {
+            if scopes.split(',').any(|scope| scope.trim() == "delete_repo") {
+                Rights::Granted
+            } else {
+                Rights::Missing
+            }
+        })
+}
+
 impl Teardown for Cli {
+    fn delete_right(&self) -> Rights {
+        output(
+            Command::new(&self.gh).args(["api", "-i", "user"]),
+            "gh api user",
+        )
+        .map_or(Rights::Unknown, |answer| {
+            rights_in(&answer.replace("\r\n", "\n"))
+        })
+    }
+
     fn delete_repository(&self, slug: &str) -> Result<(), String> {
         output(
             Command::new(&self.gh).args(["repo", "delete", slug, "--yes"]),
@@ -226,6 +258,19 @@ impl Teardown for Cli {
         }
         // The entry of a folder that went without git knowing.
         git(&["worktree", "prune"], None).map(|_| ())
+    }
+
+    fn wipe_harness_data(&self, root: &Path) -> Result<(), String> {
+        let gone = |result: std::io::Result<()>, path: &Path| match result {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(format!("{} cannot be removed: {e}", path.display()))
+            }
+            _ => Ok(()),
+        };
+        let data = root.join(".llocal");
+        gone(std::fs::remove_dir_all(&data), &data)?;
+        let env = root.join(".env.local");
+        gone(std::fs::remove_file(&env), &env)
     }
 }
 
@@ -435,6 +480,74 @@ mod tests {
             .make_folder(&here)
             .expect_err("exists");
         assert!(why.contains("exists already"), "{why}");
+    }
+
+    #[test]
+    fn the_scopes_header_says_whether_a_repository_may_be_deleted() {
+        let with = |scopes: &str| format!("HTTP/2.0 200 OK\nX-Oauth-Scopes: {scopes}\n\n{{}}");
+        assert_eq!(
+            rights_in(&with("repo, delete_repo, workflow")),
+            Rights::Granted
+        );
+        assert_eq!(rights_in(&with("repo, workflow")), Rights::Missing);
+        assert_eq!(rights_in(&with("")), Rights::Missing);
+        // A scope that merely contains the name is not the scope.
+        assert_eq!(rights_in(&with("delete_repository")), Rights::Missing);
+        // No header (fine-grained token) and no answer say nothing.
+        assert_eq!(rights_in("HTTP/2.0 200 OK\n\n{}"), Rights::Unknown);
+        assert_eq!(rights_in(""), Rights::Unknown);
+        // A header-looking line in the body is not a header.
+        assert_eq!(
+            rights_in("HTTP/2.0 200 OK\n\nX-OAuth-Scopes: delete_repo"),
+            Rights::Unknown
+        );
+    }
+
+    #[test]
+    fn the_right_to_delete_is_read_from_gh_without_deleting_anything() {
+        let dir = folder("right");
+        let said = dir.join("said");
+        let asked = |body: &str| {
+            let gh = script(
+                &dir,
+                "gh",
+                &format!("echo \"$@\" >> {}\n{body}", said.display()),
+            );
+            Cli {
+                gh,
+                ..Cli::new(dir.clone(), Vec::new())
+            }
+            .delete_right()
+        };
+        assert_eq!(
+            asked("printf 'HTTP/2.0 200 OK\\r\\nX-OAuth-Scopes: repo, delete_repo\\r\\n\\r\\n{}'"),
+            Rights::Granted
+        );
+        assert_eq!(
+            asked("printf 'HTTP/2.0 200 OK\\r\\nX-OAuth-Scopes: repo\\r\\n\\r\\n{}'"),
+            Rights::Missing
+        );
+        assert_eq!(asked("echo 'not signed in' >&2; exit 1"), Rights::Unknown);
+        let calls = std::fs::read_to_string(&said).expect("said");
+        assert!(calls.lines().all(|l| l == "api -i user"), "{calls}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn wiping_a_checkout_removes_the_harness_data_and_nothing_else() {
+        let dir = folder("wipe");
+        std::fs::create_dir_all(dir.join(".llocal/logs")).expect("llocal");
+        std::fs::write(dir.join(".llocal/harness.db"), "x").expect("db");
+        std::fs::write(dir.join(".env.local"), "A=1").expect("env");
+        std::fs::write(dir.join("code.rs"), "fn main() {}").expect("code");
+        let cli = Cli::new(dir.clone(), Vec::new());
+        assert_eq!(cli.wipe_harness_data(&dir), Ok(()));
+        assert!(!dir.join(".llocal").exists());
+        assert!(!dir.join(".env.local").exists());
+        assert!(dir.join("code.rs").exists());
+        // Nothing there is not an error: the gesture can be repeated.
+        assert_eq!(cli.wipe_harness_data(&dir), Ok(()));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -53,7 +53,7 @@ through a port so a test can refuse it:
 | an issue opened, a pin and its conversation kept | the target's board (`harness:roadmap`); `.llocal/harness.db`, table `notes` | `Product::open_issue`, `NoteStore` | *Open the issue*; a pin dropped, a brainstorm |
 | the factory register, and the view started again in another factory | `~/.harness/factories.db` (`--harness-home`), outside every checkout; the view's own `exec` | `harness-core::ports::store::factories::Factories` (adapter in `harness-adapters`), `adapters::relaunch` | the header's factory menu |
 | a new factory: its GitHub repository, its folder, `init-repo` run there, the record of its creation | GitHub (`gh repo create`); a detached `git worktree` of the harness under `~/.harness/factories/<id>`; its `.env.local`; the register's `creations` table | `Foundry` (`adapters::foundry`), `Factories::keep_creation` | *Create the factory*, *Connect* on the creation page |
-| a factory taken down: its watch stopped, its GitHub repository deleted (destroy only), its folder removed, its place in the register forgotten | `kill`; GitHub (`gh repo delete`); `git worktree remove` of `~/.harness/factories/<id>`; the register's `factories` and `creations` rows | `Plant`, `Teardown` (`adapters::foundry`), `Factories::forget` | *delink* or *destroy* on a row of the header's factory menu |
+| a factory taken down: its watch stopped, its GitHub repository deleted (destroy only), its folder removed (or, for a checkout the view did not make, its `.llocal/` and `.env.local`), its place in the register forgotten | `kill`; GitHub (`gh repo delete`); `git worktree remove` of `~/.harness/factories/<id>`; the register's `factories` and `creations` rows | `Plant`, `Teardown` (`adapters::foundry`), `Factories::forget` | *Delink* or *Destroy* in the janitor's pane (the factory this view is on), or on a row of the header's factory menu |
 | what the view's own `claude -p` calls cost (the design system's, a factory's creation, a micro-frontend's, a pin's) | `.llocal/harness.db`, table `usage`, beside the event store | `Usage` (`adapters::sqlite_usage`), read by every `ClaudeOneshot` the composition root builds | every such call; never a dev-loop run, which keeps its own ledger |
 | the proof of concept drawn, then published; its roadmap task; the watch started | the integration branch's mock-up workspace (a `claude -p` that writes, `Oneshot::work_in`), then the branch itself (or `mockup/proof-of-concept`); the board; the `harness watch` process | `Oneshot`, `Mockups`, `KitDesk::publish`, `DataDesk::open_issue`, `Plant` | *Draw the mock-ups*, *Accept* |
 
@@ -92,35 +92,49 @@ factory's own watch command and harness binary win over the one it leaves.
 
 ### Taking a factory down
 
-Each row of the menu carries two gestures, shown on hover (`removal.rs`):
+Two gestures, in the **janitor's pane** (*This factory*: the factory the view
+is on) and on each row of the header's menu (any factory), `removal.rs`:
 
 | | the watch | the repository | the folder | the register |
 | --- | --- | --- | --- | --- |
-| **delink** (`POST /api/factories/{id}/delink`) | asked to stop, soft: the running tasks finish, none starts | stays on GitHub; connect it again by URL | removed | forgotten |
-| **destroy** (`POST /api/factories/{id}/destroy`, body `{"confirm": "<owner/name>"}`) | killed | **deleted** (`gh repo delete --yes`, which needs the token's `delete_repo` scope: the refusal says how to grant it) | removed | forgotten |
+| **delink** (`POST /api/factories/<id>/delink`) | asked to stop, soft: the running tasks finish, none starts | stays on GitHub; connect it again by URL | removed, or emptied of `.llocal/` and `.env.local` | forgotten |
+| **destroy** (`POST /api/factories/<id>/destroy`) | killed | **deleted** (`gh repo delete --yes`) | as a delink | forgotten |
 
-A destruction asks the human to type the repository's name, as GitHub does
-(the factory's own name when it has no repository); the button stays shut
-until it matches, and the server compares it again — a request without the
-exact name changes nothing. A repository GitHub says is gone already does
-not block the rest, so a destruction that stopped halfway can be repeated.
+Both bodies carry `{"confirm": "<owner/name>"}`: the human types the
+repository's name, as GitHub asks (the factory's own name when it has no
+repository). The button stays shut until it matches, and the server compares
+it again — a request without the exact name changes nothing (`400`).
 
-Three rules keep it from taking more than it should:
+Rules that keep it from taking more than it should:
 
-- **The factory this view is on is never taken down** (`409`): its folder is
-  the view's working directory. Open another factory first; the row's
-  gestures are disabled with that reason.
-- **Only a folder the view made goes**: a direct child of
+- **The right to delete is asked first** (destroy, `Teardown::delete_right`:
+  the `X-OAuth-Scopes` header of `gh api -i user`, read-only). A token that
+  lists its scopes without `delete_repo` stops everything before the watch is
+  touched (`403`): the refusal carries the two commands to run by hand
+  (`gh auth refresh -h github.com -s delete_repo`, then
+  `gh repo delete <slug> --yes`). A token that lists nothing (fine-grained)
+  is tried, and a late refusal says how to grant the scope.
+- **Only a folder the view made goes whole**: a direct child of
   `~/.harness/factories/` (`Removal::is_ours`, which the list answers as
   `owned`). A factory enrolled from a checkout somebody keeps — the harness
-  itself, say — loses its register entry, its watch and (destroy) its
-  repository, never its folder.
+  itself, say — loses its register entry, its watch, its harness data and
+  (destroy) its repository, never its checkout.
+- **The factory this view is on can be taken down**, and its folder is the
+  view's working directory. The view moves to another factory (the first
+  other one whose folder exists — `409` when there is none, nothing touched)
+  through the switch (`202`, `"reopening": "<id>"`); the folder left travels to
+  the new process in `HARNESS_VIEW_LEAVING` (`remove:<path>` or
+  `wipe:<path>`, `adapters::relaunch`), which deals with it before serving
+  (`Removal::finish`) and never touches its own.
 - **The register is forgotten last.** A step that fails (a folder that will
   not go, a repository GitHub refuses) leaves the factory listed, so the
-  gesture can be repeated.
+  gesture can be repeated; a repository GitHub says is gone already does not
+  block the rest.
 
 The watch stopped is the one working in *that* factory's folder, found the
 way the status button finds its own (`WatchProcess` on that `Workspace`).
+What the Docker services of a product hold (`docs/PERSISTENCE.md`) is not
+touched.
 
 ### The factory-creation page
 

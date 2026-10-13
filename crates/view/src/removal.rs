@@ -1,29 +1,35 @@
 //! A factory taken down, in two degrees.
 //!
 //! **Delink**: the harness lets go of the factory — its watch is asked to
-//! stop (soft: the running tasks finish, none starts), its folder is removed,
-//! it leaves the register — and its GitHub repository stays as it is. The
-//! repository can be connected again, later, as any other.
+//! stop (soft: the running tasks finish, none starts), what the harness keeps
+//! in its folder is removed, it leaves the register — and its GitHub
+//! repository stays as it is. The repository can be connected again, later,
+//! as any other.
 //!
 //! **Destroy**: the same, and the repository is deleted from GitHub, for
 //! good. The watch is killed (a draining watch would push to a repository
-//! that is no more), and the human must have typed the repository's name:
-//! the check is made here, not only by the page.
+//! that is no more). The token's right to delete is asked *first*: without
+//! it nothing is touched and the refusal carries the commands to run by hand.
 //!
-//! Neither touches the factory this view is on — its folder is the view's own
-//! working directory — nor a folder the view did not make: only a direct
-//! child of the factories' folder goes, a checkout someone else keeps stays.
-//! The register is forgotten last, so a step that failed leaves the factory
-//! listed and the gesture can be repeated.
+//! Both need the human to have typed the name asked: the check is made here,
+//! not only by the page.
+//!
+//! The folder goes whole when the view made it — a direct child of the
+//! factories' folder — and only its `.llocal/` and `.env.local` otherwise: a
+//! checkout someone else keeps stays. The factory this view is on is taken
+//! down too, but its folder is the view's working directory: the view moves
+//! to another factory, and *that* process removes the folder it left
+//! (`Removal::finish`). The register is forgotten last, so a step that failed
+//! leaves the factory listed and the gesture can be repeated.
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use harness_core::ports::store::factories::{Factories, Factory};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::domain::plant::{self, Action, Gesture};
-use crate::ports::{Plant, Teardown};
+use crate::ports::{Plant, Rights, Teardown};
 
 /// The watch of the factory whose folder is given.
 pub type PlantOf = Arc<dyn Fn(&Path) -> Arc<dyn Plant> + Send + Sync>;
@@ -42,10 +48,12 @@ pub enum Degree {
 pub enum Refusal {
     /// The register does not know it.
     Unknown(String),
-    /// It is the factory this view is on.
-    Current,
+    /// It is the factory this view is on, and no other one can take its place.
+    Alone,
     /// The name typed is not the one asked for.
     Confirmation(String),
+    /// The token may not delete the repository: the commands that would.
+    Rights(String),
     /// A step failed; the factory is still listed.
     Failed(String),
 }
@@ -56,11 +64,15 @@ impl Refusal {
     pub fn reason(&self) -> String {
         match self {
             Self::Unknown(id) => format!("no factory {id}"),
-            Self::Current => {
-                "this view is on that factory: open another one first, then take this one down"
+            Self::Alone => {
+                "this view is on the only factory there is: create or connect another one first, then take this one down"
                     .to_string()
             }
             Self::Confirmation(name) => format!("type `{name}` to confirm"),
+            Self::Rights(slug) => format!(
+                "the token may not delete {slug}, and nothing was touched. Grant the right once, \
+                 then delete it: `{GRANT}`, then `gh repo delete {slug} --yes`"
+            ),
             Self::Failed(why) => why.clone(),
         }
     }
@@ -97,8 +109,9 @@ pub enum Repository {
 pub enum Folder {
     /// Removed from the disk.
     Removed,
-    /// Left in place: the view did not make it.
-    Kept,
+    /// Left in place, emptied of what the harness keeps there: the view did
+    /// not make it.
+    Wiped,
 }
 
 /// What a factory taken down leaves to say.
@@ -114,7 +127,20 @@ pub struct Report {
     pub repository: Repository,
     /// Its folder.
     pub folder: Folder,
+    /// The factory the view moves to — when this was the one it was on.
+    #[serde(rename = "reopening", serialize_with = "id_of")]
+    pub next: Option<Factory>,
 }
+
+/// A factory by its id, the way the page reads it.
+// serde hands `serialize_with` a reference to the field, whatever its type.
+#[allow(clippy::ref_option)]
+fn id_of<S: Serializer>(next: &Option<Factory>, out: S) -> Result<S::Ok, S::Error> {
+    next.as_ref().map(|factory| &factory.id).serialize(out)
+}
+
+/// The command that grants `gh` the right to delete a repository.
+const GRANT: &str = "gh auth refresh -h github.com -s delete_repo";
 
 /// The name a human types to destroy `factory`: its repository's, as GitHub
 /// asks it; its own when it has none.
@@ -139,6 +165,9 @@ pub struct Removal {
     plant_of: PlantOf,
     factories_dir: PathBuf,
     here: String,
+    /// The folder of the factory this view was on and has just taken down,
+    /// for the process that replaces it to deal with.
+    leaving: Mutex<Option<String>>,
 }
 
 impl Removal {
@@ -158,6 +187,7 @@ impl Removal {
             plant_of,
             factories_dir,
             here: here.to_string(),
+            leaving: Mutex::default(),
         }
     }
 
@@ -204,44 +234,58 @@ impl Removal {
     ///
     /// # Errors
     ///
-    /// The factory is unknown or is the one this view is on, a destruction
-    /// was not confirmed by typing the right name, or a step failed — the
-    /// factory is then still in the register.
+    /// The factory is unknown, the name typed is not the one asked for, the
+    /// view is on it and no other factory can take its place, the token may
+    /// not delete the repository, or a step failed — the factory is then
+    /// still in the register.
     pub fn take_down(&self, id: &str, degree: Degree, confirm: &str) -> Result<Report, Refusal> {
         let factory = self
             .register
             .get(id)
             .map_err(|why| Refusal::Failed(why.reason().to_string()))?
             .ok_or_else(|| Refusal::Unknown(id.to_string()))?;
-        if factory.id == self.here {
-            return Err(Refusal::Current);
-        }
-        if degree == Degree::Destroy && confirm != confirmation_of(&factory) {
+        if confirm != confirmation_of(&factory) {
             return Err(Refusal::Confirmation(confirmation_of(&factory).to_string()));
+        }
+        let next = if factory.id == self.here {
+            Some(self.successor(&factory.id)?)
+        } else {
+            None
+        };
+        let deletes = degree == Degree::Destroy && !factory.slug.is_empty();
+        if deletes && self.teardown.delete_right() == Rights::Missing {
+            return Err(Refusal::Rights(factory.slug));
         }
 
         let watch = self.stop_watch(&factory, degree)?;
 
-        let repository = if degree == Degree::Destroy && !factory.slug.is_empty() {
-            match self.teardown.delete_repository(&factory.slug) {
+        let repository = match (degree, deletes) {
+            (Degree::Delink, _) => Repository::Kept,
+            (Degree::Destroy, false) => Repository::Gone,
+            (Degree::Destroy, true) => match self.teardown.delete_repository(&factory.slug) {
                 Ok(()) => Repository::Deleted,
                 Err(why) if is_gone(&why) => Repository::Gone,
                 Err(why) => return Err(Refusal::Failed(why)),
-            }
-        } else if degree == Degree::Destroy {
-            Repository::Gone
-        } else {
-            Repository::Kept
+            },
         };
 
-        let folder = if self.is_ours(&factory.root) {
+        let owned = self.is_ours(&factory.root);
+        if next.is_some() {
+            // The view works in this folder: it goes once the view has left.
+            *self
+                .leaving
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(Self::spec(owned, &factory.root));
+        } else if owned {
             self.teardown
                 .remove_folder(&factory.root)
                 .map_err(Refusal::Failed)?;
-            Folder::Removed
         } else {
-            Folder::Kept
-        };
+            self.teardown
+                .wipe_harness_data(&factory.root)
+                .map_err(Refusal::Failed)?;
+        }
 
         self.register
             .forget(&factory.id)
@@ -251,8 +295,67 @@ impl Removal {
             name: factory.name,
             watch,
             repository,
-            folder,
+            folder: if owned {
+                Folder::Removed
+            } else {
+                Folder::Wiped
+            },
+            next,
         })
+    }
+
+    /// The factory that takes the view's place when the one it is on goes:
+    /// the first other one whose folder is still on the disk.
+    fn successor(&self, leaving: &str) -> Result<Factory, Refusal> {
+        self.register
+            .list()
+            .map_err(|why| Refusal::Failed(why.reason().to_string()))?
+            .into_iter()
+            .find(|factory| factory.id != leaving && factory.root.is_dir())
+            .ok_or(Refusal::Alone)
+    }
+
+    /// What the next process is told about the folder it must deal with.
+    fn spec(owned: bool, root: &Path) -> String {
+        format!(
+            "{}:{}",
+            if owned { "remove" } else { "wipe" },
+            root.display()
+        )
+    }
+
+    /// The folder this view left behind by taking the factory it was on
+    /// down, written the way the next process reads it (`finish`).
+    #[must_use]
+    pub fn leaving(&self) -> Option<String> {
+        self.leaving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Deals with the folder a previous view left (`leaving`): removed whole
+    /// if the view made it, emptied of the harness's data otherwise. The
+    /// folder this process runs in is never touched.
+    ///
+    /// # Errors
+    ///
+    /// The spec is not one `leaving` wrote, the folder is not one the view
+    /// may remove, or the disk refused.
+    pub fn finish(&self, spec: &str, running_in: &Path) -> Result<(), String> {
+        let (how, root) = spec
+            .split_once(':')
+            .ok_or_else(|| format!("`{spec}` is not a folder to take down"))?;
+        let root = Path::new(root);
+        if root == running_in {
+            return Err(format!("{} is where this view runs", root.display()));
+        }
+        match how {
+            "remove" if self.is_ours(root) => self.teardown.remove_folder(root),
+            "remove" => Err(format!("{} is not a folder the view made", root.display())),
+            "wipe" => self.teardown.wipe_harness_data(root),
+            other => Err(format!("`{other}` is not a way to take a folder down")),
+        }
     }
 }
 
@@ -309,9 +412,23 @@ mod tests {
         said: Mutex<Vec<String>>,
         repository_fails: Option<&'static str>,
         folder_fails: bool,
+        right: Option<Rights>,
     }
 
     impl Teardown for Wreck {
+        fn delete_right(&self) -> Rights {
+            self.said.lock().expect("held").push("right".to_string());
+            self.right.unwrap_or(Rights::Granted)
+        }
+
+        fn wipe_harness_data(&self, root: &Path) -> Result<(), String> {
+            self.said
+                .lock()
+                .expect("held")
+                .push(format!("wipe {}", root.display()));
+            Ok(())
+        }
+
         fn delete_repository(&self, slug: &str) -> Result<(), String> {
             self.said.lock().expect("held").push(format!("repo {slug}"));
             self.repository_fails
@@ -405,7 +522,7 @@ mod tests {
         let rig = rig(Wreck::default(), running_watch());
         let report = rig
             .removal
-            .take_down("made", Degree::Delink, "")
+            .take_down("made", Degree::Delink, "me/made")
             .expect("delinked");
         assert_eq!(
             report,
@@ -415,6 +532,7 @@ mod tests {
                 watch: Watch::Draining,
                 repository: Repository::Kept,
                 folder: Folder::Removed,
+                next: None,
             }
         );
         assert_eq!(sent(&rig.plant), ["Term Process(100)"]);
@@ -423,14 +541,16 @@ mod tests {
     }
 
     #[test]
-    fn a_destruction_needs_the_repository_typed_exactly_and_touches_nothing_before() {
+    fn a_take_down_needs_the_repository_typed_exactly_and_touches_nothing_before() {
         let rig = rig(Wreck::default(), running_watch());
         for typed in ["", "made", "me/MADE", "me/made ", "ME/made"] {
-            let why = rig
-                .removal
-                .take_down("made", Degree::Destroy, typed)
-                .expect_err("not confirmed");
-            assert_eq!(why, Refusal::Confirmation("me/made".to_string()), "{typed}");
+            for degree in [Degree::Delink, Degree::Destroy] {
+                let why = rig
+                    .removal
+                    .take_down("made", degree, typed)
+                    .expect_err("not confirmed");
+                assert_eq!(why, Refusal::Confirmation("me/made".to_string()), "{typed}");
+            }
         }
         assert!(sent(&rig.plant).is_empty());
         assert!(said(&rig.wreck).is_empty());
@@ -453,7 +573,10 @@ mod tests {
             "{:?}",
             sent(&rig.plant)
         );
-        assert_eq!(said(&rig.wreck), ["repo me/made", "folder /f/made"]);
+        assert_eq!(
+            said(&rig.wreck),
+            ["right", "repo me/made", "folder /f/made"]
+        );
         assert_eq!(forgotten(&rig.book), ["made"]);
     }
 
@@ -475,18 +598,156 @@ mod tests {
         assert_eq!(said(&rig.wreck), ["folder /f/loose"]);
     }
 
+    /// A register whose factories sit in folders that exist.
+    fn lived_in(rig_root: &Path) -> Rig {
+        let book = Arc::new(Book {
+            known: vec![
+                factory(
+                    "here",
+                    &rig_root.join("here").display().to_string(),
+                    "me/here",
+                ),
+                factory("other", &rig_root.display().to_string(), "me/other"),
+            ],
+            forgotten: Mutex::default(),
+        });
+        let wreck = Arc::new(Wreck::default());
+        let plant = Arc::new(running_watch());
+        let own = Arc::clone(&plant);
+        Rig {
+            removal: Removal::new(
+                book.clone(),
+                wreck.clone(),
+                Arc::new(move |_| Arc::clone(&own) as Arc<dyn Plant>),
+                rig_root.to_path_buf(),
+                "here",
+            ),
+            book,
+            wreck,
+            plant,
+        }
+    }
+
     #[test]
-    fn the_factory_the_view_is_on_is_never_taken_down() {
+    fn the_factory_the_view_is_on_leaves_its_folder_to_the_view_that_replaces_it() {
+        let tmp = std::env::temp_dir();
+        let rig = lived_in(&tmp);
+        let report = rig
+            .removal
+            .take_down("here", Degree::Delink, "me/here")
+            .expect("delinked");
+        assert_eq!(report.next.map(|f| f.id), Some("other".to_string()));
+        assert_eq!(report.folder, Folder::Removed);
+        // Nothing of its folder is touched now; the next view is told.
+        assert!(said(&rig.wreck).is_empty());
+        assert_eq!(
+            rig.removal.leaving(),
+            Some(format!("remove:{}", tmp.join("here").display()))
+        );
+        assert_eq!(forgotten(&rig.book), ["here"]);
+    }
+
+    #[test]
+    fn the_only_factory_cannot_be_taken_down_from_inside_and_nothing_is_touched() {
         let rig = rig(Wreck::default(), running_watch());
+        // None of the other roots of this register exists on the disk.
         for degree in [Degree::Delink, Degree::Destroy] {
             assert_eq!(
                 rig.removal.take_down("here", degree, "me/here"),
-                Err(Refusal::Current)
+                Err(Refusal::Alone)
             );
         }
         assert!(sent(&rig.plant).is_empty());
         assert!(said(&rig.wreck).is_empty());
         assert!(forgotten(&rig.book).is_empty());
+        assert_eq!(rig.removal.leaving(), None);
+    }
+
+    #[test]
+    fn without_the_right_to_delete_nothing_is_touched_and_the_commands_are_given() {
+        let rig = rig(
+            Wreck {
+                right: Some(Rights::Missing),
+                ..Wreck::default()
+            },
+            running_watch(),
+        );
+        let why = rig
+            .removal
+            .take_down("made", Degree::Destroy, "me/made")
+            .expect_err("no right");
+        assert_eq!(why, Refusal::Rights("me/made".to_string()));
+        let said_so = why.reason();
+        assert!(
+            said_so.contains("gh auth refresh -h github.com -s delete_repo"),
+            "{said_so}"
+        );
+        assert!(
+            said_so.contains("gh repo delete me/made --yes"),
+            "{said_so}"
+        );
+        assert_eq!(said(&rig.wreck), ["right"]);
+        assert!(sent(&rig.plant).is_empty());
+        assert!(forgotten(&rig.book).is_empty());
+    }
+
+    #[test]
+    fn an_unknown_right_is_tried_and_a_delink_never_asks() {
+        let unknown = rig(
+            Wreck {
+                right: Some(Rights::Unknown),
+                ..Wreck::default()
+            },
+            Switch::default(),
+        );
+        unknown
+            .removal
+            .take_down("made", Degree::Destroy, "me/made")
+            .expect("tried");
+        assert_eq!(
+            said(&unknown.wreck),
+            ["right", "repo me/made", "folder /f/made"]
+        );
+
+        let missing = rig(
+            Wreck {
+                right: Some(Rights::Missing),
+                ..Wreck::default()
+            },
+            Switch::default(),
+        );
+        missing
+            .removal
+            .take_down("made", Degree::Delink, "me/made")
+            .expect("delinked");
+        assert_eq!(said(&missing.wreck), ["folder /f/made"]);
+    }
+
+    #[test]
+    fn a_view_that_replaces_another_removes_or_wipes_the_folder_left_but_never_its_own() {
+        let rig = rig(Wreck::default(), Switch::default());
+        assert_eq!(
+            rig.removal.finish("remove:/f/old", Path::new("/f/new")),
+            Ok(())
+        );
+        assert_eq!(
+            rig.removal.finish("wipe:/code/old", Path::new("/f/new")),
+            Ok(())
+        );
+        assert_eq!(said(&rig.wreck), ["folder /f/old", "wipe /code/old"]);
+
+        // Not a folder the view made, itself, or something unreadable.
+        for (spec, here) in [
+            ("remove:/code/old", "/f/new"),
+            ("remove:/f/new", "/f/new"),
+            ("wipe:/f/new", "/f/new"),
+            ("remove:/f/a/b", "/f/new"),
+            ("burn:/f/old", "/f/new"),
+            ("/f/old", "/f/new"),
+        ] {
+            assert!(rig.removal.finish(spec, Path::new(here)).is_err(), "{spec}");
+        }
+        assert_eq!(said(&rig.wreck).len(), 2);
     }
 
     #[test]
@@ -507,9 +768,12 @@ mod tests {
             .expect("destroyed");
         assert_eq!(
             (report.repository, report.folder),
-            (Repository::Deleted, Folder::Kept)
+            (Repository::Deleted, Folder::Wiped)
         );
-        assert_eq!(said(&rig.wreck), ["repo me/mine"]);
+        assert_eq!(
+            said(&rig.wreck),
+            ["right", "repo me/mine", "wipe /code/mine"]
+        );
         assert_eq!(forgotten(&rig.book), ["mine"]);
     }
 
@@ -550,7 +814,7 @@ mod tests {
             why,
             Refusal::Failed("gh repo delete failed: HTTP 403: admin rights".to_string())
         );
-        assert_eq!(said(&rig.wreck), ["repo me/made"]);
+        assert_eq!(said(&rig.wreck), ["right", "repo me/made"]);
         assert!(forgotten(&rig.book).is_empty());
     }
 
@@ -587,7 +851,7 @@ mod tests {
         );
         let why = rig
             .removal
-            .take_down("made", Degree::Delink, "")
+            .take_down("made", Degree::Delink, "me/made")
             .expect_err("busy");
         assert_eq!(why, Refusal::Failed("busy".to_string()));
         assert!(forgotten(&rig.book).is_empty());
@@ -612,14 +876,18 @@ mod tests {
             "here",
         );
         removal
-            .take_down("made", Degree::Delink, "")
+            .take_down("made", Degree::Delink, "me/made")
             .expect("delinked");
         assert_eq!(*asked.lock().expect("held"), [PathBuf::from("/f/made")]);
     }
 
     #[test]
     fn the_reason_of_each_refusal_reads_as_a_sentence() {
-        assert!(Refusal::Current.reason().contains("open another one first"));
+        assert!(
+            Refusal::Alone
+                .reason()
+                .contains("create or connect another one")
+        );
         assert!(
             Refusal::Confirmation("me/app".to_string())
                 .reason()
