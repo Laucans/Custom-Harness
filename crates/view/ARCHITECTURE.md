@@ -109,7 +109,7 @@ It has two sections:
      where steps 2 to 9 run — a factory like any, so the easels serve it;
   2. **kind** — *vertical architecture development factory*, the one there
      is (*hexagonal* shown, not selectable);
-  3. **brief** — what the application does (one box for now);
+  3. **brief** — what the application does, in four guiding questions (the problem, the users, their journeys, the data and integrations); the record keeps one text, a `###` heading per answered question;
   4. **grilling** — rounds of questions (`grill_prompt`: the grilling skill's
      frontier, each question with its recommended answer, JSON), answered,
      retouched or deleted; *continue grilling* asks the next round once

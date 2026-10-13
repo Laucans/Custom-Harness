@@ -138,8 +138,7 @@
   // What the current step's fields hold, as the record takes it.
   function fields() {
     const body = {};
-    const brief = page.querySelector('[data-cr="brief"]');
-    if (brief) body.brief = brief.value;
+    if (page.querySelector('[data-cr^="brief-"]')) body.brief = composeBrief((id) => page.querySelector(`[data-cr="brief-${id}"]`).value);
     const scope = page.querySelector('[data-cr="scope"]');
     if (scope) body.scope = scope.value;
     const qs = page.querySelectorAll('[data-q]');
@@ -321,10 +320,40 @@
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="repository">← Back</button><button type="button" class="cr-btn on" data-cr-kind>Continue →</button></div>`;
   }
 
+  // The brief, asked as a few guiding questions. The record keeps one text:
+  // the answered questions, each under its own heading.
+  const BRIEF_QUESTIONS = [
+    { id: 'what', title: 'What is the application, and what problem does it solve?', hint: 'The idea in a few sentences: the need, and what goes wrong today without it.' },
+    { id: 'who', title: 'Who uses it?', hint: 'The kinds of users, their roles, what each may see or do.' },
+    { id: 'journeys', title: 'What do they do with it?', hint: 'The main journeys, start to finish: what a user comes to do, and what they get out of it.' },
+    { id: 'data', title: 'What does it keep, and what does it connect to?', hint: 'The information it stores, the tools or services it talks to, the constraints (devices, languages, offline…).' },
+  ];
+  const briefHeading = (q) => `### ${q.title}`;
+  function composeBrief(answer) {
+    return BRIEF_QUESTIONS
+      .map((q) => [q, answer(q.id).trim()])
+      .filter(([, text]) => text)
+      .map(([q, text]) => `${briefHeading(q)}\n\n${text}`)
+      .join('\n\n');
+  }
+  // Back from the record's text to one answer per question; a brief written
+  // before the questions, without their headings, goes whole to the first.
+  function splitBrief(text) {
+    const answers = Object.fromEntries(BRIEF_QUESTIONS.map((q) => [q.id, []]));
+    let current = BRIEF_QUESTIONS[0].id;
+    for (const line of (text || '').split('\n')) {
+      const q = BRIEF_QUESTIONS.find((b) => line.trim() === briefHeading(b));
+      if (q) current = q.id;
+      else answers[current].push(line);
+    }
+    return Object.fromEntries(Object.entries(answers).map(([id, lines]) => [id, lines.join('\n').trim()]));
+  }
+
   function stepBrief(r) {
-    return `<p class="muted">What the application does: who uses it, for what, what it keeps. The AI's questions start from here.</p>
+    const answers = splitBrief(r.brief);
+    return `<p class="muted">What the application does, in four questions. Answer what you know — the more context, the better the AI's questions, the scope and the mock-ups.</p>
       ${r.regenerations ? '<div class="callout">Sent back from the review: everything written is still here — change what the mock-ups got wrong.</div>' : ''}
-      <label class="cr-field">What the application does<textarea data-cr="brief" rows="12" placeholder="An application that…">${esc(r.brief)}</textarea></label>
+      ${BRIEF_QUESTIONS.map((q, i) => `<label class="cr-field cr-brief-q"><b>${i + 1} · ${esc(q.title)}</b><span class="muted">${esc(q.hint)}</span><textarea data-cr="brief-${q.id}" rows="4">${esc(answers[q.id])}</textarea></label>`).join('')}
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="kind">← Back</button><button type="button" class="cr-btn on" data-cr-next="grilling">Continue →</button></div>`;
   }
 
