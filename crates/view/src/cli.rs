@@ -57,7 +57,7 @@ pub struct Cli {
 
     /// The model that draws a creation's mock-up and cuts it into
     /// micro-frontends: one session at work each.
-    #[arg(long, env = "CREATION_DRAW_MODEL", default_value = "claude-sonnet-5-5")]
+    #[arg(long, env = "CREATION_DRAW_MODEL", default_value = "claude-opus-5-5")]
     pub creation_draw_model: String,
 
     /// Never call `gh`: the sign and the store stay empty.

@@ -237,7 +237,7 @@ It has two sections:
      (`Facts::kit_waiting`) — the mock-ups are drawn on the kit, not on
      tokens alone;
   7. **mock-ups** — one Claude Code session of the drawing's model
-     (`--creation-draw-model`, Sonnet by default; the cut into
+     (`--creation-draw-model`, Opus by default; the cut into
      micro-frontends uses it too) at work in the integration
      branch's mock-up workspace (`Oneshot::work_in`: read and write, nothing
      that runs) draws a page per screen of the scope, on the kit and the
