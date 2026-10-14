@@ -38,6 +38,8 @@
   const LAST = 'harness.mockup.page';
   const MF_ON = 'harness.mockup.mf';
   const WIDTHS = 'harness.mockup.widths';
+  // A page shown as in a browser (the default) or on the canvas: a per-viewer preference.
+  const BROWSE = 'harness.mockup.browse';
   const COLOURS = ['#4ea3f0', '#f08a2c', '#4fbf72', '#b388f5', '#e2b240', '#ef6b8a', '#2bc0c8', '#c9a46b'];
   // What a pin may sit on, nearest first; what edit mode may take hold of.
   const PARTS = '[data-component],[id],[data-id],button,a,input,select,textarea,label,h1,h2,h3,h4,img,table,th,td,tr,li,form,section,article,aside,nav,header,footer,figure,p';
@@ -79,6 +81,7 @@
       + '<button type="button" class="mini mk-only-page" data-mk="mf" aria-pressed="false" title="Outline every micro-frontend in its own colour; pins and edits then take hold of micro-frontends">micro-frontends ◧</button>'
       + '<button type="button" class="mini mk-only-page" data-mk="edit" aria-pressed="false" title="Design the page: select, drag, resize, align, insert — every change a step of the page\'s draft">edit</button>'
       + '<button type="button" class="mini mk-only-page" data-mk="interact" aria-pressed="false" title="Click through to the page itself: its links, its buttons">interact</button>'
+      + '<span class="mk-views mk-only-page" role="group" aria-label="how the page is shown"><button type="button" data-mk="browse" data-on="1" title="The page as in a browser: the room it has, the wheel scrolling it">browser</button><button type="button" data-mk="browse" data-on="0" title="The page on a canvas: zoom, pan, a width of its own">canvas</button></span>'
       + '<button type="button" class="mini" data-mk="full" aria-pressed="false" title="The mock-up over the whole window (Esc leaves)">⛶</button>'
       + '<button type="button" class="mini mk-only-components" data-mk="design" hidden title="A new micro-frontend, from its spec: generated, or made with an AI session">+ micro-frontend</button>'
       + '<button type="button" class="mini on mk-only-components" data-mk="generate-all" hidden title="Generate every micro-frontend not mocked yet, several at once — the kit makes what they lack first">generate</button>'
@@ -134,7 +137,7 @@
     const st = { branch: (opts && opts.branch) || '', page: (opts && opts.page) || '', view: (opts && opts.view) || 'page', versions: null, state: null, stamp: '', pinned: false, readOnly: !!(opts && opts.readOnly),
       timer: null, gone: false, interact: false, mf: !!kept(MF_ON, false),
       // The micro-frontends' list beside the page (off where a step hides it); the one pointed at, on the page and in the list.
-      strip: !(opts && opts.strip === false), hot: '', locked: '', toldPage: null,
+      strip: !(opts && opts.strip === false), hot: '', locked: '', toldPage: null, browse: kept(BROWSE, true) !== false,
       // A rule picked on the creation's rules step: only its micro-frontends listed, its parts marked on the page.
       focus: null, board: null, frame: null, shield: null, doc: null, armed: null, proxies: new WeakMap(), fitted: false, saving: false,
       cards: [],
@@ -264,6 +267,10 @@
     // What a request that changes the mock-up says: its history's branch,
     // and the gesture it belongs to, when it does.
     const H = (g) => Object.assign({ 'Content-Type': 'application/json', 'x-harness-branch': st.branch }, g ? { 'x-harness-step': g.token, 'x-harness-what': g.what } : {});
+    // The page's width: the room the board has, as in a browser; on the
+    // canvas, the width chosen for it.
+    const browsing = () => st.view === 'page' && st.browse;
+    const frameWidth = () => (browsing() ? Math.max(320, Math.round(q('.mk-board').clientWidth)) : st.width);
     const boardOf = () => `mockup--${plain(st.branch) || 'integration'}--${st.view === 'components' ? 'micro-frontends' : st.page ? pageSlug(st.page) : 'home'}`;
     const pageUrl = () => `/mock/${encodeURIComponent(slugOf(st.branch))}/${st.page}`;
     const baseHref = () => `${location.origin}/mock/${encodeURIComponent(slugOf(st.branch))}/${st.page.replace(/[^/]*$/, '')}`;
@@ -338,9 +345,10 @@
           design.refresh();
         },
         bounds: () => (st.view === 'page'
-          ? { x: 0, y: 0, w: st.width, h: Math.max(MIN_HEIGHT, st.frame ? parseFloat(st.frame.style.height) || MIN_HEIGHT : MIN_HEIGHT) }
+          ? { x: 0, y: 0, w: frameWidth(), h: Math.max(MIN_HEIGHT, st.frame ? parseFloat(st.frame.style.height) || MIN_HEIGHT : MIN_HEIGHT) }
           : { x: 0, y: 0, w: MF_W, h: st.mfH || MIN_HEIGHT }),
       });
+      st.board.browse(browsing());
       if (st.view === 'components') { mountMf(); return; }
       const page = currentPage();
       if (!page) {
@@ -350,10 +358,10 @@
         st.board.fit();
         return;
       }
-      st.board.content.innerHTML = `<iframe class="mk-frame" title="${esc(page.title)}" style="width:${st.width}px;height:${MIN_HEIGHT}px"></iframe><div class="mk-shield"${st.interact ? ' hidden' : ''}></div><div class="mk-vp-handle" title="drag to change the width"></div>`;
+      st.board.content.innerHTML = `<iframe class="mk-frame" title="${esc(page.title)}" style="width:${frameWidth()}px;height:${MIN_HEIGHT}px"></iframe><div class="mk-shield"${st.interact ? ' hidden' : ''}></div><div class="mk-vp-handle" title="drag to change the width"></div>`;
       st.frame = q('.mk-frame');
       st.shield = q('.mk-shield');
-      st.board.setSize(st.width, MIN_HEIGHT);
+      st.board.setSize(frameWidth(), MIN_HEIGHT);
       st.frame.addEventListener('load', onFrameLoad);
       loadPage();
     }
@@ -395,9 +403,9 @@
     function render() {
       if (!st.frame || !st.engine) return;
       const html = st.viewing ? E.engine({ source: st.source, ops: st.viewing.ops }).html(baseHref()) : st.engine.html(baseHref());
-      st.frame.style.width = st.width + 'px';
+      st.frame.style.width = frameWidth() + 'px';
       st.frame.srcdoc = withLoader(html);
-      st.board.setSize(st.width, parseFloat(st.frame.style.height) || MIN_HEIGHT);
+      st.board.setSize(frameWidth(), parseFloat(st.frame.style.height) || MIN_HEIGHT);
       drawEditBar();
       drawFrozen();
     }
@@ -459,9 +467,11 @@
       if (st.view === 'components') { if (st.mfDetail) sizeMf(); return; }
       if (!st.doc || !st.frame) return;
       const h = Math.max(MIN_HEIGHT, st.doc.documentElement.scrollHeight, st.doc.body ? st.doc.body.scrollHeight : 0);
-      if (Math.abs(h - (parseFloat(st.frame.style.height) || 0)) > 2) {
+      const w = frameWidth();
+      if (Math.abs(h - (parseFloat(st.frame.style.height) || 0)) > 2 || Math.abs(w - (parseFloat(st.frame.style.width) || 0)) > 1) {
         st.frame.style.height = h + 'px';
-        st.board.setSize(st.width, h);
+        st.frame.style.width = w + 'px';
+        st.board.setSize(w, h);
         design.refresh();
       }
     }
@@ -1963,6 +1973,7 @@
       q('.dm-features').innerHTML = features.map((b) => `<button type="button" role="menuitem" data-branch="${esc(b.branch)}">${esc(b.label)}</button>`).join('');
     }
     function drawBar() {
+      drawBrowse();
       const s = st.state;
       const pages = s.pages || [];
       const page = currentPage();
@@ -2088,6 +2099,20 @@
     }
     // Esc leaves the full window before anything else hears it.
     const onFullKey = (e) => { if (st.full && e.key === 'Escape' && !e.target.matches('input,textarea,select')) { e.stopPropagation(); e.preventDefault(); setFull(false); } };
+    // The page as in a browser, or on the canvas.
+    function setBrowse(on) {
+      st.browse = on;
+      keep(BROWSE, on);
+      drawBrowse();
+      if (!st.board || st.view !== 'page') return;
+      st.board.browse(browsing());
+      measure();
+      st.fitted = true;
+      st.board.fit();
+    }
+    function drawBrowse() {
+      host.querySelectorAll('[data-mk="browse"]').forEach((b) => b.classList.toggle('on', (b.dataset.on === '1') === st.browse));
+    }
     function setInteract(on) {
       st.interact = on;
       q('[data-mk="interact"]').setAttribute('aria-pressed', on);
@@ -2118,6 +2143,7 @@
       if (mk.dataset.mk === 'mf') setOutlines(!st.mf);
       if (mk.dataset.mk === 'edit') setEdit(!st.edit);
       if (mk.dataset.mk === 'interact') setInteract(!st.interact);
+      if (mk.dataset.mk === 'browse') setBrowse(mk.dataset.on === '1');
       if (mk.dataset.mk === 'full') setFull(!st.full);
       if (mk.dataset.mk === 'design') drawForm(q('.mk-form').hidden);
       if (mk.dataset.mk === 'form-cancel') drawForm(false);
@@ -2199,6 +2225,9 @@
     listen(q('.mk-strip'), 'mouseover', (e) => { const chip = e.target.closest && e.target.closest('[data-chip]'); setHot(chip ? chip.dataset.chip : ''); });
     listen(q('.mk-strip'), 'mouseleave', () => setHot(''));
     const boardHost = q('.mk-board');
+    // Browsing, the page follows the room the board has, as a browser's would.
+    const roomy = new ResizeObserver(() => { if (browsing() && st.frame) measure(); });
+    roomy.observe(boardHost);
     // Over the shield, the part under the pointer is found through the frame.
     listen(boardHost, 'pointermove', (e) => {
       if (!st.strip || st.view !== 'page' || st.vp) return;
@@ -2291,6 +2320,7 @@
       async flush() { if (st.engine && st.engine.ops.length && !st.readOnly) await materialize(); },
       destroy() {
         listening.abort();
+        roomy.disconnect();
         const at = MOUNTED.indexOf(keyed);
         if (at >= 0) MOUNTED.splice(at, 1);
         leavePage();

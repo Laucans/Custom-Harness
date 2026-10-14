@@ -916,6 +916,10 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .mk-views { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .mk-views button { background: transparent; color: var(--dim); border: 0; padding: 5px 10px; font: 12px var(--sans); cursor: pointer; }
 .mk-views button + button { border-left: 1px solid var(--line); }
+/* Browsing: the page as in a browser — no zoom, no width handle. */
+.hb.browsing .hb-tools [data-hb="in"], .hb.browsing .hb-tools [data-hb="out"], .hb.browsing .hb-tools [data-hb="fit"], .hb.browsing .hb-zoom { display: none; }
+.hb.browsing .mk-vp-handle { display: none; }
+.hb.browsing { cursor: default; }
 .mk-views button.on { background: var(--panel-2); color: var(--accent); }
 .mk .dm-bar .mini[hidden], .mk .mk-only-page[hidden], .mk .mk-only-components[hidden] { display: none; }
 /* The strip: the micro-frontends to drag onto the page. */

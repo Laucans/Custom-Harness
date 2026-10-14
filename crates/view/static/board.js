@@ -137,6 +137,17 @@
     const designBox = editor.querySelector('.hb-design');
 
     const view = { x: 40, y: 40, k: 1 };
+    // Browsing: the board as a browser's window — at its own size, held to
+    // the left, the wheel scrolling it down and up; no zoom, no free pan.
+    let browsing = false;
+    // The view held where a browser's window would be.
+    function held() {
+      if (!browsing) return;
+      view.k = 1;
+      view.x = 0;
+      const room = host.clientHeight - size.h - 24;
+      view.y = clamp(view.y, Math.min(0, room), 0);
+    }
     const size = { w: 800, h: 600 };
     let notes = [];
     // The board's own gestures and the pane's steps, for undo: latest last.
@@ -187,6 +198,7 @@
 
     // ---- the view: where the board sits, how big ---------------------------------
     function apply() {
+      held();
       world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`;
       q('.hb-zoom').textContent = Math.round(view.k * 100) + ' %';
       drawPins();
@@ -205,6 +217,7 @@
       return { x: a.x, y: a.y, w: r.width / view.k, h: r.height / view.k };
     }
     function zoomAt(k, sx, sy) {
+      if (browsing) return;
       const nk = clamp(k, MIN_ZOOM, MAX_ZOOM);
       const bx = (sx - view.x) / view.k;
       const by = (sy - view.y) / view.k;
@@ -214,6 +227,7 @@
       apply();
     }
     function fit() {
+      if (browsing) { view.y = 0; apply(); return; }
       const r = host.getBoundingClientRect();
       const b = (opts.bounds && opts.bounds()) || { x: 0, y: 0, w: size.w, h: size.h };
       if (!r.width || !r.height || !b.w || !b.h) return;
@@ -905,6 +919,7 @@
         view.y = press.vy + dy;
         apply();
       }
+      // Browsing, a drag scrolls only up and down (held() keeps x at 0).
       return undefined;
     };
     const onPointerUp = (e) => {
@@ -924,6 +939,8 @@
       e.preventDefault();
       const r = host.getBoundingClientRect();
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+      // Browsing, the wheel scrolls the page as a browser's would.
+      if (browsing) { view.y -= e.deltaY * unit; apply(); return; }
       const rate = e.ctrlKey ? 0.01 : 0.0015;
       zoomAt(view.k * Math.exp(-e.deltaY * unit * rate), e.clientX - r.left, e.clientY - r.top);
     };
@@ -1150,6 +1167,12 @@
       content,
       edges,
       setSize,
+      // Browsing on or off: the board as a browser's window, or the canvas.
+      browse(on) {
+        browsing = !!on;
+        host.classList.toggle('browsing', browsing);
+        if (browsing) { view.y = 0; apply(); } else fit();
+      },
       fit,
       focus,
       refresh: drawPins,
