@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use harness_core::ports::shell::github::Kept as Artifact;
 use harness_workflows::data_snapshot::action::archive::{INDEX, MODEL_FILE, SCHEMA_FILE};
 use harness_workflows::data_snapshot::config::ARCHIVE_BRANCH;
 use harness_workflows::data_snapshot::data::index::{Index, Snapshot};
@@ -24,6 +25,10 @@ use harness_architecture::model::{self as data_model, DataModel, MODEL_PATH, SCH
 
 /// How long the archive's index is trusted before it is read again.
 const INDEX_FRESH: Duration = Duration::from_secs(20);
+
+/// How long the rules' states the CI kept are shown before they are read
+/// again: a run takes minutes, and each read lists the runs and downloads.
+const RULES_FRESH: Duration = Duration::from_secs(60);
 
 /// One version the page asked for: a branch, a folder, or neither.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -54,6 +59,7 @@ enum Ask {
     Issue(Issue, oneshot::Sender<Result<String, String>>),
     Task(u64, Issue, oneshot::Sender<Result<String, String>>),
     Milestone(oneshot::Sender<Result<Option<u64>, String>>),
+    RulesStatus(oneshot::Sender<Option<Artifact>>),
     Schema(Wanted, oneshot::Sender<Option<String>>),
 }
 
@@ -123,6 +129,14 @@ impl DataDesk {
             .map_err(|_| "the data desk is closed".to_string())?
     }
 
+    /// The rules' states the CI last kept on the integration branch, read
+    /// at most once a minute; `None` when none was kept or the desk is gone.
+    pub async fn rules_status(&self) -> Option<Artifact> {
+        let (reply, answer) = oneshot::channel();
+        self.tx.send(Ask::RulesStatus(reply)).await.ok()?;
+        answer.await.ok().flatten()
+    }
+
     /// The milestone the development works on now, if any.
     ///
     /// # Errors
@@ -183,6 +197,8 @@ struct Kept {
     /// The live files, by branch.
     live: HashMap<String, (Instant, Arc<DataModel>)>,
     versions: HashMap<String, Arc<DataModel>>,
+    /// The rules' states the CI kept, and when they were read.
+    rules: Option<(Instant, Option<Artifact>)>,
 }
 
 async fn serve(
@@ -196,6 +212,7 @@ async fn serve(
         features: Vec::new(),
         live: HashMap::new(),
         versions: HashMap::new(),
+        rules: None,
     };
     while let Some(ask) = rx.recv().await {
         match ask {
@@ -229,6 +246,22 @@ async fn serve(
                     .await
                     .map_err(|h| h.to_string());
                 let _ = reply.send(opened);
+            }
+            Ask::RulesStatus(reply) => {
+                let fresh = kept
+                    .rules
+                    .as_ref()
+                    .filter(|(at, _)| at.elapsed() < RULES_FRESH)
+                    .map(|(_, read)| read.clone());
+                let read = if let Some(read) = fresh {
+                    read
+                } else {
+                    // A failed read shows nothing rather than an old state.
+                    let read = product.rules_status().await.ok().flatten();
+                    kept.rules = Some((Instant::now(), read.clone()));
+                    read
+                };
+                let _ = reply.send(read);
             }
             Ask::Milestone(reply) => {
                 let _ = reply.send(product.current_milestone().await.map_err(|h| h.to_string()));

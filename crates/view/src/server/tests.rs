@@ -2272,6 +2272,18 @@ async fn the_mockups_and_the_acceptance_wait_for_their_gates() {
 }
 
 #[tokio::test]
+async fn without_a_board_the_rules_status_says_nothing_was_judged() {
+    let roll = Arc::new(Roll::default());
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = get(state, "/api/creation/rules/status").await;
+    assert_eq!(status, StatusCode::OK);
+    let read: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(read["run_url"], "");
+    assert_eq!(read["rules"], serde_json::json!({}));
+    assert_eq!(read["tasks"], serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn changed_rules_are_sent_only_once_the_factory_runs_and_they_are_validated() {
     use crate::domain::creation::{Creation, Criterion, Requirement};
     let roll = Arc::new(Roll::default());

@@ -22,6 +22,17 @@ use async_trait::async_trait;
 
 use crate::domain::{Issue, Outcome, Pr};
 
+/// A file a CI run kept in one of its artifacts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    /// The file, as the run wrote it.
+    pub text: String,
+    /// The run that kept it, as a human opens it.
+    pub run_url: String,
+    /// When the run last moved, as GitHub says it.
+    pub at: String,
+}
+
 /// What a conditional read of the board's activity said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activity {
@@ -354,4 +365,22 @@ pub trait GitHub {
     /// # Errors
     /// [`Halt::Failed`](crate::domain::Halt::Failed) if the PR cannot be read.
     async fn pr_mergeable(&self, pr_ref: &str) -> Outcome<Option<bool>>;
+
+    /// The file `file` of the artifact `artifact` the latest finished run of
+    /// the workflow `workflow` on `branch` kept — `None` when no finished run
+    /// is there, or it kept no such file. A board with no CI keeps nothing.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`](crate::domain::Halt::Failed) if the runs cannot be
+    /// listed at all.
+    async fn artifact_file(
+        &self,
+        workflow: &str,
+        branch: &str,
+        artifact: &str,
+        file: &str,
+    ) -> Outcome<Option<Kept>> {
+        let _ = (workflow, branch, artifact, file);
+        Ok(None)
+    }
 }

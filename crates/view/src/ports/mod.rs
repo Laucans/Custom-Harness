@@ -11,6 +11,7 @@ use std::io::{self, Read};
 use async_trait::async_trait;
 use harness_core::domain::quota::Reading;
 use harness_core::domain::{Halt, Issue, Outcome};
+use harness_core::ports::shell::github::Kept;
 use serde::{Deserialize, Serialize};
 
 /// One row of the cost ledger, typed. `None` reads as "not observed", as the
@@ -444,6 +445,17 @@ pub trait Product {
     ///
     /// GitHub refused, or there is no GitHub behind this product.
     async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String>;
+
+    /// The rules' states the CI last wrote on the integration branch
+    /// (`rules-status.json`, the `rules-status` artifact of `gates.yml`) —
+    /// `None` when no run kept it, or no board.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused.
+    async fn rules_status(&self) -> Outcome<Option<Kept>> {
+        Ok(None)
+    }
 
     /// The milestone the development works on now: the lowest open
     /// `harness:milestone`. `None` when there is none, or no board.

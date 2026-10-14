@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome};
-use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::shell::github::{GitHub, Kept};
 use harness_workflows::common::labels;
 use harness_workflows::data_snapshot::config::ARCHIVE_BRANCH;
 use harness_workflows::dev_loop::data::tasks::current_milestone;
@@ -71,6 +71,17 @@ impl Product for GhProduct {
     async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String> {
         let number = self.gh.create_issue(title, body, labels).await?;
         Ok(self.url_of(number))
+    }
+
+    async fn rules_status(&self) -> Outcome<Option<Kept>> {
+        self.gh
+            .artifact_file(
+                "gates.yml",
+                &self.branch,
+                "rules-status",
+                "rules-status.json",
+            )
+            .await
     }
 
     async fn current_milestone(&self) -> Outcome<Option<u64>> {

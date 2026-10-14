@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::shell::process;
 use harness_core::domain::{Halt, Issue, Outcome, Pr};
-use harness_core::ports::shell::github::{Activity, GitHub};
+use harness_core::ports::shell::github::{Activity, GitHub, Kept};
 use harness_core::ports::shell::process::Ran;
 
 /// The called binary.
@@ -284,7 +284,7 @@ impl GhCli {
         // `gh pr …` infers the repo from the cwd, and a slug-only adapter has
         // none that means anything (it would hit the harness's own repo), so
         // name the target explicitly. `api` calls already carry the slug.
-        if args.first().is_some_and(|a| a == "pr")
+        if args.first().is_some_and(|a| a == "pr" || a == "run")
             && let Some(name) = self.name.get()
         {
             let mut named = args.to_vec();
@@ -1123,6 +1123,82 @@ impl GitHub for GhCli {
             .map_err(|e| Halt::Halted(format!("unreadable CI status for {pr_ref}: {e}")))?;
         Ok(failing_checks(&rows))
     }
+
+    async fn artifact_file(
+        &self,
+        workflow: &str,
+        branch: &str,
+        artifact: &str,
+        file: &str,
+    ) -> Outcome<Option<Kept>> {
+        let listed = self
+            .gh(&[
+                "run".to_string(),
+                "list".to_string(),
+                "--workflow".to_string(),
+                workflow.to_string(),
+                "--branch".to_string(),
+                branch.to_string(),
+                "--status".to_string(),
+                "completed".to_string(),
+                "--limit".to_string(),
+                "1".to_string(),
+                "--json".to_string(),
+                "databaseId,url,updatedAt".to_string(),
+            ])
+            .await?;
+        if !listed.ok() {
+            return Err(Halt::Failed(format!(
+                "the runs of {workflow} on {branch} cannot be listed — {}",
+                listed.why()
+            )));
+        }
+        let Some((id, run_url, at)) = latest_run(listed.out()) else {
+            return Ok(None);
+        };
+        // `gh run download` writes the artifact into a folder: one of its
+        // own, read, then removed.
+        let dir = std::env::temp_dir().join(format!(
+            "harness-artifact-{}-{id}-{artifact}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let downloaded = self
+            .gh(&[
+                "run".to_string(),
+                "download".to_string(),
+                id.to_string(),
+                "--name".to_string(),
+                artifact.to_string(),
+                "--dir".to_string(),
+                dir.to_string_lossy().to_string(),
+            ])
+            .await?;
+        let text = downloaded
+            .ok()
+            .then(|| std::fs::read_to_string(dir.join(file)).ok())
+            .flatten();
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(text.map(|text| Kept { text, run_url, at }))
+    }
+}
+
+/// The latest run `gh run list --json databaseId,url,updatedAt` names: its
+/// id, its page, when it last moved.
+fn latest_run(listed: &str) -> Option<(u64, String, String)> {
+    let rows: Vec<Value> = serde_json::from_str(listed).ok()?;
+    let row = rows.first()?;
+    Some((
+        row.get("databaseId")?.as_u64()?,
+        row.get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        row.get("updatedAt")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    ))
 }
 
 /// Reads `gh api -i` output as an [`Activity`].
@@ -1173,6 +1249,26 @@ fn activity_from(ran: &Ran) -> Outcome<Activity> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_latest_run_is_read_from_the_list_and_none_when_it_is_empty() {
+        let listed = r#"[{"databaseId": 42, "url": "https://github.com/o/r/actions/runs/42", "updatedAt": "2026-10-14T10:00:00Z"}]"#;
+        assert_eq!(
+            super::latest_run(listed),
+            Some((
+                42,
+                "https://github.com/o/r/actions/runs/42".to_string(),
+                "2026-10-14T10:00:00Z".to_string()
+            ))
+        );
+        assert_eq!(super::latest_run("[]"), None);
+        assert_eq!(super::latest_run("not json"), None);
+        assert_eq!(
+            super::latest_run(r#"[{"url": "x"}]"#),
+            None,
+            "no id, no run"
+        );
+    }
+
     #[test]
     fn a_304_is_unchanged_even_though_gh_exits_one() {
         let ran = super::Ran {

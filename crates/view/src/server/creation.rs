@@ -506,6 +506,23 @@ pub(super) async fn validate_rules(State(state): State<AppState>) -> Response {
     }
 }
 
+/// Each rule's state as the factory last judged it: the CI's
+/// `rules-status.json` on the integration branch, and the contests the
+/// board holds open.
+pub(super) async fn rules_status(State(state): State<AppState>) -> Response {
+    let kept = match &state.data {
+        Some(data) => data.rules_status().await,
+        None => None,
+    };
+    let issues = state
+        .board
+        .borrow()
+        .as_ref()
+        .map(|board| board.rules.clone())
+        .unwrap_or_default();
+    json(&crate::domain::rules_status::status(kept.as_ref(), &issues))
+}
+
 /// The rules changed since the factory received them, sent: a rules' task
 /// and a conformity task opened.
 pub(super) async fn send_rules(State(state): State<AppState>) -> Response {

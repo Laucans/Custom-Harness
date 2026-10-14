@@ -942,7 +942,9 @@
       const cards = items.map((q) => (changing.has(q.id) ? proposedCard(changing.get(q.id)) : ruleCard(q, gaps(q), mock))).join('') + added.map(proposedCard).join('');
       return `<section class="cr-rule-group"><h3 title="${esc(hint)}">${label} <small>${items.length + added.length}</small></h3>${cards || '<p class="muted">none</p>'}</section>`;
     };
+    refreshRulesStatus(r);
     return `<div class="cr-rules-head">
+        <span data-cr-rules-summary>${rulesSummary()}</span>
         ${proposals.length ? `<span class="tag warn">${proposals.length} change${proposals.length > 1 ? 's' : ''} proposed</span>` : ''}
         ${r.rules_validated ? '<span class="tag ok">validated</span>' : lacking ? `<span class="tag bad">${lacking} rule${lacking > 1 ? 's' : ''} to complete</span>` : all.length ? '<span class="tag">ready to validate</span>' : ''}
         <span class="spacer"></span>
@@ -1008,6 +1010,51 @@
     const add = rest.length ? `<span class="cr-add"><button type="button" class="cr-tie-add" data-cr-add="${kind}" aria-expanded="${open}">+ ${kind === 'page' ? 'page' : 'micro-frontend'}</button>${open ? `<div class="cr-add-list" role="menu">${rest.map((x) => `<button type="button" role="menuitem" data-cr-tie="${kind}" data-key="${esc(keyOf(x))}">${esc(labelOf(x))}</button>`).join('')}</div>` : ''}</span>` : '';
     return `<div class="cr-chips"><span class="muted">${kind === 'page' ? 'pages' : 'micro-frontends'}</span>${chips || '<span class="muted">none yet</span>'}${add}</div>`;
   }
+  // ---- each rule's state, as the factory last judged it ----------------------
+  // Once the factory runs, the CI's rules' gate says of each rule's tests:
+  // green, red, pending (a unit it needs is not built yet) — and a test a
+  // development contested. Read at most once a minute, shown in place.
+  const RULES_EVERY = 60000;
+  function issueUrl(r, number) {
+    return String(r.rules_issue || '').replace(/\/issues\/\d+$/, `/issues/${number}`);
+  }
+  function ruleStateTag(id) {
+    const st = C.rulesStatus && C.rulesStatus.rules[`R${id}`];
+    if (!st) return C.rulesStatus ? '<span class="tag" title="No run of the rules\' gate judged it yet">untested</span>' : '';
+    const r = record();
+    if (st.contested) return `<a class="tag warn" href="${esc(issueUrl(r, st.contested))}" target="_blank" rel="noopener" title="A development contests one of its tests: the rules' task decides">contested ↗</a>`;
+    const why = st.why ? ` title="${esc(st.why)}"` : '';
+    if (st.state === 'red') return st.conform ? `<span class="tag warn"${why}>to conform</span>` : `<span class="tag bad"${why}>red</span>`;
+    if (st.state === 'green') return '<span class="tag ok">green</span>';
+    if (st.state === 'pending') return `<span class="tag"${why}>pending</span>`;
+    return `<span class="tag"${why}>untested</span>`;
+  }
+  function rulesSummary() {
+    const st = C.rulesStatus;
+    if (!st) return '';
+    const states = Object.values(st.rules);
+    const count = (f) => states.filter(f).length;
+    const red = count((x) => x.state === 'red' && !x.conform);
+    const conform = count((x) => x.state === 'red' && x.conform);
+    const green = count((x) => x.state === 'green');
+    const contested = count((x) => x.contested);
+    const run = st.run_url ? `<a href="${esc(st.run_url)}" target="_blank" rel="noopener" title="${esc(st.at)}">the factory's last run ↗</a>` : '<span class="muted">no run of the rules\' gate yet</span>';
+    const waits = st.tasks.length ? `<span class="tag warn" title="No development task starts while a rules' task is open">development waits on ${st.tasks.map((n) => `#${n}`).join(', ')}</span>` : '';
+    return `${green ? `<span class="tag ok">${green} green</span>` : ''}${red ? `<span class="tag bad">${red} red</span>` : ''}${conform ? `<span class="tag warn">${conform} to conform</span>` : ''}${contested ? `<span class="tag warn">${contested} contested</span>` : ''}${waits} ${run}`;
+  }
+  function refreshRulesStatus(r) {
+    if (DEMO || !r || !r.rules_issue) return;
+    if (C.rulesStatusAt && Date.now() - C.rulesStatusAt < RULES_EVERY) return;
+    C.rulesStatusAt = Date.now();
+    call('GET', '/api/creation/rules/status').then((st) => {
+      C.rulesStatus = st;
+      // In place: a redraw would take the focus from a rule being typed.
+      page.querySelectorAll('[data-cr-rule-state]').forEach((el) => { el.innerHTML = ruleStateTag(el.dataset.crRuleState); });
+      const summary = page.querySelector('[data-cr-rules-summary]');
+      if (summary) summary.innerHTML = rulesSummary();
+    }).catch(() => {});
+  }
+
   function ruleCard(q, gaps, mock) {
     const sel = C.ruleSel === q.id;
     const titleOf = (path) => (mock.pages.find((p) => p.path === path) || {}).title || path.replace(/^pages\//, '');
@@ -1027,6 +1074,7 @@
         <header><span class="cr-qn">R${q.id}</span><input type="text" class="cr-req-title" data-cr-rule-field="title" value="${esc(q.title)}" placeholder="the rule, in a few words" aria-label="rule ${q.id}">
           <select data-cr-rule-field="family" aria-label="rule ${q.id}, family">${family}</select>
           ${q.human ? '<span class="tag" title="Yours: a new reading keeps it">yours</span>' : ''}
+          <span data-cr-rule-state="${q.id}">${ruleStateTag(q.id)}</span>
           <button type="button" class="mini" data-cr-rule-redo="${q.id}" title="The AI reads this rule again off its supports"${C.busy ? ' disabled' : ''}>↻</button>
           <button type="button" class="mini cr-del" data-cr-req-del="${q.id}" title="Delete this rule" aria-label="delete rule ${q.id}">✕</button></header>
         ${open}

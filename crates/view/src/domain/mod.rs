@@ -29,6 +29,7 @@ pub mod observe;
 pub mod pin_journal;
 pub mod plant;
 pub mod prompts;
+pub mod rules_status;
 pub mod snapshot;
 pub mod steps;
 pub mod steward;
