@@ -60,6 +60,29 @@ outlives it now goes with it (an `AbortController`): the same gesture made
 - [ ] Something changed outside the history (Read all again, Draw again):
       Cmd+Z says it "moved since" and leaves it.
 
+## Rework with AI and a better informed Propose (`355649b`, `a3968e2`)
+
+Propose now reads the page's objective, the rules the page or its
+micro-frontends carry and the mock-up's conventions, says `layout: …`
+instead of approximating a layout, and hands a micro-frontend's part over
+with the request as pinned. Rework with AI opens a Claude Code session in
+the branch's workspace (edit mode), the page's draft written into its
+file first; the workspace is kept to put back.
+
+- [ ] Rework on the Fiche d'entité rail: the session reads the page and
+      CampaignElements, says its plan, makes a left sticky rail with a
+      drawer under 960px; the canvas follows each save.
+- [ ] Validate & quit: one history entry "a request reworked with the AI",
+      the pin green (or proposed while a draft waits), rules read again.
+- [ ] Quit without validating: every file as before the session (page,
+      fragments, style.css), nothing left.
+- [ ] Discuss it then Rework on the same pin: refused until the first
+      session is closed, and the other way round.
+- [ ] A Propose on a layout request: the pin says "the AI left it: layout:
+      … — Rework with AI can make it", nothing approximated.
+- [ ] The first click on a pin sometimes does not open its window (seen
+      twice in automation, right after the frame reloads).
+
 ## Not fixed
 
 - After each restart the view opens the harness-dnd2 factory: switch back
