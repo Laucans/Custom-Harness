@@ -570,18 +570,21 @@
         drawPins();
       } catch (e) { setState(String(e.message || e).split('\n')[0].slice(0, 120)); }
     }
-    async function put(n, again) {
+    // What the pane adds to a request that changes a pin: its history's
+    // branch, a gesture's token.
+    const sent = (more) => Object.assign({ 'Content-Type': 'application/json' }, opts.headers ? opts.headers() : {}, more || {});
+    async function put(n, again, more) {
       const body = Object.assign({}, n);
       delete body.fresh;
       const placed = !!n.fresh;
-      const res = await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'PUT', headers: sent(more), body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
       delete n.fresh;
       if (placed) trail.push({ kind: 'placed', id: n.id });
       if (placed && !again) ahead = [];
     }
     // Saves a pin now, or a beat after the last keystroke.
-    function save(n, now) {
+    function save(n, now, more) {
       clearTimeout(saveTimer);
       pending = n;
       const send = async () => {
@@ -589,7 +592,7 @@
         pending = null;
         if (openId === n.id) setState('saving…');
         try {
-          await put(n);
+          await put(n, false, more);
           if (openId === n.id) setState('saved');
           changed();
         } catch (e) {
@@ -615,7 +618,7 @@
       if (n.fresh) return;
       trail.push({ kind: 'deleted', id: n.id });
       if (!again) ahead = [];
-      try { await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'DELETE' }); } catch (e) { /* shown by its absence on reload */ }
+      try { await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'DELETE', headers: sent() }); } catch (e) { /* shown by its absence on reload */ }
     }
     // The pane told a pin was kept or went — the design system counts its requests.
     function changed() {
@@ -625,6 +628,7 @@
     // later undo brings it back), a pin deleted (brought back), a step the
     // pane told of (its own to take back). Past it, the board's server undo.
     async function undo() {
+      if (opts.history) { opts.history('undo'); return; }
       const last = trail.pop();
       if (last && last.kind === 'placed') {
         const n = notes.find((x) => x.id === last.id);
@@ -656,6 +660,7 @@
     // Takes the last undo back: the pin placed again, the pin brought back
     // deleted again, the pane's step handed back to the pane.
     async function redo() {
+      if (opts.history) { opts.history('redo'); return; }
       const next = ahead.pop();
       if (!next) return;
       if (next.kind === 'pane') { if (opts.onRedo && opts.onRedo()) trail.push({ kind: 'pane' }); return; }
@@ -1042,6 +1047,8 @@
     };
     // Undo and redo anywhere but in a field: cmd+z / cmd+shift+z on a Mac, ctrl elsewhere.
     const onUndoKey = (e) => {
+      // The pane's history takes the keys itself.
+      if (opts.history) return;
       if (!modded(e) || e.key.toLowerCase() !== 'z') return;
       if (typing(e.target) || !host.isConnected) return;
       e.preventDefault();
@@ -1121,13 +1128,14 @@
         const open = notes.find((x) => x.id === openId);
         if (open && open.id === noteId) drawEditor(open);
       },
-      patch(noteId, fields) {
+      // `more`: what the pane adds to the request — a gesture's token.
+      patch(noteId, fields, more) {
         const n = notes.find((x) => x.id === noteId);
         if (!n) return;
         Object.assign(n, fields, { at: new Date().toISOString() });
         if (openId === n.id) drawEditor(n);
         drawPins();
-        if (!n.fresh) save(n, true);
+        if (!n.fresh) save(n, true, more);
       },
       // A link to a page that does not exist yet, dropped near the top left
       // of what is shown and opened on its "new page" form.

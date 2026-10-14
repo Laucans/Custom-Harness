@@ -88,8 +88,8 @@ use crate::kit_desk::KitDesk;
 use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    Board, BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
-    StepStore, TerminalFactory, Traces, Trials, Units, Usage, Yard,
+    Board, BoardReading, Builds, DraftStore, HistoryStore, Limits, Mockups, NoteStore, Oneshot,
+    Plant, Product, StepStore, TerminalFactory, Traces, Trials, Units, Usage, Yard,
 };
 use crate::pulse::{Pulse, PulsingMockups};
 use crate::removal::{PlantOf, Removal};
@@ -191,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
     let (board, product) = github_for(&cli, &root, &project);
     let program = program_for(&cli);
     let usage = usage_store(&workspace);
-    let (pins, drafts, steps, note_desks) =
+    let (pins, drafts, steps, history, note_desks) =
         notes_for(&cli, &root, &project, &program, &workspace, usage.clone())?;
     let desk = desk_for(&cli, &root, &project, &program);
     let doctor = doctor_for(&cli, &root, &project, &program);
@@ -256,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
         pins: Arc::clone(&pins),
         drafts,
         steps,
+        history,
         note_desks: note_desks.clone(),
         builds: builds_for(&cli, &root),
         integration_branch: cli.integration_branch.clone(),
@@ -530,13 +531,14 @@ fn janitor_for(cli: &Cli, workspace: &Workspace) -> Option<Janitor> {
         .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>))
 }
 
-/// The pins' store, the drafts' and the request pins' steps (one SQLite
-/// file behind the three) and the desks a pin's session sits at, when the
-/// view may open one.
+/// The pins' store, the drafts', the request pins' steps and the
+/// mock-up's history (one SQLite file behind the four) and the desks a
+/// pin's session sits at, when the view may open one.
 type Notes = (
     Arc<dyn NoteStore>,
     Arc<dyn DraftStore>,
     Arc<dyn StepStore>,
+    Arc<dyn HistoryStore>,
     Option<NoteDesks>,
 );
 
@@ -558,9 +560,10 @@ fn notes_for(
     );
     let pins: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
     let drafts: Arc<dyn DraftStore> = Arc::clone(&store) as Arc<dyn DraftStore>;
-    let steps: Arc<dyn StepStore> = store as Arc<dyn StepStore>;
+    let steps: Arc<dyn StepStore> = Arc::clone(&store) as Arc<dyn StepStore>;
+    let history: Arc<dyn HistoryStore> = store as Arc<dyn HistoryStore>;
     let desks = note_desks_for(cli, root, project, program, &pins, usage);
-    Ok((pins, drafts, steps, desks))
+    Ok((pins, drafts, steps, history, desks))
 }
 
 /// The pins' AI sessions, unless `--no-steward`: Claude Code on the

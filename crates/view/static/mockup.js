@@ -46,6 +46,8 @@
 
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const plain = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  // A gesture: the requests of one human gesture, one entry of the history.
+  const gestureOf = (what) => ({ token: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, what });
   const slugOf = (branch) => String(branch || '').replace(/\//g, '__');
   const pageSlug = (path) => plain(String(path || '').replace(/^pages\//, '').replace(/\.html?$/, '')) || 'home';
   const newId = (prefix) => prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -254,6 +256,9 @@
       return text;
     };
     const currentPage = () => (st.state && st.state.pages || []).find((p) => p.path === st.page) || null;
+    // What a request that changes the mock-up says: its history's branch,
+    // and the gesture it belongs to, when it does.
+    const H = (g) => Object.assign({ 'Content-Type': 'application/json', 'x-harness-branch': st.branch }, g ? { 'x-harness-step': g.token, 'x-harness-what': g.what } : {});
     const boardOf = () => `mockup--${plain(st.branch) || 'integration'}--${st.view === 'components' ? 'micro-frontends' : st.page ? pageSlug(st.page) : 'home'}`;
     const pageUrl = () => `/mock/${encodeURIComponent(slugOf(st.branch))}/${st.page}`;
     const baseHref = () => `${location.origin}/mock/${encodeURIComponent(slugOf(st.branch))}/${st.page.replace(/[^/]*$/, '')}`;
@@ -297,6 +302,9 @@
         dataCapabilities,
         apply: st.view === 'page' ? (note) => proposeOnPage(note) : (note) => applyMf(note.target ? note.target.slice(10).split('>')[0] : '', [note]),
         undo: st.view === 'page' ? (note) => undoOnPage(note) : undefined,
+        // Its changes go in the mock-up's history; its undo is the history's.
+        headers: () => H(),
+        history: (dir) => historyStep(dir),
         // A pin open on the page: the micro-frontends it touches lit, told to the desk.
         onOpen: (note) => setPinned(st.view === 'page' ? mfsUnder(note) : []),
         onClose: () => setPinned([]),
@@ -523,16 +531,20 @@
     function persist() {
       clearTimeout(st.saveTimer);
       const board = boardOf();
-      st.saveTimer = setTimeout(async () => {
+      const send = async () => {
+        st.pendingSave = null;
         if (!st.engine || boardOf() !== board) return;
         try {
-          const res = await fetch(`/api/drafts/${encodeURIComponent(board)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) });
+          const res = await fetch(`/api/drafts/${encodeURIComponent(board)}`, { method: 'PUT', headers: H(), body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) });
           if (!res.ok) throw new Error(await res.text());
           const current = await res.json();
           if (st.history) st.history.current = current;
           drawEditBar();
         } catch (e) { say(`draft not kept: ${esc(e.message || e)}`); }
-      }, SAVE_DELAY);
+      };
+      // An undo asked meanwhile sends it first: the history has it.
+      st.pendingSave = send;
+      st.saveTimer = setTimeout(send, SAVE_DELAY);
     }
     // A target as an operation names it, forking first when it lies inside a
     // micro-frontend; `force` forks the micro-frontend itself.
@@ -838,33 +850,34 @@
     // A request proposed: the micro-frontend under it is drafted (shown on
     // the page at once), else the page's own draft. Answers what it came to.
     async function proposeOnPage(n) {
+      const g = gestureOf('a request proposed');
       const name = mfOfPin(n);
       if (!name) {
         const drafted = await applyRequests([n]);
-        return drafted + await proposeRules(n, '');
+        return drafted + await proposeRules(n, '', g);
       }
       const c = componentOf(name);
       const page = currentPage();
       const spec = { name: c.name, system: c.system || '', description: c.description || '', needs: c.needs || [], actions: c.actions || [], props: c.props || {} };
       const text = `${n.text.trim()}\n\n(Asked on the page ${page ? page.title : st.page}, where ${name} is shown.)`;
-      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text, target: partIn(n, name) }], pin: n.id, board: boardOf() }) });
+      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: H(g), body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text, target: partIn(n, name) }], pin: n.id, board: boardOf() }) });
       const body = await res.text();
       if (!res.ok) throw new Error(body);
       const left = (JSON.parse(body).skipped || []).find(([id]) => id === n.id);
       if (left) throw new Error(`the AI left it: ${left[1]}`);
-      st.board.patch(n.id, { state: 'simulated' });
+      st.board.patch(n.id, { state: 'simulated' }, H(g));
       await loadGens();
       render();
       drawDrafts();
-      return `drafted on ${name}, shown on the page${await proposeRules(n, name)} — validate it in the bar above the page`;
+      return `drafted on ${name}, shown on the page${await proposeRules(n, name, g)} — validate it in the bar above the page`;
     }
     // The rules a proposal touches, read by the AI and kept as proposals on
     // the factory's creation (a page without one has no rules to keep in
     // step). Answers what it came to, as the end of a sentence.
-    async function proposeRules(n, name) {
+    async function proposeRules(n, name, g) {
       if (st.board.progress) st.board.progress(n.id, 'the AI reads the rules it touches…');
       try {
-        const res = await fetch('/api/creation/rules/propose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: n.id, name, saved: name, how: '', page: st.page, requests: [n.text] }) });
+        const res = await fetch('/api/creation/rules/propose', { method: 'POST', headers: H(g), body: JSON.stringify({ pin: n.id, name, saved: name, how: '', page: st.page, requests: [n.text] }) });
         const text = await res.text();
         if (res.status === 404) return '';
         if (!res.ok) return ` — the rules were not read: ${text.split('\n')[0]}`;
@@ -884,14 +897,15 @@
     // A request's Undo: the mock-up and the rules as they were before it,
     // the requests built on it taken back too. Answers what it came to.
     async function undoOnPage(n) {
-      const res = await fetch('/api/mockup/steps/undo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, pin: n.id }) });
+      const g = gestureOf('a request taken back');
+      const res = await fetch('/api/mockup/steps/undo', { method: 'POST', headers: H(g), body: JSON.stringify({ branch: st.branch, pin: n.id }) });
       const text = await res.text();
       if (!res.ok) throw new Error(text);
       const got = JSON.parse(text);
       // A request on the page itself: its operations leave the page's draft.
       if (st.engine && st.engine.ops.some((o) => o.by === n.id)) { st.engine.swap([n.id], [], { applied: [] }); afterChange(); }
       const here = new Set(st.board.all().map((x) => x.id));
-      (got.pins || []).forEach((id) => { if (here.has(id)) st.board.patch(id, { state: 'pending' }); });
+      (got.pins || []).forEach((id) => { if (here.has(id)) st.board.patch(id, { state: 'pending' }, H(g)); });
       tellRules(null);
       await loadGens();
       render();
@@ -930,10 +944,11 @@
     // fork), or thrown away (its requests taken back).
     async function settleDraft(name, how) {
       const pins = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && n.state === 'simulated' && mfOfPin(n) === name);
+      const g = gestureOf(how === 'drop' ? 'a proposed change discarded' : 'a proposed change validated');
       st.settling = name;
       drawDrafts();
       const post = async (url, body) => {
-        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ branch: st.branch }, body)) });
+        const res = await fetch(url, { method: 'POST', headers: H(g), body: JSON.stringify(Object.assign({ branch: st.branch }, body)) });
         const text = await res.text();
         if (!res.ok) throw new Error(text);
         return text ? JSON.parse(text) : {};
@@ -949,12 +964,12 @@
             (got.pins || []).forEach((id) => done.add(id));
           }
           await post(`/api/mockup/mf/${encodeURIComponent(name)}/draft/drop`, {});
-          pins.forEach((n) => st.board.patch(n.id, { state: 'pending' }));
+          pins.forEach((n) => st.board.patch(n.id, { state: 'pending' }, H(g)));
           toast(`${esc(name)}: the proposed change is thrown away`);
         } else {
           const got = await post(`/api/mockup/mf/${encodeURIComponent(name)}/save`, { how, name: '', page: how === 'fork' ? st.page : '', pins: pins.map((n) => n.id) });
           const saved = got.saved || name;
-          pins.forEach((n) => st.board.patch(n.id, { state: 'validated' }));
+          pins.forEach((n) => st.board.patch(n.id, { state: 'validated' }, H(g)));
           const said = (got.said || []).length ? ' — ' + got.said.map(esc).join('; ') : '';
           toast((how === 'fork' ? `forked as <b>${esc(saved)}</b> for this page; the other pages keep ${esc(name)}` : `${esc(name)} changed on every page that shows it`) + said);
         }
@@ -966,6 +981,90 @@
         st.stamp = '';
         load();
       }
+    }
+    // ---- the mock-up's history: Cmd+Z and its redo ---------------------------------------
+    // The page a board shows, to go there: `null`, another branch's.
+    function placeOfBoard(board) {
+      const prefix = `mockup--${plain(st.branch) || 'integration'}--`;
+      if (!board.startsWith(prefix)) return null;
+      const slug = board.slice(prefix.length);
+      if (slug === 'micro-frontends') return { label: 'the micro-frontends', go: () => setView('components') };
+      const page = ((st.state && st.state.pages) || []).find((p) => pageSlug(p.path) === slug);
+      if (!page) return null;
+      return { label: `the page ${page.title || page.path}`, go: () => { if (st.view !== 'page') setView('page'); show(page.path); } };
+    }
+    // The last entry taken back (or the first brought again). Done where
+    // it happened: there already, at once; elsewhere, once the human said
+    // so, the view going there first.
+    async function historyStep(dir) {
+      if (st.stepping) return;
+      st.stepping = true;
+      try {
+        if (st.pendingSave) { clearTimeout(st.saveTimer); await st.pendingSave(); }
+        const res = await fetch('/api/mockup/history?' + new URLSearchParams({ branch: st.branch }));
+        const told = res.ok ? await res.json() : {};
+        const e = told[dir];
+        if (!e) { toast(dir === 'undo' ? 'nothing to undo' : 'nothing to redo'); return; }
+        const boards = e.boards || [];
+        const rulesSeen = () => {
+          const ask = new CustomEvent('harness:where', { bubbles: true, detail: { rules: false } });
+          host.dispatchEvent(ask);
+          return ask.detail.rules;
+        };
+        const here = boards.length ? boards.includes(boardOf()) : !e.rules || rulesSeen();
+        if (!here) {
+          const place = boards.length
+            ? placeOfBoard(boards[0])
+            : { label: 'the rules', go: () => host.dispatchEvent(new CustomEvent('harness:goto', { bubbles: true, detail: { route: 'rules' } })) };
+          const verb = dir === 'undo' ? 'Undo' : 'Redo';
+          if (place) {
+            if (!await confirmBox(`${verb} “${e.what}” on ${place.label}? The view goes there.`, `${verb} and go`)) return;
+            place.go();
+          }
+        }
+        const done = await fetch(`/api/mockup/history/${dir}`, { method: 'POST', headers: H(), body: JSON.stringify({ branch: st.branch }) });
+        const text = await done.text();
+        if (!done.ok) { toast(esc(text.split('\n')[0])); return; }
+        toast(`${dir === 'undo' ? 'undone' : 'redone'}: ${esc(e.what)}`);
+        await afterHistory(boards);
+      } finally {
+        st.stepping = false;
+      }
+    }
+    // What a step moved, read again: the pins, the page's draft, the
+    // micro-frontends' drafts, the rules.
+    async function afterHistory(boards) {
+      if (st.board) st.board.reload();
+      if (st.view === 'page' && st.engine && boards.includes(boardOf())) await draftCall('open', { base: (currentPage() || {}).hash || '' });
+      await loadGens();
+      st.stamp = '';
+      load();
+      tellRules(null);
+    }
+    // A question in the page, not the browser's (that one stops every script).
+    function confirmBox(text, yes) {
+      return new Promise((resolve) => {
+        const box = document.createElement('div');
+        box.className = 'mk-confirm';
+        box.setAttribute('role', 'dialog');
+        box.innerHTML = `<div class="mk-confirm-card"><p>${esc(text)}</p><div class="mk-confirm-row"><button type="button" class="mini" data-no>Stay here</button><button type="button" class="mini on" data-yes>${esc(yes)}</button></div></div>`;
+        const onKey = (ev) => {
+          if (ev.key === 'Escape') { ev.stopPropagation(); ev.preventDefault(); done(false); }
+          if (ev.key === 'Enter') { ev.stopPropagation(); ev.preventDefault(); done(true); }
+        };
+        function done(answer) {
+          box.remove();
+          document.removeEventListener('keydown', onKey, true);
+          resolve(answer);
+        }
+        box.addEventListener('click', (ev) => {
+          if (ev.target.closest('[data-yes]')) done(true);
+          else if (ev.target.closest('[data-no]') || ev.target === box) done(false);
+        });
+        document.addEventListener('keydown', onKey, true);
+        document.body.appendChild(box);
+        box.querySelector('[data-yes]').focus();
+      });
     }
     const applyAll = () => {
       const pins = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim());
@@ -990,13 +1089,13 @@
     }
     async function keepVersion() {
       clearTimeout(st.saveTimer);
-      await fetch(`/api/drafts/${encodeURIComponent(boardOf())}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) }).catch(() => {});
+      await fetch(`/api/drafts/${encodeURIComponent(boardOf())}`, { method: 'PUT', headers: H(), body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) }).catch(() => {});
       await draftCall('keep');
       await draftCall('open', { base: (currentPage() || {}).hash || '' });
     }
     async function validateVersion() {
       clearTimeout(st.saveTimer);
-      await fetch(`/api/drafts/${encodeURIComponent(boardOf())}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) }).catch(() => {});
+      await fetch(`/api/drafts/${encodeURIComponent(boardOf())}`, { method: 'PUT', headers: H(), body: JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: (st.history && st.history.current && st.history.current.name) || '' }) }).catch(() => {});
       const summary = draftSummary();
       await materialize();
       await draftCall('validate');
@@ -1134,7 +1233,7 @@
       if (!st.engine || !currentPage()) return;
       const page = currentPage();
       const slug = pageSlug(page.path);
-      const write = (path, text) => fetch('/api/mockup/write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, path, text }) }).then(async (r) => { if (!r.ok) throw new Error(await r.text()); });
+      const write = (path, text) => fetch('/api/mockup/write', { method: 'POST', headers: H(), body: JSON.stringify({ branch: st.branch, path, text }) }).then(async (r) => { if (!r.ok) throw new Error(await r.text()); });
       const requests = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request').map((n) => ({ id: n.id, target: n.target, text: n.text, state: n.state || 'pending' }));
       const forked = forks().map((f) => ({ from: f.from, as: f.as }));
       const current = st.history && st.history.current;
@@ -1391,7 +1490,7 @@
       drawMfBar();
       const work = (async () => {
         try {
-          const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, spec, requests: asked }) });
+          const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: H(), body: JSON.stringify({ branch: st.branch, spec, requests: asked }) });
           const text = await res.text();
           if (!res.ok) throw new Error(text);
           const skipped = (JSON.parse(text).skipped) || [];
@@ -1409,7 +1508,7 @@
     }
     async function mfCall(url, body, done) {
       try {
-        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ branch: st.branch }, body || {})) });
+        const res = await fetch(url, { method: 'POST', headers: H(), body: JSON.stringify(Object.assign({ branch: st.branch }, body || {})) });
         const text = await res.text();
         if (!res.ok) throw new Error(text);
         if (done) done(text ? JSON.parse(text) : {});
@@ -1831,7 +1930,7 @@
       const board = boardOf();
       clearTimeout(st.saveTimer);
       const body = JSON.stringify({ ops: st.engine.ops, viewport: st.width, name: st.history.current.name || '' });
-      fetch(`/api/drafts/${encodeURIComponent(board)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
+      fetch(`/api/drafts/${encodeURIComponent(board)}`, { method: 'PUT', headers: H(), body, keepalive: true }).catch(() => {});
       if (st.engine.ops.length) fetch(`/api/drafts/${encodeURIComponent(board)}/keep`, { method: 'POST', keepalive: true }).catch(() => {});
     }
     function show(path) {
@@ -2064,6 +2163,9 @@
     const measured = setInterval(measure, 1000);
 
     load();
+    // Cmd+Z goes to the history of the pane on screen.
+    const keyed = { visible: () => host.isConnected && host.offsetParent !== null, step: (dir) => historyStep(dir) };
+    MOUNTED.unshift(keyed);
 
     return {
       get id() { return st.board ? st.board.id : ''; },
@@ -2092,6 +2194,8 @@
       // before it moves on or accepts.
       async flush() { if (st.engine && st.engine.ops.length && !st.readOnly) await materialize(); },
       destroy() {
+        const at = MOUNTED.indexOf(keyed);
+        if (at >= 0) MOUNTED.splice(at, 1);
         leavePage();
         design.detach();
         st.gone = true;
@@ -2114,6 +2218,20 @@
       },
     };
   }
+
+  // The panes mounted, the last first. Cmd+Z and Cmd+Shift+Z, out of a
+  // field (a field keeps its own undo), are the mock-up's history.
+  const MOUNTED = [];
+  document.addEventListener('keydown', (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== 'z') return;
+    const t = e.target;
+    if (t && t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
+    const pane = MOUNTED.find((p) => p.visible());
+    if (!pane) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pane.step(e.shiftKey ? 'redo' : 'undo');
+  }, true);
 
   window.MockupPane = { mount };
 })();

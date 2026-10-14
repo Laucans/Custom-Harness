@@ -552,6 +552,27 @@ impl CreationDesk {
         Ok(said)
     }
 
+    /// The rules as the mock-up's history keeps them; `None`, no creation.
+    pub async fn rules(&self) -> Option<crate::domain::creation::RulesState> {
+        let _held = self.record.lock().await;
+        self.existing().ok().map(|c| c.rules_state())
+    }
+
+    /// The rules as the mock-up's history kept them, written back.
+    ///
+    /// # Errors
+    ///
+    /// No creation, or the record could not be kept.
+    pub async fn set_rules(
+        &self,
+        rules: crate::domain::creation::RulesState,
+    ) -> Result<(), String> {
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.set_rules_state(rules);
+        self.keep(&record)
+    }
+
     /// One proposed change to the rules accepted or refused.
     ///
     /// # Errors

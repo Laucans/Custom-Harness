@@ -3,7 +3,7 @@
 use axum::body::Bytes;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,7 @@ use crate::domain::note_session::{self, Brief};
 use harness_architecture::kit;
 
 use super::desks::{TermQuery, term};
+use super::mock_history;
 use super::mockup::{NO_MOCKUPS, branch_or_integration};
 use super::{AppState, json, not_found};
 
@@ -47,6 +48,7 @@ pub(super) fn stamp() -> String {
 pub(super) async fn put_note(
     State(state): State<AppState>,
     Path((board, id)): Path<(String, String)>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     if !annotations::is_board(&board) || !annotations::is_id(&id) {
@@ -63,8 +65,27 @@ pub(super) async fn put_note(
         Ok(note) => note,
         Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
+    let before = mock_history::pin_now(&state, &board, &id);
+    let what = match &before {
+        None => "a pin placed",
+        Some(was) if was.text != note.text => "a pin's words",
+        Some(was) if was.kind != note.kind => "a pin's kind",
+        Some(_) => "a pin changed",
+    };
     match state.pins.put(&board, &note) {
-        Ok(()) => json(&note),
+        Ok(()) => {
+            mock_history::record(
+                &state,
+                &mock_history::Gesture::of(&headers, what),
+                vec![mock_history::pin_facet(
+                    &board,
+                    &id,
+                    before,
+                    Some(note.clone()),
+                )],
+            );
+            json(&note)
+        }
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }
 }
@@ -84,6 +105,7 @@ pub(super) async fn delete_note(
     State(state): State<AppState>,
     Path((board, id)): Path<(String, String)>,
     Query(query): Query<DeleteQuery>,
+    headers: HeaderMap,
 ) -> Response {
     if !annotations::is_board(&board) || !annotations::is_id(&id) {
         return not_found("no such pin");
@@ -98,6 +120,12 @@ pub(super) async fn delete_note(
             Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
         };
     }
+    let before = mock_history::pin_now(&state, &board, &id);
+    mock_history::record(
+        &state,
+        &mock_history::Gesture::of(&headers, "a pin deleted"),
+        vec![mock_history::pin_facet(&board, &id, before, None)],
+    );
     let done = state
         .pins
         .mark_deleted(&board, &id, Some(&stamp()))

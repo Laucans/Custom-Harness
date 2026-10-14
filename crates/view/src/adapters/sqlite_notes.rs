@@ -15,8 +15,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::domain::annotations::Kind;
 use crate::domain::annotations::{self, Note};
 use crate::domain::drafts::Draft;
+use crate::domain::mock_history::Entry;
 use crate::domain::steps::Step;
-use crate::ports::{DraftStore, KeptNote, NoteStore, StepStore};
+use crate::ports::{DraftStore, HistoryStore, KeptNote, NoteStore, StepStore};
 
 /// How long a writer waits for another one.
 const BUSY: Duration = Duration::from_secs(5);
@@ -36,6 +37,12 @@ CREATE TABLE IF NOT EXISTS drafts (
     version      INTEGER NOT NULL,
     body         TEXT NOT NULL,
     PRIMARY KEY (board, version)
+);
+CREATE TABLE IF NOT EXISTS history (
+    branch       TEXT NOT NULL,
+    id           INTEGER NOT NULL,
+    body         TEXT NOT NULL,
+    PRIMARY KEY (branch, id)
 );
 CREATE TABLE IF NOT EXISTS steps (
     branch       TEXT NOT NULL,
@@ -135,6 +142,45 @@ impl DraftStore for SqliteNotes {
             conn.execute(
                 "DELETE FROM drafts WHERE board = ?1 AND version = ?2",
                 params![board, version],
+            )
+        })
+        .map(|_| ())
+    }
+}
+
+impl HistoryStore for SqliteNotes {
+    fn entries(&self, branch: &str) -> Result<Vec<Entry>, String> {
+        let rows: Vec<String> = self.with(|conn| {
+            let mut statement =
+                conn.prepare("SELECT body FROM history WHERE branch = ?1 ORDER BY id")?;
+            let mapped = statement.query_map(params![branch], |row| row.get(0))?;
+            mapped.collect()
+        })?;
+        Ok(rows
+            .iter()
+            .filter_map(|body| serde_json::from_str(body).ok())
+            .collect())
+    }
+
+    fn put(&self, branch: &str, entry: &Entry) -> Result<(), String> {
+        let body = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+        let id = i64::try_from(entry.id).map_err(|e| e.to_string())?;
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO history (branch, id, body) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (branch, id) DO UPDATE SET body = excluded.body",
+                params![branch, id, body],
+            )
+        })
+        .map(|_| ())
+    }
+
+    fn remove(&self, branch: &str, id: u64) -> Result<(), String> {
+        let id = i64::try_from(id).map_err(|e| e.to_string())?;
+        self.with(|conn| {
+            conn.execute(
+                "DELETE FROM history WHERE branch = ?1 AND id = ?2",
+                params![branch, id],
             )
         })
         .map(|_| ())
@@ -298,6 +344,32 @@ mod tests {
             shape: None,
             turns: 0,
         }
+    }
+
+    #[test]
+    fn history_entries_round_trip_by_branch_in_their_order() {
+        let dir = std::env::temp_dir().join(format!("harness-history-db-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let store =
+            SqliteNotes::open(&dir.join("harness.db"), &dir.join("none.json")).expect("open");
+        let entry = |id: u64| Entry {
+            id,
+            what: format!("entry {id}"),
+            ..Entry::default()
+        };
+        HistoryStore::put(&store, "main", &entry(2)).expect("kept");
+        HistoryStore::put(&store, "main", &entry(1)).expect("kept");
+        HistoryStore::put(&store, "other", &entry(1)).expect("kept");
+        let mut undone = entry(2);
+        undone.undone = true;
+        HistoryStore::put(&store, "main", &undone).expect("a new state");
+        let kept = store.entries("main").expect("read");
+        assert_eq!(kept.iter().map(|e| e.id).collect::<Vec<_>>(), [1, 2]);
+        assert!(kept[1].undone);
+        HistoryStore::remove(&store, "main", 1).expect("gone");
+        assert_eq!(store.entries("main").expect("read").len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1150,6 +1150,33 @@ pub trait StepStore: Send + Sync {
     fn remove(&self, branch: &str, pin: &str) -> Result<(), String>;
 }
 
+/// Where the mock-up's history is kept, for Cmd+Z (`domain::mock_history`):
+/// a branch's entries, by their number.
+///
+/// Synchronous, like [`NoteStore`]: the same small local database.
+pub trait HistoryStore: Send + Sync {
+    /// A branch's entries, in order.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read.
+    fn entries(&self, branch: &str) -> Result<Vec<crate::domain::mock_history::Entry>, String>;
+
+    /// Keeps an entry — a new one, or a new state of it.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn put(&self, branch: &str, entry: &crate::domain::mock_history::Entry) -> Result<(), String>;
+
+    /// Forgets an entry.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn remove(&self, branch: &str, id: u64) -> Result<(), String>;
+}
+
 /// Where a page's draft versions are kept (`domain::drafts`).
 ///
 /// Synchronous, like [`NoteStore`]: the same small local database.

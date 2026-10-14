@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
@@ -13,13 +13,15 @@ use crate::creation_desk::Settled;
 use crate::domain::annotations;
 use crate::domain::drafts::{self};
 use crate::domain::mf_gen;
+use crate::domain::mock_history::Facet;
 use crate::domain::mockup;
 use crate::domain::steps::{self, Step};
-use crate::ports::{MockState, Mockups};
+use crate::ports::MockState;
 use harness_architecture::kit;
 
 use super::capabilities::catalogue_of;
 use super::drafts::draft_board;
+use super::mock_history;
 use super::notes::NO_SESSIONS;
 use super::{AppState, json, not_found};
 
@@ -330,28 +332,6 @@ pub(super) struct MfApplyAsk {
     board: String,
 }
 
-/// The files of the mock-up as they are, before a write: each path with
-/// what it holds (`None`, it is not there).
-async fn befores(
-    mockups: Arc<dyn Mockups>,
-    branch: String,
-    paths: Vec<String>,
-) -> Result<Vec<(String, Option<String>)>, String> {
-    tokio::task::spawn_blocking(move || {
-        paths
-            .into_iter()
-            .map(|path| {
-                let text = mockups
-                    .file(&branch, &path)?
-                    .map(|b: Vec<u8>| String::from_utf8_lossy(&b).into_owned());
-                Ok((path, text))
-            })
-            .collect()
-    })
-    .await
-    .map_err(|e| format!("the read was dropped: {e}"))?
-}
-
 /// Keeps, in each pin's step, the files as they were before a write — the
 /// write's place in the branch's order with them.
 fn keep_steps(
@@ -386,6 +366,7 @@ fn keep_steps(
 pub(super) async fn mf_apply(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let Some(desk) = state.mf.clone() else {
@@ -401,24 +382,63 @@ pub(super) async fn mf_apply(
         .map(|c| c.entries)
         .unwrap_or_default();
     let units = mf_gen::units_brief(&ask.spec, &entries);
-    let draft = mf_gen::draft_path(&name);
+    let paths = vec![mf_gen::draft_path(&name)];
     let before = match state.mockups.clone() {
-        Some(mockups) if !ask.pin.is_empty() => {
-            befores(mockups, branch.clone(), vec![draft]).await.ok()
-        }
-        _ => None,
+        Some(mockups) => mock_history::files(mockups, branch.clone(), paths.clone())
+            .await
+            .ok(),
+        None => None,
     };
+    let steps_before = mock_history::steps_now(&state, &branch);
     match desk.apply(&branch, ask.spec, units, ask.requests).await {
         Ok(skipped) => {
-            if let Some(files) = before
-                && let Err(why) = keep_steps(&state, &branch, &[ask.pin], &ask.board, &files)
-            {
-                return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+            if let Some(files) = &before {
+                if !ask.pin.is_empty()
+                    && let Err(why) = keep_steps(&state, &branch, &[ask.pin], &ask.board, files)
+                {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+                }
+                remember_files(
+                    &state,
+                    &mock_history::Gesture::of(&headers, "a request proposed"),
+                    &branch,
+                    files,
+                    paths,
+                    steps_before,
+                    Vec::new(),
+                )
+                .await;
             }
             json(&serde_json::json!({ "skipped": skipped }))
         }
         Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }
+}
+
+/// What a change of the mock-up's files did, kept in its history: the
+/// files as they were and became, the request pins' steps, and `more`.
+async fn remember_files(
+    state: &AppState,
+    gesture: &mock_history::Gesture,
+    branch: &str,
+    before: &[(String, Option<String>)],
+    paths: Vec<String>,
+    steps_before: Vec<Step>,
+    more: Vec<Facet>,
+) {
+    let Some(mockups) = state.mockups.clone() else {
+        return;
+    };
+    let Ok(after) = mock_history::files(mockups, branch.to_string(), paths).await else {
+        return;
+    };
+    let mut facets = mock_history::file_facets(before, &after);
+    facets.push(Facet::Steps {
+        before: steps_before,
+        after: mock_history::steps_now(state, branch),
+    });
+    facets.extend(more);
+    mock_history::record(state, gesture, facets);
 }
 
 /// A micro-frontend's draft saved, in its place or as a fork.
@@ -445,6 +465,7 @@ pub(super) struct MfSaveAsk {
 pub(super) async fn mf_save(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let Some(desk) = state.mf.clone() else {
@@ -465,27 +486,27 @@ pub(super) async fn mf_save(
     if forking && !page.is_empty() {
         paths.push(page.clone());
     }
-    let before = match state.mockups.clone() {
-        Some(mockups) if !ask.pins.is_empty() => {
-            match befores(mockups, branch.clone(), paths).await {
-                Ok(files) => files,
-                Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
-            }
-        }
-        _ => Vec::new(),
+    let Some(mockups) = state.mockups.clone() else {
+        return not_found(NO_MOCKUPS);
     };
+    let mut before = match mock_history::files(mockups, branch.clone(), paths.clone()).await {
+        Ok(files) => files,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let steps_before = mock_history::steps_now(&state, &branch);
+    let rules_before = mock_history::rules_now(&state).await;
     let fork = forking.then_some(ask.name);
     let saved = match desk.save(&branch, name.clone(), fork, Some(ask.page)).await {
         Ok(saved) => saved,
         Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
+    if forking {
+        before.push((mf_gen::fragment_path(&saved), None));
+        paths.push(mf_gen::fragment_path(&saved));
+    }
     let mut said = Vec::new();
     if !ask.pins.is_empty() {
-        let mut files = before;
-        if forking {
-            files.push((mf_gen::fragment_path(&saved), None));
-        }
-        if let Err(why) = keep_steps(&state, &branch, &ask.pins, "", &files) {
+        if let Err(why) = keep_steps(&state, &branch, &ask.pins, "", &before) {
             said.push(why);
         }
         if let Some(creation) = &state.creation {
@@ -503,6 +524,23 @@ pub(super) async fn mf_save(
             }
         }
     }
+    let rules = match (rules_before, mock_history::rules_now(&state).await) {
+        (Some(before), Some(after)) => vec![Facet::Rules {
+            before: Box::new(before),
+            after: Box::new(after),
+        }],
+        _ => Vec::new(),
+    };
+    remember_files(
+        &state,
+        &mock_history::Gesture::of(&headers, "a proposed change validated"),
+        &branch,
+        &before,
+        paths,
+        steps_before,
+        rules,
+    )
+    .await;
     json(&serde_json::json!({ "saved": saved, "said": said }))
 }
 
@@ -533,7 +571,11 @@ pub(super) struct UndoAsk {
 /// A request pin's Undo: the files its step wrote as they were before, the
 /// steps built on it taken back with it, the rules their proposals changed
 /// as they were. Answers the pins taken back, and what was kept.
-pub(super) async fn undo_step(State(state): State<AppState>, body: Bytes) -> Response {
+pub(super) async fn undo_step(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(mockups) = state.mockups.clone() else {
         return not_found(NO_MOCKUPS);
     };
@@ -548,10 +590,22 @@ pub(super) async fn undo_step(State(state): State<AppState>, body: Bytes) -> Res
     };
     let undone = steps::undone_with(&kept, &ask.pin);
     let files = steps::restored(&undone);
+    let paths: Vec<String> = files.iter().map(|b| b.path.clone()).collect();
+    let before =
+        match mock_history::files(Arc::clone(&mockups), branch.clone(), paths.clone()).await {
+            Ok(before) => before,
+            Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+        };
+    let rules_before = mock_history::rules_now(&state).await;
     let mut pins: Vec<String> = undone.iter().map(|s| s.pin.clone()).collect();
     if pins.is_empty() {
         pins.push(ask.pin.clone());
     }
+    let boards: Vec<(String, String)> = undone
+        .iter()
+        .filter(|s| !s.board.is_empty())
+        .map(|s| (s.board.clone(), s.pin.clone()))
+        .collect();
     let at = branch.clone();
     let written = tokio::task::spawn_blocking(move || -> Result<(), String> {
         for b in files {
@@ -568,21 +622,20 @@ pub(super) async fn undo_step(State(state): State<AppState>, body: Bytes) -> Res
     if let Err(why) = written {
         return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
     }
-    let boards: Vec<(String, String)> = undone
-        .iter()
-        .filter(|s| !s.board.is_empty())
-        .map(|s| (s.board.clone(), s.pin.clone()))
-        .collect();
     for pin in &pins {
         if let Err(why) = state.steps.remove(&branch, pin) {
             return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
         }
     }
     // The pins taken back, wherever they are: not proposed any more.
+    let mut more = Vec::new();
     for (board, pin) in boards {
+        let was = mock_history::pin_now(&state, &board, &pin);
         if let Err(why) = pending_again(&state, &board, &pin) {
             return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
         }
+        let now = mock_history::pin_now(&state, &board, &pin);
+        more.push(mock_history::pin_facet(&board, &pin, was, now));
     }
     let said = match &state.creation {
         Some(creation) => creation
@@ -591,12 +644,29 @@ pub(super) async fn undo_step(State(state): State<AppState>, body: Bytes) -> Res
             .unwrap_or_else(|why| vec![why]),
         None => Vec::new(),
     };
+    if let (Some(before), Some(after)) = (rules_before, mock_history::rules_now(&state).await) {
+        more.push(Facet::Rules {
+            before: Box::new(before),
+            after: Box::new(after),
+        });
+    }
+    remember_files(
+        &state,
+        &mock_history::Gesture::of(&headers, "a request taken back"),
+        &branch,
+        &before,
+        paths,
+        kept,
+        more,
+    )
+    .await;
     json(&serde_json::json!({ "pins": pins, "said": said }))
 }
 
 pub(super) async fn mf_drop_draft(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let Some(desk) = state.mf.clone() else {
@@ -607,8 +677,28 @@ pub(super) async fn mf_drop_draft(
     }
     let ask: MockupAsk = serde_json::from_slice(&body).unwrap_or_default();
     let branch = branch_or_integration(&state, Some(ask.branch));
+    let paths = vec![mf_gen::draft_path(&name)];
+    let before = match state.mockups.clone() {
+        Some(mockups) => mock_history::files(mockups, branch.clone(), paths.clone())
+            .await
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let steps_before = mock_history::steps_now(&state, &branch);
     match desk.drop_draft(&branch, name).await {
-        Ok(()) => json(&serde_json::json!({ "dropped": true })),
+        Ok(()) => {
+            remember_files(
+                &state,
+                &mock_history::Gesture::of(&headers, "a proposed change discarded"),
+                &branch,
+                &before,
+                paths,
+                steps_before,
+                Vec::new(),
+            )
+            .await;
+            json(&serde_json::json!({ "dropped": true }))
+        }
         Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }
 }
@@ -710,7 +800,11 @@ pub(super) async fn apply_requests(
 /// The most a written file may weigh.
 pub(super) const WRITE_CHARS: usize = 2_000_000;
 
-pub(super) async fn mockup_write(State(state): State<AppState>, body: Bytes) -> Response {
+pub(super) async fn mockup_write(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Some(mockups) = state.mockups.clone() else {
         return not_found(NO_MOCKUPS);
     };
@@ -722,11 +816,29 @@ pub(super) async fn mockup_write(State(state): State<AppState>, body: Bytes) -> 
         return (StatusCode::BAD_REQUEST, "too big a file").into_response();
     }
     let branch = branch_or_integration(&state, Some(ask.branch));
+    let paths = vec![ask.path.clone()];
+    let before = mock_history::files(Arc::clone(&mockups), branch.clone(), paths.clone())
+        .await
+        .unwrap_or_default();
+    let steps_before = mock_history::steps_now(&state, &branch);
+    let at = branch.clone();
     let written =
-        tokio::task::spawn_blocking(move || mockups.write(&branch, &ask.path, ask.text.as_bytes()))
+        tokio::task::spawn_blocking(move || mockups.write(&at, &ask.path, ask.text.as_bytes()))
             .await;
     match written {
-        Ok(Ok(())) => json(&serde_json::json!({ "written": true })),
+        Ok(Ok(())) => {
+            remember_files(
+                &state,
+                &mock_history::Gesture::of(&headers, "the page written"),
+                &branch,
+                &before,
+                paths,
+                steps_before,
+                Vec::new(),
+            )
+            .await;
+            json(&serde_json::json!({ "written": true }))
+        }
         Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the write was dropped").into_response(),
     }

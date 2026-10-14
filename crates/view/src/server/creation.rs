@@ -5,14 +5,16 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::creation_desk::{CreationDesk, Founding};
-use crate::domain::creation::{BRIEF_PARTS, Creation, Edit, RuleChange, Step};
+use crate::domain::creation::{BRIEF_PARTS, Creation, Edit, RuleChange, RulesState, Step};
 use crate::domain::data_draft::DataEdit;
+use crate::domain::mock_history::Facet;
 
+use super::mock_history;
 use super::{AppState, json};
 
 /// Why a page asks in vain.
@@ -75,14 +77,42 @@ pub(super) struct Saved {
     step: Option<Step>,
 }
 
-pub(super) async fn save(State(state): State<AppState>, Json(saved): Json<Saved>) -> Response {
+pub(super) async fn save(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(saved): Json<Saved>,
+) -> Response {
     let desk = match desk_of(&state) {
         Ok(desk) => desk,
         Err(r) => return *r,
     };
+    let before = desk.rules().await;
     match desk.save(saved.edit, saved.step).await {
-        Ok(record) => view(desk, Some(record)).await,
+        Ok(record) => {
+            remember_rules(&state, &headers, "a rule edited", before, &record);
+            view(desk, Some(record)).await
+        }
         Err(why) => refused(why),
+    }
+}
+
+/// The rules' change a request made, kept in the mock-up's history.
+fn remember_rules(
+    state: &AppState,
+    headers: &HeaderMap,
+    what: &str,
+    before: Option<RulesState>,
+    record: &Creation,
+) {
+    if let Some(before) = before {
+        mock_history::record(
+            state,
+            &mock_history::Gesture::of(headers, what),
+            vec![Facet::Rules {
+                before: Box::new(before),
+                after: Box::new(record.rules_state()),
+            }],
+        );
     }
 }
 
@@ -243,14 +273,19 @@ pub(super) async fn reread_rule(State(state): State<AppState>, Path(id): Path<u3
 /// the human to accept or refuse.
 pub(super) async fn propose_rules(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(change): Json<RuleChange>,
 ) -> Response {
     let desk = match desk_of(&state) {
         Ok(desk) => desk,
         Err(r) => return *r,
     };
+    let before = desk.rules().await;
     match desk.propose_rules(change).await {
-        Ok(record) => view(desk, Some(record)).await,
+        Ok(record) => {
+            remember_rules(&state, &headers, "rules proposed", before, &record);
+            view(desk, Some(record)).await
+        }
         Err(why) => refused(why),
     }
 }
@@ -259,6 +294,7 @@ pub(super) async fn propose_rules(
 pub(super) async fn settle_proposal(
     State(state): State<AppState>,
     Path((key, how)): Path<(u32, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let desk = match desk_of(&state) {
         Ok(desk) => desk,
@@ -269,8 +305,17 @@ pub(super) async fn settle_proposal(
         "refuse" => false,
         _ => return refused(format!("`{how}` is neither accept nor refuse")),
     };
+    let before = desk.rules().await;
     match desk.settle_proposal(key, accept).await {
-        Ok(record) => view(desk, Some(record)).await,
+        Ok(record) => {
+            let what = if accept {
+                "a rule's change validated"
+            } else {
+                "a rule's change refused"
+            };
+            remember_rules(&state, &headers, what, before, &record);
+            view(desk, Some(record)).await
+        }
         Err(why) => refused(why),
     }
 }

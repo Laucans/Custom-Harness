@@ -81,6 +81,7 @@ pub(super) async fn open_draft(
 pub(super) async fn put_draft(
     State(state): State<AppState>,
     Path(board): Path<String>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
     if let Err(r) = draft_board(&board) {
@@ -104,11 +105,23 @@ pub(super) async fn put_draft(
         )
             .into_response();
     };
+    let before = current.clone();
     current.ops = ask.ops;
     current.viewport = ask.viewport;
     current.name = ask.name.chars().take(80).collect();
     match state.drafts.put(&board, &current) {
-        Ok(()) => json(&current),
+        Ok(()) => {
+            super::mock_history::record(
+                &state,
+                &super::mock_history::Gesture::of(&headers, "the page retouched"),
+                vec![crate::domain::mock_history::Facet::Draft {
+                    board: board.clone(),
+                    before: Some(Box::new(before)),
+                    after: Some(Box::new(current.clone())),
+                }],
+            );
+            json(&current)
+        }
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }
 }

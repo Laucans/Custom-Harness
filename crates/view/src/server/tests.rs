@@ -60,6 +60,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         pins: Arc::new(Pins::default()),
         drafts: Arc::new(Versions::default()),
         steps: Arc::new(Steps::default()),
+        history: Arc::new(Lines::default()),
         note_desks: None,
         mockups: None,
         kit: None,
@@ -364,6 +365,36 @@ impl crate::ports::Mockups for FakeMockups {
 }
 
 /// Draft versions in memory.
+/// The mock-up's history, in memory.
+#[derive(Default)]
+struct Lines(std::sync::Mutex<Vec<(String, crate::domain::mock_history::Entry)>>);
+
+// A test fake: each method holds its lock for the whole of its few lines.
+#[allow(clippy::significant_drop_tightening)]
+impl crate::ports::HistoryStore for Lines {
+    fn entries(&self, branch: &str) -> Result<Vec<crate::domain::mock_history::Entry>, String> {
+        let kept = self.0.lock().map_err(|e| e.to_string())?;
+        let mut entries: Vec<_> = kept
+            .iter()
+            .filter(|(b, _)| b == branch)
+            .map(|(_, e)| e.clone())
+            .collect();
+        entries.sort_by_key(|e| e.id);
+        Ok(entries)
+    }
+    fn put(&self, branch: &str, entry: &crate::domain::mock_history::Entry) -> Result<(), String> {
+        let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+        kept.retain(|(b, e)| !(b == branch && e.id == entry.id));
+        kept.push((branch.to_string(), entry.clone()));
+        Ok(())
+    }
+    fn remove(&self, branch: &str, id: u64) -> Result<(), String> {
+        let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+        kept.retain(|(b, e)| !(b == branch && e.id == id));
+        Ok(())
+    }
+}
+
 /// The request pins' steps, in memory.
 #[derive(Default)]
 struct Steps(std::sync::Mutex<Vec<(String, crate::domain::steps::Step)>>);
@@ -2538,6 +2569,113 @@ fn undo_fixture() -> (std::path::PathBuf, AppState, Arc<Steps>, Arc<Pins>) {
         ..state_without_plant()
     };
     (dir, state, steps, pins)
+}
+
+/// A request to the router with headers of its own.
+async fn send_with(
+    state: AppState,
+    method: &str,
+    uri: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, String) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = router(state)
+        .oneshot(request.body(Body::from(body.to_string())).expect("request"))
+        .await
+        .expect("response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn the_mock_up_s_history_takes_back_a_pin_and_brings_it_again_unless_it_moved_outside() {
+    let state = state_without_plant();
+    let pin = |text: &str| {
+        format!(r#"{{"id":"p1","target":"","x":1,"y":2,"text":"{text}","kind":"request"}}"#)
+    };
+    let uri = "/api/notes/mockup--main--home/p1";
+    let at_main: &[(&str, &str)] = &[("x-harness-branch", "main")];
+    let (status, _) = send_with(state.clone(), "PUT", uri, &pin(""), at_main).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send_with(state.clone(), "PUT", uri, &pin("bolder"), at_main).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, told) = send_with(
+        state.clone(),
+        "GET",
+        "/api/mockup/history?branch=main",
+        "",
+        &[],
+    )
+    .await;
+    let told: serde_json::Value = serde_json::from_str(&told).expect("json");
+    assert_eq!(told["undo"]["what"], "a pin's words");
+    assert_eq!(
+        told["undo"]["boards"],
+        serde_json::json!(["mockup--main--home"])
+    );
+    assert!(told["redo"].is_null());
+
+    let text = |state: &AppState| {
+        crate::ports::NoteStore::notes(state.pins.as_ref(), "mockup--main--home")
+            .expect("pins")
+            .into_iter()
+            .find(|k| k.deleted_at.is_none())
+            .map(|k| k.note.text)
+    };
+    let (status, body) = post(
+        state.clone(),
+        "/api/mockup/history/undo",
+        r#"{"branch":"main"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(text(&state).as_deref(), Some(""), "the words taken back");
+    let (status, _) = post(
+        state.clone(),
+        "/api/mockup/history/undo",
+        r#"{"branch":"main"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text(&state), None, "the pin taken back");
+    let (status, _) = post(
+        state.clone(),
+        "/api/mockup/history/undo",
+        r#"{"branch":"main"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "nothing left to undo");
+    let (status, _) = post(
+        state.clone(),
+        "/api/mockup/history/redo",
+        r#"{"branch":"main"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text(&state).as_deref(), Some(""), "placed again");
+
+    // Moved outside the history (no branch said): a redo would overwrite it.
+    let (status, _) = send_with(state.clone(), "PUT", uri, &pin("mine"), &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post(
+        state.clone(),
+        "/api/mockup/history/redo",
+        r#"{"branch":"main"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("moved since"));
+    assert_eq!(text(&state).as_deref(), Some("mine"));
 }
 
 #[tokio::test]

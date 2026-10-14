@@ -1748,3 +1748,11 @@ body.cr-fullscreen { overflow: hidden; }
 .hb-detached { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .hb-detached small { grid-column: 2; color: var(--dim); }
 .hb-detached-acts { grid-column: 2; display: flex; gap: 6px; }
+
+/* A question in the page: the mock-up's history going elsewhere. */
+.mk-confirm { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); }
+.mk-confirm-card { max-width: 420px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); color: var(--text); font: 14px var(--sans); }
+.mk-confirm-card p { margin: 0 0 14px; }
+.mk-confirm-row { display: flex; justify-content: flex-end; gap: 8px; }
+.mk-confirm .mini { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 5px 12px; font: 13px var(--sans); cursor: pointer; }
+.mk-confirm .mini.on { background: var(--accent); border-color: var(--accent); color: #1b1300; font-weight: 600; }

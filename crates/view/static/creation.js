@@ -62,7 +62,10 @@
   const page = $('factory-page');
 
   async function call(method, url, body) {
-    const r = await fetch(url, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+    // A change of the creation says its mock-up's branch: the rules' part
+    // of it goes in that mock-up's history (Cmd+Z).
+    const branch = method !== 'GET' && C.data && C.data.branch ? { 'x-harness-branch': C.data.branch } : {};
+    const r = await fetch(url, { method, headers: Object.assign(body ? { 'content-type': 'application/json' } : {}, branch), body: body ? JSON.stringify(body) : undefined });
     const text = await r.text();
     if (!r.ok) throw new Error(text || r.statusText);
     return text ? JSON.parse(text) : null;
@@ -1252,6 +1255,13 @@
   page.addEventListener('harness:mockup-page', (e) => {
     C.canvasPage = e.detail.page || '';
     if (C.route === 'rules') draw();
+  });
+  // The mock-up's history asks whether the rules are on screen, and goes
+  // there when they are not.
+  page.addEventListener('harness:where', (e) => { if (e.detail && C.route === 'rules') e.detail.rules = true; });
+  page.addEventListener('harness:goto', (e) => {
+    const to = e.detail && e.detail.route;
+    if (to && to !== C.route) setRoute(to);
   });
   // A pin open on the mock-up: the rules of the micro-frontends it touches.
   page.addEventListener('harness:pin-mfs', (e) => {

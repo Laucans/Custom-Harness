@@ -271,6 +271,25 @@ pub struct Applied {
     pub became: Requirement,
 }
 
+/// The rules of a creation as the mock-up's history keeps them: what an
+/// undo of a rule's edit, acceptance or proposal writes back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RulesState {
+    /// The rules.
+    pub requirements: Vec<Requirement>,
+    /// The highest number a rule was ever given.
+    pub last_requirement: u32,
+    /// The rules were validated.
+    pub rules_validated: bool,
+    /// The proposals waiting.
+    pub proposals: Vec<Proposal>,
+    /// The highest number a proposal was ever given.
+    pub last_proposal: u32,
+    /// The proposals of request pins accepted.
+    pub applied: Vec<Applied>,
+}
+
 /// What moved in the mock-up: a request drafted on a micro-frontend (or on
 /// the page), then kept in its place or forked for the page it was asked on.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -766,6 +785,29 @@ impl Creation {
         rule.criterion = read.criterion;
         self.rules_validated = false;
         Ok(())
+    }
+
+    /// The rules as the mock-up's history keeps them.
+    #[must_use]
+    pub fn rules_state(&self) -> RulesState {
+        RulesState {
+            requirements: self.requirements.clone(),
+            last_requirement: self.last_requirement,
+            rules_validated: self.rules_validated,
+            proposals: self.proposals.clone(),
+            last_proposal: self.last_proposal,
+            applied: self.applied.clone(),
+        }
+    }
+
+    /// The rules as the history kept them, written back.
+    pub fn set_rules_state(&mut self, rules: RulesState) {
+        self.requirements = rules.requirements;
+        self.last_requirement = rules.last_requirement;
+        self.rules_validated = rules.rules_validated;
+        self.proposals = rules.proposals;
+        self.last_proposal = rules.last_proposal;
+        self.applied = rules.applied;
     }
 
     /// The changes the AI proposed, kept for the human: numbered, a
