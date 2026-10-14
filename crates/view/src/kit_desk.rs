@@ -1617,6 +1617,7 @@ pub mod tests {
                     id: "r1".into(),
                     text: "bigger".into(),
                     target: String::new(),
+                    ..Asked::default()
                 }],
             )
             .await
@@ -1663,6 +1664,7 @@ pub mod tests {
                 id: "r2".into(),
                 text: "x".into(),
                 target: String::new(),
+                ..Asked::default()
             }],
         )
         .await
@@ -1743,6 +1745,7 @@ pub mod tests {
                 id: id.into(),
                 text: format!("change {id}"),
                 target: String::new(),
+                ..Asked::default()
             }]
         };
         let (first, second) = tokio::join!(

@@ -21,6 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt::Write as _;
 
 /// How many closed versions a board keeps beside the open one.
 pub const KEPT: usize = 3;
@@ -219,6 +220,15 @@ pub struct Asked {
     /// `id:create`), or empty for the page.
     #[serde(default)]
     pub target: String,
+    /// What the pin points at when it is rendered at run time inside the
+    /// target (a kit component's insides) and so not in the page's source;
+    /// empty when the target is the part itself.
+    #[serde(default)]
+    pub inside: String,
+    /// Where the pin or the zone stands: its place in the target and the
+    /// elements around it, or the elements a zone covers.
+    #[serde(default)]
+    pub place: String,
 }
 
 /// The prompt that applies requests to a page's draft in one go: the page
@@ -236,7 +246,7 @@ pub fn apply_prompt(
     let requests = asked
         .iter()
         .map(|a| {
-            format!(
+            let mut line = format!(
                 "- request `{}`{}: {}",
                 a.id,
                 if a.target.is_empty() {
@@ -245,7 +255,18 @@ pub fn apply_prompt(
                     format!(" (on {})", a.target)
                 },
                 a.text.trim()
-            )
+            );
+            if !a.inside.trim().is_empty() {
+                let _ = write!(
+                    line,
+                    "\n  it points inside that element, at a part rendered at run time and not in the page's source: {}",
+                    a.inside.trim()
+                );
+            }
+            if !a.place.trim().is_empty() {
+                let _ = write!(line, "\n  where: {}", a.place.trim());
+            }
+            line
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -255,7 +276,8 @@ pub fn apply_prompt(
          `data-component`, whose rendered content is shown but belongs to the micro-frontend's own \
          code). You answer ONLY a JSON array of operations on that page, nothing else — no prose, \
          no code fence. Each operation is an object with `kind`, `by` (the request's id), a \
-         `target` naming an existing element by `component:<Name>`, `id:<id>` or \
+         `target` naming an existing element by `component:<Name>`, `kit:<Name>` (a kit \
+         component; `kit:<Name>@<n>` for the n-th of that name on the page), `id:<id>` or \
          `data:<data-id>`, and the fields of its kind:\n\
          - `move`: `before` or `after` (a target) or `into` (a container target) — reorders, never \
          positions freely;\n\
@@ -277,7 +299,10 @@ pub fn apply_prompt(
          and the human decides (build it, edit one, a placeholder, or without).\n\
          A request that changes what a micro-frontend does inside is not a page operation: answer \
          for it one operation `{{\"kind\":\"add\",\"by\":\"<id>\",\"skip\":\"<why, one line>\"}}` and \
-         leave the rest to the human. Use only elements that exist in the page. Keep the changes \
+         leave the rest to the human. A kit component's insides are rendered at run time: act on \
+         the kit component itself (its `props`, or what goes before, after or around it). A \
+         request's `where` says where the human pointed — use it to choose `before`, `after` or \
+         `into`. Use only elements that exist in the page. Keep the changes \
          small and faithful to each request.\n\n\
          The micro-frontends on this branch:\n{components}\n\n\
          The kit's components:\n{kit}\n\n\
@@ -313,6 +338,34 @@ pub fn ops_from_answer(answer: &str, asked: &[Asked]) -> Result<Vec<Value>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_says_what_it_points_inside_and_where() {
+        let asked = [
+            Asked {
+                id: "r1".to_string(),
+                text: "add the logo here".to_string(),
+                target: "kit:Menu".to_string(),
+                inside: " inside the kit component Menu, rendered at run time — <nav>…</nav> "
+                    .to_string(),
+                place: " 10% across and 50% down in kit:Menu, in an empty space before id:search "
+                    .to_string(),
+            },
+            Asked {
+                id: "r2".to_string(),
+                text: "bigger".to_string(),
+                ..Asked::default()
+            },
+        ];
+        let prompt = apply_prompt("pages/a.html", "<main></main>", "", "", &asked);
+        assert!(prompt.contains("- request `r1` (on kit:Menu): add the logo here\n  it points inside that element, at a part rendered at run time and not in the page's source: inside the kit component Menu, rendered at run time — <nav>…</nav>\n  where: 10% across and 50% down in kit:Menu, in an empty space before id:search"));
+        assert!(
+            prompt.contains("- request `r2`: bigger\n"),
+            "nothing more said when nothing more is known"
+        );
+        assert!(prompt.contains("`kit:<Name>` (a kit component; `kit:<Name>@<n>`"));
+        assert!(prompt.contains("A kit component's insides are rendered at run time"));
+    }
     use serde_json::json;
 
     fn draft(version: u32, state: State, base: &str) -> Draft {
@@ -383,6 +436,7 @@ mod tests {
             id: "r1".into(),
             text: "add an archive button".into(),
             target: "component:Campagnes".into(),
+            ..Asked::default()
         }];
         let answer = "Here you go:\n```json\n[{\"kind\":\"add\",\"by\":\"r1\",\"target\":\"component:Campagnes\",\"what\":\"button\",\"label\":\"Archiver\",\"after\":\"id:create\",\"as\":\"archive\"}]\n```";
         let ops = ops_from_answer(answer, &asked).expect("read");

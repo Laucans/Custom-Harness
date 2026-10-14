@@ -281,6 +281,11 @@
         zones: st.view === 'page',
         // A page redrawn leaves pins whose part is gone: put aside, not left floating.
         detach: st.view === 'page',
+        // A request inside a kit component may be the component's, for every page.
+        noteActions: (n) => {
+          const kit = st.view === 'page' && n.kind === 'request' && (n.text || '').trim() ? kitOf(n) : '';
+          return kit ? [{ label: `→ the kit's ${kit}`, title: `Ask it of the kit component ${kit} itself: every page that shows it changes`, run: () => toKit(n, kit) }] : [];
+        },
         pages: () => (st.state && st.state.pages) || [],
         capabilities,
         dataCapabilities,
@@ -646,7 +651,76 @@
     // ---- requests applied to the draft, in one go ----------------------------------------
     async function applyRequests(notes) {
       if (!st.engine || !st.frame) return;
-      const asked = notes.filter((n) => (n.text || '').trim()).map((n) => ({ id: n.id, text: n.text, target: n.target || '' }));
+      // A part rendered at run time (inside a kit component, filled by
+      // mock.js) is not in the page's source the operations edit: the
+      // request is put on its nearest ancestor that is, and told what it
+      // points at inside.
+      const source = new DOMParser().parseFromString(st.engine.materialized(), 'text/html');
+      const inSource = (target) => {
+        let t = target;
+        while (t) {
+          if (E.elementOf(source, t)) return t;
+          const cut = t.lastIndexOf('>');
+          t = cut < 0 ? '' : t.slice(0, cut);
+        }
+        return '';
+      };
+      const insideOf = (n) => {
+        const el = st.doc && n.target ? E.elementOf(st.doc, n.target) : null;
+        if (!el) return 'a part the page no longer shows';
+        const kit = el.closest('[data-kit]');
+        const html = el.outerHTML.replace(/\s+/g, ' ');
+        return `${kit ? `inside the kit component ${kit.dataset.kit}, rendered at run time — ` : ''}${html.length > 300 ? html.slice(0, 300) + '…' : html}`;
+      };
+      // Where the human pointed, in the page as drawn (board units are the
+      // page's pixels): a pin's place in its part and the parts around it; a
+      // zone's place and the parts it covers — each named as the source has it.
+      const named = (el) => inSource(E.targetOf(el)) || describe(E.targetOf(el));
+      const pct = (v, from, size) => Math.round(Math.max(0, Math.min(1, (v - from) / (size || 1))) * 100);
+      const placeOf = (n) => {
+        if (!st.doc || !st.doc.body) return '';
+        let box;
+        if (n.shape && n.shape.points && n.shape.points.length) {
+          const pts = n.shape.points;
+          if (n.shape.kind === 'circle' && pts.length > 1) {
+            const r = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
+            box = { x0: pts[0][0] - r, y0: pts[0][1] - r, x1: pts[0][0] + r, y1: pts[0][1] + r };
+          } else {
+            const xs = pts.map((p) => p[0]); const ys = pts.map((p) => p[1]);
+            box = { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+          }
+        }
+        const x = box ? (box.x0 + box.x1) / 2 : n.x;
+        const y = box ? (box.y0 + box.y1) / 2 : n.y;
+        let container = n.target ? E.elementOf(st.doc, n.target) : null;
+        // A zone on no part: the smallest part that holds it whole.
+        if (!container) {
+          container = st.doc.elementFromPoint(x, y) || st.doc.body;
+          while (box && container.parentElement && container !== st.doc.body) {
+            const r = container.getBoundingClientRect();
+            if (r.left <= box.x0 && r.top <= box.y0 && r.right >= box.x1 && r.bottom >= box.y1) break;
+            container = container.parentElement;
+          }
+        }
+        const cr = container.getBoundingClientRect();
+        const kids = Array.prototype.filter.call(container.children, (k) => { const r = k.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+        const at = `${pct(x, cr.left, cr.width)}% across and ${pct(y, cr.top, cr.height)}% down ${container === st.doc.body ? 'the page' : 'in ' + named(container)}`;
+        if (box) {
+          const covered = kids.filter((k) => { const r = k.getBoundingClientRect(); return r.right > box.x0 && r.left < box.x1 && r.bottom > box.y0 && r.top < box.y1; });
+          const size = `${pct(box.x1, box.x0, cr.width)}% of its width and ${pct(box.y1, box.y0, cr.height)}% of its height`;
+          return `a zone centred ${at}, covering ${size}; ${covered.length ? 'it covers ' + covered.slice(0, 8).map(named).join(', ') + (covered.length > 8 ? ` and ${covered.length - 8} more` : '') : 'it covers no part: an empty space of it'}`;
+        }
+        const holding = kids.find((k) => { const r = k.getBoundingClientRect(); return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; });
+        if (holding) return `${at}, on ${named(holding)}`;
+        // An empty space: the parts just before and after it, in reading order.
+        const before = kids.filter((k) => { const r = k.getBoundingClientRect(); return r.bottom <= y || (r.top <= y && r.right <= x); }).pop();
+        const after = kids.find((k) => { const r = k.getBoundingClientRect(); return r.top >= y || (r.bottom >= y && r.left >= x); });
+        return `${at}, in an empty space${before ? ' after ' + named(before) : ''}${after ? (before ? ' and' : '') + ' before ' + named(after) : ''}`;
+      };
+      const asked = notes.filter((n) => (n.text || '').trim()).map((n) => {
+        const target = inSource(n.target || '');
+        return { id: n.id, text: n.text, target, inside: target !== (n.target || '') ? insideOf(n) : '', place: placeOf(n) };
+      });
       if (!asked.length) { say('nothing to apply: write the intention first'); return; }
       const board = boardOf();
       const action = window.HarnessActions && window.HarnessActions.start({ key: `apply:${board}`, label: `apply ${asked.length} request(s) to the draft of ${st.page}`, button: q('[data-ed="apply-all"]') });
@@ -1281,6 +1355,27 @@
         clearTimeout(again);
         again = setTimeout(() => { sizeMf(); drawRules(); }, 120);
       }).observe(doc.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-writes', 'data-reads', 'data-kit', 'hidden'] });
+    }
+    // The kit component a pin points into: its own target's, or the nearest one around its part.
+    function kitOf(n) {
+      const t = n.target || '';
+      if (t.startsWith('kit:')) return t.slice(4).split(/[@>]/)[0];
+      const el = st.doc && t ? E.elementOf(st.doc, t) : null;
+      const kit = el && el.closest ? el.closest('[data-kit]') : null;
+      return kit ? kit.dataset.kit : '';
+    }
+    // A request moved to the kit component itself: a pin on the design
+    // system's canvas, opened there; this page's pin goes (undo brings it back).
+    async function toKit(n, kit) {
+      const id = newId('n');
+      const pin = { id, target: 'kit:' + kit, dx: 0, dy: 0, x: 0, y: 0, text: n.text, at: new Date().toISOString(), kind: 'request', turns: 0 };
+      try {
+        const res = await fetch(`/api/notes/kit--components/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pin) });
+        if (!res.ok) throw new Error(await res.text());
+        st.board.drop(n.id);
+        toast(`asked of the kit's <b>${esc(kit)}</b> — every page that shows it changes`);
+        window.dispatchEvent(new CustomEvent('harness:open-pane', { detail: { kind: 'kit', title: 'design system', tab: 'canvas', pin: id } }));
+      } catch (e) { toast(esc(String(e.message || e).split('\n')[0])); }
     }
     // The kit component on the design system's easel, alone.
     function openKit(name) {

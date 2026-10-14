@@ -104,6 +104,7 @@
       + '<div class="hb-link-go" hidden><button type="button" data-note="go">Open the page →</button><button type="button" data-note="create">Create it with an AI session</button></div>'
       + '<div class="hb-apply" hidden><button type="button" data-note="apply">Apply to the draft</button><span class="hb-apply-state"></span></div>'
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
+      + '<div class="hb-extra" hidden></div>'
       + '<div class="hb-backlog" hidden><button type="button" data-note="backlog" title="Open a harness:roadmap issue from this pin: the planner takes it from there">→ backlog</button><a class="hb-issue" target="_blank" rel="noopener" hidden>on the backlog ↗</a></div>'
       + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="delete">delete</button></div>'
       + '</div>';
@@ -369,6 +370,11 @@
         apply.querySelector('.hb-apply-state').textContent = applying.has(n.id) ? 'the AI is applying it…' : { pending: 'not applied yet', simulated: 'applied to the draft', stale: 'applied once; the page moved since' }[state] || '';
       }
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
+      // What the pane offers for this pin beyond the board's own actions.
+      const extra = editor.querySelector('.hb-extra');
+      const offered = opts.noteActions ? opts.noteActions(n) : [];
+      extra.hidden = !offered.length;
+      extra.innerHTML = offered.map((a, i) => `<button type="button" data-note-extra="${i}" title="${esc(a.title || '')}">${esc(a.label)}</button>`).join('');
       // A request, a link or a design goes on the product's backlog as an issue.
       const backlog = editor.querySelector('.hb-backlog');
       backlog.hidden = opts.backlog === false || !(kind === 'request' || kind === 'link' || kind === 'design');
@@ -842,6 +848,12 @@
       const n = notes.find((x) => x.id === openId);
       const kindButton = e.target.closest('.hb-kind');
       if (kindButton && n) { rekind(n, kindButton.dataset.kind); return; }
+      const more = e.target.closest('[data-note-extra]');
+      if (more && n && opts.noteActions) {
+        const offered = opts.noteActions(n)[Number(more.dataset.noteExtra)];
+        if (offered) offered.run(n);
+        return;
+      }
       const act = e.target.closest('[data-note]');
       if (!act) return;
       if (act.dataset.note === 'close') closeNote();

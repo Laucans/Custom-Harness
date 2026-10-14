@@ -648,6 +648,7 @@ mod tests {
             id: "r1".into(),
             text: "bigger".into(),
             target: String::new(),
+            ..Asked::default()
         }];
         let rewrite = rewrite_prompt("Button", "<div></div>", "", &asked);
         assert!(rewrite.contains("request `r1`: bigger"));
@@ -659,6 +660,7 @@ mod tests {
                 id: "r2".into(),
                 text: "bolder".into(),
                 target: "table.kit-table:nth-child(2)>thead:nth-child(1)".into(),
+                ..Asked::default()
             }],
         );
         assert!(on_part.contains(

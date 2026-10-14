@@ -680,6 +680,7 @@ mod tests {
                 id: "r1".into(),
                 text: "bolder".into(),
                 target: "ul:nth-child(1)".into(),
+                ..Asked::default()
             }],
         );
         assert!(

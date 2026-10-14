@@ -20,9 +20,17 @@
   // a path of `tag:nth-child(n)` steps from the body — resolved in order on
   // the page as it is at that point of the draft, so a path stays true as
   // long as the operations replay in order.
+  // A kit component on the page, by its name — and its rank among those of
+  // the same name when there are several (`kit:Menu@2`).
+  function kitTarget(el) {
+    const name = el.dataset.kit;
+    const same = Array.prototype.filter.call(el.ownerDocument.querySelectorAll('[data-kit]'), (k) => k.dataset.kit === name);
+    return 'kit:' + name + (same.length > 1 ? '@' + (same.indexOf(el) + 1) : '');
+  }
   function targetOf(el) {
     if (!el || el.nodeType !== 1) return '';
     if (el.dataset && el.dataset.component) return 'component:' + el.dataset.component;
+    if (el.dataset && el.dataset.kit) return kitTarget(el);
     if (el.id) return 'id:' + el.id;
     if (el.dataset && el.dataset.id) return 'data:' + el.dataset.id;
     const doc = el.ownerDocument;
@@ -33,7 +41,7 @@
       if (!parent) break;
       const index = Array.prototype.indexOf.call(parent.children, at) + 1;
       steps.unshift(`${at.tagName.toLowerCase()}:nth-child(${index})`);
-      if (parent.id || (parent.dataset && (parent.dataset.component || parent.dataset.id))) {
+      if (parent.id || (parent.dataset && (parent.dataset.component || parent.dataset.kit || parent.dataset.id))) {
         // Anchored on the nearest stable ancestor: shorter, and steadier.
         return targetOf(parent) + '>' + steps.join('>');
       }
@@ -49,6 +57,11 @@
     let root = null;
     try {
       if (head.startsWith('component:')) root = doc.querySelector(`[data-component="${CSS.escape(head.slice(10))}"]`);
+      else if (head.startsWith('kit:')) {
+        const [name, rank] = head.slice(4).split('@');
+        const same = Array.prototype.filter.call(doc.querySelectorAll('[data-kit]'), (k) => k.dataset.kit === name);
+        root = same[(Number(rank) || 1) - 1] || null;
+      }
       else if (head.startsWith('id:')) root = doc.getElementById(head.slice(3));
       else if (head.startsWith('data:')) root = doc.querySelector(`[data-id="${CSS.escape(head.slice(5))}"]`);
       else if (head === 'path:') return doc.body;

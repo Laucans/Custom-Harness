@@ -1237,7 +1237,10 @@ pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str, tokens_css: &str) ->
          objective (what the user does there), a `mock/index.html` that lists them, the fixtures \
          they read under `mock/fixtures/` with believable example data in the language of the \
          brief — never a lorem ipsum — and the links between the pages that carry the journeys, \
-         so a human can click through them. Build every page from the design system: \
+         so a human can click through them. Give every region of a page — its header, its \
+         navigation, its main area, each section, aside, list and form, its footer — an `id` in \
+         kebab-case, unique on the page: the human pins requests on them, and they are what an \
+         edit names. Build every page from the design system: \
          `mock/design/tokens.css` holds its variables (`var(--…)`, never a colour or a size \
          written by hand), and its kit components are dropped as \
          `<div data-kit=\"<Name>\" data-props='{…}'></div>`, which `../mock.js` fills — use one \
@@ -1361,7 +1364,7 @@ pub fn componentize_prompt(c: &Creation, rules: &str, kit: &str, tokens_css: &st
          would read and trigger, `<system>.<verb><Thing>`). A micro-frontend shared by several pages \
          is written once. Then rewrite each page as layout only: its regions, and in them \
          `<div data-component=\"<Name>\" data-props='{…}'></div>` for each micro-frontend, with \
-         `<script src=\"../mock.js\"></script>` — no business markup left inline. Keep each page's \
+         `<script src=\"../mock.js\"></script>` — no business markup left inline. Keep every `id` a page carries on its region. Keep each page's \
          look, texts, links and example data as they are. List each page's micro-frontends under its \
          `components` in `mock/pages.json`. Say in a few lines which micro-frontends you made.\n\n",
     );
@@ -2246,6 +2249,18 @@ mod tests {
             vec!["--color-bg".to_string(), "--space-9".to_string()]
         );
         assert!(unknown_tokens("a { color: var(--color-text) }", &tokens).is_empty());
+    }
+
+    #[test]
+    fn a_page_s_regions_carry_ids_the_cut_keeps() {
+        let c = ready();
+        assert!(
+            mockups_prompt(&c, "R", "", "").contains("an `id` in kebab-case, unique on the page")
+        );
+        assert!(
+            componentize_prompt(&c, "R", "", "")
+                .contains("Keep every `id` a page carries on its region")
+        );
     }
 
     #[test]

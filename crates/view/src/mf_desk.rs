@@ -750,6 +750,16 @@ mod tests {
         assert!(write.contains("--color-primary") && !write.contains(".kit-button {"));
     }
 
+    /// One request asking a micro-frontend's list to be bolder.
+    fn bolder(id: &str) -> Vec<Asked> {
+        vec![Asked {
+            id: id.into(),
+            text: "bolder".into(),
+            target: "ul:nth-child(1)".into(),
+            ..Asked::default()
+        }]
+    }
+
     #[tokio::test]
     async fn requests_rewrite_a_draft_saved_in_place_or_as_a_fork_or_dropped() {
         let dir = std::env::temp_dir().join(format!("harness-mf-draft-{}", std::process::id()));
@@ -777,13 +787,7 @@ mod tests {
             needs: vec!["campagne.listerPjs".into()],
             ..Spec::default()
         };
-        let asked = |id: &str| {
-            vec![Asked {
-                id: id.into(),
-                text: "bolder".into(),
-                target: "ul:nth-child(1)".into(),
-            }]
-        };
+        let asked = bolder;
         let read = |path: &str| {
             std::fs::read_to_string(dir.join("main/mock").join(path)).unwrap_or_default()
         };
