@@ -19,6 +19,10 @@
   const plain = (text) => String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
   function create(host, opts) {
+    // Every listener this one sets on what outlives it (its host, the
+    // document) goes with it: a host mounted again would answer twice.
+    const listening = new AbortController();
+    const listen = (target, type, fn, options) => target.addEventListener(type, fn, Object.assign(typeof options === 'boolean' ? { capture: options } : Object.assign({}, options), { signal: listening.signal }));
     host.innerHTML = '<div class="kt-gallery"><div class="kt-gallery-top">'
       + `<input type="search" class="kt-find" maxlength="80" placeholder="${esc(opts.placeholder || 'Find…')}" aria-label="find" title="Press / to come here">`
       + '<span class="kt-count"></span><div class="kt-chips" role="group" aria-label="show"></div></div>'
@@ -110,7 +114,7 @@
     function refind() { draw(); scroller.scrollTop = 0; }
 
     find.addEventListener('input', () => { st.find = find.value; refind(); });
-    host.addEventListener('click', (e) => {
+    listen(host, 'click', (e) => {
       const chip = e.target.closest('.kt-chip');
       if (chip) { st.chip = chip.dataset.chip; refind(); return; }
       const tile = e.target.closest('.kt-tile');
@@ -129,7 +133,7 @@
         if (item) opts.onOpen(item);
       }
     };
-    document.addEventListener('keydown', onKey);
+    listen(document, 'keydown', onKey);
 
     return {
       draw,
@@ -140,6 +144,7 @@
       top: () => scroller.scrollTop,
       scrollTo(y) { scroller.scrollTop = y || 0; },
       destroy() {
+        listening.abort();
         document.removeEventListener('keydown', onKey);
         if (st.seen) st.seen.disconnect();
         host.innerHTML = '';

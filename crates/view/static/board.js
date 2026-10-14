@@ -62,6 +62,11 @@
   const typing = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
 
   function create(host, opts) {
+    // Every listener this one sets on what outlives it (its host, the
+    // document, the window) goes with it: a host given to the next one
+    // would answer twice otherwise.
+    const listening = new AbortController();
+    const listen = (target, type, fn, options) => target.addEventListener(type, fn, Object.assign(typeof options === 'boolean' ? { capture: options } : Object.assign({}, options), { signal: listening.signal }));
     // No id yet: no pin is read until `setBoard` names the board.
     let id = opts.id || null;
     const describe = opts.describe || ((target) => (target ? target : 'the canvas'));
@@ -1055,13 +1060,13 @@
       if (e.shiftKey) redo(); else undo();
     };
 
-    host.addEventListener('pointerdown', onPointerDown);
-    host.addEventListener('pointermove', onPointerMove);
-    host.addEventListener('pointerup', onPointerUp);
-    host.addEventListener('pointercancel', onPointerUp);
-    host.addEventListener('click', onClickCapture, true);
-    host.addEventListener('click', onToolClick);
-    host.addEventListener('wheel', onWheel, { passive: false });
+    listen(host, 'pointerdown', onPointerDown);
+    listen(host, 'pointermove', onPointerMove);
+    listen(host, 'pointerup', onPointerUp);
+    listen(host, 'pointercancel', onPointerUp);
+    listen(host, 'click', onClickCapture, true);
+    listen(host, 'click', onToolClick);
+    listen(host, 'wheel', onWheel, { passive: false });
     textarea.addEventListener('input', onInput);
     designBox.addEventListener('input', onDesignInput);
     designBox.addEventListener('change', onDesignInput);
@@ -1087,7 +1092,7 @@
       head.addEventListener('pointerup', up);
       head.addEventListener('pointercancel', up);
     });
-    document.addEventListener('keydown', onUndoKey);
+    listen(document, 'keydown', onUndoKey);
     const resized = new ResizeObserver(() => drawPins());
     resized.observe(host);
 
@@ -1164,6 +1169,7 @@
       noteStep: () => { trail.push({ kind: 'pane' }); ahead = []; },
       goTo,
       destroy() {
+        listening.abort();
         // A note being typed is not lost to a closed pane.
         flush();
         document.removeEventListener('keydown', onUndoKey);

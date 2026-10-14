@@ -34,6 +34,10 @@
   }
 
   function mount(host, opts) {
+    // Every listener this one sets on what outlives it (its host, the
+    // document) goes with it: a host mounted again would answer twice.
+    const listening = new AbortController();
+    const listen = (target, type, fn, options) => target.addEventListener(type, fn, Object.assign(typeof options === 'boolean' ? { capture: options } : Object.assign({}, options), { signal: listening.signal }));
     host.innerHTML = '<div class="dm">'
       + '<div class="dm-switch" hidden><div class="dm-branches" role="group" aria-label="branch"></div>'
       + '<div class="dm-features" hidden role="menu" aria-label="feature branches"></div>'
@@ -705,8 +709,8 @@
       const first = e.target.options[0];
       show(st.branch, first && e.target.value === first.value ? '' : e.target.value);
     });
-    host.addEventListener('click', onClick);
-    host.addEventListener('click', onBuild);
+    listen(host, 'click', onClick);
+    listen(host, 'click', onBuild);
     search.addEventListener('input', markSearch);
     search.addEventListener('keydown', (e) => {
       e.stopPropagation(); // the page's Escape would leave the pane
@@ -744,6 +748,7 @@
         return { what: describe(target), text: context(target) };
       },
       destroy() {
+        listening.abort();
         st.gone = true;
         clearTimeout(st.buildTimer);
         clearTimeout(st.timer);

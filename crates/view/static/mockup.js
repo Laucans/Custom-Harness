@@ -62,6 +62,11 @@
   function remember(branch, page) { const all = kept(LAST, {}) || {}; all[branch] = page; keep(LAST, all); }
 
   function mount(host, opts) {
+    // Every listener this pane sets on what outlives it (its host, the
+    // document, the window) goes with it: a host mounted again would
+    // answer twice otherwise.
+    const listening = new AbortController();
+    const listen = (target, type, fn, options) => target.addEventListener(type, fn, Object.assign(typeof options === 'boolean' ? { capture: options } : Object.assign({}, options), { signal: listening.signal }));
     host.innerHTML = '<div class="dm mk">'
       + '<div class="dm-switch" hidden><div class="dm-branches" role="group" aria-label="branch"></div>'
       + '<div class="dm-features" hidden role="menu" aria-label="feature branches"></div></div>'
@@ -662,16 +667,16 @@
       }
     };
     const onKeyUp = (e) => { if (e.key === ' ') { st.space = false; host.classList.remove('mk-space'); } };
-    host.addEventListener('focusin', (e) => { if (e.target.classList.contains('fg-kit-search')) searchKit(e.target.value); });
-    host.addEventListener('input', (e) => { if (e.target.classList.contains('fg-kit-search')) { st.kitPick = ''; searchKit(e.target.value); } });
-    host.addEventListener('keydown', (e) => {
+    listen(host, 'focusin', (e) => { if (e.target.classList.contains('fg-kit-search')) searchKit(e.target.value); });
+    listen(host, 'input', (e) => { if (e.target.classList.contains('fg-kit-search')) { st.kitPick = ''; searchKit(e.target.value); } });
+    listen(host, 'keydown', (e) => {
       if (!e.target.classList.contains('fg-kit-search')) return;
       e.stopPropagation();
       if (e.key === 'Escape') { q('.fg-kit-list').hidden = true; st.kitPick = ''; e.target.value = ''; design.setTool('move'); e.target.blur(); }
       if (e.key === 'Enter') { const first = q('.fg-kit-list [data-kit-pick]'); if (first) pickKit(first.dataset.kitPick); }
     });
-    host.addEventListener('pointerdown', (e) => { if (!e.target.closest('.fg-kit')) q('.fg-kit-list').hidden = true; }, true);
-    host.addEventListener('click', (e) => {
+    listen(host, 'pointerdown', (e) => { if (!e.target.closest('.fg-kit')) q('.fg-kit-list').hidden = true; }, true);
+    listen(host, 'click', (e) => {
       const pick = e.target.closest('[data-kit-pick]');
       if (pick) { pickKit(pick.dataset.kitPick); return; }
       onMissing(e);
@@ -2096,13 +2101,13 @@
       if (e.target.classList.contains('mk-version-name') && st.history && st.history.current) { st.history.current.name = e.target.value.slice(0, 80); persist(); }
       if (e.target.classList.contains('mk-fork-name')) renameForkTo(e.target.dataset.from, e.target.value);
     };
-    host.addEventListener('click', onClick);
-    host.addEventListener('click', onCardMock);
-    host.addEventListener('click', (e) => {
+    listen(host, 'click', onClick);
+    listen(host, 'click', onCardMock);
+    listen(host, 'click', (e) => {
       const b = e.target.closest('[data-mkd]');
       if (b && !b.disabled) settleDraft(b.dataset.name, b.dataset.mkd);
     });
-    host.addEventListener('click', (e) => {
+    listen(host, 'click', (e) => {
       const b = e.target.closest('[data-mf]');
       if (!b || b.disabled) return;
       switch (b.dataset.mf) {
@@ -2121,32 +2126,32 @@
       }
     });
     // A unit pointed at in the panel outlines its parts in the frame.
-    host.addEventListener('mouseover', (e) => {
+    listen(host, 'mouseover', (e) => {
       const row = e.target.closest && e.target.closest('.mk-rules .mk-rule');
       if (row) { st.mfHover = { unit: row.dataset.unit, how: row.dataset.how }; drawMarks(); }
     });
-    host.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('.mk-rules') && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.mk-rules'))) { st.mfHover = null; drawMarks(); } });
-    host.addEventListener('change', onChange);
-    host.addEventListener('keydown', onKey);
-    host.addEventListener('keyup', onKeyUp);
-    q('.mk-strip').addEventListener('pointerdown', onStripDown);
-    document.addEventListener('pointerup', onChipUp, true);
-    q('.mk-strip').addEventListener('mouseover', (e) => { const chip = e.target.closest && e.target.closest('[data-chip]'); setHot(chip ? chip.dataset.chip : ''); });
-    q('.mk-strip').addEventListener('mouseleave', () => setHot(''));
+    listen(host, 'mouseout', (e) => { if (e.target.closest && e.target.closest('.mk-rules') && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.mk-rules'))) { st.mfHover = null; drawMarks(); } });
+    listen(host, 'change', onChange);
+    listen(host, 'keydown', onKey);
+    listen(host, 'keyup', onKeyUp);
+    listen(q('.mk-strip'), 'pointerdown', onStripDown);
+    listen(document, 'pointerup', onChipUp, true);
+    listen(q('.mk-strip'), 'mouseover', (e) => { const chip = e.target.closest && e.target.closest('[data-chip]'); setHot(chip ? chip.dataset.chip : ''); });
+    listen(q('.mk-strip'), 'mouseleave', () => setHot(''));
     const boardHost = q('.mk-board');
     // Over the shield, the part under the pointer is found through the frame.
-    boardHost.addEventListener('pointermove', (e) => {
+    listen(boardHost, 'pointermove', (e) => {
       if (!st.strip || st.view !== 'page' || st.vp) return;
       const el = elementAt(e.clientX, e.clientY, '[data-component]');
       setHot(el ? el.dataset.component : '');
     });
-    boardHost.addEventListener('pointerleave', () => setHot(''));
+    listen(boardHost, 'pointerleave', () => setHot(''));
     // A press and a release on the page, in the same spot: a click on a
     // micro-frontend, not a pan. Read in the capture phase, before the board
     // swallows a click or the editor takes the press.
     let lockPress = null;
-    boardHost.addEventListener('pointerdown', (e) => { lockPress = e.button === 0 && e.target.classList.contains('mk-shield') ? { x: e.clientX, y: e.clientY } : null; }, true);
-    boardHost.addEventListener('pointerup', (e) => {
+    listen(boardHost, 'pointerdown', (e) => { lockPress = e.button === 0 && e.target.classList.contains('mk-shield') ? { x: e.clientX, y: e.clientY } : null; }, true);
+    listen(boardHost, 'pointerup', (e) => {
       const press = lockPress;
       lockPress = null;
       if (!press || Math.hypot(e.clientX - press.x, e.clientY - press.y) > SLOP) return;
@@ -2154,12 +2159,12 @@
       const el = elementAt(e.clientX, e.clientY, '[data-component]');
       if (el) setLocked(st.locked === el.dataset.component ? '' : el.dataset.component);
     }, true);
-    boardHost.addEventListener('pointerdown', onViewportDown, true);
-    boardHost.addEventListener('pointermove', onViewportMove, true);
-    boardHost.addEventListener('pointerup', onViewportUp, true);
-    document.addEventListener('keydown', onKey);
-    document.addEventListener('keyup', onKeyUp);
-    window.addEventListener('keydown', onFullKey, true);
+    listen(boardHost, 'pointerdown', onViewportDown, true);
+    listen(boardHost, 'pointermove', onViewportMove, true);
+    listen(boardHost, 'pointerup', onViewportUp, true);
+    listen(document, 'keydown', onKey);
+    listen(document, 'keyup', onKeyUp);
+    listen(window, 'keydown', onFullKey, true);
     const measured = setInterval(measure, 1000);
 
     load();
@@ -2194,6 +2199,7 @@
       // before it moves on or accepts.
       async flush() { if (st.engine && st.engine.ops.length && !st.readOnly) await materialize(); },
       destroy() {
+        listening.abort();
         const at = MOUNTED.indexOf(keyed);
         if (at >= 0) MOUNTED.splice(at, 1);
         leavePage();

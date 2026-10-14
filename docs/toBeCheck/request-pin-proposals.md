@@ -28,6 +28,20 @@ linear Cmd+Z history covers pins, rules, requests and retouches.
 - Cmd+Z of "a pin placed" from another page: question, view went back,
   pin gone; Cmd+Shift+Z there without a question; Cmd+Z again.
 
+## Fixed since: the duplicated empty pins
+
+A board's `destroy()` emptied its host but left its listeners on it, and
+the mock-up pane builds every page's board on the same host: each page
+visited left a board that still drew zones and dropped pins — saving them
+on *its* page. One zone drawn after two page changes made 5 pins on 2
+pages, same millisecond (reproduced with the saves intercepted). Every
+listener a board or a pane (mock-up, kit, data model, gallery) sets on what
+outlives it now goes with it (an `AbortController`): the same gesture made
+1 save, on the page shown.
+
+- [ ] Over a session of page changes and pins, no pin appears on a page
+      it was not placed on (`/api/notes`: no empty twins).
+
 ## To verify
 
 - [ ] **Validate** in the blue bar: fragment replaced, the pin turns green
@@ -48,7 +62,5 @@ linear Cmd+Z history covers pins, rules, requests and retouches.
 
 ## Not fixed
 
-- Empty request zones duplicated on several boards with identical
-  timestamps: origin not found (cleared by hand on 2026-10-14).
 - After each restart the view opens the harness-dnd2 factory: switch back
   to ForgeDesMondes from the factory menu.

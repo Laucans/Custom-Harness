@@ -30,6 +30,10 @@
   const stateName = { pending: 'to generate', running: 'generating…', generated: 'generated', failed: 'failed' };
 
   function mount(host, opts) {
+    // Every listener this one sets on what outlives it (its host, the
+    // document) goes with it: a host mounted again would answer twice.
+    const listening = new AbortController();
+    const listen = (target, type, fn, options) => target.addEventListener(type, fn, Object.assign(typeof options === 'boolean' ? { capture: options } : Object.assign({}, options), { signal: listening.signal }));
     host.innerHTML = '<div class="dm kt">'
       + '<div class="dm-bar">'
       + '<div class="mk-views" role="group" aria-label="view"><button type="button" data-kt="tab" data-tab="system">design system</button><button type="button" data-kt="tab" data-tab="catalogue">catalogue</button><button type="button" data-kt="tab" data-tab="canvas">canvas</button></div>'
@@ -964,7 +968,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
     }
 
     // ---- what the human does ---------------------------------------------------------------------
-    host.addEventListener('click', async (e) => {
+    listen(host, 'click', async (e) => {
       const b = e.target.closest('[data-kt]');
       if (!b || b.disabled) return;
       const what = b.dataset.kt; const name = b.dataset.name || '';
@@ -1018,7 +1022,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         default: break;
       }
     });
-    host.addEventListener('change', async (e) => {
+    listen(host, 'change', async (e) => {
       if (e.target.matches('select[data-kt="swap"]')) { swapToken(e.target); return; }
       const t = e.target;
       if (t.matches('[data-kt="tokens-file"]') && t.files[0]) { q('.kt-json').value = await t.files[0].text(); return; }
@@ -1041,7 +1045,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       }
       if (t.matches('input[type="color"][data-token]')) { const text = host.querySelector(`.kt-token[data-token="${CSS.escape(t.dataset.token)}"]`); if (text) { text.value = t.value; keepTokens(); } }
     });
-    host.addEventListener('input', (e) => {
+    listen(host, 'input', (e) => {
       if (e.target.matches('.kt-token')) keepTokens();
       if (e.target.matches('[data-kt="bg"]')) pickBackground(e.target.value);
     });
@@ -1059,7 +1063,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         } catch (err) { say(`<span class="bad">${esc(String(err.message || err).split('\n')[0])}</span>`); }
       }, 600);
     }
-    host.addEventListener('submit', async (e) => {
+    listen(host, 'submit', async (e) => {
       const form = e.target.closest('.kt-custom');
       if (!form) return;
       e.preventDefault();
@@ -1102,6 +1106,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         };
       },
       destroy() {
+        listening.abort();
         st.gone = true;
         clearTimeout(st.timer); clearTimeout(st.editTimer); clearTimeout(st.toastTimer);
         if (st.gallery) st.gallery.destroy();
