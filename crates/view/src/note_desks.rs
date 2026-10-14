@@ -248,9 +248,14 @@ impl NoteDesks {
         if compact && grew && !self.note(board, id)?.kind.keeps_its_text() {
             let mut note = self.note(board, id)?;
             let about = Self::about(board, &note);
-            let text = self
-                .ask(note_session::compact_prompt(&about, &conversation.digest()))
-                .await?;
+            // A request's text is what Propose applies: the discussion
+            // rewrites the request itself, not an account of where it stands.
+            let asked = if note.kind == Kind::Request {
+                note_session::request_prompt(&about, &conversation.digest())
+            } else {
+                note_session::compact_prompt(&about, &conversation.digest())
+            };
+            let text = self.ask(asked).await?;
             note.text = text.chars().take(MAX_TEXT).collect();
             note.at = now();
             self.setup.store.put(board, &note)?;
@@ -474,6 +479,42 @@ mod tests {
             shape: None,
             turns: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn a_request_s_session_validated_rewrites_the_request_itself() {
+        let store = Arc::new(Shelf::default());
+        store
+            .put("mockup--main--home", &pin(Kind::Request))
+            .expect("kept");
+        let oneshot = Arc::new(Echo::default());
+        let desks = NoteDesks::new(Setup {
+            store: Arc::clone(&store) as Arc<dyn NoteStore>,
+            maker: Arc::new(Maker::default()) as Arc<dyn TerminalMaker>,
+            oneshot: Arc::clone(&oneshot) as Arc<dyn Oneshot>,
+            transcripts: Arc::new(Kept),
+            model: "claude-sonnet-5-5".into(),
+            cwd: PathBuf::from("/tmp"),
+            permission_mode: "bypassPermissions".into(),
+        });
+        desks
+            .open("mockup--main--home", "n1", Brief::default())
+            .await
+            .expect("opened");
+        desks
+            .close("mockup--main--home", "n1", true)
+            .await
+            .expect("closed");
+        assert!(lock(&oneshot.asked)[0].contains("Formulate the change"));
+        let rewritten = store.notes("mockup--main--home").expect("read")[0]
+            .note
+            .clone();
+        assert!(
+            rewritten
+                .text
+                .starts_with("answer to: This is a brainstorm")
+        );
+        assert_eq!(rewritten.kind, Kind::Request, "it stays a request");
     }
 
     #[tokio::test]

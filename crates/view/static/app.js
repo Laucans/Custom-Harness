@@ -1271,6 +1271,9 @@
     try { if (t.term) t.term.dispose(); } catch (e) { /* already gone */ }
     // The pin's turns are counted once the session is closed: the canvas rereads them.
     if (closing) { const canvas = S.canvas; closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); }
+    // A pin's session closed: whatever pane shows its board — the side
+    // pane's or one a page mounted (a creation step's easel) — follows it.
+    if (closing && t.who === 'note_session') window.dispatchEvent(new CustomEvent('harness:pin-session', { detail: { board: t.p.board, id: t.p.id, keep, done: closing } }));
   }
   $('talk-ok').addEventListener('click', () => closeTalk(true));
   $('talk-x').addEventListener('click', () => closeTalk(true, false));

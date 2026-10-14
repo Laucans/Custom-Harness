@@ -686,6 +686,10 @@
         if (asked !== base) return;
         notes = read;
       } catch (e) { notes = []; }
+      // The pin open shows its words as read — rewritten by a session, say —
+      // unless they are being typed.
+      const open = notes.find((x) => x.id === openId);
+      if (open && document.activeElement !== textarea) { textarea.value = open.text || ''; drawEditor(open); }
       drawPins();
       if (opts.onLoaded) opts.onLoaded(id);
     }
@@ -960,6 +964,8 @@
         undoPin(n, act.dataset.note === 'undo-delete');
         return;
       }
+      // A proposed request's words are fixed: discussing them is a change too.
+      if (act.dataset.note === 'session' && n && proposed(n)) { lockBadge(e, n); return; }
       if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
       if (act.dataset.note === 'apply' && n && opts.apply && !applying.has(n.id)) {
         if (!(n.text || '').trim()) { setState('write the request first: it is what the AI applies'); textarea.focus(); return; }

@@ -2167,6 +2167,18 @@
     listen(window, 'keydown', onFullKey, true);
     const measured = setInterval(measure, 1000);
 
+    // A pin's session closed (app.js): validated, the AI rewrites its words —
+    // the pin says so meanwhile, and its board is read again once it is done.
+    listen(window, 'harness:pin-session', (e) => {
+      const d = e.detail || {};
+      if (!st.board || d.board !== boardOf() || !d.done) return;
+      const board = d.board;
+      const done = Promise.resolve(d.done).catch(() => {}).then(() => { if (st.board && boardOf() === board) st.board.reload(); });
+      if (d.keep && st.board.track) {
+        if (st.board.progress) st.board.progress(d.id, 'the AI rewrites the request from the discussion…');
+        st.board.track([d.id], done);
+      }
+    });
     load();
     // Cmd+Z goes to the history of the pane on screen.
     const keyed = { visible: () => host.isConnected && host.offsetParent !== null, step: (dir) => historyStep(dir) };
