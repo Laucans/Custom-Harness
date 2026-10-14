@@ -341,7 +341,7 @@ pub(super) struct MfApplyAsk {
 
 /// Keeps, in each pin's step, the files as they were before a write — the
 /// write's place in the branch's order with them.
-fn keep_steps(
+pub(super) fn keep_steps(
     state: &AppState,
     branch: &str,
     pins: &[String],

@@ -310,6 +310,9 @@
         // Its changes go in the mock-up's history; its undo is the history's.
         headers: () => H(),
         history: (dir) => historyStep(dir),
+        // A request made in the files with an AI: the page's draft written
+        // into its file first, so the AI works on what the canvas shows.
+        onRework: st.view === 'page' && opts && opts.onSession ? (note, ctx) => reworkOnPage(note, ctx) : undefined,
         // A pin open on the page: the micro-frontends it touches lit, told to the desk.
         onOpen: (note) => setPinned(st.view === 'page' ? mfsUnder(note) : []),
         onClose: () => setPinned([]),
@@ -893,6 +896,18 @@
       }
       const where = [page.ops ? page.said : '', drafted.length ? `${drafted.join(', ')} drafted` : ''].filter(Boolean).join('; ');
       return `${where}${await proposeRules(n, drafted[0] || '', g)} — validate it above the page${left.length ? `. Left to you: ${left.join('; ')}` : ''}`;
+    }
+    // A request reworked in the files with an AI: the page's draft written
+    // into its file and its operations closed, then the session opened —
+    // in the branch's workspace, the canvas following what it saves.
+    async function reworkOnPage(n, ctx) {
+      if (st.engine && st.engine.ops.length) {
+        await materialize();
+        st.stamp = '';
+        await load();
+        await draftCall('reset', { base: (currentPage() || {}).hash || '' });
+      }
+      opts.onSession({ board: boardOf(), id: n.id, on: describe(n.target), kind: n.kind, context: ctx, branch: st.branch, page: st.page, rework: true, components: onPage() });
     }
     // A micro-frontend redrafted for a request pin: its step keeps the draft
     // as it was, for the pin's Undo. Answers what the AI left of the request
@@ -2212,9 +2227,28 @@
       const d = e.detail || {};
       if (!st.board || d.board !== boardOf() || !d.done) return;
       const board = d.board;
-      const done = Promise.resolve(d.done).catch(() => {}).then(() => { if (st.board && boardOf() === board) st.board.reload(); });
+      const done = Promise.resolve(d.done).catch(() => {}).then(async () => {
+        if (!st.board || boardOf() !== board) return;
+        st.board.reload();
+        // A rework kept: what it saved is the mock-up now — the pin settled,
+        // the rules it touches read again; dropped, the files are back.
+        if (d.rework) {
+          await loadGens();
+          st.stamp = '';
+          load();
+          const n = st.board.all().find((x) => x.id === d.id);
+          if (d.keep && n) {
+            const g = gestureOf('a request reworked with the AI');
+            // A micro-frontend's draft it left waits for the bar above the
+            // page: the pin stays proposed until then; else it is settled.
+            const waits = (st.mfDrafts || []).some((x) => x === n.component || mfOfPin(n) === x);
+            st.board.patch(d.id, { state: waits ? 'simulated' : 'validated' }, H(g));
+            proposeRules(n, n.component || '', g);
+          }
+        }
+      });
       if (d.keep && st.board.track) {
-        if (st.board.progress) st.board.progress(d.id, 'the AI rewrites the request from the discussion…');
+        if (st.board.progress) st.board.progress(d.id, d.rework ? 'keeping what the AI made, then the rules it touches…' : 'the AI rewrites the request from the discussion…');
         st.board.track([d.id], done);
       }
     });

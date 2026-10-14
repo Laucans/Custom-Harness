@@ -661,7 +661,7 @@
       strip: p.strip,
       // Where the pane stands — its view, the micro-frontend opened — so going back finds it there.
       onPlace: (place) => Object.assign(p, place),
-      onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page }),
+      onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page, rework: !!s.rework, components: s.components || [] }),
     }) : null),
   };
 
@@ -1087,14 +1087,14 @@
     // A pin's AI session: opened by the server with the pin's conversation
     // handed back, closed when the pane is left — its turns are then kept.
     note_session: {
-      title: (p) => `${{ request: 'Request', asking: 'Request', simulate: 'Request', link: 'New page', design: 'Micro-frontend', note: 'Note' }[p.pin] || 'Session'} · ${p.on}`,
+      title: (p) => `${p.rework ? 'Rework with AI' : { request: 'Request', asking: 'Request', simulate: 'Request', link: 'New page', design: 'Micro-frontend', note: 'Note' }[p.pin] || 'Session'} · ${p.on}`,
       flag: '--no-steward',
       chips: [
         ['Where are we?', 'Summarize where we are: what is decided, what is open.'],
         ['What are the options?', 'List the options we have here, with their trade-offs.'],
         ['What would you recommend?', 'What would you recommend, and why?'],
       ],
-      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', dir: p.dir || '', page: p.page || '' }) })
+      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', dir: p.dir || '', page: p.page || '', rework: !!p.rework, components: p.components || [] }) })
         .then(async (r) => (r.ok ? r.json() : { available: false, why: await r.text() })),
       socket: (p) => `/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/term`,
       close: (p, keep = true) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/close${keep ? '' : '?keep=false'}`, { method: 'POST', keepalive: true }),
@@ -1273,7 +1273,7 @@
     if (closing) { const canvas = S.canvas; closing.then(() => { if (canvas && canvas.reload) canvas.reload(); }).catch(() => {}); }
     // A pin's session closed: whatever pane shows its board — the side
     // pane's or one a page mounted (a creation step's easel) — follows it.
-    if (closing && t.who === 'note_session') window.dispatchEvent(new CustomEvent('harness:pin-session', { detail: { board: t.p.board, id: t.p.id, keep, done: closing } }));
+    if (closing && t.who === 'note_session') window.dispatchEvent(new CustomEvent('harness:pin-session', { detail: { board: t.p.board, id: t.p.id, keep, rework: !!t.p.rework, done: closing } }));
   }
   $('talk-ok').addEventListener('click', () => closeTalk(true));
   $('talk-x').addEventListener('click', () => closeTalk(true, false));

@@ -61,6 +61,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         drafts: Arc::new(Versions::default()),
         steps: Arc::new(Steps::default()),
         history: Arc::new(Lines::default()),
+        reworks: Arc::default(),
         note_desks: None,
         mockups: None,
         kit: None,
@@ -2569,6 +2570,64 @@ fn undo_fixture() -> (std::path::PathBuf, AppState, Arc<Steps>, Arc<Pins>) {
         ..state_without_plant()
     };
     (dir, state, steps, pins)
+}
+
+#[tokio::test]
+async fn a_rework_dropped_puts_every_file_back_and_kept_goes_in_the_history_and_the_pin_s_step() {
+    let dir = std::env::temp_dir().join(format!("harness-rework-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("main/mock/pages")).expect("dir");
+    let file = |path: &str| dir.join("main/mock").join(path);
+    std::fs::write(file("pages/a.html"), "<main>before</main>").expect("page");
+    let state = AppState {
+        mockups: Some(Arc::new(crate::adapters::mockups::DirMockups::new(&dir))),
+        ..state_without_plant()
+    };
+    let (board, pin) = ("mockup--main--a", "p1");
+
+    // Dropped: the page written and a style added are put back.
+    super::rework::take(&state, "main", board, pin)
+        .await
+        .expect("taken");
+    std::fs::write(file("pages/a.html"), "<main>after</main>").expect("edited");
+    std::fs::write(file("style.css"), ".rail{}").expect("added");
+    assert_eq!(
+        super::rework::settle(&state, board, pin, false).await,
+        Ok(2)
+    );
+    assert_eq!(
+        std::fs::read_to_string(file("pages/a.html")).expect("page"),
+        "<main>before</main>"
+    );
+    assert!(!file("style.css").exists());
+    assert_eq!(
+        super::rework::settle(&state, board, pin, false).await,
+        Ok(0),
+        "settled once"
+    );
+
+    // Kept: in the history, and in the pin's step for its Undo.
+    super::rework::take(&state, "main", board, pin)
+        .await
+        .expect("taken again");
+    std::fs::write(file("pages/a.html"), "<main>rail</main>").expect("edited");
+    assert_eq!(super::rework::settle(&state, board, pin, true).await, Ok(1));
+    assert_eq!(
+        std::fs::read_to_string(file("pages/a.html")).expect("page"),
+        "<main>rail</main>"
+    );
+    let entries = state.history.entries("main").expect("history");
+    assert_eq!(
+        entries.last().map(|e| e.what.as_str()),
+        Some("a request reworked with the AI")
+    );
+    let steps = state.steps.steps("main").expect("steps");
+    assert_eq!(steps.len(), 1);
+    assert_eq!(
+        (steps[0].pin.as_str(), steps[0].files[0].text.as_deref()),
+        (pin, Some("<main>before</main>"))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A request to the router with headers of its own.

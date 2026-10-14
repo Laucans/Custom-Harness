@@ -30,6 +30,7 @@ mod mockup;
 mod notes;
 mod plant;
 mod prompts;
+pub mod rework;
 mod runs;
 #[cfg(test)]
 mod tests;
@@ -174,6 +175,8 @@ pub struct AppState {
     pub steps: Arc<dyn StepStore>,
     /// The mock-up's history, for Cmd+Z.
     pub history: Arc<dyn HistoryStore>,
+    /// The requests being reworked with the AI: the mock-up as each found it.
+    pub reworks: rework::Reworks,
     /// The pins' AI sessions — `None` when the view runs no terminal.
     pub note_desks: Option<NoteDesks>,
     /// The product's mock-up on every branch — `None` when nothing can read

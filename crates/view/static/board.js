@@ -115,6 +115,7 @@
       + '<div class="hb-link-go" hidden><button type="button" data-note="go">Open the page →</button><button type="button" data-note="create">Create it with an AI session</button></div>'
       + '<div class="hb-apply" hidden><button type="button" data-note="apply">Propose</button><span class="hb-apply-state"></span></div>'
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
+      + '<div class="hb-rework" hidden><button type="button" data-note="rework" title="An AI makes it in the files with you — a layout included — the canvas showing each change; you keep all of it or drop all of it">Rework with AI</button></div>'
       + '<div class="hb-extra" hidden></div>'
       + '<div class="hb-backlog" hidden><button type="button" data-note="backlog" title="Open a harness:roadmap issue from this pin: the planner takes it from there">→ backlog</button><a class="hb-issue" target="_blank" rel="noopener" hidden>on the backlog ↗</a></div>'
       + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="undo-delete" title="Take back what the AI did for it, then delete it" hidden>undo &amp; delete</button><button type="button" data-note="delete">delete</button></div>'
@@ -393,6 +394,9 @@
         // Not `disabled`: a log button inside must stay clickable.
         if (locked || fixed) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
       });
+      // A request made in the files with an AI, the human talking to it.
+      editor.querySelector('.hb-rework').hidden = kind !== 'request' || !opts.onRework;
+      editor.querySelector('[data-note="rework"]').disabled = locked;
       const session = editor.querySelector('.hb-session');
       session.hidden = kind === 'note' || kind === 'link' || !opts.onSession;
       session.querySelector('button').textContent = kind === 'design' ? (n.turns ? 'Continue the AI session' : 'Make / inject it with an AI session') : kind === 'request' ? 'Discuss it (AI session)' : 'Open the AI session';
@@ -973,6 +977,11 @@
       // A proposed request's words are fixed: discussing them is a change too.
       if (act.dataset.note === 'session' && n && proposed(n)) { lockBadge(e, n); return; }
       if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
+      if (act.dataset.note === 'rework' && n && opts.onRework && !applying.has(n.id)) {
+        if (!(n.text || '').trim()) { setState('write the request first: it is what the AI makes'); textarea.focus(); return; }
+        flush();
+        track([n.id], (n.fresh ? put(n) : Promise.resolve()).then(() => opts.onRework(n, opts.context ? opts.context(n.target) : '')).catch((err) => { news.set(n.id, { ok: false, text: 'no rework: ' + String((err && err.message) || err).split('\n')[0] }); }));
+      }
       if (act.dataset.note === 'apply' && n && opts.apply && !applying.has(n.id)) {
         if (!(n.text || '').trim()) { setState('write the request first: it is what the AI applies'); textarea.focus(); return; }
         flush();

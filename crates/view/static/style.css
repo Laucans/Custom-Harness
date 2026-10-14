@@ -722,6 +722,11 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .hb-kind.request.on { background: var(--pin-request); border-color: var(--pin-request); color: #2e1500; }
 .hb-note[data-kind="request"] { border-color: var(--pin-request); }
 .hb-note[data-kind="request"] .hb-session button { border-color: var(--pin-request); }
+.hb-rework { margin: 0 0 6px; }
+.hb-rework[hidden] { display: none; }
+.hb-rework button { width: 100%; background: transparent; color: var(--text); border: 1px dashed var(--pin-request); border-radius: 6px; padding: 5px 10px; font: 600 12px var(--sans); cursor: pointer; }
+.hb-rework button:hover { background: rgba(240, 138, 44, 0.12); }
+.hb-rework button:disabled { opacity: 0.5; cursor: progress; }
 .hb-apply { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
 .hb-apply[hidden] { display: none; }
 .hb-apply button { background: var(--pin-request); color: #2e1500; border: 1px solid var(--pin-request); border-radius: 6px; padding: 4px 10px; font: 600 12px var(--sans); cursor: pointer; }

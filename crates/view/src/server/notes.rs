@@ -18,6 +18,7 @@ use harness_architecture::kit;
 use super::desks::{TermQuery, term};
 use super::mock_history;
 use super::mockup::{NO_MOCKUPS, branch_or_integration};
+use super::rework;
 use super::{AppState, json, not_found};
 
 /// A board's pins, the deleted ones left out.
@@ -182,6 +183,13 @@ pub(super) struct SessionAsk {
     /// On the mock-up: the page the pin sits on.
     #[serde(default)]
     page: String,
+    /// A request reworked in the files with the human, not discussed.
+    #[serde(default)]
+    rework: bool,
+    /// On the mock-up: the micro-frontends the page shows — the rules they
+    /// carry go to a rework.
+    #[serde(default)]
+    components: Vec<String>,
 }
 
 /// The most of a schema a session is handed: a few hundred tables.
@@ -232,6 +240,7 @@ pub(super) async fn open_session(
         milestone,
         cwd: None,
         page: String::new(),
+        rework: false,
     };
     // A pin on the mock-up: its session runs in the branch's workspace,
     // made now if it is the first.
@@ -254,8 +263,23 @@ pub(super) async fn open_session(
             }
         };
         brief.cwd = Some(cwd);
-        brief.branch = branch;
         brief.page = ask.page.chars().take(200).collect();
+        // A rework edits the workspace: the mock-up as it is now is kept to
+        // put back if the human drops it, and the rules it must keep go with it.
+        if ask.rework {
+            if let Err(why) = rework::take(&state, &branch, &board, &id).await {
+                return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+            }
+            let rules = super::mockup::rules_for(&state, &brief.page, &ask.components).await;
+            if !rules.is_empty() {
+                brief.context = format!(
+                    "{}\n\nThe product's rules this page or its micro-frontends carry — a change must keep them:\n{rules}",
+                    brief.context
+                );
+            }
+            brief.rework = true;
+        }
+        brief.branch = branch;
     }
     // A pin on the kit's canvas: its session runs in the design system's
     // workspace, where the fragments are.
@@ -306,14 +330,19 @@ pub(super) async fn close_session(
     let Some(desks) = state.note_desks.clone() else {
         return not_found(NO_SESSIONS);
     };
-    if query.keep == Some(false) {
-        return match desks.discard(&board, &id) {
-            Ok(turns) => json(&serde_json::json!({ "turns": turns })),
-            Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
-        };
-    }
-    match desks.close(&board, &id, true).await {
-        Ok(turns) => json(&serde_json::json!({ "turns": turns })),
+    let keep = query.keep != Some(false);
+    let turns = if keep {
+        desks.close(&board, &id, true).await
+    } else {
+        desks.discard(&board, &id)
+    };
+    // A rework's files: kept with the history and the pin's step, or put back.
+    let changed = match rework::settle(&state, &board, &id, keep).await {
+        Ok(changed) => changed,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    match turns {
+        Ok(turns) => json(&serde_json::json!({ "turns": turns, "changed": changed })),
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }
 }

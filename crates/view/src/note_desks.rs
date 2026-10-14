@@ -43,6 +43,8 @@ pub struct Setup {
 struct Open {
     desk: Desk,
     session: String,
+    /// It reworks the request in the files, rather than talks about it.
+    rework: bool,
 }
 
 /// The pins' sessions; cheap to clone, shared by the handlers.
@@ -157,6 +159,15 @@ impl NoteDesks {
     /// No such pin, the store unreadable, or the summary failed.
     pub async fn open(&self, board: &str, id: &str, brief: Brief) -> Result<String, String> {
         if let Some(open) = lock(&self.open).get(&key(board, id)) {
+            // A discussion is not a rework: the one open is closed first.
+            if open.rework != brief.rework {
+                return Err(if open.rework {
+                    "this pin is being reworked with the AI: validate or quit that session first"
+                        .to_string()
+                } else {
+                    "a discussion of this pin is open: validate or quit it first".to_string()
+                });
+            }
             return Ok(open.desk.command());
         }
         let note = self.note(board, id)?;
@@ -170,6 +181,7 @@ impl NoteDesks {
             branch: brief.branch,
             schema: brief.schema,
             milestone: brief.milestone,
+            rework: brief.rework,
             ..Self::about(board, &note)
         };
         let mut conversation = self.conversation(board, id)?;
@@ -184,7 +196,7 @@ impl NoteDesks {
         let session = uuid();
         // A conversation, not a change: Claude reads, it does not edit. A
         // simulate or a page to create edits the mock-up's workspace.
-        let permission_mode = if note.kind.edits() {
+        let permission_mode = if note.kind.edits() || about.rework {
             self.setup.permission_mode.clone()
         } else {
             "plan".to_string()
@@ -214,7 +226,14 @@ impl NoteDesks {
             if let Some(existing) = open.get(&key(board, id)) {
                 return Ok(existing.desk.command());
             }
-            open.insert(key(board, id), Open { desk, session });
+            open.insert(
+                key(board, id),
+                Open {
+                    desk,
+                    session,
+                    rework: about.rework,
+                },
+            );
         }
         Ok(command)
     }
@@ -287,6 +306,7 @@ impl NoteDesks {
             branch: String::new(),
             schema: String::new(),
             milestone: String::new(),
+            rework: false,
             note: note.text.clone(),
             kind: match note.kind {
                 Kind::Note | Kind::Brainstorm => "brainstorm",

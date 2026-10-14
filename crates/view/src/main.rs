@@ -257,6 +257,7 @@ async fn main() -> anyhow::Result<()> {
         drafts,
         steps,
         history,
+        reworks: Arc::default(),
         note_desks: note_desks.clone(),
         builds: builds_for(&cli, &root),
         integration_branch: cli.integration_branch.clone(),

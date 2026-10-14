@@ -38,6 +38,15 @@ pub(super) struct Gesture {
 }
 
 impl Gesture {
+    /// A gesture the server makes itself, on a branch's history.
+    pub fn new(branch: &str, what: &str) -> Self {
+        Self {
+            branch: branch.to_string(),
+            token: String::new(),
+            what: what.to_string(),
+        }
+    }
+
     /// The gesture the page says a request belongs to; `what` when it says
     /// not what it was.
     pub fn of(headers: &HeaderMap, what: &str) -> Self {

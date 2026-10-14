@@ -298,6 +298,10 @@ pub struct About {
     /// ([`milestone_words`]); empty for another branch.
     #[serde(default)]
     pub milestone: String,
+    /// The session reworks the request in the files, with the human,
+    /// rather than talks about it.
+    #[serde(default)]
+    pub rework: bool,
 }
 
 /// What the page tells a session it opens: what it shows of the pin's
@@ -318,6 +322,8 @@ pub struct Brief {
     pub cwd: Option<std::path::PathBuf>,
     /// On the mock-up: the page the pin sits on.
     pub page: String,
+    /// A request reworked in the files with the human, not discussed.
+    pub rework: bool,
 }
 
 /// The most of a milestone's description a session is handed.
@@ -351,6 +357,7 @@ pub fn milestone_words(milestone: &crate::ports::Milestone) -> String {
 #[must_use]
 pub fn briefing(about: &About, handback: &Handback) -> String {
     let mut text = match about.kind.as_str() {
+        _ if about.rework => rework_briefing(about),
         "link" => page_briefing(about),
         "design" => design_briefing(about),
         _ => talk_briefing(about),
@@ -473,6 +480,34 @@ fn page_briefing(about: &About) -> String {
 
 /// A design: a micro-frontend to make from its spec, and to inject in the
 /// page the pin sits on when it sits on one.
+/// A request made in the files with the human: the mock-up's rules, what
+/// the request asks, how what is saved shows, and what stays the view's.
+fn rework_briefing(about: &About) -> String {
+    let mut text = mockup_rules(about);
+    let _ = write!(
+        text,
+        "\nThe human pinned a request on {target} of the page `{page}` and asks you to make it in \
+         the files, here, with them — the request is below, and what the view already tried for it \
+         is in what the view shows. Edit the page under `mock/pages/`, its micro-frontends under \
+         `mock/components/` and `mock/style.css` as the request needs, a layout included (columns, \
+         a sticky part, a drawer, a breakpoint), keeping the micro-frontends' contract and the \
+         design system (the kit's components, the `var(--…)` tokens). A micro-frontend that has a \
+         draft (`mock/components/<Name>.draft.html`) shows its draft on the human's canvas: edit \
+         the draft then, not its fragment — the human settles drafts in the bar above the page. \
+         What you save shows on the canvas at once. Do what the request asks and keep the \
+         product's rules the view lists; when a point is unclear, ask before doing it. After each \
+         change, say in two lines what changed and where. When the human leaves you, they keep \
+         all of it or drop all of it.\n",
+        target = if about.target.is_empty() {
+            "a spot"
+        } else {
+            &about.target
+        },
+        page = about.page,
+    );
+    text
+}
+
 fn design_briefing(about: &About) -> String {
     let mut text = mockup_rules(about);
     if about.page.is_empty() {
@@ -564,6 +599,11 @@ fn talk_briefing(about: &About) -> String {
 pub fn first_prompt(about: &About) -> Option<String> {
     let note = about.note.trim();
     match about.kind.as_str() {
+        _ if about.rework => Some(format!(
+            "Make this request in the files of the page `{}` — read the page and the \
+             micro-frontends it concerns first, then say how you will do it before you start: {note}",
+            about.page
+        )),
         "link" => Some(if note.is_empty() {
             format!("Create the page `{}` of the mock-up.", about.page)
         } else {
@@ -739,6 +779,7 @@ not json
             milestone: String::new(),
             component: String::new(),
             source: String::new(),
+            rework: false,
         };
         let text = briefing(&about, &Handback::Nothing);
         assert!(text.contains("a *request*") && text.contains("Do not edit any file"));
@@ -848,6 +889,7 @@ not json
             source: String::new(),
             branch: "milestone/3-campaigns".into(),
             schema: "CREATE TABLE character (name varchar(40));".into(),
+            rework: false,
             milestone: milestone_words(&crate::ports::Milestone {
                 issue: Issue {
                     number: 3,
