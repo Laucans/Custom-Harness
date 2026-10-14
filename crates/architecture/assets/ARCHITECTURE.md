@@ -436,6 +436,7 @@ writing: they are the first to stabilise.
 | M. Data model | Data ↔ the agents' understanding of it | Read agents, migrations |
 | N. Mock pages | Mock-up ↔ screens | Human, UI agents |
 | O. Design system and kit | Tokens and visual components ↔ every screen | Human, UI agents |
+| P. Rules | What the product keeps ↔ the tests that prove it | Human (in the factory's design), rules' agent |
 
 ### A. Concept
 
@@ -702,6 +703,55 @@ components:
     recoded: "the banner reads its map from the shell's image service"
 ```
 
+### P. Rules
+
+`rules.json`: the rules the product must keep, as the human validated them
+in the factory's design — each a step of a user's **journey** or a
+**business** rule (an invariant, a computation), with the **criterion** a
+test proves it by, in three parts (given, when, then), and the pages and
+micro-frontends that carry it.
+
+```yaml
+version: 1
+rules:
+  - id: R3
+    title: A campaign archived leaves the list
+    family: business                  # journey | business
+    criterion:
+      given: a campaign in the list
+      when: the DM archives it
+      then: it is no longer listed
+    pages: [pages/campaigns.html]
+    components: [CampaignList]
+    # state: conform                  # the rule changed: its tests ahead of the code
+```
+
+**The rules are proved before they are built.** One task — the rules'
+task, labelled `harness:rules`, the first of the roadmap — writes every
+rule's tests before any development, from the criteria alone, and lands
+them; every development after conforms to them:
+
+- a **business** rule's test is Rust, in `tests/rules/business/tests/`; a
+  **journey** rule's is a browser test (Playwright) in `tests/rules/journey/`.
+  Both suites are their own, and reach the product only the way a Micro-UI
+  does — **by identifier**, over the shell's wire protocol
+  (`POST /capabilities/<id>`, `POST /commands`, `GET /commands/<id>`) and by
+  screen name — through the kit installed beside them;
+- every test names its rule (`rule("R3", needs, …)`), the units it needs
+  (`data-capability:ArchiveCampaign`, `capability:ListCampaigns`,
+  `micro-ui:…`, `screen:…`, `aggregate:…`) and copies the criterion as it is,
+  in three comment lines `given: …`, `when: …`, `then: …`;
+- a test is **pending** while a unit it needs is not built (no manifest names
+  it) or the product is not served (`scripts/rules-runtime.sh serve`, which
+  the task building the server teaches to serve): it passes, and says so.
+  Once everything it needs exists, it runs and must hold;
+- the data a test starts from is the mock-up's (`mock/fixtures/`), loaded by
+  the runtime, plus what a `given` asks;
+- a development never writes `rules.json` or `tests/rules/`: a test it cannot
+  meet is **contested**, and the rules' task settles it. A rule changed after
+  the start is rewritten with its tests by the rules' task and marked
+  `conform` until a task brings the code to it.
+
 ## CI gates
 
 Contracts protect only if they are verified automatically. These gates block
@@ -725,6 +775,9 @@ off until an agent implements them.
 | Relations | Every foreign key has a declared `onDelete` and `onUpdate` policy | I |
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
 | Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page; every Micro-UI has a micro-frontend whose listing says its needs and actions; the bundles are rebuilt from the Micro-UIs' code | D, E, N |
+| Rules covered | Every rule of `rules.json` has a test of its family naming it, its criterion copied as it is; no test names a rule `rules.json` has not (`scripts/rules-gate.mjs coverage`) | P |
+| Rules hold | Every rule's test whose units are built runs on the product the runtime serves, and passes; each rule's state (pending, green, red) is kept as `rules-status.json`; a rule marked `conform` may be red in a task, never where a milestone lands (`scripts/rules-gate.mjs status`) | P |
+| Rule tests untouched | A change that is not the rules' task leaves `rules.json` and `tests/rules/` alone (`scripts/rules-gate.mjs untouched`) | P |
 
 Beside the gates, the project's own CI (`.github/workflows/ci.yml`) judges
 the code and its tests, not the contracts: format and lint; the tests a

@@ -534,3 +534,87 @@ jobs:
             echo "::error file=$file::$file belongs to the design-system branch — the harness carries it here on publish; recode a kit component on design-system, never on this branch"
           done <<< "$changed"
           exit 1
+
+  # Contract P — every rule of rules.json has its test, of its family, its
+  # criterion copied as it is (scripts/rules-gate.mjs coverage).
+  rules-covered:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Every rule has its test, its criterion copied as it is
+        run: node scripts/rules-gate.mjs coverage
+
+  # Contract P — the rules hold: a rule's test runs once every unit it needs
+  # is built and the runtime serves the product, and must pass; a rule marked
+  # `conform` may stay red in a task, never where a milestone lands.
+  rules-hold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Serve the product for the rules' tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/rules-runtime.sh serve | tee rules-env
+          cat rules-env >> "$GITHUB_ENV"
+      - name: The business rules hold
+        shell: bash
+        env:
+          RULES_STATUS: ${{ github.workspace }}/target/rules-status.jsonl
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tests=(tests/rules/business/tests/*.rs)
+          if [ -f tests/rules/business/Cargo.toml ] && [ ${#tests[@]} -gt 0 ]; then
+            cargo test --manifest-path tests/rules/business/Cargo.toml
+          fi
+      - name: The journey rules hold
+        if: always()
+        shell: bash
+        env:
+          RULES_STATUS: ${{ github.workspace }}/target/rules-status.jsonl
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          specs=(tests/rules/journey/**/*.spec.ts)
+          if [ ${#specs[@]} -gt 0 ]; then
+            cd tests/rules/journey
+            npm install --no-audit --no-fund
+            if [ -n "${RULES_APP_URL:-}" ]; then npx playwright install --with-deps chromium; fi
+            npx playwright test
+          fi
+      - name: Each rule's state
+        if: always()
+        shell: bash
+        env:
+          RULES_STATUS: ${{ github.workspace }}/target/rules-status.jsonl
+          STRICT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main_agent' && '--strict' || '' }}
+        run: node scripts/rules-gate.mjs status $STRICT
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rules-status
+          path: rules-status.json
+          if-no-files-found: ignore
+
+  # Contract P — only the rules' task (label harness:rules) writes rules.json
+  # and the rules' tests: a development conforms to them, or contests them.
+  rule-tests-untouched:
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'harness:rules')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The rules and their tests are left alone
+        run: node scripts/rules-gate.mjs untouched "origin/${{ github.base_ref }}"

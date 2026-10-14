@@ -1,6 +1,6 @@
 # Contracts
 
-The fifteen interface contracts of the agent-native architecture
+The sixteen interface contracts of the agent-native architecture
 (`docs/ARCHITECTURE.md`, "Interface contracts"), as JSON Schema draft 2020-12.
 Installed by `harness init-repo`; the repository owns them from here. A change
 to one of them is its own task, and lists the units it touches.
@@ -22,6 +22,7 @@ to one of them is its own task, and lists the units it touches.
 | `m-data-model.schema.json` | M. Data model | `data/model.json`: what every table and field is for |
 | `n-mock-pages.schema.json` | N. Mock pages | `mock/pages.json`: the pages of the mock-up, one per screen |
 | `o-design-kit.schema.json` | O. Design system and kit | `mock/design/design.json` and `mock/kit/kit.json` on the `design-system` branch: the tokens' record, the kit's components |
+| `p-rules.schema.json` | P. Rules | `rules.json`: the rules the product keeps, each with the criterion its tests prove |
 
 Validate a manifest by hand the way the `gates` workflow does:
 

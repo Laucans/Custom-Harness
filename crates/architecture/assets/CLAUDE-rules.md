@@ -56,7 +56,10 @@ mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI (`source` in 
 mock/fixtures/*.json               what the Capabilities would answer
 mock/mock.js                       the loader: fills every data-component element from components/
 scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)
-contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
+contracts/*.schema.json            the sixteen contracts, JSON Schema 2020-12
+rules.json                         the rules the product keeps, with their criteria (contract P)
+tests/rules/business/  tests/rules/journey/   the rules' tests, written before the code (contract P)
+scripts/rules-runtime.sh           how the rules' tests reach the product: serve, stop
 ```
 
 ### Rules
@@ -102,14 +105,22 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
 10. **A Micro-UI declares `needs` and `actions`** and reads the Data through
     nothing else. Screens are composed from the registry and frozen in a
     versioned manifest; a frozen screen is replayed, never regenerated.
-11. **Contracts first.** A unit lands with its manifest or contract file and
+11. **The rules are tests, written first.** `rules.json` (contract P) and
+    `tests/rules/` are the rules' task's (`harness:rules`), never a
+    development's: a change makes the rules' tests it unblocks pass, without
+    touching them. A rule's test you cannot meet — it contradicts another
+    rule or the architecture — is **contested**: stop, and write
+    `CONTEST.md` at the repository's root (the rule's id, the test, why it
+    cannot hold) instead of changing it. The task that builds the server
+    keeps `scripts/rules-runtime.sh serve` serving it.
+12. **Contracts first.** A unit lands with its manifest or contract file and
     passes the gate that validates it. A change to a contract schema is its
     own task and lists the units it touches.
-12. **Read side merges on green gates; write side waits for a human.** In the
+13. **Read side merges on green gates; write side waits for a human.** In the
     harness, `harness:read-side` tasks run in parallel and merge on their own;
     `harness:write-side` tasks run one at a time and their pull request is
     merged by a human.
-13. **The data model is described in the task that changes it.** A migration
+14. **The data model is described in the task that changes it.** A migration
     that adds, renames or changes a table or a field updates `data/model.json`
     (contract M) in the same pull request: the field's `type` and `nullable`
     as the migration makes them, its `purpose` in a sentence, its business
@@ -119,7 +130,7 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
     `harness/data-model`, and compares the two — a divergence sends an agent
     to find out which side is wrong. Keep `scripts/dump-schema.sh` printing
     the schema the migrations build when the stack changes.
-14. **Every screen is mocked before it is built, and stays mocked.** The
+15. **Every screen is mocked before it is built, and stays mocked.** The
     mock-up under `mock/` is the product's frontend without a backend: one
     static HTML page per screen under `mock/pages/`, any file server runs it,
     no backend ever. `mock/pages.json` (contract N) lists every page with its

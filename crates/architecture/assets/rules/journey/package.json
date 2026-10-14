@@ -1,0 +1,8 @@
+{
+  "name": "rules-journey",
+  "private": true,
+  "type": "module",
+  "description": "The rules' journey tests: one test (or more) per journey rule of rules.json (contract P), written before the code by the rules' task. Installed by harness init-repo.",
+  "scripts": { "test": "playwright test" },
+  "devDependencies": { "@playwright/test": "^1.48.0" }
+}

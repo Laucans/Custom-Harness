@@ -102,7 +102,7 @@ pub fn issue(d: &Divergence, resolution: &str) -> Result<(String, String), Strin
     }
     body.push_str(
         "\n---\nOpened from the factory view's data model pane. A migration changes the \
-         structure; `data/model.json` (contract M) describes it — rule 13 of `CLAUDE.md`.\n",
+         structure; `data/model.json` (contract M) describes it — rule 14 of `CLAUDE.md`.\n",
     );
     Ok((title, body))
 }

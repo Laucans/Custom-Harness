@@ -2,12 +2,14 @@
 //!
 //! Compiled in, so every repository the plant works on carries the same
 //! architecture from the same source: the architecture document, the rules
-//! section of `CLAUDE.md`, the fifteen contracts, the CI gates, the project's
+//! section of `CLAUDE.md`, the sixteen contracts, the CI gates, the project's
 //! CI for its stack, the script that scopes its tests, the one that finds the
 //! dead code the compiler cannot see, the mutation gate's configuration and
 //! its rotation with the script that files what it misses, the script that
 //! dumps its schema, an empty data model to grow, an empty list of mock pages
-//! and the mock-up's loader, screen host, mock server and build. The kit's base
+//! and the mock-up's loader, screen host, mock server and build, and the
+//! rules' kit: their gate, their runtime's stub, the business and journey
+//! suites the rules' task writes their tests in. The kit's base
 //! fragments are not installed: the harness keeps them and writes the styled
 //! ones (`kit`). What to write of them in a given
 //! checkout, and what to keep, is `init-repo`'s decision, not this module's.
@@ -38,8 +40,8 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// The document, the gates, the CI, the test scope, the isolation check, the
 /// dead-code script, the mutants configuration, rotation and test-debt
 /// filing, the schema dump, the data model, the mock-up's files, the
-/// contracts A–O.
-pub const FILES: [Asset; 36] = [
+/// contracts A–P, the rules' gate, runtime and suites.
+pub const FILES: [Asset; 46] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -184,6 +186,46 @@ pub const FILES: [Asset; 36] = [
         path: "contracts/o-design-kit.schema.json",
         content: include_str!("../assets/contracts/o-design-kit.schema.json"),
     },
+    Asset {
+        path: "contracts/p-rules.schema.json",
+        content: include_str!("../assets/contracts/p-rules.schema.json"),
+    },
+    Asset {
+        path: "scripts/rules-gate.mjs",
+        content: include_str!("../assets/rules-gate.mjs"),
+    },
+    Asset {
+        path: "scripts/rules-runtime.sh",
+        content: include_str!("../assets/rules-runtime.sh"),
+    },
+    Asset {
+        path: "tests/rules/business/Cargo.toml",
+        content: include_str!("../assets/rules/business/Cargo.toml"),
+    },
+    Asset {
+        path: "tests/rules/business/src/lib.rs",
+        content: include_str!("../assets/rules/business/src/lib.rs"),
+    },
+    Asset {
+        path: "tests/rules/journey/package.json",
+        content: include_str!("../assets/rules/journey/package.json"),
+    },
+    Asset {
+        path: "tests/rules/journey/playwright.config.ts",
+        content: include_str!("../assets/rules/journey/playwright.config.ts"),
+    },
+    Asset {
+        path: "tests/rules/journey/kit.ts",
+        content: include_str!("../assets/rules/journey/kit.ts"),
+    },
+    Asset {
+        path: "tests/rules/journey/status-reporter.ts",
+        content: include_str!("../assets/rules/journey/status-reporter.ts"),
+    },
+    Asset {
+        path: "tests/rules/journey/.gitignore",
+        content: include_str!("../assets/rules/journey/gitignore"),
+    },
 ];
 
 /// The content of the asset installed at `path`, if there is one.
@@ -244,6 +286,40 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(asset.content)
                 .unwrap_or_else(|e| panic!("{} is not JSON: {e}", asset.path));
         }
+    }
+
+    #[test]
+    fn the_rules_kit_is_installed_and_the_gates_run_it() {
+        for path in [
+            "contracts/p-rules.schema.json",
+            "scripts/rules-gate.mjs",
+            "scripts/rules-runtime.sh",
+            "tests/rules/business/Cargo.toml",
+            "tests/rules/business/src/lib.rs",
+            "tests/rules/journey/kit.ts",
+            "tests/rules/journey/status-reporter.ts",
+        ] {
+            assert!(content_of(path).is_some(), "{path} is installed");
+        }
+        let gates = content_of(".github/workflows/gates.yml").unwrap_or_default();
+        for step in [
+            "node scripts/rules-gate.mjs coverage",
+            "node scripts/rules-gate.mjs status $STRICT",
+            "node scripts/rules-gate.mjs untouched",
+            "bash scripts/rules-runtime.sh serve",
+            "cargo test --manifest-path tests/rules/business/Cargo.toml",
+            "npx playwright test",
+            "harness:rules",
+        ] {
+            assert!(gates.contains(step), "the gates run {step}");
+        }
+        let business = content_of("tests/rules/business/Cargo.toml").unwrap_or_default();
+        assert!(
+            business.contains("[workspace]"),
+            "the rules' suite builds apart"
+        );
+        let rules = CLAUDE_RULES;
+        assert!(rules.contains("CONTEST.md") && rules.contains("harness:rules"));
     }
 
     #[test]

@@ -35,7 +35,7 @@ The code at that commit is not checked out: read it through git —
   git log --oneline -20 {sha} -- <path>
   git ls-tree -r --name-only {sha}
 The migrations live under a `migrations/` folder; `data/model.json` is the
-agents' side as committed. Rule 13 of the repository's `CLAUDE.md` asks every
+agents' side as committed. Rule 14 of the repository's `CLAUDE.md` asks every
 task that changes the structure to update `data/model.json` in the same pull
 request.
 

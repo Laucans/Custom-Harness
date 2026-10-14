@@ -1,0 +1,16 @@
+# The rules' business tests: one test (or more) per business rule of
+# `rules.json` (contract P), under `tests/`, written before the code by the
+# rules' task. Its own workspace: it builds apart from the product's, and
+# calls the product only through the shell's wire protocol — by identifier,
+# as a Micro-UI does. Installed by `harness init-repo`.
+[package]
+name = "rules-business"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
