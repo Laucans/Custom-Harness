@@ -1003,6 +1003,7 @@ impl CreationDesk {
             .ask(mock_plan::plan_prompt(&record, &index.lines()))
             .await?;
         let plan = mock_plan::parse_plan(&answer, &kit_names)?;
+        let (plan, index) = self.kit_made(plan, index).await;
         let manifest = mock_plan::manifest(&plan)?;
         let home = mock_plan::index_html(&record, &plan);
         let (wrote, at) = (mockups.clone(), branch.clone());
@@ -1033,6 +1034,7 @@ impl CreationDesk {
                 .write_all(page_writings(&record, &plan, &index))
                 .await,
         );
+        self.finished(&writers, &plan, &index.tokens).await;
         let said = format!(
             "planned by {}, written by {}: {} pages, {} micro-frontends{}",
             self.setup.model,
@@ -1056,10 +1058,180 @@ impl CreationDesk {
             record.componentized = Some(said);
         }
         // Drawn ahead, the human is still before the mock-up step: left there.
-        if record.step >= Step::Mockups {
-            record.go(Step::Rules, facts)?;
+        // A gate still closed — a kit component the plan asked for not made
+        // yet — keeps the human on the mock-ups: the drawing is kept anyway.
+        if record.step >= Step::Mockups
+            && let Err(why) = record.go(Step::Rules, facts)
+        {
+            self.step(&format!("the rules wait: {why}"));
         }
         self.keep(&record)
+    }
+
+    /// The components a plan asks the kit for, made before any writer
+    /// builds on them: added as custom components (or found by their title),
+    /// generated several at once, waited for. One the kit cannot make leaves
+    /// the `uses` of every micro-frontend; the index is read again.
+    async fn kit_made(
+        &self,
+        mut plan: mock_plan::MockPlan,
+        index: KitIndex,
+    ) -> (mock_plan::MockPlan, KitIndex) {
+        if plan.kit.is_empty() {
+            return (plan, index);
+        }
+        let asked: Vec<String> = plan.kit.iter().map(|k| k.name.clone()).collect();
+        let Some(kit) = self.setup.kit.clone().filter(|_| index.validated) else {
+            self.step("the design system is not validated: the micro-frontends build without the components the kit lacks");
+            strip_uses(&mut plan, &asked);
+            return (plan, index);
+        };
+        self.step(&format!(
+            "the kit makes {} component(s) it lacks first: {}",
+            asked.len(),
+            asked.join(", ")
+        ));
+        let mut made: Vec<String> = Vec::new();
+        let mut added: Vec<String> = Vec::new();
+        let mut lost: Vec<String> = Vec::new();
+        for need in plan.kit.clone() {
+            let named = match kit.titled(need.title.clone()).await {
+                Ok(Some(name)) => Ok(name),
+                _ => kit
+                    .custom(need.name.clone(), need.title.clone(), need.what.clone())
+                    .await
+                    .map(|c| {
+                        added.push(c.name.clone());
+                        c.name
+                    }),
+            };
+            match named {
+                Ok(name) => {
+                    rename_uses(&mut plan, &need.name, &name);
+                    made.push(name);
+                }
+                Err(why) => {
+                    self.step(&format!(
+                        "kit component {} could not be added: {why}",
+                        need.name
+                    ));
+                    lost.push(need.name);
+                }
+            }
+        }
+        let ready: Vec<String> = index.components.iter().map(|(n, _, _)| n.clone()).collect();
+        let waiting: Vec<String> = made
+            .iter()
+            .filter(|n| !ready.contains(n))
+            .cloned()
+            .collect();
+        if !waiting.is_empty() {
+            match kit.start_generation(waiting.clone()).await {
+                // Generating already: the wait follows it all the same.
+                Ok(_) => lost.extend(self.kit_waited(&kit, &waiting).await),
+                Err(why) if why.starts_with("nothing to generate") => {
+                    lost.extend(self.kit_waited(&kit, &waiting).await);
+                }
+                Err(why) => {
+                    self.step(&format!("the kit could not make its components: {why}"));
+                    lost.extend(waiting);
+                }
+            }
+        }
+        strip_uses(&mut plan, &lost);
+        // What this drawing added and the kit could not make leaves the kit:
+        // nothing is left pending for the human to wait on.
+        for name in lost.iter().filter(|n| added.contains(n)) {
+            if kit.delete(name.clone()).await.is_ok() {
+                self.step(&format!("kit component {name} removed: not made"));
+            }
+        }
+        let index = kit.index().await.unwrap_or(index);
+        (plan, index)
+    }
+
+    /// The kit's components waited for, each said as it is made; answers
+    /// those that failed or were not made in time.
+    async fn kit_waited(&self, kit: &KitDesk, waiting: &[String]) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + KIT_WAIT;
+        let mut said: Vec<String> = Vec::new();
+        let mut lost: Vec<String> = Vec::new();
+        loop {
+            let open: Vec<&String> = waiting.iter().filter(|n| !said.contains(n)).collect();
+            for name in open {
+                match kit.job_of(name) {
+                    Some((JobState::Done, _)) => {
+                        said.push(name.clone());
+                        self.step(&format!(
+                            "kit component {name} made ({} of {})",
+                            said.len(),
+                            waiting.len()
+                        ));
+                    }
+                    Some((JobState::Failed, why)) => {
+                        said.push(name.clone());
+                        lost.push(name.clone());
+                        self.step(&format!("kit component {name} could not be made: {why}"));
+                    }
+                    _ => {}
+                }
+            }
+            if said.len() == waiting.len() {
+                return lost;
+            }
+            if tokio::time::Instant::now() > deadline {
+                let late: Vec<String> = waiting
+                    .iter()
+                    .filter(|n| !said.contains(n))
+                    .cloned()
+                    .collect();
+                self.step(&format!(
+                    "the kit took too long for {}: the micro-frontends build without them",
+                    late.join(", ")
+                ));
+                lost.extend(late);
+                return lost;
+            }
+            tokio::time::sleep(KIT_POLL).await;
+        }
+    }
+
+    /// The finishing pass: one session of the creation's model reads every
+    /// page as assembled and puts right what the writers got wrong. Its
+    /// failure is said, never fatal: the pages are there already.
+    async fn finished(&self, writers: &Writers, plan: &mock_plan::MockPlan, tokens: &[String]) {
+        self.step(&format!(
+            "{} finishes the mock-up: titles, frames, widths, data",
+            self.setup.model
+        ));
+        let rules = mockup_rules(&About {
+            branch: writers.branch.clone(),
+            ..About::default()
+        });
+        let prompt = mock_plan::finish_prompt(&rules, plan, tokens);
+        let (oneshot, mockups, branch, model) = (
+            Arc::clone(&writers.oneshot),
+            Arc::clone(&writers.mockups),
+            writers.branch.clone(),
+            self.setup.model.clone(),
+        );
+        let done = tokio::task::spawn_blocking(move || {
+            let dir = mockups.workspace(&branch)?;
+            oneshot.work_in(&model, &prompt, &dir)
+        })
+        .await
+        .map_err(|e| format!("the session did not finish: {e}"))
+        .and_then(|r| r);
+        match done {
+            Ok(said) => self.step(&format!(
+                "finished: {}",
+                said.lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("done")
+                    .trim()
+            )),
+            Err(why) => self.step(&format!("the finishing pass did not finish: {why}")),
+        }
     }
 
     /// The proof of concept accepted: the factory is initialized — the
@@ -1570,6 +1742,33 @@ fn page_writings(
         .collect()
 }
 
+/// How long the kit's components are waited for before the writers go on
+/// without them.
+const KIT_WAIT: Duration = Duration::from_mins(10);
+
+/// How often they are looked at.
+const KIT_POLL: Duration = Duration::from_secs(3);
+
+/// The kit's components the plan asked for, renamed to what the kit calls
+/// them in every micro-frontend's `uses`.
+fn rename_uses(plan: &mut mock_plan::MockPlan, from: &str, to: &str) {
+    for c in &mut plan.components {
+        for u in &mut c.uses {
+            if u == from {
+                *u = to.to_string();
+            }
+        }
+    }
+}
+
+/// The kit's components that were not made, out of every micro-frontend's
+/// `uses`.
+fn strip_uses(plan: &mut mock_plan::MockPlan, lost: &[String]) {
+    for c in &mut plan.components {
+        c.uses.retain(|u| !lost.contains(u));
+    }
+}
+
 /// What a writer turns an answer into: the files it lands, by path under
 /// `mock/`.
 type Land = Arc<dyn Fn(&str) -> Result<Vec<(String, String)>, String> + Send + Sync>;
@@ -1787,7 +1986,7 @@ mod tests {
     }
 
     /// The plan a planner answers: one page, one micro-frontend.
-    const PLAN: &str = r#"{"pages":[{"path":"pages/home.html","title":"Home","objective":"see the ledger","components":["Home"],"layout":"the lines"}],"components":[{"name":"Home","system":"ledger","description":"the lines","needs":["ledger.readLines"],"data":"two lines"}]}"#;
+    const PLAN: &str = r#"{"pages":[{"path":"pages/home.html","title":"Home","objective":"see the ledger","components":["Home"],"layout":"the lines"}],"components":[{"name":"Home","system":"ledger","description":"the lines","needs":["ledger.readLines"],"uses":["LineTable"],"data":"two lines"}],"world":"ldg-1 — the ledger","kit":[{"name":"LineTable","title":"Line table","what":"rows of lines"}]}"#;
 
     impl Oneshot for Drawer {
         fn ask(&self, model: &str, prompt: &str) -> Result<String, String> {
@@ -1842,6 +2041,13 @@ mod tests {
                 prompt.contains("the branch `main_agent`"),
                 "the branch is in the prompt"
             );
+            if prompt.contains("This mock-up was just written by many hands at once") {
+                assert!(
+                    prompt.contains("The example world:\nldg-1 — the ledger"),
+                    "the world is in the finishing prompt"
+                );
+                return Ok("nothing to change\nall pages read".to_string());
+            }
             if prompt.contains("The architecture's guard found this") {
                 assert!(prompt.contains("- about: ledger.saveLine"));
                 return Ok("moved ledger.saveLine to actions".to_string());
@@ -1951,7 +2157,7 @@ mod tests {
         }
 
         fn work_in(&self, _: &str, _: &str, _: &Path) -> Result<String, String> {
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(50));
             Ok("late".to_string())
         }
     }
@@ -2375,7 +2581,18 @@ mod tests {
     /// What the story's drawing left: each item said as it landed, every
     /// file where the plan put it.
     fn drawn_in_two_hands(job: &Job, dir: &Path) {
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.starts_with("the kit could not make its components: ")),
+            "the story's kit has no Claude: {:?}",
+            job.steps
+        );
         for written in [
+            "the kit makes 1 component(s) it lacks first: LineTable",
+            "kit component LineTable removed: not made",
+            "m finishes the mock-up: titles, frames, widths, data",
+            "finished: nothing to change",
             "micro-frontend Home written (1 of 1)",
             "page pages/home.html written (1 of 1)",
         ] {
@@ -3183,6 +3400,7 @@ mod tests {
         );
         for step in [
             "planned: 4 micro-frontends, then 2 pages — s writes them, 2 at once",
+            "the finishing pass did not finish: no session here",
             "the mock-up is drawn",
         ] {
             assert!(

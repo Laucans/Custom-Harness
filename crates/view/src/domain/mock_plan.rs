@@ -30,7 +30,25 @@ pub struct MockPlan {
     /// the pages' props name, with its fixed id — so a page hands a
     /// micro-frontend an id its fixture has.
     pub world: String,
+    /// The visual primitives the kit lacks that micro-frontends need: made
+    /// by the kit first, so every writer builds on the same ones.
+    pub kit: Vec<KitNeed>,
 }
+
+/// A component the kit lacks, as the planner asks for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct KitNeed {
+    /// `PascalCase`: what the micro-frontends' `uses` call it.
+    pub name: String,
+    /// Its name for humans.
+    pub title: String,
+    /// What it shows and does, visually: no data, no network.
+    pub what: String,
+}
+
+/// The most components a plan asks the kit for.
+pub const KIT_MAX: usize = 10;
 
 /// One page of the plan.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -110,13 +128,18 @@ pub fn plan_prompt(c: &Creation, kit_index: &str) -> String {
          a fixture holds or a page hands as a prop — the campaign, its sessions, its people, its \
          places, its media… — each with its fixed id, one line each (`cmp-1 — the campaign …`): \
          the writers never see each other, and only these ids let a page's props find a \
-         fixture's rows.\n\n\
+         fixture's rows. Last, the visual primitives the kit lacks that several micro-frontends \
+         need (`kit`: a table, tabs, a stat block, a timeline…; at most ten, none the kit already \
+         has): each with a PascalCase name, a title and what it shows, visually — no data, no \
+         network. The kit makes them first; name them in the `uses` of the micro-frontends built \
+         of them.\n\n\
          Answer with one JSON object and nothing else: {\"pages\": [{\"path\": \"pages/home.html\", \
          \"title\": \"…\", \"objective\": \"…\", \"components\": [\"Name\"], \"links\": \
          [\"pages/other.html\"], \"layout\": \"…\"}], \"components\": [{\"name\": \"Name\", \
          \"system\": \"…\", \"description\": \"…\", \"needs\": [\"system.readThing\"], \"actions\": \
          [\"system.doThing\"], \"props\": {\"id\": \"ID\"}, \"uses\": [\"Button\"], \"data\": \
-         \"…\"}], \"world\": \"cmp-1 — …\"}.\n\n",
+         \"…\"}], \"world\": \"cmp-1 — …\", \"kit\": [{\"name\": \"DataTable\", \"title\": \"…\", \"what\": \
+         \"…\"}]}.\n\n",
     );
     if kit_index.trim().is_empty() {
         text.push_str("The kit has no generated component yet: `uses` stays empty.\n\n");
@@ -164,13 +187,22 @@ pub fn parse_plan(answer: &str, kit: &[String]) -> Result<MockPlan, String> {
         .ok_or("the planner answered no plan")?;
     let read: MockPlan =
         serde_json::from_str(object).map_err(|e| format!("the plan is not readable: {e}"))?;
+    let mut needed = BTreeSet::new();
+    let needs: Vec<KitNeed> = read
+        .kit
+        .into_iter()
+        .filter(|k| pascal(&k.name) && !kit.contains(&k.name) && !k.title.trim().is_empty())
+        .filter(|k| needed.insert(k.name.clone()))
+        .take(KIT_MAX)
+        .collect();
     let mut seen = BTreeSet::new();
     let components: Vec<PlannedComponent> = read
         .components
         .into_iter()
         .filter(|c| pascal(&c.name) && seen.insert(c.name.clone()))
         .map(|mut c| {
-            c.uses.retain(|u| kit.contains(u));
+            c.uses
+                .retain(|u| kit.contains(u) || needs.iter().any(|k| &k.name == u));
             c
         })
         .collect();
@@ -198,6 +230,7 @@ pub fn parse_plan(answer: &str, kit: &[String]) -> Result<MockPlan, String> {
         pages,
         components,
         world: read.world.trim().to_string(),
+        kit: needs,
     })
 }
 
@@ -267,7 +300,12 @@ pub fn manifest(plan: &MockPlan) -> Result<String, String> {
 /// world every fixture shares.
 #[must_use]
 pub fn units_of(component: &PlannedComponent, world: &str) -> String {
-    let mut text = String::new();
+    let mut text = String::from(
+        "Its place on a page: the page draws the region it sits in — the region's title and its \
+         frame. So render no title of your own section and no outer card, border or shadow \
+         around yourself; fill the region's whole width (no fixed width, no max-width of your \
+         own); never position yourself fixed or absolute outside your root.\n",
+    );
     if !component.data.trim().is_empty() {
         let _ = writeln!(text, "Its fixture holds: {}", component.data.trim());
     }
@@ -347,7 +385,10 @@ pub fn page_prompt(c: &Creation, plan: &MockPlan, page: &PlannedPage, tokens: &[
          data-component=\"<Name>\" data-props='{…}'></div>` in its region, with the props it \
          expects, and write none of its markup yourself. In `<head>`: `<link rel=\"stylesheet\" \
          href=\"../design/tokens.css\">` and `<link rel=\"stylesheet\" href=\"../kit/kit.css\">`; \
-         style the layout through the design system's variables (`var(--…)`), never a colour or \
+         each region carries its own title and its frame (a kit `Card`, or a surface with a \
+         border from the design system), and the micro-frontend inside fills it — it draws no \
+         title and no frame of its own; style the layout through the design system's variables \
+         (`var(--…)`), never a colour or \
          a size written by hand — the page's own background, text colour and font included, set \
          on `body` from those variables. At the end of `<body>`: `<script src=\"../mock.js\"></script>`. \
          Link the other pages by their relative path (`other.html`). Write its texts in the \
@@ -444,6 +485,43 @@ pub fn page_of(answer: &str, page: &PlannedPage) -> Result<String, String> {
     Ok(html)
 }
 
+/// The finishing session's question: every page read with the
+/// micro-frontends it injects, as a human would see them assembled, and
+/// what parallel writers get wrong put right — the plan's names, files and
+/// world kept.
+#[must_use]
+pub fn finish_prompt(rules: &str, plan: &MockPlan, tokens: &[String]) -> String {
+    let mut text = rules.to_string();
+    text.push_str(
+        "\nThis mock-up was just written by many hands at once, each seeing one page or one \
+         micro-frontend alone. Read every page under `mock/pages/` together with the fragments \
+         under `mock/components/` it injects and the fixtures they read, as the page shows them \
+         assembled, and put right what such hands get wrong:\n\
+         - a title said twice: the page's region title stays, the micro-frontend's own goes;\n\
+         - frames inside frames: the page's region frame stays, a micro-frontend's outer card, \
+         border or shadow goes;\n\
+         - widths: a micro-frontend fills its region — no fixed width leaving space empty, no \
+         element fixed or absolute over the content unless it is meant as an overlay;\n\
+         - data that does not fit: a micro-frontend shown for an entity its fixture does not \
+         describe (a place given hit points), a prop naming an id no fixture has;\n\
+         - the same thing styled two ways on two pages: make them one.\n\
+         Keep every file's name, every micro-frontend's name, the manifest `mock/pages.json` and \
+         the example world's ids. A fragment is shared by every page that injects it: fix it \
+         once, for all of them. Say in a few lines what you changed.\n",
+    );
+    if !tokens.is_empty() {
+        let _ = write!(
+            text,
+            "\nThe design system's variables — use these and no other:\n{}\n",
+            tokens.join(", ")
+        );
+    }
+    if !plan.world.trim().is_empty() {
+        let _ = write!(text, "\nThe example world:\n{}\n", plan.world.trim());
+    }
+    text
+}
+
 /// `mock/index.html`: every page of the plan, linked — written without a
 /// question.
 #[must_use]
@@ -482,10 +560,16 @@ mod tests {
         {"path": "home.html", "title": "astray"},
         {"path": "pages/a/b.html", "title": "deep"}
     ], "components": [
-        {"name": "CampaignList", "system": "campagne", "description": "the campaigns", "needs": ["campagne.lister"], "actions": ["campagne.creer"], "props": {"id": "ID"}, "uses": ["Card", "Unknown"], "data": "three campaigns"},
+        {"name": "CampaignList", "system": "campagne", "description": "the campaigns", "needs": ["campagne.lister"], "actions": ["campagne.creer"], "props": {"id": "ID"}, "uses": ["Card", "Unknown", "DataTable"], "data": "three campaigns"},
         {"name": "CampaignList", "description": "twice"},
         {"name": "lower"}
-    ], "world": " cmp-1 — the campaign "}"#;
+    ], "world": " cmp-1 — the campaign ", "kit": [
+        {"name": "DataTable", "title": "Data table", "what": "rows and columns"},
+        {"name": "DataTable", "title": "again", "what": ""},
+        {"name": "Card", "title": "the kit has it"},
+        {"name": "untitled"},
+        {"name": "NoTitle", "title": " "}
+    ]}"#;
 
     fn plan() -> MockPlan {
         parse_plan(ANSWER, &["Card".to_string()]).expect("read")
@@ -520,14 +604,23 @@ mod tests {
         assert_eq!(p.components.len(), 1, "each once, in PascalCase");
         assert_eq!(
             p.components[0].uses,
-            vec!["Card".to_string()],
-            "the kit's names only"
+            vec!["Card".to_string(), "DataTable".to_string()],
+            "the kit's names and those the plan asks it for, only"
         );
         assert_eq!(
             p.components[0].spec().needs,
             vec!["campagne.lister".to_string()]
         );
         assert_eq!(p.world, "cmp-1 — the campaign");
+        assert_eq!(
+            p.kit.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(),
+            vec!["DataTable"],
+            "new, named, titled, once"
+        );
+        assert_eq!(
+            p.components[0].uses,
+            vec!["Card".to_string(), "DataTable".to_string()]
+        );
         assert!(parse_plan("no plan", &[]).is_err());
         assert!(parse_plan("{\"pages\": 3}", &[]).is_err());
         assert!(parse_plan(r#"{"pages": [], "components": [{"name": "A"}]}"#, &[]).is_err());
@@ -571,11 +664,16 @@ mod tests {
             read.components[0].actions,
             vec!["campagne.creer".to_string()]
         );
-        assert_eq!(
-            units_of(&plan().components[0], " "),
-            "Its fixture holds: three campaigns\n"
+        let units = units_of(&plan().components[0], " ");
+        assert!(
+            units.starts_with("Its place on a page: the page draws the region"),
+            "{units}"
         );
-        assert_eq!(units_of(&PlannedComponent::default(), ""), "");
+        assert!(
+            units.ends_with("Its fixture holds: three campaigns\n"),
+            "{units}"
+        );
+        assert!(!units_of(&PlannedComponent::default(), "").contains("Its fixture"));
         let with = units_of(&PlannedComponent::default(), " cmp-1 — the campaign ");
         assert!(
             with.ends_with("the pages hand them as props:\ncmp-1 — the campaign\n"),
@@ -631,6 +729,30 @@ mod tests {
             retry_prompt("ASK", "WHY"),
             "ASK\n\nYour last answer was refused: WHY. Answer again, the whole answer, with that corrected.\n"
         );
+    }
+
+    #[test]
+    fn the_finishing_session_is_told_what_parallel_hands_get_wrong() {
+        let p = plan();
+        let asked = finish_prompt("RULES", &p, &["--color-text".to_string()]);
+        assert!(asked.starts_with("RULES\n"));
+        assert!(
+            asked.contains("a title said twice")
+                && asked.contains("frames inside frames")
+                && asked.contains("a place given hit points")
+        );
+        assert!(asked.contains("use these and no other:\n--color-text\n"));
+        assert!(asked.contains("The example world:\ncmp-1 — the campaign\n"));
+        let bare = finish_prompt("R", &MockPlan::default(), &[]);
+        assert!(!bare.contains("use these and no other") && !bare.contains("The example world"));
+        let many = format!(
+            r#"{{"pages": [{{"path": "pages/a.html", "components": ["A"]}}], "components": [{{"name": "A"}}], "kit": [{}]}}"#,
+            (0..12)
+                .map(|i| format!(r#"{{"name": "K{i}", "title": "k{i}"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert_eq!(parse_plan(&many, &[]).expect("read").kit.len(), KIT_MAX);
     }
 
     #[test]

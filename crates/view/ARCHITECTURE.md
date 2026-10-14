@@ -240,12 +240,22 @@ It has two sections:
      model (Opus, `--creation-model`) plans every page and every
      micro-frontend in one question — what each shows, its `needs` and
      `actions`, the kit's components it is built of, the data its fixture
-     holds — and the plan is written as the manifest (`mock/pages.json`,
-     contract N) and an `index.html` before any other file; then the
+     holds, the example world every writer shares (each entity with its
+     fixed id), and the components the kit lacks — and the plan is written
+     as the manifest (`mock/pages.json`, contract N) and an `index.html`
+     before any other file. The kit makes the components it lacks first
+     (custom components, generated several at once and waited for; one it
+     cannot make leaves the plan, and the kit if the drawing added it); then the
      writers (Sonnet, `--creation-exec-model`, `--creation-sessions` at
      once, one question each, asked twice before giving up) write every
      micro-frontend (fragment and fixture, `mf_gen::generate_prompt`), then
-     every page (layout and `data-component` only, `mock_plan::page_prompt`).
+     every page (layout and `data-component` only, `mock_plan::page_prompt`)
+     — the page owns each region's title and frame, a micro-frontend fills
+     its region and draws neither; an answer using a variable the design
+     system has not is refused, and the second try is told why. Last, one
+     session of the creation's model finishes the mock-up as assembled
+     (`mock_plan::finish_prompt`: titles said twice, frames in frames,
+     widths, data that does not fit); its failure is said, never fatal.
      Each item is said on the job as it lands (`… written (n of N)`); a
      drawing whose items were all written is taken as cut into
      micro-frontends already (`componentized`), else the micro-frontends'
