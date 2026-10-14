@@ -661,9 +661,6 @@
       strip: p.strip,
       // Where the pane stands — its view, the micro-frontend opened — so going back finds it there.
       onPlace: (place) => Object.assign(p, place),
-      // A desk that hosts the pane (the rules step): the page shown, the micro-frontend locked by a click.
-      onPage: p.onPage,
-      onLock: p.onLock,
       onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page }),
     }) : null),
   };

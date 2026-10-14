@@ -1438,18 +1438,18 @@
         + section('the rest', list.filter((c) => !here.has(c.name)), 'none')
         + '<button type="button" class="mini" data-mk="design">+ micro-frontend</button>';
     }
-    // A click on a micro-frontend locks its light and tells the desk; a
-    // second click on it lets go. Only for a desk that listens (onLock).
+    // A click on a micro-frontend locks its light and tells the page that
+    // holds the pane (a bubbling `harness:mf-lock`); a second click lets go.
     function setLocked(name) {
       st.locked = name || '';
       setHot(st.locked);
-      if (opts && typeof opts.onLock === 'function') opts.onLock(st.locked || null);
+      host.dispatchEvent(new CustomEvent('harness:mf-lock', { bubbles: true, detail: { name: st.locked || null } }));
     }
-    // The page on the board, told to the desk once per change.
+    // The page on the board, told once per change (`harness:mockup-page`).
     function tellPage() {
-      if (!opts || typeof opts.onPage !== 'function' || st.view !== 'page' || st.toldPage === st.page) return;
+      if (st.view !== 'page' || st.toldPage === st.page) return;
       st.toldPage = st.page;
-      opts.onPage(st.page);
+      host.dispatchEvent(new CustomEvent('harness:mockup-page', { bubbles: true, detail: { page: st.page } }));
     }
     // The picked rule's micro-frontends, marked on the page.
     function marksFocus() {
@@ -1469,7 +1469,17 @@
       if (!chip || e.button !== 0 || !st.board) return;
       const c = componentOf(chip.dataset.chip);
       if (!c) return;
+      chipPress = { name: c.name, x: e.clientX, y: e.clientY };
       st.board.carryFrom(e, { kind: 'design', component: c.name, text: specOf(c) });
+    };
+    // A chip pressed and released in place is a click, not a drop: it locks
+    // its micro-frontend, or lets it go. The board holds the pointer while it
+    // carries, so the release is read on the document.
+    let chipPress = null;
+    const onChipUp = (e) => {
+      const press = chipPress;
+      chipPress = null;
+      if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) <= SLOP) setLocked(st.locked === press.name ? '' : press.name);
     };
 
     // ---- the form: a new micro-frontend ----------------------------------------------------
@@ -1793,6 +1803,7 @@
     host.addEventListener('keydown', onKey);
     host.addEventListener('keyup', onKeyUp);
     q('.mk-strip').addEventListener('pointerdown', onStripDown);
+    document.addEventListener('pointerup', onChipUp, true);
     q('.mk-strip').addEventListener('mouseover', (e) => { const chip = e.target.closest && e.target.closest('[data-chip]'); setHot(chip ? chip.dataset.chip : ''); });
     q('.mk-strip').addEventListener('mouseleave', () => setHot(''));
     const boardHost = q('.mk-board');
@@ -1803,13 +1814,19 @@
       setHot(el ? el.dataset.component : '');
     });
     boardHost.addEventListener('pointerleave', () => setHot(''));
-    // A drag swallows its click (board.js), so this is a click, not a pan.
-    boardHost.addEventListener('click', (e) => {
-      if (!opts || typeof opts.onLock !== 'function' || !st.strip || st.view !== 'page' || st.interact) return;
+    // A press and a release on the page, in the same spot: a click on a
+    // micro-frontend, not a pan. Read in the capture phase, before the board
+    // swallows a click or the editor takes the press.
+    let lockPress = null;
+    boardHost.addEventListener('pointerdown', (e) => { lockPress = e.button === 0 && e.target.classList.contains('mk-shield') ? { x: e.clientX, y: e.clientY } : null; }, true);
+    boardHost.addEventListener('pointerup', (e) => {
+      const press = lockPress;
+      lockPress = null;
+      if (!press || Math.hypot(e.clientX - press.x, e.clientY - press.y) > SLOP) return;
+      if (!st.strip || st.view !== 'page' || st.interact || editing()) return;
       const el = elementAt(e.clientX, e.clientY, '[data-component]');
-      if (!el) return;
-      setLocked(st.locked === el.dataset.component ? '' : el.dataset.component);
-    });
+      if (el) setLocked(st.locked === el.dataset.component ? '' : el.dataset.component);
+    }, true);
     boardHost.addEventListener('pointerdown', onViewportDown, true);
     boardHost.addEventListener('pointermove', onViewportMove, true);
     boardHost.addEventListener('pointerup', onViewportUp, true);
@@ -1861,6 +1878,7 @@
         host.removeEventListener('keyup', onKeyUp);
         document.removeEventListener('keydown', onKey);
         document.removeEventListener('keyup', onKeyUp);
+        document.removeEventListener('pointerup', onChipUp, true);
         window.removeEventListener('keydown', onFullKey, true);
         if (st.full) setFull(false);
         if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }

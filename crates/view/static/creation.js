@@ -1199,17 +1199,18 @@
     // The mock-ups step reworks the pages: no micro-frontends' list beside them.
     mockups: { kind: 'mockup', face: 'mockup-pages', title: "The mock-up — rework it: edit, pin a request, add a page", foot: mockupsFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO, strip: false }) },
     data: { kind: 'data_model', face: 'data-draft', title: 'The data model drafted for the proof of concept', foot: dataFoot, opts: () => ({ kind: 'data_model', source: '/api/creation/data-model' }) },
-    rules: { kind: 'mockup', face: 'mockup', title: "The mock-up — pick a rule to see what carries it, click a micro-frontend to filter by it", foot: rulesFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO, onLock: lockedMf, onPage: canvasPage }) },
+    rules: { kind: 'mockup', face: 'mockup', title: "The mock-up — pick a rule to see what carries it, click a micro-frontend to filter by it", foot: rulesFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
   };
-  // The easel tells the rules step what it shows: the page, the micro-frontend locked.
-  function canvasPage(path) {
-    C.canvasPage = path || '';
+  // The easel tells the rules step what it shows (mockup.js's events): the
+  // page, the micro-frontend locked by a click on it.
+  page.addEventListener('harness:mockup-page', (e) => {
+    C.canvasPage = e.detail.page || '';
     if (C.route === 'rules') draw();
-  }
-  function lockedMf(name) {
-    C.rulesMf = name || '';
+  });
+  page.addEventListener('harness:mf-lock', (e) => {
+    C.rulesMf = e.detail.name || '';
     if (C.route === 'rules') draw();
-  }
+  });
   // The easel a step mounts right now: the mock-up's only once it is drawn.
   function embedFor(route) {
     if (!record()) return undefined;
