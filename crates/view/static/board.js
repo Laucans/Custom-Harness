@@ -12,7 +12,8 @@
 // a zone — a rectangle, a circle or a
 // hand-drawn outline around several parts — drawn with the toolbar's tools.
 // Pins are kept by the server one by one (`/api/notes/<board>/<id>`); a
-// deleted one comes back with ctrl+z, the last ten of a board.
+// deleted one comes back with undo (cmd+z on a Mac, ctrl+z elsewhere), the
+// last ten of a board; redo (shift added) takes the undo back.
 //
 //   const board = HarnessBoard.create(host, { id, describe, resolve, context, onSession,
 //     kinds, zones, under, pages, goto, newPage });
@@ -28,6 +29,10 @@
 // system's one-component view shows that component's pins alone.
 (() => {
   'use strict';
+  // The shortcut key: cmd on a Mac, ctrl elsewhere.
+  const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const modded = (e) => (MAC ? e.metaKey : e.ctrlKey);
+  const KEYS = { undo: MAC ? '⌘Z' : 'ctrl+z', redo: MAC ? '⌘⇧Z' : 'ctrl+shift+z' };
 
   const MIN_ZOOM = 0.15;
   const MAX_ZOOM = 3;
@@ -81,7 +86,8 @@
       + '<button type="button" data-hb="fit" title="Fit everything in view">fit</button>'
       + '<span class="hb-sep"></span>'
       + '<button type="button" data-hb="list" title="Every note on this board">notes <span class="hb-count">0</span></button>'
-      + '<button type="button" data-hb="undo" title="Bring back the pin deleted last (ctrl+z)">undo</button>'
+      + `<button type="button" data-hb="undo" title="Undo the last step (${KEYS.undo})">undo</button>`
+      + `<button type="button" data-hb="redo" title="Redo the step undone last (${KEYS.redo})">redo</button>`
       + '</div>'
       + '<div class="hb-list" hidden></div>'
       + '<div class="hb-note" hidden role="dialog" aria-label="note">'
@@ -126,6 +132,10 @@
     const view = { x: 40, y: 40, k: 1 };
     const size = { w: 800, h: 600 };
     let notes = [];
+    // The board's own gestures and the pane's steps, for undo: latest last.
+    let trail = [];
+    // What redo brings back, the latest undone first; a new step clears it.
+    let ahead = [];
     // The pins shown: every pin of the board, or those the pane keeps.
     const shown = () => (opts.only ? notes.filter((n) => opts.only(n)) : notes);
     let openId = null;
@@ -527,12 +537,15 @@
         drawPins();
       } catch (e) { setState(String(e.message || e).split('\n')[0].slice(0, 120)); }
     }
-    async function put(n) {
+    async function put(n, again) {
       const body = Object.assign({}, n);
       delete body.fresh;
+      const placed = !!n.fresh;
       const res = await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
       delete n.fresh;
+      if (placed) trail.push({ kind: 'placed', id: n.id });
+      if (placed && !again) ahead = [];
     }
     // Saves a pin now, or a beat after the last keystroke.
     function save(n, now) {
@@ -560,28 +573,65 @@
       pending = null;
       put(n).then(changed).catch(() => { /* the next edit saves it again */ });
     }
-    async function remove(n) {
+    async function remove(n, again) {
       notes = notes.filter((x) => x !== n);
       if (openId === n.id) { openId = null; editor.hidden = true; }
       if (pending === n) { pending = null; clearTimeout(saveTimer); }
       drawPins();
       changed();
       if (n.fresh) return;
+      trail.push({ kind: 'deleted', id: n.id });
+      if (!again) ahead = [];
       try { await fetch(`${base}/${encodeURIComponent(n.id)}`, { method: 'DELETE' }); } catch (e) { /* shown by its absence on reload */ }
     }
     // The pane told a pin was kept or went — the design system counts its requests.
     function changed() {
       if (opts.onChange) { try { opts.onChange(); } catch (e) { /* the pane's own trouble */ } }
     }
+    // What undo takes back, the latest first: a pin placed (destroyed — no
+    // later undo brings it back), a pin deleted (brought back), a step the
+    // pane told of (its own to take back). Past it, the board's server undo.
     async function undo() {
+      const last = trail.pop();
+      if (last && last.kind === 'placed') {
+        const n = notes.find((x) => x.id === last.id);
+        if (n) {
+          notes = notes.filter((x) => x !== n);
+          if (openId === n.id) { openId = null; editor.hidden = true; }
+          if (pending === n) { pending = null; clearTimeout(saveTimer); }
+          drawPins();
+          changed();
+          const kept = Object.assign({}, n);
+          delete kept.fresh;
+          ahead.push({ kind: 'placed', note: kept });
+          try { await fetch(`${base}/${encodeURIComponent(n.id)}?forever=1`, { method: 'DELETE' }); } catch (e) { /* shown by its absence on reload */ }
+          return;
+        }
+      }
+      if (last && last.kind === 'pane') { if (opts.onUndo && opts.onUndo()) ahead.push({ kind: 'pane' }); return; }
+      if (!last && opts.onUndo && opts.onUndo()) { ahead.push({ kind: 'pane' }); return; }
       try {
         const res = await fetch(`${base}/undo`, { method: 'POST' });
         if (!res.ok) return;
         const n = await res.json();
         if (!notes.some((x) => x.id === n.id)) notes.push(n);
+        ahead.push({ kind: 'deleted', id: n.id });
         drawPins();
         changed();
       } catch (e) { /* nothing to bring back */ }
+    }
+    // Takes the last undo back: the pin placed again, the pin brought back
+    // deleted again, the pane's step handed back to the pane.
+    async function redo() {
+      const next = ahead.pop();
+      if (!next) return;
+      if (next.kind === 'pane') { if (opts.onRedo && opts.onRedo()) trail.push({ kind: 'pane' }); return; }
+      if (next.kind === 'deleted') { const n = notes.find((x) => x.id === next.id); if (n) await remove(n, true); return; }
+      const n = Object.assign({ fresh: true }, next.note);
+      notes.push(n);
+      drawPins();
+      changed();
+      try { await put(n, true); } catch (e) { /* shown by its absence on reload */ }
     }
     async function load() {
       if (!base) { notes = []; drawPins(); return; }
@@ -619,6 +669,8 @@
       id = next;
       base = baseOf(id);
       notes = [];
+      trail = [];
+      ahead = [];
       drawPins();
       load();
     }
@@ -830,6 +882,7 @@
         if (b.dataset.hb === 'fit') fit();
         if (b.dataset.hb === 'list') showList();
         if (b.dataset.hb === 'undo') undo();
+        if (b.dataset.hb === 'redo') redo();
         return;
       }
       const go = e.target.closest('[data-goto-note]');
@@ -918,12 +971,12 @@
       e.stopPropagation();
       if (e.key === 'Escape') { e.preventDefault(); closeNote(); }
     };
-    // ctrl+z (cmd+z) anywhere but in a field brings back the pin deleted last.
+    // Undo and redo anywhere but in a field: cmd+z / cmd+shift+z on a Mac, ctrl elsewhere.
     const onUndoKey = (e) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' || e.shiftKey) return;
+      if (!modded(e) || e.key.toLowerCase() !== 'z') return;
       if (typing(e.target) || !host.isConnected) return;
       e.preventDefault();
-      undo();
+      if (e.shiftKey) redo(); else undo();
     };
 
     host.addEventListener('pointerdown', onPointerDown);
@@ -1005,6 +1058,9 @@
       isApplying: (noteId) => applying.has(noteId),
       // A pin whose work is done goes, as a delete does: ctrl+z brings it back.
       drop: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n) remove(n); },
+      // The pane made an undoable step of its own (the AI's application to a
+      // draft): the board's undo hands it back to the pane in its turn.
+      noteStep: () => { trail.push({ kind: 'pane' }); ahead = []; },
       goTo,
       destroy() {
         // A note being typed is not lost to a closed pane.
@@ -1017,5 +1073,5 @@
     };
   }
 
-  window.HarnessBoard = { create };
+  window.HarnessBoard = { create, modded, keys: KEYS };
 })();

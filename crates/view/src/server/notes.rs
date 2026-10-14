@@ -69,11 +69,21 @@ pub(super) async fn put_note(
     }
 }
 
+/// `?forever=1`: a pin destroyed at once rather than marked deleted.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct DeleteQuery {
+    #[serde(default)]
+    forever: Option<String>,
+}
+
 /// Deletes a pin — only marked, so ctrl+z brings it back; the deleted pins
-/// past the undo depth are destroyed, conversation and all.
+/// past the undo depth are destroyed, conversation and all. `forever`
+/// destroys it at once: a pin just placed and taken back by undo, which no
+/// later undo should bring back.
 pub(super) async fn delete_note(
     State(state): State<AppState>,
     Path((board, id)): Path<(String, String)>,
+    Query(query): Query<DeleteQuery>,
 ) -> Response {
     if !annotations::is_board(&board) || !annotations::is_id(&id) {
         return not_found("no such pin");
@@ -81,6 +91,12 @@ pub(super) async fn delete_note(
     // An open session's turns are kept with the pin before it goes.
     if let Some(desks) = &state.note_desks {
         let _ = desks.close(&board, &id, false).await;
+    }
+    if query.forever.as_deref() == Some("1") {
+        return match state.pins.destroy(&board, &id) {
+            Ok(()) => json(&serde_json::json!({ "destroyed": id })),
+            Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+        };
     }
     let done = state
         .pins

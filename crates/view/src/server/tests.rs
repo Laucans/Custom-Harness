@@ -688,6 +688,24 @@ async fn a_pin_is_kept_deleted_brought_back_and_destroyed_past_ten() {
     let (status, _) = send(state.clone(), "POST", "/api/notes/data-model/undo", "").await;
     assert_eq!(status, StatusCode::NOT_FOUND, "nothing left to bring back");
 
+    // A pin destroyed at once (a placement taken back) is gone for good: no
+    // undo brings it back.
+    let (status, body) = send(
+        state.clone(),
+        "DELETE",
+        "/api/notes/data-model/p1?forever=1",
+        "",
+    )
+    .await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::OK, r#"{"destroyed":"p1"}"#)
+    );
+    let (_, back) = send(state.clone(), "GET", "/api/notes/data-model", "").await;
+    assert!(!back.contains("why uuid?"), "{back}");
+    let (status, _) = send(state.clone(), "POST", "/api/notes/data-model/undo", "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "destroyed, not deleted");
+
     for k in 0..12 {
         let id = format!("q{k:02}");
         send(

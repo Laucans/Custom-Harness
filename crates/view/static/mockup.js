@@ -84,8 +84,8 @@
       + '<button type="button" class="mini" data-mk="restore" hidden title="Bring back the mock-up as it was before the last discard">undo discard</button>'
       + '</div>'
       + '<div class="mk-editbar" hidden>'
-      + '<button type="button" class="mini" data-ed="undo" title="Undo the last step (ctrl+z)">↶ undo</button>'
-      + '<button type="button" class="mini" data-ed="redo" title="Redo (ctrl+shift+z)">↷ redo</button>'
+      + '<button type="button" class="mini" data-ed="undo" title="Undo the last step (' + HarnessBoard.keys.undo + ')">↶ undo</button>'
+      + '<button type="button" class="mini" data-ed="redo" title="Redo (' + HarnessBoard.keys.redo + ')">↷ redo</button>'
       + '<span class="mk-sep"></span>'
       + '<span class="fg-tools" role="group" aria-label="tools">'
       + '<button type="button" class="mini on" data-tool="move" title="Move · select (V)">↖</button>'
@@ -281,6 +281,9 @@
         zones: st.view === 'page',
         // A page redrawn leaves pins whose part is gone: put aside, not left floating.
         detach: st.view === 'page',
+        // The canvas's undo takes back the AI's last application first.
+        onUndo: () => st.view === 'page' && undoApplied(),
+        onRedo: () => st.view === 'page' && redoApplied(),
         // A request inside a kit component may be the component's, for every page.
         noteActions: (n) => {
           const kit = st.view === 'page' && n.kind === 'request' && (n.text || '').trim() ? kitOf(n) : '';
@@ -616,8 +619,8 @@
       return true;
     }
 
-    // Keys the pane keeps for itself: space pans, ctrl+z and ctrl+shift+z
-    // undo and redo; the designer has the rest.
+    // Keys the pane keeps for itself: space pans, cmd+z and cmd+shift+z
+    // (ctrl off a Mac) undo and redo; the designer has the rest.
     const onKey = (e) => {
       if (e.target.closest('.mk-form') || e.target.classList.contains('mk-name') || e.target.closest('.mk-panel') || e.target.closest('.mk-layers') || e.target.closest('.mk-history') || e.target.closest('.mk-editbar')) {
         e.stopPropagation();
@@ -627,9 +630,9 @@
       }
       if (!editing() || !host.isConnected) return;
       if (e.key === ' ' && e.type === 'keydown') { st.space = true; host.classList.add('mk-space'); }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.target.matches('input,textarea')) {
+      if (HarnessBoard.modded(e) && e.key.toLowerCase() === 'z' && !e.target.matches('input,textarea')) {
         e.preventDefault(); e.stopPropagation();
-        if (e.shiftKey ? st.engine.redo() : st.engine.undo()) afterChange();
+        stepped(e.shiftKey ? st.engine.redo() : st.engine.undo(), !e.shiftKey);
       }
     };
     const onKeyUp = (e) => { if (e.key === ' ') { st.space = false; host.classList.remove('mk-space'); } };
@@ -733,12 +736,13 @@
         const got = JSON.parse(text);
         const ops = (got.ops || []).filter((o) => !o.skip);
         const skipped = (got.ops || []).filter((o) => o.skip);
-        // A request applied again: its former operations go, the new ones come.
-        const ids = new Set(asked.map((a) => a.id));
-        st.engine.setOps(st.engine.ops.filter((o) => !ids.has(o.by)));
-        if (ops.length && !st.engine.push(ops).ok) throw new Error('the operations found no target on the page');
+        // A request applied again: its former operations go, the new ones
+        // come — one undoable step, which knows the pins it marked.
+        const marked = asked.filter((a) => !skipped.some((x) => x.by === a.id)).map((a) => ({ id: a.id, was: (st.board.all().find((n) => n.id === a.id) || {}).state || 'pending' }));
+        if (!st.engine.swap(asked.map((a) => a.id), ops, { applied: marked }).ok) throw new Error('the operations found no target on the page');
         afterChange();
-        asked.forEach((a) => { if (!skipped.some((s) => s.by === a.id)) st.board.patch(a.id, { state: 'simulated' }); });
+        marked.forEach((m) => st.board.patch(m.id, { state: 'simulated' }));
+        if (st.board.noteStep) st.board.noteStep();
         offerSkipped(skipped);
         if (action) action.ok(`${ops.length} operation(s)${skipped.length ? `, ${skipped.length} left to the human` : ''}`);
         drawBar();
@@ -1356,6 +1360,29 @@
         again = setTimeout(() => { sizeMf(); drawRules(); }, 120);
       }).observe(doc.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-writes', 'data-reads', 'data-kit', 'hidden'] });
     }
+    // A step of the draft taken back or brought back: an AI application
+    // carries the pins it marked, which follow it.
+    function stepped(taken, undone) {
+      if (!taken) return false;
+      const applied = taken.meta && taken.meta.applied;
+      if (applied && st.board) applied.forEach((m) => st.board.patch(m.id, { state: undone ? m.was : 'simulated' }));
+      afterChange();
+      return true;
+    }
+    // The canvas's undo: the AI's last application to the draft, when it is
+    // the draft's last step; else the board's own (a pin brought back).
+    function undoApplied() {
+      const last = st.engine && st.engine.lastStep();
+      if (!last || last.kind !== 'swap') return false;
+      return stepped(st.engine.undo(), true);
+    }
+    // The canvas's redo of an AI application it undid.
+    function redoApplied() {
+      const next = st.engine && st.engine.nextRedo();
+      if (!next || next.kind !== 'swap') return false;
+      return stepped(st.engine.redo(), false);
+    }
+
     // The kit component a pin points into: its own target's, or the nearest one around its part.
     function kitOf(n) {
       const t = n.target || '';
@@ -1690,8 +1717,8 @@
       const what = b.dataset.ed;
       const version = Number(b.dataset.version);
       // Nothing left to undo on the page: the last discard is what goes back.
-      if (what === 'undo') { if (st.engine && st.engine.undo()) afterChange(); else if (st.state && st.state.discarded && !st.state.edited) restore(); }
-      if (what === 'redo' && st.engine.redo()) afterChange();
+      if (what === 'undo') { if (!(st.engine && stepped(st.engine.undo(), true)) && st.state && st.state.discarded && !st.state.edited) restore(); }
+      if (what === 'redo' && st.engine) stepped(st.engine.redo(), false);
       if (what === 'apply-all') applyAll();
       if (what === 'keep') keepVersion();
       if (what === 'validate') validateVersion();

@@ -524,7 +524,7 @@
     function onKey(e) {
       if (!ctx.editing()) return false;
       const typing = e.target.matches('input,textarea,select,[contenteditable]');
-      const meta = e.ctrlKey || e.metaKey;
+      const meta = HarnessBoard.modded(e);
       if (e.key === 'Escape') { if (st.menu) { closeMenu(); return true; } if (st.tool !== 'move') { setTool('move'); return true; } if (st.sels.length) { select([]); return true; } return false; }
       if (typing) return false;
       const tool = Object.keys(TOOLS).find((t) => TOOLS[t] && TOOLS[t].toLowerCase() === e.key.toLowerCase());

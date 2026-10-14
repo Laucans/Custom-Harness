@@ -281,7 +281,14 @@
 
   // ---- the engine: the source, the operations, undo ---------------------------------
   function engine(setup) {
-    const st = { source: setup.source, ops: [...(setup.ops || [])], redo: [], undoable: 0, failed: [] };
+    const st = { source: setup.source, ops: [...(setup.ops || [])], redo: [], undoable: 0, failed: [], steps: [] };
+    // A new step: kept for undo, the redo cleared, the depth bounded.
+    function step(taken) {
+      st.redo = [];
+      st.steps.push(taken);
+      if (st.steps.length > UNDO_DEPTH) st.steps.shift();
+      st.undoable = Math.min(UNDO_DEPTH, st.undoable + 1);
+    }
     function render() {
       const doc = parse(st.source);
       st.failed = applyOps(doc, st.ops);
@@ -290,7 +297,7 @@
     return {
       get ops() { return st.ops; },
       get failed() { return st.failed; },
-      setOps(ops) { st.ops = [...ops]; st.redo = []; st.undoable = 0; },
+      setOps(ops) { st.ops = [...ops]; st.redo = []; st.undoable = 0; st.steps = []; },
       setSource(source) { st.source = source; },
       /** Adds an operation — or several as one undoable step — and answers whether all applied. */
       push(ops) {
@@ -300,30 +307,51 @@
         const after = applyOps(probe, list).length;
         if (after > 0) return { ok: false, failed: after, before };
         st.ops.push(...list);
-        st.redo = [];
-        st.undoable = Math.min(UNDO_DEPTH, st.undoable + 1);
-        st.groups = (st.groups || []);
-        st.groups.push(list.length);
-        if (st.groups.length > UNDO_DEPTH) st.groups.shift();
+        step({ kind: 'push', n: list.length });
         return { ok: true };
       },
-      canUndo() { return st.undoable > 0 && st.groups && st.groups.length > 0; },
+      /**
+       * Replaces the operations signed by `by` (request ids) with `list`, as
+       * one undoable step — a request applied, or applied again — and
+       * answers whether all applied. `meta` rides along with the step.
+       */
+      swap(by, list, meta) {
+        const ids = new Set(by);
+        const kept = st.ops.filter((o) => !ids.has(o.by));
+        const probe = parse(st.source);
+        const before = applyOps(probe, kept).length;
+        const after = applyOps(probe, list).length;
+        if (after > 0) return { ok: false, failed: after, before };
+        const was = st.ops.slice();
+        st.ops = kept.concat(list);
+        step({ kind: 'swap', before: was, after: st.ops.slice(), meta: meta || null });
+        return { ok: true };
+      },
+      /** The step undo would take back, or null. */
+      lastStep() { return st.steps && st.steps.length && st.undoable > 0 ? st.steps[st.steps.length - 1] : null; },
+      canUndo() { return st.undoable > 0 && !!st.steps && st.steps.length > 0; },
       canRedo() { return st.redo.length > 0; },
+      /** The step redo would bring back, or null. */
+      nextRedo() { return st.redo.length ? st.redo[st.redo.length - 1] : null; },
+      /** Takes the last step back; answers it (truthy), or false. */
       undo() {
         if (!this.canUndo()) return false;
-        const n = st.groups.pop();
-        const taken = st.ops.splice(st.ops.length - n, n);
+        const taken = st.steps.pop();
+        if (taken.kind === 'swap') st.ops = taken.before.slice();
+        else taken.ops = st.ops.splice(st.ops.length - taken.n, taken.n);
         st.redo.push(taken);
         st.undoable -= 1;
-        return true;
+        return taken;
       },
+      /** Brings the last step undone back; answers it (truthy), or false. */
       redo() {
         const back = st.redo.pop();
         if (!back) return false;
-        st.ops.push(...back);
-        st.groups.push(back.length);
+        if (back.kind === 'swap') st.ops = back.after.slice();
+        else st.ops.push(...back.ops);
+        st.steps.push(back);
         st.undoable = Math.min(UNDO_DEPTH, st.undoable + 1);
-        return true;
+        return back;
       },
       /** The page's document with the draft applied. */
       document: render,
