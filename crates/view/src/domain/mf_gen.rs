@@ -95,14 +95,15 @@ pub struct Plan {
     pub missing: Vec<Missing>,
 }
 
-/// What the generation answers: the fragment, and the fixture when one was
+/// What the generation answers: the fragment, and the fixtures it was
 /// asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Generated {
     /// `mock/components/<Name>.html`.
     pub fragment: String,
-    /// `mock/fixtures/<name>.json`, pretty, when the answer carried one.
-    pub fixture: Option<String>,
+    /// Each fixture asked for, by Capability: `mock/fixtures/<Capability>.json`,
+    /// pretty.
+    pub fixtures: Vec<(String, String)>,
 }
 
 /// The fragment's path, relative to `mock/`.
@@ -118,17 +119,12 @@ pub fn draft_path(name: &str) -> String {
     format!("components/{name}.draft.html")
 }
 
-/// The fixture's path, relative to `mock/`: the name in kebab case.
+/// The fixture of one Capability, relative to `mock/`: what the mock server
+/// answers it with (`fixtures/<identifier>.json`), what a micro-frontend
+/// that needs it reads, what the rules' tests start from.
 #[must_use]
-pub fn fixture_path(name: &str) -> String {
-    let mut kebab = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            kebab.push('-');
-        }
-        kebab.push(c.to_ascii_lowercase());
-    }
-    format!("fixtures/{kebab}.json")
+pub fn fixture_path(capability: &str) -> String {
+    format!("fixtures/{capability}.json")
 }
 
 /// The units of a spec as the generation reads them: a few lines each —
@@ -244,22 +240,22 @@ pub fn generate_prompt(
     units: &str,
     skeletons: &str,
     tokens: &str,
-    fixture: Option<&str>,
+    fixtures: &[(String, Option<String>)],
 ) -> String {
-    let fixture_at = fixture_path(&spec.name);
     let mut prompt = String::from(
         "You write one micro-frontend of a product's mock-up: a fragment of HTML a static page \
          injects in `<div data-component=\"<Name>\" data-props='{…}'>`, shown on a fixture — the \
          data its Capabilities would answer — with no backend ever.\n\n\
          The rules:\n\
          - Answer ONLY a ```html block (the fragment), then — when asked below — a ```json block \
-         (the fixture). No prose.\n\
+         (the fixtures). No prose.\n\
          - The fragment is its markup, then one <script> in an arrow IIFE: `const root = \
          document.currentScript.closest('[data-component]'); const props = \
-         JSON.parse(root.dataset.props || '{}');`. It reads its data from one fetch of the fixture, \
-         `fetch(new URL('../<fixture>', location.href))` — no other network, no external script or \
+         JSON.parse(root.dataset.props || '{}');`. It reads its data with one fetch per Capability \
+         it needs, `fetch(new URL('../fixtures/<Capability>.json', location.href))` — what the \
+         mock server answers that Capability with — no other network, no external script or \
          stylesheet — and filters it by the props. Shown alone it is handed no props: a prop \
-         missing falls back to the fixture's first fitting value, so it always shows its data.\n\
+         missing falls back to the fixtures' first fitting value, so it always shows its data.\n\
          - It opens at rest: what overlays — a dialog, a toast, a drop list — stays hidden \
          until its actuator opens it, and closes again.\n\
          - Every actuator carries `data-writes=\"<DataCapability>\"`, every part that shows a read \
@@ -289,20 +285,27 @@ pub fn generate_prompt(
         spec.text(),
         units
     );
-    match fixture {
-        Some(text) => {
-            let _ = write!(
-                prompt,
-                "Its fixture, `{fixture_at}`, exists — read it, do not answer one:\n{text}\n"
-            );
+    let mut missing = Vec::new();
+    for (capability, text) in fixtures {
+        match text {
+            Some(text) => {
+                let _ = write!(
+                    prompt,
+                    "The fixture of `{capability}`, `{}`, exists — read it, do not answer it:\n{text}\n",
+                    fixture_path(capability)
+                );
+            }
+            None => missing.push(format!("`{capability}`")),
         }
-        None => {
-            let _ = writeln!(
-                prompt,
-                "It has no fixture yet: answer one after the fragment, the ```json of `{fixture_at}` \
-                 — a few rows shaped as its reads return them, enough to show every state."
-            );
-        }
+    }
+    if !missing.is_empty() {
+        let _ = writeln!(
+            prompt,
+            "No fixture yet for {}: answer them after the fragment, in one ```json block holding \
+             an object keyed by Capability — `{{\"<Capability>\": <what it answers>}}` — a few \
+             rows each, shaped as the reads return them, enough to show every state.",
+            missing.join(", ")
+        );
     }
     prompt
 }
@@ -340,8 +343,8 @@ pub fn rewrite_prompt(
         "You edit one micro-frontend of a product's mock-up on behalf of a human who dropped \
          requests on it. Apply every request to the fragment below and answer the WHOLE fragment \
          back in a ```html block — its markup and its script — no prose. Keep what the requests do \
-         not touch as it is, and keep its rules: its data from the one fetch of its fixture, no \
-         other network; `data-writes` on every actuator and `data-reads` on every part that shows \
+         not touch as it is, and keep its rules: its data from one fetch per Capability it needs \
+         (`fixtures/<Capability>.json`), no other network; `data-writes` on every actuator and `data-reads` on every part that shows \
          a read; a write checks the rules below in the page and shows the command's life; it opens \
          at rest; the kit's components written with their classes, any other style through \
          `var(--…)`, never a colour literal. A request that needs data or a unit the \
@@ -465,13 +468,14 @@ pub fn fork_name(pages: &str, from: &str) -> String {
         .unwrap_or_else(|| format!("{from}Fork"))
 }
 
-/// The fragment and the fixture an answer carries.
+/// The fragment and the fixtures an answer carries: one per Capability of
+/// `missing`, read off the fenced `json` object keyed by them.
 ///
 /// # Errors
 ///
-/// No HTML block or no markup, a fragment too heavy, a fixture not JSON
-/// or too heavy.
-pub fn generated_of(answer: &str) -> Result<Generated, String> {
+/// No HTML block or no markup, a fragment too heavy, fixtures not JSON, too
+/// heavy, or lacking one of `missing`.
+pub fn generated_of(answer: &str, missing: &[String]) -> Result<Generated, String> {
     let fragment = block(answer, "html")
         .or_else(|| (!answer.contains("```")).then(|| answer.trim().to_string()))
         .ok_or("the answer carries no ```html block")?;
@@ -484,25 +488,32 @@ pub fn generated_of(answer: &str) -> Result<Generated, String> {
             kit::MAX_FRAGMENT
         ));
     }
-    let fixture = match block(answer, "json") {
-        Some(text) => {
-            if text.chars().count() > MAX_FIXTURE {
-                return Err(format!(
-                    "the fixture weighs more than {MAX_FIXTURE} characters"
-                ));
-            }
-            let value: Value =
-                serde_json::from_str(&text).map_err(|e| format!("the fixture: {e}"))?;
-            Some(format!(
-                "{}\n",
-                serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
-            ))
+    let mut fixtures = Vec::new();
+    if !missing.is_empty() {
+        let text =
+            block(answer, "json").ok_or("the answer carries no ```json block of fixtures")?;
+        if text.chars().count() > MAX_FIXTURE {
+            return Err(format!(
+                "the fixtures weigh more than {MAX_FIXTURE} characters"
+            ));
         }
-        None => None,
-    };
+        let value: Value = serde_json::from_str(&text).map_err(|e| format!("the fixtures: {e}"))?;
+        for capability in missing {
+            let one = value
+                .get(capability)
+                .ok_or_else(|| format!("the fixtures lack `{capability}`"))?;
+            fixtures.push((
+                capability.clone(),
+                format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(one).map_err(|e| e.to_string())?
+                ),
+            ));
+        }
+    }
     Ok(Generated {
         fragment: format!("{}\n", fragment.trim()),
-        fixture,
+        fixtures,
     })
 }
 
@@ -520,6 +531,13 @@ fn block(text: &str, lang: &str) -> Option<String> {
 /// and needs no `data-writes`/`data-reads` names.
 #[must_use]
 pub fn untagged(fragment: &str, spec: &Spec) -> Vec<String> {
+    unnamed(fragment, &spec.needs, &spec.actions)
+}
+
+/// The actions no `data-writes` and the needs no `data-reads` of a fragment
+/// names (contract D), actions first.
+#[must_use]
+pub fn unnamed(fragment: &str, needs: &[String], actions: &[String]) -> Vec<String> {
     let lower = fragment.to_lowercase();
     let named = |attr: &str, id: &str| {
         let id = id.to_lowercase();
@@ -529,10 +547,10 @@ pub fn untagged(fragment: &str, spec: &Spec) -> Vec<String> {
                 .is_some_and(|near| near.contains(&id))
         })
     };
-    spec.actions
+    actions
         .iter()
         .filter(|a| !named("data-writes", a))
-        .chain(spec.needs.iter().filter(|n| !named("data-reads", n)))
+        .chain(needs.iter().filter(|n| !named("data-reads", n)))
         .cloned()
         .collect()
 }
@@ -543,7 +561,7 @@ pub fn untagged(fragment: &str, spec: &Spec) -> Vec<String> {
 /// # Errors
 ///
 /// The manifest is not JSON, or not an object.
-pub fn listed(pages: Option<&str>, spec: &Spec, with_fixture: bool) -> Result<String, String> {
+pub fn listed(pages: Option<&str>, spec: &Spec, fixtures: &[String]) -> Result<String, String> {
     let mut root: Value = match pages {
         Some(text) if !text.trim().is_empty() => {
             serde_json::from_str(text).map_err(|e| format!("pages.json: {e}"))?
@@ -572,8 +590,12 @@ pub fn listed(pages: Option<&str>, spec: &Spec, with_fixture: bool) -> Result<St
         Value::String(spec.description.clone()),
     );
     entry.insert("fragment".into(), Value::String(fragment_path(&spec.name)));
-    if with_fixture || entry.contains_key("fixture") {
-        entry.insert("fixture".into(), Value::String(fixture_path(&spec.name)));
+    // One fixture per Capability it needs; the old single file goes.
+    entry.remove("fixture");
+    if fixtures.is_empty() {
+        entry.remove("fixtures");
+    } else {
+        entry.insert("fixtures".into(), serde_json::json!(fixtures));
     }
     entry.insert("needs".into(), serde_json::json!(spec.needs));
     entry.insert("actions".into(), serde_json::json!(spec.actions));
@@ -683,11 +705,12 @@ mod tests {
             "- units\n",
             "Table: <table class=\"kit-table\">…</table>",
             "--color-primary",
-            None,
+            &[("campagne.listerPjs".to_string(), None)],
         );
         assert!(
             prompt.contains("data-writes=")
-                && prompt.contains("fixtures/pjs.json")
+                && prompt.contains("fixtures/<Capability>.json")
+                && prompt.contains("No fixture yet for `campagne.listerPjs`")
                 && prompt.contains("```json")
         );
         assert!(
@@ -695,16 +718,51 @@ mod tests {
                 < prompt.find("The micro-frontend:\n").unwrap_or(0),
             "the stable part first"
         );
-        let with = generate_prompt(&spec(), "", "", "", Some("[]"));
-        assert!(with.contains("exists — read it"));
-        let got = generated_of("```html\n<table data-reads=\"campagne.listerPjs\"></table>\n```\n```json\n[{\"id\":1}]\n```").expect("generated");
+        let with = generate_prompt(
+            &spec(),
+            "",
+            "",
+            "",
+            &[("campagne.listerPjs".to_string(), Some("[]".to_string()))],
+        );
+        assert!(with.contains("`fixtures/campagne.listerPjs.json`, exists — read it"));
+        assert!(!with.contains("No fixture yet"));
+        let missing = ["campagne.listerPjs".to_string()];
+        let got = generated_of(
+            "```html\n<table data-reads=\"campagne.listerPjs\"></table>\n```\n```json\n{\"campagne.listerPjs\": [{\"id\":1}], \"other\": 2}\n```",
+            &missing,
+        )
+        .expect("generated");
         assert!(got.fragment.starts_with("<table"));
         assert_eq!(
-            got.fixture.as_deref(),
-            Some("[\n  {\n    \"id\": 1\n  }\n]\n")
+            got.fixtures,
+            [(
+                "campagne.listerPjs".to_string(),
+                "[\n  {\n    \"id\": 1\n  }\n]\n".to_string()
+            )]
         );
-        assert!(generated_of("```json\n[]\n```").is_err());
-        assert!(generated_of("```html\n<div data-x></div>\n```\n```json\nnot json\n```").is_err());
+        let none = generated_of(
+            "```html\n<div data-x></div>\n```\n```json\nnot json\n```",
+            &[],
+        )
+        .expect("nothing asked, nothing read");
+        assert!(none.fixtures.is_empty());
+        assert!(generated_of("```json\n[]\n```", &missing).is_err());
+        assert!(
+            generated_of(
+                "```html\n<div data-x></div>\n```\n```json\nnot json\n```",
+                &missing
+            )
+            .is_err()
+        );
+        assert!(
+            generated_of(
+                "```html\n<div data-x></div>\n```\n```json\n{\"x\": 1}\n```",
+                &missing
+            )
+            .expect_err("lacks it")
+            .contains("lack `campagne.listerPjs`")
+        );
         assert_eq!(
             untagged("<button data-writes=\"campagne.ajouterPj\">", &spec()),
             ["campagne.listerPjs"]
@@ -778,21 +836,27 @@ mod tests {
     #[test]
     fn the_manifest_lists_the_micro_frontend_and_keeps_the_rest() {
         let before = r#"{"version":1,"pages":[{"path":"pages/a.html"}],"components":[{"name":"Pjs","fixture":"fixtures/old.json","extra":true},{"name":"Other"}]}"#;
+        let paths = [fixture_path("campagne.listerPjs")];
         let after: Value =
-            serde_json::from_str(&listed(Some(before), &spec(), false).expect("listed"))
+            serde_json::from_str(&listed(Some(before), &spec(), &paths).expect("listed"))
                 .expect("json");
         let pjs = &after["components"][0];
         assert_eq!(pjs["fragment"], "components/Pjs.html");
-        assert_eq!(pjs["fixture"], "fixtures/pjs.json");
+        assert!(pjs.get("fixture").is_none(), "the old single file goes");
+        assert_eq!(
+            pjs["fixtures"],
+            serde_json::json!(["fixtures/campagne.listerPjs.json"])
+        );
         assert_eq!(pjs["extra"], true);
         assert_eq!(after["components"][1]["name"], "Other");
         assert_eq!(after["pages"][0]["path"], "pages/a.html");
         let fresh: Value =
-            serde_json::from_str(&listed(None, &spec(), true).expect("new")).expect("json");
+            serde_json::from_str(&listed(None, &spec(), &[]).expect("new")).expect("json");
+        assert!(fresh["components"][0].get("fixtures").is_none());
         assert_eq!(fresh["components"][0]["actions"][0], "campagne.ajouterPj");
         assert_eq!(
-            fixture_path("NiveauDuGroupe"),
-            "fixtures/niveau-du-groupe.json"
+            fixture_path("groupe.lireNiveau"),
+            "fixtures/groupe.lireNiveau.json"
         );
     }
 }

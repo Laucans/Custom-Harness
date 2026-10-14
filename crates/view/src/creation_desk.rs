@@ -745,7 +745,7 @@ impl CreationDesk {
             let mut paths: Vec<String> = state
                 .components
                 .into_iter()
-                .flat_map(|c| c.fixture)
+                .flat_map(|c| c.fixtures)
                 .collect();
             paths.sort();
             paths.dedup();
@@ -775,13 +775,21 @@ impl CreationDesk {
     pub async fn validate_rules(&self) -> Result<Creation, String> {
         // A tie to a page or a micro-frontend the mock-up has not is a gap
         // too, where there is a mock-up to read.
+        // So is a micro-frontend that names no part for one of its needs or
+        // actions: nothing a gate or a rule's test could find.
         let dangling = match &self.setup.mockups {
             Some(_) => {
                 let ctx = self.context(&self.existing()?).await;
                 let pages: Vec<String> = ctx.pages.iter().map(|p| p.path.clone()).collect();
                 let components: Vec<String> =
                     ctx.components.iter().map(|c| c.name.clone()).collect();
-                self.existing()?.dangling(&pages, &components)
+                let mut gaps = self.existing()?.dangling(&pages, &components);
+                gaps.extend(
+                    crate::domain::audit::unnamed_parts(&ctx.components)
+                        .into_iter()
+                        .map(|f| f.why),
+                );
+                gaps
             }
             None => Vec::new(),
         };
@@ -1383,7 +1391,26 @@ impl CreationDesk {
         let mut ctx = Context::default();
         if let Some(mockups) = self.setup.mockups.clone() {
             let at = branch.clone();
-            if let Ok(Ok(state)) = tokio::task::spawn_blocking(move || mockups.state(&at)).await {
+            // The state, and each fragment's markup: what says whether its
+            // parts are named.
+            let read = tokio::task::spawn_blocking(move || {
+                let state = mockups.state(&at)?;
+                let markup: Vec<String> = state
+                    .components
+                    .iter()
+                    .map(|c| {
+                        mockups
+                            .file(&at, &c.fragment)
+                            .ok()
+                            .flatten()
+                            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                Ok::<_, String>((state, markup))
+            })
+            .await;
+            if let Ok(Ok((state, markup))) = read {
                 ctx.pages = state
                     .pages
                     .iter()
@@ -1396,12 +1423,17 @@ impl CreationDesk {
                 ctx.components = state
                     .components
                     .iter()
-                    .map(|c| ComponentRef {
+                    .zip(markup)
+                    .map(|(c, markup)| ComponentRef {
                         name: c.name.clone(),
                         system: c.system.clone(),
                         description: c.description.clone(),
                         needs: c.needs.clone(),
                         actions: c.actions.clone(),
+                        fragment: c.fragment.clone(),
+                        fixtures: c.fixtures.clone(),
+                        props: c.props.clone(),
+                        markup,
                     })
                     .collect();
             }
@@ -1638,7 +1670,14 @@ impl CreationDesk {
         let data = match &record.data {
             Some(d) => Some((
                 d.model_json()?,
-                serde_json::to_string_pretty(&d.aggregates).map_err(|e| e.to_string())?,
+                d.aggregate_manifests()
+                    .into_iter()
+                    .map(|(name, manifest)| {
+                        serde_json::to_string_pretty(&manifest)
+                            .map(|text| (creation::aggregate_draft_path(&name), text + "\n"))
+                            .map_err(|e| e.to_string())
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
             )),
             None => None,
         };
@@ -1648,7 +1687,9 @@ impl CreationDesk {
             wrote.write(&at, creation::RECORD_JSON, json.as_bytes())?;
             if let Some((model, aggregates)) = data {
                 wrote.write(&at, creation::DATA_MODEL, model.as_bytes())?;
-                wrote.write(&at, creation::DATA_AGGREGATES, aggregates.as_bytes())?;
+                for (path, text) in aggregates {
+                    wrote.write(&at, &path, text.as_bytes())?;
+                }
             }
             wrote.write(&at, creation::RECORD_MD, md.as_bytes())
         })
@@ -3150,11 +3191,13 @@ mod tests {
         let model = std::fs::read_to_string(dir.join("main_agent/mock/data/model.json"))
             .expect("the data model is written beside the mock-up");
         assert!(model.contains("\"name\": \"line\""), "{model}");
-        let aggregates = std::fs::read_to_string(dir.join("main_agent/mock/data/aggregates.json"))
-            .expect("the aggregates are written beside the mock-up");
+        let aggregate = std::fs::read_to_string(
+            dir.join("main_agent/mock/data/aggregates/Line.aggregate.json"),
+        )
+        .expect("each aggregate is drafted beside the mock-up, as contract I has it");
         assert!(
-            aggregates.contains("\"aggregate\": \"Line\""),
-            "{aggregates}"
+            aggregate.contains("\"aggregate\": \"Line\"") && aggregate.contains("\"holds\""),
+            "{aggregate}"
         );
         let kept = std::fs::read_to_string(dir.join("main_agent/mock/proof-of-concept.json"))
             .expect("the record is written");

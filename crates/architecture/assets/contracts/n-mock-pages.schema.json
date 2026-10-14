@@ -76,23 +76,15 @@
             "pattern": "^components/[A-Z][A-Za-z0-9]*\\.html$",
             "description": "Its markup and script, relative to `mock/`: `components/RiskBadge.html`."
           },
-          "fixture": {
-            "oneOf": [
-              {
-                "type": "string",
-                "pattern": "^fixtures/[A-Za-z0-9/_-]+\\.json$"
-              },
-              {
-                "type": "array",
-                "minItems": 1,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "pattern": "^fixtures/[A-Za-z0-9/_-]+\\.json$"
-                }
-              }
-            ],
-            "description": "What its Capabilities would answer, as the fragment reads it: one file, or the list of them when it reads several."
+          "fixtures": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^fixtures/[a-z][a-z0-9-]*\\.[A-Za-z][A-Za-z0-9]*\\.json$"
+            },
+            "description": "What its Capabilities answer, one file per Capability it needs, `fixtures/<Capability>.json`: what the mock server answers that Capability with, and what the rules' tests start from."
           },
           "needs": {
             "type": "array",

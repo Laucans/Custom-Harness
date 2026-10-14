@@ -5,7 +5,7 @@
 //! The record is what the register keeps beside a factory being created
 //! (`Factories::creation`, opaque to `core`): its shape is decided here.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -1791,12 +1791,18 @@ pub fn componentize_prompt(c: &Creation, rules: &str, kit: &str, tokens_css: &st
          (an invoice list, an upload form, a balance), named in PascalCase, its system the bounded \
          context it belongs to — and for each one: write its fragment \
          `mock/components/<Name>.html` (its markup, its style on the design system's variables, its \
-         script finding its root as `document.currentScript.closest('[data-component]')`, its data \
-         read from `mock/fixtures/<Name>.json`, the kit's components kept as `data-kit` elements), \
-         and list it under `components` of `mock/pages.json` (name, system, description, fragment, \
-         fixture, props; `needs` and `actions` named as the Capabilities and DataCapabilities it \
-         would read and trigger, `<system>.<verb><Thing>`). A micro-frontend shared by several pages \
-         is written once. Then rewrite each page as layout only: its regions, and in them \
+         script finding its root as `document.currentScript.closest('[data-component]')`, the \
+         kit's components kept as `data-kit` elements), and list it under `components` of \
+         `mock/pages.json` (name, system, description, fragment, fixtures, props; `needs` and \
+         `actions` named as the Capabilities and DataCapabilities it would read and trigger, \
+         `<system>.<verb><Thing>`). **Its data comes from one fixture per Capability it needs**, \
+         `mock/fixtures/<Capability>.json` — what the mock server answers that Capability with, \
+         what the rules' tests start from, shared by every micro-frontend that reads it — fetched \
+         as `fetch(new URL('../fixtures/<Capability>.json', location.href))` and listed under its \
+         `fixtures`. **Name its parts** (contract D): every actuator carries \
+         `data-writes=\"<DataCapability>\"`, every part that shows a read \
+         `data-reads=\"<Capability>\"`, each of its `actions` and `needs` at least once. A \
+         micro-frontend shared by several pages is written once. Then rewrite each page as layout only: its regions, and in them \
          `<div data-component=\"<Name>\" data-props='{…}'></div>` for each micro-frontend, with \
          `<script src=\"../mock.js\"></script>` — no business markup left inline. Keep every `id` a page carries on its region. Keep each page's \
          look, texts, links and example data as they are. List each page's micro-frontends under its \
@@ -1894,6 +1900,16 @@ pub struct ComponentRef {
     pub needs: Vec<String>,
     /// The `DataCapabilities` it triggers.
     pub actions: Vec<String>,
+    /// Its fragment, relative to `mock/`.
+    pub fragment: String,
+    /// Its fixtures, one per Capability it needs, relative to `mock/`.
+    pub fixtures: Vec<String>,
+    /// The props it takes, `name: type`.
+    pub props: BTreeMap<String, String>,
+    /// Its fragment's markup as read when the context was made; empty when
+    /// it was not read. Never written in the record.
+    #[serde(skip)]
+    pub markup: String,
 }
 
 /// A pin left on the mock-up that no backlog issue carries yet.
@@ -1946,8 +1962,17 @@ pub const RECORD_MD: &str = "proof-of-concept.md";
 /// The data model drafted at creation, beside the mock-up (contract M):
 /// the write side installs it at `data/model.json`.
 pub const DATA_MODEL: &str = "data/model.json";
-/// The aggregates' integrity rules drafted at creation (after contract I).
-pub const DATA_AGGREGATES: &str = "data/aggregates.json";
+/// Where the aggregates' integrity rules drafted at creation lie, one
+/// `<Aggregate>.aggregate.json` each, as contract I has it: the task that
+/// builds an aggregate installs its own at
+/// `crates/dataguard/aggregates/<Aggregate>/aggregate.json`.
+pub const DATA_AGGREGATES_DIR: &str = "data/aggregates";
+
+/// The draft of one aggregate, under [`DATA_AGGREGATES_DIR`].
+#[must_use]
+pub fn aggregate_draft_path(aggregate: &str) -> String {
+    format!("{DATA_AGGREGATES_DIR}/{aggregate}.aggregate.json")
+}
 
 /// The record and its context, as one JSON document for the repository.
 ///
@@ -1971,6 +1996,8 @@ pub fn record_json(c: &Creation, ctx: &Context) -> Result<String, String> {
         design: &'a DesignRef,
         mockup_at: &'a str,
         design_at: &'a str,
+        writes: Vec<WriteRef>,
+        aggregates: Vec<&'a str>,
     }
     serde_json::to_string_pretty(&Kept {
         version: 1,
@@ -1987,8 +2014,52 @@ pub fn record_json(c: &Creation, ctx: &Context) -> Result<String, String> {
         design: &ctx.design,
         mockup_at: &c.mockup_at,
         design_at: &c.design_at,
+        writes: writes_of(c, ctx),
+        aggregates: c
+            .data
+            .iter()
+            .flat_map(|d| d.aggregates.iter().map(|a| a.name.as_str()))
+            .collect(),
     })
     .map_err(|e| e.to_string())
+}
+
+/// One `DataCapability` as the creation decided it: what contract F's
+/// manifest declares when the task builds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WriteRef {
+    /// Its identifier, `<system>.<verbThing>`.
+    #[serde(rename = "dataCapability")]
+    pub data_capability: String,
+    /// What it does to the data, as the guard read it; `None` when no audit
+    /// was made.
+    pub effect: Option<super::audit::Effect>,
+    /// The fields it changes, `table.field`, as the data step drafted them.
+    pub touches: Vec<String>,
+}
+
+/// Every `DataCapability` a micro-frontend triggers, with its effect and
+/// the fields it changes, by identifier.
+#[must_use]
+pub fn writes_of(c: &Creation, ctx: &Context) -> Vec<WriteRef> {
+    let mut ids: Vec<&str> = ctx
+        .components
+        .iter()
+        .flat_map(|m| m.actions.iter().map(String::as_str))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter()
+        .map(|id| WriteRef {
+            data_capability: id.to_string(),
+            effect: c.audit.as_ref().and_then(|a| a.effects.get(id).copied()),
+            touches: c
+                .data
+                .as_ref()
+                .and_then(|d| d.writes.get(id).cloned())
+                .unwrap_or_default(),
+        })
+        .collect()
 }
 
 /// Where the mock-up lives, in words: for the task and the record.
@@ -2094,7 +2165,9 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
     if !ctx.components.is_empty() {
         body.push_str(
             "\n## Micro-frontends\n\nAs `mock/pages.json` lists them, with the Capabilities \
-             they read (`needs`) and the DataCapabilities they trigger (`actions`).\n\n",
+             they read (`needs`, each answered by `mock/fixtures/<Capability>.json`) and the \
+             DataCapabilities they trigger (`actions`). Every write's effect and the fields it \
+             touches are in `mock/proof-of-concept.json` (`writes`).\n\n",
         );
         for m in &ctx.components {
             let _ = write!(body, "- **{}**", m.name);
@@ -2141,9 +2214,11 @@ fn data_section(c: &Creation) -> String {
     let _ = write!(
         body,
         "\n## Data\n\nDrafted and validated at creation, beside the mock-up: `mock/{DATA_MODEL}` \
-         (contract M, {} tables) and `mock/{DATA_AGGREGATES}` (contract I, {} aggregates, \
-         {invariants} invariants) — the write side installs them at `data/model.json` and \
-         `crates/dataguard/aggregates/`.\n\n",
+         (contract M, {} tables) and one `mock/{DATA_AGGREGATES_DIR}/<Aggregate>.aggregate.json` \
+         per aggregate (contract I, {} aggregates, {invariants} invariants). The task that \
+         builds an aggregate installs its draft at \
+         `crates/dataguard/aggregates/<Aggregate>/aggregate.json` and moves its tables into \
+         `data/model.json` with its migration.\n\n",
         d.tables.len(),
         d.aggregates.len()
     );
@@ -3207,7 +3282,7 @@ mod tests {
             ..DataDraft::default()
         });
         let (_, body) = roadmap_issue(&c, &Context::default());
-        assert!(body.contains("\n## Data\n\nDrafted and validated at creation, beside the mock-up: `mock/data/model.json` (contract M, 2 tables) and `mock/data/aggregates.json` (contract I, 1 aggregates, 1 invariants)"), "{body}");
+        assert!(body.contains("\n## Data\n\nDrafted and validated at creation, beside the mock-up: `mock/data/model.json` (contract M, 2 tables) and one `mock/data/aggregates/<Aggregate>.aggregate.json` per aggregate (contract I, 1 aggregates, 1 invariants)"), "{body}");
         assert!(
             body.contains("- **Line** — line, total\n  - positive — above zero\n"),
             "{body}"
@@ -3759,6 +3834,7 @@ mod tests {
                 description: "the invoices".to_string(),
                 needs: vec!["billing.listInvoices".to_string()],
                 actions: vec!["billing.payInvoice".to_string()],
+                ..ComponentRef::default()
             }],
             pins: vec![PinRef {
                 kind: "request".to_string(),
@@ -3800,6 +3876,32 @@ mod tests {
         assert_eq!(read["components"][0]["needs"][0], "billing.listInvoices");
         assert_eq!(read["decisions"][0]["answer"], "yes");
         assert_eq!(read["mockup_at"], "mockup/proof-of-concept");
+        // Every write, with what the guard and the data step decided of it.
+        assert_eq!(read["writes"][0]["dataCapability"], "billing.payInvoice");
+        assert!(read["writes"][0]["effect"].is_null(), "no audit made");
+        let mut audited = c.clone();
+        audited.audit = Some(crate::domain::audit::Audit {
+            effects: std::collections::BTreeMap::from([(
+                "billing.payInvoice".to_string(),
+                crate::domain::audit::Effect::Update,
+            )]),
+            ..crate::domain::audit::Audit::default()
+        });
+        audited.data = Some(crate::domain::data_draft::DataDraft {
+            writes: std::collections::BTreeMap::from([(
+                "billing.payInvoice".to_string(),
+                vec!["invoice.paid_at".to_string()],
+            )]),
+            ..crate::domain::data_draft::DataDraft::default()
+        });
+        let writes = writes_of(&audited, &ctx);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].effect, Some(crate::domain::audit::Effect::Update));
+        assert_eq!(writes[0].touches, ["invoice.paid_at"]);
+        assert!(
+            read["components"][0].get("markup").is_none(),
+            "never written"
+        );
     }
 
     #[test]
@@ -3918,6 +4020,7 @@ mod tests {
                 description: "the invoices".to_string(),
                 needs: vec!["billing.listInvoices".to_string()],
                 actions: vec!["billing.payInvoice".to_string()],
+                ..ComponentRef::default()
             }],
             ..Context::default()
         };

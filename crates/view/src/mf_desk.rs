@@ -7,9 +7,9 @@
 //! added to the kit as custom components and generated there first — the
 //! design system's easel does it, as a human's would. **Write**: one
 //! question reads the skeletons of the components used, the units' contracts
-//! and rules, the fixture when there is one, and answers the fragment (and
-//! a fixture when there was none); the fragment, the fixture and the
-//! manifest's entry are written in the branch's workspace, saved with the
+//! and rules, the fixtures of the Capabilities it needs that exist, and
+//! answers the fragment (and the fixtures still missing, one per
+//! Capability); the fragment, the fixtures and the manifest's entry are written in the branch's workspace, saved with the
 //! mock-up like a human's edit. The questions are blocking: each one runs
 //! in `spawn_blocking`; a generation is a task, and the sessions' count
 //! bounds how many ask at once.
@@ -262,7 +262,7 @@ impl MfDesk {
                 &fragment,
                 &asked,
             );
-            let rewritten = mf_gen::generated_of(&oneshot.ask(&model, &prompt)?)?.fragment;
+            let rewritten = mf_gen::generated_of(&oneshot.ask(&model, &prompt)?, &[])?.fragment;
             let skipped = design::skipped_in(&rewritten);
             let _held = lock(&files);
             mockups.write(
@@ -434,21 +434,31 @@ impl MfDesk {
             j.uses.clone_from(&uses);
             j.step = Step::Writing;
         });
-        let fixture_at = mf_gen::fixture_path(&spec.name);
-        let fixture = self.read(branch, &fixture_at).await?;
+        // One fixture per Capability it needs: those there are read, the
+        // others asked for.
+        let mut fixtures = Vec::new();
+        for need in &spec.needs {
+            let text = self.read(branch, &mf_gen::fixture_path(need)).await?;
+            fixtures.push((need.clone(), text));
+        }
+        let missing: Vec<String> = fixtures
+            .iter()
+            .filter(|(_, text)| text.is_none())
+            .map(|(need, _)| need.clone())
+            .collect();
         let prompt = mf_gen::generate_prompt(
             &spec,
             units,
             &index.skeletons(&uses),
             &index.tokens.join(", "),
-            fixture.as_deref(),
+            &fixtures,
         );
-        let generated = mf_gen::generated_of(&ask(&oneshot, &model, prompt).await?)?;
+        let generated = mf_gen::generated_of(&ask(&oneshot, &model, prompt).await?, &missing)?;
         let untagged = mf_gen::untagged(&generated.fragment, &spec);
         let mockups = Arc::clone(&self.setup.mockups);
         let files = Arc::clone(&self.files);
         let branch_owned = branch.to_string();
-        let had_fixture = fixture.is_some();
+        let paths: Vec<String> = spec.needs.iter().map(|n| mf_gen::fixture_path(n)).collect();
         tokio::task::spawn_blocking(move || {
             let _held = lock(&files);
             mockups.write(
@@ -456,17 +466,17 @@ impl MfDesk {
                 &mf_gen::fragment_path(&spec.name),
                 generated.fragment.as_bytes(),
             )?;
-            let with_fixture = match (&generated.fixture, had_fixture) {
-                (Some(text), false) => {
-                    mockups.write(&branch_owned, &fixture_at, text.as_bytes())?;
-                    true
-                }
-                _ => had_fixture,
-            };
+            for (capability, text) in &generated.fixtures {
+                mockups.write(
+                    &branch_owned,
+                    &mf_gen::fixture_path(capability),
+                    text.as_bytes(),
+                )?;
+            }
             let pages = mockups
                 .file(&branch_owned, "pages.json")?
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-            let listed = mf_gen::listed(pages.as_deref(), &spec, with_fixture)?;
+            let listed = mf_gen::listed(pages.as_deref(), &spec, &paths)?;
             mockups.write(&branch_owned, "pages.json", listed.as_bytes())
         })
         .await
@@ -614,7 +624,7 @@ mod tests {
                 ));
             }
             if prompt.starts_with("You write one micro-frontend") {
-                return Ok("```html\n<section><button class=\"primary\" data-writes=\"campagne.ajouterPj\">Ajouter</button><ul data-reads=\"campagne.listerPjs\"></ul></section>\n```\n```json\n[{\"id\": 1, \"nom\": \"Aldric\"}]\n```".to_string());
+                return Ok("```html\n<section><button class=\"primary\" data-writes=\"campagne.ajouterPj\">Ajouter</button><ul data-reads=\"campagne.listerPjs\"></ul></section>\n```\n```json\n{\"campagne.listerPjs\": [{\"id\": 1, \"nom\": \"Aldric\"}]}\n```".to_string());
             }
             Ok("```html\n<div class=\"kit-fiche\" style=\"color:var(--color-text, #111111)\">Fiche</div>\n```".to_string())
         }
@@ -721,7 +731,7 @@ mod tests {
         let read = |path: &str| std::fs::read_to_string(dir.join(path)).unwrap_or_default();
         let asked = lock(&model.asked).clone();
         let fragment = read("main/mock/components/Pjs.html");
-        let fixture = read("main/mock/fixtures/pjs.json");
+        let fixture = read("main/mock/fixtures/campagne.listerPjs.json");
         let pages = read("main/mock/pages.json");
         let kit_json = read("design-system/mock/kit/kit.json");
         let made = read("design-system/mock/kit/Fiche.html");
@@ -733,7 +743,8 @@ mod tests {
         assert!(fixture.contains("Aldric"), "{fixture}");
         assert!(
             pages.contains("\"fragment\": \"components/Pjs.html\"")
-                && pages.contains("\"fixture\": \"fixtures/pjs.json\""),
+                && pages.contains("\"fixtures/campagne.listerPjs.json\"")
+                && !pages.contains("\"fixture\":"),
             "{pages}"
         );
         assert!(

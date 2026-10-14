@@ -43,6 +43,8 @@ jobs:
           validate e-screen-composition.schema.json apps/screens/*.json
           validate f-data-capability.schema.json crates/**/data-capability.json
           validate i-aggregate.schema.json crates/**/aggregate.json
+          # The aggregates drafted at the factory's creation conform before any is built.
+          validate i-aggregate.schema.json mock/data/aggregates/*.aggregate.json
           validate c-persisted-query.schema.json queries/registry.json
           validate m-data-model.schema.json data/model.json
           validate n-mock-pages.schema.json mock/pages.json
@@ -434,6 +436,37 @@ jobs:
               echo "::error file=$manifest::lists the micro-frontend $fragment, which is not under mock/"
               failed=1
             fi
+          done
+          # Before any Micro-UI is built, a hand-written micro-frontend already names its parts
+          # (contract D) and reads one fixture per Capability it needs, fixtures/<Capability>.json —
+          # what the mock server answers it with and the rules' tests start from.
+          for name in $(jq -r '.components[]? | select((.source // "") == "") | .name' "$manifest"); do
+            entry=$(jq -c --arg n "$name" '.components[] | select(.name == $n)' "$manifest")
+            fragment=$(jq -r '.fragment // empty' <<< "$entry")
+            [ -n "$fragment" ] && [ -f "mock/$fragment" ] || continue
+            text=$(tr '\n' ' ' < "mock/$fragment")
+            for key in actions needs; do
+              attr=reads
+              [ "$key" = actions ] && attr=writes
+              for unit in $(jq -r --arg k "$key" '.[$k][]?' <<< "$entry"); do
+                if ! grep -qiE "data-$attr[^;]{0,160}${unit//./\\.}" <<< "$text"; then
+                  echo "::error file=$manifest::the micro-frontend $name names no part data-$attr=\"$unit\" in mock/$fragment (contract D)"
+                  failed=1
+                fi
+              done
+            done
+            for need in $(jq -r '.needs[]?' <<< "$entry"); do
+              if ! jq -e --arg f "fixtures/$need.json" '.fixtures // [] | index($f)' <<< "$entry" > /dev/null; then
+                echo "::error file=$manifest::the micro-frontend $name needs $need and lists no fixtures/$need.json"
+                failed=1
+              fi
+            done
+            for fixture in $(jq -r '.fixtures[]?' <<< "$entry"); do
+              if [ ! -f "mock/$fixture" ]; then
+                echo "::error file=$manifest::the micro-frontend $name lists $fixture, which is not under mock/"
+                failed=1
+              fi
+            done
           done
           for name in $(jq -r '[.pages[].components[]?] | unique[]' "$manifest"); do
             if ! jq -e --arg n "$name" '.components[]? | select(.name == $n)' "$manifest" > /dev/null; then

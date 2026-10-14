@@ -274,6 +274,89 @@ impl DataDraft {
         .map_err(|e| e.to_string())
     }
 
+    /// Each aggregate as contract I has it — one `aggregate.json` apiece,
+    /// by aggregate name: every field of its tables keyed in `camelCase`
+    /// (the table's name joined in when two of its tables share a field's
+    /// name), its kind and criticality as drafted — authoritative and normal
+    /// where the draft left them open —, its invariants with a `kebab-case`
+    /// id, each relation from `<Aggregate>.<field>`, and holds of a quarter
+    /// of an hour, renewable. What the task building the aggregate installs
+    /// at `crates/dataguard/aggregates/<Aggregate>/aggregate.json`.
+    #[must_use]
+    pub fn aggregate_manifests(&self) -> Vec<(String, serde_json::Value)> {
+        self.aggregates
+            .iter()
+            .map(|a| (a.name.clone(), self.manifest_of(a)))
+            .collect()
+    }
+
+    /// One aggregate as contract I has it.
+    fn manifest_of(&self, a: &Aggregate) -> serde_json::Value {
+        let owned: Vec<(&str, &str)> = self
+            .tables
+            .iter()
+            .filter(|t| a.tables.contains(&t.name))
+            .flat_map(|t| {
+                t.fields
+                    .iter()
+                    .map(move |f| (t.name.as_str(), f.name.as_str()))
+            })
+            .collect();
+        let keys = field_keys(&owned);
+        let key_of = |table: &str, field: &str| {
+            keys.get(&(table.to_string(), field.to_string()))
+                .cloned()
+                .unwrap_or_else(|| camel(field))
+        };
+        let mut fields = serde_json::Map::new();
+        for (table, field) in &owned {
+            let rule = a.fields.get(&format!("{table}.{field}"));
+            let kind = rule
+                .and_then(|r| r.kind)
+                .unwrap_or(ValueKind::Authoritative);
+            let criticality = rule
+                .and_then(|r| r.criticality)
+                .unwrap_or(Criticality::Normal);
+            fields.insert(
+                key_of(table, field),
+                serde_json::json!({ "kind": kind, "criticality": criticality }),
+            );
+        }
+        let invariants: Vec<serde_json::Value> = a
+            .invariants
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "id": kebab(&i.id),
+                    "rule": i.rule.trim(),
+                    "onViolation": i.on_violation.unwrap_or(OnViolation::Reject),
+                })
+            })
+            .collect();
+        let relations: Vec<serde_json::Value> = a
+            .relations
+            .iter()
+            .map(|r| {
+                let (table, field) = r.from.split_once('.').unwrap_or(("", &r.from));
+                let mut relation = serde_json::json!({
+                    "from": format!("{}.{}", a.name, key_of(table, field)),
+                    "onDelete": r.on_delete.unwrap_or(OnDelete::Restrict),
+                });
+                if let Some(on_update) = r.on_update {
+                    relation["onUpdate"] = serde_json::json!(on_update);
+                }
+                relation
+            })
+            .collect();
+        serde_json::json!({
+            "aggregate": a.name,
+            "fields": fields,
+            "invariants": invariants,
+            "relations": relations,
+            "holds": { "maxTtl": "15m", "renewable": true },
+        })
+    }
+
     /// The human's retouches applied: words on what exists, the policies
     /// picked. Anything it names that does not exist is left alone; any
     /// change takes the validation back.
@@ -481,6 +564,88 @@ pub fn parse_data(answer: &str, from: &str) -> Result<DataDraft, String> {
     Ok(draft)
 }
 
+/// Each `(table, field)` of an aggregate keyed once in `camelCase`: by the
+/// field's name, the table's joined in where two would share a key, a
+/// number appended where even that is not enough.
+fn field_keys(owned: &[(&str, &str)]) -> BTreeMap<(String, String), String> {
+    let mut keys: Vec<((String, String), String, bool)> = owned
+        .iter()
+        .map(|(t, f)| (((*t).to_string(), (*f).to_string()), camel(f), false))
+        .collect();
+    for _ in 0..owned.len() {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, key, _) in &keys {
+            *counts.entry(key.clone()).or_default() += 1;
+        }
+        let clashing = |key: &String| counts.get(key).is_some_and(|n| *n > 1);
+        if !keys.iter().any(|(_, key, _)| clashing(key)) {
+            break;
+        }
+        // The plainer ones yield first: a field's own name is joined to its
+        // table's; one already joined takes a number.
+        let plain_clash = keys.iter().any(|(_, key, joined)| !joined && clashing(key));
+        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        for ((table, field), key, joined) in &mut keys {
+            if !clashing(key) {
+                continue;
+            }
+            if !*joined {
+                *key = camel(&format!("{table}_{field}"));
+                *joined = true;
+            } else if !plain_clash {
+                let n = seen.entry(key.clone()).or_default();
+                *n += 1;
+                if *n > 1 {
+                    *key = format!("{key}{n}");
+                }
+            }
+        }
+    }
+    keys.into_iter().map(|(at, key, _)| (at, key)).collect()
+}
+
+/// A `snake_case` or spaced name in `camelCase`: `credit_limit` → `creditLimit`.
+fn camel(name: &str) -> String {
+    let mut out = String::new();
+    let mut upper = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if out.is_empty() {
+                out.push(c.to_ascii_lowercase());
+            } else if upper {
+                out.push(c.to_ascii_uppercase());
+            } else {
+                out.push(c);
+            }
+            upper = false;
+        } else {
+            upper = true;
+        }
+    }
+    if out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, 'f');
+    }
+    out
+}
+
+/// A name in `kebab-case`, starting with a letter: `Max 3 PJ` → `max-3-pj`.
+fn kebab(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-').to_string();
+    if out.starts_with(|c: char| c.is_ascii_lowercase()) {
+        out
+    } else {
+        format!("i-{out}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +724,120 @@ mod tests {
             ],
             ..Creation::default()
         }
+    }
+
+    /// Contract I, mirrored strictly: a key the schema has not is refused.
+    mod contract_i {
+        use std::collections::BTreeMap;
+
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        // The contract's own names, mirrored.
+        #[allow(dead_code, clippy::struct_field_names)]
+        pub struct Aggregate {
+            pub aggregate: String,
+            pub fields: BTreeMap<String, Field>,
+            pub invariants: Vec<Invariant>,
+            pub relations: Vec<Relation>,
+            pub holds: Holds,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        pub struct Field {
+            pub kind: String,
+            pub criticality: String,
+            pub review: Option<String>,
+            pub merge: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields, rename_all = "camelCase")]
+        #[allow(dead_code)]
+        pub struct Invariant {
+            pub id: String,
+            pub rule: String,
+            pub on_violation: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields, rename_all = "camelCase")]
+        #[allow(dead_code)]
+        pub struct Relation {
+            pub from: String,
+            pub on_delete: String,
+            pub on_update: Option<String>,
+            pub semantic: Option<bool>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields, rename_all = "camelCase")]
+        #[allow(dead_code)]
+        pub struct Holds {
+            pub max_ttl: String,
+            pub renewable: bool,
+        }
+    }
+
+    #[test]
+    fn each_aggregate_is_drafted_as_contract_i_has_it() {
+        let mut d = draft();
+        // Two tables sharing a field's name: the table's name is joined in.
+        d.aggregates[0].invariants.push(Invariant {
+            id: "Max 3 PJ".to_string(),
+            rule: " at most three ".to_string(),
+            ..Invariant::default()
+        });
+        d.aggregates[0].relations[0].on_update = None;
+        let manifests = d.aggregate_manifests();
+        assert_eq!(manifests.len(), 1);
+        let (name, manifest) = &manifests[0];
+        assert_eq!(name, "Campaign");
+        let strict: contract_i::Aggregate =
+            serde_json::from_value(manifest.clone()).expect("contract I, strictly");
+        assert_eq!(strict.aggregate, "Campaign");
+        assert_eq!(
+            strict.fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["campaignId", "name", "sessionCampaignId", "sessionId"],
+            "two ids join their tables, and the link then joins its own"
+        );
+        assert_eq!(manifest["fields"]["name"]["criticality"], "normal");
+        assert_eq!(manifest["fields"]["sessionId"]["kind"], "authoritative");
+        assert_eq!(strict.invariants[0].id, "one");
+        assert_eq!(strict.invariants[1].id, "max-3-pj");
+        assert_eq!(strict.invariants[1].rule, "at most three");
+        assert_eq!(strict.invariants[1].on_violation, "reject");
+        assert_eq!(strict.relations[0].from, "Campaign.sessionCampaignId");
+        assert_eq!(strict.relations[0].on_delete, "cascade");
+        assert!(strict.relations[0].on_update.is_none());
+        assert_eq!(
+            (strict.holds.max_ttl.as_str(), strict.holds.renewable),
+            ("15m", true)
+        );
+    }
+
+    #[test]
+    fn every_field_gets_one_key_however_names_clash() {
+        let keys = field_keys(&[("a", "x"), ("b", "x"), ("a_x", "y"), ("c", "a_x")]);
+        let mut all: Vec<&String> = keys.values().collect();
+        all.sort();
+        let n = all.len();
+        all.dedup();
+        assert_eq!(all.len(), n, "{keys:?}");
+        assert_eq!(keys[&("c".to_string(), "a_x".to_string())], "cAX");
+    }
+
+    #[test]
+    fn names_become_the_case_the_contract_asks_for() {
+        assert_eq!(camel("credit_limit"), "creditLimit");
+        assert_eq!(camel("Name"), "name");
+        assert_eq!(camel("3d_view"), "f3dView");
+        assert_eq!(kebab("Max 3 PJ"), "max-3-pj");
+        assert_eq!(kebab("--a__b--"), "a-b");
+        assert_eq!(kebab("1st"), "i-1st");
     }
 
     #[test]

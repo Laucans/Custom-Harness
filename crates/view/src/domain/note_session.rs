@@ -421,8 +421,9 @@ pub fn mockup_rules(about: &About) -> String {
          `mock/components/<Name>.js`, which the fragment loads; the bundles are committed. Read \
          `mock/README.md` and the existing `mock/src/` first and follow them. A hand-written \
          fragment is only for a Micro-UI not built yet. Each is listed under \
-         `components` of `mock/pages.json` (name, system, description, fragment, fixture, needs, \
-         actions, props), and a page injects one with `<div data-component=\"<Name>\" \
+         `components` of `mock/pages.json` (name, system, description, fragment, fixtures, needs, \
+         actions, props) — one fixture per Capability it needs, `mock/fixtures/<Capability>.json`, \
+         and its parts named `data-reads=\"<Capability>\"` / `data-writes=\"<DataCapability>\"`, and a page injects one with `<div data-component=\"<Name>\" \
          data-props='{{…}}'></div>` plus `<script src=\"../mock.js\"></script>` — `mock/mock.js` \
          (create it if absent) fetches each `components/<Name>.html` into its element and runs its \
          scripts; a fragment's script finds its root as `document.currentScript.closest('[data-component]')`. \
@@ -438,8 +439,8 @@ pub fn mockup_rules(about: &About) -> String {
          the human saves the mock-up from the view when they are satisfied. Say in one line what \
          you changed when you are done.\n\n\
          `mock/pages.json` has exactly this shape — a field is a string unless it is a list or an \
-         object here, except a micro-frontend's `fixture`: one file, or a list of files when it \
-         reads several; no other field is read:\n\n\
+         object here, a micro-frontend's `fixtures` a list of `fixtures/<Capability>.json`, one \
+         per Capability it needs; no other field is read:\n\n\
          ```json\n{shape}\n```\n",
         shape = crate::domain::mockup::manifest_shape(),
         branch = if about.branch.is_empty() {
@@ -724,7 +725,10 @@ mod tests {
             rules.contains(&crate::domain::mockup::manifest_shape()),
             "{rules}"
         );
-        assert!(rules.contains("or a list of files"), "{rules}");
+        assert!(
+            rules.contains("one per Capability it needs") && rules.contains("data-reads="),
+            "{rules}"
+        );
     }
     use proptest::prelude::*;
 

@@ -44,7 +44,7 @@ below is untried on a real model.
 - [ ] *Ask the AI* changes the structure and keeps the policies.
 - [ ] Criticality and policy selects, purpose fields: kept at once, the
       validation taken back.
-- [ ] Accept: `mock/data/model.json` and `mock/data/aggregates.json` on
+- [ ] Accept: `mock/data/model.json` and one `mock/data/aggregates/<Aggregate>.aggregate.json` per aggregate on
       the integration branch beside `mock/proof-of-concept.json`; the
       roadmap task has `## Rules` (family, criterion) and `## Data`.
 - [ ] Back to the rules, change a criterion: the Data crumb turns yellow.

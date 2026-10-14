@@ -36,13 +36,16 @@ pub enum Check {
     WriteAsRead,
     /// A Capability that leans on another one.
     CapabilityCalls,
+    /// A micro-frontend whose fragment names no part for one of its needs
+    /// or actions (contract D: `data-reads`, `data-writes`).
+    PartUnnamed,
 }
 
 impl Check {
     /// It keeps the rules from being validated.
     #[must_use]
-    pub fn blocks(self) -> bool {
-        self == Self::WriteAsRead
+    pub const fn blocks(self) -> bool {
+        matches!(self, Self::WriteAsRead | Self::PartUnnamed)
     }
 }
 
@@ -118,17 +121,55 @@ impl Audit {
             .position(|f| f.id == id)
             .ok_or_else(|| format!("no finding {id}"))?;
         if !applied && self.findings[at].blocks() {
-            return Err("a write passed off as a read is fixed, not dismissed".to_string());
+            return Err(match self.findings[at].check {
+                Some(Check::PartUnnamed) => {
+                    "a part a micro-frontend does not name is named, not dismissed".to_string()
+                }
+                _ => "a write passed off as a read is fixed, not dismissed".to_string(),
+            });
         }
         Ok(self.findings.remove(at))
     }
 }
 
+/// The micro-frontends whose fragment, as read, names no part for one of
+/// its needs or actions: what a part must carry for the gates and the
+/// rules' tests to find it (contract D). A fragment not read is not judged.
+#[must_use]
+pub fn unnamed_parts(components: &[ComponentRef]) -> Vec<Finding> {
+    components
+        .iter()
+        .filter(|c| !c.markup.trim().is_empty())
+        .filter_map(|c| {
+            let unnamed = super::mf_gen::unnamed(&c.markup, &c.needs, &c.actions);
+            (!unnamed.is_empty()).then(|| Finding {
+                id: 0,
+                check: Some(Check::PartUnnamed),
+                units: std::iter::once(c.name.clone())
+                    .chain(unnamed.iter().cloned())
+                    .collect(),
+                why: format!(
+                    "{} names no part for {}: nothing a gate or a rule's test can find",
+                    c.name,
+                    unnamed.join(", ")
+                ),
+                fix: format!(
+                    "in `mock/{}`, mark the part that shows each read `data-reads=\"<Capability>\"` \
+                     and the actuator of each write `data-writes=\"<DataCapability>\"`: {}",
+                    c.fragment,
+                    unnamed.join(", ")
+                ),
+            })
+        })
+        .collect()
+}
+
 /// The checks read off the cut alone: the names, the systems' sizes, the
-/// micro-frontends reaching into another system.
+/// micro-frontends reaching into another system, the parts a fragment does
+/// not name.
 #[must_use]
 pub fn local_findings(components: &[ComponentRef]) -> Vec<Finding> {
-    let mut found = Vec::new();
+    let mut found = unnamed_parts(components);
     let units: BTreeSet<&str> = components
         .iter()
         .flat_map(|c| c.needs.iter().chain(&c.actions))
@@ -365,6 +406,7 @@ mod tests {
             description: String::new(),
             needs: needs.iter().map(ToString::to_string).collect(),
             actions: actions.iter().map(ToString::to_string).collect(),
+            ..ComponentRef::default()
         }
     }
 
@@ -374,6 +416,48 @@ mod tests {
             .filter(|f| f.check == Some(check))
             .flat_map(|f| f.units.clone())
             .collect()
+    }
+
+    #[test]
+    fn a_fragment_that_names_no_part_for_a_need_or_an_action_blocks() {
+        let mut named = mf(
+            "Pjs",
+            "campagne",
+            &["campagne.listerPjs"],
+            &["campagne.ajouterPj"],
+        );
+        named.fragment = "components/Pjs.html".to_string();
+        named.markup = r#"<ul data-reads="campagne.listerPjs"></ul><button data-writes="campagne.ajouterPj">+</button>"#.to_string();
+        let mut half = named.clone();
+        half.name = "Half".to_string();
+        half.markup = r#"<ul data-reads="campagne.listerPjs"></ul><button>+</button>"#.to_string();
+        let unread = mf("Unread", "campagne", &["campagne.listerPjs"], &[]);
+        let found = unnamed_parts(&[named, half, unread]);
+        assert_eq!(
+            found.len(),
+            1,
+            "a fragment not read is not judged: {found:?}"
+        );
+        assert_eq!(found[0].check, Some(Check::PartUnnamed));
+        assert_eq!(found[0].units, ["Half", "campagne.ajouterPj"]);
+        assert!(
+            found[0].why.contains("campagne.ajouterPj") && found[0].fix.contains("data-writes")
+        );
+        assert!(found[0].blocks());
+        let mut audit = Audit {
+            findings: vec![Finding {
+                id: 1,
+                ..found[0].clone()
+            }],
+            ..Audit::default()
+        };
+        assert!(
+            audit
+                .resolve(1, false)
+                .expect_err("not dismissed")
+                .contains("named, not dismissed")
+        );
+        assert!(audit.resolve(1, true).is_ok(), "named by its fix");
     }
 
     #[test]

@@ -91,7 +91,7 @@ pub fn manifest_shape() -> String {
             system: "billing".to_string(),
             description: "The invoices, filtered by status".to_string(),
             fragment: "components/InvoiceList.html".to_string(),
-            fixture: vec!["fixtures/InvoiceList.json".to_string()],
+            fixtures: vec!["fixtures/billing.listInvoices.json".to_string()],
             needs: vec!["billing.listInvoices".to_string()],
             actions: vec!["billing.markInvoicePaid".to_string()],
             props: props.into_iter().collect(),
@@ -153,7 +153,7 @@ pub fn units_of(files: &[UnitFile]) -> Units {
                         system: text("system").unwrap_or_default(),
                         description: text("description").unwrap_or_default(),
                         fragment: String::new(),
-                        fixture: Vec::new(),
+                        fixtures: Vec::new(),
                         needs: list("needs"),
                         actions: list("actions"),
                         source: String::new(),
@@ -314,11 +314,14 @@ mod tests {
         let read = manifest_of(&shape).expect("the shape is the contract");
         assert_eq!((read.pages.len(), read.components.len()), (1, 1));
         let c = &read.components[0];
-        assert_eq!(c.fixture, vec!["fixtures/InvoiceList.json".to_string()]);
+        assert_eq!(
+            c.fixtures,
+            vec!["fixtures/billing.listInvoices.json".to_string()]
+        );
         assert_eq!(c.props.len(), 1);
         assert!(
-            shape.contains("\"fixture\": \"fixtures/InvoiceList.json\""),
-            "one fixture is written as one: {shape}"
+            shape.contains("\"fixtures\": [\n"),
+            "the fixtures are always a list, one per Capability: {shape}"
         );
         assert!(
             !shape.contains("\"hash\""),
@@ -327,35 +330,43 @@ mod tests {
     }
 
     #[test]
-    fn a_fixture_is_one_file_or_a_list_of_them() {
-        let read = |fixture: &str| {
+    fn fixtures_are_a_list_and_an_older_single_one_is_still_read() {
+        let read = |key: &str, fixture: &str| {
             manifest_of(&format!(
-                r#"{{"pages":[],"components":[{{"name":"Map","fixture":{fixture}}}]}}"#
+                r#"{{"pages":[],"components":[{{"name":"Map","{key}":{fixture}}}]}}"#
             ))
-            .map(|m| m.components[0].fixture.clone())
+            .map(|m| m.components[0].fixtures.clone())
         };
         let files = |f: &[&str]| f.iter().map(ToString::to_string).collect::<Vec<_>>();
         assert_eq!(
-            read(r#""fixtures/a.json""#),
+            read("fixture", r#""fixtures/a.json""#),
             Ok(files(&["fixtures/a.json"]))
         );
         assert_eq!(
-            read(r#"["fixtures/a.json","fixtures/b.json"]"#),
-            Ok(files(&["fixtures/a.json", "fixtures/b.json"]))
+            read("fixtures", r#"["fixtures/a.b.json","fixtures/c.d.json"]"#),
+            Ok(files(&["fixtures/a.b.json", "fixtures/c.d.json"]))
         );
-        assert_eq!(read(r#""""#), Ok(Vec::new()), "none written: none");
-        assert!(read("3").is_err(), "neither a file nor a list");
-        let many = MockComponent {
-            fixture: files(&["fixtures/a.json", "fixtures/b.json"]),
+        assert_eq!(
+            read("fixture", r#""""#),
+            Ok(Vec::new()),
+            "none written: none"
+        );
+        assert!(read("fixtures", "3").is_err(), "neither a file nor a list");
+        let one = MockComponent {
+            fixtures: files(&["fixtures/a.b.json"]),
             ..MockComponent::default()
         };
-        let written = serde_json::to_value(&many).expect("json");
+        let written = serde_json::to_value(&one).expect("json");
         assert_eq!(
-            written["fixture"],
-            serde_json::json!(["fixtures/a.json", "fixtures/b.json"])
+            written["fixtures"],
+            serde_json::json!(["fixtures/a.b.json"])
+        );
+        assert!(
+            written.get("fixture").is_none(),
+            "the old key is never written"
         );
         let none = serde_json::to_value(MockComponent::default()).expect("json");
-        assert!(none.get("fixture").is_none(), "no fixture, no field");
+        assert!(none.get("fixtures").is_none(), "no fixture, no field");
     }
 
     #[test]

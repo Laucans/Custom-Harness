@@ -329,9 +329,11 @@ It has two sections:
      `creation::record_json`, `RECORD_JSON`: the brief, the decisions with
      the questions asked, the scope, the rules, the pages with their
      objectives, the micro-frontends with their `needs` and `actions`, the
-     pins no backlog issue carries, the design system, the data model — and
-     the data model itself, `mock/data/model.json` and
-     `mock/data/aggregates.json`, for the write side to install), then the mock-up
+     pins no backlog issue carries, the design system, every write with its
+     effect and the fields it touches, the aggregates — and the data model
+     itself, `mock/data/model.json` and one
+     `mock/data/aggregates/<Aggregate>.aggregate.json` per aggregate (contract
+     I), for the task building each aggregate to install), then the mock-up
      published on the integration branch (else saved on
      `mockup/proof-of-concept`) and **where it went kept**
      (`Creation::mockup_at`), the design system published and carried
