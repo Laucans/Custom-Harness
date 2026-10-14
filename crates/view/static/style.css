@@ -1716,3 +1716,6 @@ body.cr-fullscreen { overflow: hidden; }
 .danger-zone h3 { color: var(--bad); }
 .act.danger { color: var(--bad); border-color: var(--bad); }
 .act.danger:hover:not(:disabled), .act.danger:focus-visible { background: var(--bad); color: var(--bg); border-color: var(--bad); }
+.hb-detached { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.hb-detached small { grid-column: 2; color: var(--dim); }
+.hb-detached-acts { grid-column: 2; display: flex; gap: 6px; }

@@ -188,6 +188,8 @@
       p = {
         el,
         getAttribute: (name) => (name === 'data-pin' ? E.targetOf(el) : el.getAttribute(name)),
+        // A part hidden in the page hides its pins: the board asks the frame's own element.
+        closest: (selector) => el.closest(selector),
         classList: { add: (c) => el.classList.add(c), remove: (c) => el.classList.remove(c) },
         getBoundingClientRect() { return screenRect(el); },
       };
@@ -277,6 +279,8 @@
         only: components ? (n) => !n.target || n.target === 'component:' + st.mfDetail || n.target.startsWith('component:' + st.mfDetail + '>') : undefined,
         kinds: st.view === 'page' ? ['note', 'request', 'link', 'design'] : ['note', 'request', 'design'],
         zones: st.view === 'page',
+        // A page redrawn leaves pins whose part is gone: put aside, not left floating.
+        detach: st.view === 'page',
         pages: () => (st.state && st.state.pages) || [],
         capabilities,
         dataCapabilities,

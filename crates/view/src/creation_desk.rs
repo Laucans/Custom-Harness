@@ -1009,6 +1009,12 @@ impl CreationDesk {
         })
         .await
         .map_err(|e| format!("the step did not finish: {e}"))??;
+        let put_away = self.pins_put_away(&branch).await;
+        if put_away > 0 {
+            self.step(&format!(
+                "{put_away} pin(s) of the last mock-up put away: a board's deleted list brings them back"
+            ));
+        }
         self.step("a Claude Code session draws the proof of concept's pages");
         // The workspace was just discarded above: nothing of a page is
         // there yet, so the poller starts from an empty `seen`.
@@ -1040,6 +1046,37 @@ impl CreationDesk {
             record.go(Step::Rules, facts)?;
         }
         self.keep(&record)
+    }
+
+    /// The pins still on `branch`'s mock-up, put away (marked deleted, not
+    /// destroyed) before a drawing replaces its pages: what they pointed at
+    /// goes with them. Answers how many.
+    async fn pins_put_away(&self, branch: &str) -> usize {
+        let Some(pins) = self.setup.pins.clone() else {
+            return 0;
+        };
+        let prefix = Self::boards_of(branch);
+        let at = jiff::Timestamp::now().to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut count = 0;
+            for board in pins
+                .boards()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|b| b.starts_with(&prefix))
+            {
+                for kept in pins.notes(&board).unwrap_or_default() {
+                    if kept.deleted_at.is_none()
+                        && pins.mark_deleted(&board, &kept.note.id, Some(&at)).is_ok()
+                    {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        })
+        .await
+        .unwrap_or(0)
     }
 
     /// The design system's variables, as its own branch holds them: what a
@@ -2474,9 +2511,168 @@ mod tests {
         }
         assert!(!dir.join("main_agent/mock/design/tokens.css").exists());
         assert!(
-            job.started > 0 && job.ended >= job.started,
-            "a job keeps its time"
+            job.started > 1_700_000_000 && job.ended >= job.started,
+            "a job keeps when it started and ended, on the clock"
         );
+    }
+
+    // With no design system's variables to hold them to, a session's
+    // variables are not judged; its copies under design/ and kit/ still go.
+    #[tokio::test]
+    async fn no_variable_is_judged_before_the_design_system_has_any() {
+        let dir = product("no-tokens");
+        std::fs::create_dir_all(dir.join("main_agent/mock/pages")).expect("dir");
+        std::fs::write(
+            dir.join("main_agent/mock/pages/a.html"),
+            "<p style=\"color: var(--anything)\"></p>",
+        )
+        .expect("page");
+        std::fs::create_dir_all(dir.join("main_agent/mock/kit")).expect("dir");
+        std::fs::write(dir.join("main_agent/mock/kit/Copy.html"), "<b></b>").expect("copy");
+        let desk = desk_drawing_in(&dir);
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        desk.kept_on_design(&mockups, "main_agent", "").await;
+        let steps = desk.job().expect("a job").steps;
+        assert!(
+            !steps
+                .iter()
+                .any(|s| s.starts_with("variables the design system has not")),
+            "{steps:?}"
+        );
+        assert!(
+            steps.iter().any(
+                |s| s.starts_with("1 file(s) the session wrote under design/ and kit/ removed")
+            ),
+            "{steps:?}"
+        );
+        assert!(!dir.join("main_agent/mock/kit/Copy.html").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A creation desk with a drawing under way, over the mock-ups in `dir`.
+    fn desk_drawing_in(dir: &Path) -> CreationDesk {
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(dir));
+        let book = Arc::new(Book::default());
+        book.keep_creation(
+            "alpha",
+            &serde_json::to_string(&Creation::new("alpha", "me/alpha")).expect("json"),
+        )
+        .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: None,
+            model: "m".to_string(),
+            draw_model: "d".to_string(),
+            mockups: Some(mockups),
+            kit: None,
+            data: None,
+            plant: None,
+            pins: None,
+        });
+        desk.begin(Work::Mockups).expect("nothing under way");
+        desk
+    }
+
+    /// Pins on two boards of this branch's mock-up and one of another
+    /// branch, one already deleted on each: what is put away is noted.
+    #[derive(Default)]
+    struct Shelved(Mutex<Vec<(String, String)>>);
+
+    impl NoteStore for Shelved {
+        fn boards(&self) -> Result<Vec<String>, String> {
+            Ok(vec![
+                "mockup--main-agent--home".to_string(),
+                "mockup--main-agent--about".to_string(),
+                "mockup--other--home".to_string(),
+            ])
+        }
+        fn notes(&self, board: &str) -> Result<Vec<crate::ports::KeptNote>, String> {
+            use crate::domain::annotations::Note;
+            let pin = |id: &str, gone: bool| crate::ports::KeptNote {
+                note: Note {
+                    id: format!("{board}/{id}"),
+                    ..Note::default()
+                },
+                deleted_at: gone.then(|| "before".to_string()),
+            };
+            Ok(vec![pin("on", false), pin("gone", true)])
+        }
+        fn put(&self, _: &str, _: &crate::domain::annotations::Note) -> Result<(), String> {
+            Ok(())
+        }
+        fn mark_deleted(&self, board: &str, id: &str, at: Option<&str>) -> Result<(), String> {
+            assert!(
+                at.is_some_and(|a| a.starts_with("20")),
+                "put away at a time: {at:?}"
+            );
+            lock(&self.0).push((board.to_string(), id.to_string()));
+            Ok(())
+        }
+        fn destroy(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn conversation(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn save_conversation(&self, _: &str, _: &str, _: &str, _: usize) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    // Before a drawing replaces the pages, the pins still on this branch's
+    // mock-up are put away; another branch's and those deleted already stay.
+    #[tokio::test]
+    async fn a_drawing_puts_away_the_pins_of_the_mock_up_it_replaces() {
+        let dir = product("pins-away");
+        let shelved = Arc::new(Shelved::default());
+        let book = Arc::new(Book::default());
+        book.keep_creation(
+            "alpha",
+            &serde_json::to_string(&Creation::new("alpha", "me/alpha")).expect("json"),
+        )
+        .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: None,
+            model: "m".to_string(),
+            draw_model: "d".to_string(),
+            mockups: None,
+            kit: None,
+            data: None,
+            plant: None,
+            pins: Some(Arc::clone(&shelved) as Arc<dyn NoteStore>),
+        });
+        assert_eq!(desk.pins_put_away("main_agent").await, 2);
+        let mut away = lock(&shelved.0).clone();
+        away.sort();
+        assert_eq!(
+            away,
+            vec![
+                (
+                    "mockup--main-agent--about".to_string(),
+                    "mockup--main-agent--about/on".to_string()
+                ),
+                (
+                    "mockup--main-agent--home".to_string(),
+                    "mockup--main-agent--home/on".to_string()
+                ),
+            ]
+        );
+        let bare = desk_drawing_in(&dir);
+        assert_eq!(
+            bare.pins_put_away("main_agent").await,
+            0,
+            "no pins kept here: nothing to put away"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The second half of the flow above: accepted, the record is kept in

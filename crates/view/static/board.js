@@ -294,20 +294,27 @@
       const el = n.target ? resolve(n.target) : null;
       if (!el) return { x: n.x, y: n.y, orphan: !!n.target };
       // A part the pane hides (a card filtered out) hides its pins with it.
-      if (el.closest('[hidden]')) return { x: n.x, y: n.y, orphan: false, hidden: true };
+      // A pane may hand a stand-in for a part (the mock-up's, inside its
+      // frame): one without `closest` hides nothing.
+      if (typeof el.closest === 'function' && el.closest('[hidden]')) return { x: n.x, y: n.y, orphan: false, hidden: true };
       const b = boxOf(el);
       const x = b.x + clamp(n.dx, 0, b.w);
       const y = b.y + clamp(n.dy, 0, b.h);
       n.x = x; n.y = y;
       return { x, y, orphan: false };
     }
+    // A pin whose part is gone, on a board that puts such pins aside
+    // (`detach`): kept off the canvas, listed as detached.
+    const detached = (n) => !!opts.detach && !n.shape && !!n.target && !resolve(n.target);
     function drawPins() {
       const r = host.getBoundingClientRect();
       let h = '';
+      let aside = 0;
       shown().forEach((n, i) => {
         if (carry && carry.note === n) return;
         const p = n.shape ? Object.assign(anchorOf(n.shape), { orphan: false }) : placeOf(n);
         if (p.hidden) return;
+        if (p.orphan && opts.detach) { aside += 1; return; }
         if (n.shape) { n.x = p.x; n.y = p.y; }
         const s = toScreen(p.x, p.y);
         if (s.x < -30 || s.y < -30 || s.x > r.width + 30 || s.y > r.height + 60) return;
@@ -317,7 +324,7 @@
         h += `<button type="button" class="${cls}" data-note-id="${esc(n.id)}" style="left:${s.x}px;top:${s.y}px" title="${esc(tip)}"><span>${i + 1}</span></button>`;
       });
       pinLayer.innerHTML = h;
-      q('.hb-count').textContent = shown().length;
+      q('.hb-count').textContent = shown().length + (aside ? ` · ${aside} detached` : '');
       drawZones();
       placeEditor();
     }
@@ -612,7 +619,9 @@
     function showList() {
       if (!list.hidden) { list.hidden = true; return; }
       list.innerHTML = shown().length
-        ? shown().map((n, i) => `<button type="button" data-goto-note="${esc(n.id)}"><b class="${esc(n.kind || 'note')}">${i + 1}</b><span>${esc(n.text || (n.kind || 'note'))}</span><small>${esc(n.kind || 'note')} · ${esc(describe(n.target))}</small></button>`).join('')
+        ? shown().map((n, i) => (detached(n)
+          ? `<div class="hb-detached"><b class="${esc(n.kind || 'note')}">${i + 1}</b><span>${esc(n.text || (n.kind || 'note'))}</span><small>detached — what it was on is gone</small><span class="hb-detached-acts"><button type="button" class="mini" data-replace-note="${esc(n.id)}" title="Drag it onto the part it is about">re-place</button><button type="button" class="mini" data-delete-note="${esc(n.id)}" title="Delete it (undo brings it back)">delete</button></span></div>`
+          : `<button type="button" data-goto-note="${esc(n.id)}"><b class="${esc(n.kind || 'note')}">${i + 1}</b><span>${esc(n.text || (n.kind || 'note'))}</span><small>${esc(n.kind || 'note')} · ${esc(describe(n.target))}</small></button>`)).join('')
         : '<div class="hb-empty">No note yet. Drag the pin onto a part of the board.</div>';
       list.hidden = false;
     }
@@ -736,6 +745,12 @@
       if (e.button !== 0) return;
       const pinTool = e.target.closest('.hb-pin-tool');
       if (pinTool) return startCarry(e, null);
+      // A detached pin is carried off the list onto the part it is about.
+      const again = e.target.closest('[data-replace-note]');
+      if (again) {
+        const n = notes.find((x) => x.id === again.dataset.replaceNote);
+        if (n) { list.hidden = true; return startCarry(e, n); }
+      }
       const pin = e.target.closest('.hb-pin[data-note-id]');
       if (pin && applying.has(pin.dataset.noteId)) { e.preventDefault(); e.stopPropagation(); const n = notes.find((x) => x.id === pin.dataset.noteId); if (n) openNote(n); return undefined; }
       if (pin) return startCarry(e, notes.find((n) => n.id === pin.dataset.noteId));
@@ -815,6 +830,13 @@
       if (go) {
         list.hidden = true;
         goTo(go.dataset.gotoNote);
+        return;
+      }
+      const drop = e.target.closest('[data-delete-note]');
+      if (drop) {
+        const gone = notes.find((x) => x.id === drop.dataset.deleteNote);
+        if (gone) remove(gone);
+        list.hidden = true;
         return;
       }
       const n = notes.find((x) => x.id === openId);
