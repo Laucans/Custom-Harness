@@ -347,7 +347,22 @@
   }
   function drawJob() {
     const el = page.querySelector('[data-cr-job]');
-    if (el) el.innerHTML = jobPanel();
+    if (!el) return;
+    const kept = jobScroll();
+    el.innerHTML = jobPanel();
+    jobScrolled(kept);
+  }
+  // The job's checklist scrolls in its own box: left at its bottom, it
+  // follows the new lines; scrolled up, it stays where the human put it.
+  function jobScroll() {
+    const list = page.querySelector('[data-cr-job] .cr-job ul');
+    if (!list) return null;
+    return { bottom: list.scrollTop + list.clientHeight >= list.scrollHeight - 4, top: list.scrollTop };
+  }
+  function jobScrolled(kept) {
+    const list = page.querySelector('[data-cr-job] .cr-job ul');
+    if (!list) return;
+    list.scrollTop = !kept || kept.bottom ? list.scrollHeight : kept.top;
   }
 
   // A live, navigable preview of the mock-up as it stands right now: the
@@ -738,7 +753,7 @@
     const split = DEMO ? mine : running('mockups') || making;
     const spinner = !DEMO && running('mockups') ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Drawing the proof of concept…</b></div>'
       : making ? '<div class="cr-loading"><span class="cr-spin big" aria-hidden="true"></span><b>Making the micro-frontends…</b></div>' : '';
-    const track = `${spinner}<div data-cr-job>${mine || making ? jobPanel() : ''}</div><div data-cr-files>${filesPanel()}</div>`;
+    const track = `${spinner}<div data-cr-files>${filesPanel()}</div><div data-cr-job>${mine || making ? jobPanel() : ''}</div>`;
     return `${split ? drawSplit(C.data.branch, track) : `${mine && !r.mocked ? `<div data-cr-job>${jobPanel()}</div>` : ''}<div data-cr-files>${filesPanel()}</div>`}
       ${failed ? `<div class="cr-error" role="alert">${esc(j.why)}</div>` : ''}
       ${C.data.mockupStale && !running() ? '<div class="callout">Drawn from an earlier scope: the scope moved since — draw them again to follow it.</div>' : ''}
@@ -757,15 +772,10 @@
     // A file written in the last minute and a half: a session is at work.
     const writing = running('mockups') || running('componentize') || (last && Date.now() / 1000 - last < 90);
     const notice = writing ? '<div class="callout">Drawing the mock-up takes <b>several tens of minutes</b>: the fixtures and the micro-frontends come first, the pages last. You may leave this page — the work goes on.</div>' : '';
-    if (!files.length) return notice + (writing ? '<p class="muted">Nothing written yet.</p>' : '');
-    const name = (path) => path.split('/').pop().replace(/\.(html|json)$/, '');
-    const group = ([kind, label]) => {
-      const items = files.filter((f) => f.kind === kind);
-      if (!items.length) return `<section class="cr-files-group"><h4>${label} <small>0</small></h4><p class="muted">none yet</p></section>`;
-      return `<section class="cr-files-group"><h4>${label} <small>${items.length}</small></h4><ul>${items.map((f) => `<li title="mock/${esc(f.path)}"><span class="cr-ok">✓</span> ${esc(kind === 'fixture' ? f.path.replace(/^fixtures\//, '') : name(f.path))}${f.at ? `<small>${clock(f.at)}</small>` : ''}</li>`).join('')}</ul></section>`;
-    };
-    const head = `<div class="cr-files-head">${writing ? '<span class="cr-spin" aria-hidden="true"></span> ' : ''}${files.length} files${last ? ` · last written ${clock(last)}` : ''}</div>`;
-    return notice + head + FILE_KINDS.map(group).join('');
+    const count = (kind) => files.filter((f) => f.kind === kind).length;
+    const counts = FILE_KINDS.map(([kind, label]) => `<span><b>${count(kind)}</b> ${label.toLowerCase()}</span>`).join('');
+    const head = files.length ? `<div class="cr-files-head">${counts}<span class="muted">${files.length} files${last ? ` · last written ${clock(last)}` : ''}</span></div>` : '';
+    return notice + head;
   }
   async function loadFiles() {
     if (C.route !== 'mockups' || !C.data || !C.data.branch) { clearInterval(C.filesTimer); C.filesTimer = null; return; }
@@ -1089,7 +1099,9 @@
       ${SPLIT.includes(C.route) && embed ? '<div class="cr-rules-split">' : ''}<div class="cr-body">${body}</div>
       ${embed ? `<div class="cr-embed" id="cr-embed" data-cr-fullable data-cr-keep="${esc(embed.face)}"><div class="cr-embed-bar"><b>${esc(embed.title)}</b><button type="button" class="cr-btn" data-cr-full title="Fill the screen (Esc to leave)">⛶ Full screen</button></div><div class="cr-embed-host" id="cr-embed-host"></div></div>${SPLIT.includes(C.route) ? '</div>' : ''}${embed.foot()}` : ''}
     </div>`;
+    const kept = jobScroll();
     paint(html);
+    jobScrolled(kept);
     if (embed) mountEmbed(embed);
     else unmountEmbed();
     syncFocus();

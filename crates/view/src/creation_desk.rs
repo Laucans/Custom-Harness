@@ -266,7 +266,22 @@ impl CreationDesk {
     /// What the gates read outside the record: the design system validated,
     /// its kit generated.
     pub async fn facts(&self) -> Facts {
-        Self::facts_of(self.kit().await)
+        self.facts_with(self.kit().await)
+    }
+
+    /// The facts from a kit status read already, as the gates read them
+    /// now: while a drawing runs, the kit's components it asked for are
+    /// being made for it, and close no gate — the page stays on its step.
+    #[must_use]
+    pub fn facts_with(&self, kit: Option<KitStatus>) -> Facts {
+        let mut facts = Self::facts_of(kit);
+        if self
+            .job()
+            .is_some_and(|j| j.work == Work::Mockups && j.state == State::Running)
+        {
+            facts.kit_waiting = 0;
+        }
+        facts
     }
 
     /// The same, from a kit status read already.
@@ -3431,9 +3446,14 @@ mod tests {
         )
         .await
         .expect("added");
+        assert_eq!(
+            desk.facts().await.kit_waiting,
+            0,
+            "a drawing under way: what the kit makes for it closes no gate"
+        );
         let plan = mock_plan::parse_plan(
-            r#"{"pages":[{"path":"pages/a.html","components":["A"]}],"components":[{"name":"A","uses":["LineTable","Broken","Badge"]}],
-            "kit":[{"name":"LineTable","title":"Line table","what":"rows"},{"name":"Broken","title":"Broken thing","what":"never"},{"name":"Badge","title":"Badge","what":"a badge"}]}"#,
+            r#"{"pages":[{"path":"pages/a.html","components":["A"]}],"components":[{"name":"A","uses":["LineTable","Broken","Badge","Vague"]}],
+            "kit":[{"name":"LineTable","title":"Line table","what":"rows"},{"name":"Broken","title":"Broken thing","what":"never"},{"name":"Badge","title":"Badge","what":"a badge"},{"name":"Vague","title":"Vague thing","what":""}]}"#,
             &[],
         )
         .expect("a plan");
@@ -3460,6 +3480,23 @@ mod tests {
             "{steps:?}"
         );
         assert!(
+            steps.iter().any(|s| s
+                .starts_with("kit component Vague could not be added: say what the component is")),
+            "{steps:?}"
+        );
+        kit.custom(
+            "Pending".to_string(),
+            "Pending thing".to_string(),
+            "it".to_string(),
+        )
+        .await
+        .expect("added");
+        desk.update(|j| j.state = State::Done);
+        assert!(
+            desk.facts().await.kit_waiting > 0,
+            "the drawing over, a component left pending counts again"
+        );
+        assert!(
             steps
                 .iter()
                 .any(|s| s.starts_with("kit component Broken could not be made: ")),
@@ -3474,7 +3511,7 @@ mod tests {
             "Lines: {steps:?}"
         );
         assert!(
-            !steps.iter().any(|s| s.contains("could not be added")),
+            !steps.iter().any(|s| s.contains("Badge could not be added")),
             "one in the catalogue is used: {steps:?}"
         );
         assert!(

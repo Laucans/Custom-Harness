@@ -16,7 +16,13 @@ exclude_globs = ["**/main.rs", "crates/view-render/**", "**/fake_*.rs"]
 # and hand them to a workflow — wiring, like `main.rs`, that no unit test
 # runs (it would spawn `gh` and `claude`). What it decides is `routing::decide`,
 # which is mutated and tested.
-exclude_re = ["router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) "]
+# The kit's wait ends on `now > deadline` (`creation_desk.rs`, `kit_waited`):
+# `>=` differs only at the very nanosecond of the deadline, which no clock
+# lets a test land on.
+exclude_re = [
+    "router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) ",
+    "creation_desk\\.rs:.*replace > with >= in CreationDesk::kit_waited",
+]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI
 # tests with.
