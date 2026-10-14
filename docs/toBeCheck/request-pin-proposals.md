@@ -1,42 +1,54 @@
-# Request pins proposed on their micro-frontend, rules following
+# Request pins: proposals, rules in place, pin Undo, Cmd+Z history
 
 ## Context
 
-A request pin on a mock-up page did nothing until its buried "Apply to the
-draft" button was pressed, then edited the page's HTML even when the pin sat
-on a micro-frontend, with no visible outcome and no follow-up on the rules.
+A request pin on the mock-up drafts the micro-frontend it sits on and
+reads the rules it touches; the human validates, forks or takes back; a
+linear Cmd+Z history covers pins, rules, requests and retouches.
 
 ## What shipped
 
-- `565d5e3` — on a page, **Propose** drafts the micro-frontend under the pin
-  (`/api/mockup/mf/{name}/apply`), or the page when none is; the page shows
-  the draft at once (a fetch shim in the frame loads `<Name>.draft.html`).
-  A blue bar above the page settles each draft: changed everywhere, forked
-  for this page (the page injects the fork), or discarded. Kept, the canvas
-  emits `harness:mf-saved`; `creation.js` posts `/api/creation/rules/propose`
-  and the AI's proposals wait on the record, accepted or refused in Rules.
-  Pin window: note and request only, draggable by its head, says what the
-  AI does and what it came to. Drafts no longer count as micro-frontends.
+- `565d5e3` — Propose drafts the micro-frontend under the pin, shown live;
+  the blue bar settles it (everywhere / fork for this page / discard).
+- `8b0bae3` — rules proposed at Propose, shown in place (dashed orange),
+  Validate / Refuse; per-pin steps (`StepStore`), pin Undo, undo & delete,
+  the lock badge; validated pins stay (green).
+- `d5c87e2` — an open pin outlines the micro-frontends its zone touches and
+  filters the rules by them.
+- `f8c88d4` — the mock-up's history (`HistoryStore`, 30 a branch): Cmd+Z /
+  Cmd+Shift+Z out of a field, the board's undo/redo; a question in the page
+  before going to another page or to the rules.
 
-## To verify (ForgeDesMondes, page Paramètres IA, AiSettings drafted already)
+## Checked live (2026-10-14, ForgeDesMondes, Paramètres IA)
 
-- [ ] **Validate** in the blue bar: AiSettings' fragment takes the draft, the
-      bar goes, the pin goes, a toast says so.
-- [ ] Within ~1 min, a callout on step 7 says "N changes to the rules
-      proposed"; Rules shows them with Accept / Refuse, each beside the rule
-      as it is now.
-- [ ] Accept one: the rule is rewritten (or added), "validated" drops.
-      Refuse one: it goes, the rule unchanged.
-- [ ] On a micro-frontend used by 2+ pages: **Only on this page (fork)** →
-      `components/<Name>2.html` exists, this page injects `<Name>2`, the other
-      pages still show `<Name>`; the proposals tie the page's rules to the fork.
-- [ ] **Discard**: the draft goes, the pin turns back to "not proposed yet".
-- [ ] A pin on no micro-frontend (page chrome): Propose edits the page's draft
-      and says how many changes.
-- [ ] The pin window dragged aside stays where it was dropped while the AI
-      works; it opens next to the pin again for another pin.
+- Propose: draft in 35 s, 3 rule proposals 20 s later (R3, R77 rewritten,
+  one new), cards dashed orange, filter "pin: AiSettings" 2 of 41.
+- Lock badge on the locked words; pin Undo (via its route) put back the
+  draft, the 3 proposals and the pin state.
+- Cmd+Z of "a pin placed" from another page: question, view went back,
+  pin gone; Cmd+Shift+Z there without a question; Cmd+Z again.
+
+## To verify
+
+- [ ] **Validate** in the blue bar: fragment replaced, the pin turns green
+      and stays, its proposals accepted (cards back to normal), one entry
+      "a proposed change validated" in Cmd+Z.
+- [ ] Cmd+Z right after that validation: fragment, rules and pin as before.
+- [ ] **Only on this page (fork)** on a micro-frontend used by 2+ pages:
+      `<Name>2` injected on this page only, its rules retied to the fork.
+- [ ] Undo & delete on a validated pin; plain delete keeps the change.
+- [ ] A rule's title edited in Rules, then Cmd+Z out of the field: the
+      title comes back; typing in one field makes one entry.
+- [ ] Cmd+Z of a rule change while on step 7: question, view goes to Rules.
+- [ ] Edit mode retouch (move a part), Cmd+Z: the page's draft as before.
+- [ ] A redo of a pin: shown "detached" a moment while the frame reloads —
+      check it reattaches; if not, reload the board after the frame loads.
+- [ ] Something changed outside the history (Read all again, Draw again):
+      Cmd+Z says it "moved since" and leaves it.
 
 ## Not fixed
 
-- Empty request zones duplicated on 3 boards (campagne, parametres-ia,
-  preparation-seance) with identical timestamps: origin not found yet.
+- Empty request zones duplicated on several boards with identical
+  timestamps: origin not found (cleared by hand on 2026-10-14).
+- After each restart the view opens the harness-dnd2 factory: switch back
+  to ForgeDesMondes from the factory menu.
