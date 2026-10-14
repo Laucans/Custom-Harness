@@ -20,10 +20,11 @@ use crate::data_desk::{DataDesk, Issue};
 use crate::domain::annotations::Kind as PinKind;
 use crate::domain::audit::{audit_of, audit_prompt, fix_prompt};
 use crate::domain::creation::{
-    self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
-    componentize_prompt, decompose_prompt, examples_part, examples_taken, grill_prompt,
-    manifest_repair_prompt, mockups_prompt, not_componentized, parse_brief, parse_requirements,
-    parse_round, parse_ties, requirements_prompt, rule_prompt, scope_prompt, unfenced,
+    self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, RuleChange,
+    Step, componentize_prompt, decompose_prompt, examples_part, examples_taken, grill_prompt,
+    manifest_repair_prompt, mockups_prompt, not_componentized, parse_brief, parse_proposals,
+    parse_requirements, parse_round, parse_ties, requirements_prompt, rule_prompt,
+    rules_change_prompt, scope_prompt, unfenced,
 };
 use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
 use crate::domain::design::Entry;
@@ -481,6 +482,43 @@ impl CreationDesk {
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
         record.reread(id, read)?;
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The rules kept in step with a change of the mock-up: the AI proposes
+    /// the rules it rewrites or adds, kept for the human to accept or
+    /// refuse. No rule yet: nothing to keep in step, the record as it is.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no Claude, or an answer with no proposals.
+    pub async fn propose_rules(&self, change: RuleChange) -> Result<Creation, String> {
+        let asked = self.existing()?;
+        if asked.requirements.is_empty() {
+            return Ok(asked);
+        }
+        let ctx = self.context(&asked).await;
+        let pages: Vec<String> = ctx.pages.iter().map(|p| p.path.clone()).collect();
+        let components: Vec<String> = ctx.components.iter().map(|c| c.name.clone()).collect();
+        let answer = self.ask(rules_change_prompt(&asked, &ctx, &change)).await?;
+        let read = parse_proposals(&answer, &pages, &components)?;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.propose_rules(&change.said(), read);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// One proposed change to the rules accepted or refused.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no such proposal, or the rule it rewrites is gone.
+    pub async fn settle_proposal(&self, key: u32, accept: bool) -> Result<Creation, String> {
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.settle_proposal(key, accept)?;
         self.keep(&record)?;
         Ok(record)
     }
@@ -1999,6 +2037,94 @@ mod tests {
                 .ok_or("no description")?;
             Ok(serde_json::json!({ "what": said.trim(), "who": "bakers" }).to_string())
         }
+    }
+
+    /// An AI that rewrites R1 when told the micro-frontend `Ai` changed.
+    struct Proposer;
+
+    impl Oneshot for Proposer {
+        fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
+            if !prompt.contains("What changed: Ai changed on every page that shows it.") {
+                return Err("not told the change".to_string());
+            }
+            Ok(
+                r#"{"proposals": [{"id": 1, "why": "w", "title": "Rewritten",
+                "criterion": {"given": "g", "when": "w", "then": "t"}}]}"#
+                    .to_string(),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn a_change_of_the_mock_up_proposes_rules_kept_until_settled() {
+        let book = Arc::new(Book::default());
+        let keep = |record: &Creation| {
+            book.keep_creation("alpha", &serde_json::to_string(record).expect("json"))
+                .expect("kept");
+        };
+        let mut record = Creation {
+            step: Step::Rules,
+            ..Creation::new("alpha", "me/alpha")
+        };
+        keep(&record);
+        let desk = CreationDesk::new(Setup {
+            register: Arc::clone(&book) as Arc<dyn Factories + Send + Sync>,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: PathBuf::from("/factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: Some(Arc::new(Proposer)),
+            model: "m".to_string(),
+            draw_model: "d".to_string(),
+            mockups: None,
+            kit: None,
+            data: None,
+            plant: None,
+            pins: None,
+        });
+        let change = RuleChange {
+            name: "Ai".to_string(),
+            saved: "Ai".to_string(),
+            how: "replace".to_string(),
+            ..RuleChange::default()
+        };
+        let none = desk
+            .propose_rules(change.clone())
+            .await
+            .expect("no rule yet");
+        assert!(
+            none.proposals.is_empty(),
+            "no rule: nothing to keep in step"
+        );
+
+        record.requirements = vec![crate::domain::creation::Requirement {
+            id: 1,
+            title: "Old".to_string(),
+            ..crate::domain::creation::Requirement::default()
+        }];
+        record.last_requirement = 1;
+        keep(&record);
+        let proposed = desk.propose_rules(change).await.expect("proposed");
+        assert_eq!(
+            proposed
+                .proposals
+                .iter()
+                .map(|p| (p.id, p.title.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "Rewritten")]
+        );
+        let key = proposed.proposals[0].key;
+        let settled = desk.settle_proposal(key, true).await.expect("accepted");
+        assert_eq!(settled.requirements[0].title, "Rewritten");
+        assert!(settled.proposals.is_empty());
+        assert!(
+            desk.settle_proposal(key, true).await.is_err(),
+            "settled once"
+        );
+        assert!(
+            desk.propose_rules(RuleChange::default()).await.is_err(),
+            "an answer that is no proposal"
+        );
     }
 
     #[tokio::test]

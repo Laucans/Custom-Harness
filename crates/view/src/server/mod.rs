@@ -379,6 +379,11 @@ pub fn router(state: AppState) -> Router {
             "/api/creation/rules/{id}/reread",
             post(creation::reread_rule),
         )
+        .route("/api/creation/rules/propose", post(creation::propose_rules))
+        .route(
+            "/api/creation/rules/proposals/{key}/{how}",
+            post(creation::settle_proposal),
+        )
         .route(
             "/api/creation/rules/validate",
             post(creation::validate_rules),

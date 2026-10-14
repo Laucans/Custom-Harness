@@ -201,10 +201,12 @@ pub fn preview_page(name: &str) -> String {
 }
 
 /// What a file of the mock-up is, by where it lies under `mock/`: what
-/// the page counts while a session draws.
+/// the page counts while a session draws. A micro-frontend's draft is a
+/// proposal, not a micro-frontend.
 #[must_use]
 pub fn kind_of(path: &str) -> &'static str {
     match path.split('/').next().unwrap_or_default() {
+        "components" if path.ends_with(".draft.html") => "draft",
         "pages" => "page",
         "components" => "micro-frontend",
         "fixtures" => "fixture",
@@ -269,6 +271,7 @@ mod tests {
         for (path, kind) in [
             ("pages/home.html", "page"),
             ("components/List.html", "micro-frontend"),
+            ("components/List.draft.html", "draft"),
             ("fixtures/media/a.svg", "fixture"),
             ("kit/Button.html", "kit"),
             ("design/tokens.css", "design"),

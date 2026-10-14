@@ -356,6 +356,10 @@ pub(super) struct MfSaveAsk {
     /// The fork's name; empty, one is made.
     #[serde(default)]
     name: String,
+    /// The page a fork is made for, relative to `mock/`: it injects the
+    /// fork in place of the origin. Empty: no page changes.
+    #[serde(default)]
+    page: String,
 }
 
 pub(super) async fn mf_save(
@@ -372,7 +376,7 @@ pub(super) async fn mf_save(
     let ask: MfSaveAsk = serde_json::from_slice(&body).unwrap_or_default();
     let branch = branch_or_integration(&state, Some(ask.branch));
     let fork = (ask.how == "fork").then_some(ask.name);
-    match desk.save(&branch, name, fork).await {
+    match desk.save(&branch, name, fork, Some(ask.page)).await {
         Ok(saved) => json(&serde_json::json!({ "saved": saved })),
         Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }

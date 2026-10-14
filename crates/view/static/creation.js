@@ -770,7 +770,8 @@
   const clock = (at) => (at ? new Date(at * 1000).toTimeString().slice(0, 5) : '');
   function filesPanel() {
     const files = C.files || [];
-    const last = files.reduce((m, f) => Math.max(m, f.at || 0), 0);
+    // A micro-frontend's draft is a proposal on the canvas, not a session drawing.
+    const last = files.filter((f) => f.kind !== 'draft').reduce((m, f) => Math.max(m, f.at || 0), 0);
     // A file written in the last minute and a half: a session is at work.
     const writing = running('mockups') || running('componentize') || (last && Date.now() / 1000 - last < 90);
     const notice = writing ? '<div class="callout">Drawing the mock-up takes <b>several tens of minutes</b>: the fixtures and the micro-frontends come first, the pages last. You may leave this page — the work goes on.</div>' : '';
@@ -935,8 +936,33 @@
         ${broken ? `<button type="button" class="cr-btn" data-cr-unbreak title="Untie every rule from the pages and micro-frontends the mock-up has not">Remove ${broken} broken link${broken > 1 ? 's' : ''}</button>` : ''}
         <button type="button" class="cr-btn" data-cr-req-add>+ rule</button>
         <button type="button" class="cr-btn" data-cr-reqs title="The AI reads the rules again off the scope and the mock-up as it stands; yours are kept"${C.busy ? ' disabled' : ''}>${all.length ? 'Read all again' : 'Read the rules'}</button></div>
+      ${proposalsPanel(r)}
       ${all.length ? rulesFilter(list.length, all.length) : ''}
       <div class="cr-rules">${all.length ? FAMILIES.map(group).join('') : (C.busy ? '' : '<p class="muted">No rule yet.</p>')}</div>`;
+  }
+  // The changes the AI proposed after a change of the mock-up was
+  // validated: each read beside the rule as it is, accepted or refused.
+  function proposalsPanel(r) {
+    const list = r.proposals || [];
+    if (!list.length && !C.proposing) return '';
+    const crit = (c) => `<div class="cr-crit">${PARTS.map(([k, label]) => `<div class="cr-crit-line"><b>${label}</b><span>${esc((c || {})[k] || '') || '<i class="muted">to write</i>'}</span></div>`).join('')}</div>`;
+    const card = (p) => {
+      const was = p.id ? ruleOf(p.id) : null;
+      const ties = [...(p.pages || []), ...(p.components || [])];
+      return `<article class="cr-proposal">
+          <header><span class="cr-qn">${p.id ? 'R' + p.id : 'new'}</span><b>${esc(p.title)}</b><span class="spacer"></span>
+            <button type="button" class="cr-btn on" data-cr-proposal="${p.key}" data-how="accept"${C.busy ? ' disabled' : ''}>Accept</button>
+            <button type="button" class="cr-btn" data-cr-proposal="${p.key}" data-how="refuse"${C.busy ? ' disabled' : ''}>Refuse</button></header>
+          <p class="muted">${esc(p.about)}${p.why ? ' — ' + esc(p.why) : ''}</p>
+          ${p.body ? `<p>${esc(p.body)}</p>` : ''}
+          ${crit(p.criterion)}
+          <div class="cr-chips"><span class="muted">carried by</span>${ties.length ? ties.map((x) => `<code>${esc(x)}</code>`).join(' ') : '<span class="muted">nothing</span>'}</div>
+          ${was ? `<details><summary>R${was.id} as it is now</summary><p><b>${esc(was.title)}</b> — ${esc(was.body)}</p>${crit(was.criterion)}</details>` : ''}
+        </article>`;
+    };
+    return `<section class="cr-proposals"><h3>Changes proposed after the mock-up moved <small>${list.length}</small></h3>
+        ${C.proposing ? '<div class="cr-busy" role="status"><span class="cr-spin" aria-hidden="true"></span>the AI reads the rules the change touches…</div>' : ''}
+        ${list.map(card).join('')}</section>`;
   }
   // A rule's ties to what the mock-up has not (gone with a discard or a new
   // drawing): shown red, counted as gaps, removed on a click.
@@ -1141,6 +1167,7 @@
       <div class="cr-top"><h1>${esc(title)}</h1><button type="button" class="fp-back" data-cr-leave>${C.auto ? '← open the plant anyway' : '← back to the plant'}</button></div>
       ${lead}
       ${C.route === 'landing' ? '' : crumbs(fresh)}
+      ${proposalsNotice(r)}
       ${C.busy ? `<div class="cr-busy" role="status"><span class="cr-spin" aria-hidden="true"></span>${esc(C.busy)}…</div>` : ''}
       ${C.error ? `<div class="cr-error" role="alert">${esc(C.error)}</div>` : ''}
       ${SPLIT.includes(C.route) && embed ? '<div class="cr-rules-split">' : ''}<div class="cr-body">${body}</div>
@@ -1201,6 +1228,30 @@
     data: { kind: 'data_model', face: 'data-draft', title: 'The data model drafted for the proof of concept', foot: dataFoot, opts: () => ({ kind: 'data_model', source: '/api/creation/data-model' }) },
     rules: { kind: 'mockup', face: 'mockup', title: "The mock-up — pick a rule to see what carries it, click a micro-frontend to filter by it", foot: rulesFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
   };
+  // Elsewhere than the rules step: the changes waiting there, one line.
+  function proposalsNotice(r) {
+    const waiting = r && C.route !== 'rules' ? (r.proposals || []).length : 0;
+    if (!waiting && !(C.proposing && C.route !== 'rules')) return '';
+    return `<div class="callout cr-proposals-notice">${C.proposing ? '<span class="cr-spin" aria-hidden="true"></span> the AI reads the rules your change touches… ' : ''}${waiting ? `<b>${waiting}</b> change${waiting > 1 ? 's' : ''} to the rules proposed after the mock-up moved. ` : ''}<button type="button" class="cr-btn" data-cr-go="rules">Review in Rules →</button></div>`;
+  }
+  // A micro-frontend's change validated on the mock-up (mockup.js's
+  // `harness:mf-saved`, wherever the pane is): the AI proposes the rules it
+  // touches, kept on the record for the human to accept or refuse.
+  document.addEventListener('harness:mf-saved', async (e) => {
+    if (!C.data) await read();
+    const r = record();
+    if (!r || !(r.requirements || []).length) return;
+    C.proposing = (C.proposing || 0) + 1;
+    if (page.offsetParent) draw();
+    try {
+      await flushRules();
+      C.data = await call('POST', '/api/creation/rules/propose', e.detail);
+    } catch (err) {
+      C.error = 'the rules were not proposed: ' + (err.message || err);
+    }
+    C.proposing -= 1;
+    if (page.offsetParent && !C.busy) draw();
+  });
   // The easel tells the rules step what it shows (mockup.js's events): the
   // page, the micro-frontend locked by a click on it.
   page.addEventListener('harness:mockup-page', (e) => {
@@ -1450,6 +1501,16 @@
       const open = C.addOpen && C.addOpen.rule === C.ruleSel && C.addOpen.kind === t.dataset.crAdd;
       C.addOpen = open ? null : { rule: C.ruleSel, kind: t.dataset.crAdd };
       draw();
+      return;
+    }
+    if (t.dataset.crProposal) {
+      const key = t.dataset.crProposal;
+      const how = t.dataset.how;
+      act(how === 'accept' ? 'accepting the change' : 'refusing the change', async () => {
+        await flushRules();
+        C.data = await call('POST', `/api/creation/rules/proposals/${key}/${how}`);
+        C.rules = null;
+      });
       return;
     }
     if (t.matches('[data-cr-rules-unlock]')) {

@@ -41,7 +41,7 @@
   const SAVE_DELAY = 600;
   const KINDS = {
     note: ['note', 'Your words'],
-    request: ['request', 'An intention for the next roadmap — a change, a behaviour; on the mock-up, applied to the draft by an AI'],
+    request: ['request', 'An intention for the next roadmap — a change, a behaviour; on the mock-up, drafted by an AI when you press Propose'],
     link: ['link', 'Leads to another page of the mock-up — or creates one'],
     design: ['design', 'A micro-frontend: made by an AI session from its spec, or injected where the pin sits'],
   };
@@ -108,7 +108,7 @@
       + '</div>'
       + '<textarea class="hb-text" maxlength="4000" placeholder="Write a note…"></textarea>'
       + '<div class="hb-link-go" hidden><button type="button" data-note="go">Open the page →</button><button type="button" data-note="create">Create it with an AI session</button></div>'
-      + '<div class="hb-apply" hidden><button type="button" data-note="apply">Apply to the draft</button><span class="hb-apply-state"></span></div>'
+      + '<div class="hb-apply" hidden><button type="button" data-note="apply">Propose</button><span class="hb-apply-state"></span></div>'
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
       + '<div class="hb-extra" hidden></div>'
       + '<div class="hb-backlog" hidden><button type="button" data-note="backlog" title="Open a harness:roadmap issue from this pin: the planner takes it from there">→ backlog</button><a class="hb-issue" target="_blank" rel="noopener" hidden>on the backlog ↗</a></div>'
@@ -144,6 +144,10 @@
     let busy = false; // an AI is writing the open pin
     // The pins an AI is applying right now: their outline turns, their text is read only.
     const applying = new Set();
+    // What the last proposal of a pin came to, said in its window: { ok, text }.
+    const news = new Map();
+    // Where the window was dragged to, until it opens on another pin.
+    let editorAt = null;
     // Follows an application: the pins turn until it settles.
     function track(ids, work) {
       ids.forEach((x) => applying.add(x));
@@ -347,6 +351,11 @@
       const s = toScreen(n.x, n.y);
       const w = editor.offsetWidth || 280;
       const h = editor.offsetHeight || 190;
+      if (editorAt) {
+        editor.style.left = clamp(editorAt.x, 8, Math.max(8, r.width - w - 8)) + 'px';
+        editor.style.top = clamp(editorAt.y, 8, Math.max(8, r.height - 40)) + 'px';
+        return;
+      }
       let left = s.x + 18;
       if (left + w > r.width - 8) left = s.x - w - 18;
       editor.style.left = clamp(left, 8, Math.max(8, r.width - w - 8)) + 'px';
@@ -375,9 +384,14 @@
       apply.hidden = kind !== 'request' || !opts.apply;
       if (!apply.hidden) {
         const state = n.state || 'pending';
-        apply.querySelector('button').textContent = state === 'simulated' ? 'Apply again' : state === 'stale' ? 'Apply again (the page moved)' : 'Apply to the draft';
+        apply.querySelector('button').textContent = state === 'simulated' || state === 'stale' ? 'Propose again' : 'Propose';
         apply.querySelector('button').disabled = locked;
-        apply.querySelector('.hb-apply-state').textContent = applying.has(n.id) ? 'the AI is applying it…' : { pending: 'not applied yet', simulated: 'applied to the draft', stale: 'applied once; the page moved since' }[state] || '';
+        const said = news.get(n.id);
+        const line = apply.querySelector('.hb-apply-state');
+        line.classList.toggle('bad', !!said && !said.ok && !applying.has(n.id));
+        line.innerHTML = applying.has(n.id) ? '<span class="spin"></span> the AI drafts it on the mock-up…'
+          : said ? esc(said.text)
+            : esc({ pending: 'not proposed yet', simulated: 'drafted on the mock-up — validate it in the bar above the page', stale: 'drafted once; the page moved since' }[state] || '');
       }
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
       // What the pane offers for this pin beyond the board's own actions.
@@ -401,7 +415,7 @@
       textarea.placeholder = {
         note: 'Write a note…',
         link: 'The objective of the page this leads to — what a new page is drawn from',
-        request: 'The intention: what should change, what this part should do — applied to the draft, kept for the next roadmap',
+        request: 'The intention: what should change, what this part should do — Propose drafts it on the mock-up',
       }[kind] || 'Where the discussion stands — rewritten when you leave the session';
       drawLink(n, kind);
       drawDesign(n, kind);
@@ -494,6 +508,7 @@
     };
     function openNote(n) {
       flush();
+      if (openId !== n.id) editorAt = null;
       openId = n.id;
       editor.hidden = false;
       editor.querySelector('.hb-note-on').textContent = 'on ' + describe(n.target);
@@ -915,9 +930,11 @@
       if (act.dataset.note === 'apply' && n && opts.apply && !applying.has(n.id)) {
         if (!(n.text || '').trim()) { setState('write the request first: it is what the AI applies'); textarea.focus(); return; }
         flush();
-        // The window closes; the pin's outline turns until the AI is done.
-        closeNote();
-        track([n.id], (n.fresh ? put(n) : Promise.resolve()).then(() => opts.apply(n)).catch((err) => { if (opts.onApplyError) opts.onApplyError(err); }));
+        // The window stays: it says what the AI is doing, then what it came to.
+        news.delete(n.id);
+        track([n.id], (n.fresh ? put(n) : Promise.resolve()).then(() => opts.apply(n))
+          .then((text) => { news.set(n.id, { ok: true, text: text || 'drafted on the mock-up' }); })
+          .catch((err) => { news.set(n.id, { ok: false, text: 'not drafted: ' + String((err && err.message) || err).split('\n')[0] }); if (opts.onApplyError) opts.onApplyError(err); }));
       }
       if (act.dataset.note === 'backlog' && n) toBacklog(n);
       if (act.dataset.note === 'go' && n && n.page && opts.goto) { flush(); opts.goto(n.page); }
@@ -993,6 +1010,24 @@
     linkTitle.addEventListener('input', onLinkTitle);
     linkSource.addEventListener('input', onLinkSource);
     editor.addEventListener('keydown', onKey);
+    // The window dragged by its head, to see what lies under it.
+    const head = editor.querySelector('.hb-note-head');
+    head.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || e.target.closest('button')) return;
+      e.preventDefault();
+      const r = host.getBoundingClientRect();
+      const from = { x: e.clientX, y: e.clientY, left: editor.offsetLeft, top: editor.offsetTop };
+      head.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        editorAt = { x: from.left + ev.clientX - from.x, y: from.top + ev.clientY - from.y };
+        editor.style.left = clamp(editorAt.x, 8, Math.max(8, r.width - editor.offsetWidth - 8)) + 'px';
+        editor.style.top = clamp(editorAt.y, 8, Math.max(8, r.height - 40)) + 'px';
+      };
+      const up = () => { head.removeEventListener('pointermove', move); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up); };
+      head.addEventListener('pointermove', move);
+      head.addEventListener('pointerup', up);
+      head.addEventListener('pointercancel', up);
+    });
     document.addEventListener('keydown', onUndoKey);
     const resized = new ResizeObserver(() => drawPins());
     resized.observe(host);

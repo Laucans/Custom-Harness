@@ -299,7 +299,9 @@ impl MfDesk {
 
     /// Saves a micro-frontend's draft: in its place — every page that
     /// injects it shows the new one — or as a fork, a new micro-frontend
-    /// listed beside it, the origin untouched. Answers the name saved as.
+    /// listed beside it, the origin untouched. A fork made from a page
+    /// (`page`, relative to `mock/`) is injected there in place of the
+    /// origin. Answers the name saved as.
     ///
     /// # Errors
     ///
@@ -310,6 +312,7 @@ impl MfDesk {
         branch: &str,
         name: String,
         fork: Option<String>,
+        page: Option<String>,
     ) -> Result<String, String> {
         if let Some(wanted) = fork
             .as_deref()
@@ -342,8 +345,20 @@ impl MfDesk {
                     } else {
                         wanted
                     };
-                    let listed = mf_gen::forked(&pages, &name, &to)?;
+                    let mut listed = mf_gen::forked(&pages, &name, &to)?;
                     mockups.write(&branch, &mf_gen::fragment_path(&to), &draft)?;
+                    if let Some(page) = page.filter(|p| !p.is_empty()) {
+                        listed = mf_gen::page_forked(&listed, &page, &name, &to)?;
+                        let html = mockups
+                            .file(&branch, &page)?
+                            .map(|b| String::from_utf8_lossy(&b).into_owned())
+                            .ok_or_else(|| format!("the mock-up has no {page}"))?;
+                        mockups.write(
+                            &branch,
+                            &page,
+                            mf_gen::retargeted(&html, &name, &to).as_bytes(),
+                        )?;
+                    }
                     mockups.write(&branch, "pages.json", listed.as_bytes())?;
                     to
                 }
@@ -772,9 +787,15 @@ mod tests {
         .expect("fragment");
         std::fs::write(
             dir.join("main/mock/pages.json"),
-            r#"{"version":1,"pages":[],"components":[{"name":"Pjs","fragment":"components/Pjs.html","description":"Les PJ"}]}"#,
+            r#"{"version":1,"pages":[{"path":"pages/a.html","components":["Pjs"]}],"components":[{"name":"Pjs","fragment":"components/Pjs.html","description":"Les PJ"}]}"#,
         )
         .expect("manifest");
+        std::fs::create_dir_all(dir.join("main/mock/pages")).expect("pages dir");
+        std::fs::write(
+            dir.join("main/mock/pages/a.html"),
+            "<main><div data-component=\"Pjs\"></div></main>",
+        )
+        .expect("page");
         let desk = MfDesk::new(Setup {
             mockups: Arc::new(DirMockups::new(&dir)),
             kit: None,
@@ -822,7 +843,7 @@ mod tests {
         );
         // As a fork: a new micro-frontend beside it, the origin untouched.
         assert_eq!(
-            desk.save("main", "Pjs".into(), Some(String::new()))
+            desk.save("main", "Pjs".into(), Some(String::new()), None)
                 .await
                 .expect("forked"),
             "Pjs2"
@@ -836,7 +857,7 @@ mod tests {
             "the draft goes once saved"
         );
         assert!(
-            desk.save("main", "Pjs".into(), None).await.is_err(),
+            desk.save("main", "Pjs".into(), None, None).await.is_err(),
             "no draft left"
         );
         // In place.
@@ -844,20 +865,80 @@ mod tests {
             .await
             .expect("applied again");
         assert_eq!(
-            desk.save("main", "Pjs".into(), None)
+            desk.save("main", "Pjs".into(), None, None)
                 .await
                 .expect("replaced"),
             "Pjs"
         );
         assert!(read("components/Pjs.html").contains("data-v"));
         // Dropped.
-        desk.apply("main", spec, String::new(), asked("r4"))
+        desk.apply("main", spec.clone(), String::new(), asked("r4"))
             .await
             .expect("applied once more");
         desk.drop_draft("main", "Pjs".into())
             .await
             .expect("dropped");
         assert!(read("components/Pjs.draft.html").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_draft_forked_for_one_page_is_injected_there() {
+        let dir = std::env::temp_dir().join(format!("harness-mf-page-fork-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("main/mock/components")).expect("dir");
+        std::fs::write(
+            dir.join("main/mock/components/Pjs.html"),
+            "<ul data-reads=\"campagne.listerPjs\"></ul>",
+        )
+        .expect("fragment");
+        std::fs::write(
+            dir.join("main/mock/pages.json"),
+            r#"{"version":1,"pages":[{"path":"pages/a.html","components":["Pjs"]}],"components":[{"name":"Pjs","fragment":"components/Pjs.html","description":"Les PJ"}]}"#,
+        )
+        .expect("manifest");
+        std::fs::create_dir_all(dir.join("main/mock/pages")).expect("pages dir");
+        std::fs::write(
+            dir.join("main/mock/pages/a.html"),
+            "<main><div data-component=\"Pjs\"></div></main>",
+        )
+        .expect("page");
+        let desk = MfDesk::new(Setup {
+            mockups: Arc::new(DirMockups::new(&dir)),
+            kit: None,
+            oneshot: Some(Arc::new(Model::default()) as Arc<dyn Oneshot>),
+            model: "m".into(),
+            sessions: 1,
+        });
+        let spec = Spec {
+            name: "Pjs".into(),
+            needs: vec!["campagne.listerPjs".into()],
+            ..Spec::default()
+        };
+        let asked = bolder;
+        let read = |path: &str| {
+            std::fs::read_to_string(dir.join("main/mock").join(path)).unwrap_or_default()
+        };
+        // As a fork for one page: that page injects the fork.
+        desk.apply("main", spec, String::new(), asked("r5"))
+            .await
+            .expect("applied for a page");
+        assert_eq!(
+            desk.save(
+                "main",
+                "Pjs".into(),
+                Some(String::new()),
+                Some("pages/a.html".into())
+            )
+            .await
+            .expect("forked for the page"),
+            "Pjs2"
+        );
+        assert_eq!(
+            read("pages/a.html"),
+            "<main><div data-component=\"Pjs2\"></div></main>"
+        );
+        assert!(read("pages.json").contains("\"components\": [\n        \"Pjs2\""));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

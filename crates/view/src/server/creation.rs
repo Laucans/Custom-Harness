@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::creation_desk::{CreationDesk, Founding};
-use crate::domain::creation::{BRIEF_PARTS, Creation, Edit, Step};
+use crate::domain::creation::{BRIEF_PARTS, Creation, Edit, RuleChange, Step};
 use crate::domain::data_draft::DataEdit;
 
 use super::{AppState, json};
@@ -234,6 +234,42 @@ pub(super) async fn reread_rule(State(state): State<AppState>, Path(id): Path<u3
         Err(r) => return *r,
     };
     match desk.reread_rule(id).await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The rules kept in step with a change of the mock-up: proposals, for
+/// the human to accept or refuse.
+pub(super) async fn propose_rules(
+    State(state): State<AppState>,
+    Json(change): Json<RuleChange>,
+) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.propose_rules(change).await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// One proposed change to the rules, accepted or refused.
+pub(super) async fn settle_proposal(
+    State(state): State<AppState>,
+    Path((key, how)): Path<(u32, String)>,
+) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    let accept = match how.as_str() {
+        "accept" => true,
+        "refuse" => false,
+        _ => return refused(format!("`{how}` is neither accept nor refuse")),
+    };
+    match desk.settle_proposal(key, accept).await {
         Ok(record) => view(desk, Some(record)).await,
         Err(why) => refused(why),
     }

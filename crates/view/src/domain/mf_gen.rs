@@ -411,6 +411,49 @@ pub fn forked(pages: &str, from: &str, to: &str) -> Result<String, String> {
     ))
 }
 
+/// `mock/pages.json` with one page injecting `to` where it injected `from`:
+/// a fork made for that page alone, the other pages as they were.
+///
+/// # Errors
+///
+/// The manifest is not JSON, or lists no such page.
+pub fn page_forked(pages: &str, page: &str, from: &str, to: &str) -> Result<String, String> {
+    let mut root: Value = serde_json::from_str(pages).map_err(|e| format!("pages.json: {e}"))?;
+    let entry = root
+        .get_mut("pages")
+        .and_then(Value::as_array_mut)
+        .and_then(|list| {
+            list.iter_mut()
+                .find(|p| p.get("path").and_then(Value::as_str) == Some(page))
+        })
+        .ok_or_else(|| format!("pages.json does not list {page}"))?;
+    if let Some(list) = entry.get_mut("components").and_then(Value::as_array_mut) {
+        for name in list.iter_mut() {
+            if name.as_str() == Some(from) {
+                *name = Value::String(to.to_string());
+            }
+        }
+    }
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?
+    ))
+}
+
+/// A page's markup injecting `to` where it injected `from`: every
+/// `data-component` naming it, quoted either way.
+#[must_use]
+pub fn retargeted(html: &str, from: &str, to: &str) -> String {
+    html.replace(
+        &format!("data-component=\"{from}\""),
+        &format!("data-component=\"{to}\""),
+    )
+    .replace(
+        &format!("data-component='{from}'"),
+        &format!("data-component='{to}'"),
+    )
+}
+
 /// The name a fork takes when the human gives none: the origin's, with the
 /// first number that is free.
 #[must_use]
@@ -709,6 +752,27 @@ mod tests {
         assert!(forked(pages, "Pjs", "Pjs").is_err());
         assert!(forked(pages, "None", "X").is_err());
         assert_eq!(draft_path("Pjs"), "components/Pjs.draft.html");
+    }
+
+    #[test]
+    fn a_fork_for_one_page_is_injected_there_alone() {
+        let pages = r#"{"pages":[{"path":"pages/a.html","components":["Pjs","Map"]},{"path":"pages/b.html","components":["Pjs"]}],"components":[]}"#;
+        let after: Value = serde_json::from_str(
+            &page_forked(pages, "pages/a.html", "Pjs", "Pjs2").expect("forked"),
+        )
+        .expect("json");
+        assert_eq!(
+            after["pages"][0]["components"],
+            serde_json::json!(["Pjs2", "Map"])
+        );
+        assert_eq!(after["pages"][1]["components"], serde_json::json!(["Pjs"]));
+        assert!(page_forked(pages, "pages/c.html", "Pjs", "Pjs2").is_err());
+        assert!(page_forked("not json", "pages/a.html", "Pjs", "Pjs2").is_err());
+        let html = r#"<div data-component="Pjs"></div><p data-component='Pjs'></p><i data-component="Pjs3"></i>"#;
+        assert_eq!(
+            retargeted(html, "Pjs", "Pjs2"),
+            r#"<div data-component="Pjs2"></div><p data-component='Pjs2'></p><i data-component="Pjs3"></i>"#
+        );
     }
 
     #[test]

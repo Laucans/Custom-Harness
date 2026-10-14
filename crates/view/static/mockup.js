@@ -106,6 +106,7 @@
       + '<button type="button" class="mini" data-ed="history" title="The versions of this page\'s draft">history</button>'
       + '</div>'
       + '<div class="mk-frozen" hidden></div>'
+      + '<div class="mk-mfdrafts" hidden></div>'
       + '<div class="mk-form" hidden></div>'
       + '<div class="mk-mfbar kt-detail-bar" hidden></div>'
       + '<div class="mk-mfsave kt-save" hidden></div>'
@@ -277,7 +278,7 @@
         under: components ? undefined : under,
         // The micro-frontend opened alone shows its own pins.
         only: components ? (n) => !n.target || n.target === 'component:' + st.mfDetail || n.target.startsWith('component:' + st.mfDetail + '>') : undefined,
-        kinds: st.view === 'page' ? ['note', 'request', 'link', 'design'] : ['note', 'request', 'design'],
+        kinds: ['note', 'request'],
         zones: st.view === 'page',
         // A page redrawn leaves pins whose part is gone: put aside, not left floating.
         detach: st.view === 'page',
@@ -292,7 +293,7 @@
         pages: () => (st.state && st.state.pages) || [],
         capabilities,
         dataCapabilities,
-        apply: st.view === 'page' ? (note) => applyRequests([note]) : (note) => applyMf(note.target ? note.target.slice(10).split('>')[0] : '', [note]),
+        apply: st.view === 'page' ? (note) => proposeOnPage(note) : (note) => applyMf(note.target ? note.target.slice(10).split('>')[0] : '', [note]),
         onChange: () => { if (st.view === 'components' && st.mfDetail) drawMfBar(); },
         backlogContext: (note) => {
           const page = currentPage();
@@ -360,6 +361,8 @@
     // loader, so a kit component dropped on it is filled and the tokens
     // linked — on the page shown, never on the page saved.
     function withLoader(html) {
+      const shim = draftShim();
+      if (shim) html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + shim) : shim + html;
       if (/mock\.js/.test(html)) return html;
       const tag = `<script src="${location.origin}/mock/${encodeURIComponent(slugOf(st.branch))}/mock.js"></script>`;
       return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, tag + '</body>') : html + tag;
@@ -394,6 +397,7 @@
       if (st.locked) setHot(st.locked);
       marksFocus();
       tellPage();
+      drawDrafts();
       // In interact mode the pointer is in the frame itself: the part under it lights its entry.
       doc.addEventListener('pointermove', (ev) => { const el = ev.target && ev.target.closest ? ev.target.closest('[data-component]') : null; setHot(el ? el.dataset.component : ''); });
       doc.addEventListener('pointerleave', () => setHot(''));
@@ -654,8 +658,9 @@
     });
 
     // ---- requests applied to the draft, in one go ----------------------------------------
+    // Answers what it came to; throws what kept it from it.
     async function applyRequests(notes) {
-      if (!st.engine || !st.frame) return;
+      if (!st.engine || !st.frame) throw new Error('the page is not loaded yet');
       // A part rendered at run time (inside a kit component, filled by
       // mock.js) is not in the page's source the operations edit: the
       // request is put on its nearest ancestor that is, and told what it
@@ -726,7 +731,7 @@
         const target = inSource(n.target || '');
         return { id: n.id, text: n.text, target, inside: target !== (n.target || '') ? insideOf(n) : '', place: placeOf(n) };
       });
-      if (!asked.length) { say('nothing to apply: write the intention first'); return; }
+      if (!asked.length) throw new Error('nothing to apply: write the intention first');
       const board = boardOf();
       const action = window.HarnessActions && window.HarnessActions.start({ key: `apply:${board}`, label: `apply ${asked.length} request(s) to the draft of ${st.page}`, button: q('[data-ed="apply-all"]') });
       say(`<span class="spin"></span> the AI applies ${asked.length} request(s)…`);
@@ -748,14 +753,132 @@
         offerSkipped(skipped);
         if (action) action.ok(`${ops.length} operation(s)${skipped.length ? `, ${skipped.length} left to the human` : ''}`);
         drawBar();
+        return `drafted on the page: ${ops.length} change${ops.length === 1 ? '' : 's'}${skipped.length ? `, ${skipped.length} left to you` : ''} — keep or validate the draft above`;
       } catch (e) {
         if (action) action.fail(e.message || e);
         say(`not applied: ${esc(String(e.message || e).split('\n')[0])}`);
+        throw e;
+      }
+    }
+    // ---- a request proposed on the page: on the micro-frontend it sits on, or on the page ----------
+    // The pin's box in the page's pixels: its zone, or its point.
+    function pinBox(n) {
+      const pts = n.shape && n.shape.points;
+      if (pts && pts.length) {
+        if (n.shape.kind === 'circle' && pts.length > 1) {
+          const r = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
+          return { x0: pts[0][0] - r, y0: pts[0][1] - r, x1: pts[0][0] + r, y1: pts[0][1] + r };
+        }
+        const xs = pts.map((p) => p[0]); const ys = pts.map((p) => p[1]);
+        return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+      }
+      return { x0: n.x, y0: n.y, x1: n.x, y1: n.y };
+    }
+    // The innermost part under the pin's centre, in the page's frame.
+    function partUnder(n) {
+      if (!st.doc) return null;
+      const b = pinBox(n);
+      return st.doc.elementFromPoint((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+    }
+    // The micro-frontend a pin is about: the one it is on, or the innermost
+    // one under its centre. Empty: the page itself.
+    function mfOfPin(n) {
+      if (n.target && n.target.startsWith('component:')) return n.target.slice(10).split('>')[0];
+      const el = partUnder(n);
+      const host = el && el.closest('[data-component]');
+      return host && componentOf(host.dataset.component) ? host.dataset.component : '';
+    }
+    // The part under the pin, by its path of children from the micro-frontend's root.
+    function partIn(n, name) {
+      const el = partUnder(n);
+      const root = el && el.closest(`[data-component="${CSS.escape(name)}"]`);
+      if (!root || el === root) return '';
+      const steps = [];
+      for (let at = el; at && at !== root; at = at.parentElement) {
+        const index = Array.prototype.indexOf.call(at.parentElement.children, at) + 1;
+        steps.unshift(`${at.tagName.toLowerCase()}${at.classList && at.classList[0] ? '.' + at.classList[0] : ''}:nth-child(${index})`);
+      }
+      return steps.join('>');
+    }
+    // A request proposed: the micro-frontend under it is drafted (shown on
+    // the page at once), else the page's own draft. Answers what it came to.
+    async function proposeOnPage(n) {
+      const name = mfOfPin(n);
+      if (!name) return applyRequests([n]);
+      const c = componentOf(name);
+      const page = currentPage();
+      const spec = { name: c.name, system: c.system || '', description: c.description || '', needs: c.needs || [], actions: c.actions || [], props: c.props || {} };
+      const text = `${n.text.trim()}\n\n(Asked on the page ${page ? page.title : st.page}, where ${name} is shown.)`;
+      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text, target: partIn(n, name) }] }) });
+      const body = await res.text();
+      if (!res.ok) throw new Error(body);
+      const left = (JSON.parse(body).skipped || []).find(([id]) => id === n.id);
+      if (left) throw new Error(`the AI left it: ${left[1]}`);
+      st.board.patch(n.id, { state: 'simulated' });
+      await loadGens();
+      render();
+      drawDrafts();
+      return `drafted on ${name}, shown on the page — validate it in the bar above the page`;
+    }
+    // What the frame fetches for a micro-frontend with a draft: its draft.
+    function draftShim() {
+      const names = (st.mfDrafts || []).filter((x) => /^[A-Za-z0-9]+$/.test(x));
+      if (st.view !== 'page' || !names.length) return '';
+      return `<script>(()=>{const d=${JSON.stringify(names)};const f=window.fetch.bind(window);`
+        + `window.fetch=(u,o)=>{const s=String(u&&u.url||u);for(const n of d){const t='components/'+n+'.html';if(s.endsWith(t))return f(s.slice(0,-5)+'.draft.html?v='+Date.now(),o);}return f(u,o);};})();<\/script>`;
+    }
+    // The micro-frontends of the page with a proposed change, each to settle.
+    function drawDrafts() {
+      const bar = q('.mk-mfdrafts');
+      const here = new Set(onPage());
+      const names = st.view === 'page' && !st.readOnly ? (st.mfDrafts || []).filter((x) => here.has(x)) : [];
+      bar.hidden = !names.length;
+      if (bar.hidden) { bar.dataset.html = ''; return; }
+      const html = names.map((name) => {
+        const pages = (componentOf(name) || {}).pages || [];
+        const busy = st.settling === name ? ' disabled' : '';
+        const shared = pages.length > 1;
+        return `<div class="mk-mfdraft"><span>✎ <b>${esc(name)}</b> has a proposed change, shown on the page.</span><span class="spacer"></span>`
+          + `<button type="button" class="mini on" data-mkd="replace" data-name="${esc(name)}"${busy} title="${esc(shared ? 'Every page that shows it changes: ' + pages.join(', ') : 'Only this page shows it')}">${shared ? `Change it everywhere (${pages.length} pages)` : 'Validate'}</button>`
+          + (shared ? `<button type="button" class="mini" data-mkd="fork" data-name="${esc(name)}"${busy} title="A copy of it takes the change, injected on this page only; the other pages keep it as it was">Only on this page (fork)</button>` : '')
+          + `<button type="button" class="mini" data-mkd="drop" data-name="${esc(name)}"${busy} title="Throw the proposed change away">Discard</button></div>`;
+      }).join('');
+      if (bar.dataset.html !== html) { bar.dataset.html = html; bar.innerHTML = html; }
+    }
+    // A proposed change settled: kept everywhere, forked for this page, or
+    // thrown away. Kept, the page holding the pane is told (`harness:mf-saved`)
+    // so the rules it touches can be read again.
+    async function settleDraft(name, how) {
+      const pins = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && n.state === 'simulated' && mfOfPin(n) === name);
+      st.settling = name;
+      drawDrafts();
+      try {
+        const url = `/api/mockup/mf/${encodeURIComponent(name)}/${how === 'drop' ? 'draft/drop' : 'save'}`;
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, how, name: '', page: how === 'fork' ? st.page : '' }) });
+        const text = await res.text();
+        if (!res.ok) throw new Error(text);
+        if (how === 'drop') {
+          pins.forEach((n) => st.board.patch(n.id, { state: 'pending' }));
+          toast(`${esc(name)}: the proposed change is thrown away`);
+        } else {
+          const saved = (JSON.parse(text || '{}').saved) || name;
+          const page = currentPage();
+          host.dispatchEvent(new CustomEvent('harness:mf-saved', { bubbles: true, detail: { name, saved, how, page: st.page, title: page ? page.title : '', branch: st.branch, requests: pins.map((n) => n.text) } }));
+          pins.forEach((n) => st.board.drop(n.id));
+          toast(how === 'fork' ? `forked as <b>${esc(saved)}</b> for this page; the other pages keep ${esc(name)}` : `${esc(name)} changed on every page that shows it`);
+        }
+      } catch (e) {
+        toast(`${esc(name)}: ${esc(String(e.message || e).split('\n')[0])}`);
+      } finally {
+        st.settling = '';
+        st.stamp = '';
+        load();
       }
     }
     const applyAll = () => {
       const pins = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && (n.state || 'pending') !== 'simulated' && (n.text || '').trim());
-      if (st.board && st.board.track) st.board.track(pins.map((n) => n.id), applyRequests(pins)); else applyRequests(pins);
+      const work = applyRequests(pins).catch(() => { /* said in the bar */ });
+      if (st.board && st.board.track) st.board.track(pins.map((n) => n.id), work);
     };
 
     // ---- the draft's versions ---------------------------------------------------------------
@@ -1550,11 +1673,20 @@
         await loadGens();
         if (was !== JSON.stringify(st.gens) + JSON.stringify(st.mfDrafts) && st.board && st.board.id === boardOf()) mountMf();
       }
+      let draftsMoved = false;
+      if (st.view === 'page') {
+        const was = JSON.stringify(st.mfDrafts || []);
+        await loadGens();
+        if (st.gone) return;
+        draftsMoved = was !== JSON.stringify(st.mfDrafts || []);
+        drawDrafts();
+      }
       const listChanged = before && JSON.stringify(before.components) + JSON.stringify(before.units) !== JSON.stringify(reply.components) + JSON.stringify(reply.units);
       const pageChanged = !before || !st.board || st.board.id !== boardOf();
       if (pageChanged) { st.stamp = reply.stamp; mountBoard(); }
       else if (st.view === 'components' && (listChanged || reply.stamp !== st.stamp)) { st.stamp = reply.stamp; mountMf(); }
       else if (reply.stamp !== st.stamp && !st.drag && !st.resize) { st.stamp = reply.stamp; reloadFrame(); }
+      else if (draftsMoved) render();
       else if (listChanged) outline();
       st.timer = setTimeout(load, POLL_MS);
     }
@@ -1775,6 +1907,10 @@
     };
     host.addEventListener('click', onClick);
     host.addEventListener('click', onCardMock);
+    host.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-mkd]');
+      if (b && !b.disabled) settleDraft(b.dataset.name, b.dataset.mkd);
+    });
     host.addEventListener('click', (e) => {
       const b = e.target.closest('[data-mf]');
       if (!b || b.disabled) return;

@@ -171,6 +171,11 @@ pub struct Creation {
     pub rules_for: String,
     /// What the architecture's guard found on the cut, once asked.
     pub audit: Option<Audit>,
+    /// The changes to the rules the AI proposed after the mock-up moved,
+    /// waiting for the human to accept or refuse each.
+    pub proposals: Vec<Proposal>,
+    /// The highest number a proposal was ever given.
+    pub last_proposal: u32,
     /// The data model drafted for the proof of concept, once asked.
     pub data: Option<DataDraft>,
     /// How many times the mock-ups were sent back to the brief.
@@ -219,6 +224,62 @@ pub struct Requirement {
     pub family: Family,
     /// How to tell it is met: given…, when…, then….
     pub criterion: Criterion,
+}
+
+/// A change to the rules the AI proposes once the mock-up moved: a rule
+/// rewritten, or a new one, for the human to accept or refuse.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Proposal {
+    /// Its number among the proposals, never reused.
+    pub key: u32,
+    /// The rule it rewrites; 0 for a new rule.
+    pub id: u32,
+    /// What moved in the mock-up and called for it.
+    pub about: String,
+    /// Why the rule changes, in a sentence.
+    pub why: String,
+    /// The rule, in a few words.
+    pub title: String,
+    /// What it asks for.
+    pub body: String,
+    /// The pages that carry it.
+    pub pages: Vec<String>,
+    /// The micro-frontends that carry it.
+    pub components: Vec<String>,
+    /// A step of a journey, or a business rule.
+    pub family: Family,
+    /// How to tell it is met.
+    pub criterion: Criterion,
+}
+
+/// What moved in the mock-up: a micro-frontend changed on a request, kept
+/// in its place or forked for the page it was asked on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct RuleChange {
+    /// The micro-frontend changed.
+    pub name: String,
+    /// What it was saved as: itself, or its fork.
+    pub saved: String,
+    /// `replace` or `fork`.
+    pub how: String,
+    /// The page the change was asked on (`pages/…`).
+    pub page: String,
+    /// The requests, in the human's words.
+    pub requests: Vec<String>,
+}
+
+impl RuleChange {
+    /// The change in a sentence, as a proposal says what called for it.
+    #[must_use]
+    pub fn said(&self) -> String {
+        if self.how == "fork" {
+            format!("{} forked as {} for {}", self.name, self.saved, self.page)
+        } else {
+            format!("{} changed on every page that shows it", self.name)
+        }
+    }
 }
 
 /// How a test tells a rule is met, in its three parts.
@@ -686,6 +747,69 @@ impl Creation {
         Ok(())
     }
 
+    /// The changes the AI proposed, kept for the human: numbered, a
+    /// proposal about a rule replacing an older one about it, one about a
+    /// rule that is gone left out.
+    pub fn propose_rules(&mut self, about: &str, read: Vec<Proposal>) {
+        for mut p in read {
+            if p.title.trim().is_empty() {
+                continue;
+            }
+            if p.id != 0 && !self.requirements.iter().any(|r| r.id == p.id) {
+                continue;
+            }
+            if p.id != 0 {
+                self.proposals.retain(|q| q.id != p.id);
+            }
+            self.last_proposal = self.last_proposal.saturating_add(1);
+            p.key = self.last_proposal;
+            p.about = about.to_string();
+            self.proposals.push(p);
+        }
+    }
+
+    /// One proposal settled: accepted, its rule rewritten or added as the
+    /// human's; refused, gone.
+    ///
+    /// # Errors
+    ///
+    /// No proposal has that number, or the rule it rewrites is gone.
+    pub fn settle_proposal(&mut self, key: u32, accept: bool) -> Result<(), String> {
+        let at = self
+            .proposals
+            .iter()
+            .position(|p| p.key == key)
+            .ok_or_else(|| format!("no proposal {key}"))?;
+        let p = self.proposals.remove(at);
+        if !accept {
+            return Ok(());
+        }
+        let mut rule = Requirement {
+            id: p.id,
+            title: p.title,
+            body: p.body,
+            pages: p.pages,
+            components: p.components,
+            human: true,
+            family: p.family,
+            criterion: p.criterion,
+        };
+        if rule.id == 0 {
+            self.last_requirement = self.last_requirement.saturating_add(1);
+            rule.id = self.last_requirement;
+            self.requirements.push(rule);
+        } else {
+            let kept = self
+                .requirements
+                .iter_mut()
+                .find(|r| r.id == rule.id)
+                .ok_or_else(|| format!("R{} is gone", rule.id))?;
+            *kept = rule;
+        }
+        self.rules_validated = false;
+        Ok(())
+    }
+
     /// What keeps the rules from being validated, in words: a rule with no
     /// criterion, a rule nothing in the mock-up carries. Empty: they may.
     #[must_use]
@@ -1031,6 +1155,41 @@ pub fn parse_ties(answer: &str, pages: &[String], components: &[String]) -> Vec<
         })
         .filter(|t| !t.pages.is_empty() || !t.components.is_empty())
         .collect()
+}
+
+/// The proposals, as the AI answers them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+struct Proposals {
+    proposals: Vec<Proposal>,
+}
+
+/// The changes to the rules out of the AI's answer: those with a title,
+/// their pages and micro-frontends kept to the ones the mock-up has. None
+/// is an answer: the change leaves the rules as they are.
+///
+/// # Errors
+///
+/// The answer carries no proposals.
+pub fn parse_proposals(
+    answer: &str,
+    pages: &[String],
+    components: &[String],
+) -> Result<Vec<Proposal>, String> {
+    let object = object_in(answer).ok_or("the AI answered no proposals")?;
+    let read: Proposals = serde_json::from_str(object)
+        .map_err(|e| format!("the AI's proposals are not readable: {e}"))?;
+    Ok(read
+        .proposals
+        .into_iter()
+        .filter(|p| !p.title.trim().is_empty())
+        .map(|mut p| {
+            p.pages.retain(|x| pages.iter().any(|known| known == x));
+            p.components
+                .retain(|x| components.iter().any(|known| known == x));
+            p
+        })
+        .collect())
 }
 
 /// A grilling round, as the AI answers it.
@@ -1870,7 +2029,81 @@ pub fn requirements_prompt(c: &Creation, ctx: &Context) -> String {
          \"components\": [\"Name\"]}]}. Between eight and twenty-five requirements, the \
          scope's order.\n\n",
     );
-    text.push_str(&product(c));
+    text.push_str(&mockup_context(c, ctx));
+    if c.requirements.iter().any(|r| r.human) {
+        text.push_str(
+            "\nThe human wrote these already; they are kept, do not repeat them. Tie each again \
+             to the pages and the micro-frontends listed above that carry it now, beside the \
+             requirements: \"ties\": [{\"id\": <its number>, \"pages\": [\"pages/….html\"], \
+             \"components\": [\"Name\"]}].\n\n",
+        );
+        for r in c.requirements.iter().filter(|r| r.human) {
+            let _ = writeln!(text, "- R{}: {}", r.id, r.title.trim());
+        }
+    }
+    text
+}
+
+/// The question that keeps the rules in step with a change of the mock-up:
+/// the rules it makes wrong or incomplete rewritten, those it calls for
+/// added — each a proposal the human accepts or refuses.
+#[must_use]
+pub fn rules_change_prompt(c: &Creation, ctx: &Context, change: &RuleChange) -> String {
+    let mut text = String::from(
+        "You keep the requirements of a proof of concept in step with its mock-up. The human \
+         just changed the mock-up; propose the changes to the requirements it calls for: a \
+         requirement it makes wrong or incomplete, rewritten whole under its number; a \
+         requirement it calls for that none covers, with the number 0. Leave out every \
+         requirement it does not touch. A requirement is of a family, `journey` or `business`, \
+         and carries its criterion in three parts — `given`, `when`, `then` — none left empty. \
+         Write in the language of the human's brief, and tie each to the pages and the \
+         micro-frontends that carry it, by the exact paths and names listed below; a fork \
+         carries, on its page, what the micro-frontend it was forked from carried there. Answer \
+         with one JSON object and nothing else: {\"proposals\": [{\"id\": 0, \"why\": \"why it \
+         changes, one sentence\", \"title\": \"…\", \"body\": \"…\", \"family\": \"journey\", \
+         \"criterion\": {\"given\": \"…\", \"when\": \"…\", \"then\": \"…\"}, \"pages\": \
+         [\"pages/….html\"], \"components\": [\"Name\"]}]}, with an empty list when nothing \
+         changes.\n\n",
+    );
+    text.push_str(&mockup_context(c, ctx));
+    let _ = write!(text, "\nWhat changed: {}.\n", change.said());
+    if !change.requests.is_empty() {
+        text.push_str("The human asked for it in these words:\n\n");
+        for r in &change.requests {
+            let _ = writeln!(text, "- {}", r.trim().replace('\n', " "));
+        }
+    }
+    text.push_str(
+        "\nThe requirements as they stand (number — family — title — what it asks — criterion \
+         — pages — micro-frontends), those tied to what changed marked *:\n\n",
+    );
+    for r in &c.requirements {
+        let tied = r.components.contains(&change.name)
+            || (!change.page.is_empty() && r.pages.contains(&change.page));
+        let _ = writeln!(
+            text,
+            "- {}R{} — {} — {} — {} — given {}, when {}, then {} — {} — {}",
+            if tied { "*" } else { "" },
+            r.id,
+            serde_json::to_string(&r.family)
+                .unwrap_or_default()
+                .trim_matches('"'),
+            r.title.trim(),
+            r.body.trim().replace('\n', " "),
+            r.criterion.given.trim(),
+            r.criterion.when.trim(),
+            r.criterion.then.trim(),
+            r.pages.join(", "),
+            r.components.join(", ")
+        );
+    }
+    text
+}
+
+/// What the AI is told of the product and its mock-up: the product, the
+/// scope, the pages and the micro-frontends.
+fn mockup_context(c: &Creation, ctx: &Context) -> String {
+    let mut text = product(c);
     let _ = write!(text, "\nThe scope:\n\n{}\n", c.scope.trim());
     if !ctx.pages.is_empty() {
         text.push_str("\nThe mock-up's pages (path — title — objective):\n\n");
@@ -1898,17 +2131,6 @@ pub fn requirements_prompt(c: &Creation, ctx: &Context) -> String {
                 m.needs.join(", "),
                 m.actions.join(", ")
             );
-        }
-    }
-    if c.requirements.iter().any(|r| r.human) {
-        text.push_str(
-            "\nThe human wrote these already; they are kept, do not repeat them. Tie each again \
-             to the pages and the micro-frontends listed above that carry it now, beside the \
-             requirements: \"ties\": [{\"id\": <its number>, \"pages\": [\"pages/….html\"], \
-             \"components\": [\"Name\"]}].\n\n",
-        );
-        for r in c.requirements.iter().filter(|r| r.human) {
-            let _ = writeln!(text, "- R{}: {}", r.id, r.title.trim());
         }
     }
     text
@@ -2116,6 +2338,111 @@ mod tests {
             pages: pages.iter().map(ToString::to_string).collect(),
             ..Requirement::default()
         }
+    }
+
+    #[test]
+    fn a_change_of_the_mock_up_proposes_rules_the_human_accepts_or_refuses() {
+        let mut c = Creation {
+            requirements: vec![rule(3, "x", &["pages/a.html"]), rule(5, "x", &[])],
+            last_requirement: 5,
+            rules_validated: true,
+            ..Creation::default()
+        };
+        let pages = ["pages/a.html".to_string()];
+        let components = ["Ai".to_string(), "Ai2".to_string()];
+        let read = parse_proposals(
+            r#"Here: {"proposals": [
+                {"id": 3, "why": "two modes now", "title": "Connect", "body": "by URL", "family": "business",
+                 "criterion": {"given": "a URL", "when": "tested", "then": "the kind is found"},
+                 "pages": ["pages/a.html", "pages/gone.html"], "components": ["Ai2", "Gone"]},
+                {"id": 0, "title": "Binary", "criterion": {"given": "g", "when": "w", "then": "t"}},
+                {"id": 9, "title": "Unknown rule"},
+                {"id": 0, "title": "  "}
+            ]}"#,
+            &pages,
+            &components,
+        )
+        .expect("read");
+        assert_eq!(read.len(), 3, "a proposal with no title is none");
+        assert_eq!(read[0].pages, ["pages/a.html"]);
+        assert_eq!(read[0].components, ["Ai2"]);
+        assert_eq!(
+            parse_proposals(r#"{"proposals": []}"#, &pages, &components),
+            Ok(vec![])
+        );
+        assert!(parse_proposals("no json", &pages, &components).is_err());
+
+        let change = RuleChange {
+            name: "Ai".to_string(),
+            saved: "Ai2".to_string(),
+            how: "fork".to_string(),
+            page: "pages/a.html".to_string(),
+            requests: vec!["two modes".to_string()],
+        };
+        c.propose_rules(&change.said(), read.clone());
+        assert_eq!(
+            c.proposals
+                .iter()
+                .map(|p| (p.key, p.id))
+                .collect::<Vec<_>>(),
+            [(1, 3), (2, 0)],
+            "numbered; one about a rule that is not there left out"
+        );
+        assert_eq!(c.proposals[0].about, "Ai forked as Ai2 for pages/a.html");
+        // A newer proposal about a rule replaces the older one.
+        c.propose_rules("again", vec![read[0].clone()]);
+        assert_eq!(
+            c.proposals
+                .iter()
+                .map(|p| (p.key, p.id))
+                .collect::<Vec<_>>(),
+            [(2, 0), (3, 3)]
+        );
+        assert!(c.rules_validated, "proposing changes no rule");
+
+        c.settle_proposal(3, true).expect("accepted");
+        let r3 = c.requirements.iter().find(|r| r.id == 3).expect("R3");
+        assert_eq!((r3.title.as_str(), r3.human), ("Connect", true));
+        assert_eq!(r3.criterion.then, "the kind is found");
+        assert!(
+            !c.rules_validated,
+            "a rule changed takes the validation back"
+        );
+        c.settle_proposal(2, true).expect("added");
+        assert_eq!(
+            c.requirements.last().map(|r| (r.id, r.title.as_str())),
+            Some((6, "Binary"))
+        );
+        assert!(c.proposals.is_empty());
+        assert!(c.settle_proposal(2, true).is_err(), "settled once");
+
+        c.propose_rules("x", vec![read[0].clone()]);
+        c.requirements.retain(|r| r.id != 3);
+        assert_eq!(c.settle_proposal(4, true), Err("R3 is gone".to_string()));
+        c.propose_rules("x", vec![read[1].clone()]);
+        c.settle_proposal(5, false).expect("refused");
+        assert_eq!(c.requirements.len(), 2, "refused: nothing added");
+
+        assert_eq!(
+            RuleChange {
+                how: "replace".to_string(),
+                ..change.clone()
+            }
+            .said(),
+            "Ai changed on every page that shows it"
+        );
+        let prompt = rules_change_prompt(
+            &Creation {
+                requirements: vec![rule(3, "x", &["pages/a.html"]), rule(5, "x", &[])],
+                ..Creation::default()
+            },
+            &Context::default(),
+            &change,
+        );
+        assert!(prompt.contains("What changed: Ai forked as Ai2 for pages/a.html."));
+        assert!(prompt.contains("- two modes"));
+        assert!(prompt.contains("- *R3 — "), "tied to the page: marked");
+        assert!(prompt.contains("- R5 — "), "not tied: listed, unmarked");
     }
 
     #[test]
@@ -3315,6 +3642,11 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn proposals_read_off_any_answer_never_panic(answer in ".{0,200}") {
+            let _ = parse_proposals(&answer, &[], &[]);
+        }
+
         #[test]
         fn a_sorted_brief_keeps_every_part_said_in_order(parts in proptest::collection::vec(".{0,40}", 4)) {
             let object: HashMap<&str, &String> = BRIEF_PARTS.iter().map(|p| p.id).zip(&parts).collect();
