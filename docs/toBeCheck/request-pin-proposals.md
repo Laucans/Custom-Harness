@@ -83,6 +83,20 @@ file first; the workspace is kept to put back.
 - [ ] The first click on a pin sometimes does not open its window (seen
       twice in automation, right after the frame reloads).
 
+## A pin's history (`1bf6859`)
+
+Checked live: the history button opens the journal in the dock; the
+Fiche d'entité pin's rework (2 turns, before the journal existed) shows as
+"earlier conversation"; Discuss it on that pin asks Continue / Start fresh.
+
+- [ ] A Propose, then Validate, then Undo: three events in order, with what
+      the AI said and the files.
+- [ ] A Rework validated: one "reworked with the AI" event, its turns folded
+      under it, "validated", the files it changed listed.
+- [ ] Continue: the last session recalled above the terminal; Start fresh:
+      the AI starts from the request alone (it does not quote the old turns).
+- [ ] Not done yet: a file's before/after from the history (only the list).
+
 ## Not fixed
 
 - After each restart the view opens the harness-dnd2 factory: switch back
