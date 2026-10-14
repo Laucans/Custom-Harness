@@ -1288,9 +1288,9 @@ pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str, tokens_css: &str) ->
          objective (what the user does there), a `mock/index.html` that lists them, the fixtures \
          they read under `mock/fixtures/` with believable example data in the language of the \
          brief — never a lorem ipsum — and the links between the pages that carry the journeys, \
-         so a human can click through them. A page is a kind of screen: title it by what it is \
-         (\"Campaign\", \"Session preparation\"), never by one example record's name or number, \
-         and give it the record it shows through its fixture. The menu every page shares lists \
+         so a human can click through them. A page is a kind of screen: title it by the kind of \
+         screen it is, never by the name or the number of one record of its example data, and \
+         give it the record it shows through its fixture. The menu every page shares lists \
          the product's sections, the screens reachable from anywhere; a screen about one record \
          is reached from the list that holds it, never named in that menu. Give every region of a page — its header, its \
          navigation, its main area, each section, aside, list and form, its footer — an `id` in \
@@ -3054,7 +3054,7 @@ mod tests {
     #[test]
     fn a_page_is_titled_by_its_kind_and_the_menu_lists_sections() {
         let prompt = mockups_prompt(&ready(), "R", "", "");
-        assert!(prompt.contains("never by one example record's name or number"));
+        assert!(prompt.contains("never by the name or the number of one record"));
         assert!(prompt.contains("never named in that menu"));
     }
 
