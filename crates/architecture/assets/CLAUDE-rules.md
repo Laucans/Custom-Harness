@@ -59,7 +59,9 @@ scripts/dump-schema.sh             prints the schema the migrations build (pg_du
 contracts/*.schema.json            the sixteen contracts, JSON Schema 2020-12
 rules.json                         the rules the product keeps, with their criteria (contract P)
 tests/rules/business/  tests/rules/journey/   the rules' tests, written before the code (contract P)
-scripts/rules-runtime.sh           how the rules' tests reach the product: serve, stop
+scripts/rules-runtime.sh           installed, changed by nobody: starts the product for the rules' tests (serve, stop)
+crates/server/                     the one binary serving the shell's wire protocol and GET /health; reads PORT, DATABASE_URL, FIXTURES_DIR
+apps/shell/                        the frontend's host: npm scripts build and serve (PORT, SERVER_URL), a frozen screen at /screens/<screen>
 ```
 
 ### Rules
@@ -112,8 +114,11 @@ scripts/rules-runtime.sh           how the rules' tests reach the product: serve
     rule or the architecture — is **contested**: stop, and write
     `CONTEST.md` at the repository's root (the rule's id, the test, why it
     cannot hold) instead of changing it: the CI opens the issue the rules'
-    task settles, and your change waits for its decision. The task that builds the server
-    keeps `scripts/rules-runtime.sh serve` serving it.
+    task settles, and your change waits for its decision. The product is
+    started for them by `scripts/rules-runtime.sh`, which nobody changes: the
+    server is `crates/server` (the wire protocol, `GET /health`, the mock-up's
+    fixtures loaded from `FIXTURES_DIR` at start), the frontend `apps/shell`
+    (`npm run build`, `npm run serve`), both where the layout puts them.
 12. **Contracts first.** A unit lands with its manifest or contract file and
     passes the gate that validates it. A change to a contract schema is its
     own task and lists the units it touches.

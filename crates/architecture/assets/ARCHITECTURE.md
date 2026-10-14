@@ -742,9 +742,18 @@ them; every development after conforms to them:
   `micro-ui:…`, `screen:…`, `aggregate:…`) and copies the criterion as it is,
   in three comment lines `given: …`, `when: …`, `then: …`;
 - a test is **pending** while a unit it needs is not built (no manifest names
-  it) or the product is not served (`scripts/rules-runtime.sh serve`, which
-  the task building the server teaches to serve): it passes, and says so.
-  Once everything it needs exists, it runs and must hold;
+  it) or the product is not served yet: it passes, and says so. Once
+  everything it needs exists, it runs and must hold;
+- the product is served by `scripts/rules-runtime.sh`, installed whole and
+  changed by nobody (the gate *Rule tests untouched*). It starts what the
+  layout fixes: `crates/server`, the one binary serving the wire protocol
+  and `GET /health` (it reads `PORT`, `DATABASE_URL`, and `FIXTURES_DIR`,
+  the mock-up's fixtures it loads as it starts), on a scratch database the
+  migrations build; then `apps/shell`, the frontend's host (`npm run build`,
+  `npm run serve` on `PORT`, reaching the server at `SERVER_URL`, a frozen
+  screen at `/screens/<screen>`). Until `crates/server` exists it serves
+  nothing; never the mock server, which would make every rule hold without
+  the product;
 - the data a test starts from is the mock-up's (`mock/fixtures/`), loaded by
   the runtime, plus what a `given` asks;
 - a development never writes `rules.json` or `tests/rules/`: a test it cannot

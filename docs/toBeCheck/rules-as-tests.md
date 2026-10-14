@@ -92,7 +92,21 @@ exercised on a real product.
       once a `gates.yml` run on `main_agent` uploaded `rules-status`.
   - `gh run download` works with the view's slug-only `GhCli` (`-R`).
   - The summary links the run.
-- [ ] Unknown, to look at: `scripts/rules-runtime.sh` stays a stub until a
-      task makes it serve the product. Every rule stays **pending** until
-      then, even once its units are built. Decide which task owns the
-      runtime.
+- [ ] `scripts/rules-runtime.sh` (complete since the follow-up commit) in
+      the CI's `rules-hold`, on the Postgres service:
+  - while `crates/server` does not exist it prints nothing, and every
+    rule is pending;
+  - once it exists, it builds a scratch database from the migrations and
+    starts `crates/server` with `FIXTURES_DIR`;
+  - it waits on `/health`, then builds and serves `apps/shell`;
+  - `tee` does not hang on the background processes;
+  - the step "Stop the product" drops the scratch database.
+
+  Checked locally on a scratch product: no server, no database, the server
+  alone, server and shell, and a server that never answers (exit 1). It
+  has never run on a GitHub runner.
+- [ ] The first development tasks put the server in `crates/server` and
+      the frontend in `apps/shell`, as the layout of `CLAUDE.md` says.
+  - The server loads `FIXTURES_DIR`, otherwise the givens have no data.
+- [ ] A dev PR touching `scripts/rules-runtime.sh` is refused by
+      `rule-tests-untouched`.

@@ -313,6 +313,29 @@ mod tests {
         ] {
             assert!(gates.contains(step), "the gates run {step}");
         }
+        for step in [
+            "bash scripts/rules-runtime.sh stop",
+            "DATABASE_URL: postgres://postgres:postgres@localhost:5432/app",
+        ] {
+            assert!(gates.contains(step), "the rules' runtime gets {step}");
+        }
+        let runtime = content_of("scripts/rules-runtime.sh").unwrap_or_default();
+        for part in [
+            "crates/server/Cargo.toml",
+            "apps/shell/package.json",
+            "/health",
+            "FIXTURES_DIR",
+        ] {
+            assert!(
+                runtime.contains(part),
+                "the runtime starts what the layout fixes: {part}"
+            );
+        }
+        let gate = content_of("scripts/rules-gate.mjs").unwrap_or_default();
+        assert!(
+            gate.contains("p === 'scripts/rules-runtime.sh'"),
+            "nobody changes the runtime"
+        );
         let business = content_of("tests/rules/business/Cargo.toml").unwrap_or_default();
         assert!(
             business.contains("[workspace]"),

@@ -20,7 +20,8 @@
 //
 //   node scripts/rules-gate.mjs untouched <base>
 //       A change measured against <base> leaves tests/rules/ and rules.json
-//       alone: only the rules' task writes them.
+//       alone — only the rules' task writes them — and scripts/rules-runtime.sh
+//       alone: nobody does.
 //
 //   node scripts/rules-gate.mjs contest <pr>
 //       A development that cannot meet a rule's test writes CONTEST.md at the
@@ -124,7 +125,11 @@ function untouched(base) {
   const changed = execFileSync('git', ['diff', '--name-only', `${base}...HEAD`], { encoding: 'utf8' }).split('\n').filter(Boolean);
   const touched = changed.filter((p) => p === 'rules.json' || p.startsWith('tests/rules/'));
   for (const p of touched) fail(`${p}: only the rules' task writes the rules and their tests — contest a rule's test instead`);
-  return touched.length ? 1 : 0;
+  // The runtime is installed whole and changed by nobody: a product it
+  // cannot start contests it too.
+  const runtime = changed.filter((p) => p === 'scripts/rules-runtime.sh');
+  for (const p of runtime) fail(`${p}: the rules' runtime starts the product where the layout puts it — build crates/server and apps/shell there, or contest it`);
+  return touched.length + runtime.length ? 1 : 0;
 }
 
 function contest(pr) {

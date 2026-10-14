@@ -238,7 +238,7 @@ pub fn rule(id: &str, needs: &[&str], body: impl FnOnce(&Server) -> Result<(), S
         return;
     }
     let Ok(base) = std::env::var("RULES_SERVER_URL") else {
-        let why = "no server: scripts/rules-runtime.sh serves none yet";
+        let why = "no server: crates/server is not built, or no DATABASE_URL";
         eprintln!("{id} pending: {why}");
         record(id, "pending", why);
         return;

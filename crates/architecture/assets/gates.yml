@@ -552,6 +552,21 @@ jobs:
   # `conform` may stay red in a task, never where a milestone lands.
   rules-hold:
     runs-on: ubuntu-latest
+    # The store the runtime builds its scratch database on, as in ci.yml.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -599,6 +614,9 @@ jobs:
           # never on the rules' own change: a changed rule's test lands red.
           STRICT: ${{ github.event_name == 'pull_request' && github.base_ref == 'main_agent' && !contains(github.event.pull_request.labels.*.name, 'harness:rules') && '--strict' || '' }}
         run: node scripts/rules-gate.mjs status $STRICT
+      - name: Stop the product
+        if: always()
+        run: bash scripts/rules-runtime.sh stop
       - uses: actions/upload-artifact@v4
         if: always()
         with:

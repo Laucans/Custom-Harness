@@ -74,7 +74,7 @@ export async function screen(page: Page, name: string): Promise<void> {
 /** Proves rule `id`: pending while a unit it `needs` is not built or nothing serves the product (decided as the test is declared: a pending test opens no browser); else `body` runs, and must hold. */
 export function rule(id: string, needs: string[], title: string, body: Parameters<typeof test>[2]): void {
   const missing = needs.filter((n) => !built(n));
-  const why = missing.length ? `waiting for ${missing.join(', ')}` : process.env.RULES_APP_URL ? '' : 'no app: scripts/rules-runtime.sh serves none yet';
+  const why = missing.length ? `waiting for ${missing.join(', ')}` : process.env.RULES_APP_URL ? '' : 'no app: apps/shell is not built, or the runtime serves none';
   const annotation = [{ type: 'rule', description: id }];
   if (why) {
     // eslint-disable-next-line no-empty-pattern
