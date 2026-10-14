@@ -191,6 +191,8 @@ pub fn units_of(files: &[UnitFile]) -> Units {
 pub fn preview_page(name: &str) -> String {
     format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{name}</title>\
+         <link rel=\"stylesheet\" href=\"../design/tokens.css\">\
+         <link rel=\"stylesheet\" href=\"../kit/kit.css\">\
          <link rel=\"stylesheet\" href=\"../style.css\"></head>\n\
          <body style=\"margin:0;padding:16px;background:transparent\">\n\
          <div data-component=\"{name}\"></div>\n\
@@ -397,7 +399,13 @@ mod tests {
         )
         .expect("a manifest");
         assert_eq!(manifest.components[0].fragment, "components/RiskBadge.html");
-        assert!(preview_page("RiskBadge").contains(r#"data-component="RiskBadge""#));
+        let preview = preview_page("RiskBadge");
+        assert!(preview.contains(r#"data-component="RiskBadge""#));
+        // Styled as a page is: the design system's variables and kit first.
+        let tokens = preview.find("../design/tokens.css").expect("tokens");
+        let kit = preview.find("../kit/kit.css").expect("kit");
+        let own = preview.find("../style.css").expect("style");
+        assert!(tokens < kit && kit < own, "{preview}");
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
     componentize_prompt, decompose_prompt, examples_part, examples_taken, grill_prompt,
     manifest_repair_prompt, mockups_prompt, not_componentized, parse_brief, parse_requirements,
-    parse_round, requirements_prompt, rule_prompt, scope_prompt, unfenced,
+    parse_round, parse_ties, requirements_prompt, rule_prompt, scope_prompt, unfenced,
 };
 use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
 use crate::domain::design::Entry;
@@ -445,9 +445,11 @@ impl CreationDesk {
         let components: Vec<String> = ctx.components.iter().map(|c| c.name.clone()).collect();
         let answer = self.ask(requirements_prompt(&asked, &ctx)).await?;
         let read = parse_requirements(&answer, &pages, &components)?;
+        let ties = parse_ties(&answer, &pages, &components);
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
         record.add_requirements(read);
+        record.retie(&ties);
         self.keep(&record)?;
         Ok(record)
     }
@@ -1827,6 +1829,9 @@ mod tests {
             if prompt.contains("Read again this one requirement only") {
                 return Ok(r#"{"requirements":[{"title":"See every line","family":"business","criterion":"given lines, when opened, then all show","pages":["pages/home.html"]}]}"#.to_string());
             }
+            if prompt.contains("read the requirements") && prompt.contains("- R7: Mine\n") {
+                return Ok(r#"{"requirements":[{"title":"See the ledger","body":"the lines","pages":["pages/home.html"],"components":["Home","Ghost"]}],"ties":[{"id":7,"pages":["pages/home.html"],"components":["Home"]}]}"#.to_string());
+            }
             if prompt.contains("read the requirements") {
                 return Ok(r#"{"requirements":[{"title":"See the ledger","body":"the lines","pages":["pages/home.html"],"components":["Home","Ghost"]}]}"#.to_string());
             }
@@ -2201,19 +2206,8 @@ mod tests {
         desk.componentize_now()
             .await
             .expect("done already: nothing runs");
-        let read = desk.read_requirements().await.expect("read");
-        assert_eq!(read.requirements.len(), 1);
-        assert_eq!(read.requirements[0].title, "See the ledger");
-        assert_eq!(
-            read.requirements[0].pages,
-            vec!["pages/home.html".to_string()]
-        );
-        assert_eq!(
-            read.requirements[0].components,
-            vec!["Home".to_string()],
-            "a micro-frontend the mock-up has not is dropped"
-        );
-        rules_read_again_and_guarded(&desk, read.requirements[0].id).await;
+        let id = rules_read_the_human_s_tied_again(&desk).await;
+        rules_read_again_and_guarded(&desk, id).await;
         data_drafted_and_retouched(&desk).await;
         initialized_up_to_the_board(&desk, &dir).await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -2388,12 +2382,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The rules read off the mock-up, a rule of the human's tied to a page
+    /// an earlier drawing had kept and tied again. Answers the AI's rule.
+    async fn rules_read_the_human_s_tied_again(desk: &CreationDesk) -> u32 {
+        desk.save(
+            Edit {
+                requirements: Some(vec![crate::domain::creation::Requirement {
+                    id: 7,
+                    title: "Mine".to_string(),
+                    human: true,
+                    criterion: creation::Criterion {
+                        given: "lines".to_string(),
+                        when: "opened".to_string(),
+                        then: "all show".to_string(),
+                    },
+                    pages: vec!["pages/gone.html".to_string()],
+                    ..crate::domain::creation::Requirement::default()
+                }]),
+                ..Edit::default()
+            },
+            None,
+        )
+        .await
+        .expect("the human's rule");
+        let read = desk.read_requirements().await.expect("read");
+        assert_eq!(read.requirements.len(), 2);
+        let mine = &read.requirements[0];
+        assert_eq!((mine.title.as_str(), mine.human), ("Mine", true));
+        assert_eq!(mine.pages, ["pages/home.html"], "tied again");
+        assert_eq!(mine.components, ["Home"]);
+        let ais = &read.requirements[1];
+        assert_eq!(ais.title, "See the ledger");
+        assert_eq!(ais.pages, vec!["pages/home.html".to_string()]);
+        assert_eq!(
+            ais.components,
+            vec!["Home".to_string()],
+            "a micro-frontend the mock-up has not is dropped"
+        );
+        ais.id
+    }
+
     /// The third quarter of the flow above: one rule read again, then the
     /// architecture's guard — a write passed off as a read blocks the
     /// rules until its fix is applied.
     async fn rules_read_again_and_guarded(desk: &CreationDesk, id: u32) {
         let again = desk.reread_rule(id).await.expect("read again");
-        let rule = &again.requirements[0];
+        let rule = again
+            .requirements
+            .iter()
+            .find(|r| r.id == id)
+            .expect("the rule");
         assert_eq!((rule.id, rule.title.as_str()), (id, "See every line"));
         assert_eq!(rule.family, creation::Family::Business);
         assert!(desk.reread_rule(id + 7).await.is_err(), "no such rule");
@@ -2434,9 +2472,15 @@ mod tests {
             "no data model yet"
         );
         let mut record = desk.existing().expect("a creation");
-        record.requirements[0].criterion =
+        // R1, the AI's: the human's R7 is kept before it.
+        let first = record
+            .requirements
+            .iter()
+            .position(|r| r.id == 1)
+            .expect("R1");
+        record.requirements[first].criterion =
             creation::Criterion::from_sentence("given lines, when opened, then all show");
-        record.requirements[0]
+        record.requirements[first]
             .pages
             .push("pages/gone.html".to_string());
         desk.keep(&record).expect("kept");
@@ -2448,7 +2492,7 @@ mod tests {
             refused.contains("R1 points at pages/gone.html, which the mock-up has not"),
             "{refused}"
         );
-        record.requirements[0].pages.pop();
+        record.requirements[first].pages.pop();
         desk.keep(&record).expect("kept");
         assert!(
             desk.validate_rules()
@@ -2828,8 +2872,9 @@ mod tests {
         let kept = std::fs::read_to_string(dir.join("main_agent/mock/proof-of-concept.json"))
             .expect("the record is written");
         let kept: serde_json::Value = serde_json::from_str(&kept).expect("json");
-        assert_eq!(kept["requirements"][0]["title"], "See every line");
-        assert_eq!(kept["requirements"][0]["family"], "business");
+        assert_eq!(kept["requirements"][0]["title"], "Mine");
+        assert_eq!(kept["requirements"][1]["title"], "See every line");
+        assert_eq!(kept["requirements"][1]["family"], "business");
         assert_eq!(kept["components"][0]["name"], "Home");
         assert_eq!(kept["pins"][0]["text"], "the total above the lines");
         assert_eq!(

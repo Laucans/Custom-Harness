@@ -39,6 +39,7 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "reachable": record.as_ref().map(|r| r.reachable(facts)),
         "scopeStale": record.as_ref().is_some_and(Creation::scope_stale),
         "mockupStale": record.as_ref().is_some_and(Creation::mockup_stale),
+        "rulesStale": record.as_ref().is_some_and(Creation::rules_stale),
         "marks": record.as_ref().map(|r| r.marks(facts)),
         "ruleGaps": record.as_ref().map(Creation::rule_gaps),
         "auditStale": record.as_ref().is_some_and(Creation::audit_stale),

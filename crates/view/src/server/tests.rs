@@ -2139,6 +2139,7 @@ async fn the_drawing_ahead_waits_for_the_scope() {
     let (_, body) = get(state, "/api/creation").await;
     let view: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(view["mockupStale"], false);
+    assert_eq!(view["rulesStale"], false);
     assert!(view["job"].is_null(), "a refused drawing starts nothing");
 }
 

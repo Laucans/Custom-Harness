@@ -268,6 +268,8 @@
       if (!C.mock) loadMock();
       if (!r.componentized && !running()) once(`mf-${r.regenerations}`, () => act('starting the micro-frontends', () => start('componentize')));
       else if (r.componentized && !r.requirements.length && !running()) once(`req-${r.regenerations}`, () => act('the AI reads the rules', async () => { await post('requirements'); await loadMock(); }));
+      // The mock-up was cut again since the rules were read: read again, the human's kept and tied again.
+      else if (r.componentized && C.data.rulesStale && !running()) once(`reread-${r.regenerations}-${r.componentized.length}-${r.componentized.slice(0, 60)}`, () => act('the mock-up changed: the AI reads the rules again', async () => { C.rules = null; await post('requirements'); await loadMock(); }));
       // The guard reads the cut once by itself; again only when asked.
       // (The data step drafts its model by itself the same way, below.)
       else if (r.componentized && r.requirements.length && !r.audit && !running()) once(`audit-${r.regenerations}`, () => act('the guard reads the architecture', () => post('audit')));

@@ -816,6 +816,22 @@ impl Creation {
                 .is_some_and(|now| now != self.rules_for)
     }
 
+    /// The human's rules tied again to the mock-up as it stands: a rule the
+    /// AI tied keeps those ties alone; the others, and every rule the AI
+    /// read, are left as they are.
+    pub fn retie(&mut self, ties: &[Tie]) {
+        for tie in ties {
+            if let Some(rule) = self
+                .requirements
+                .iter_mut()
+                .find(|r| r.human && r.id == tie.id)
+            {
+                rule.pages.clone_from(&tie.pages);
+                rule.components.clone_from(&tie.components);
+            }
+        }
+    }
+
     /// A grilling round, added: its questions numbered after the last ever
     /// given. A round with nothing to ask marks the grilling done.
     pub fn add_round(&mut self, round: Round) {
@@ -941,12 +957,26 @@ pub struct Read {
     pub criterion: Criterion,
 }
 
+/// A human's rule tied again to the mock-up as it stands, as the AI answers it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Tie {
+    /// The rule's number.
+    pub id: u32,
+    /// The pages that carry it now.
+    pub pages: Vec<String>,
+    /// The micro-frontends that carry it now.
+    pub components: Vec<String>,
+}
+
 /// The requirements, as the AI answers them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct Requirements {
     /// The requirements read.
     pub requirements: Vec<Read>,
+    /// The human's rules, tied again to the mock-up as it stands.
+    pub ties: Vec<Tie>,
 }
 
 /// The requirements out of the AI's answer: those with a title, their
@@ -980,6 +1010,27 @@ pub fn parse_requirements(
         return Err("the AI read no requirement off the scope".to_string());
     }
     Ok(kept)
+}
+
+/// The human's rules tied again, out of the AI's answer: the pages and
+/// micro-frontends the mock-up has, a rule with none left out. An answer
+/// with none is no tie, not an error: the rules keep theirs.
+#[must_use]
+pub fn parse_ties(answer: &str, pages: &[String], components: &[String]) -> Vec<Tie> {
+    let Some(read) = object_in(answer).and_then(|o| serde_json::from_str::<Requirements>(o).ok())
+    else {
+        return Vec::new();
+    };
+    read.ties
+        .into_iter()
+        .map(|mut t| {
+            t.pages.retain(|p| pages.iter().any(|known| known == p));
+            t.components
+                .retain(|c| components.iter().any(|known| known == c));
+            t
+        })
+        .filter(|t| !t.pages.is_empty() || !t.components.is_empty())
+        .collect()
 }
 
 /// A grilling round, as the AI answers it.
@@ -1237,7 +1288,11 @@ pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str, tokens_css: &str) ->
          objective (what the user does there), a `mock/index.html` that lists them, the fixtures \
          they read under `mock/fixtures/` with believable example data in the language of the \
          brief — never a lorem ipsum — and the links between the pages that carry the journeys, \
-         so a human can click through them. Give every region of a page — its header, its \
+         so a human can click through them. A page is a kind of screen: title it by what it is \
+         (\"Campaign\", \"Session preparation\"), never by one example record's name or number, \
+         and give it the record it shows through its fixture. The menu every page shares lists \
+         the product's sections, the screens reachable from anywhere; a screen about one record \
+         is reached from the list that holds it, never named in that menu. Give every region of a page — its header, its \
          navigation, its main area, each section, aside, list and form, its footer — an `id` in \
          kebab-case, unique on the page: the human pins requests on them, and they are what an \
          edit names. Build every page from the design system: \
@@ -1846,9 +1901,14 @@ pub fn requirements_prompt(c: &Creation, ctx: &Context) -> String {
         }
     }
     if c.requirements.iter().any(|r| r.human) {
-        text.push_str("\nThe human wrote these already; they are kept, do not repeat them:\n\n");
+        text.push_str(
+            "\nThe human wrote these already; they are kept, do not repeat them. Tie each again \
+             to the pages and the micro-frontends listed above that carry it now, beside the \
+             requirements: \"ties\": [{\"id\": <its number>, \"pages\": [\"pages/….html\"], \
+             \"components\": [\"Name\"]}].\n\n",
+        );
         for r in c.requirements.iter().filter(|r| r.human) {
-            let _ = writeln!(text, "- {}", r.title.trim());
+            let _ = writeln!(text, "- R{}: {}", r.id, r.title.trim());
         }
     }
     text
@@ -2954,10 +3014,48 @@ mod tests {
         assert!(prompt.contains(
             "- `InvoiceList` — billing — the invoices — billing.listInvoices — billing.payInvoice"
         ));
-        assert!(prompt.contains("do not repeat them:\n\n- Mine already"));
+        assert!(prompt.contains("\"ties\": [{\"id\": <its number>"));
+        assert!(prompt.contains(".\n\n- R1: Mine already\n"));
         assert!(!prompt.contains("- The AI's"), "only the human's are kept");
         let bare = requirements_prompt(&ready(), &ctx);
         assert!(!bare.contains("do not repeat them"));
+    }
+
+    #[test]
+    fn the_human_s_rules_are_tied_again_to_the_mock_up_as_it_stands() {
+        let pages = vec!["pages/home.html".to_string()];
+        let components = vec!["CampaignList".to_string()];
+        let answer = r#"{"requirements": [], "ties": [
+            {"id": 1, "pages": ["pages/home.html", "pages/gone.html"], "components": ["CampaignList", "Gone"]},
+            {"id": 2, "pages": ["pages/gone.html"], "components": []},
+            {"id": 3, "components": ["CampaignList"]}]}"#;
+        let ties = parse_ties(answer, &pages, &components);
+        assert_eq!(ties.len(), 2, "a tie to nothing the mock-up has is none");
+        assert_eq!(ties[0].pages, pages);
+        assert_eq!(ties[0].components, components);
+        assert_eq!(ties[1].id, 3);
+        assert!(parse_ties("no object", &pages, &components).is_empty());
+        let mut c = ready();
+        let mut mine = rule(1, "given", &["pages/old.html"]);
+        mine.human = true;
+        mine.components = vec!["OldList".to_string()];
+        let ais = rule(3, "given", &["pages/old.html"]);
+        c.requirements = vec![mine, ais];
+        c.retie(&ties);
+        assert_eq!(c.requirements[0].pages, pages);
+        assert_eq!(c.requirements[0].components, components);
+        assert_eq!(
+            c.requirements[1].pages,
+            ["pages/old.html"],
+            "only the human's are tied again"
+        );
+    }
+
+    #[test]
+    fn a_page_is_titled_by_its_kind_and_the_menu_lists_sections() {
+        let prompt = mockups_prompt(&ready(), "R", "", "");
+        assert!(prompt.contains("never by one example record's name or number"));
+        assert!(prompt.contains("never named in that menu"));
     }
 
     #[test]
