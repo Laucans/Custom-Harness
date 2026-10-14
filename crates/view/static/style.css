@@ -1606,7 +1606,7 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-rule.proposed header .spacer { flex: 1; }
 .cr-rule.proposed p { margin: 0; }
 .cr-rule.proposed details { color: var(--dim); }
-.cr-proposed-title { flex: 1; min-width: 0; }
+.cr-proposed-title { font-size: 14px; }
 .cr-proposals-notice { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cr-rules-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
 .cr-rules-search { flex: 1 1 220px; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: 13px var(--sans); padding: 5px 8px; }

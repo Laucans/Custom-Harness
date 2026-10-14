@@ -957,9 +957,10 @@
     const crit = (c) => `<div class="cr-crit">${PARTS.map(([k, label]) => `<div class="cr-crit-line"><b>${label}</b><span>${esc((c || {})[k] || '') || '<i class="muted">to write</i>'}</span></div>`).join('')}</div>`;
     const ties = [...(p.pages || []), ...(p.components || [])];
     return `<article class="cr-rule proposed">
-        <header><span class="cr-qn">${p.id ? 'R' + p.id : 'new'}</span><b class="cr-proposed-title">${esc(p.title)}</b><span class="tag warn" title="${esc(p.about)}">${p.id ? 'changed' : 'new'} by a request</span><span class="spacer"></span>
+        <header><span class="cr-qn">${p.id ? 'R' + p.id : 'new'}</span><span class="tag warn" title="${esc(p.about)}">${p.id ? 'changed' : 'new'} by a request</span><span class="spacer"></span>
           <button type="button" class="cr-btn on" data-cr-proposal="${p.key}" data-how="accept"${C.busy ? ' disabled' : ''}>Validate</button>
           <button type="button" class="cr-btn" data-cr-proposal="${p.key}" data-how="refuse"${C.busy ? ' disabled' : ''}>Refuse</button></header>
+        <b class="cr-proposed-title">${esc(p.title)}</b>
         ${p.why ? `<p class="muted">${esc(p.why)}</p>` : ''}
         ${p.body ? `<p>${esc(p.body)}</p>` : ''}
         ${crit(p.criterion)}

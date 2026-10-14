@@ -1009,8 +1009,9 @@
       badge.className = 'hb-lock-badge';
       badge.setAttribute('role', 'status');
       badge.innerHTML = 'Any change needs an Undo first <button type="button" data-note="undo">Undo</button>';
-      badge.style.left = clamp(e.clientX - r.left + 8, 8, Math.max(8, r.width - 260)) + 'px';
-      badge.style.top = clamp(e.clientY - r.top + 12, 8, Math.max(8, r.height - 40)) + 'px';
+      // The host may be scrolled: its children sit in its scrolled box.
+      badge.style.left = (clamp(e.clientX - r.left + 8, 8, Math.max(8, r.width - 260)) + host.scrollLeft) + 'px';
+      badge.style.top = (clamp(e.clientY - r.top + 12, 8, Math.max(8, r.height - 40)) + host.scrollTop) + 'px';
       host.appendChild(badge);
       const id = n.id;
       setTimeout(() => { if (badge && openId === id) hideBadge(); }, 5000);
