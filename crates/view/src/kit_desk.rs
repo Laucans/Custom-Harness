@@ -1512,6 +1512,80 @@ pub mod tests {
         }
     }
 
+    /// Claude styling a component, telling apart a question that reads
+    /// images from one that does not: the folder each ran in, `None` for
+    /// no folder.
+    #[derive(Default)]
+    struct Seeing {
+        ran: std::sync::Mutex<Vec<Option<PathBuf>>>,
+    }
+
+    impl Oneshot for Seeing {
+        fn ask(&self, model: &str, prompt: &str) -> Result<String, String> {
+            if !prompt.contains("design tokens") {
+                self.ran.lock().expect("ran").push(None);
+            }
+            Styling.ask(model, prompt)
+        }
+        fn ask_in(
+            &self,
+            model: &str,
+            prompt: &str,
+            dir: &std::path::Path,
+        ) -> Result<String, String> {
+            self.ran.lock().expect("ran").push(Some(dir.to_path_buf()));
+            Styling.ask(model, prompt)
+        }
+    }
+
+    // A component with an interface example to read, and no reference of
+    // its own, is made by a session that sees the examples' folder.
+    #[tokio::test]
+    async fn a_component_with_an_example_is_made_where_the_example_is_seen() {
+        let (plain, dir) = desk(false);
+        let seeing = Arc::new(Seeing::default());
+        let desk = KitDesk::new(Setup {
+            mockups: Arc::new(DirMockups::new(&dir)),
+            oneshot: Some(seeing.clone() as Arc<dyn Oneshot>),
+            model: "m".into(),
+            sessions: 1,
+            pins: Arc::new(Shelf::default()),
+            integration_branch: "main".into(),
+        });
+        drop(plain);
+        desk.inject(kit::default_tokens_json(), false)
+            .await
+            .expect("injected");
+        desk.keep_asset(Asset::Example, "nav.png", vec![1])
+            .await
+            .expect("example kept");
+        desk.set_checked(vec!["button".into()])
+            .await
+            .expect("checked");
+        desk.start_generation(vec![]).await.expect("started");
+        for _ in 0..200 {
+            if desk
+                .jobs()
+                .iter()
+                .all(|j| matches!(j.state, JobState::Done | JobState::Failed))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let ran = seeing.ran.lock().expect("ran").clone();
+        assert!(!ran.is_empty(), "a component was made");
+        for folder in ran {
+            let folder = folder.expect("asked in a folder: the example is an image to read");
+            assert!(
+                folder.join("design/examples/nav.png").exists(),
+                "{folder:?}"
+            );
+        }
+        desk.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn desk(oneshot: bool) -> (KitDesk, PathBuf) {
         static NTH: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(

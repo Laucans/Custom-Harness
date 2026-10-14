@@ -2536,3 +2536,42 @@ async fn injecting_tokens_queues_the_kit_too() {
     settled_kit(&kit, "injecting tokens queues the kit too").await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// An interface example: uploaded as an image of its kind, then described
+// through its own route; a body that is not one is refused.
+#[tokio::test]
+async fn an_interface_example_is_uploaded_and_described() {
+    let dir = kit_product("example");
+    let mockups: Arc<dyn crate::ports::Mockups> =
+        Arc::new(crate::adapters::mockups::DirMockups::new(&dir));
+    let kit = crate::kit_desk::KitDesk::new(crate::kit_desk::Setup {
+        mockups,
+        oneshot: None,
+        model: "m".to_string(),
+        sessions: 1,
+        pins: Arc::new(crate::kit_desk::tests::Shelf::default()),
+        integration_branch: "main".to_string(),
+    });
+    let state = AppState {
+        kit: Some(kit.clone()),
+        ..state_without_plant()
+    };
+    let (status, response) = post(
+        state.clone(),
+        "/api/design/asset?kind=example&name=nav.png",
+        "png",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert!(response.contains("design/examples/nav.png"), "{response}");
+    let body =
+        r#"{"file":"examples/nav.png","note":"the side nav","scope":{"on":"page","name":"Login"}}"#;
+    let (status, response) = post(state.clone(), "/api/design/example", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let view: serde_json::Value = serde_json::from_str(&response).expect("json");
+    assert_eq!(view["design"]["examples"][0]["note"], "the side nav");
+    assert_eq!(view["design"]["examples"][0]["scope"]["name"], "Login");
+    let (status, _) = post(state, "/api/design/example", "{}").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let _ = std::fs::remove_dir_all(&dir);
+}
