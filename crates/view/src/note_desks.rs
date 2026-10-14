@@ -185,14 +185,21 @@ impl NoteDesks {
             ..Self::about(board, &note)
         };
         let mut conversation = self.conversation(board, id)?;
-        if let Handback::Summarize { older, covers } = conversation.handback() {
+        let fresh = brief.fresh;
+        if !fresh && let Handback::Summarize { older, covers } = conversation.handback() {
             let summary = self
                 .ask(note_session::summary_prompt(&about, &older))
                 .await?;
             conversation.summarized(summary, covers);
             self.save(board, id, &conversation)?;
         }
-        let briefing = note_session::briefing(&about, &conversation.handback());
+        // Afresh, the AI starts from the pin as it is: nothing handed back.
+        let handback = if fresh {
+            Handback::Nothing
+        } else {
+            conversation.handback()
+        };
+        let briefing = note_session::briefing(&about, &handback);
         let session = uuid();
         // A conversation, not a change: Claude reads, it does not edit. A
         // simulate or a page to create edits the mock-up's workspace.
@@ -212,7 +219,7 @@ impl NoteDesks {
             briefing,
         ];
         // A first session opens on what the note says: its first prompt.
-        if conversation.turns.is_empty()
+        if (conversation.turns.is_empty() || fresh)
             && let Some(first) = note_session::first_prompt(&about)
         {
             args.push(first);

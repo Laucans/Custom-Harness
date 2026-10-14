@@ -661,7 +661,8 @@
       strip: p.strip,
       // Where the pane stands — its view, the micro-frontend opened — so going back finds it there.
       onPlace: (place) => Object.assign(p, place),
-      onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page, rework: !!s.rework, components: s.components || [] }),
+      onSession: (s) => openTalk({ kind: 'note_session', board: s.board, id: s.id, on: s.on, pin: s.kind, context: s.context, branch: s.branch, page: s.page, rework: !!s.rework, components: s.components || [], fresh: !!s.fresh, turns: s.turns || 0 }),
+      onHistory: (s) => openJournal(s),
     }) : null),
   };
 
@@ -1094,7 +1095,7 @@
         ['What are the options?', 'List the options we have here, with their trade-offs.'],
         ['What would you recommend?', 'What would you recommend, and why?'],
       ],
-      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', dir: p.dir || '', page: p.page || '', rework: !!p.rework, components: p.components || [] }) })
+      status: (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: p.context || '', branch: p.branch || '', dir: p.dir || '', page: p.page || '', rework: !!p.rework, components: p.components || [], fresh: !!p.fresh }) })
         .then(async (r) => (r.ok ? r.json() : { available: false, why: await r.text() })),
       socket: (p) => `/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/term`,
       close: (p, keep = true) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/session/close${keep ? '' : '?keep=false'}`, { method: 'POST', keepalive: true }),
@@ -1243,6 +1244,13 @@
     $('talk').dataset.who = who;
     $('talk-ok').hidden = who !== 'note_session';
     $('talk-drop').hidden = who !== 'note_session';
+    $('talk-restart').hidden = false;
+    $('talk-pin').hidden = false;
+    $('talk-term').hidden = false;
+    $('talk-journal').hidden = true;
+    // A pin's session going on: the last one recalled above the terminal.
+    $('talk-recall').hidden = true;
+    if (who === 'note_session' && p.turns > 0 && !p.fresh) recall(p);
     const talk = $('talk');
     $('talk-title').textContent = typeof desk.title === 'function' ? desk.title(p) : desk.title;
     $('talk-chips').innerHTML = desk.chips.map(([label, say]) => `<button data-type="${esc(say)}">${esc(label)}</button>`).join('');
@@ -1253,6 +1261,70 @@
     talk.hidden = false;
     S.talk = { p, who, term: null, ws: null, ro: null, close: null, pending: '', pendingAt: 0, lastOut: 0, deliverTimer: null };
     mountTerminal(who, p, TALK_SLOT);
+  }
+  // A pin's journal, read: its events, its kept conversation.
+  const readJournal = (p) => fetch(`/api/notes/${encodeURIComponent(p.board)}/${encodeURIComponent(p.id)}/journal`).then((r) => (r.ok ? r.json() : { events: [], turns: [] }));
+  const turnsHtml = (turns) => turns.map((t) => `<div class="jr-turn ${t.role === 'human' ? 'you' : 'ai'}"><b>${t.role === 'human' ? 'you' : 'Claude'}</b><pre>${esc(t.text)}</pre></div>`).join('');
+  // The last session of a pin, folded above the terminal of the next.
+  function recall(p) {
+    readJournal(p).then((j) => {
+      if (!S.talk || S.talk.p !== p) return;
+      const turns = j.turns || [];
+      const last = (j.events || []).slice().reverse().find((e) => e.session && e.session.to != null);
+      const own = last ? turns.slice(last.session.from, last.session.to) : turns.slice(-6);
+      if (!own.length) return;
+      const box = $('talk-recall');
+      box.innerHTML = `<summary>The last session — ${own.length} turn${own.length > 1 ? 's' : ''}${last ? `, ${last.session.kept ? 'validated' : 'dropped'}` : ''}</summary>${turnsHtml(own)}`;
+      box.hidden = false;
+    }).catch(() => {});
+  }
+  // What happened to a pin, newest first: its proposals and what they came
+  // to, what was validated or taken back, the rules it moved, each session
+  // with its turns, the files a rework changed.
+  const JOURNAL_LABEL = { placed: 'placed', words: 'words written', kind: 'kind changed', proposed: 'proposed', 'not proposed': 'not proposed', validated: 'validated', 'taken back': 'taken back', rules: 'rules' };
+  function journalHtml(j) {
+    const turns = j.turns || [];
+    const events = j.events || [];
+    const covered = new Set();
+    events.forEach((e) => { if (e.session) for (let i = e.session.from; i < (e.session.to == null ? turns.length : e.session.to); i += 1) covered.add(i); });
+    const earlier = turns.filter((_, i) => !covered.has(i));
+    const items = events.slice().reverse().map((e, at) => {
+      const when = e.ms ? new Date(e.ms).toLocaleString() : '';
+      let body = '';
+      if (e.session) {
+        const m = e.session;
+        const own = turns.slice(m.from, m.to == null ? undefined : m.to);
+        const end = m.to == null ? 'open' : m.kept ? 'validated' : 'dropped';
+        body = `<details${at === 0 ? ' open' : ''}><summary>${own.length} turn${own.length === 1 ? '' : 's'} — ${end}</summary>${turnsHtml(own) || '<p class="muted">nothing said</p>'}</details>`;
+      } else if (e.said) {
+        body = `<pre class="jr-said">${esc(e.said)}</pre>`;
+      }
+      const files = (e.files || []).length ? `<div class="jr-files">${e.files.map((f) => `<code>${esc(f)}</code>`).join(' ')}</div>` : '';
+      const title = e.session ? e.said : JOURNAL_LABEL[e.kind] || e.kind;
+      return `<article class="jr-event jr-${esc(String(e.kind).replace(/\s+/g, '-'))}"><header><b>${esc(title)}</b><span class="muted">${esc(when)}</span></header>${body}${files}</article>`;
+    });
+    if (earlier.length) items.push(`<article class="jr-event"><header><b>earlier conversation</b><span class="muted">before the journal was kept</span></header><details><summary>${earlier.length} turn${earlier.length === 1 ? '' : 's'}</summary>${turnsHtml(earlier)}</details></article>`);
+    return items.length ? items.join('') : '<p class="muted">Nothing happened to this pin yet.</p>';
+  }
+  // The pin's journal, in the dock where its sessions open.
+  function openJournal(p) {
+    closeTalk();
+    const talk = $('talk');
+    talk.dataset.who = 'journal';
+    ['talk-ok', 'talk-drop', 'talk-restart', 'talk-pin'].forEach((id) => { $(id).hidden = true; });
+    $('talk-title').textContent = `History · ${p.on}`;
+    $('talk-chips').innerHTML = '';
+    $('talk-term').hidden = true;
+    $('talk-recall').hidden = true;
+    const box = $('talk-journal');
+    box.hidden = false;
+    box.innerHTML = '<p class="muted">reading…</p>';
+    const size = JSON.parse(localStorage.getItem(TALK_SIZE) || 'null') || {};
+    talk.style.setProperty('--talk-w', (size.w || 640) + 'px');
+    talk.style.setProperty('--talk-h', (size.h || Math.round(window.innerHeight * 0.4)) + 'px');
+    talk.hidden = false;
+    S.talk = { p, who: 'journal', term: null, ws: null, ro: null, close: null, pending: '', pendingAt: 0, lastOut: 0, deliverTimer: null };
+    readJournal(p).then((j) => { if (S.talk && S.talk.p === p) box.innerHTML = journalHtml(j); }).catch((e) => { box.innerHTML = `<p class="muted">not read: ${esc(e.message || e)}</p>`; });
   }
   // Validating keeps what the session said on the pin; quitting without
   // validating drops it. Either way the program behind it stops. The cross

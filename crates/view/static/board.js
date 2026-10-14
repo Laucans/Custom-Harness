@@ -115,10 +115,11 @@
       + '<div class="hb-link-go" hidden><button type="button" data-note="go">Open the page →</button><button type="button" data-note="create">Create it with an AI session</button></div>'
       + '<div class="hb-apply" hidden><button type="button" data-note="apply">Propose</button><span class="hb-apply-state"></span></div>'
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
+      + '<div class="hb-resume" hidden><span class="hb-resume-said"></span><button type="button" data-note="resume" data-afresh="0" title="The AI is handed the earlier conversation">Continue</button><button type="button" data-note="resume" data-afresh="1" title="The AI starts from the pin as it is; the earlier conversation stays in its history">Start fresh</button></div>'
       + '<div class="hb-rework" hidden><button type="button" data-note="rework" title="An AI makes it in the files with you — a layout included — the canvas showing each change; you keep all of it or drop all of it">Rework with AI</button></div>'
       + '<div class="hb-extra" hidden></div>'
       + '<div class="hb-backlog" hidden><button type="button" data-note="backlog" title="Open a harness:roadmap issue from this pin: the planner takes it from there">→ backlog</button><a class="hb-issue" target="_blank" rel="noopener" hidden>on the backlog ↗</a></div>'
-      + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="undo-delete" title="Take back what the AI did for it, then delete it" hidden>undo &amp; delete</button><button type="button" data-note="delete">delete</button></div>'
+      + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="history" title="What happened to this pin: its proposals, its sessions, what they changed" hidden>history</button><button type="button" data-note="undo-delete" title="Take back what the AI did for it, then delete it" hidden>undo &amp; delete</button><button type="button" data-note="delete">delete</button></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
     const world = q('.hb-world');
@@ -154,6 +155,8 @@
     const news = new Map();
     // What the AI is at for a pin being applied, said in its window.
     const progress = new Map();
+    // A session asked on a pin that already talked: continue it, or afresh.
+    let resume = null;
     // A request proposed: its words and kind are what the AI worked from,
     // fixed until its Undo.
     const proposed = (n) => !!opts.undo && kindOf(n) === 'request' && ['simulated', 'stale', 'validated'].includes(n.state || 'pending');
@@ -396,6 +399,10 @@
       });
       // A request made in the files with an AI, the human talking to it.
       editor.querySelector('.hb-rework').hidden = kind !== 'request' || !opts.onRework;
+      editor.querySelector('[data-note="history"]').hidden = !opts.onHistory || !!n.fresh;
+      const asking = editor.querySelector('.hb-resume');
+      asking.hidden = !resume || resume.id !== n.id;
+      if (!asking.hidden) asking.querySelector('.hb-resume-said').textContent = `${n.turns} turn${n.turns > 1 ? 's' : ''} kept from earlier:`;
       editor.querySelector('[data-note="rework"]').disabled = locked;
       const session = editor.querySelector('.hb-session');
       session.hidden = kind === 'note' || kind === 'link' || !opts.onSession;
@@ -552,6 +559,7 @@
     function closeNote() {
       flush();
       hideBadge();
+      resume = null;
       const n = notes.find((x) => x.id === openId);
       openId = null;
       if (opts.onClose) opts.onClose();
@@ -921,12 +929,23 @@
     };
     // Opens the open pin's AI session; a pin the server does not have yet
     // is saved first.
-    async function openSession(n) {
+    async function openSession(n, afresh) {
       flush();
       if (n.fresh) {
         try { await put(n); } catch (err) { setState('not saved: ' + (err.message || err)); return; }
       }
-      opts.onSession(n, opts.context ? opts.context(n.target) : '');
+      opts.onSession(n, opts.context ? opts.context(n.target) : '', !!afresh);
+    }
+    // A rework: the page's draft into its file, then the session.
+    function reworkPin(n, afresh) {
+      if (!(n.text || '').trim()) { setState('write the request first: it is what the AI makes'); textarea.focus(); return; }
+      flush();
+      track([n.id], (n.fresh ? put(n) : Promise.resolve()).then(() => opts.onRework(n, opts.context ? opts.context(n.target) : '', !!afresh)).catch((err) => { news.set(n.id, { ok: false, text: 'no rework: ' + String((err && err.message) || err).split('\n')[0] }); }));
+    }
+    // A session on a pin that already talked asks first: continue or afresh.
+    function sessionOn(n, act) {
+      if ((n.turns || 0) > 0) { resume = { id: n.id, act }; drawEditor(n); return; }
+      if (act === 'rework') reworkPin(n, false); else openSession(n, false);
     }
     const onToolClick = (e) => {
       const zoneTool = e.target.closest('[data-zone]');
@@ -976,12 +995,16 @@
       }
       // A proposed request's words are fixed: discussing them is a change too.
       if (act.dataset.note === 'session' && n && proposed(n)) { lockBadge(e, n); return; }
-      if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
-      if (act.dataset.note === 'rework' && n && opts.onRework && !applying.has(n.id)) {
-        if (!(n.text || '').trim()) { setState('write the request first: it is what the AI makes'); textarea.focus(); return; }
-        flush();
-        track([n.id], (n.fresh ? put(n) : Promise.resolve()).then(() => opts.onRework(n, opts.context ? opts.context(n.target) : '')).catch((err) => { news.set(n.id, { ok: false, text: 'no rework: ' + String((err && err.message) || err).split('\n')[0] }); }));
+      if (act.dataset.note === 'session' && n && opts.onSession) sessionOn(n, 'session');
+      if (act.dataset.note === 'rework' && n && opts.onRework && !applying.has(n.id)) sessionOn(n, 'rework');
+      if (act.dataset.note === 'resume' && n && resume && resume.id === n.id) {
+        const afresh = act.dataset.afresh === '1';
+        const what = resume.act;
+        resume = null;
+        drawEditor(n);
+        if (what === 'rework') reworkPin(n, afresh); else openSession(n, afresh);
       }
+      if (act.dataset.note === 'history' && n && opts.onHistory) opts.onHistory(n);
       if (act.dataset.note === 'apply' && n && opts.apply && !applying.has(n.id)) {
         if (!(n.text || '').trim()) { setState('write the request first: it is what the AI applies'); textarea.focus(); return; }
         flush();

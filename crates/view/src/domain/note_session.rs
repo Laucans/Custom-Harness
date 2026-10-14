@@ -324,6 +324,9 @@ pub struct Brief {
     pub page: String,
     /// A request reworked in the files with the human, not discussed.
     pub rework: bool,
+    /// The session starts afresh: the earlier conversation is not handed
+    /// back.
+    pub fresh: bool,
 }
 
 /// The most of a milestone's description a session is handed.

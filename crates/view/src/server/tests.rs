@@ -61,6 +61,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         drafts: Arc::new(Versions::default()),
         steps: Arc::new(Steps::default()),
         history: Arc::new(Lines::default()),
+        journal: Arc::new(Diary::default()),
         reworks: Arc::default(),
         note_desks: None,
         mockups: None,
@@ -366,6 +367,31 @@ impl crate::ports::Mockups for FakeMockups {
 }
 
 /// Draft versions in memory.
+/// Each pin's journal, in memory.
+#[derive(Default)]
+struct Diary(std::sync::Mutex<Vec<(String, crate::domain::pin_journal::Event)>>);
+
+// A test fake: each method holds its lock for the whole of its few lines.
+#[allow(clippy::significant_drop_tightening)]
+impl crate::ports::PinJournal for Diary {
+    fn events(&self, pin: &str) -> Result<Vec<crate::domain::pin_journal::Event>, String> {
+        let kept = self.0.lock().map_err(|e| e.to_string())?;
+        let mut events: Vec<_> = kept
+            .iter()
+            .filter(|(p, _)| p == pin)
+            .map(|(_, e)| e.clone())
+            .collect();
+        events.sort_by_key(|e| e.seq);
+        Ok(events)
+    }
+    fn put(&self, pin: &str, event: &crate::domain::pin_journal::Event) -> Result<(), String> {
+        let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+        kept.retain(|(p, e)| !(p == pin && e.seq == event.seq));
+        kept.push((pin.to_string(), event.clone()));
+        Ok(())
+    }
+}
+
 /// The mock-up's history, in memory.
 #[derive(Default)]
 struct Lines(std::sync::Mutex<Vec<(String, crate::domain::mock_history::Entry)>>);
@@ -2573,6 +2599,68 @@ fn undo_fixture() -> (std::path::PathBuf, AppState, Arc<Steps>, Arc<Pins>) {
 }
 
 #[tokio::test]
+async fn a_pin_s_journal_tells_it_placed_written_and_proposed_with_its_conversation() {
+    let state = state_without_plant();
+    let uri = "/api/notes/mockup--main--home/p1";
+    let pin = |text: &str| {
+        format!(r#"{{"id":"p1","target":"","x":1,"y":2,"text":"{text}","kind":"request"}}"#)
+    };
+    for text in ["", "a rail", "a rail on the left"] {
+        let (status, _) = send_with(state.clone(), "PUT", uri, &pin(text), &[]).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, _) = post(
+        state.clone(),
+        "/api/notes/mockup--main--home/p1/journal",
+        r#"{"kind":"proposed","said":"1 change on the page"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = post(
+        state.clone(),
+        "/api/notes/mockup--main--home/p1/journal",
+        r#"{"kind":"validated","said":"by a page"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a page tells proposals only"
+    );
+    let (status, body) = send_with(
+        state,
+        "GET",
+        "/api/notes/mockup--main--home/p1/journal",
+        "",
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let got: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let told: Vec<(String, String)> = got["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap_or_default().to_string(),
+                e["said"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        told,
+        [
+            ("placed".to_string(), String::new()),
+            ("words".to_string(), "a rail on the left".to_string()),
+            ("proposed".to_string(), "1 change on the page".to_string()),
+        ],
+        "the words written on in one event"
+    );
+    assert_eq!(got["turns"], serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn a_rework_dropped_puts_every_file_back_and_kept_goes_in_the_history_and_the_pin_s_step() {
     let dir = std::env::temp_dir().join(format!("harness-rework-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2593,7 +2681,7 @@ async fn a_rework_dropped_puts_every_file_back_and_kept_goes_in_the_history_and_
     std::fs::write(file("style.css"), ".rail{}").expect("added");
     assert_eq!(
         super::rework::settle(&state, board, pin, false).await,
-        Ok(2)
+        Ok(vec!["pages/a.html".to_string(), "style.css".to_string()])
     );
     assert_eq!(
         std::fs::read_to_string(file("pages/a.html")).expect("page"),
@@ -2602,7 +2690,7 @@ async fn a_rework_dropped_puts_every_file_back_and_kept_goes_in_the_history_and_
     assert!(!file("style.css").exists());
     assert_eq!(
         super::rework::settle(&state, board, pin, false).await,
-        Ok(0),
+        Ok(Vec::new()),
         "settled once"
     );
 
@@ -2611,7 +2699,12 @@ async fn a_rework_dropped_puts_every_file_back_and_kept_goes_in_the_history_and_
         .await
         .expect("taken again");
     std::fs::write(file("pages/a.html"), "<main>rail</main>").expect("edited");
-    assert_eq!(super::rework::settle(&state, board, pin, true).await, Ok(1));
+    assert_eq!(
+        super::rework::settle(&state, board, pin, true)
+            .await
+            .map(|p| p.len()),
+        Ok(1)
+    );
     assert_eq!(
         std::fs::read_to_string(file("pages/a.html")).expect("page"),
         "<main>rail</main>"

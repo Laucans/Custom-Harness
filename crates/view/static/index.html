@@ -55,7 +55,9 @@
 <div id="talk" hidden role="dialog" aria-label="an AI session">
   <div id="talk-head"><button type="button" id="talk-pin" title="Point at a part of the page: the window hides, click the part, its context is handed to this session (Esc cancels)" aria-label="point at a part of the page">📍</button><span id="talk-title"></span><span class="spacer"></span><span id="talk-status"></span><button type="button" id="talk-restart" class="mini" title="kill this Claude Code and start a fresh one">restart</button><button type="button" id="talk-ok" class="mini ok" title="close the session: its turns join the pin, the pin's text is compacted from them">✓ validate &amp; quit</button><button type="button" id="talk-drop" class="mini" title="close the session and drop what it said">✕ quit without validating</button><button type="button" id="talk-x" title="Close the window — the session keeps running, the button reopens it" aria-label="close the window">×</button></div>
   <div id="talk-chips" class="chips"></div>
+  <details id="talk-recall" hidden></details>
   <div id="talk-term"></div>
+  <div id="talk-journal" hidden></div>
   <div id="talk-grip" title="drag to resize"></div>
 </div>
 <div id="pick-layer" hidden aria-hidden="true"></div>

@@ -276,7 +276,7 @@
       if ((st.pinned || []).length) setPinned([]);
       st.board = null; st.frame = null; st.doc = null; st.shield = null; st.fitted = false; st.proxies = new WeakMap(); st.cards = []; design.select([]);
       const onSession = opts && opts.onSession
-        ? (note, ctx) => opts.onSession({ board: boardOf(), id: note.id, on: note.kind === 'link' ? 'page ' + (note.page || '?') : note.kind === 'design' ? 'micro-frontend ' + (note.component || '?') : describe(note.target), kind: note.kind, context: ctx, branch: st.branch, page: st.view === 'page' ? st.page : '' })
+        ? (note, ctx, afresh) => opts.onSession({ board: boardOf(), id: note.id, on: note.kind === 'link' ? 'page ' + (note.page || '?') : note.kind === 'design' ? 'micro-frontend ' + (note.component || '?') : describe(note.target), kind: note.kind, context: ctx, branch: st.branch, page: st.view === 'page' ? st.page : '' , fresh: !!afresh, turns: note.turns || 0 })
         : null;
       layoutView();
       const components = st.view === 'components';
@@ -305,14 +305,16 @@
         pages: () => (st.state && st.state.pages) || [],
         capabilities,
         dataCapabilities,
-        apply: st.view === 'page' ? (note) => proposeOnPage(note) : (note) => applyMf(note.target ? note.target.slice(10).split('>')[0] : '', [note]),
+        apply: st.view === 'page' ? (note) => proposeOnPage(note).then((said) => { tellJournal(note, 'proposed', said); return said; }, (err) => { tellJournal(note, 'not proposed', String((err && err.message) || err)); throw err; }) : (note) => applyMf(note.target ? note.target.slice(10).split('>')[0] : '', [note]),
         undo: st.view === 'page' ? (note) => undoOnPage(note) : undefined,
         // Its changes go in the mock-up's history; its undo is the history's.
         headers: () => H(),
         history: (dir) => historyStep(dir),
         // A request made in the files with an AI: the page's draft written
         // into its file first, so the AI works on what the canvas shows.
-        onRework: st.view === 'page' && opts && opts.onSession ? (note, ctx) => reworkOnPage(note, ctx) : undefined,
+        onRework: st.view === 'page' && opts && opts.onSession ? (note, ctx, afresh) => reworkOnPage(note, ctx, afresh) : undefined,
+        // What happened to a pin, told in the dock.
+        onHistory: opts && opts.onHistory ? (note) => opts.onHistory({ board: boardOf(), id: note.id, on: describe(note.target) }) : undefined,
         // A pin open on the page: the micro-frontends it touches lit, told to the desk.
         onOpen: (note) => setPinned(st.view === 'page' ? mfsUnder(note) : []),
         onClose: () => setPinned([]),
@@ -900,14 +902,14 @@
     // A request reworked in the files with an AI: the page's draft written
     // into its file and its operations closed, then the session opened —
     // in the branch's workspace, the canvas following what it saves.
-    async function reworkOnPage(n, ctx) {
+    async function reworkOnPage(n, ctx, afresh) {
       if (st.engine && st.engine.ops.length) {
         await materialize();
         st.stamp = '';
         await load();
         await draftCall('reset', { base: (currentPage() || {}).hash || '' });
       }
-      opts.onSession({ board: boardOf(), id: n.id, on: describe(n.target), kind: n.kind, context: ctx, branch: st.branch, page: st.page, rework: true, components: onPage() });
+      opts.onSession({ board: boardOf(), id: n.id, on: describe(n.target), kind: n.kind, context: ctx, branch: st.branch, page: st.page, rework: true, components: onPage(), fresh: !!afresh, turns: n.turns || 0 });
     }
     // A micro-frontend redrafted for a request pin: its step keeps the draft
     // as it was, for the pin's Undo. Answers what the AI left of the request
@@ -944,6 +946,10 @@
       } catch (e) {
         return ` — the rules were not read: ${String(e.message || e).split('\n')[0]}`;
       }
+    }
+    // What a proposal came to, kept in the pin's journal.
+    function tellJournal(n, kind, said) {
+      fetch(`/api/notes/${encodeURIComponent(boardOf())}/${encodeURIComponent(n.id)}/journal`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind, said: String(said || '').slice(0, 2000) }) }).catch(() => {});
     }
     // The page holding the pane is told the rules moved: `detail` is the
     // creation as the server answered it, or null to read it again.

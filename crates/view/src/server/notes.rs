@@ -16,6 +16,7 @@ use crate::domain::note_session::{self, Brief};
 use harness_architecture::kit;
 
 use super::desks::{TermQuery, term};
+use super::journal;
 use super::mock_history;
 use super::mockup::{NO_MOCKUPS, branch_or_integration};
 use super::rework;
@@ -73,8 +74,17 @@ pub(super) async fn put_note(
         Some(was) if was.kind != note.kind => "a pin's kind",
         Some(_) => "a pin changed",
     };
+    let told = match &before {
+        None => Some(("placed", String::new())),
+        Some(was) if was.text != note.text => Some(("words", note.text.clone())),
+        Some(was) if was.kind != note.kind => Some(("kind", note.kind.name().to_string())),
+        _ => None,
+    };
     match state.pins.put(&board, &note) {
         Ok(()) => {
+            if let Some((kind, said)) = told {
+                journal::note(&state, &id, kind, &said, Vec::new());
+            }
             mock_history::record(
                 &state,
                 &mock_history::Gesture::of(&headers, what),
@@ -190,6 +200,10 @@ pub(super) struct SessionAsk {
     /// carry go to a rework.
     #[serde(default)]
     components: Vec<String>,
+    /// The session starts afresh: the pin's earlier conversation is not
+    /// handed back to the AI (it stays in the pin's journal).
+    #[serde(default)]
+    fresh: bool,
 }
 
 /// The most of a schema a session is handed: a few hundred tables.
@@ -241,6 +255,7 @@ pub(super) async fn open_session(
         cwd: None,
         page: String::new(),
         rework: false,
+        fresh: ask.fresh,
     };
     // A pin on the mock-up: its session runs in the branch's workspace,
     // made now if it is the first.
@@ -302,8 +317,33 @@ pub(super) async fn open_session(
         brief.cwd = Some(cwd);
         brief.branch = kit::DESIGN_BRANCH.to_string();
     }
-    match desks.open(&board, &id, brief).await {
-        Ok(command) => json(&serde_json::json!({ "available": true, "command": command })),
+    opened(&state, &desks, &board, &id, brief).await
+}
+
+/// A pin's session opened — or found open — and, opened, marked in the
+/// pin's journal from the turn it starts at.
+async fn opened(
+    state: &AppState,
+    desks: &crate::note_desks::NoteDesks,
+    board: &str,
+    id: &str,
+    brief: Brief,
+) -> Response {
+    let mode = if brief.rework { "rework" } else { "discuss" };
+    let opening = desks.desk(board, id).is_none();
+    let from = state
+        .pins
+        .notes(board)
+        .ok()
+        .and_then(|kept| kept.into_iter().find(|k| k.note.id == id))
+        .map_or(0, |k| k.note.turns);
+    match desks.open(board, id, brief).await {
+        Ok(command) => {
+            if opening {
+                journal::session_opened(state, id, mode, from);
+            }
+            json(&serde_json::json!({ "available": true, "command": command }))
+        }
         Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }
 }
@@ -341,8 +381,11 @@ pub(super) async fn close_session(
         Ok(changed) => changed,
         Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     };
+    if let Ok(turns) = &turns {
+        journal::session_closed(&state, &id, *turns, keep, changed.clone());
+    }
     match turns {
-        Ok(turns) => json(&serde_json::json!({ "turns": turns, "changed": changed })),
+        Ok(turns) => json(&serde_json::json!({ "turns": turns, "changed": changed.len() })),
         Err(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
     }
 }

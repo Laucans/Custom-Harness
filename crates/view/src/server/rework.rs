@@ -99,7 +99,7 @@ pub fn changes(before: &[(String, Vec<u8>)], after: &[(String, Vec<u8>)]) -> Vec
 
 /// A rework's session closed: validated, what it changed is kept in the
 /// history and in the pin's step; dropped, every file is put back. No
-/// rework open for the pin: nothing to do. Answers how many files changed.
+/// rework open for the pin: nothing to do. Answers the files it changed.
 ///
 /// # Errors
 ///
@@ -109,14 +109,14 @@ pub(super) async fn settle(
     board: &str,
     pin: &str,
     keep: bool,
-) -> Result<usize, String> {
+) -> Result<Vec<String>, String> {
     let Some(snapshot) = lock(&state.reworks).remove(&key(board, pin)) else {
-        return Ok(0);
+        return Ok(Vec::new());
     };
     let mockups = state.mockups.clone().ok_or("nothing reads the mock-up")?;
     let now = read_all(Arc::clone(&mockups), snapshot.branch.clone()).await?;
     let changed = changes(&snapshot.files, &now);
-    let count = changed.len();
+    let paths: Vec<String> = changed.iter().map(|(p, _, _)| p.clone()).collect();
     if keep {
         // The history and the pin's step keep text: a file not text is kept
         // as it is now, out of reach of an undo.
@@ -146,7 +146,7 @@ pub(super) async fn settle(
                 })
                 .collect(),
         );
-        return Ok(count);
+        return Ok(paths);
     }
     let branch = snapshot.branch.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -160,7 +160,7 @@ pub(super) async fn settle(
     })
     .await
     .map_err(|e| format!("the put back was dropped: {e}"))??;
-    Ok(count)
+    Ok(paths)
 }
 
 fn lock(reworks: &Reworks) -> std::sync::MutexGuard<'_, HashMap<String, Snapshot>> {

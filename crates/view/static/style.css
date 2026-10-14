@@ -722,6 +722,10 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .hb-kind.request.on { background: var(--pin-request); border-color: var(--pin-request); color: #2e1500; }
 .hb-note[data-kind="request"] { border-color: var(--pin-request); }
 .hb-note[data-kind="request"] .hb-session button { border-color: var(--pin-request); }
+.hb-resume { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; padding: 6px; border: 1px dashed var(--line); border-radius: 6px; font: 11px var(--mono); color: var(--dim); }
+.hb-resume[hidden] { display: none; }
+.hb-resume button { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; font: 12px var(--sans); cursor: pointer; }
+.hb-resume button:hover { border-color: var(--accent); }
 .hb-rework { margin: 0 0 6px; }
 .hb-rework[hidden] { display: none; }
 .hb-rework button { width: 100%; background: transparent; color: var(--text); border: 1px dashed var(--pin-request); border-radius: 6px; padding: 5px 10px; font: 600 12px var(--sans); cursor: pointer; }
@@ -1077,6 +1081,26 @@ table.rows th.desc::after { content: ' ▼'; color: var(--accent); }
 #talk-chips { padding: 6px 12px 0; }
 #talk-term { flex: 1; min-height: 120px; margin: 8px 12px 12px; background: #070b10; border: 1px solid var(--line); border-radius: 8px; padding: 6px; overflow: hidden; }
 #talk-term .xterm { height: 100%; }
+/* A pin's journal in the dock, and its last session recalled over the terminal. */
+#talk-journal { flex: 1; min-height: 120px; margin: 8px 12px 12px; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; }
+#talk-journal[hidden] { display: none; }
+#talk-recall { margin: 6px 12px 0; max-height: 40%; overflow-y: auto; border: 1px dashed var(--line); border-radius: 8px; padding: 4px 8px; font-size: 12px; }
+#talk-recall[hidden] { display: none; }
+#talk-recall summary, .jr-event summary { cursor: pointer; color: var(--dim); font: 12px var(--mono); }
+.jr-event { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--panel); }
+.jr-event header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.jr-event header .muted { font: 11px var(--mono); }
+.jr-proposed { border-left: 3px solid var(--pin-request); }
+.jr-not-proposed { border-left: 3px solid var(--bad); }
+.jr-validated { border-left: 3px solid var(--ok); }
+.jr-taken-back { border-left: 3px solid var(--warn); }
+.jr-session { border-left: 3px solid #4ea3f0; }
+.jr-said, .jr-turn pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.45 var(--sans); color: var(--text); }
+.jr-turn { margin: 6px 0; padding: 4px 8px; border-radius: 6px; }
+.jr-turn.you { background: rgba(226, 178, 64, 0.08); }
+.jr-turn.ai { background: rgba(78, 163, 240, 0.08); }
+.jr-turn b { font: 11px var(--mono); color: var(--dim); }
+.jr-files { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
 #talk-grip { position: absolute; top: 0; right: 0; width: 16px; height: 16px; cursor: nesw-resize; background: linear-gradient(225deg, var(--pin-design) 0 4px, transparent 4px); opacity: 0.8; }
 .pins-tabs { margin-bottom: 8px; }
 .tag.warn { color: var(--warn); border-color: var(--warn); }

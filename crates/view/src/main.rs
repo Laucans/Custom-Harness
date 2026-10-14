@@ -89,7 +89,7 @@ use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
     Board, BoardReading, Builds, DraftStore, HistoryStore, Limits, Mockups, NoteStore, Oneshot,
-    Plant, Product, StepStore, TerminalFactory, Traces, Trials, Units, Usage, Yard,
+    PinJournal, Plant, Product, StepStore, TerminalFactory, Traces, Trials, Units, Usage, Yard,
 };
 use crate::pulse::{Pulse, PulsingMockups};
 use crate::removal::{PlantOf, Removal};
@@ -191,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
     let (board, product) = github_for(&cli, &root, &project);
     let program = program_for(&cli);
     let usage = usage_store(&workspace);
-    let (pins, drafts, steps, history, note_desks) =
+    let (pins, drafts, steps, history, journal, note_desks) =
         notes_for(&cli, &root, &project, &program, &workspace, usage.clone())?;
     let desk = desk_for(&cli, &root, &project, &program);
     let doctor = doctor_for(&cli, &root, &project, &program);
@@ -257,6 +257,7 @@ async fn main() -> anyhow::Result<()> {
         drafts,
         steps,
         history,
+        journal,
         reworks: Arc::default(),
         note_desks: note_desks.clone(),
         builds: builds_for(&cli, &root),
@@ -540,6 +541,7 @@ type Notes = (
     Arc<dyn DraftStore>,
     Arc<dyn StepStore>,
     Arc<dyn HistoryStore>,
+    Arc<dyn PinJournal>,
     Option<NoteDesks>,
 );
 
@@ -562,9 +564,10 @@ fn notes_for(
     let pins: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
     let drafts: Arc<dyn DraftStore> = Arc::clone(&store) as Arc<dyn DraftStore>;
     let steps: Arc<dyn StepStore> = Arc::clone(&store) as Arc<dyn StepStore>;
-    let history: Arc<dyn HistoryStore> = store as Arc<dyn HistoryStore>;
+    let history: Arc<dyn HistoryStore> = Arc::clone(&store) as Arc<dyn HistoryStore>;
+    let journal: Arc<dyn PinJournal> = store as Arc<dyn PinJournal>;
     let desks = note_desks_for(cli, root, project, program, &pins, usage);
-    Ok((pins, drafts, steps, history, desks))
+    Ok((pins, drafts, steps, history, journal, desks))
 }
 
 /// The pins' AI sessions, unless `--no-steward`: Claude Code on the

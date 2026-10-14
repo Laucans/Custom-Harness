@@ -25,6 +25,7 @@ mod desks;
 mod drafts;
 mod factories;
 mod janitor;
+mod journal;
 mod mock_history;
 mod mockup;
 mod notes;
@@ -65,8 +66,8 @@ use crate::kit_desk::KitDesk;
 use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    BoardReading, Builds, DraftStore, HistoryStore, Limits, Mockups, NoteStore, Plant, Prompts,
-    StepStore, Traces, Trials, Usage,
+    BoardReading, Builds, DraftStore, HistoryStore, Limits, Mockups, NoteStore, PinJournal, Plant,
+    Prompts, StepStore, Traces, Trials, Usage,
 };
 use crate::pulse::Pulse;
 use crate::removal::Removal;
@@ -175,6 +176,8 @@ pub struct AppState {
     pub steps: Arc<dyn StepStore>,
     /// The mock-up's history, for Cmd+Z.
     pub history: Arc<dyn HistoryStore>,
+    /// Each pin's journal.
+    pub journal: Arc<dyn PinJournal>,
     /// The requests being reworked with the AI: the mock-up as each found it.
     pub reworks: rework::Reworks,
     /// The pins' AI sessions — `None` when the view runs no terminal.
@@ -362,6 +365,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/notes/{board}/{id}/session", post(open_session))
         .route("/api/notes/{board}/{id}/session/term", get(session_term))
         .route("/api/notes/{board}/{id}/session/close", post(close_session))
+        .route(
+            "/api/notes/{board}/{id}/journal",
+            get(journal::read).post(journal::write),
+        )
         .route("/api/notes/{board}/{id}/into/{kind}", post(turn_note))
         .route("/api/prompts/edit", post(edit_prompt))
         .route("/api/prompts/restore", post(restore_prompt))

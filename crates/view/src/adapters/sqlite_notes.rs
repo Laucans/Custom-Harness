@@ -16,8 +16,9 @@ use crate::domain::annotations::Kind;
 use crate::domain::annotations::{self, Note};
 use crate::domain::drafts::Draft;
 use crate::domain::mock_history::Entry;
+use crate::domain::pin_journal::Event;
 use crate::domain::steps::Step;
-use crate::ports::{DraftStore, HistoryStore, KeptNote, NoteStore, StepStore};
+use crate::ports::{DraftStore, HistoryStore, KeptNote, NoteStore, PinJournal, StepStore};
 
 /// How long a writer waits for another one.
 const BUSY: Duration = Duration::from_secs(5);
@@ -37,6 +38,12 @@ CREATE TABLE IF NOT EXISTS drafts (
     version      INTEGER NOT NULL,
     body         TEXT NOT NULL,
     PRIMARY KEY (board, version)
+);
+CREATE TABLE IF NOT EXISTS pin_journal (
+    pin          TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    body         TEXT NOT NULL,
+    PRIMARY KEY (pin, seq)
 );
 CREATE TABLE IF NOT EXISTS history (
     branch       TEXT NOT NULL,
@@ -142,6 +149,34 @@ impl DraftStore for SqliteNotes {
             conn.execute(
                 "DELETE FROM drafts WHERE board = ?1 AND version = ?2",
                 params![board, version],
+            )
+        })
+        .map(|_| ())
+    }
+}
+
+impl PinJournal for SqliteNotes {
+    fn events(&self, pin: &str) -> Result<Vec<Event>, String> {
+        let rows: Vec<String> = self.with(|conn| {
+            let mut statement =
+                conn.prepare("SELECT body FROM pin_journal WHERE pin = ?1 ORDER BY seq")?;
+            let mapped = statement.query_map(params![pin], |row| row.get(0))?;
+            mapped.collect()
+        })?;
+        Ok(rows
+            .iter()
+            .filter_map(|body| serde_json::from_str(body).ok())
+            .collect())
+    }
+
+    fn put(&self, pin: &str, event: &Event) -> Result<(), String> {
+        let body = serde_json::to_string(event).map_err(|e| e.to_string())?;
+        let seq = i64::try_from(event.seq).map_err(|e| e.to_string())?;
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO pin_journal (pin, seq, body) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (pin, seq) DO UPDATE SET body = excluded.body",
+                params![pin, seq, body],
             )
         })
         .map(|_| ())
@@ -344,6 +379,30 @@ mod tests {
             shape: None,
             turns: 0,
         }
+    }
+
+    #[test]
+    fn a_pin_s_journal_round_trips_in_its_order() {
+        let dir = std::env::temp_dir().join(format!("harness-journal-db-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let store =
+            SqliteNotes::open(&dir.join("harness.db"), &dir.join("none.json")).expect("open");
+        let event = |seq: u64, kind: &str| Event {
+            seq,
+            kind: kind.to_string(),
+            ..Event::default()
+        };
+        PinJournal::put(&store, "p1", &event(2, "words")).expect("kept");
+        PinJournal::put(&store, "p1", &event(1, "placed")).expect("kept");
+        PinJournal::put(&store, "p2", &event(1, "placed")).expect("kept");
+        PinJournal::put(&store, "p1", &event(2, "words again")).expect("a new state");
+        let kept = store.events("p1").expect("read");
+        assert_eq!(
+            kept.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+            ["placed", "words again"]
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -14,6 +14,7 @@ use crate::domain::creation::{BRIEF_PARTS, Creation, Edit, RuleChange, RulesStat
 use crate::domain::data_draft::DataEdit;
 use crate::domain::mock_history::Facet;
 
+use super::journal;
 use super::mock_history;
 use super::{AppState, json};
 
@@ -281,8 +282,33 @@ pub(super) async fn propose_rules(
         Err(r) => return *r,
     };
     let before = desk.rules().await;
+    let pin = change.pin.clone();
     match desk.propose_rules(change).await {
         Ok(record) => {
+            if !pin.is_empty() {
+                let mine: Vec<String> = record
+                    .proposals
+                    .iter()
+                    .filter(|p| p.pin == pin)
+                    .map(|p| {
+                        if p.id == 0 {
+                            format!("new: {}", p.title)
+                        } else {
+                            format!("R{}: {}", p.id, p.title)
+                        }
+                    })
+                    .collect();
+                let said = if mine.is_empty() {
+                    "no rule touched".to_string()
+                } else {
+                    format!(
+                        "{} rule change(s) proposed — {}",
+                        mine.len(),
+                        mine.join("; ")
+                    )
+                };
+                journal::note(&state, &pin, "rules", &said, Vec::new());
+            }
             remember_rules(&state, &headers, "rules proposed", before, &record);
             view(desk, Some(record)).await
         }
@@ -306,8 +332,27 @@ pub(super) async fn settle_proposal(
         _ => return refused(format!("`{how}` is neither accept nor refuse")),
     };
     let before = desk.rules().await;
+    let settling = before
+        .as_ref()
+        .and_then(|r| r.proposals.iter().find(|p| p.key == key).cloned());
     match desk.settle_proposal(key, accept).await {
         Ok(record) => {
+            if let Some(p) = settling.filter(|p| !p.pin.is_empty()) {
+                let rule = if p.id == 0 {
+                    format!("new rule {}", p.title)
+                } else {
+                    format!("R{} {}", p.id, p.title)
+                };
+                let said = format!(
+                    "{rule}: {}",
+                    if accept {
+                        "change validated"
+                    } else {
+                        "change refused"
+                    }
+                );
+                journal::note(&state, &p.pin, "rules", &said, Vec::new());
+            }
             let what = if accept {
                 "a rule's change validated"
             } else {

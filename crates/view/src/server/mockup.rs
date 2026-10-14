@@ -21,6 +21,7 @@ use harness_architecture::kit;
 
 use super::capabilities::catalogue_of;
 use super::drafts::draft_board;
+use super::journal;
 use super::mock_history;
 use super::notes::NO_SESSIONS;
 use super::{AppState, json, not_found};
@@ -540,6 +541,14 @@ pub(super) async fn mf_save(
         }],
         _ => Vec::new(),
     };
+    let validated = if forking {
+        format!("validated: {name} forked as {saved} for this page")
+    } else {
+        format!("validated: {name} changed on every page that shows it")
+    };
+    for pin in &ask.pins {
+        journal::note(&state, pin, "validated", &validated, paths.clone());
+    }
     remember_files(
         &state,
         &mock_history::Gesture::of(&headers, "a proposed change validated"),
@@ -694,6 +703,18 @@ pub(super) async fn undo_step(
         }
         let now = mock_history::pin_now(&state, &board, &pin);
         more.push(mock_history::pin_facet(&board, &pin, was, now));
+    }
+    for pin in &pins {
+        let with = if *pin == ask.pin {
+            if pins.len() > 1 {
+                format!("taken back, with {} request(s) built on it", pins.len() - 1)
+            } else {
+                "taken back".to_string()
+            }
+        } else {
+            format!("taken back with the request {} it built on", ask.pin)
+        };
+        journal::note(&state, pin, "taken back", &with, paths.clone());
     }
     let said = match &state.creation {
         Some(creation) => creation
