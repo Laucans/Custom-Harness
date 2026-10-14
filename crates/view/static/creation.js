@@ -906,17 +906,21 @@
     const words = String(C.rulesQuery || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
     return list.filter((q) => {
       if (here && !q.pages.includes(here) && !q.components.some((c) => onHere.has(c))) return false;
-      if (C.rulesMf && !q.components.includes(C.rulesMf)) return false;
+      // The open pin's micro-frontends stand for the lock while it is open.
+      const pinned = C.pinMfs || [];
+      if (pinned.length ? !q.components.some((c) => pinned.includes(c)) : C.rulesMf && !q.components.includes(C.rulesMf)) return false;
       const text = [`r${q.id}`, q.title, ...q.pages, ...q.pages.map(titleOf), ...q.components].join(' ').toLowerCase();
       return words.every((w) => text.includes(w));
     });
   }
   function rulesFilter(shown, total) {
-    const filtering = (C.rulesHere && C.canvasPage) || C.rulesMf || String(C.rulesQuery || '').trim();
+    const pinned = C.pinMfs || [];
+    const filtering = (C.rulesHere && C.canvasPage) || C.rulesMf || pinned.length || String(C.rulesQuery || '').trim();
     return `<div class="cr-rules-filter">
         <input type="search" class="cr-rules-search" data-cr-rules-q value="${esc(C.rulesQuery || '')}" placeholder="Filter by micro-frontend, page or rule" aria-label="Filter the rules">
         <label class="cr-simple" title="Only the rules tied to the page the mock-up shows, or to one of its micro-frontends"><input type="checkbox" data-cr-rules-here${C.rulesHere ? ' checked' : ''}${C.canvasPage ? '' : ' disabled'}> this page only</label>
-        ${C.rulesMf ? `<span class="cr-tie on" title="Locked on the mock-up: click it there again to let go"><span class="cr-tie-name">${esc(C.rulesMf)}</span><button type="button" class="mini" data-cr-rules-unlock title="Let go of this micro-frontend" aria-label="let go of ${esc(C.rulesMf)}">✕</button></span>` : ''}
+        ${pinned.length ? `<span class="cr-tie pin" title="The micro-frontends the open pin touches: close the pin to let go"><span class="cr-tie-name">pin: ${pinned.map(esc).join(', ')}</span></span>` : ''}
+        ${!pinned.length && C.rulesMf ? `<span class="cr-tie on" title="Locked on the mock-up: click it there again to let go"><span class="cr-tie-name">${esc(C.rulesMf)}</span><button type="button" class="mini" data-cr-rules-unlock title="Let go of this micro-frontend" aria-label="let go of ${esc(C.rulesMf)}">✕</button></span>` : ''}
         ${filtering ? `<span class="muted">${shown} of ${total}</span>` : ''}</div>`;
   }
   function rulesPanel(r) {
@@ -1248,6 +1252,11 @@
     C.canvasPage = e.detail.page || '';
     if (C.route === 'rules') draw();
   });
+  // A pin open on the mock-up: the rules of the micro-frontends it touches.
+  page.addEventListener('harness:pin-mfs', (e) => {
+    C.pinMfs = (e.detail && e.detail.names) || [];
+    if (C.route === 'rules') draw();
+  });
   page.addEventListener('harness:mf-lock', (e) => {
     C.rulesMf = e.detail.name || '';
     if (C.route === 'rules') draw();
@@ -1279,6 +1288,7 @@
     // What the easel told is gone with it.
     C.canvasPage = '';
     C.rulesMf = '';
+    C.pinMfs = [];
   }
   // A part of the page takes the whole screen; Esc gives it back.
   function toggleFull(el) {

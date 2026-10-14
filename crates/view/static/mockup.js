@@ -262,6 +262,8 @@
     // ---- the board: one per branch and page, one for the micro-frontends ------------
     function mountBoard() {
       if (st.board) { try { st.board.destroy(); } catch (e) { /* gone */ } }
+      // A pin open on the board that goes is closed with it.
+      if ((st.pinned || []).length) setPinned([]);
       st.board = null; st.frame = null; st.doc = null; st.shield = null; st.fitted = false; st.proxies = new WeakMap(); st.cards = []; design.select([]);
       const onSession = opts && opts.onSession
         ? (note, ctx) => opts.onSession({ board: boardOf(), id: note.id, on: note.kind === 'link' ? 'page ' + (note.page || '?') : note.kind === 'design' ? 'micro-frontend ' + (note.component || '?') : describe(note.target), kind: note.kind, context: ctx, branch: st.branch, page: st.view === 'page' ? st.page : '' })
@@ -295,6 +297,9 @@
         dataCapabilities,
         apply: st.view === 'page' ? (note) => proposeOnPage(note) : (note) => applyMf(note.target ? note.target.slice(10).split('>')[0] : '', [note]),
         undo: st.view === 'page' ? (note) => undoOnPage(note) : undefined,
+        // A pin open on the page: the micro-frontends it touches lit, told to the desk.
+        onOpen: (note) => setPinned(st.view === 'page' ? mfsUnder(note) : []),
+        onClose: () => setPinned([]),
         onChange: () => { if (st.view === 'components' && st.mfDetail) drawMfBar(); },
         backlogContext: (note) => {
           const page = currentPage();
@@ -397,6 +402,7 @@
       st.hot = '';
       if (st.locked) setHot(st.locked);
       marksFocus();
+      if ((st.pinned || []).length) setPinned(st.pinned);
       tellPage();
       drawDrafts();
       // In interact mode the pointer is in the frame itself: the part under it lights its entry.
@@ -416,6 +422,7 @@
         + '.mf-on[data-component]{outline:2px solid var(--mf,#4ea3f0) !important;outline-offset:4px;position:relative}'
         + '.mf-on[data-component]::before{content:attr(data-component);position:absolute;left:-2px;top:-22px;background:var(--mf,#4ea3f0);color:#101418;font:600 11px/1 ui-monospace,monospace;padding:4px 7px;border-radius:4px 4px 0 0;letter-spacing:.03em;z-index:2147483000}'
         + '.mf-focus[data-component]{outline:2px dashed #4ea3f0 !important;outline-offset:3px}'
+        + '.mf-pin[data-component]{outline:3px dashed #f08a2c !important;outline-offset:2px;box-shadow:0 0 0 4px rgba(240,138,44,.15) !important}'
         + '.mf-hot[data-component]{outline:3px solid #e2b240 !important;outline-offset:4px;box-shadow:0 0 0 4px rgba(226,178,64,.18),0 0 24px rgba(226,178,64,.35) !important}'
         + '[data-layout="static"]{outline:1px dashed rgba(43,192,200,.5)}'
         + '.mk-added{outline:1px dotted #2bc0c8}';
@@ -788,6 +795,33 @@
       const el = partUnder(n);
       const host = el && el.closest('[data-component]');
       return host && componentOf(host.dataset.component) ? host.dataset.component : '';
+    }
+    // Every micro-frontend a pin touches: the one it is on, every one its
+    // zone overlaps, else the innermost one under its point.
+    function mfsUnder(n) {
+      if (!st.doc) return [];
+      const named = new Set();
+      if (n.target && n.target.startsWith('component:')) named.add(n.target.slice(10).split('>')[0]);
+      const b = pinBox(n);
+      if (b.x1 > b.x0 || b.y1 > b.y0) {
+        st.doc.querySelectorAll('[data-component]').forEach((el) => {
+          const r = el.getBoundingClientRect();
+          if (r.width && r.height && r.right > b.x0 && r.left < b.x1 && r.bottom > b.y0 && r.top < b.y1) named.add(el.dataset.component);
+        });
+      } else {
+        const one = mfOfPin(n);
+        if (one) named.add(one);
+      }
+      return [...named].filter((x) => componentOf(x));
+    }
+    // The micro-frontends of the open pin: outlined in the frame, their
+    // chips lit, the page holding the pane told (`harness:pin-mfs`).
+    function setPinned(names) {
+      const was = JSON.stringify(st.pinned || []);
+      st.pinned = names;
+      if (st.doc) st.doc.querySelectorAll('[data-component]').forEach((el) => el.classList.toggle('mf-pin', names.includes(el.dataset.component)));
+      q('.mk-strip').querySelectorAll('[data-chip]').forEach((el) => el.classList.toggle('pin', names.includes(el.dataset.chip)));
+      if (was !== JSON.stringify(names)) host.dispatchEvent(new CustomEvent('harness:pin-mfs', { bubbles: true, detail: { names } }));
     }
     // The part under the pin, by its path of children from the micro-frontend's root.
     function partIn(n, name) {
@@ -1610,7 +1644,7 @@
       const chip = (c) => {
         const used = c.pages.length ? 'used on: ' + c.pages.join(', ') : 'on no page';
         const title = [c.description || c.name, here.has(c.name) ? '' : used, c.mocked ? '' : 'not mocked yet: its session makes the fragment first'].filter(Boolean).join('\n');
-        return `<div class="mk-chip${c.name === st.hot ? ' hot' : ''}" data-chip="${esc(c.name)}" style="--mf:${c.colour}" title="${esc(title)}"><i></i><b>${esc(c.name)}</b><small>${esc(c.system || '')}${c.pages.length ? ' · ' + c.pages.length + ' page' + (c.pages.length > 1 ? 's' : '') : ''}</small></div>`;
+        return `<div class="mk-chip${c.name === st.hot ? ' hot' : ''}${(st.pinned || []).includes(c.name) ? ' pin' : ''}" data-chip="${esc(c.name)}" style="--mf:${c.colour}" title="${esc(title)}"><i></i><b>${esc(c.name)}</b><small>${esc(c.system || '')}${c.pages.length ? ' · ' + c.pages.length + ' page' + (c.pages.length > 1 ? 's' : '') : ''}</small></div>`;
       };
       const section = (title, items, empty) => `<div class="mk-strip-sec">${title} <small>${items.length}</small></div>`
         + (items.length ? items.map(chip).join('') : `<div class="hb-empty">${empty}</div>`);

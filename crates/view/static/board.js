@@ -525,6 +525,7 @@
       flush();
       if (openId !== n.id) editorAt = null;
       openId = n.id;
+      if (opts.onOpen) opts.onOpen(n);
       editor.hidden = false;
       editor.querySelector('.hb-note-on').textContent = 'on ' + describe(n.target);
       textarea.value = n.text || '';
@@ -538,6 +539,7 @@
       hideBadge();
       const n = notes.find((x) => x.id === openId);
       openId = null;
+      if (opts.onClose) opts.onClose();
       editor.hidden = true;
       // An empty note that never was saved is a pin dropped by mistake.
       if (n && n.fresh && !n.text.trim() && (n.kind || 'note') === 'note' && !n.shape) {
