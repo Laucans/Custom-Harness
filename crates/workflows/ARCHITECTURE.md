@@ -254,12 +254,12 @@ its precheck, its lock and its trigger.
 
 | | `dev_loop` | `refinement` | `planner` | `split` |
 | --- | --- | --- | --- | --- |
-| what it does | picks a task (or the one `--task` names, as a lane of a parallel watch), runs it through its stages, observes delivery — a merged PR on the read side, an open reviewed PR marked `review-pending` on the write side | rewrites an issue body into its five refined sections, never `Scope` or `Architecture` — a milestone gets the three business ones only, before `split` cuts it | opens the milestones of a roadmap item, each placed in the architecture (`systems`, `concepts`, side) | opens the tasks of a milestone, each one unit of the architecture, each layer chained on the one before and parallel inside |
+| what it does | picks a task (or the one `--task` names, as a lane of a parallel watch), builds it in one session from the SPEC `split` wrote, observes delivery — a merged PR on the read side, an open reviewed PR marked `review-pending` on the write side | rewrites an issue body into its five refined sections, never `Scope`, `Architecture` or `Rules` — only when a human asks, `split` writing the SPEC otherwise | opens the milestones of a roadmap item from the design dossier, each placed in the architecture (`systems`, `concepts`, side) and `harness:ready` | opens the tasks of a milestone, each one unit of the architecture and a whole SPEC read off the design dossier, each agent task `harness:ready`, each layer chained on the one before and parallel inside |
 | trigger | the `harness` binary, or the router | the `harness:refinement` label | `harness:ready` on a roadmap item with no milestone yet | `harness:ready` on a milestone |
 | state | `Loop` (`Resumable` + `Scoped`) | `RefinementState` (`Explored`) | `PlannerState` (`Explored`) | `SplitState` |
 | `remaining` | the `--rounds` budget | 1 | 1 | 1 |
 | the round | `TaskRound`, hand-written | core's `Round<S>` | core's `Round<S>` | core's `Round<S>` |
-| stages | `technical_refinement`, `code`, `create_test` | `router`, the phase sections (business: 3, technical: 2), `coherence`, `human-advice` (business) or `graph-advice` (technical), `publish` | the map, `context`, `plan`, `publish` | `context`, `slice`, `publish` |
+| stages | `code` — one session plans, builds and tests the task | `router`, the phase sections (business: 3, technical: 2), `coherence`, `human-advice` (business) or `graph-advice` (technical), `publish` | the map, `context`, `plan`, `publish` | `context`, `slice`, `publish` |
 | `orchestration/` | + `round.rs` | + `round.rs`, `prompts.rs` | + `round.rs` | + `round.rs` |
 | `checks/` | + `preflight.rs` | — | + `gates.rs` | + `gates.rs` |
 | lock | — | per issue | per roadmap item | per milestone |

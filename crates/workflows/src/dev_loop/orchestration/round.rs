@@ -192,7 +192,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_round_whose_every_stage_is_filtered_out_still_demands_the_proof() {
-        // Real case: `--stages technical-refinement` delivers nothing, so nothing
+        // Real case: `--stages pick` delivers nothing, so nothing
         // marks the task. Without the postcondition, the next round would
         // repick it and repay the same SPEC write.
         let gh = Rc::new(FakeGitHub {

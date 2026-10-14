@@ -7,7 +7,7 @@
 //!
 //! | Python | its judging half | its acting half |
 //! | --- | --- | --- |
-//! | `spec_is_in_the_issue` | `gates::IssueBodyIsNotEmpty` | [`RecordTechWritten`] |
+//! | `spec_is_in_the_issue` | gone: `split` writes the SPEC | gone |
 //! | `task_is_delivered` | `gates::AMergedPrClosesTheTask` | [`MarkWaitingMerge`] |
 //!
 //! The split costs one issue re-read per pair: the action re-reads to write,
@@ -127,7 +127,6 @@ impl Action<Loop> for PickTask {
         ctx.state.task_key = task.key();
         ctx.state.kind = tasks::kind(task).to_string();
         ctx.state.spec_written = tasks::spec_written(task);
-        ctx.state.tech_written = tasks::tech_written(task);
         ctx.state.resumed = resumed.is_some();
         ctx.state.write_side = tasks::is_write_side(task);
         // Set on every pick, cleared otherwise: the next round's task may
@@ -152,40 +151,6 @@ impl Action<Loop> for PickTask {
                 spec.model, spec.effort
             ));
         }
-        Ok(Verdict::Continue)
-    }
-}
-
-/// Records that the technical sections are in the issue's body.
-///
-/// The "write" half of the old `spec_is_in_the_issue`: it re-reads the body —
-/// which **is** the SPEC, and that the next stage will receive in its scope —,
-/// copies it into the state, and places the label.
-///
-/// It doesn't judge. An empty body is not an error here, it's simply that
-/// there's nothing to record: it doesn't label and stays silent, and it's the
-/// following gate — `gates::IssueBodyIsNotEmpty` — that stops the round by
-/// saying so. Placing the label first would skip the write on the next run when
-/// nothing was written.
-pub struct RecordTechWritten {
-    /// What re-reads the issue and labels it.
-    pub gh: Rc<dyn GitHub>,
-}
-
-#[async_trait(?Send)]
-impl Action<Loop> for RecordTechWritten {
-    async fn run(&self, ctx: &mut Context<Loop>) -> Outcome<Verdict> {
-        if ctx.settings.dry_run {
-            return Ok(Verdict::Continue);
-        }
-        let number = number_of(ctx)?;
-        let issue = self.gh.issue(number).await?;
-        if issue.body.trim().is_empty() {
-            return Ok(Verdict::Continue);
-        }
-        ctx.state.task.body = issue.body;
-        self.gh.add_label(number, labels::TECH_WRITTEN).await?;
-        ctx.state.tech_written = true;
         Ok(Verdict::Continue)
     }
 }
@@ -647,7 +612,7 @@ mod tests {
         assert!(!context.state.has_task());
     }
 
-    // --- RecordTechWritten -------------------------------------------------
+    // --- a task's state ------------------------------------------------------
 
     fn with_task(number: &str) -> Loop {
         Loop {
@@ -659,59 +624,6 @@ mod tests {
             task_key: number.to_string(),
             ..Loop::default()
         }
-    }
-
-    #[tokio::test]
-    async fn recording_the_technical_sections_copies_the_reread_body_into_the_scope() {
-        let mut written = issue(11, &[labels::AGENT]);
-        written.body = "the SPEC, with its technical sections".to_string();
-        let gh = Rc::new(FakeGitHub {
-            issues: vec![written],
-            ..FakeGitHub::default()
-        });
-        let mut context = ctx(with_task("11"));
-        RecordTechWritten { gh: gh.clone() }
-            .run(&mut context)
-            .await
-            .expect("recorded");
-        assert!(context.state.task.body.contains("the SPEC"));
-        assert!(context.state.tech_written);
-        assert_eq!(
-            gh.writes(),
-            vec![Wrote::Label(11, labels::TECH_WRITTEN.to_string())]
-        );
-    }
-
-    #[tokio::test]
-    async fn an_empty_body_is_not_labelled_as_written() {
-        // Placing the label would skip the write on the next run when
-        // nothing was written. It's the gate that stops, not this one.
-        let gh = Rc::new(FakeGitHub {
-            issues: vec![issue(11, &[labels::AGENT])],
-            ..FakeGitHub::default()
-        });
-        let mut context = ctx(with_task("11"));
-        RecordTechWritten { gh: gh.clone() }
-            .run(&mut context)
-            .await
-            .expect("nothing to record");
-        assert!(!context.state.tech_written);
-        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
-    }
-
-    #[tokio::test]
-    async fn a_dry_run_writes_nothing_to_github() {
-        let gh = Rc::new(FakeGitHub {
-            issues: vec![issue(11, &[labels::AGENT])],
-            ..FakeGitHub::default()
-        });
-        let mut context = ctx(with_task("11"));
-        context.settings.dry_run = true;
-        RecordTechWritten { gh: gh.clone() }
-            .run(&mut context)
-            .await
-            .expect("nothing");
-        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     // --- MarkWaitingMerge --------------------------------------------------

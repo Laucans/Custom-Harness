@@ -789,10 +789,9 @@ mod tests {
     }
 
     const MID_RUN: &str = "\
-[2026-10-06T20:26:10Z] pipeline: technical-refinement(opus/high) -> code(sonnet/high) -> create-test(sonnet/high)
+[2026-10-06T20:26:10Z] pipeline: code(sonnet/high)
 [2026-10-06T20:26:16Z] --- round 1/3 ---
 [2026-10-06T20:26:21Z] task #62: Asset folder rule [auto]
-[2026-10-06T20:28:32Z] [technical-refinement] AGENT_LOOP_OK: sections written
 [2026-10-06T20:28:34Z] [code] session opens
 ";
 
@@ -814,21 +813,13 @@ mod tests {
         })
     }
 
-    const ARCH: &str = "technical-refinement-must-achieve+code-requires";
+    const ARCH: &str = "code-requires";
 
     #[test]
     fn an_arch_shows_what_its_gates_last_said_and_a_halted_gate_is_red() {
         use crate::domain::gates::fake::{checked, halted};
         let run = "agent-loop/20261006-202608";
         let events = [
-            checked(
-                "2026-10-06T20:28:33Z",
-                run,
-                "technical-refinement must achieve",
-                "IssueBodyIsNotEmpty",
-                "pass",
-                "",
-            ),
             checked(
                 "2026-10-06T20:28:34Z",
                 run,
@@ -858,10 +849,10 @@ mod tests {
         let station = |id: &str| dev.stations.iter().find(|s| s.id == id).expect(id);
         let arch = station(ARCH);
         assert_eq!(arch.state, StationState::Failed);
-        assert_eq!(arch.gates[0].state, StationState::Done);
-        assert_eq!(arch.gates[1].state, StationState::Failed);
-        assert_eq!(arch.gates[1].reason.as_deref(), Some("no SPEC"));
-        assert_eq!(arch.gates[1].checks.len(), 2);
+        assert_eq!(arch.gates.len(), 1);
+        assert_eq!(arch.gates[0].state, StationState::Failed);
+        assert_eq!(arch.gates[0].reason.as_deref(), Some("no SPEC"));
+        assert_eq!(arch.gates[0].checks.len(), 2);
         // The gate carries the stop: the stage behind it never opened.
         assert_ne!(station("code").state, StationState::Failed);
         assert_eq!(station("dev_loop-preflight").state, StationState::Idle);
@@ -886,9 +877,8 @@ mod tests {
             .find(|l| l.id == "agent-loop")
             .expect("line");
         let state = |id: &str| dev.stations.iter().find(|s| s.id == id).expect(id).state;
-        assert_eq!(state("technical-refinement"), StationState::Done);
+        assert_eq!(state("pick"), StationState::Done);
         assert_eq!(state("code"), StationState::Failed);
-        assert_eq!(state("create-test"), StationState::Idle);
     }
 
     #[test]
@@ -921,10 +911,11 @@ mod tests {
             .expect("line");
         let state = |id: &str| dev.stations.iter().find(|s| s.id == id).expect(id).state;
         assert_eq!(state("pick"), StationState::Done);
-        assert_eq!(state("technical-refinement"), StationState::Done);
         assert_eq!(state("code"), StationState::Active);
-        assert_eq!(state("create-test"), StationState::Idle);
-        assert_eq!(state(ARCH), StationState::Idle);
+        assert_eq!(
+            state("code-must-keep-the-architecture+the-round-must-deliver"),
+            StationState::Idle
+        );
         assert!(!snap.factory.idle);
         assert!(snap.factory.watching);
     }
@@ -1040,8 +1031,8 @@ mod tests {
     fn a_skipped_stage_reads_as_skipped_and_the_product_moves_past_it() {
         let text = "[2026-10-06T20:26:16Z] --- round 1/3 ---\n\
                     [2026-10-06T20:26:21Z] task #64: fvtt pack adapter [auto]\n\
-                    [2026-10-06T20:26:22Z] issue #64 already carries harness:tech-written — skipping the technical refinement\n";
-        let known = vec!["technical-refinement".to_string()];
+                    [2026-10-06T20:26:22Z] issue #64 is already delivered — skipping code\n";
+        let known = vec!["code".to_string()];
         let run = ObservedRun {
             log: parse_run_log(text, &known),
             ..dev_run(text, 10)
@@ -1053,8 +1044,8 @@ mod tests {
             .find(|l| l.id == "agent-loop")
             .expect("line");
         let state = |id: &str| dev.stations.iter().find(|s| s.id == id).expect(id).state;
-        assert_eq!(state("technical-refinement"), StationState::Skipped);
-        assert_eq!(state("code"), StationState::Active);
+        assert_eq!(state("pick"), StationState::Done);
+        assert_eq!(state("code"), StationState::Skipped);
     }
 
     fn issue(number: u64, title: &str, state: &str, labels: &[&str]) -> Issue {

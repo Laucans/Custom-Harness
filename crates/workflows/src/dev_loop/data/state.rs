@@ -38,10 +38,8 @@ pub struct Loop {
     /// round, `/code` never ran, and looking for a merged PR would cost one
     /// call per round for a known answer.
     pub resumed: bool,
-    /// The business SPEC is already in the issue body.
+    /// The SPEC is in the issue body: `split`'s sections, or a refinement's.
     pub spec_written: bool,
-    /// The technical sections are already in the issue body.
-    pub tech_written: bool,
     /// The stages already done for this task, across all runs.
     pub stages_done: Vec<String>,
 }

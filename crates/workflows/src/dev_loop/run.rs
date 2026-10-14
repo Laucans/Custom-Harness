@@ -154,18 +154,18 @@ pub fn installed(root: &Path, disk: &dyn Disk) -> Vec<(String, String)> {
     dependencies::needed(&present)
 }
 
-/// The skills this run names: the stages, and the commands that open them.
+/// The skills this run names: the stages, and the skills their one session
+/// runs.
 ///
-/// A lead command is not the name of any table entry — `/tech-analyst` opens
-/// the `code` stage — so nothing else would notice it missing.
+/// `/tech-analyst` opens the `code` stage and `/create-test` closes it: not
+/// the name of any table entry, so nothing else would notice them missing.
 fn named_skills(ports: &Ports, config: &Config) -> Vec<String> {
     let mut named: Vec<String> = stages::table(ports, config, 1)
         .iter()
         .map(|stage| stage.name.clone())
-        // Runs `/tech-analyst`: it is not a skill of its own.
-        .filter(|name| name != "technical-refinement")
         .collect();
     named.push("tech-analyst".to_string());
+    named.push("create-test".to_string());
     named
 }
 
@@ -315,7 +315,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(built(1).stages.len(), 3);
+        assert_eq!(built(1).stages.len(), 1);
     }
 
     #[test]
@@ -323,8 +323,8 @@ mod tests {
         // Without this, "nothing marks delivery" reads as a bug when in fact
         // it's `--stages` that removed the only stage that delivers.
         assert!(code_runs(""), "empty means all");
-        assert!(code_runs("technical-refinement code"));
-        assert!(!code_runs("technical-refinement"));
+        assert!(code_runs("pick code"));
+        assert!(!code_runs("pick"));
     }
 
     #[test]

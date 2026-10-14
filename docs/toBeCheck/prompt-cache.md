@@ -49,9 +49,7 @@ The design and the measurements are in `docs/SESSION-CARRIER.md`, section
 
 ## Open follow-up
 
-Dev loop: run `technical-refinement` on sonnet and fork `code` from its
-session, behind a `BRANCH_CODE` switch. Not started. It needs a rewritten
-`code` instruction, and the base cleared after `code` so `create-test` does
-not fork.
+Dev loop: moot. The dev loop is one `code` session per task now (it plans,
+builds and tests), so there is no earlier session to fork it from.
 
 When every point above is checked, delete this file.

@@ -26,11 +26,9 @@
 //!
 //! # Models
 //!
-//! Distributed by where a wrong answer costs twice. The technical refinement writes
-//! the technical half of the SPEC — the issue body — that all following stages read; `code` plans
-//! then writes the change itself: an error comes back as rework. `/create-test`
-//! writes hermetic Vitest against an already-existing spec, which is not a
-//! reasoning problem. Tune to the cost registry, not intuition.
+//! One stage, `code`: it plans, builds and tests the task in one session, on
+//! sonnet — `split` decided the SPEC — and on opus for the data layer, where
+//! a wrong answer costs twice. Tune to the cost registry, not intuition.
 //!
 //! There is no archival stage anymore. A task once closed by moving two files;
 //! it now closes because `/code`'s PR merged with `Closes #N`.
@@ -44,7 +42,7 @@ use harness_core::execution::{
 };
 
 use crate::common::labels;
-use crate::dev_loop::action::actions::{Ask, RecordTechWritten};
+use crate::dev_loop::action::actions::Ask;
 use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
 use crate::dev_loop::checks::gates;
 use crate::dev_loop::config::Config;
@@ -53,34 +51,14 @@ use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::ports::Ports;
 use crate::prompts;
 
-/// What `technical-refinement` leaves out: the three sections it writes.
+/// What `code` leaves out of the SPEC: nothing.
 ///
-/// 26 167 characters of #65's body, re-read on every turn of the stage whose
-/// whole output they are. A previous run's draft also invites the session to
-/// edit what is there rather than write the section the gate asks for.
-const REFINEMENT_WRITES: &[&str] = &["Technical", "Technical Implementation Plan", "Assumptions"];
+/// One session plans, builds and tests the task: the goal is what it plans
+/// from, the acceptance criteria and the business rules what it verifies and
+/// tests against, the technical sketch where it starts.
+const CODE_SKIPS: &[&str] = &[];
 
-/// What `code` leaves out: the business goal.
-///
-/// 1 557 characters, and the only section `code` cannot act on — it executes a
-/// plan that was derived from it, by the stage above. The acceptance criteria
-/// and the business rules stay: those it verifies against, bullet by bullet.
-///
-/// The smallest of the three cuts, and the most arguable: the goal is also the
-/// cheapest insurance against a session drifting out of scope. One line to
-/// restore if a run ever reads as though it lost the point.
-const CODE_SKIPS: &[&str] = &["Business Goal"];
-
-/// What `/create-test` leaves out: everything but the spec it asserts against.
-///
-/// It writes hermetic tests from the acceptance criteria, the business rules and
-/// the plan's verification bullets. The technical design, the goal and another
-/// session's assumptions are not things a test asserts — and neither is the
-/// hierarchy, which is why this is the one stage on
-/// [`Cut::TaskOnly`](crate::dev_loop::data::brief::Cut::TaskOnly).
-const TEST_SKIPS: &[&str] = &["Business Goal", "Technical", "Assumptions"];
-
-/// How `code` and `/create-test` run the Rust tests of a repository under the
+/// How `code` runs the Rust tests of a repository under the
 /// architecture: through the script `init-repo` installs, which the CI runs
 /// too. A task that stays inside Capability crates then waits for their
 /// tests alone instead of the whole workspace's.
@@ -91,20 +69,6 @@ PR targets>` whenever the repository has that script, never a bare
 (`crates/<system>/capabilities/<name>/`) then runs their tests alone, and
 anything else the whole workspace — the CI runs the same script on the PR.
 Arguments after `--` go to `cargo test`, to run one test while you work.";
-
-pub(crate) const TECHNICAL_REFINEMENT: &str =
-    "Take issue #{num} (\"{title}\") — its body is below, under SCOPE, and already
-carries its business sections. Read the real code, then write the two missing
-sections, `## Technical` and `## Technical Implementation Plan`, into the body
-of issue #{num} itself — that body is what the /code stage reads, and nothing
-else is. Keep every other section verbatim. No human is reachable: record
-every answer you had to assume under an `## Assumptions (autonomous run)`
-heading. Anything a human must do first becomes its own `{human}` issue, a
-sub-issue of milestone #{milestone}, declared as a dependency of #{num}. If an
-assumption would make the task useless or harmful when wrong — a paid service,
-a schema decision the later tasks depend on, a credential only the human
-holds — that is ambiguity, not a default: AGENT_LOOP_STOP instead of
-guessing.";
 
 pub(crate) const CODE: &str =
     "The task is issue #{num} (\"{title}\"); its body, below under SCOPE, is the
@@ -158,6 +122,23 @@ A rule's test you cannot meet is contested: write CONTEST.md at the root
 (the rule, the test, why it cannot hold) and say so in your reply. The
 server is crates/server, the frontend's host apps/shell, as the layout of
 CLAUDE.md says: the runtime starts them from there.
+No human is reachable while you work: every answer you had to assume goes
+in the PR body under `## Assumptions (autonomous run)`. Anything a human
+must do first becomes its own `{human}` issue, a sub-issue of
+milestone #{milestone}, declared as a dependency of #{num}. If an assumption would make
+the task useless or harmful when wrong — a paid service, a schema decision
+later tasks depend on, a credential only the human holds — that is
+ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
+then decides it and writes the answer under `## Decision`. Honour
+`## Decision` and `## Owner Decisions` when the body has them: they
+override the sections above.
+Then, in this same session and without /clear, write the tests as
+.claude/skills/create-test/SKILL.md says — triage what you changed, write
+only the hermetic tests the change warrants, prove each red then green — and
+ship them **in the same PR**, never a second one. The PR body carries your
+plan (checklist, risks) under `## Plan` — the issue body is the SPEC, you
+never rewrite it — and, when the SPEC has a `## Rules` section, the line
+`Rules: R3, R5` naming them, which a gate checks.
 /code's steps 1-3 are what you just did as the tech analyst; adopt your own
 findings instead of re-deriving them. Nothing outside this session can read
 your plan, so a gate finding or a risk you do not act on now is lost — put it
@@ -208,6 +189,23 @@ A rule's test you cannot meet is contested: write CONTEST.md at the root
 (the rule, the test, why it cannot hold) and say so in your reply. The
 server is crates/server, the frontend's host apps/shell, as the layout of
 CLAUDE.md says: the runtime starts them from there.
+No human is reachable while you work: every answer you had to assume goes
+in the PR body under `## Assumptions (autonomous run)`. Anything a human
+must do first becomes its own `{human}` issue, a sub-issue of
+milestone #{milestone}, declared as a dependency of #{num}. If an assumption would make
+the task useless or harmful when wrong — a paid service, a schema decision
+later tasks depend on, a credential only the human holds — that is
+ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
+then decides it and writes the answer under `## Decision`. Honour
+`## Decision` and `## Owner Decisions` when the body has them: they
+override the sections above.
+Then, in this same session and without /clear, write the tests as
+.claude/skills/create-test/SKILL.md says — triage what you changed, write
+only the hermetic tests the change warrants, prove each red then green — and
+ship them **in the same PR**, never a second one. The PR body carries your
+plan (checklist, risks) under `## Plan` — the issue body is the SPEC, you
+never rewrite it — and, when the SPEC has a `## Rules` section, the line
+`Rules: R3, R5` naming them, which a gate checks.
 /code's steps 1-3 are what you just did as the tech analyst; adopt your own
 findings instead of re-deriving them. Nothing outside this session can read
 your plan, so a gate finding or a risk you do not act on now is lost — put it
@@ -290,53 +288,14 @@ impl Paid<'_> {
     }
 }
 
-/// `technical-refinement`: writes the technical sections into the issue body.
+/// `code`: plans in `/tech-analyst`, builds and delivers as `/code`, tests
+/// as `/create-test` — the whole task, one session.
 ///
-/// Only runs when the technical refinement was not done on the issue
-/// (`harness:tech-written`); the business half must already exist.
-#[must_use]
-pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
-    let instructions = config
-        .prompts
-        .text(prompts::TECHNICAL_REFINEMENT, TECHNICAL_REFINEMENT);
-    let body = Paid {
-        stage: "technical-refinement",
-        model: "opus",
-        lead: "/tech-analyst",
-        instructions: &instructions,
-        write_side_instructions: None,
-        cut: Cut::Situated(REFINEMENT_WRITES),
-        // Recording is local work, and it goes *in* the stage — not in a
-        // gate, which would have no right to write.
-        then: vec![Box::new(Unpaid(RecordTechWritten {
-            gh: Rc::clone(&ports.gh),
-        }))],
-    }
-    .body(ports, config, turn);
-    let mut pre = always("technical-refinement");
-    pre.push(Box::new(gates::TechAlreadyWritten));
-    pre.push(Box::new(gates::TaskHasASpec));
-    Stage {
-        name: "technical-refinement".to_string(),
-        pre: Some(Gate {
-            name: "technical-refinement requires",
-            checks: pre,
-        }),
-        post: Some(Gate {
-            name: "technical-refinement must achieve",
-            checks: vec![Box::new(gates::IssueBodyIsNotEmpty {
-                gh: Rc::clone(&ports.gh),
-            })],
-        }),
-        body,
-    }
-}
-
-/// `code`: plans in `/tech-analyst`, then builds and delivers.
-///
-/// One stage for two skills, one session: `/code` adopts the plan the session
-/// just wrote. Nothing outside the session can re-read it, so splitting into
-/// two stages would lose it.
+/// Three skills, one session: each adopts what the one before it just
+/// decided. Nothing outside the session can re-read a plan, so splitting it
+/// into stages lost it and paid for the SPEC to be read again each time —
+/// there were three stages once (a technical refinement, `code`,
+/// `create-test`).
 #[must_use]
 pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
     let test_scope = config.prompts.text(prompts::TEST_SCOPE, TEST_SCOPE);
@@ -354,6 +313,7 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
         restart: config.restart,
     }));
     pre.push(Box::new(gates::CodeHasASpec));
+    pre.push(Box::new(gates::TaskHasASpec));
     Stage {
         name: "code".to_string(),
         pre: Some(Gate {
@@ -378,11 +338,12 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
         }),
         body: Paid {
             stage: "code",
-            // Sonnet, not opus: the tasks reaching this stage are sliced by
-            // `split` and specified by the refinement, so `code` executes a
-            // decided plan rather than making the decision. Measured on
-            // milestone 15, `code` was 62% of the spend while the stages that
-            // actually decide — `plan`, `slice` — were cents.
+            // Sonnet, not opus: the tasks reaching this stage are sliced and
+            // specified by `split`, so `code` executes a decided SPEC rather
+            // than making the decision. Measured on milestone 15, `code` was
+            // 62% of the spend while the stages that actually decide —
+            // `plan`, `slice` — were cents. A data-layer task opens on opus
+            // (`Config::data_layer_spec`, applied where the round is built).
             model: "sonnet",
             lead: "/tech-analyst",
             instructions: &instructions,
@@ -394,45 +355,13 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
     }
 }
 
-/// `/create-test`: hermetic tests against an already-written spec.
-///
-/// No gate: it works against an existing spec, and nothing it produces
-/// conditions what follows — it's the final stage. Its one instruction is how
-/// to run the tests ([`TEST_SCOPE`]).
-#[must_use]
-pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
-    let instructions = config.prompts.text(prompts::TEST_SCOPE, TEST_SCOPE);
-    Stage {
-        name: "create-test".to_string(),
-        pre: Some(Gate {
-            name: "create-test requires",
-            checks: always("create-test"),
-        }),
-        post: None,
-        body: Paid {
-            stage: "create-test",
-            model: "sonnet",
-            lead: "/create-test",
-            instructions: &instructions,
-            write_side_instructions: None,
-            cut: Cut::TaskOnly(TEST_SKIPS),
-            then: Vec::new(),
-        }
-        .body(ports, config, turn),
-    }
-}
-
 /// The sequence of a round, in execution order.
 #[must_use]
 pub fn table(ports: &Ports, config: &Config, turn: u32) -> Vec<Stage<Loop>> {
-    vec![
-        technical_refinement(ports, config, turn),
-        code(ports, config, turn),
-        create_test(ports, config, turn),
-    ]
+    vec![code(ports, config, turn)]
 }
 
-/// `technical-refinement(opus/high) -> code(opus/high) -> …`
+/// `code(sonnet/high)` — or `code(opus/high)` on the data layer.
 ///
 /// Derived from **built** stages, not a second list: the announced line and
 /// what runs cannot diverge, and `MODEL`/`EFFORT` forcing shows up here
@@ -476,19 +405,23 @@ mod tests {
     }
 
     #[test]
-    fn the_order_of_the_table_is_the_order_of_the_round() {
-        let names: Vec<String> = table(&ports_fake::ports(), &config_fake::config(), 1)
-            .iter()
-            .map(|stage| stage.name.clone())
-            .collect();
-        assert_eq!(names, ["technical-refinement", "code", "create-test"]);
+    fn the_round_is_one_session_that_plans_builds_and_tests() {
+        let built = table(&ports_fake::ports(), &config_fake::config(), 1);
+        let names: Vec<&str> = built.iter().map(|stage| stage.name.as_str()).collect();
+        assert_eq!(names, ["code"]);
+        let pre = built[0].pre.as_ref().expect("gated");
+        let purposes: Vec<String> = pre.checks.iter().map(|c| c.purpose()).collect();
+        assert!(
+            purposes.iter().any(|p| p.contains("Acceptance Criteria")),
+            "the SPEC split wrote is required: {purposes:?}"
+        );
     }
 
     #[test]
     fn no_instruction_text_names_a_label_the_code_does_not_use() {
         // Failure mode avoided: the prompt asks for `pipeline:human`, the label
         // no longer exists, and the session creates a new one.
-        for text in [TECHNICAL_REFINEMENT, CODE] {
+        for text in [CODE, CODE_WRITE_SIDE] {
             let said = with_labels(text);
             assert!(
                 !said.contains("pipeline:"),
@@ -503,17 +436,9 @@ mod tests {
 
     #[test]
     fn every_label_dev_loops_own_prose_mentions_appears_as_written() {
-        let said = format!(
-            "{} {}",
-            with_labels(TECHNICAL_REFINEMENT),
-            with_labels(CODE)
-        );
-        // Only the labels dev_loop's own two prompts talk about: opening a
-        // human blocker, and the merge-wait state. `ROADMAP`/`MILESTONE`/
-        // `READY`/`AGENT` are the planner/split workflows' concern now, not
-        // something a technical-refinement or `/code` session needs explained
-        // to it. `SPEC_WRITTEN` is set by the harness, never mentioned to the
-        // session either.
+        // Only the labels the prompts talk about: opening a human blocker,
+        // and the merge-wait state.
+        let said = with_labels(CODE);
         for label in [labels::HUMAN, labels::WAITING_MERGE] {
             assert!(said.contains(label), "{label} missing from prose");
         }
@@ -521,10 +446,31 @@ mod tests {
 
     #[test]
     fn the_task_placeholders_survive_the_label_pass_for_the_scope_to_fill() {
-        let said = with_labels(TECHNICAL_REFINEMENT);
-        assert!(said.contains("#{num}"), "the number remains to fill");
-        assert!(said.contains("{title}"));
-        assert!(said.contains("milestone #{milestone}"));
+        for text in [CODE, CODE_WRITE_SIDE] {
+            let said = with_labels(text);
+            assert!(said.contains("#{num}"), "the number remains to fill");
+            assert!(said.contains("{title}"));
+            assert!(said.contains("milestone #{milestone}"));
+        }
+    }
+
+    #[test]
+    fn the_one_session_plans_builds_tests_and_never_waits_on_a_human() {
+        for text in [CODE, CODE_WRITE_SIDE] {
+            for said in [
+                "/tech-analyst",
+                ".claude/skills/create-test/SKILL.md",
+                "in the same PR",
+                "## Assumptions (autonomous run)",
+                "AGENT_LOOP_STOP",
+                "## Decision",
+                "## Owner Decisions",
+                "## Plan",
+                "Rules: R3, R5",
+            ] {
+                assert!(text.contains(said), "{said}");
+            }
+        }
     }
 
     #[test]
@@ -535,12 +481,6 @@ mod tests {
         assert!(text.contains("harness:review-pending"));
         assert!(text.contains("harness:write-side"));
         assert!(!text.contains("{to_review}") && !text.contains("{review_pending}"));
-        for placeholder in ["{num}", "{title}"] {
-            assert!(
-                text.contains(placeholder),
-                "{placeholder} is filled per task"
-            );
-        }
         let read = with_labels(CODE);
         assert!(
             read.contains("gh pr merge --squash"),
@@ -560,61 +500,13 @@ mod tests {
     }
 
     #[test]
-    fn technical_refinement_records_the_sections_before_declaring_itself_done() {
-        // Order matters: declaring done before recording would leave a written
-        // but unrecorded SPEC, so it would be rewritten on the next run.
-        let stage = technical_refinement(&ports_fake::ports(), &config_fake::config(), 1);
-        let StageBody::Session { actions, .. } = &stage.body else {
-            panic!("a paid stage");
-        };
-        assert_eq!(actions.len(), 3, "Ask, record, mark");
-    }
-
-    #[test]
     fn no_stage_drops_a_section_that_is_not_part_of_an_issue_body() {
-        // The failure mode: a drop-list naming `Technical Design`, nothing
-        // matching it, and a stage still paying for the section on every turn
-        // with nothing to show that the filter did nothing.
-        //
-        // `Assumptions` is the one entry no canonical table carries: a session
-        // writes it, under the heading `TECHNICAL_REFINEMENT` asks for.
-        for list in [REFINEMENT_WRITES, CODE_SKIPS, TEST_SKIPS] {
-            for heading in list {
-                let known = crate::common::sections::SECTIONS
-                    .iter()
-                    .any(|s| s.heading == *heading);
-                assert!(
-                    known || TECHNICAL_REFINEMENT.contains(heading),
-                    "no issue body ever carries `## {heading}`"
-                );
-            }
+        for heading in CODE_SKIPS {
+            let known = crate::common::sections::SECTIONS
+                .iter()
+                .any(|s| s.heading == *heading);
+            assert!(known, "no issue body ever carries `## {heading}`");
         }
-    }
-
-    #[test]
-    fn the_refinement_does_not_receive_the_sections_its_own_prose_asks_it_to_write() {
-        // Two halves of one decision: the prompt names the sections to write,
-        // the cut names the sections left out. A section asked for but injected
-        // invites the session to edit a previous run's draft instead.
-        for heading in ["Technical", "Technical Implementation Plan", "Assumptions"] {
-            assert!(
-                TECHNICAL_REFINEMENT.contains(heading),
-                "the prose must ask for `{heading}`"
-            );
-            assert!(
-                REFINEMENT_WRITES.contains(&heading),
-                "and the cut must leave it out"
-            );
-        }
-    }
-
-    #[test]
-    fn create_test_keeps_the_plan_it_asserts_against() {
-        // `Technical` and `Technical Implementation Plan` are two sections, and
-        // `/create-test` needs exactly one of them. A prefix-matching drop-list
-        // would take both — see `sections::without`.
-        assert!(TEST_SKIPS.contains(&"Technical"));
-        assert!(!TEST_SKIPS.contains(&"Technical Implementation Plan"));
     }
 
     #[test]
@@ -623,11 +515,7 @@ mod tests {
             &table(&ports_fake::ports(), &config_fake::config(), 1),
             &settings(""),
         );
-        assert_eq!(
-            said,
-            "technical-refinement(opus/high) -> code(sonnet/high) -> \
-             create-test(sonnet/high)"
-        );
+        assert_eq!(said, "code(sonnet/high)");
     }
 
     #[test]
@@ -635,24 +523,17 @@ mod tests {
         let mut config = config_fake::config();
         config.model = "haiku".to_string();
         let said = summary(&table(&ports_fake::ports(), &config, 1), &settings(""));
-        assert!(!said.contains("opus"), "forcing applies to the entire run");
         assert!(
             !said.contains("sonnet"),
-            "including each stage's own default"
+            "forcing applies to the stage's own default"
         );
     }
 
     #[test]
     fn what_stages_leaves_out_is_named_rather_than_silently_dropped() {
         let built = table(&ports_fake::ports(), &config_fake::config(), 1);
-        let cfg = settings("code");
-        assert_eq!(summary(&built, &cfg), "code(sonnet/high)");
-        assert_eq!(
-            filtered_out(&built, &cfg),
-            [
-                "technical-refinement".to_string(),
-                "create-test".to_string()
-            ]
-        );
+        let cfg = settings("pick");
+        assert_eq!(summary(&built, &cfg), "");
+        assert_eq!(filtered_out(&built, &cfg), ["code".to_string()]);
     }
 }

@@ -26,13 +26,11 @@ use crate::rules::orchestration::stages as rules;
 use crate::split::orchestration::stages as split;
 use crate::test_debt::orchestration::stages as test_debt;
 
-/// `technical-refinement`'s instructions.
-pub const TECHNICAL_REFINEMENT: &str = "agent-loop/technical-refinement";
 /// `code`'s instructions, for a task on the read side.
 pub const CODE: &str = "agent-loop/code";
 /// `code`'s instructions, for a task on the write side.
 pub const CODE_WRITE_SIDE: &str = "agent-loop/code-write-side";
-/// How the Rust tests are run — appended to `code`, the whole of `create-test`.
+/// How the Rust tests are run — appended to `code`.
 pub const TEST_SCOPE: &str = "agent-loop/test-scope";
 /// The repository map, shared by refinement and planner.
 pub const EXPLORE: &str = "explore";
@@ -92,12 +90,6 @@ pub struct Prompt {
 /// Every editable prompt, line by line.
 const CATALOG: &[Prompt] = &[
     Prompt {
-        key: TECHNICAL_REFINEMENT,
-        title: "Technical refinement",
-        stations: &[("agent-loop", "technical-refinement")],
-        default: dev_loop::TECHNICAL_REFINEMENT,
-    },
-    Prompt {
         key: CODE,
         title: "Code — read side",
         stations: &[("agent-loop", "code")],
@@ -105,14 +97,14 @@ const CATALOG: &[Prompt] = &[
     },
     Prompt {
         key: CODE_WRITE_SIDE,
-        title: "Code — write side (a human merges)",
+        title: "Code — write side (merged once reviewed and green)",
         stations: &[("agent-loop", "code")],
         default: dev_loop::CODE_WRITE_SIDE,
     },
     Prompt {
         key: TEST_SCOPE,
-        title: "How the tests are run (code and create-test)",
-        stations: &[("agent-loop", "code"), ("agent-loop", "create-test")],
+        title: "How the tests are run",
+        stations: &[("agent-loop", "code")],
         default: dev_loop::TEST_SCOPE,
     },
     Prompt {

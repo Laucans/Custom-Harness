@@ -10,7 +10,7 @@
 //!
 //! | Python | what it did | becomes here |
 //! | --- | --- | --- |
-//! | `spec_is_in_the_issue` | re-read, place `spec-written`, mutate state | [`IssueBodyIsNotEmpty`] + `RecordSpecWritten` |
+//! | `spec_is_in_the_issue` | re-read, place `spec-written`, mutate state | gone: `split` writes the SPEC |
 //! | `task_is_delivered` | re-read, place `waiting-merge` | [`AMergedPrClosesTheTask`] + `MarkWaitingMerge` |
 //!
 //! The actions live in `actions.rs`: that's the point of the split.
@@ -25,30 +25,6 @@ use harness_core::ports::shell::github::GitHub;
 use crate::common::labels;
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::data::tasks;
-
-/// The label says the technical sections are already written — by a
-/// technical refinement or by a previous run: we resume after, we don't
-/// re-charge a second write on top of the first.
-pub struct TechAlreadyWritten;
-
-#[async_trait(?Send)]
-impl Verification<Loop> for TechAlreadyWritten {
-    fn purpose(&self) -> String {
-        "the issue does not already carry harness:tech-written — the technical sections are not paid for twice".to_string()
-    }
-
-    async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
-        if !ctx.state.tech_written {
-            return Ok(Verdict::Continue);
-        }
-        Ok(Verdict::Skip(format!(
-            "issue #{} already carries {} — skipping the technical \
-             refinement",
-            ctx.state.task.number,
-            labels::TECH_WRITTEN
-        )))
-    }
-}
 
 /// The session builds on the SPEC: without its goal and its acceptance
 /// criteria it would plan a guess.
@@ -153,47 +129,11 @@ impl Verification<Loop> for CodeAlreadyDelivered {
     }
 }
 
-/// The issue body is not empty — the "judge" half of the old `spec_is_in_the_issue`.
-///
-/// Re-read from GitHub, not assumed: the issue body **is** the SPEC, and
-/// it's what the next stage receives in scope.
-pub struct IssueBodyIsNotEmpty {
-    /// What re-reads the issue.
-    pub gh: Rc<dyn GitHub>,
-}
-
-#[async_trait(?Send)]
-impl Verification<Loop> for IssueBodyIsNotEmpty {
-    fn purpose(&self) -> String {
-        "the issue body, re-read from GitHub after the stage, is not empty".to_string()
-    }
-
-    async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
-        if ctx.settings.dry_run {
-            return Ok(Verdict::Continue);
-        }
-        let number: u64 = ctx.state.task.number.parse().map_err(|_| {
-            Halt::Failed(format!(
-                "unreadable task number: {:?}",
-                ctx.state.task.number
-            ))
-        })?;
-        let issue = self.gh.issue(number).await?;
-        if issue.body.trim().is_empty() {
-            return Err(Halt::Halted(format!(
-                "the technical refinement left issue #{number} with an empty \
-                 body — the SPEC goes there, and /code reads nothing else"
-            )));
-        }
-        Ok(Verdict::Continue)
-    }
-}
-
 /// Does a merged PR carry `Closes #N` — the "judge" half of the old `task_is_delivered`.
 ///
 /// What we require is not a stage's assertion, but a **merged** PR declaring it.
-/// Without this check, `--stages technical-refinement` would infinitely re-charge the
-/// same SPEC write.
+/// Without this check, a run that left `/code` out (`--stages`) would be read
+/// as a task delivered.
 pub struct AMergedPrClosesTheTask {
     /// What reads the issue and PRs.
     pub gh: Rc<dyn GitHub>,
@@ -293,26 +233,6 @@ mod tests {
             body: body.to_string(),
             ..Issue::default()
         }
-    }
-
-    #[tokio::test]
-    async fn technical_sections_already_written_skip_rather_than_paying_twice() {
-        let mut state = with_task("34", "the SPEC");
-        state.tech_written = true;
-        let verdict = TechAlreadyWritten
-            .verify(&ctx(state))
-            .await
-            .expect("a verdict");
-        assert!(matches!(verdict, Verdict::Skip(_)));
-    }
-
-    #[tokio::test]
-    async fn without_the_label_the_technical_refinement_runs() {
-        let verdict = TechAlreadyWritten
-            .verify(&ctx(with_task("34", "")))
-            .await
-            .expect("a verdict");
-        assert_eq!(verdict, Verdict::Continue);
     }
 
     #[tokio::test]
@@ -421,40 +341,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_spec_is_reread_from_github_not_assumed() {
-        // The issue carries an empty body on GitHub even if local state says
-        // otherwise: GitHub is right, it's what /code will read.
-        let gh = Rc::new(FakeGitHub {
-            issues: vec![issue(34, &[], "")],
-            ..FakeGitHub::default()
-        });
-        let gate = IssueBodyIsNotEmpty { gh };
-        let err = gate
-            .verify(&ctx(with_task("34", "misleading local body")))
-            .await
-            .expect_err("must stop");
-        assert!(matches!(err, Halt::Halted(_)));
-    }
-
-    #[tokio::test]
-    async fn a_non_empty_body_satisfies_the_verification_without_writing() {
-        let gh = Rc::new(FakeGitHub {
-            issues: vec![issue(34, &[], "the SPEC")],
-            ..FakeGitHub::default()
-        });
-        let gate = IssueBodyIsNotEmpty { gh: gh.clone() };
-        assert_eq!(
-            gate.verify(&ctx(with_task("34", "")))
-                .await
-                .expect("verdict"),
-            Verdict::Continue
-        );
-        // The "judge" half applies no label: the action will, and the borrow
-        // checker enforces it.
-        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
-    }
-
-    #[tokio::test]
     async fn a_merged_pr_that_closes_the_task_is_the_proof() {
         let gh = Rc::new(FakeGitHub {
             issues: vec![issue(34, &[], "")],
@@ -514,7 +400,7 @@ mod tests {
             gh,
             integration_branch: "main_agent".to_string(),
             code_runs: false,
-            stages: "technical-refinement".to_string(),
+            stages: "pick".to_string(),
         };
         let err = gate
             .verify(&ctx(with_task("34", "")))

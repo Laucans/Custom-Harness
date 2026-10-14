@@ -63,12 +63,6 @@ pub fn spec_written(issue: &Issue) -> bool {
         .all(|key| found.get(*key).is_some_and(|text| !text.trim().is_empty()))
 }
 
-/// True if the technical sections are already written in the body.
-#[must_use]
-pub fn tech_written(issue: &Issue) -> bool {
-    issue.has(labels::TECH_WRITTEN)
-}
-
 /// True if the task is delivered and waiting for a merge.
 #[must_use]
 pub fn waiting_merge(issue: &Issue) -> bool {

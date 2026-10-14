@@ -408,51 +408,23 @@ fn agent_loop_line() -> Line {
                  its branch.",
             )],
             paid(
-                "technical-refinement",
-                "technical refinement",
-                Kind::Builder,
-                "opus",
-                "Reads the code the task touches and writes its Technical section and its \
-                 implementation plan into the issue.",
-                Some(gate(
-                    "technical-refinement requires",
-                    "The stage is in this run and not already done, the issue has no technical \
-                     sections yet, and it carries its business sections.",
-                )),
-                Some(gate(
-                    "technical-refinement must achieve",
-                    "The issue body, re-read from GitHub, is not empty.",
-                )),
-            ),
-            paid(
                 "code",
                 "code",
                 Kind::Builder,
                 "sonnet",
-                "Builds the plan on the task's branch, runs the checks, and opens the pull \
-                 request.",
+                "One session plans the task against the code, builds it on its branch, adds \
+                 the tests it warrants, runs the checks and opens the pull request — opus on \
+                 the data layer.",
                 Some(gate(
                     "code requires",
                     "The stage is in this run, not already done or delivered, and the issue \
-                     has a SPEC to build.",
+                     carries the SPEC split wrote: its goal and its acceptance criteria.",
                 )),
                 Some(gate(
                     "code must keep the architecture",
                     "Static analysis of the checkout: the agent-native architecture still \
                      holds, and every Concept a Capability implements is documented.",
                 )),
-            ),
-            paid(
-                "create-test",
-                "create test",
-                Kind::Builder,
-                "sonnet",
-                "Adds the tests the change actually warrants, each proven red then green.",
-                Some(gate(
-                    "create-test requires",
-                    "The stage is in this run and not already done.",
-                )),
-                None,
             ),
             vec![scanner(gate(
                 "the round must deliver",
@@ -994,14 +966,13 @@ mod tests {
         let arch = dev
             .stations
             .iter()
-            .find(|s| s.id == "technical-refinement-must-achieve+code-requires")
+            .find(|s| s.id == "code-must-keep-the-architecture+the-round-must-deliver")
             .expect("the merged arch");
         assert_eq!(arch.kind, Kind::Scanner);
-        assert_eq!(arch.label, "technical refinement → code");
         let names: Vec<&str> = arch.gates.iter().map(|g| g.name.as_str()).collect();
         assert_eq!(
             names,
-            ["technical-refinement must achieve", "code requires"]
+            ["code must keep the architecture", "the round must deliver"]
         );
         assert!(arch.purpose.contains("2 gates"));
         // A lone gate keeps its own name on the sign.
@@ -1037,24 +1008,25 @@ mod tests {
     }
 
     #[test]
-    fn the_dev_loop_logs_the_three_stages_the_blueprint_names() {
+    fn the_dev_loop_logs_the_stages_the_blueprint_names() {
         let dev = lines()
             .into_iter()
             .find(|l| l.id == "agent-loop")
             .expect("agent-loop");
         let staged: Vec<String> = dev.stations.into_iter().filter_map(|s| s.stage).collect();
-        assert_eq!(
-            staged,
-            [PICK, "technical-refinement", "code", "create-test", DELIVER]
-        );
+        assert_eq!(staged, [PICK, "code", DELIVER]);
     }
 
     #[test]
     fn two_models_get_a_chimney_by_default() {
-        assert_eq!(models(), ["opus", "sonnet"]);
+        assert_eq!(
+            models(),
+            ["sonnet", "opus"],
+            "in the order the plant first meets them"
+        );
         assert_eq!(model_of_stage(&lines(), "code").as_deref(), Some("sonnet"));
         assert_eq!(
-            model_of_stage(&lines(), "technical-refinement").as_deref(),
+            model_of_stage(&lines(), "fidelity").as_deref(),
             Some("opus")
         );
         assert_eq!(model_of_stage(&lines(), "publish"), None);
