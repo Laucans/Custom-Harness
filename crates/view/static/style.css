@@ -1579,6 +1579,8 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-rules-split > .cr-body { max-height: calc(100vh - 160px); overflow: auto; padding-right: 4px; }
 .cr-rules-split > .cr-embed { position: sticky; top: 8px; min-width: 0; }
 @media (max-width: 900px) { .cr-rules-split { grid-template-columns: 1fr; } .cr-rules-split > .cr-embed { position: static; } }
+/* Full screen wins over the column's sticky place: fixed over the whole window. */
+.cr-rules-split > .cr-embed.cr-full { position: fixed; inset: 0; z-index: 90; height: auto; border-radius: 0; }
 .cr-rules-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 10px; }
 .cr-rules-head .spacer { flex: 1; }
 .cr-rules { display: flex; flex-direction: column; gap: 14px; }
