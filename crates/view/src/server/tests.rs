@@ -59,6 +59,7 @@ fn state(shelf: Shelf, desk: Option<Desk>) -> AppState {
         data: None,
         pins: Arc::new(Pins::default()),
         drafts: Arc::new(Versions::default()),
+        steps: Arc::new(Steps::default()),
         note_desks: None,
         mockups: None,
         kit: None,
@@ -363,6 +364,36 @@ impl crate::ports::Mockups for FakeMockups {
 }
 
 /// Draft versions in memory.
+/// The request pins' steps, in memory.
+#[derive(Default)]
+struct Steps(std::sync::Mutex<Vec<(String, crate::domain::steps::Step)>>);
+
+// A test fake: each method holds its lock for the whole of its few lines.
+#[allow(clippy::significant_drop_tightening)]
+impl crate::ports::StepStore for Steps {
+    fn steps(&self, branch: &str) -> Result<Vec<crate::domain::steps::Step>, String> {
+        let kept = self.0.lock().map_err(|e| e.to_string())?;
+        let mut steps: Vec<_> = kept
+            .iter()
+            .filter(|(b, _)| b == branch)
+            .map(|(_, s)| s.clone())
+            .collect();
+        steps.sort_by_key(crate::domain::steps::Step::last);
+        Ok(steps)
+    }
+    fn put(&self, branch: &str, step: &crate::domain::steps::Step) -> Result<(), String> {
+        let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+        kept.retain(|(b, s)| !(b == branch && s.pin == step.pin));
+        kept.push((branch.to_string(), step.clone()));
+        Ok(())
+    }
+    fn remove(&self, branch: &str, pin: &str) -> Result<(), String> {
+        let mut kept = self.0.lock().map_err(|e| e.to_string())?;
+        kept.retain(|(b, s)| !(b == branch && s.pin == pin));
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct Versions(std::sync::Mutex<Vec<(String, Draft)>>);
 
@@ -2435,6 +2466,138 @@ async fn settled_kit(kit: &crate::kit_desk::KitDesk, why: &str) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("{why}: never queued a single job");
+}
+
+/// A branch's mock-up with three steps on it — `b` built on `a`, `c` on
+/// its own — and the pins `a` and `b` validated on their board.
+fn undo_fixture() -> (std::path::PathBuf, AppState, Arc<Steps>, Arc<Pins>) {
+    use crate::domain::steps::Step;
+    use crate::ports::StepStore;
+    let dir = std::env::temp_dir().join(format!("harness-undo-step-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("main/mock/components")).expect("dir");
+    let file = |path: &str| dir.join("main/mock").join(path);
+    std::fs::write(file("components/X.html"), "b's X").expect("fragment");
+    std::fs::write(file("components/X2.html"), "the fork").expect("fork");
+    std::fs::write(file("components/Y.html"), "c's Y").expect("other");
+    let steps = Arc::new(Steps::default());
+    let step = |pin: &str, files: &[(&str, Option<&str>, u64)]| {
+        let mut s = Step {
+            pin: pin.to_string(),
+            board: "mockup--main--home".to_string(),
+            ..Step::default()
+        };
+        for (path, text, seq) in files {
+            s.keep(path, text.map(ToString::to_string), *seq);
+        }
+        s
+    };
+    StepStore::put(
+        steps.as_ref(),
+        "main",
+        &step(
+            "a",
+            &[
+                ("components/X.html", Some("old X"), 1),
+                ("components/X2.html", None, 1),
+            ],
+        ),
+    )
+    .expect("a");
+    StepStore::put(
+        steps.as_ref(),
+        "main",
+        &step("b", &[("components/X.html", Some("a's X"), 2)]),
+    )
+    .expect("b");
+    StepStore::put(
+        steps.as_ref(),
+        "main",
+        &step("c", &[("components/Y.html", Some("old Y"), 3)]),
+    )
+    .expect("c");
+    let pins = Arc::new(Pins::default());
+    for id in ["a", "b"] {
+        crate::ports::NoteStore::put(
+            pins.as_ref(),
+            "mockup--main--home",
+            &crate::domain::annotations::Note {
+                id: id.to_string(),
+                text: "make it bolder".to_string(),
+                kind: crate::domain::annotations::Kind::Request,
+                state: crate::domain::annotations::RequestState::Validated,
+                ..crate::domain::annotations::Note::default()
+            },
+        )
+        .expect("pin");
+    }
+    let state = AppState {
+        mockups: Some(Arc::new(crate::adapters::mockups::DirMockups::new(&dir))),
+        steps: Arc::clone(&steps) as Arc<dyn StepStore>,
+        pins: Arc::clone(&pins) as Arc<dyn crate::ports::NoteStore>,
+        ..state_without_plant()
+    };
+    (dir, state, steps, pins)
+}
+
+#[tokio::test]
+async fn a_pin_s_undo_puts_back_the_files_of_its_step_and_of_those_built_on_it() {
+    let (dir, state, steps, pins) = undo_fixture();
+    let file = |path: &str| dir.join("main/mock").join(path);
+    let (status, body) = post(
+        state.clone(),
+        "/api/mockup/steps/undo",
+        r#"{"branch":"main","pin":"a"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let got: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(got["pins"], serde_json::json!(["b", "a"]));
+    assert_eq!(
+        std::fs::read_to_string(file("components/X.html")).expect("X"),
+        "old X"
+    );
+    assert!(
+        !file("components/X2.html").exists(),
+        "the fork it made is gone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(file("components/Y.html")).expect("Y"),
+        "c's Y"
+    );
+    let pin_states: Vec<_> = crate::ports::NoteStore::notes(pins.as_ref(), "mockup--main--home")
+        .expect("pins")
+        .into_iter()
+        .map(|k| k.note.state)
+        .collect();
+    assert_eq!(
+        pin_states,
+        [crate::domain::annotations::RequestState::Pending; 2],
+        "the pins taken back are not proposed any more"
+    );
+    assert_eq!(
+        StepStore::steps(steps.as_ref(), "main")
+            .expect("steps")
+            .iter()
+            .map(|s| s.pin.as_str())
+            .collect::<Vec<_>>(),
+        ["c"]
+    );
+    let (status, body) = post(
+        state.clone(),
+        "/api/mockup/steps/undo",
+        r#"{"branch":"main","pin":"nothing kept"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a pin with no step is taken back all the same"
+    );
+    assert!(body.contains("nothing kept"));
+    let (status, _) = post(state, "/api/mockup/steps/undo", r#"{"branch":"main"}"#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no pin");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

@@ -1,17 +1,21 @@
 //! The mock-up on its easel: the pages of a branch, their preview, the
 //! workspace a session edits and what saves or discards it.
 
+use std::sync::Arc;
+
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::creation_desk::Settled;
 use crate::domain::annotations;
 use crate::domain::drafts::{self};
 use crate::domain::mf_gen;
 use crate::domain::mockup;
-use crate::ports::MockState;
+use crate::domain::steps::{self, Step};
+use crate::ports::{MockState, Mockups};
 use harness_architecture::kit;
 
 use super::capabilities::catalogue_of;
@@ -317,6 +321,64 @@ pub(super) struct MfApplyAsk {
     spec: mf_gen::Spec,
     #[serde(default)]
     requests: Vec<drafts::Asked>,
+    /// The request pin they come from: its step keeps the draft as it was,
+    /// for its Undo. Empty: none.
+    #[serde(default)]
+    pin: String,
+    /// The board the pin is on.
+    #[serde(default)]
+    board: String,
+}
+
+/// The files of the mock-up as they are, before a write: each path with
+/// what it holds (`None`, it is not there).
+async fn befores(
+    mockups: Arc<dyn Mockups>,
+    branch: String,
+    paths: Vec<String>,
+) -> Result<Vec<(String, Option<String>)>, String> {
+    tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|path| {
+                let text = mockups
+                    .file(&branch, &path)?
+                    .map(|b: Vec<u8>| String::from_utf8_lossy(&b).into_owned());
+                Ok((path, text))
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("the read was dropped: {e}"))?
+}
+
+/// Keeps, in each pin's step, the files as they were before a write — the
+/// write's place in the branch's order with them.
+fn keep_steps(
+    state: &AppState,
+    branch: &str,
+    pins: &[String],
+    board: &str,
+    files: &[(String, Option<String>)],
+) -> Result<(), String> {
+    let kept = state.steps.steps(branch)?;
+    let seq = steps::next_seq(&kept);
+    for pin in pins.iter().filter(|p| !p.is_empty()) {
+        let mut step = kept
+            .iter()
+            .find(|s| s.pin == *pin)
+            .cloned()
+            .unwrap_or_else(|| Step {
+                pin: pin.clone(),
+                board: board.to_string(),
+                ..Step::default()
+            });
+        for (path, text) in files {
+            step.keep(path, text.clone(), seq);
+        }
+        state.steps.put(branch, &step)?;
+    }
+    Ok(())
 }
 
 /// Applies requests to a micro-frontend's draft, the units it reads and
@@ -339,8 +401,22 @@ pub(super) async fn mf_apply(
         .map(|c| c.entries)
         .unwrap_or_default();
     let units = mf_gen::units_brief(&ask.spec, &entries);
+    let draft = mf_gen::draft_path(&name);
+    let before = match state.mockups.clone() {
+        Some(mockups) if !ask.pin.is_empty() => {
+            befores(mockups, branch.clone(), vec![draft]).await.ok()
+        }
+        _ => None,
+    };
     match desk.apply(&branch, ask.spec, units, ask.requests).await {
-        Ok(skipped) => json(&serde_json::json!({ "skipped": skipped })),
+        Ok(skipped) => {
+            if let Some(files) = before
+                && let Err(why) = keep_steps(&state, &branch, &[ask.pin], &ask.board, &files)
+            {
+                return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+            }
+            json(&serde_json::json!({ "skipped": skipped }))
+        }
         Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
     }
 }
@@ -360,6 +436,10 @@ pub(super) struct MfSaveAsk {
     /// fork in place of the origin. Empty: no page changes.
     #[serde(default)]
     page: String,
+    /// The request pins whose change it validates: their steps keep what
+    /// the save writes, their proposals to the rules are accepted.
+    #[serde(default)]
+    pins: Vec<String>,
 }
 
 pub(super) async fn mf_save(
@@ -375,11 +455,143 @@ pub(super) async fn mf_save(
     }
     let ask: MfSaveAsk = serde_json::from_slice(&body).unwrap_or_default();
     let branch = branch_or_integration(&state, Some(ask.branch));
-    let fork = (ask.how == "fork").then_some(ask.name);
-    match desk.save(&branch, name, fork, Some(ask.page)).await {
-        Ok(saved) => json(&serde_json::json!({ "saved": saved })),
-        Err(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+    let forking = ask.how == "fork";
+    let page = ask.page.clone();
+    let mut paths = vec![
+        mf_gen::fragment_path(&name),
+        mf_gen::draft_path(&name),
+        "pages.json".to_string(),
+    ];
+    if forking && !page.is_empty() {
+        paths.push(page.clone());
     }
+    let before = match state.mockups.clone() {
+        Some(mockups) if !ask.pins.is_empty() => {
+            match befores(mockups, branch.clone(), paths).await {
+                Ok(files) => files,
+                Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+            }
+        }
+        _ => Vec::new(),
+    };
+    let fork = forking.then_some(ask.name);
+    let saved = match desk.save(&branch, name.clone(), fork, Some(ask.page)).await {
+        Ok(saved) => saved,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    let mut said = Vec::new();
+    if !ask.pins.is_empty() {
+        let mut files = before;
+        if forking {
+            files.push((mf_gen::fragment_path(&saved), None));
+        }
+        if let Err(why) = keep_steps(&state, &branch, &ask.pins, "", &files) {
+            said.push(why);
+        }
+        if let Some(creation) = &state.creation {
+            let fork = (forking && !page.is_empty()).then_some((
+                page.as_str(),
+                name.as_str(),
+                saved.as_str(),
+            ));
+            match creation
+                .settle_pins(&ask.pins, Settled::Kept { fork })
+                .await
+            {
+                Ok(more) => said.extend(more),
+                Err(why) => said.push(why),
+            }
+        }
+    }
+    json(&serde_json::json!({ "saved": saved, "said": said }))
+}
+
+/// A request pin turned back to not proposed, on its board.
+fn pending_again(state: &AppState, board: &str, pin: &str) -> Result<(), String> {
+    let kept = state.pins.notes(board)?;
+    if let Some(mut note) = kept
+        .into_iter()
+        .find(|k| k.note.id == pin && k.deleted_at.is_none())
+        .map(|k| k.note)
+    {
+        note.state = annotations::RequestState::Pending;
+        state.pins.put(board, &note)?;
+    }
+    Ok(())
+}
+
+/// A request pin's Undo, as the page asks it.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct UndoAsk {
+    #[serde(default)]
+    branch: String,
+    /// The pin taken back.
+    #[serde(default)]
+    pin: String,
+}
+
+/// A request pin's Undo: the files its step wrote as they were before, the
+/// steps built on it taken back with it, the rules their proposals changed
+/// as they were. Answers the pins taken back, and what was kept.
+pub(super) async fn undo_step(State(state): State<AppState>, body: Bytes) -> Response {
+    let Some(mockups) = state.mockups.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let ask: UndoAsk = serde_json::from_slice(&body).unwrap_or_default();
+    if ask.pin.is_empty() {
+        return (StatusCode::BAD_REQUEST, "no pin to take back").into_response();
+    }
+    let branch = branch_or_integration(&state, Some(ask.branch));
+    let kept = match state.steps.steps(&branch) {
+        Ok(kept) => kept,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+    };
+    let undone = steps::undone_with(&kept, &ask.pin);
+    let files = steps::restored(&undone);
+    let mut pins: Vec<String> = undone.iter().map(|s| s.pin.clone()).collect();
+    if pins.is_empty() {
+        pins.push(ask.pin.clone());
+    }
+    let at = branch.clone();
+    let written = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        for b in files {
+            match b.text {
+                Some(text) => mockups.write(&at, &b.path, text.as_bytes())?,
+                None => mockups.remove(&at, &b.path)?,
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("the undo was dropped: {e}"))
+    .and_then(|done| done);
+    if let Err(why) = written {
+        return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+    }
+    let boards: Vec<(String, String)> = undone
+        .iter()
+        .filter(|s| !s.board.is_empty())
+        .map(|s| (s.board.clone(), s.pin.clone()))
+        .collect();
+    for pin in &pins {
+        if let Err(why) = state.steps.remove(&branch, pin) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+        }
+    }
+    // The pins taken back, wherever they are: not proposed any more.
+    for (board, pin) in boards {
+        if let Err(why) = pending_again(&state, &board, &pin) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, why).into_response();
+        }
+    }
+    let said = match &state.creation {
+        Some(creation) => creation
+            .settle_pins(&pins, Settled::Undone)
+            .await
+            .unwrap_or_else(|why| vec![why]),
+        None => Vec::new(),
+    };
+    json(&serde_json::json!({ "pins": pins, "said": said }))
 }
 
 pub(super) async fn mf_drop_draft(

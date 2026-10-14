@@ -294,6 +294,7 @@
         capabilities,
         dataCapabilities,
         apply: st.view === 'page' ? (note) => proposeOnPage(note) : (note) => applyMf(note.target ? note.target.slice(10).split('>')[0] : '', [note]),
+        undo: st.view === 'page' ? (note) => undoOnPage(note) : undefined,
         onChange: () => { if (st.view === 'components' && st.mfDetail) drawMfBar(); },
         backlogContext: (note) => {
           const page = currentPage();
@@ -804,12 +805,15 @@
     // the page at once), else the page's own draft. Answers what it came to.
     async function proposeOnPage(n) {
       const name = mfOfPin(n);
-      if (!name) return applyRequests([n]);
+      if (!name) {
+        const drafted = await applyRequests([n]);
+        return drafted + await proposeRules(n, '');
+      }
       const c = componentOf(name);
       const page = currentPage();
       const spec = { name: c.name, system: c.system || '', description: c.description || '', needs: c.needs || [], actions: c.actions || [], props: c.props || {} };
       const text = `${n.text.trim()}\n\n(Asked on the page ${page ? page.title : st.page}, where ${name} is shown.)`;
-      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text, target: partIn(n, name) }] }) });
+      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text, target: partIn(n, name) }], pin: n.id, board: boardOf() }) });
       const body = await res.text();
       if (!res.ok) throw new Error(body);
       const left = (JSON.parse(body).skipped || []).find(([id]) => id === n.id);
@@ -818,7 +822,49 @@
       await loadGens();
       render();
       drawDrafts();
-      return `drafted on ${name}, shown on the page — validate it in the bar above the page`;
+      return `drafted on ${name}, shown on the page${await proposeRules(n, name)} — validate it in the bar above the page`;
+    }
+    // The rules a proposal touches, read by the AI and kept as proposals on
+    // the factory's creation (a page without one has no rules to keep in
+    // step). Answers what it came to, as the end of a sentence.
+    async function proposeRules(n, name) {
+      if (st.board.progress) st.board.progress(n.id, 'the AI reads the rules it touches…');
+      try {
+        const res = await fetch('/api/creation/rules/propose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: n.id, name, saved: name, how: '', page: st.page, requests: [n.text] }) });
+        const text = await res.text();
+        if (res.status === 404) return '';
+        if (!res.ok) return ` — the rules were not read: ${text.split('\n')[0]}`;
+        const view = JSON.parse(text);
+        tellRules(view);
+        const count = ((view.record && view.record.proposals) || []).filter((p) => p.pin === n.id).length;
+        return count ? ` — ${count} rule change${count > 1 ? 's' : ''} proposed in Rules` : ' — no rule touched';
+      } catch (e) {
+        return ` — the rules were not read: ${String(e.message || e).split('\n')[0]}`;
+      }
+    }
+    // The page holding the pane is told the rules moved: `detail` is the
+    // creation as the server answered it, or null to read it again.
+    function tellRules(view) {
+      host.dispatchEvent(new CustomEvent('harness:creation-moved', { bubbles: true, detail: view || null }));
+    }
+    // A request's Undo: the mock-up and the rules as they were before it,
+    // the requests built on it taken back too. Answers what it came to.
+    async function undoOnPage(n) {
+      const res = await fetch('/api/mockup/steps/undo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, pin: n.id }) });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text);
+      const got = JSON.parse(text);
+      // A request on the page itself: its operations leave the page's draft.
+      if (st.engine && st.engine.ops.some((o) => o.by === n.id)) { st.engine.swap([n.id], [], { applied: [] }); afterChange(); }
+      const here = new Set(st.board.all().map((x) => x.id));
+      (got.pins || []).forEach((id) => { if (here.has(id)) st.board.patch(id, { state: 'pending' }); });
+      tellRules(null);
+      await loadGens();
+      render();
+      drawDrafts();
+      const others = (got.pins || []).filter((id) => id !== n.id).length;
+      const kept = got.said || [];
+      return `taken back${others ? `, with ${others} request${others > 1 ? 's' : ''} built on it` : ''}${kept.length ? ' — ' + kept.join('; ') : ''}`;
     }
     // What the frame fetches for a micro-frontend with a draft: its draft.
     function draftShim() {
@@ -845,28 +891,40 @@
       }).join('');
       if (bar.dataset.html !== html) { bar.dataset.html = html; bar.innerHTML = html; }
     }
-    // A proposed change settled: kept everywhere, forked for this page, or
-    // thrown away. Kept, the page holding the pane is told (`harness:mf-saved`)
-    // so the rules it touches can be read again.
+    // A proposed change settled: kept everywhere (its requests' rule
+    // proposals accepted), forked for this page (those rules tied to the
+    // fork), or thrown away (its requests taken back).
     async function settleDraft(name, how) {
       const pins = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && n.state === 'simulated' && mfOfPin(n) === name);
       st.settling = name;
       drawDrafts();
-      try {
-        const url = `/api/mockup/mf/${encodeURIComponent(name)}/${how === 'drop' ? 'draft/drop' : 'save'}`;
-        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ branch: st.branch, how, name: '', page: how === 'fork' ? st.page : '' }) });
+      const post = async (url, body) => {
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ branch: st.branch }, body)) });
         const text = await res.text();
         if (!res.ok) throw new Error(text);
+        return text ? JSON.parse(text) : {};
+      };
+      try {
         if (how === 'drop') {
+          // Discard: every request drafted on it taken back (one built on
+          // another goes with it), then a draft no pin made.
+          const done = new Set();
+          for (const n of pins) {
+            if (done.has(n.id)) continue;
+            const got = await post('/api/mockup/steps/undo', { pin: n.id });
+            (got.pins || []).forEach((id) => done.add(id));
+          }
+          await post(`/api/mockup/mf/${encodeURIComponent(name)}/draft/drop`, {});
           pins.forEach((n) => st.board.patch(n.id, { state: 'pending' }));
           toast(`${esc(name)}: the proposed change is thrown away`);
         } else {
-          const saved = (JSON.parse(text || '{}').saved) || name;
-          const page = currentPage();
-          host.dispatchEvent(new CustomEvent('harness:mf-saved', { bubbles: true, detail: { name, saved, how, page: st.page, title: page ? page.title : '', branch: st.branch, requests: pins.map((n) => n.text) } }));
-          pins.forEach((n) => st.board.drop(n.id));
-          toast(how === 'fork' ? `forked as <b>${esc(saved)}</b> for this page; the other pages keep ${esc(name)}` : `${esc(name)} changed on every page that shows it`);
+          const got = await post(`/api/mockup/mf/${encodeURIComponent(name)}/save`, { how, name: '', page: how === 'fork' ? st.page : '', pins: pins.map((n) => n.id) });
+          const saved = got.saved || name;
+          pins.forEach((n) => st.board.patch(n.id, { state: 'validated' }));
+          const said = (got.said || []).length ? ' — ' + got.said.map(esc).join('; ') : '';
+          toast((how === 'fork' ? `forked as <b>${esc(saved)}</b> for this page; the other pages keep ${esc(name)}` : `${esc(name)} changed on every page that shows it`) + said);
         }
+        tellRules(null);
       } catch (e) {
         toast(`${esc(name)}: ${esc(String(e.message || e).split('\n')[0])}`);
       } finally {

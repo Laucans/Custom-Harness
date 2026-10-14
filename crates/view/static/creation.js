@@ -926,43 +926,42 @@
     const gaps = (q) => { const d = danglingOf(q); return [critMissing(q).length ? 'criterion to complete' : '', !(q.pages.length || q.components.length) ? 'carried by nothing' : '', d.pages.length + d.components.length ? 'broken links' : ''].filter(Boolean); };
     const broken = danglingGaps().length;
     const lacking = all.filter((q) => gaps(q).length).length;
+    const proposals = r.proposals || [];
+    const changing = new Map(proposals.filter((p) => p.id).map((p) => [p.id, p]));
+    const fresh = shownRules(proposals.filter((p) => !p.id), mock);
     const group = ([family, label, hint]) => {
       const items = list.filter((q) => (q.family || 'journey') === family);
-      return `<section class="cr-rule-group"><h3 title="${esc(hint)}">${label} <small>${items.length}</small></h3>${items.map((q) => ruleCard(q, gaps(q), mock)).join('') || '<p class="muted">none</p>'}</section>`;
+      const added = fresh.filter((p) => (p.family || 'journey') === family);
+      const cards = items.map((q) => (changing.has(q.id) ? proposedCard(changing.get(q.id)) : ruleCard(q, gaps(q), mock))).join('') + added.map(proposedCard).join('');
+      return `<section class="cr-rule-group"><h3 title="${esc(hint)}">${label} <small>${items.length + added.length}</small></h3>${cards || '<p class="muted">none</p>'}</section>`;
     };
     return `<div class="cr-rules-head">
+        ${proposals.length ? `<span class="tag warn">${proposals.length} change${proposals.length > 1 ? 's' : ''} proposed</span>` : ''}
         ${r.rules_validated ? '<span class="tag ok">validated</span>' : lacking ? `<span class="tag bad">${lacking} rule${lacking > 1 ? 's' : ''} to complete</span>` : all.length ? '<span class="tag">ready to validate</span>' : ''}
         <span class="spacer"></span>
         ${broken ? `<button type="button" class="cr-btn" data-cr-unbreak title="Untie every rule from the pages and micro-frontends the mock-up has not">Remove ${broken} broken link${broken > 1 ? 's' : ''}</button>` : ''}
         <button type="button" class="cr-btn" data-cr-req-add>+ rule</button>
         <button type="button" class="cr-btn" data-cr-reqs title="The AI reads the rules again off the scope and the mock-up as it stands; yours are kept"${C.busy ? ' disabled' : ''}>${all.length ? 'Read all again' : 'Read the rules'}</button></div>
-      ${proposalsPanel(r)}
       ${all.length ? rulesFilter(list.length, all.length) : ''}
-      <div class="cr-rules">${all.length ? FAMILIES.map(group).join('') : (C.busy ? '' : '<p class="muted">No rule yet.</p>')}</div>`;
+      <div class="cr-rules">${all.length || proposals.length ? FAMILIES.map(group).join('') : (C.busy ? '' : '<p class="muted">No rule yet.</p>')}</div>`;
   }
-  // The changes the AI proposed after a change of the mock-up was
-  // validated: each read beside the rule as it is, accepted or refused.
-  function proposalsPanel(r) {
-    const list = r.proposals || [];
-    if (!list.length && !C.proposing) return '';
+  // A rule the AI proposes to change (or to add) for a request on the
+  // mock-up: its new version in place, outlined until validated or refused,
+  // the rule as it is now folded under it.
+  function proposedCard(p) {
+    const was = p.id ? ruleOf(p.id) : null;
     const crit = (c) => `<div class="cr-crit">${PARTS.map(([k, label]) => `<div class="cr-crit-line"><b>${label}</b><span>${esc((c || {})[k] || '') || '<i class="muted">to write</i>'}</span></div>`).join('')}</div>`;
-    const card = (p) => {
-      const was = p.id ? ruleOf(p.id) : null;
-      const ties = [...(p.pages || []), ...(p.components || [])];
-      return `<article class="cr-proposal">
-          <header><span class="cr-qn">${p.id ? 'R' + p.id : 'new'}</span><b>${esc(p.title)}</b><span class="spacer"></span>
-            <button type="button" class="cr-btn on" data-cr-proposal="${p.key}" data-how="accept"${C.busy ? ' disabled' : ''}>Accept</button>
-            <button type="button" class="cr-btn" data-cr-proposal="${p.key}" data-how="refuse"${C.busy ? ' disabled' : ''}>Refuse</button></header>
-          <p class="muted">${esc(p.about)}${p.why ? ' — ' + esc(p.why) : ''}</p>
-          ${p.body ? `<p>${esc(p.body)}</p>` : ''}
-          ${crit(p.criterion)}
-          <div class="cr-chips"><span class="muted">carried by</span>${ties.length ? ties.map((x) => `<code>${esc(x)}</code>`).join(' ') : '<span class="muted">nothing</span>'}</div>
-          ${was ? `<details><summary>R${was.id} as it is now</summary><p><b>${esc(was.title)}</b> — ${esc(was.body)}</p>${crit(was.criterion)}</details>` : ''}
-        </article>`;
-    };
-    return `<section class="cr-proposals"><h3>Changes proposed after the mock-up moved <small>${list.length}</small></h3>
-        ${C.proposing ? '<div class="cr-busy" role="status"><span class="cr-spin" aria-hidden="true"></span>the AI reads the rules the change touches…</div>' : ''}
-        ${list.map(card).join('')}</section>`;
+    const ties = [...(p.pages || []), ...(p.components || [])];
+    return `<article class="cr-rule proposed">
+        <header><span class="cr-qn">${p.id ? 'R' + p.id : 'new'}</span><b class="cr-proposed-title">${esc(p.title)}</b><span class="tag warn" title="${esc(p.about)}">${p.id ? 'changed' : 'new'} by a request</span><span class="spacer"></span>
+          <button type="button" class="cr-btn on" data-cr-proposal="${p.key}" data-how="accept"${C.busy ? ' disabled' : ''}>Validate</button>
+          <button type="button" class="cr-btn" data-cr-proposal="${p.key}" data-how="refuse"${C.busy ? ' disabled' : ''}>Refuse</button></header>
+        ${p.why ? `<p class="muted">${esc(p.why)}</p>` : ''}
+        ${p.body ? `<p>${esc(p.body)}</p>` : ''}
+        ${crit(p.criterion)}
+        <div class="cr-rule-cover">${ties.length ? ties.map((x) => `<code>${esc(x)}</code>`).join(' ') : '<span class="tag bad">carried by nothing</span>'}</div>
+        ${was ? `<details><summary>R${was.id} as it is now</summary><p><b>${esc(was.title)}</b>${was.body ? ' — ' + esc(was.body) : ''}</p>${crit(was.criterion)}</details>` : ''}
+      </article>`;
   }
   // A rule's ties to what the mock-up has not (gone with a discard or a new
   // drawing): shown red, counted as gaps, removed on a click.
@@ -1231,25 +1230,16 @@
   // Elsewhere than the rules step: the changes waiting there, one line.
   function proposalsNotice(r) {
     const waiting = r && C.route !== 'rules' ? (r.proposals || []).length : 0;
-    if (!waiting && !(C.proposing && C.route !== 'rules')) return '';
-    return `<div class="callout cr-proposals-notice">${C.proposing ? '<span class="cr-spin" aria-hidden="true"></span> the AI reads the rules your change touches… ' : ''}${waiting ? `<b>${waiting}</b> change${waiting > 1 ? 's' : ''} to the rules proposed after the mock-up moved. ` : ''}<button type="button" class="cr-btn" data-cr-go="rules">Review in Rules →</button></div>`;
+    if (!waiting) return '';
+    return `<div class="callout cr-proposals-notice"><b>${waiting}</b> change${waiting > 1 ? 's' : ''} to the rules proposed by your requests on the mock-up. <button type="button" class="cr-btn" data-cr-go="rules">Review in Rules →</button></div>`;
   }
-  // A micro-frontend's change validated on the mock-up (mockup.js's
-  // `harness:mf-saved`, wherever the pane is): the AI proposes the rules it
-  // touches, kept on the record for the human to accept or refuse.
-  document.addEventListener('harness:mf-saved', async (e) => {
-    if (!C.data) await read();
-    const r = record();
-    if (!r || !(r.requirements || []).length) return;
-    C.proposing = (C.proposing || 0) + 1;
-    if (page.offsetParent) draw();
-    try {
-      await flushRules();
-      C.data = await call('POST', '/api/creation/rules/propose', e.detail);
-    } catch (err) {
-      C.error = 'the rules were not proposed: ' + (err.message || err);
-    }
-    C.proposing -= 1;
+  // The rules moved under the page (mockup.js's `harness:creation-moved`:
+  // a request proposed, validated or taken back on the mock-up): read again,
+  // what was typed here kept first.
+  document.addEventListener('harness:creation-moved', async () => {
+    await flushRules();
+    await read();
+    C.rules = null;
     if (page.offsetParent && !C.busy) draw();
   });
   // The easel tells the rules step what it shows (mockup.js's events): the

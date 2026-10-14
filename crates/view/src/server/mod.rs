@@ -63,8 +63,8 @@ use crate::kit_desk::KitDesk;
 use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
-    BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Plant, Prompts, Traces, Trials,
-    Usage,
+    BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Plant, Prompts, StepStore,
+    Traces, Trials, Usage,
 };
 use crate::pulse::Pulse;
 use crate::removal::Removal;
@@ -169,6 +169,8 @@ pub struct AppState {
     pub pins: Arc<dyn NoteStore>,
     /// Where the pages' draft versions are kept.
     pub drafts: Arc<dyn DraftStore>,
+    /// What each request pin did to the mock-up, for its Undo.
+    pub steps: Arc<dyn StepStore>,
     /// The pins' AI sessions — `None` when the view runs no terminal.
     pub note_desks: Option<NoteDesks>,
     /// The product's mock-up on every branch — `None` when nothing can read
@@ -299,6 +301,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mockup/generations", get(mf_generations))
         .route("/api/mockup/mf/{name}/apply", post(mf_apply))
         .route("/api/mockup/mf/{name}/save", post(mf_save))
+        .route("/api/mockup/steps/undo", post(mockup::undo_step))
         .route("/api/mockup/mf/{name}/draft/drop", post(mf_drop_draft))
         .route("/api/mockup/discard", post(mockup_discard))
         .route("/api/mockup/restore", post(mockup_restore))

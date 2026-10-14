@@ -107,6 +107,8 @@ pub enum RequestState {
     Simulated,
     /// Applied once, but the page moved under it since.
     Stale,
+    /// Applied, then validated: the mock-up keeps what it changed.
+    Validated,
 }
 
 /// The outline of a zone.
@@ -378,6 +380,16 @@ pub fn backlog_issue(board: &str, note: &Note, context: &str) -> Result<(String,
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_request_validated_is_said_so_and_read_back() {
+        let said = serde_json::to_string(&RequestState::Validated).expect("json");
+        assert_eq!(said, "\"validated\"");
+        assert_eq!(
+            serde_json::from_str::<RequestState>(&said).expect("read"),
+            RequestState::Validated
+        );
+    }
 
     #[test]
     fn a_request_becomes_an_issue_titled_by_its_first_line() {

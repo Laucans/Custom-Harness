@@ -89,7 +89,7 @@ use crate::mf_desk::MfDesk;
 use crate::note_desks::NoteDesks;
 use crate::ports::{
     Board, BoardReading, Builds, DraftStore, Limits, Mockups, NoteStore, Oneshot, Plant, Product,
-    TerminalFactory, Traces, Trials, Units, Usage, Yard,
+    StepStore, TerminalFactory, Traces, Trials, Units, Usage, Yard,
 };
 use crate::pulse::{Pulse, PulsingMockups};
 use crate::removal::{PlantOf, Removal};
@@ -191,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
     let (board, product) = github_for(&cli, &root, &project);
     let program = program_for(&cli);
     let usage = usage_store(&workspace);
-    let (pins, drafts, note_desks) =
+    let (pins, drafts, steps, note_desks) =
         notes_for(&cli, &root, &project, &program, &workspace, usage.clone())?;
     let desk = desk_for(&cli, &root, &project, &program);
     let doctor = doctor_for(&cli, &root, &project, &program);
@@ -255,6 +255,7 @@ async fn main() -> anyhow::Result<()> {
         data,
         pins: Arc::clone(&pins),
         drafts,
+        steps,
         note_desks: note_desks.clone(),
         builds: builds_for(&cli, &root),
         integration_branch: cli.integration_branch.clone(),
@@ -529,11 +530,15 @@ fn janitor_for(cli: &Cli, workspace: &Workspace) -> Option<Janitor> {
         .then(|| Janitor::new(Arc::new(FsYard::new(workspace.state_root())) as Arc<dyn Yard>))
 }
 
-/// The pins' store — the drafts' too, one database — and the pins' AI
-/// sessions.
-/// The pins' store, the drafts' store (one SQLite file behind both) and
-/// the desks a pin's session sits at, when the view may open one.
-type Notes = (Arc<dyn NoteStore>, Arc<dyn DraftStore>, Option<NoteDesks>);
+/// The pins' store, the drafts' and the request pins' steps (one SQLite
+/// file behind the three) and the desks a pin's session sits at, when the
+/// view may open one.
+type Notes = (
+    Arc<dyn NoteStore>,
+    Arc<dyn DraftStore>,
+    Arc<dyn StepStore>,
+    Option<NoteDesks>,
+);
 
 fn notes_for(
     cli: &Cli,
@@ -552,9 +557,10 @@ fn notes_for(
         .context("opening the pins' store")?,
     );
     let pins: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
-    let drafts: Arc<dyn DraftStore> = store as Arc<dyn DraftStore>;
+    let drafts: Arc<dyn DraftStore> = Arc::clone(&store) as Arc<dyn DraftStore>;
+    let steps: Arc<dyn StepStore> = store as Arc<dyn StepStore>;
     let desks = note_desks_for(cli, root, project, program, &pins, usage);
-    Ok((pins, drafts, desks))
+    Ok((pins, drafts, steps, desks))
 }
 
 /// The pins' AI sessions, unless `--no-steward`: Claude Code on the

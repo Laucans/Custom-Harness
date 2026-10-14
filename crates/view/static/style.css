@@ -712,6 +712,9 @@ label.switch input:focus-visible + .track { outline: 2px solid var(--accent); ou
 .hb-pin.request { background: var(--pin-request); border-color: #3d1d00; }
 .hb-pin.request > span { color: #2e1500; }
 .hb-pin.request.state-pending { background: #f3e7c9; border-color: var(--pin-request); border-style: dashed; }
+.hb-pin.request.state-validated { background: var(--ok, #3fb950); border-color: var(--ok, #3fb950); }
+.hb-lock-badge { position: absolute; z-index: 7; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: var(--pin-request); color: #2e1500; font: 600 12px var(--sans); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+.hb-lock-badge button { background: #2e1500; color: #fff; border: 0; border-radius: 999px; padding: 2px 10px; font: 600 12px var(--sans); cursor: pointer; }
 .hb-pin.request.state-stale { background: repeating-linear-gradient(45deg, var(--pin-request), var(--pin-request) 3px, #f3e7c9 3px, #f3e7c9 6px); }
 .hb-kind.request.on { background: var(--pin-request); border-color: var(--pin-request); color: #2e1500; }
 .hb-note[data-kind="request"] { border-color: var(--pin-request); }
@@ -1598,14 +1601,11 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-rules-split > .cr-embed.cr-full { position: fixed; inset: 0; z-index: 90; height: auto; border-radius: 0; }
 .cr-rules-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 10px; }
 .cr-rules-head .spacer { flex: 1; }
-.cr-proposals { border: 1px solid #4ea3f0; border-radius: 10px; padding: 10px 12px; margin: 0 0 12px; background: rgba(78, 163, 240, 0.06); }
-.cr-proposals h3 { margin: 0 0 8px; font-size: 14px; }
-.cr-proposal { border-top: 1px solid var(--line); padding: 8px 0; }
-.cr-proposal:first-of-type { border-top: 0; }
-.cr-proposal header { display: flex; align-items: center; gap: 8px; }
-.cr-proposal header .spacer { flex: 1; }
-.cr-proposal p { margin: 6px 0; }
-.cr-proposal details { margin-top: 6px; color: var(--dim); }
+.cr-rule.proposed { border: 2px dashed var(--pin-request); cursor: default; }
+.cr-rule.proposed header .spacer { flex: 1; }
+.cr-rule.proposed p { margin: 0; }
+.cr-rule.proposed details { color: var(--dim); }
+.cr-proposed-title { flex: 1; min-width: 0; }
 .cr-proposals-notice { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cr-rules-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
 .cr-rules-search { flex: 1 1 220px; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: 13px var(--sans); padding: 5px 8px; }

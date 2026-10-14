@@ -15,7 +15,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::domain::annotations::Kind;
 use crate::domain::annotations::{self, Note};
 use crate::domain::drafts::Draft;
-use crate::ports::{DraftStore, KeptNote, NoteStore};
+use crate::domain::steps::Step;
+use crate::ports::{DraftStore, KeptNote, NoteStore, StepStore};
 
 /// How long a writer waits for another one.
 const BUSY: Duration = Duration::from_secs(5);
@@ -35,6 +36,13 @@ CREATE TABLE IF NOT EXISTS drafts (
     version      INTEGER NOT NULL,
     body         TEXT NOT NULL,
     PRIMARY KEY (board, version)
+);
+CREATE TABLE IF NOT EXISTS steps (
+    branch       TEXT NOT NULL,
+    pin          TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    body         TEXT NOT NULL,
+    PRIMARY KEY (branch, pin)
 );
 ";
 
@@ -127,6 +135,44 @@ impl DraftStore for SqliteNotes {
             conn.execute(
                 "DELETE FROM drafts WHERE board = ?1 AND version = ?2",
                 params![board, version],
+            )
+        })
+        .map(|_| ())
+    }
+}
+
+impl StepStore for SqliteNotes {
+    fn steps(&self, branch: &str) -> Result<Vec<Step>, String> {
+        let rows: Vec<String> = self.with(|conn| {
+            let mut statement =
+                conn.prepare("SELECT body FROM steps WHERE branch = ?1 ORDER BY seq")?;
+            let mapped = statement.query_map(params![branch], |row| row.get(0))?;
+            mapped.collect()
+        })?;
+        Ok(rows
+            .iter()
+            .filter_map(|body| serde_json::from_str(body).ok())
+            .collect())
+    }
+
+    fn put(&self, branch: &str, step: &Step) -> Result<(), String> {
+        let body = serde_json::to_string(step).map_err(|e| e.to_string())?;
+        let seq = i64::try_from(step.last()).map_err(|e| e.to_string())?;
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO steps (branch, pin, seq, body) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (branch, pin) DO UPDATE SET seq = excluded.seq, body = excluded.body",
+                params![branch, step.pin, seq, body],
+            )
+        })
+        .map(|_| ())
+    }
+
+    fn remove(&self, branch: &str, pin: &str) -> Result<(), String> {
+        self.with(|conn| {
+            conn.execute(
+                "DELETE FROM steps WHERE branch = ?1 AND pin = ?2",
+                params![branch, pin],
             )
         })
         .map(|_| ())
@@ -252,6 +298,48 @@ mod tests {
             shape: None,
             turns: 0,
         }
+    }
+
+    #[test]
+    fn steps_round_trip_by_branch_and_pin_in_their_order() {
+        let dir = std::env::temp_dir().join(format!("harness-steps-db-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let store =
+            SqliteNotes::open(&dir.join("harness.db"), &dir.join("none.json")).expect("open");
+        let mut late = Step {
+            pin: "b".into(),
+            ..Step::default()
+        };
+        late.keep("components/X.draft.html", Some("a's".into()), 2);
+        StepStore::put(&store, "main", &late).expect("kept");
+        StepStore::put(
+            &store,
+            "main",
+            &Step {
+                pin: "a".into(),
+                files: vec![crate::domain::steps::Before {
+                    path: "components/X.draft.html".into(),
+                    text: None,
+                    seq: 1,
+                }],
+                ..Step::default()
+            },
+        )
+        .expect("kept");
+        StepStore::put(&store, "other", &Step::default()).expect("kept");
+        let steps = store.steps("main").expect("read");
+        assert_eq!(
+            steps.iter().map(|s| s.pin.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(steps[1], late);
+        late.keep("pages.json", None, 3);
+        StepStore::put(&store, "main", &late).expect("a new state");
+        assert_eq!(store.steps("main").expect("read")[1].files.len(), 2);
+        StepStore::remove(&store, "main", "a").expect("gone");
+        assert_eq!(store.steps("main").expect("read").len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

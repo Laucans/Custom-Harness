@@ -176,6 +176,9 @@ pub struct Creation {
     pub proposals: Vec<Proposal>,
     /// The highest number a proposal was ever given.
     pub last_proposal: u32,
+    /// The proposals of request pins accepted: each rule as it was and as
+    /// it became, so the pin's Undo takes it back.
+    pub applied: Vec<Applied>,
     /// The data model drafted for the proof of concept, once asked.
     pub data: Option<DataDraft>,
     /// How many times the mock-ups were sent back to the brief.
@@ -235,6 +238,8 @@ pub struct Proposal {
     pub key: u32,
     /// The rule it rewrites; 0 for a new rule.
     pub id: u32,
+    /// The request pin that called for it; empty for none.
+    pub pin: String,
     /// What moved in the mock-up and called for it.
     pub about: String,
     /// Why the rule changes, in a sentence.
@@ -253,16 +258,31 @@ pub struct Proposal {
     pub criterion: Criterion,
 }
 
-/// What moved in the mock-up: a micro-frontend changed on a request, kept
-/// in its place or forked for the page it was asked on.
+/// A request pin's proposal accepted: the rule as it was (`None`, it was
+/// new) and as it became.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Applied {
+    /// The pin whose proposal it was.
+    pub pin: String,
+    /// The rule as it was; `None`, the proposal added it.
+    pub was: Option<Requirement>,
+    /// The rule as the proposal made it.
+    pub became: Requirement,
+}
+
+/// What moved in the mock-up: a request drafted on a micro-frontend (or on
+/// the page), then kept in its place or forked for the page it was asked on.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct RuleChange {
-    /// The micro-frontend changed.
+    /// The request pin it comes from; empty for none.
+    pub pin: String,
+    /// The micro-frontend changed; empty, the page itself.
     pub name: String,
     /// What it was saved as: itself, or its fork.
     pub saved: String,
-    /// `replace` or `fork`.
+    /// `replace`, `fork`, or empty while it is a draft.
     pub how: String,
     /// The page the change was asked on (`pages/…`).
     pub page: String,
@@ -274,10 +294,11 @@ impl RuleChange {
     /// The change in a sentence, as a proposal says what called for it.
     #[must_use]
     pub fn said(&self) -> String {
-        if self.how == "fork" {
-            format!("{} forked as {} for {}", self.name, self.saved, self.page)
-        } else {
-            format!("{} changed on every page that shows it", self.name)
+        match self.how.as_str() {
+            "fork" => format!("{} forked as {} for {}", self.name, self.saved, self.page),
+            "replace" => format!("{} changed on every page that shows it", self.name),
+            _ if self.name.is_empty() => format!("the page {} drafted on a request", self.page),
+            _ => format!("{} drafted on a request, on {}", self.name, self.page),
         }
     }
 }
@@ -768,6 +789,97 @@ impl Creation {
         }
     }
 
+    /// A request pin's proposals kept: [`Self::propose_rules`], each tied
+    /// to the pin so its validation accepts them and its Undo takes them
+    /// back.
+    pub fn propose_for(&mut self, change: &RuleChange, read: Vec<Proposal>) {
+        let tagged = read
+            .into_iter()
+            .map(|mut p| {
+                p.pin.clone_from(&change.pin);
+                p
+            })
+            .collect();
+        self.propose_rules(&change.said(), tagged);
+    }
+
+    /// Every proposal of these pins still waiting, accepted: the pins'
+    /// change was validated. Answers what could not be.
+    pub fn accept_pins(&mut self, pins: &[String]) -> Vec<String> {
+        let mut said = Vec::new();
+        // A proposal leaves the list as it is settled, accepted or not.
+        while let Some(key) = self
+            .proposals
+            .iter()
+            .find(|p| pins.contains(&p.pin))
+            .map(|p| p.key)
+        {
+            if let Err(why) = self.settle_proposal(key, true) {
+                said.push(why);
+            }
+        }
+        said
+    }
+
+    /// A micro-frontend forked for a page: the rules these pins proposed or
+    /// had accepted that it carried on that page are carried by the fork.
+    pub fn retie_fork(&mut self, pins: &[String], page: &str, from: &str, to: &str) {
+        let swap = |components: &mut Vec<String>, pages: &[String]| {
+            if pages.iter().any(|p| p == page) {
+                for c in components.iter_mut().filter(|c| *c == from) {
+                    *c = to.to_string();
+                }
+            }
+        };
+        for p in self.proposals.iter_mut().filter(|p| pins.contains(&p.pin)) {
+            swap(&mut p.components, &p.pages);
+        }
+        for a in self.applied.iter_mut().filter(|a| pins.contains(&a.pin)) {
+            let Some(rule) = self.requirements.iter_mut().find(|r| r.id == a.became.id) else {
+                continue;
+            };
+            if *rule != a.became {
+                continue;
+            }
+            let pages = rule.pages.clone();
+            swap(&mut rule.components, &pages);
+            a.became = rule.clone();
+        }
+    }
+
+    /// What these pins did to the rules, taken back: their waiting
+    /// proposals gone, the rules they had accepted as they were — unless
+    /// the human retouched one since, which stays. Answers those kept.
+    pub fn undo_pins(&mut self, pins: &[String]) -> Vec<String> {
+        self.proposals.retain(|p| !pins.contains(&p.pin));
+        let (mine, others): (Vec<Applied>, Vec<Applied>) = std::mem::take(&mut self.applied)
+            .into_iter()
+            .partition(|a| pins.contains(&a.pin));
+        self.applied = others;
+        let mut kept = Vec::new();
+        for a in mine.into_iter().rev() {
+            let Some(at) = self.requirements.iter().position(|r| r.id == a.became.id) else {
+                continue;
+            };
+            if self.requirements.get(at) != Some(&a.became) {
+                kept.push(format!("R{} retouched since: kept", a.became.id));
+                continue;
+            }
+            match a.was {
+                Some(rule) => {
+                    if let Some(slot) = self.requirements.get_mut(at) {
+                        *slot = rule;
+                    }
+                }
+                None => {
+                    self.requirements.remove(at);
+                }
+            }
+            self.rules_validated = false;
+        }
+        kept
+    }
+
     /// One proposal settled: accepted, its rule rewritten or added as the
     /// human's; refused, gone.
     ///
@@ -794,17 +906,25 @@ impl Creation {
             family: p.family,
             criterion: p.criterion,
         };
-        if rule.id == 0 {
+        let was = if rule.id == 0 {
             self.last_requirement = self.last_requirement.saturating_add(1);
             rule.id = self.last_requirement;
-            self.requirements.push(rule);
+            self.requirements.push(rule.clone());
+            None
         } else {
             let kept = self
                 .requirements
                 .iter_mut()
                 .find(|r| r.id == rule.id)
                 .ok_or_else(|| format!("R{} is gone", rule.id))?;
-            *kept = rule;
+            Some(std::mem::replace(kept, rule.clone()))
+        };
+        if !p.pin.is_empty() {
+            self.applied.push(Applied {
+                pin: p.pin,
+                was,
+                became: rule,
+            });
         }
         self.rules_validated = false;
         Ok(())
@@ -2373,6 +2493,7 @@ mod tests {
         assert!(parse_proposals("no json", &pages, &components).is_err());
 
         let change = RuleChange {
+            pin: String::new(),
             name: "Ai".to_string(),
             saved: "Ai2".to_string(),
             how: "fork".to_string(),
@@ -2443,6 +2564,98 @@ mod tests {
         assert!(prompt.contains("- two modes"));
         assert!(prompt.contains("- *R3 — "), "tied to the page: marked");
         assert!(prompt.contains("- R5 — "), "not tied: listed, unmarked");
+    }
+
+    #[test]
+    fn a_pin_s_proposals_are_accepted_with_it_retied_to_its_fork_and_taken_back_by_its_undo() {
+        let mut c = Creation {
+            requirements: vec![rule(3, "x", &["pages/a.html"]), rule(5, "x", &[])],
+            last_requirement: 5,
+            ..Creation::default()
+        };
+        let proposal = |id: u32, title: &str| Proposal {
+            id,
+            title: title.to_string(),
+            pages: vec!["pages/a.html".to_string()],
+            components: vec!["Ai".to_string()],
+            ..Proposal::default()
+        };
+        let drafted = |pin: &str| RuleChange {
+            pin: pin.to_string(),
+            name: "Ai".to_string(),
+            page: "pages/a.html".to_string(),
+            ..RuleChange::default()
+        };
+        assert_eq!(
+            drafted("p").said(),
+            "Ai drafted on a request, on pages/a.html"
+        );
+        assert_eq!(
+            RuleChange {
+                name: String::new(),
+                ..drafted("p")
+            }
+            .said(),
+            "the page pages/a.html drafted on a request"
+        );
+        c.propose_for(
+            &drafted("p"),
+            vec![proposal(3, "Connect"), proposal(0, "Binary")],
+        );
+        c.propose_for(&drafted("q"), vec![proposal(5, "Other pin")]);
+        assert!(c.proposals.iter().take(2).all(|p| p.pin == "p"));
+        let pins = ["p".to_string()];
+
+        // Forked for the page, then validated: retied to the fork, accepted.
+        c.retie_fork(&pins, "pages/a.html", "Ai", "Ai2");
+        assert_eq!(c.proposals[0].components, ["Ai2"]);
+        assert_eq!(
+            c.proposals[2].components,
+            ["Ai"],
+            "another pin's: untouched"
+        );
+        assert!(c.accept_pins(&pins).is_empty());
+        assert_eq!(c.proposals.len(), 1, "the other pin's still waits");
+        assert_eq!(c.applied.len(), 2);
+        let titles = |c: &Creation| {
+            c.requirements
+                .iter()
+                .map(|r| (r.id, r.title.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            titles(&c),
+            [
+                (3, "Connect".to_string()),
+                (5, "rule 5".to_string()),
+                (6, "Binary".to_string())
+            ]
+        );
+
+        // The human retouches the new rule; the pin's Undo leaves it.
+        c.requirements[2].body = "mine now".to_string();
+        let kept = c.undo_pins(&pins);
+        assert_eq!(kept, ["R6 retouched since: kept"]);
+        assert_eq!(
+            titles(&c),
+            [
+                (3, "rule 3".to_string()),
+                (5, "rule 5".to_string()),
+                (6, "Binary".to_string())
+            ]
+        );
+        assert!(c.applied.is_empty());
+        assert_eq!(c.proposals.len(), 1, "another pin's proposal stays");
+
+        // A proposal of a new rule accepted then undone: the rule goes.
+        c.propose_for(&drafted("r"), vec![proposal(0, "Fresh")]);
+        c.accept_pins(&["r".to_string()]);
+        assert!(c.requirements.iter().any(|r| r.title == "Fresh"));
+        assert!(c.undo_pins(&["r".to_string()]).is_empty());
+        assert!(!c.requirements.iter().any(|r| r.title == "Fresh"));
+        // Waiting proposals of a pin go with its undo.
+        c.undo_pins(&["q".to_string()]);
+        assert!(c.proposals.is_empty());
     }
 
     #[test]

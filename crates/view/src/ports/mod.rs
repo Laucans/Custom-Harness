@@ -1123,6 +1123,33 @@ pub trait Mockups: Send + Sync {
     ) -> Result<Option<String>, String>;
 }
 
+/// Where what each request pin did to the mock-up is kept, for its Undo
+/// (`domain::steps`): a branch's steps, one per pin.
+///
+/// Synchronous, like [`NoteStore`]: the same small local database.
+pub trait StepStore: Send + Sync {
+    /// A branch's steps, in their order.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read.
+    fn steps(&self, branch: &str) -> Result<Vec<crate::domain::steps::Step>, String>;
+
+    /// Keeps a pin's step — a new one, or a new state of it.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn put(&self, branch: &str, step: &crate::domain::steps::Step) -> Result<(), String>;
+
+    /// Forgets a pin's step.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    fn remove(&self, branch: &str, pin: &str) -> Result<(), String>;
+}
+
 /// Where a page's draft versions are kept (`domain::drafts`).
 ///
 /// Synchronous, like [`NoteStore`]: the same small local database.

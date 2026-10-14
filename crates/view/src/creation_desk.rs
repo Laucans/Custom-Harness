@@ -184,6 +184,18 @@ pub struct CreationDesk {
     pulse: Pulse,
 }
 
+/// How request pins' change was settled on the mock-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settled<'a> {
+    /// Validated; `fork` is `(page, from, to)` when it was forked for a page.
+    Kept {
+        /// The fork made for a page: the page, the origin, the fork.
+        fork: Option<(&'a str, &'a str, &'a str)>,
+    },
+    /// Taken back by an Undo.
+    Undone,
+}
+
 impl CreationDesk {
     /// A desk with nothing under way.
     #[must_use]
@@ -505,9 +517,39 @@ impl CreationDesk {
         let read = parse_proposals(&answer, &pages, &components)?;
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
-        record.propose_rules(&change.said(), read);
+        record.propose_for(&change, read);
         self.keep(&record)?;
         Ok(record)
+    }
+
+    /// What request pins did to the rules, after their change was settled
+    /// on the mock-up: validated (their proposals accepted, retied to a
+    /// fork made for `page`), or taken back by their Undo. No creation:
+    /// nothing to do. Answers what could not be done, in words.
+    ///
+    /// # Errors
+    ///
+    /// The record could not be kept.
+    pub async fn settle_pins(
+        &self,
+        pins: &[String],
+        settled: Settled<'_>,
+    ) -> Result<Vec<String>, String> {
+        let _held = self.record.lock().await;
+        let Ok(mut record) = self.existing() else {
+            return Ok(Vec::new());
+        };
+        let said = match settled {
+            Settled::Kept { fork } => {
+                if let Some((page, from, to)) = fork {
+                    record.retie_fork(pins, page, from, to);
+                }
+                record.accept_pins(pins)
+            }
+            Settled::Undone => record.undo_pins(pins),
+        };
+        self.keep(&record)?;
+        Ok(said)
     }
 
     /// One proposed change to the rules accepted or refused.

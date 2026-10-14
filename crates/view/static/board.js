@@ -112,7 +112,7 @@
       + '<div class="hb-session" hidden><button type="button" data-note="session">Open the AI session</button><span class="hb-turns"></span></div>'
       + '<div class="hb-extra" hidden></div>'
       + '<div class="hb-backlog" hidden><button type="button" data-note="backlog" title="Open a harness:roadmap issue from this pin: the planner takes it from there">→ backlog</button><a class="hb-issue" target="_blank" rel="noopener" hidden>on the backlog ↗</a></div>'
-      + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="delete">delete</button></div>'
+      + '<div class="hb-note-foot"><span class="hb-note-state"></span><button type="button" data-note="undo-delete" title="Take back what the AI did for it, then delete it" hidden>undo &amp; delete</button><button type="button" data-note="delete">delete</button></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
     const world = q('.hb-world');
@@ -146,6 +146,11 @@
     const applying = new Set();
     // What the last proposal of a pin came to, said in its window: { ok, text }.
     const news = new Map();
+    // What the AI is at for a pin being applied, said in its window.
+    const progress = new Map();
+    // A request proposed: its words and kind are what the AI worked from,
+    // fixed until its Undo.
+    const proposed = (n) => !!opts.undo && kindOf(n) === 'request' && ['simulated', 'stale', 'validated'].includes(n.state || 'pending');
     // Where the window was dragged to, until it opens on another pin.
     let editorAt = null;
     // Follows an application: the pins turn until it settles.
@@ -369,12 +374,13 @@
       editor.dataset.kind = kind;
       // A pin being applied is read, not written: its words are what the AI works from.
       const locked = busy || applying.has(n.id);
+      const fixed = proposed(n);
       editor.classList.toggle('applying', applying.has(n.id));
       editor.querySelectorAll('.hb-kind').forEach((b) => {
         b.classList.toggle('on', b.dataset.kind === kind);
         b.setAttribute('aria-checked', b.dataset.kind === kind);
         // Not `disabled`: a log button inside must stay clickable.
-        if (locked) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
+        if (locked || fixed) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
       });
       const session = editor.querySelector('.hb-session');
       session.hidden = kind === 'note' || kind === 'link' || !opts.onSession;
@@ -384,14 +390,17 @@
       apply.hidden = kind !== 'request' || !opts.apply;
       if (!apply.hidden) {
         const state = n.state || 'pending';
-        apply.querySelector('button').textContent = state === 'simulated' || state === 'stale' ? 'Propose again' : 'Propose';
-        apply.querySelector('button').disabled = locked;
+        const button = apply.querySelector('button');
+        button.textContent = fixed ? 'Undo' : 'Propose';
+        button.dataset.note = fixed ? 'undo' : 'apply';
+        button.title = fixed ? 'Take back what the AI did for this request: the mock-up and the rules as they were' : 'The AI drafts it on the mock-up and reads the rules it touches';
+        button.disabled = locked;
         const said = news.get(n.id);
         const line = apply.querySelector('.hb-apply-state');
         line.classList.toggle('bad', !!said && !said.ok && !applying.has(n.id));
-        line.innerHTML = applying.has(n.id) ? '<span class="spin"></span> the AI drafts it on the mock-up…'
+        line.innerHTML = applying.has(n.id) ? `<span class="spin"></span> ${esc(progress.get(n.id) || 'the AI drafts it on the mock-up…')}`
           : said ? esc(said.text)
-            : esc({ pending: 'not proposed yet', simulated: 'drafted on the mock-up — validate it in the bar above the page', stale: 'drafted once; the page moved since' }[state] || '');
+            : esc({ pending: 'not proposed yet', simulated: 'drafted on the mock-up — validate it in the bar above the page', stale: 'drafted once; the page moved since', validated: 'validated: the mock-up keeps it' }[state] || '');
       }
       editor.querySelector('.hb-turns').textContent = n.turns ? `${n.turns} turn${n.turns > 1 ? 's' : ''} kept` : 'no conversation yet';
       // What the pane offers for this pin beyond the board's own actions.
@@ -410,8 +419,14 @@
         if (n.issue) { a.href = n.issue; a.textContent = 'on the backlog ' + (/\/(\d+)$/.exec(n.issue) ? '#' + /\/(\d+)$/.exec(n.issue)[1] : '') + ' ↗'; }
       }
       textarea.disabled = busy;
-      textarea.readOnly = applying.has(n.id);
+      textarea.readOnly = applying.has(n.id) || fixed;
       editor.querySelector('[data-note="delete"]').disabled = locked;
+      // Proposed, a delete takes the AI's work back first; validated, a
+      // plain delete keeps what it changed.
+      const undoDelete = editor.querySelector('[data-note="undo-delete"]');
+      undoDelete.hidden = !fixed;
+      undoDelete.disabled = locked;
+      editor.querySelector('[data-note="delete"]').hidden = fixed && (n.state || 'pending') !== 'validated';
       textarea.placeholder = {
         note: 'Write a note…',
         link: 'The objective of the page this leads to — what a new page is drawn from',
@@ -520,6 +535,7 @@
     }
     function closeNote() {
       flush();
+      hideBadge();
       const n = notes.find((x) => x.id === openId);
       openId = null;
       editor.hidden = true;
@@ -915,6 +931,7 @@
       }
       const n = notes.find((x) => x.id === openId);
       const kindButton = e.target.closest('.hb-kind');
+      if (n && proposed(n) && (kindButton || e.target === textarea)) { lockBadge(e, n); return; }
       if (kindButton && n) { rekind(n, kindButton.dataset.kind); return; }
       const more = e.target.closest('[data-note-extra]');
       if (more && n && opts.noteActions) {
@@ -926,6 +943,11 @@
       if (!act) return;
       if (act.dataset.note === 'close') closeNote();
       if (act.dataset.note === 'delete' && n) remove(n);
+      if ((act.dataset.note === 'undo' || act.dataset.note === 'undo-delete') && n && opts.undo && !applying.has(n.id)) {
+        hideBadge();
+        undoPin(n, act.dataset.note === 'undo-delete');
+        return;
+      }
       if (act.dataset.note === 'session' && n && opts.onSession) openSession(n);
       if (act.dataset.note === 'apply' && n && opts.apply && !applying.has(n.id)) {
         if (!(n.text || '').trim()) { setState('write the request first: it is what the AI applies'); textarea.focus(); return; }
@@ -934,6 +956,7 @@
         news.delete(n.id);
         track([n.id], (n.fresh ? put(n) : Promise.resolve()).then(() => opts.apply(n))
           .then((text) => { news.set(n.id, { ok: true, text: text || 'drafted on the mock-up' }); })
+          .finally(() => progress.delete(n.id))
           .catch((err) => { news.set(n.id, { ok: false, text: 'not drafted: ' + String((err && err.message) || err).split('\n')[0] }); if (opts.onApplyError) opts.onApplyError(err); }));
       }
       if (act.dataset.note === 'backlog' && n) toBacklog(n);
@@ -973,6 +996,32 @@
       n.at = new Date().toISOString();
       save(n, false);
     };
+    // A click on the words or the kind of a proposed pin: a badge by the
+    // click says they are fixed, with the Undo that frees them.
+    let badge = null;
+    function hideBadge() { if (badge) { badge.remove(); badge = null; } }
+    function lockBadge(e, n) {
+      hideBadge();
+      const r = host.getBoundingClientRect();
+      badge = document.createElement('div');
+      badge.className = 'hb-lock-badge';
+      badge.setAttribute('role', 'status');
+      badge.innerHTML = 'Any change needs an Undo first <button type="button" data-note="undo">Undo</button>';
+      badge.style.left = clamp(e.clientX - r.left + 8, 8, Math.max(8, r.width - 260)) + 'px';
+      badge.style.top = clamp(e.clientY - r.top + 12, 8, Math.max(8, r.height - 40)) + 'px';
+      host.appendChild(badge);
+      const id = n.id;
+      setTimeout(() => { if (badge && openId === id) hideBadge(); }, 5000);
+    }
+    // A proposed pin taken back — then deleted, when asked so.
+    function undoPin(n, andDelete) {
+      news.delete(n.id);
+      progress.set(n.id, 'taking back what the AI did…');
+      return track([n.id], Promise.resolve(opts.undo(n))
+        .then((text) => { news.set(n.id, { ok: true, text: text || 'taken back' }); if (andDelete) return remove(n); return undefined; })
+        .catch((err) => { news.set(n.id, { ok: false, text: 'not taken back: ' + String((err && err.message) || err).split('\n')[0] }); })
+        .finally(() => progress.delete(n.id)));
+    }
     const onInput = () => {
       const n = notes.find((x) => x.id === openId);
       if (!n || busy || applying.has(n.id)) return;
@@ -1063,6 +1112,12 @@
       session: (noteId) => { const n = notes.find((x) => x.id === noteId); if (n && opts.onSession) openSession(n); },
       // Every pin, and a pin's fields changed from outside — a request applied.
       all: () => notes.map((n) => Object.assign({}, n)),
+      // What the AI is at for a pin being applied, said in its window.
+      progress(noteId, text) {
+        progress.set(noteId, text);
+        const open = notes.find((x) => x.id === openId);
+        if (open && open.id === noteId) drawEditor(open);
+      },
       patch(noteId, fields) {
         const n = notes.find((x) => x.id === noteId);
         if (!n) return;
