@@ -236,33 +236,19 @@ It has two sections:
      from, the standalone one too), and the step closes when none waits
      (`Facts::kit_waiting`) — the mock-ups are drawn on the kit, not on
      tokens alone;
-  7. **mock-ups** — drawn in two hands (`domain::mock_plan`): the creation's
-     model (Opus, `--creation-model`) plans every page and every
-     micro-frontend in one question — what each shows, its `needs` and
-     `actions`, the kit's components it is built of, the data its fixture
-     holds, the example world every writer shares (each entity with its
-     fixed id), and the components the kit lacks — and the plan is written
-     as the manifest (`mock/pages.json`, contract N) and an `index.html`
-     before any other file. The kit makes the components it lacks first
-     (custom components, generated several at once and waited for; one it
-     cannot make leaves the plan, and the kit if the drawing added it); then the
-     writers (Sonnet, `--creation-exec-model`, `--creation-sessions` at
-     once, one question each, asked twice before giving up) write every
-     micro-frontend (fragment and fixture, `mf_gen::generate_prompt`), then
-     every page (layout and `data-component` only, `mock_plan::page_prompt`)
-     — the page owns each region's title and frame, a micro-frontend fills
-     its region and draws neither; an answer using a variable the design
-     system has not is refused, and the second try is told why. Last, one
-     session of the creation's model finishes the mock-up as assembled
-     (`mock_plan::finish_prompt`: titles said twice, frames in frames,
-     widths, data that does not fit); its failure is said, never fatal.
-     Each item is said on the job as it lands (`… written (n of N)`); a
-     drawing whose items were all written is taken as cut into
-     micro-frontends already (`componentized`), else the micro-frontends'
-     session runs after it. Whatever started it, the step lists the files
-     the workspace holds (`Mockups::files`, `GET /api/mockup/files`, read
-     every few seconds): pages, micro-frontends, fixtures, each with its
-     time, so a reload or a restarted view never loses the thread. The page's
+  7. **mock-ups** — one Claude Code session of the drawing's model
+     (`--creation-draw-model`, Sonnet by default; the cut into
+     micro-frontends uses it too) at work in the integration
+     branch's mock-up workspace (`Oneshot::work_in`: read and write, nothing
+     that runs) draws a page per screen of the scope, on the kit and the
+     tokens (`mockups_prompt`, the mock-up's own rules first) — fast, its
+     markup inline: the proposal loop is what is optimised here. While it
+     runs, a concurrent poller (`poll_mockup_pages`, every `DRAW_POLL`, 2s)
+     reads `Mockups::state` — safe alongside an active write, no locking
+     either side needs — and reports each page the manifest lists once it
+     actually has a fragment (`MockPage::hash` non-empty; a page merely
+     listed is still to do), naming it and the count read back from the
+     manifest itself, never predicted from the scope's prose. The page's
      left column is the growing checklist; the right shows the mock-up
      itself, navigable in its current state, through the same
      `/mock/{branch}/{*path}` route the review step's easel already reads

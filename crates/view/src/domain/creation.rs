@@ -1225,6 +1225,46 @@ pub fn scope_prompt(c: &Creation) -> String {
     text
 }
 
+/// The session that draws the proof of concept as the product's mock-up:
+/// `rules` are the mock-up's own (`note_session::mockup_rules`), `kit` the
+/// design system's components, one line each.
+#[must_use]
+pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str) -> String {
+    let mut text = rules.to_string();
+    text.push_str(
+        "\nDraw the proof of concept below as the product's mock-up: one page per screen of its \
+         scope under `mock/pages/`, each registered in `mock/pages.json` with its title and its \
+         objective (what the user does there), a `mock/index.html` that lists them, the fixtures \
+         they read under `mock/fixtures/` with believable example data in the language of the \
+         brief — never a lorem ipsum — and the links between the pages that carry the journeys, \
+         so a human can click through them. Build every page from the design system: \
+         `mock/design/tokens.css` holds its variables (`var(--…)`, never a colour or a size \
+         written by hand), and its kit components are dropped as \
+         `<div data-kit=\"<Name>\" data-props='{…}'></div>`, which `../mock.js` fills — use one \
+         wherever it fits rather than writing that markup again. When there is no page yet, \
+         start the mock-up. When pages already exist from an earlier draft, replace them: this \
+         proof of concept is the one to show. Say in a few lines which pages you made.\n\n",
+    );
+    if kit.trim().is_empty() {
+        text.push_str(
+            "The kit has no generated component yet: style the pages with the tokens alone.\n\n",
+        );
+    } else {
+        let _ = write!(
+            text,
+            "The kit's components, one line each:\n\n{}\n\n",
+            kit.trim()
+        );
+    }
+    text.push_str(&product(c));
+    let _ = write!(
+        text,
+        "\nThe proof of concept's scope:\n\n{}\n",
+        c.scope.trim()
+    );
+    text
+}
+
 /// The session that repairs a `mock/pages.json` the view cannot read:
 /// `rules` are the mock-up's own (the manifest's shape among them), `why`
 /// what the reading said.
@@ -2544,6 +2584,16 @@ mod tests {
         assert!(!scope.contains("q2"));
         c.scope = String::new();
         assert!(!scope_prompt(&c).contains("start from it"));
+    }
+
+    #[test]
+    fn the_mockups_prompt_carries_the_rules_the_kit_and_the_scope() {
+        let c = ready();
+        let with = mockups_prompt(&c, "RULES", "Button: a button");
+        assert!(with.starts_with("RULES"));
+        assert!(with.contains("Button: a button"));
+        assert!(with.ends_with("## Goal\n"));
+        assert!(mockups_prompt(&c, "RULES", " ").contains("no generated component yet"));
     }
 
     #[test]

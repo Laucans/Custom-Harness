@@ -21,17 +21,14 @@ use crate::domain::annotations::Kind as PinKind;
 use crate::domain::audit::{audit_of, audit_prompt, fix_prompt};
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
-    componentize_prompt, decompose_prompt, grill_prompt, manifest_repair_prompt, not_componentized,
-    parse_brief, parse_requirements, parse_round, requirements_prompt, rule_prompt, scope_prompt,
-    unfenced,
+    componentize_prompt, decompose_prompt, grill_prompt, manifest_repair_prompt, mockups_prompt,
+    not_componentized, parse_brief, parse_requirements, parse_round, requirements_prompt,
+    rule_prompt, scope_prompt, unfenced,
 };
 use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
 use crate::domain::design::Entry;
 use crate::domain::divergence;
-use crate::domain::mf_gen;
-use crate::domain::mock_plan;
 use crate::domain::note_session::{About, mockup_rules};
-use crate::kit_desk::KitIndex;
 use crate::kit_desk::{JobState, KitDesk};
 use crate::ports::{Foundry, MockState, Mockups, NoteStore, Oneshot, Plant};
 use crate::pulse::Pulse;
@@ -63,14 +60,11 @@ pub struct Setup {
     pub integration_branch: String,
     /// The AI; `None` when no Claude is at hand.
     pub oneshot: Option<Arc<dyn Oneshot>>,
-    /// The model the creation asks: the grilling, the scope, the
-    /// mock-up's plan.
+    /// The model the creation asks.
     pub model: String,
-    /// The model that writes what a plan decided, many at once: the
-    /// mock-up's micro-frontends and pages.
-    pub exec_model: String,
-    /// How many writers ask at once.
-    pub exec_sessions: usize,
+    /// The model that draws the mock-up and cuts it into micro-frontends:
+    /// one session at work each.
+    pub draw_model: String,
     /// The product's mock-up — `None` when the product cannot be read.
     pub mockups: Option<Arc<dyn Mockups>>,
     /// The design system's easel.
@@ -266,22 +260,7 @@ impl CreationDesk {
     /// What the gates read outside the record: the design system validated,
     /// its kit generated.
     pub async fn facts(&self) -> Facts {
-        self.facts_with(self.kit().await)
-    }
-
-    /// The facts from a kit status read already, as the gates read them
-    /// now: while a drawing runs, the kit's components it asked for are
-    /// being made for it, and close no gate — the page stays on its step.
-    #[must_use]
-    pub fn facts_with(&self, kit: Option<KitStatus>) -> Facts {
-        let mut facts = Self::facts_of(kit);
-        if self
-            .job()
-            .is_some_and(|j| j.work == Work::Mockups && j.state == State::Running)
-        {
-            facts.kit_waiting = 0;
-        }
-        facts
+        Self::facts_of(self.kit().await)
     }
 
     /// The same, from a kit status read already.
@@ -972,22 +951,16 @@ impl CreationDesk {
     ) -> Result<(), String> {
         self.drawn(record, Arc::clone(&oneshot), Arc::clone(&mockups))
             .await?;
+        // The job is named after what it does now: the page follows it.
+        self.update(|job| job.work = Work::Componentize);
         let record = self.existing()?;
-        if record.componentized.is_none() {
-            // The job is named after what it does now: the page follows it.
-            self.update(|job| job.work = Work::Componentize);
-            self.componentize(&record, oneshot, mockups).await?;
-        }
+        self.componentize(&record, oneshot, mockups).await?;
         self.step("the AI reads the requirements off the scope and the mock-up");
         let read = self.requirements_read().await?;
         self.step(&format!("{} requirement(s) read", read.requirements.len()));
         Ok(())
     }
 
-    /// The mock-up drawn in two hands: the creation's model plans every
-    /// page and micro-frontend (the manifest, before any file), then the
-    /// writers write every micro-frontend, several at once, then every
-    /// page — each step said as it lands.
     async fn drawn(
         &self,
         record: Creation,
@@ -995,278 +968,58 @@ impl CreationDesk {
         mockups: Arc<dyn Mockups>,
     ) -> Result<(), String> {
         let branch = self.setup.integration_branch.clone();
-        let index = match &self.setup.kit {
-            Some(kit) => kit.index().await.unwrap_or_default(),
-            None => KitIndex::default(),
+        let kit = match &self.setup.kit {
+            Some(kit) => kit.index().await.map(|i| i.lines()).unwrap_or_default(),
+            None => String::new(),
         };
+        let rules = mockup_rules(&About {
+            branch: branch.clone(),
+            ..About::default()
+        });
+        let prompt = mockups_prompt(&record, &rules, &kit);
+        let model = self.setup.draw_model.clone();
+        let desk = self.clone();
         self.step("opening the integration branch's mock-up");
+        let poll_mockups = mockups.clone();
+        let poll_branch = branch.clone();
         let (opened, at) = (mockups.clone(), branch.clone());
-        tokio::task::spawn_blocking(move || {
+        let dir = tokio::task::spawn_blocking(move || {
             // A drawing starts from the branch as committed: one sent back
-            // leaves nothing of the last behind (kept aside, for an undo).
+            // leaves nothing of the last behind.
             let _ = opened.discard(&at);
             opened.workspace(&at)
         })
         .await
         .map_err(|e| format!("the step did not finish: {e}"))??;
-        self.step(&format!(
-            "{} plans the mock-up: its pages and its micro-frontends",
-            self.setup.model
-        ));
-        let kit_names: Vec<String> = index.components.iter().map(|(n, _, _)| n.clone()).collect();
-        let answer = self
-            .ask(mock_plan::plan_prompt(&record, &index.lines()))
-            .await?;
-        let plan = mock_plan::parse_plan(&answer, &kit_names)?;
-        let (plan, index) = self.kit_made(plan, index).await;
-        let manifest = mock_plan::manifest(&plan)?;
-        let home = mock_plan::index_html(&record, &plan);
-        let (wrote, at) = (mockups.clone(), branch.clone());
-        tokio::task::spawn_blocking(move || {
-            wrote.write(&at, "pages.json", manifest.as_bytes())?;
-            wrote.write(&at, "index.html", home.as_bytes())
+        self.step("a Claude Code session draws the proof of concept's pages");
+        // The workspace was just discarded above: nothing of a page is
+        // there yet, so the poller starts from an empty `seen`.
+        let poll = tokio::spawn(poll_mockup_pages(self.clone(), poll_mockups, poll_branch));
+        let said = tokio::task::spawn_blocking(move || {
+            let said = oneshot.work_in(&model, &prompt, &dir)?;
+            let at = Session {
+                oneshot: oneshot.as_ref(),
+                model: &model,
+                rules: &rules,
+                dir: &dir,
+            };
+            read_back(&desk, &at, mockups.as_ref(), &branch)?;
+            Ok::<_, String>(said)
         })
         .await
-        .map_err(|e| format!("the step did not finish: {e}"))??;
-        self.step(&format!(
-            "planned: {} micro-frontends, then {} pages — {} writes them, {} at once",
-            plan.components.len(),
-            plan.pages.len(),
-            self.setup.exec_model,
-            self.setup.exec_sessions.max(1)
-        ));
-        let index = Arc::new(index);
-        let writers = Writers {
-            desk: self.clone(),
-            oneshot,
-            mockups: mockups.clone(),
-            branch: branch.clone(),
-            model: self.setup.exec_model.clone(),
-        };
-        let mut failed = writers.write_all(component_writings(&plan, &index)).await;
-        failed.extend(
-            writers
-                .write_all(page_writings(&record, &plan, &index))
-                .await,
-        );
-        self.finished(&writers, &plan, &index.tokens).await;
-        let said = format!(
-            "planned by {}, written by {}: {} pages, {} micro-frontends{}",
-            self.setup.model,
-            self.setup.exec_model,
-            plan.pages.len(),
-            plan.components.len(),
-            if failed.is_empty() {
-                String::new()
-            } else {
-                format!(" — not written: {}", failed.join("; "))
-            }
-        );
+        .map_err(|e| format!("the session did not finish: {e}"));
+        poll.abort();
+        let said = said??;
         self.step("the mock-up is drawn");
         let facts = self.facts().await;
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
-        record.drawn(said.clone());
-        // Drawn of micro-frontends from the start: nothing to cut again,
-        // unless some could not be written.
-        if failed.is_empty() {
-            record.componentized = Some(said);
-        }
+        record.drawn(said);
         // Drawn ahead, the human is still before the mock-up step: left there.
-        // A gate still closed — a kit component the plan asked for not made
-        // yet — keeps the human on the mock-ups: the drawing is kept anyway.
-        if record.step >= Step::Mockups
-            && let Err(why) = record.go(Step::Rules, facts)
-        {
-            self.step(&format!("the rules wait: {why}"));
+        if record.step >= Step::Mockups {
+            record.go(Step::Rules, facts)?;
         }
         self.keep(&record)
-    }
-
-    /// The components a plan asks the kit for, made before any writer
-    /// builds on them: added as custom components (or found by their title),
-    /// generated several at once, waited for. One the kit cannot make leaves
-    /// the `uses` of every micro-frontend; the index is read again.
-    async fn kit_made(
-        &self,
-        mut plan: mock_plan::MockPlan,
-        index: KitIndex,
-    ) -> (mock_plan::MockPlan, KitIndex) {
-        if plan.kit.is_empty() {
-            return (plan, index);
-        }
-        let asked: Vec<String> = plan.kit.iter().map(|k| k.name.clone()).collect();
-        let Some(kit) = self.setup.kit.clone().filter(|_| index.validated) else {
-            self.step("the design system is not validated: the micro-frontends build without the components the kit lacks");
-            strip_uses(&mut plan, &asked);
-            return (plan, index);
-        };
-        self.step(&format!(
-            "the kit makes {} component(s) it lacks first: {}",
-            asked.len(),
-            asked.join(", ")
-        ));
-        let mut made: Vec<String> = Vec::new();
-        let mut added: Vec<String> = Vec::new();
-        let mut lost: Vec<String> = Vec::new();
-        for need in plan.kit.clone() {
-            let named = match kit.titled(need.title.clone()).await {
-                Ok(Some(name)) => Ok(name),
-                _ => kit
-                    .custom(need.name.clone(), need.title.clone(), need.what.clone())
-                    .await
-                    .map(|c| {
-                        added.push(c.name.clone());
-                        c.name
-                    }),
-            };
-            // In the kit's catalogue already, not generated yet: that one,
-            // generated below like the others.
-            let named = match named {
-                Err(why) if why.ends_with("is already in the kit") => Ok(need.name.clone()),
-                other => other,
-            };
-            match named {
-                Ok(name) => {
-                    rename_uses(&mut plan, &need.name, &name);
-                    made.push(name);
-                }
-                Err(why) => {
-                    self.step(&format!(
-                        "kit component {} could not be added: {why}",
-                        need.name
-                    ));
-                    lost.push(need.name);
-                }
-            }
-        }
-        let ready: Vec<String> = index.components.iter().map(|(n, _, _)| n.clone()).collect();
-        let waiting: Vec<String> = made
-            .iter()
-            .filter(|n| !ready.contains(n))
-            .cloned()
-            .collect();
-        if !waiting.is_empty() {
-            match kit.start_generation(waiting.clone()).await {
-                // Generating already: the wait follows it all the same.
-                Ok(_) => lost.extend(self.kit_waited(&kit, &waiting, KIT_WAIT).await),
-                Err(why) if why.starts_with("nothing to generate") => {
-                    lost.extend(self.kit_waited(&kit, &waiting, KIT_WAIT).await);
-                }
-                Err(why) => {
-                    self.step(&format!("the kit could not make its components: {why}"));
-                    lost.extend(waiting);
-                }
-            }
-        }
-        strip_uses(&mut plan, &lost);
-        // What this drawing added and the kit could not make leaves the kit:
-        // nothing is left pending for the human to wait on.
-        for name in lost.iter().filter(|n| added.contains(n)) {
-            if kit.delete(name.clone()).await.is_ok() {
-                self.step(&format!("kit component {name} removed: not made"));
-            }
-        }
-        let index = kit.index().await.unwrap_or(index);
-        (plan, index)
-    }
-
-    /// The kit's components waited for, each said as it is made; answers
-    /// those that failed or were not made in time.
-    async fn kit_waited(
-        &self,
-        kit: &KitDesk,
-        waiting: &[String],
-        patience: Duration,
-    ) -> Vec<String> {
-        let deadline = tokio::time::Instant::now() + patience;
-        let mut said: Vec<String> = Vec::new();
-        let mut lost: Vec<String> = Vec::new();
-        loop {
-            let open: Vec<&String> = waiting.iter().filter(|n| !said.contains(n)).collect();
-            for name in open {
-                match kit.job_of(name) {
-                    Some((JobState::Done, _)) => {
-                        said.push(name.clone());
-                        self.step(&format!(
-                            "kit component {name} made ({} of {})",
-                            said.len(),
-                            waiting.len()
-                        ));
-                    }
-                    Some((JobState::Failed, why)) => {
-                        said.push(name.clone());
-                        lost.push(name.clone());
-                        self.step(&format!("kit component {name} could not be made: {why}"));
-                    }
-                    // No generation for it: it will not come.
-                    None => {
-                        said.push(name.clone());
-                        lost.push(name.clone());
-                        self.step(&format!(
-                            "kit component {name} could not be made: the kit is not generating it"
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-            if said.len() == waiting.len() {
-                return lost;
-            }
-            if tokio::time::Instant::now() > deadline {
-                let late: Vec<String> = waiting
-                    .iter()
-                    .filter(|n| !said.contains(n))
-                    .cloned()
-                    .collect();
-                self.step(&format!(
-                    "the kit took too long for {}: the micro-frontends build without them",
-                    late.join(", ")
-                ));
-                lost.extend(late);
-                return lost;
-            }
-            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-            tokio::time::sleep(KIT_POLL.min(left)).await;
-        }
-    }
-
-    /// The finishing pass: one session of the creation's model reads every
-    /// page as assembled and puts right what the writers got wrong. Its
-    /// failure is said, never fatal: the pages are there already.
-    async fn finished(&self, writers: &Writers, plan: &mock_plan::MockPlan, tokens: &[String]) {
-        self.step(&format!(
-            "{} finishes the mock-up: titles, frames, widths, data",
-            self.setup.model
-        ));
-        let rules = mockup_rules(&About {
-            branch: writers.branch.clone(),
-            ..About::default()
-        });
-        let prompt = mock_plan::finish_prompt(&rules, plan, tokens);
-        let (oneshot, mockups, branch, model) = (
-            Arc::clone(&writers.oneshot),
-            Arc::clone(&writers.mockups),
-            writers.branch.clone(),
-            self.setup.model.clone(),
-        );
-        let done = tokio::task::spawn_blocking(move || {
-            let dir = mockups.workspace(&branch)?;
-            oneshot.work_in(&model, &prompt, &dir)
-        })
-        .await
-        .map_err(|e| format!("the session did not finish: {e}"))
-        .and_then(|r| r);
-        match done {
-            Ok(said) => self.step(&format!(
-                "finished: {}",
-                said.lines()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or("done")
-                    .trim()
-            )),
-            Err(why) => self.step(&format!("the finishing pass did not finish: {why}")),
-        }
     }
 
     /// The proof of concept accepted: the factory is initialized — the
@@ -1604,7 +1357,7 @@ impl CreationDesk {
             ..About::default()
         });
         let prompt = componentize_prompt(record, &rules, &kit);
-        let model = self.setup.model.clone();
+        let model = self.setup.draw_model.clone();
         self.step("a Claude Code session makes the mock-up again of micro-frontends");
         // Seeded with whatever is already there: a retry's own earlier
         // components are never reported as newly made.
@@ -1721,184 +1474,32 @@ fn read_back(
 /// polled for a page or a component that just landed.
 const DRAW_POLL: Duration = Duration::from_secs(2);
 
-/// What the writers of a plan's micro-frontends are asked, and what each
-/// answer lands as: its fragment and its fixture.
-fn component_writings(plan: &mock_plan::MockPlan, index: &Arc<KitIndex>) -> Vec<Written> {
-    plan.components
-        .iter()
-        .map(|c| {
-            let index = Arc::clone(index);
-            let c = c.clone();
-            Written {
-                label: format!("micro-frontend {}", c.name),
-                prompt: mf_gen::generate_prompt(
-                    &c.spec(),
-                    &mock_plan::units_of(&c, &plan.world),
-                    &index.skeletons(&c.uses),
-                    &index.tokens.join(", "),
-                    None,
-                ),
-                land: Arc::new(move |answer: &str| {
-                    let generated = mf_gen::generated_of(answer)?;
-                    mock_plan::on_tokens(&generated.fragment, &index.tokens)?;
-                    let mut files = vec![(mf_gen::fragment_path(&c.name), generated.fragment)];
-                    if let Some(fixture) = generated.fixture {
-                        files.push((mf_gen::fixture_path(&c.name), fixture));
-                    }
-                    Ok(files)
-                }),
+/// Reports each page of `branch`'s mock-up as it gets a real fragment,
+/// starting from nothing: `drawn()` always calls this on a freshly
+/// discarded workspace, so no page is there yet to seed `seen` with. Runs
+/// until aborted — `drawn()` stops it once `work_in` returns, success or
+/// not; a read that fails is skipped, never reported as a reason the job
+/// failed, since the real outcome is `work_in`'s alone.
+async fn poll_mockup_pages(desk: CreationDesk, mockups: Arc<dyn Mockups>, branch: String) {
+    let mut seen: HashSet<String> = HashSet::new();
+    loop {
+        tokio::time::sleep(DRAW_POLL).await;
+        let (mockups, at) = (mockups.clone(), branch.clone());
+        let Ok(Ok(state)) = tokio::task::spawn_blocking(move || mockups.state(&at)).await else {
+            continue;
+        };
+        let total = state.pages.len();
+        for page in &state.pages {
+            if page.hash.is_empty() || seen.contains(&page.path) {
+                continue;
             }
-        })
-        .collect()
-}
-
-/// What the writers of a plan's pages are asked, and what each answer
-/// lands as: the page.
-fn page_writings(
-    record: &Creation,
-    plan: &mock_plan::MockPlan,
-    index: &Arc<KitIndex>,
-) -> Vec<Written> {
-    plan.pages
-        .iter()
-        .map(|p| {
-            let page = p.clone();
-            let tokens = index.tokens.clone();
-            Written {
-                label: format!("page {}", page.path),
-                prompt: mock_plan::page_prompt(record, plan, p, &index.tokens),
-                land: Arc::new(move |answer: &str| {
-                    let html = mock_plan::page_of(answer, &page)?;
-                    mock_plan::on_tokens(&html, &tokens)?;
-                    Ok(vec![(page.path.clone(), html)])
-                }),
-            }
-        })
-        .collect()
-}
-
-/// How long the kit's components are waited for before the writers go on
-/// without them.
-const KIT_WAIT: Duration = Duration::from_mins(10);
-
-/// How often they are looked at.
-const KIT_POLL: Duration = Duration::from_secs(3);
-
-/// The kit's components the plan asked for, renamed to what the kit calls
-/// them in every micro-frontend's `uses`.
-fn rename_uses(plan: &mut mock_plan::MockPlan, from: &str, to: &str) {
-    for c in &mut plan.components {
-        for u in &mut c.uses {
-            if u == from {
-                *u = to.to_string();
-            }
+            seen.insert(page.path.clone());
+            desk.step(&format!(
+                "drew the mock-up's \"{}\" page ({} of {total})",
+                page.title,
+                seen.len()
+            ));
         }
-    }
-}
-
-/// The kit's components that were not made, out of every micro-frontend's
-/// `uses`.
-fn strip_uses(plan: &mut mock_plan::MockPlan, lost: &[String]) {
-    for c in &mut plan.components {
-        c.uses.retain(|u| !lost.contains(u));
-    }
-}
-
-/// What a writer turns an answer into: the files it lands, by path under
-/// `mock/`.
-type Land = Arc<dyn Fn(&str) -> Result<Vec<(String, String)>, String> + Send + Sync>;
-
-/// One file set a writer writes from the plan.
-struct Written {
-    /// How the job names it.
-    label: String,
-    /// What the writer is asked.
-    prompt: String,
-    /// What its answer becomes.
-    land: Land,
-}
-
-/// The writers of a plan: one question each, several at once, each said
-/// on the job as it lands.
-struct Writers {
-    desk: CreationDesk,
-    oneshot: Arc<dyn Oneshot>,
-    mockups: Arc<dyn Mockups>,
-    branch: String,
-    model: String,
-}
-
-/// How many times a writer is asked before its item is given up.
-const WRITER_TRIES: usize = 2;
-
-impl Writers {
-    /// Every item written, `exec_sessions` at once; answers the labels of
-    /// those that could not be, with why.
-    async fn write_all(&self, items: Vec<Written>) -> Vec<String> {
-        let total = items.len();
-        let gate = Arc::new(tokio::sync::Semaphore::new(
-            self.desk.setup.exec_sessions.max(1),
-        ));
-        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut handles = Vec::with_capacity(total);
-        for item in items {
-            let gate = Arc::clone(&gate);
-            let done = Arc::clone(&done);
-            let (desk, oneshot, mockups) = (
-                self.desk.clone(),
-                Arc::clone(&self.oneshot),
-                Arc::clone(&self.mockups),
-            );
-            let (branch, model) = (self.branch.clone(), self.model.clone());
-            handles.push(tokio::spawn(async move {
-                let _permit = gate.acquire_owned().await.map_err(|e| e.to_string())?;
-                let label = item.label.clone();
-                let wrote = tokio::task::spawn_blocking(move || {
-                    let mut last = String::new();
-                    for _ in 0..WRITER_TRIES {
-                        // A second try is told why the first was refused.
-                        let prompt = if last.is_empty() {
-                            item.prompt.clone()
-                        } else {
-                            mock_plan::retry_prompt(&item.prompt, &last)
-                        };
-                        let tried = oneshot
-                            .ask(&model, &prompt)
-                            .and_then(|answer| (item.land)(&answer))
-                            .and_then(|files| {
-                                for (path, text) in &files {
-                                    mockups.write(&branch, path, text.as_bytes())?;
-                                }
-                                Ok(())
-                            });
-                        match tried {
-                            Ok(()) => return Ok(()),
-                            Err(why) => last = why,
-                        }
-                    }
-                    Err(last)
-                })
-                .await
-                .map_err(|e| format!("the writer did not finish: {e}"))?;
-                let n = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                match &wrote {
-                    Ok(()) => desk.step(&format!("{label} written ({n} of {total})")),
-                    Err(why) => desk.step(&format!(
-                        "{label} could not be written ({n} of {total}): {why}"
-                    )),
-                }
-                wrote.map_err(|why| format!("{label}: {why}"))
-            }));
-        }
-        let mut failed = Vec::new();
-        for handle in handles {
-            match handle.await {
-                Ok(Ok(())) => {}
-                Ok(Err(why)) => failed.push(why),
-                Err(e) => failed.push(format!("a writer was dropped: {e}")),
-            }
-        }
-        failed
     }
 }
 
@@ -2020,34 +1621,15 @@ mod tests {
         lazy: bool,
     }
 
-    /// The plan a planner answers: one page, one micro-frontend.
-    const PLAN: &str = r#"{"pages":[{"path":"pages/home.html","title":"Home","objective":"see the ledger","components":["Home"],"layout":"the lines"}],"components":[{"name":"Home","system":"ledger","description":"the lines","needs":["ledger.readLines"],"uses":["LineTable"],"data":"two lines"}],"world":"ldg-1 — the ledger","kit":[{"name":"LineTable","title":"Line table","what":"rows of lines"}]}"#;
-
     impl Oneshot for Drawer {
-        fn ask(&self, model: &str, prompt: &str) -> Result<String, String> {
-            if prompt.contains("You plan the mock-up of a proof of concept") {
-                assert_eq!(model, "m", "the creation's model plans");
-                assert!(
-                    prompt.contains("The proof of concept's scope:"),
-                    "the scope is in the plan's prompt"
-                );
-                return Ok(PLAN.to_string());
-            }
-            if prompt.contains("You write one micro-frontend") {
-                assert_eq!(model, "s", "the writers' model writes");
-                return Ok("```html\n<section data-reads=\"ledger.readLines\">home</section>\n```\n```json\n[{\"line\": 1}]\n```".to_string());
-            }
-            if prompt.contains("You write one page of a product's static mock-up") {
-                assert_eq!(model, "s", "the writers' model writes");
-                return Ok("```html\n<html><body><div data-component=\"Home\"></div><script src=\"../mock.js\"></script></body></html>\n```".to_string());
-            }
+        fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
             if prompt.contains("You guard a vertical-slice architecture") {
                 assert!(prompt.contains("- `Home` —"), "the cut is in the prompt");
                 return Ok(r#"{"findings":[{"check":"write_as_read","units":["ledger.saveLine"],"why":"it saves","fix":"move it to actions"}],"effects":{}}"#.to_string());
             }
             if prompt.contains("You draft the data model") {
                 assert!(
-                    prompt.contains("`fixtures/home.json`"),
+                    prompt.contains("`fixtures/Home.json`"),
                     "the example data is in the prompt"
                 );
                 return Ok(r#"{"tables":[{"name":"line","purpose":"a line","fields":[{"name":"id","type":"uuid"}]}],"aggregates":[{"aggregate":"Line","fields":{"line.id":{"kind":"authoritative"}},"invariants":[{"id":"every-line","rule":"shown","onViolation":"reject","rules":[1]}]}]}"#.to_string());
@@ -2065,7 +1647,7 @@ mod tests {
             Ok("## Goal\nfirst".to_string())
         }
 
-        fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
+        fn work_in(&self, model: &str, prompt: &str, dir: &Path) -> Result<String, String> {
             let write = |path: &str, text: &str| -> Result<(), String> {
                 let full = dir.join(path);
                 std::fs::create_dir_all(full.parent().ok_or("no folder")?)
@@ -2076,13 +1658,14 @@ mod tests {
                 prompt.contains("the branch `main_agent`"),
                 "the branch is in the prompt"
             );
-            if prompt.contains("This mock-up was just written by many hands at once") {
-                assert!(
-                    prompt.contains("The example world:\nldg-1 — the ledger"),
-                    "the world is in the finishing prompt"
-                );
-                return Ok("nothing to change\nall pages read".to_string());
-            }
+            // The mock-up is drawn and cut by the drawing's model; a guard's
+            // fix is the creation's own.
+            let drawing = !prompt.contains("The architecture's guard found this");
+            assert_eq!(
+                model,
+                if drawing { "d" } else { "m" },
+                "the model a session works with"
+            );
             if prompt.contains("The architecture's guard found this") {
                 assert!(prompt.contains("- about: ledger.saveLine"));
                 return Ok("moved ledger.saveLine to actions".to_string());
@@ -2185,14 +1768,12 @@ mod tests {
     struct Slow;
 
     impl Oneshot for Slow {
-        fn ask(&self, model: &str, prompt: &str) -> Result<String, String> {
-            // Three questions — the plan, a micro-frontend, a page — each slow.
-            std::thread::sleep(Duration::from_millis(100));
-            Drawer { lazy: false }.ask(model, prompt)
+        fn ask(&self, _: &str, _: &str) -> Result<String, String> {
+            Ok(String::new())
         }
 
         fn work_in(&self, _: &str, _: &str, _: &Path) -> Result<String, String> {
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(300));
             Ok("late".to_string())
         }
     }
@@ -2238,8 +1819,7 @@ mod tests {
                 integration_branch: "main_agent".to_string(),
                 oneshot,
                 model: "m".to_string(),
-                exec_model: "s".to_string(),
-                exec_sessions: 2,
+                draw_model: "d".to_string(),
                 mockups: None,
                 kit: None,
                 data: None,
@@ -2372,8 +1952,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
             oneshot: Some(Arc::new(Drawer { lazy: false })),
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
+            draw_model: "d".to_string(),
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
@@ -2393,16 +1972,35 @@ mod tests {
             "{}",
             job.why
         );
-        drawn_in_two_hands(&job, &dir);
+        assert!(dir.join("main_agent/mock/pages/home.html").is_file());
         let drawn = desk.record().expect("read").expect("a record");
-        let said = "planned by m, written by s: 1 pages, 1 micro-frontends";
-        assert_eq!(drawn.mocked.as_deref(), Some(said));
-        assert_eq!(
-            drawn.componentized.as_deref(),
-            Some(said),
-            "drawn of micro-frontends already"
-        );
+        assert_eq!(drawn.mocked.as_deref(), Some("one page: home"));
         assert_eq!(drawn.step, Step::Rules);
+
+        // The micro-frontends before the review, so the requirements tie to them.
+        desk.componentize_now().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(
+            (job.work, job.state),
+            (Work::Componentize, State::Done),
+            "{}",
+            job.why
+        );
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s == "every page is made of micro-frontends"),
+            "{:?}",
+            job.steps
+        );
+        assert_eq!(
+            desk.record()
+                .expect("read")
+                .expect("a record")
+                .componentized
+                .as_deref(),
+            Some("one micro-frontend: Home")
+        );
         desk.componentize_now()
             .await
             .expect("done already: nothing runs");
@@ -2431,15 +2029,10 @@ mod tests {
         repairs: bool,
     }
 
-    const UNREAD: &str = r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home"}],"components":[{"name":"Home","fragment":"components/Home.html","needs":"ledger.lines"}]}"#;
+    const UNREAD: &str = r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home"}],"components":[{"name":"Home","needs":"ledger.lines"}]}"#;
 
     impl Oneshot for Sloppy {
         fn ask(&self, model: &str, prompt: &str) -> Result<String, String> {
-            // Its pages never come: the drawing cannot say it is cut, and
-            // the micro-frontends' session runs after it.
-            if prompt.contains("You write one page") {
-                return Ok("no page".to_string());
-            }
             Drawer { lazy: false }.ask(model, prompt)
         }
 
@@ -2460,7 +2053,9 @@ mod tests {
                 return Ok("repaired".to_string());
             }
             let said = Drawer { lazy: false }.work_in(model, prompt, dir)?;
-            std::fs::write(&manifest, UNREAD).map_err(|e| e.to_string())?;
+            if !prompt.contains("Make it again of **micro-frontends**") {
+                std::fs::write(&manifest, UNREAD).map_err(|e| e.to_string())?;
+            }
             Ok(said)
         }
     }
@@ -2490,8 +2085,7 @@ mod tests {
                 integration_branch: "main_agent".to_string(),
                 oneshot: Some(Arc::new(Sloppy { repairs })),
                 model: "m".to_string(),
-                exec_model: "s".to_string(),
-                exec_sessions: 2,
+                draw_model: "d".to_string(),
                 mockups: Some(Arc::new(DirMockups::new(&dir))),
                 kit: None,
                 data: None,
@@ -2506,32 +2100,15 @@ mod tests {
                 .filter(|s| s.ends_with("a session repairs it"))
                 .count();
             let kept = desk.record().expect("read").expect("a record");
-            assert!(
-                job.steps
-                    .iter()
-                    .any(|s| s.starts_with("page pages/home.html could not be written (1 of 1)")),
-                "{:?}",
-                job.steps
-            );
-            assert!(
-                kept.mocked
-                    .as_deref()
-                    .is_some_and(|m| m.contains("not written: page pages/home.html"))
-            );
             if repairs {
-                assert_eq!(
-                    (job.work, job.state),
-                    (Work::Componentize, State::Done),
-                    "{}",
-                    job.why
-                );
+                assert_eq!(job.state, State::Done, "{}", job.why);
                 assert_eq!(asked, 1, "{:?}", job.steps);
-                assert!(kept.componentized.is_some());
+                assert!(kept.mocked.is_some());
             } else {
-                assert_eq!((job.work, job.state), (Work::Componentize, State::Failed));
+                assert_eq!((job.work, job.state), (Work::Mockups, State::Failed));
                 assert!(job.why.contains("invalid type"), "{}", job.why);
                 assert_eq!(asked, MANIFEST_REPAIRS as usize, "{:?}", job.steps);
-                assert_eq!(kept.componentized, None, "an unreadable cut is not kept");
+                assert_eq!(kept.mocked, None, "an unreadable drawing is not kept");
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -2562,8 +2139,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
             oneshot: Some(Arc::new(Drawer { lazy: false })),
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
+            draw_model: "d".to_string(),
             mockups: Some(mockups),
             kit: None,
             data: None,
@@ -2590,8 +2166,8 @@ mod tests {
         let job = settled(&desk).await;
         assert_eq!(
             (job.work, job.state),
-            (Work::Mockups, State::Done),
-            "nothing to cut again: {}",
+            (Work::Componentize, State::Done),
+            "{}",
             job.why
         );
         assert_eq!(
@@ -2600,10 +2176,12 @@ mod tests {
         );
         let ahead = desk.record().expect("read").expect("a record");
         assert_eq!(ahead.step, Step::Design, "the human's step is left");
-        let said = "planned by m, written by s: 1 pages, 1 micro-frontends";
-        assert_eq!(ahead.mocked.as_deref(), Some(said));
+        assert_eq!(ahead.mocked.as_deref(), Some("one page: home"));
         assert_eq!(ahead.mocked_scope, "## Goal\nproof");
-        assert_eq!(ahead.componentized.as_deref(), Some(said));
+        assert_eq!(
+            ahead.componentized.as_deref(),
+            Some("one micro-frontend: Home")
+        );
         assert_eq!(ahead.requirements.len(), 1);
         assert!(!ahead.mockup_stale());
 
@@ -2611,41 +2189,6 @@ mod tests {
         desk.draw_ahead().await.expect("nothing to do");
         assert_eq!(desk.job().map(|j| j.steps), Some(job.steps));
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// What the story's drawing left: each item said as it landed, every
-    /// file where the plan put it.
-    fn drawn_in_two_hands(job: &Job, dir: &Path) {
-        assert!(
-            job.steps
-                .iter()
-                .any(|s| s.starts_with("the kit could not make its components: ")),
-            "the story's kit has no Claude: {:?}",
-            job.steps
-        );
-        for written in [
-            "the kit makes 1 component(s) it lacks first: LineTable",
-            "kit component LineTable removed: not made",
-            "m finishes the mock-up: titles, frames, widths, data",
-            "finished: nothing to change",
-            "micro-frontend Home written (1 of 1)",
-            "page pages/home.html written (1 of 1)",
-        ] {
-            assert!(
-                job.steps.iter().any(|s| s == written),
-                "{written}: {:?}",
-                job.steps
-            );
-        }
-        for file in [
-            "pages.json",
-            "index.html",
-            "pages/home.html",
-            "components/Home.html",
-            "fixtures/home.json",
-        ] {
-            assert!(dir.join("main_agent/mock").join(file).is_file(), "{file}");
-        }
     }
 
     /// The third quarter of the flow above: one rule read again, then the
@@ -2660,10 +2203,7 @@ mod tests {
 
         let audited = desk.audit().await.expect("audited");
         let audit = audited.audit.as_ref().expect("an audit");
-        assert_eq!(
-            audit.from,
-            "planned by m, written by s: 1 pages, 1 micro-frontends"
-        );
+        assert_eq!(audit.from, "one micro-frontend: Home");
         assert_eq!(audit.blocking().len(), 1);
         assert!(
             audited
@@ -2895,8 +2435,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
             oneshot: None,
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
+            draw_model: "d".to_string(),
             mockups: None,
             kit: None,
             data: None,
@@ -2931,8 +2470,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
             oneshot: None,
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
+            draw_model: "d".to_string(),
             mockups: None,
             kit: None,
             data: None,
@@ -2993,8 +2531,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
             oneshot: Some(Arc::new(Drawer { lazy: false })),
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
+            draw_model: "d".to_string(),
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
@@ -3084,8 +2621,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
             oneshot: Some(Arc::clone(&oneshot)),
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
+            draw_model: "d".to_string(),
             mockups: Some(Arc::clone(&mockups)),
             kit: Some(KitDesk::new(kit_desk::Setup {
                 mockups,
@@ -3266,8 +2802,7 @@ mod tests {
                 integration_branch: "main_agent".to_string(),
                 oneshot: Some(Arc::new(Slow)),
                 model: "m".to_string(),
-                exec_model: "s".to_string(),
-                exec_sessions: 2,
+                draw_model: "d".to_string(),
                 mockups: Some(Arc::clone(&mockups)),
                 kit: Some(KitDesk::new(kit_desk::Setup {
                     mockups: Arc::clone(&mockups),
@@ -3329,8 +2864,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
             oneshot: Some(Arc::new(Drawer { lazy: true })),
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
+            draw_model: "d".to_string(),
             mockups: Some(Arc::clone(&mockups)),
             kit: Some(KitDesk::new(kit_desk::Setup {
                 mockups,
@@ -3370,422 +2904,115 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The kit's generator: each component drawn from its name, one named
-    /// in `fail` refused, every one `slow` to come.
-    struct KitMaker {
-        fail: Vec<String>,
-        slow: Duration,
-    }
+    /// A session that draws two pages, several seconds apart — slow enough
+    /// that a poller's own 2s tick lands on each page in turn, not just the
+    /// end of a fast call.
+    struct StagedPages;
 
-    impl Oneshot for KitMaker {
-        fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
-            std::thread::sleep(self.slow);
-            let name = prompt.split('`').nth(1).unwrap_or("X").to_string();
-            if self.fail.iter().any(|f| prompt.contains(f.as_str())) {
-                return Err("cannot draw it".to_string());
-            }
-            Ok(format!("<div class=\"kit-x\">{name}</div>"))
+    impl Oneshot for StagedPages {
+        fn ask(&self, _: &str, _: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+
+        fn work_in(&self, _: &str, _: &str, dir: &Path) -> Result<String, String> {
+            let write = |name: &str, manifest: &str| -> Result<(), String> {
+                std::fs::create_dir_all(dir.join("mock/pages")).map_err(|e| e.to_string())?;
+                std::fs::write(dir.join(format!("mock/pages/{name}.html")), "<main></main>")
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(dir.join("mock/pages.json"), manifest).map_err(|e| e.to_string())
+            };
+            // "C" is listed from the start but never gets a file: it must
+            // never be reported, whatever a mutated `||` would let through.
+            write(
+                "a",
+                r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A"},{"path":"pages/c.html","title":"C"}],"components":[]}"#,
+            )?;
+            std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
+            write(
+                "b",
+                r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A"},{"path":"pages/b.html","title":"B"},{"path":"pages/c.html","title":"C"}],"components":[]}"#,
+            )?;
+            // Left on disk long enough for the poller's next tick to see it
+            // before the call returns and the poller is aborted.
+            std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
+            Ok("two pages".to_string())
         }
     }
 
-    /// A creation desk over a validated design system whose kit generates
-    /// with `maker`.
-    fn kit_desk_with(tag: &str, maker: KitMaker) -> (CreationDesk, KitDesk, PathBuf) {
-        let dir = product(tag);
+    #[tokio::test]
+    async fn drawing_the_mock_up_reports_each_page_live_as_it_is_written() {
+        let dir = product("staged-pages");
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
         let kit = KitDesk::new(kit_desk::Setup {
             mockups: Arc::clone(&mockups),
-            oneshot: Some(Arc::new(maker)),
-            model: "k".into(),
-            sessions: 3,
+            oneshot: None,
+            model: "m".into(),
+            sessions: 1,
             pins: Arc::new(Shelf::default()),
             integration_branch: "main_agent".into(),
         });
         let book = Arc::new(Book::default());
-        book.keep_creation(
-            "alpha",
-            &serde_json::to_string(&Creation::new("alpha", "me/alpha")).expect("json"),
-        )
-        .expect("kept");
-        let desk = CreationDesk::new(Setup {
-            register: book,
-            factory: "alpha".to_string(),
-            foundry: Arc::new(Nothing),
-            factories_dir: dir.join("factories"),
-            integration_branch: "main_agent".to_string(),
-            oneshot: None,
-            model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
-            mockups: Some(mockups),
-            kit: Some(kit.clone()),
-            data: None,
-            plant: None,
-            pins: None,
-        });
-        desk.begin(Work::Mockups).expect("nothing under way");
-        (desk, kit, dir)
-    }
-
-    // What a plan asks the kit for is made before any writer: one found by
-    // its title and renamed, one made, one refused — out of the plan and of
-    // the kit — each said as it comes.
-    #[tokio::test]
-    async fn the_kit_makes_what_the_plan_asks_before_the_writers() {
-        let (desk, kit, dir) = kit_desk_with(
-            "kit-first",
-            KitMaker {
-                fail: vec!["Broken".to_string()],
-                slow: Duration::ZERO,
-            },
-        );
-        kit.custom(
-            "Lines".to_string(),
-            "Line table".to_string(),
-            "rows".to_string(),
-        )
-        .await
-        .expect("added");
-        assert_eq!(
-            desk.facts().await.kit_waiting,
-            0,
-            "a drawing under way: what the kit makes for it closes no gate"
-        );
-        let plan = mock_plan::parse_plan(
-            r#"{"pages":[{"path":"pages/a.html","components":["A"]}],"components":[{"name":"A","uses":["LineTable","Broken","Badge","Vague"]}],
-            "kit":[{"name":"LineTable","title":"Line table","what":"rows"},{"name":"Broken","title":"Broken thing","what":"never"},{"name":"Badge","title":"Badge","what":"a badge"},{"name":"Vague","title":"Vague thing","what":""}]}"#,
-            &[],
-        )
-        .expect("a plan");
-        let index = kit.index().await.expect("an index");
-        let (plan, index) = desk.kit_made(plan, index).await;
-        let steps = desk.job().expect("a job").steps;
-        assert_eq!(
-            plan.components[0].uses,
-            vec!["Lines".to_string()],
-            "{steps:?}"
-        );
-        assert!(
-            steps.iter().any(|s| s == "kit component Badge could not be made: the kit is not generating it"),
-            "in the catalogue, not ticked: never generated, never waited for: {steps:?}"
-        );
-        assert!(
-            index.components.iter().any(|(n, _, _)| n == "Lines"),
-            "the index read again"
-        );
-        assert!(
-            steps
-                .iter()
-                .any(|s| s == "kit component Broken removed: not made"),
-            "{steps:?}"
-        );
-        assert!(
-            steps.iter().any(|s| s
-                .starts_with("kit component Vague could not be added: say what the component is")),
-            "{steps:?}"
-        );
-        kit.custom(
-            "Pending".to_string(),
-            "Pending thing".to_string(),
-            "it".to_string(),
-        )
-        .await
-        .expect("added");
-        desk.update(|j| j.state = State::Done);
-        assert!(
-            desk.facts().await.kit_waiting > 0,
-            "the drawing over, a component left pending counts again"
-        );
-        assert!(
-            steps
-                .iter()
-                .any(|s| s.starts_with("kit component Broken could not be made: ")),
-            "{steps:?}"
-        );
-        assert_eq!(
-            steps
-                .iter()
-                .filter(|s| s.starts_with("kit component ") && s.contains(" made ("))
-                .count(),
-            1,
-            "Lines: {steps:?}"
-        );
-        assert!(
-            !steps.iter().any(|s| s.contains("Badge could not be added")),
-            "one in the catalogue is used: {steps:?}"
-        );
-        assert!(
-            kit.titled("Broken thing".to_string())
-                .await
-                .expect("read")
-                .is_none(),
-            "taken out of the kit"
-        );
-        assert_eq!(
-            kit.titled("Line table".to_string())
-                .await
-                .expect("read")
-                .as_deref(),
-            Some("Lines"),
-            "found, not added again"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // A component already generating is waited for, not refused; one that
-    // takes longer than the patience given is given up and said.
-    #[tokio::test]
-    async fn a_kit_component_under_way_is_waited_for_and_a_late_one_given_up() {
-        let (desk, kit, dir) = kit_desk_with(
-            "kit-busy",
-            KitMaker {
-                fail: Vec::new(),
-                slow: Duration::from_millis(400),
-            },
-        );
-        kit.custom(
-            "Busy".to_string(),
-            "Busy thing".to_string(),
-            "it".to_string(),
-        )
-        .await
-        .expect("added");
-        kit.start_generation(vec!["Busy".to_string()])
-            .await
-            .expect("under way");
-        let plan = mock_plan::parse_plan(
-            r#"{"pages":[{"path":"pages/a.html","components":["A"]}],"components":[{"name":"A","uses":["BusyThing"]}],"kit":[{"name":"BusyThing","title":"Busy thing","what":"it"}]}"#,
-            &[],
-        )
-        .expect("a plan");
-        let index = kit.index().await.expect("an index");
-        let (plan, _) = desk.kit_made(plan, index).await;
-        let steps = desk.job().expect("a job").steps;
-        assert_eq!(
-            plan.components[0].uses,
-            vec!["Busy".to_string()],
-            "{steps:?}"
-        );
-        assert!(
-            steps
-                .iter()
-                .any(|s| s == "kit component Busy made (1 of 1)"),
-            "{steps:?}"
-        );
-
-        kit.custom(
-            "Late".to_string(),
-            "Late thing".to_string(),
-            "it".to_string(),
-        )
-        .await
-        .expect("added");
-        kit.start_generation(vec!["Late".to_string()])
-            .await
-            .expect("under way");
-        let lost = desk
-            .kit_waited(&kit, &["Late".to_string()], Duration::from_millis(50))
-            .await;
-        assert_eq!(lost, vec!["Late".to_string()]);
-        let steps = desk.job().expect("a job").steps;
-        assert!(
-            steps
-                .iter()
-                .any(|s| s
-                    == "the kit took too long for Late: the micro-frontends build without them"),
-            "{steps:?}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_kit_component_s_name_follows_into_every_use_and_one_not_made_leaves() {
-        let mut plan = mock_plan::parse_plan(
-            r#"{"pages":[{"path":"pages/a.html","components":["A","B"]}],"components":[{"name":"A","uses":["Old","Keep"]},{"name":"B","uses":["Old"]}],"kit":[{"name":"Old","title":"o"},{"name":"Keep","title":"k"}]}"#,
-            &[],
-        )
-        .expect("a plan");
-        rename_uses(&mut plan, "Old", "New");
-        assert_eq!(
-            plan.components[0].uses,
-            vec!["New".to_string(), "Keep".to_string()]
-        );
-        assert_eq!(plan.components[1].uses, vec!["New".to_string()]);
-        strip_uses(&mut plan, &["New".to_string()]);
-        assert_eq!(plan.components[0].uses, vec!["Keep".to_string()]);
-        assert!(plan.components[1].uses.is_empty());
-    }
-
-    /// Writers that keep count of how many ask at once, the order they are
-    /// asked in, and fail one micro-frontend every time.
-    #[derive(Default)]
-    struct Counted {
-        now: std::sync::atomic::AtomicUsize,
-        most: std::sync::atomic::AtomicUsize,
-        asked: Mutex<Vec<String>>,
-        /// Asked again, told why the first answer was refused.
-        retried: std::sync::atomic::AtomicUsize,
-    }
-
-    impl Oneshot for Counted {
-        fn ask(&self, _model: &str, prompt: &str) -> Result<String, String> {
-            use std::sync::atomic::Ordering::SeqCst;
-            if prompt.contains("You plan the mock-up of a proof of concept") {
-                return Ok(r#"{"pages":[{"path":"pages/a.html","title":"A","components":["One","Two"]},{"path":"pages/b.html","title":"B","components":["Three"]}],"components":[{"name":"One"},{"name":"Two"},{"name":"Three"},{"name":"Broken"}]}"#.to_string());
-            }
-            if prompt.contains("Your last answer was refused: the writer stumbled") {
-                self.retried.fetch_add(1, SeqCst);
-            }
-            let n = self.now.fetch_add(1, SeqCst) + 1;
-            self.most.fetch_max(n, SeqCst);
-            std::thread::sleep(Duration::from_millis(150));
-            self.now.fetch_sub(1, SeqCst);
-            let name = ["One", "Two", "Three", "Broken"]
-                .into_iter()
-                .find(|n| prompt.contains(&format!("name: {n}\n")));
-            lock(&self.asked).push(name.map_or_else(|| "page".to_string(), str::to_string));
-            match name {
-                Some("Broken") => Err("the writer stumbled".to_string()),
-                Some(n) => Ok(format!("```html\n<p data-x=\"{n}\">{n}</p>\n```")),
-                None if prompt.contains("`pages/a.html`") => Ok("<html><body><div data-component=\"One\"></div><div data-component=\"Two\"></div></body></html>".to_string()),
-                None => Ok("<html><body><div data-component=\"Three\"></div></body></html>".to_string()),
-            }
-        }
-
-        fn work_in(&self, _: &str, _: &str, _: &Path) -> Result<String, String> {
-            Err("no session here".to_string())
-        }
-    }
-
-    /// What the parallel writers did: two at once, the micro-frontends
-    /// before the pages, the broken one asked twice and said.
-    fn written_two_at_once(writers: &Counted, job: &Job) {
-        use std::sync::atomic::Ordering::SeqCst;
-        assert_eq!(writers.most.load(SeqCst), 2, "two at once, never more");
-        assert_eq!(
-            writers.retried.load(SeqCst),
-            WRITER_TRIES - 1,
-            "a retry is told why"
-        );
-        let asked = lock(&writers.asked).clone();
-        let first_page = asked.iter().position(|a| a == "page").expect("pages asked");
-        assert!(asked[..first_page].iter().all(|a| a != "page"), "{asked:?}");
-        assert_eq!(
-            asked[first_page..].len(),
-            2,
-            "every page after every micro-frontend: {asked:?}"
-        );
-        assert_eq!(
-            asked.iter().filter(|a| *a == "Broken").count(),
-            WRITER_TRIES
-        );
-        for step in [
-            "planned: 4 micro-frontends, then 2 pages — s writes them, 2 at once",
-            "the finishing pass did not finish: no session here",
-            "the mock-up is drawn",
-        ] {
-            assert!(
-                job.steps.iter().any(|s| s == step),
-                "{step}: {:?}",
-                job.steps
-            );
-        }
-        assert_eq!(
-            job.steps
-                .iter()
-                .filter(|s| s.starts_with("micro-frontend ")
-                    && s.contains(" written (")
-                    && !s.contains("could not"))
-                .count(),
-            3
-        );
-        assert!(
-            job.steps.iter().any(
-                |s| s.starts_with("micro-frontend Broken could not be written (")
-                    && s.ends_with("the writer stumbled")
-            ),
-            "{:?}",
-            job.steps
-        );
-        assert!(
-            job.steps
-                .iter()
-                .any(|s| s == "page pages/a.html written (1 of 2)"
-                    || s == "page pages/a.html written (2 of 2)"),
-            "{:?}",
-            job.steps
-        );
-    }
-
-    // Planned once, then written by several writers at once, the
-    // micro-frontends before the pages; one that cannot be written is
-    // asked twice, then said, and the drawing is not taken as cut.
-    #[tokio::test]
-    async fn the_plan_is_written_in_parallel_micro_frontends_first() {
-        let dir = product("parallel");
-        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
-        let book = Arc::new(Book::default());
         let record = Creation {
             kind: Some(Kind::Vertical),
             brief: "a ledger".to_string(),
-            grilled: true,
-            scope: "## Goal".to_string(),
-            step: Step::Design,
+            questions: vec![Question {
+                id: 1,
+                title: "who".to_string(),
+                answer: "the client".to_string(),
+                ..Question::default()
+            }],
+            scope: "## Goal\nproof".to_string(),
+            step: Step::Mockups,
             ..Creation::new("alpha", "me/alpha")
         };
         book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
             .expect("kept");
-        let writers = Arc::new(Counted::default());
         let desk = CreationDesk::new(Setup {
             register: book,
             factory: "alpha".to_string(),
             foundry: Arc::new(Nothing),
             factories_dir: dir.join("factories"),
             integration_branch: "main_agent".to_string(),
-            oneshot: Some(Arc::clone(&writers) as Arc<dyn Oneshot>),
+            oneshot: Some(Arc::new(StagedPages)),
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
-            mockups: Some(Arc::clone(&mockups)),
-            kit: None,
+            draw_model: "d".to_string(),
+            mockups: Some(mockups),
+            kit: Some(kit),
             data: None,
             plant: None,
             pins: None,
         });
-        let job = {
-            desk.begin(Work::Mockups).expect("nothing under way");
-            let record = desk.existing().expect("a creation");
-            let drawn = desk
-                .drawn(record, Arc::clone(&writers) as Arc<dyn Oneshot>, mockups)
-                .await;
-            assert!(drawn.is_ok(), "{drawn:?}");
-            desk.job().expect("a job")
-        };
-        written_two_at_once(&writers, &job);
-        for file in [
-            "components/One.html",
-            "components/Three.html",
-            "pages/a.html",
-            "pages/b.html",
-            "index.html",
-        ] {
-            assert!(dir.join("main_agent/mock").join(file).is_file(), "{file}");
+        desk.draw_mockups().await.expect("started");
+        // The first page's own line shows up while the session is still
+        // mid-write, well before `work_in` itself returns.
+        let mut seen_a = false;
+        for _ in 0..80 {
+            if desk
+                .job()
+                .is_some_and(|j| j.steps.iter().any(|s| s.contains("\"A\" page (1 of 2)")))
+            {
+                seen_a = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let kept = desk.record().expect("read").expect("a record");
+        assert!(seen_a, "the first page's step never showed up live");
         assert_eq!(
-            kept.mocked.as_deref(),
-            Some(
-                "planned by m, written by s: 2 pages, 4 micro-frontends — not written: micro-frontend Broken: the writer stumbled"
-            )
+            desk.job().map(|j| j.state),
+            Some(State::Running),
+            "the session itself had not returned yet"
         );
-        assert_eq!(
-            kept.componentized, None,
-            "a micro-frontend missing: to cut again"
+        let job = settled(&desk).await;
+        assert_eq!((job.work, job.state), (Work::Mockups, State::Done));
+        assert!(
+            job.steps.iter().any(|s| s.contains("\"B\" page (2 of 3)")),
+            "{:?}",
+            job.steps
         );
-        assert_eq!(
-            kept.step,
-            Step::Design,
-            "drawn ahead: the human's step is left"
+        assert!(
+            !job.steps.iter().any(|s| s.contains("\"C\" page")),
+            "listed with no file ever written: never reported done — {:?}",
+            job.steps
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3881,8 +3108,7 @@ mod tests {
             integration_branch: "main_agent".to_string(),
             oneshot: Some(Arc::new(StagedComponentize)),
             model: "m".to_string(),
-            exec_model: "s".to_string(),
-            exec_sessions: 2,
+            draw_model: "d".to_string(),
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
