@@ -1185,6 +1185,7 @@
     jobScrolled(kept);
     if (embed) mountEmbed(embed);
     else unmountEmbed();
+    sizeEmbed();
     syncFocus();
     followFiles();
     page.querySelectorAll('.cr-rule.sel textarea.cr-fit').forEach(fit);
@@ -1283,6 +1284,24 @@
   async function flushEmbed() {
     if (C.embed && C.embed.canvas && typeof C.embed.canvas.flush === 'function') await C.embed.canvas.flush();
   }
+  // The easel ends at nine tenths of the screen, wherever it stands — at
+  // the top of the step or held at the top while the page scrolls (sticky):
+  // its height follows its top, measured once a frame while scrolling.
+  const EMBED_END = 0.9;
+  const EMBED_MIN = 480;
+  let sizing = 0;
+  function sizeEmbed() {
+    sizing = 0;
+    const el = $('cr-embed');
+    if (!el || el.classList.contains('cr-full')) return;
+    const top = Math.max(8, el.getBoundingClientRect().top);
+    el.style.setProperty('--embed-h', Math.max(EMBED_MIN, Math.round(window.innerHeight * EMBED_END - top)) + 'px');
+  }
+  const sizeSoon = () => { if (!sizing) sizing = requestAnimationFrame(sizeEmbed); };
+  // The page scrolls inside its own box (#factory-page), not the window:
+  // a scroll of any box is heard, in the capture phase.
+  document.addEventListener('scroll', sizeSoon, { passive: true, capture: true });
+  window.addEventListener('resize', sizeSoon);
   function mountEmbed(embed) {
     if (C.embed && C.embed.face === embed.face) return;
     unmountEmbed();
@@ -1306,6 +1325,7 @@
     const on = el.classList.toggle('cr-full');
     document.body.classList.toggle('cr-fullscreen', !!page.querySelector('.cr-full'));
     el.querySelector('[data-cr-full]').textContent = on ? '✕ Leave full screen' : '⛶ Full screen';
+    sizeEmbed();
   }
   document.addEventListener('keydown', (e) => {
     const full = e.key === 'Escape' && page.querySelector('.cr-full');

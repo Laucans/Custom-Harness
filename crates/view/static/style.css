@@ -521,7 +521,10 @@ svg.process .name { fill: var(--dim); pointer-events: none; }
 .hb-list button small { color: var(--dim); font: 11px var(--mono); }
 .hb-empty { color: var(--dim); padding: 8px; font-size: 13px; }
 .hb-note { position: absolute; width: 270px; z-index: 5; cursor: default; user-select: text;
-  background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45); padding: 8px; }
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45); padding: 8px;
+  /* Its insides scroll when it is taller than the board; the scroll stays in it. */
+  overflow-y: auto; overscroll-behavior: contain; box-sizing: border-box; }
+.hb-note .hb-note-head { position: sticky; top: -8px; z-index: 1; margin: -8px -8px 0; padding: 8px 8px 4px; background: var(--panel); }
 .hb-note[hidden] { display: none; }
 .hb-note-head, .hb-note-foot { display: flex; align-items: center; gap: 6px; }
 .hb-note-head { cursor: move; touch-action: none; user-select: none; }
@@ -1460,7 +1463,7 @@ body.creating > #stage, body.creating > #pane { display: none; }
 /* The mock-up's own preview wants more than the kit's embed does — almost
    the full window, not capped at 1500px. */
 .cr.cr-wider { width: min(2200px, 100%); }
-.cr-embed { display: flex; flex-direction: column; height: max(560px, calc(100vh - 360px)); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); }
+.cr-embed { display: flex; flex-direction: column; height: var(--embed-h, max(560px, calc(100vh - 360px))); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); }
 .cr-embed-bar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; }
 .cr-embed-host { flex: 1; min-height: 0; display: flex; }
 /* A part of the page that fills the screen (Esc leaves); under the AI sessions' window. */

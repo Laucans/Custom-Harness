@@ -866,21 +866,23 @@
       const g = gestureOf('a request proposed');
       const name = mfOfPin(n);
       if (name) {
-        await draftMf(n, name, n.text, g);
+        const left = await draftMf(n, name, n.text, g);
         st.board.patch(n.id, { state: 'simulated', component: name }, H(g));
         await loadGens();
         render();
         drawDrafts();
-        return `drafted on ${name}, shown on the page${await proposeRules(n, name, g)} — validate it in the bar above the page`;
+        return `drafted on ${name}, shown on the page${await proposeRules(n, name, g)} — validate it in the bar above the page${left ? `. Left to you: ${left}` : ''}`;
       }
       // On the page: its part done there, each micro-frontend's inside it
       // hands over drafted on that micro-frontend, for the same pin.
       const page = await applyRequests([n]);
       const drafted = [];
+      const left = [];
       for (const m of page.mfs.filter((x) => x.by === n.id)) {
         if (st.board.progress) st.board.progress(n.id, `the AI drafts ${m.name}…`);
-        await draftMf(n, m.name, m.ask, g);
+        const why = await draftMf(n, m.name, m.ask, g);
         drafted.push(m.name);
+        if (why) left.push(`${m.name}: ${why}`);
       }
       if (drafted.length) {
         st.board.patch(n.id, { state: 'simulated', component: drafted[0] }, H(g));
@@ -889,10 +891,11 @@
         drawDrafts();
       }
       const where = [page.ops ? page.said : '', drafted.length ? `${drafted.join(', ')} drafted` : ''].filter(Boolean).join('; ');
-      return `${where}${await proposeRules(n, drafted[0] || '', g)} — validate it above the page`;
+      return `${where}${await proposeRules(n, drafted[0] || '', g)} — validate it above the page${left.length ? `. Left to you: ${left.join('; ')}` : ''}`;
     }
     // A micro-frontend redrafted for a request pin: its step keeps the draft
-    // as it was, for the pin's Undo. Throws what the AI left.
+    // as it was, for the pin's Undo. Answers what the AI left of the request
+    // (the rest is drafted), empty when nothing; throws when nothing was.
     async function draftMf(n, name, text, g) {
       const c = componentOf(name);
       if (!c) throw new Error(`no micro-frontend ${name}`);
@@ -904,7 +907,7 @@
       const body = await res.text();
       if (!res.ok) throw new Error(body);
       const left = (JSON.parse(body).skipped || []).find(([id]) => id === n.id);
-      if (left) throw new Error(`the AI left ${name}: ${left[1]}`);
+      return left ? left[1] : '';
     }
     // The rules a proposal touches, read by the AI and kept as proposals on
     // the factory's creation (a page without one has no rules to keep in

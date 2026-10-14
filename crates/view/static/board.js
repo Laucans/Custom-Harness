@@ -361,15 +361,21 @@
       const s = toScreen(n.x, n.y);
       const w = editor.offsetWidth || 280;
       const h = editor.offsetHeight || 190;
+      // Never taller than the board below it: its insides scroll instead.
+      const fit = (top) => { editor.style.maxHeight = Math.max(120, r.height - top - 8) + 'px'; };
       if (editorAt) {
+        const top = clamp(editorAt.y, 8, Math.max(8, r.height - 40));
         editor.style.left = clamp(editorAt.x, 8, Math.max(8, r.width - w - 8)) + 'px';
-        editor.style.top = clamp(editorAt.y, 8, Math.max(8, r.height - 40)) + 'px';
+        editor.style.top = top + 'px';
+        fit(top);
         return;
       }
       let left = s.x + 18;
       if (left + w > r.width - 8) left = s.x - w - 18;
+      const top = clamp(s.y - 30, 8, Math.max(8, r.height - h - 8));
       editor.style.left = clamp(left, 8, Math.max(8, r.width - w - 8)) + 'px';
-      editor.style.top = clamp(s.y - 30, 8, Math.max(8, r.height - h - 8)) + 'px';
+      editor.style.top = top + 'px';
+      fit(top);
     }
     // The editor shows the pin's kind, its text, and — for a brainstorm or
     // a request — its AI session.
@@ -1090,8 +1096,10 @@
       head.setPointerCapture(e.pointerId);
       const move = (ev) => {
         editorAt = { x: from.left + ev.clientX - from.x, y: from.top + ev.clientY - from.y };
+        const top = clamp(editorAt.y, 8, Math.max(8, r.height - 40));
         editor.style.left = clamp(editorAt.x, 8, Math.max(8, r.width - editor.offsetWidth - 8)) + 'px';
-        editor.style.top = clamp(editorAt.y, 8, Math.max(8, r.height - 40)) + 'px';
+        editor.style.top = top + 'px';
+        editor.style.maxHeight = Math.max(120, r.height - top - 8) + 'px';
       };
       const up = () => { head.removeEventListener('pointermove', move); head.removeEventListener('pointerup', up); head.removeEventListener('pointercancel', up); };
       head.addEventListener('pointermove', move);
