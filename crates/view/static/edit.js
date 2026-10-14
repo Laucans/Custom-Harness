@@ -204,6 +204,11 @@
         el.style.width = `${op.width || 200}px`;
         el.style.height = 'auto';
         el.style.display = 'block';
+      } else if (op.what === 'component') {
+        // A micro-frontend of the branch: the runtime fills it from components/<Name>.html.
+        el = doc.createElement('div');
+        el.dataset.component = op.name || '';
+        if (op.props) el.dataset.props = JSON.stringify(op.props);
       } else if (op.what === 'kit') {
         // A component of the design system's kit: the loader fills it from kit/<Name>.html.
         el = doc.createElement('div');

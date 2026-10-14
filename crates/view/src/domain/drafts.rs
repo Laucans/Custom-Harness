@@ -286,10 +286,12 @@ pub fn apply_prompt(
          - `clone`: copies the target right after itself, `as` the new element's id;\n\
          - `text`: `text`, the new text of a static element;\n\
          - `static`: `layout` `static`|`flow` on a container;\n\
-         - `add`: `what` `link`|`button`|`text`|`section`|`image`|`kit`, `label`, and `page` (a page \
-         path) or `href` for a link, `intent` (what the button is for, in words) for a button, \
-         `name` (a component of the kit, listed below) for `kit` with optional `props` (an object); \
-         placed `before`/`after`/`into` like a move, with `as` the new element's id;\n\
+         - `add`: `what` `link`|`button`|`text`|`section`|`image`|`kit`|`component`, `label`, and \
+         `page` (a page path) or `href` for a link, `intent` (what the button is for, in words) for \
+         a button, `name` (a component of the kit, listed below) for `kit` with optional `props` (an \
+         object), `name` (a micro-frontend of the branch, listed below) for `component` — the \
+         micro-frontend injected on the page, as its own code draws it; placed \
+         `before`/`after`/`into` like a move, with `as` the new element's id;\n\
          - `props`: `props`, an object, on a kit component already on the page.\n\
          The product has a **design system**: a kit of styled visual components (a menu, a \
          carousel, a card…) listed below. When a request calls for something visual the kit \
@@ -297,9 +299,13 @@ pub fn apply_prompt(
          for a visual component the kit lacks, do not invent it: answer for that request one \
          operation `{{\"kind\":\"add\",\"by\":\"<id>\",\"skip\":\"missing component: <Name> — <what it is, one line>\"}}` \
          and the human decides (build it, edit one, a placeholder, or without).\n\
-         A request that changes what a micro-frontend does inside is not a page operation: answer \
-         for it one operation `{{\"kind\":\"add\",\"by\":\"<id>\",\"skip\":\"<why, one line>\"}}` and \
-         leave the rest to the human. A kit component's insides are rendered at run time: act on \
+         A request that changes what a micro-frontend does inside: do the page's part yourself \
+         (injecting it with `add` `what: component`, placing it, what goes around it), and for its \
+         inside answer one operation `{{\"kind\":\"mf\",\"by\":\"<id>\",\"name\":\"<Name>\",\"ask\":\"<what \
+         must change inside it, in the human's words>\"}}` per micro-frontend, naming only those \
+         listed below: each is redrafted from it apart. Answer \
+         `{{\"kind\":\"add\",\"by\":\"<id>\",\"skip\":\"<why, one line>\"}}` only for what neither the page \
+         nor a listed micro-frontend can carry. A kit component's insides are rendered at run time: act on \
          the kit component itself (its `props`, or what goes before, after or around it). A \
          request's `where` says where the human pointed — use it to choose `before`, `after` or \
          `into`. Use only elements that exist in the page. Keep the changes \
@@ -310,13 +316,54 @@ pub fn apply_prompt(
     )
 }
 
+/// A request's part that is a micro-frontend's inside, as the answer
+/// hands it over: redrafted apart, on that micro-frontend.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MfAsk {
+    /// The request it comes from.
+    pub by: String,
+    /// The micro-frontend.
+    pub name: String,
+    /// What must change inside it.
+    pub ask: String,
+}
+
+/// What an answer carries: the page's operations, and the micro-frontends'
+/// insides handed over (`kind: mf`), each signed with a request asked.
+///
+/// # Errors
+///
+/// No array in the answer, an operation that is not one, or a hand-over
+/// with no micro-frontend or nothing to do.
+pub fn answered(answer: &str, asked: &[Asked]) -> Result<(Vec<Value>, Vec<MfAsk>), String> {
+    let all = ops_from_answer(answer, asked)?;
+    let mut ops = Vec::new();
+    let mut mfs = Vec::new();
+    for op in all {
+        if op.get("kind").and_then(Value::as_str) == Some("mf") {
+            let mf: MfAsk = serde_json::from_value(op)
+                .map_err(|e| format!("a micro-frontend's part is not readable: {e}"))?;
+            if mf.name.trim().is_empty() || mf.ask.trim().is_empty() {
+                return Err("a micro-frontend's part names none, or asks nothing".to_string());
+            }
+            mfs.push(mf);
+        } else {
+            ops.push(op);
+        }
+    }
+    checked_ops(&ops)?;
+    Ok((ops, mfs))
+}
+
 /// The operations an answer carries: a JSON array, alone or inside a code
-/// fence, each operation signed with a request that was asked.
+/// fence, each operation signed with a request that was asked; a hand-over
+/// to a micro-frontend (`kind: mf`) among them.
 ///
 /// # Errors
 ///
 /// No array in the answer, or an operation that is not one.
-pub fn ops_from_answer(answer: &str, asked: &[Asked]) -> Result<Vec<Value>, String> {
+fn ops_from_answer(answer: &str, asked: &[Asked]) -> Result<Vec<Value>, String> {
     let start = answer.find('[').ok_or("the answer carries no list")?;
     let end = answer.rfind(']').ok_or("the answer carries no list")?;
     if end < start {
@@ -325,7 +372,12 @@ pub fn ops_from_answer(answer: &str, asked: &[Asked]) -> Result<Vec<Value>, Stri
     let text = answer.get(start..=end).unwrap_or_default();
     let ops: Vec<Value> = serde_json::from_str(text)
         .map_err(|e| format!("the answer is not a list of operations: {e}"))?;
-    checked_ops(&ops)?;
+    let draft: Vec<Value> = ops
+        .iter()
+        .filter(|o| o.get("kind").and_then(Value::as_str) != Some("mf"))
+        .cloned()
+        .collect();
+    checked_ops(&draft)?;
     for op in &ops {
         let by = op.get("by").and_then(Value::as_str).unwrap_or_default();
         if !asked.iter().any(|a| a.id == by) {
@@ -441,6 +493,30 @@ mod tests {
         let answer = "Here you go:\n```json\n[{\"kind\":\"add\",\"by\":\"r1\",\"target\":\"component:Campagnes\",\"what\":\"button\",\"label\":\"Archiver\",\"after\":\"id:create\",\"as\":\"archive\"}]\n```";
         let ops = ops_from_answer(answer, &asked).expect("read");
         assert_eq!(ops.len(), 1);
+        let (ops, mfs) = answered(
+            r#"[{"kind":"add","by":"r1","what":"component","name":"Rail","after":"id:a","as":"rail"},
+                {"kind":"mf","by":"r1","name":"Rail","ask":"a folded mode"}]"#,
+            &asked,
+        )
+        .expect("read");
+        assert_eq!(ops.len(), 1, "the page's part");
+        assert_eq!(
+            mfs,
+            [MfAsk {
+                by: "r1".into(),
+                name: "Rail".into(),
+                ask: "a folded mode".into()
+            }]
+        );
+        assert!(answered(r#"[{"kind":"mf","by":"r1","name":"","ask":"x"}]"#, &asked).is_err());
+        assert!(
+            answered(
+                r#"[{"kind":"mf","by":"r9","name":"Rail","ask":"x"}]"#,
+                &asked
+            )
+            .is_err()
+        );
+        assert!(answered(r#"[{"kind":"teleport","by":"r1"}]"#, &asked).is_err());
         assert!(
             ops_from_answer(
                 "[{\"kind\":\"remove\",\"by\":\"r9\",\"target\":\"id:a\"}]",
@@ -458,6 +534,8 @@ mod tests {
         );
         assert!(prompt.contains("request `r1` (on component:Campagnes): add an archive button"));
         assert!(prompt.contains("The kit's components:\n- Menu (Navigation menu): a bar"));
+        assert!(prompt.contains(r#""kind":"mf""#));
+        assert!(prompt.contains("`what: component`"));
         assert!(prompt.contains("missing component: <Name>"));
         assert!(
             checked_ops(&[

@@ -833,8 +833,12 @@ impl Creation {
 
     /// A request pin's proposals kept: [`Self::propose_rules`], each tied
     /// to the pin so its validation accepts them and its Undo takes them
-    /// back.
+    /// back; its proposals still waiting from before go.
     pub fn propose_for(&mut self, change: &RuleChange, read: Vec<Proposal>) {
+        // Proposed again, a pin's waiting proposals give way to the new ones.
+        if !change.pin.is_empty() {
+            self.proposals.retain(|p| p.pin != change.pin);
+        }
         let tagged = read
             .into_iter()
             .map(|mut p| {
@@ -2645,6 +2649,16 @@ mod tests {
             vec![proposal(3, "Connect"), proposal(0, "Binary")],
         );
         c.propose_for(&drafted("q"), vec![proposal(5, "Other pin")]);
+        // Proposed again: the pin's waiting proposals give way to the new ones.
+        c.propose_for(&drafted("q"), vec![proposal(0, "Other pin, again")]);
+        assert_eq!(
+            c.proposals
+                .iter()
+                .filter(|p| p.pin == "q")
+                .map(|p| p.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Other pin, again"]
+        );
         assert!(c.proposals.iter().take(2).all(|p| p.pin == "p"));
         let pins = ["p".to_string()];
 

@@ -683,7 +683,8 @@
     });
 
     // ---- requests applied to the draft, in one go ----------------------------------------
-    // Answers what it came to; throws what kept it from it.
+    // Answers what it came to — the page's changes, the micro-frontends'
+    // insides handed over; throws what kept it from it.
     async function applyRequests(notes) {
       if (!st.engine || !st.frame) throw new Error('the page is not loaded yet');
       // A part rendered at run time (inside a kit component, filled by
@@ -768,6 +769,13 @@
         const got = JSON.parse(text);
         const ops = (got.ops || []).filter((o) => !o.skip);
         const skipped = (got.ops || []).filter((o) => o.skip);
+        // The micro-frontends' insides the answer hands over: redrafted apart.
+        const mfs = (got.mfs || []).filter((m) => componentOf(m.name));
+        // Nothing the page or a micro-frontend can carry: said, not swallowed.
+        if (!ops.length && !mfs.length) {
+          const why = skipped.map((x) => x.skip).filter(Boolean).join('; ');
+          throw new Error(why ? `the AI left it: ${why}` : 'the AI changed nothing');
+        }
         // A request applied again: its former operations go, the new ones
         // come — one undoable step, which knows the pins it marked.
         const marked = asked.filter((a) => !skipped.some((x) => x.by === a.id)).map((a) => ({ id: a.id, was: (st.board.all().find((n) => n.id === a.id) || {}).state || 'pending' }));
@@ -778,7 +786,7 @@
         offerSkipped(skipped);
         if (action) action.ok(`${ops.length} operation(s)${skipped.length ? `, ${skipped.length} left to the human` : ''}`);
         drawBar();
-        return `drafted on the page: ${ops.length} change${ops.length === 1 ? '' : 's'}${skipped.length ? `, ${skipped.length} left to you` : ''} — keep or validate the draft above`;
+        return { ops: ops.length, mfs, said: `${ops.length} change${ops.length === 1 ? '' : 's'} on the page${skipped.length ? `, ${skipped.length} left to you` : ''}` };
       } catch (e) {
         if (action) action.fail(e.message || e);
         say(`not applied: ${esc(String(e.message || e).split('\n')[0])}`);
@@ -857,24 +865,46 @@
     async function proposeOnPage(n) {
       const g = gestureOf('a request proposed');
       const name = mfOfPin(n);
-      if (!name) {
-        const drafted = await applyRequests([n]);
-        return drafted + await proposeRules(n, '', g);
+      if (name) {
+        await draftMf(n, name, n.text, g);
+        st.board.patch(n.id, { state: 'simulated', component: name }, H(g));
+        await loadGens();
+        render();
+        drawDrafts();
+        return `drafted on ${name}, shown on the page${await proposeRules(n, name, g)} — validate it in the bar above the page`;
       }
+      // On the page: its part done there, each micro-frontend's inside it
+      // hands over drafted on that micro-frontend, for the same pin.
+      const page = await applyRequests([n]);
+      const drafted = [];
+      for (const m of page.mfs.filter((x) => x.by === n.id)) {
+        if (st.board.progress) st.board.progress(n.id, `the AI drafts ${m.name}…`);
+        await draftMf(n, m.name, m.ask, g);
+        drafted.push(m.name);
+      }
+      if (drafted.length) {
+        st.board.patch(n.id, { state: 'simulated', component: drafted[0] }, H(g));
+        await loadGens();
+        render();
+        drawDrafts();
+      }
+      const where = [page.ops ? page.said : '', drafted.length ? `${drafted.join(', ')} drafted` : ''].filter(Boolean).join('; ');
+      return `${where}${await proposeRules(n, drafted[0] || '', g)} — validate it above the page`;
+    }
+    // A micro-frontend redrafted for a request pin: its step keeps the draft
+    // as it was, for the pin's Undo. Throws what the AI left.
+    async function draftMf(n, name, text, g) {
       const c = componentOf(name);
+      if (!c) throw new Error(`no micro-frontend ${name}`);
       const page = currentPage();
       const spec = { name: c.name, system: c.system || '', description: c.description || '', needs: c.needs || [], actions: c.actions || [], props: c.props || {} };
-      const text = `${n.text.trim()}\n\n(Asked on the page ${page ? page.title : st.page}, where ${name} is shown.)`;
-      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: H(g), body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text, target: partIn(n, name) }], pin: n.id, board: boardOf() }) });
+      const asked = `${String(text).trim()}\n\n(Asked on the page ${page ? page.title : st.page}, where ${name} is shown.)`;
+      const target = mfOfPin(n) === name ? partIn(n, name) : '';
+      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: H(g), body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text: asked, target }], pin: n.id, board: boardOf() }) });
       const body = await res.text();
       if (!res.ok) throw new Error(body);
       const left = (JSON.parse(body).skipped || []).find(([id]) => id === n.id);
-      if (left) throw new Error(`the AI left it: ${left[1]}`);
-      st.board.patch(n.id, { state: 'simulated' }, H(g));
-      await loadGens();
-      render();
-      drawDrafts();
-      return `drafted on ${name}, shown on the page${await proposeRules(n, name, g)} — validate it in the bar above the page`;
+      if (left) throw new Error(`the AI left ${name}: ${left[1]}`);
     }
     // The rules a proposal touches, read by the AI and kept as proposals on
     // the factory's creation (a page without one has no rules to keep in
@@ -948,7 +978,7 @@
     // proposals accepted), forked for this page (those rules tied to the
     // fork), or thrown away (its requests taken back).
     async function settleDraft(name, how) {
-      const pins = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && n.state === 'simulated' && mfOfPin(n) === name);
+      const pins = (st.board ? st.board.all() : []).filter((n) => n.kind === 'request' && n.state === 'simulated' && (mfOfPin(n) === name || n.component === name));
       const g = gestureOf(how === 'drop' ? 'a proposed change discarded' : 'a proposed change validated');
       st.settling = name;
       drawDrafts();
@@ -1245,7 +1275,10 @@
       await write(page.path, st.engine.materialized());
       await write(`drafts/${slug}.json`, JSON.stringify({ page: page.path, version: current ? current.version : 0, name: current ? current.name : '', viewport: st.width, ops: st.engine.ops.map((o) => (o.kind === 'fork' ? Object.assign({}, o, { html: undefined }) : o)), forks: forked, requests }, null, 2) + '\n');
       for (const f of forks()) await write(`components/${f.as}.html`, (f.html || '') + '\n');
-      if (forked.length) {
+      // The micro-frontends the draft injected: listed on the page's entry.
+      const shown = [...new Set([...new DOMParser().parseFromString(st.engine.materialized(), 'text/html').querySelectorAll('[data-component]')].map((el) => el.dataset.component))];
+      const injected = shown.filter((x) => !(page.components || []).includes(x) && !forked.some((f) => f.as === x));
+      if (forked.length || injected.length) {
         const manifest = await fetch(`/mock/${encodeURIComponent(slugOf(st.branch))}/pages.json?v=${Date.now()}`).then((r) => (r.ok ? r.json() : { version: 1, pages: [], components: [] }));
         manifest.components = manifest.components || [];
         forked.forEach((f) => {
@@ -1254,7 +1287,7 @@
           manifest.components.push({ name: f.as, system: origin.system || 'page', description: `${f.from} as the page ${page.title} wants it`, fragment: `components/${f.as}.html`, needs: origin.needs || [], actions: origin.actions || [], props: origin.props || {}, variantOf: f.from });
         });
         const entry = (manifest.pages || []).find((p) => p.path === page.path);
-        if (entry) entry.components = [...new Set([...(entry.components || []).filter((n) => !forked.some((f) => f.from === n)), ...forked.map((f) => f.as)])];
+        if (entry) entry.components = [...new Set([...(entry.components || []).filter((n) => !forked.some((f) => f.from === n)), ...forked.map((f) => f.as), ...injected])];
         await write('pages.json', JSON.stringify(manifest, null, 2) + '\n');
       }
     }

@@ -791,8 +791,8 @@ pub(super) async fn apply_requests(
         Ok(answer) => answer,
         Err(why) => return (StatusCode::BAD_GATEWAY, why).into_response(),
     };
-    match drafts::ops_from_answer(&answer, &ask.requests) {
-        Ok(ops) => json(&serde_json::json!({ "ops": ops })),
+    match drafts::answered(&answer, &ask.requests) {
+        Ok((ops, mfs)) => json(&serde_json::json!({ "ops": ops, "mfs": mfs })),
         Err(why) => (StatusCode::BAD_GATEWAY, format!("{why}\n\n{answer}")).into_response(),
     }
 }
