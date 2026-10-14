@@ -1229,7 +1229,7 @@ pub fn scope_prompt(c: &Creation) -> String {
 /// `rules` are the mock-up's own (`note_session::mockup_rules`), `kit` the
 /// design system's components, one line each.
 #[must_use]
-pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str) -> String {
+pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str, tokens_css: &str) -> String {
     let mut text = rules.to_string();
     text.push_str(
         "\nDraw the proof of concept below as the product's mock-up: one page per screen of its \
@@ -1256,6 +1256,7 @@ pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str) -> String {
             kit.trim()
         );
     }
+    text.push_str(&design_brief(tokens_css));
     text.push_str(&product(c));
     let _ = write!(
         text,
@@ -1263,6 +1264,63 @@ pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str) -> String {
         c.scope.trim()
     );
     text
+}
+
+/// What a mock-up session is told of the design system it builds on: it
+/// lives on its own branch and is served beside the pages, its variables
+/// are the only ones to use, and its folders are never written — a file
+/// there hides the design system's own.
+#[must_use]
+pub fn design_brief(tokens_css: &str) -> String {
+    let mut text = String::from(
+        "The design system lives on its own branch and is served beside the pages: \
+         `../design/tokens.css` (its variables), `../kit/kit.css` and its kit's components \
+         (`data-kit`). Never write anything under `mock/design/` or `mock/kit/`: a file there \
+         hides the design system's own. Link `../design/tokens.css` and `../kit/kit.css` in \
+         every page, and style everything through the variables below and no other — never a \
+         colour, a font or a size written by hand.\n\n",
+    );
+    if tokens_css.trim().is_empty() {
+        text.push_str("The design system has no variable yet: style with none.\n\n");
+    } else {
+        let _ = write!(
+            text,
+            "Its variables:\n\n```css\n{}\n```\n\n",
+            tokens_css.trim()
+        );
+    }
+    text
+}
+
+/// The variables a stylesheet declares, `--name`, in their order.
+#[must_use]
+pub fn token_names(css: &str) -> Vec<String> {
+    css.split([';', '{', '\n'])
+        .filter_map(|decl| decl.trim().split_once(':'))
+        .map(|(name, _)| name.trim())
+        .filter(|name| name.starts_with("--"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The variables a text uses that the design system has not — those the
+/// text itself declares (`--cols: 3`) aside.
+#[must_use]
+pub fn unknown_tokens(text: &str, tokens: &[String]) -> Vec<String> {
+    let declared = token_names(text);
+    let mut unknown = std::collections::BTreeSet::new();
+    for (at, _) in text.match_indices("var(--") {
+        let name: String = text
+            .get(at + 4..)
+            .unwrap_or_default()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if !tokens.contains(&name) && !declared.contains(&name) {
+            unknown.insert(name);
+        }
+    }
+    unknown.into_iter().collect()
 }
 
 /// The session that repairs a `mock/pages.json` the view cannot read:
@@ -1286,7 +1344,7 @@ pub fn manifest_repair_prompt(rules: &str, why: &str) -> String {
 /// keeping what the human saw: `rules` are the mock-up's own, `kit` the
 /// design system's components.
 #[must_use]
-pub fn componentize_prompt(c: &Creation, rules: &str, kit: &str) -> String {
+pub fn componentize_prompt(c: &Creation, rules: &str, kit: &str, tokens_css: &str) -> String {
     let mut text = rules.to_string();
     text.push_str(
         "\nThis proof of concept's mock-up was drawn fast: its pages may carry \
@@ -1314,6 +1372,7 @@ pub fn componentize_prompt(c: &Creation, rules: &str, kit: &str) -> String {
             kit.trim()
         );
     }
+    text.push_str(&design_brief(tokens_css));
     text.push_str(&product(c));
     text
 }
@@ -2164,6 +2223,32 @@ mod tests {
     }
 
     #[test]
+    fn a_session_is_told_the_design_system_s_variables_and_never_to_write_its_folders() {
+        let css = ":root {\n  --color-text: #fff;\n  --space-1: 4px;\n}";
+        let brief = design_brief(css);
+        assert!(brief.contains("Never write anything under `mock/design/` or `mock/kit/`"));
+        assert!(brief.contains("```css\n:root {\n  --color-text: #fff;"));
+        assert!(design_brief(" ").contains("has no variable yet"));
+        let c = ready();
+        assert!(mockups_prompt(&c, "R", "", css).contains("--space-1: 4px;"));
+        assert!(
+            componentize_prompt(&c, "R", "", css)
+                .contains("Never write anything under `mock/design/`")
+        );
+        assert_eq!(
+            token_names(css),
+            vec!["--color-text".to_string(), "--space-1".to_string()]
+        );
+        let tokens = token_names(css);
+        let page = "body { color: var(--color-text); background: var(--color-bg); } .g { --cols: 2; width: var(--cols); margin: var(--space-9) }";
+        assert_eq!(
+            unknown_tokens(page, &tokens),
+            vec!["--color-bg".to_string(), "--space-9".to_string()]
+        );
+        assert!(unknown_tokens("a { color: var(--color-text) }", &tokens).is_empty());
+    }
+
+    #[test]
     fn a_rule_changed_takes_the_validation_back_the_same_rules_do_not() {
         let mut c = ready();
         c.requirements = vec![rule(1, "given y", &["pages/a.html"])];
@@ -2589,11 +2674,16 @@ mod tests {
     #[test]
     fn the_mockups_prompt_carries_the_rules_the_kit_and_the_scope() {
         let c = ready();
-        let with = mockups_prompt(&c, "RULES", "Button: a button");
+        let with = mockups_prompt(
+            &c,
+            "RULES",
+            "Button: a button",
+            ":root { --color-text: #fff; }",
+        );
         assert!(with.starts_with("RULES"));
         assert!(with.contains("Button: a button"));
         assert!(with.ends_with("## Goal\n"));
-        assert!(mockups_prompt(&c, "RULES", " ").contains("no generated component yet"));
+        assert!(mockups_prompt(&c, "RULES", " ", "").contains("no generated component yet"));
     }
 
     #[test]
@@ -2930,12 +3020,17 @@ mod tests {
     #[test]
     fn the_componentize_prompt_keeps_the_look_and_carries_the_kit_and_the_brief() {
         let c = ready();
-        let text = componentize_prompt(&c, "RULES", "Button: a button");
+        let text = componentize_prompt(
+            &c,
+            "RULES",
+            "Button: a button",
+            ":root { --color-text: #fff; }",
+        );
         assert!(text.starts_with("RULES"));
         assert!(text.contains("without changing what the human sees"));
         assert!(text.contains("Button: a button"));
         assert!(text.contains("a ledger"));
-        assert!(!componentize_prompt(&c, "RULES", "  ").contains("The kit's components"));
+        assert!(!componentize_prompt(&c, "RULES", "  ", "").contains("The kit's components"));
     }
 
     #[test]

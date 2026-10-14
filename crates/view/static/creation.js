@@ -774,8 +774,20 @@
     const notice = writing ? '<div class="callout">Drawing the mock-up takes <b>several tens of minutes</b>: the fixtures and the micro-frontends come first, the pages last. You may leave this page — the work goes on.</div>' : '';
     const count = (kind) => files.filter((f) => f.kind === kind).length;
     const counts = FILE_KINDS.map(([kind, label]) => `<span><b>${count(kind)}</b> ${label.toLowerCase()}</span>`).join('');
-    const head = files.length ? `<div class="cr-files-head">${counts}<span class="muted">${files.length} files${last ? ` · last written ${clock(last)}` : ''}</span></div>` : '';
+    const timer = drawingTime();
+    const head = files.length || timer ? `<div class="cr-files-head">${counts}<span class="muted">${files.length} files${last ? ` · last written ${clock(last)}` : ''}${timer ? ` · <span data-cr-timer title="How long the drawing has been at work">${timer}</span>` : ''}</span></div>` : '';
     return notice + head;
+  }
+  // How long the drawing (or the cut into micro-frontends) has been at
+  // work — frozen at its end; empty when no such job is known.
+  function drawingTime() {
+    const j = job();
+    if (!j || !j.started || (j.work !== 'mockups' && j.work !== 'componentize')) return '';
+    const secs = Math.max(0, (j.ended || Math.floor(Date.now() / 1000)) - j.started);
+    const h = Math.floor(secs / 3600);
+    const mm = String(Math.floor((secs % 3600) / 60)).padStart(h ? 2 : 1, '0');
+    const ss = String(secs % 60).padStart(2, '0');
+    return `${j.ended ? 'took' : 'drawing for'} ${h ? `${h}:` : ''}${mm}:${ss}`;
   }
   async function loadFiles() {
     if (C.route !== 'mockups' || !C.data || !C.data.branch) { clearInterval(C.filesTimer); C.filesTimer = null; return; }
@@ -788,6 +800,14 @@
   }
   function followFiles() {
     if (C.route === 'mockups' && !C.filesTimer && !DEMO) { loadFiles(); C.filesTimer = setInterval(loadFiles, FILES_MS); }
+    // The drawing's time ticks every second, on its own span only.
+    if (C.route === 'mockups' && !C.clockTimer && !DEMO) {
+      C.clockTimer = setInterval(() => {
+        if (C.route !== 'mockups') { clearInterval(C.clockTimer); C.clockTimer = null; return; }
+        const span = page.querySelector('[data-cr-timer]');
+        if (span) span.textContent = drawingTime();
+      }, 1000);
+    }
   }
   function mockupsFoot() {
     const r = record();

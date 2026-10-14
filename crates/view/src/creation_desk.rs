@@ -142,6 +142,17 @@ pub struct Job {
     pub factory: String,
     /// What a step reported at length — `init-repo`'s report.
     pub report: String,
+    /// When it started, in seconds since the epoch.
+    pub started: u64,
+    /// When it ended; 0 while it runs.
+    pub ended: u64,
+}
+
+/// Now, in seconds since the epoch: when a job starts and ends.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// A new factory, as the human asks for it.
@@ -738,6 +749,8 @@ impl CreationDesk {
             why: String::new(),
             factory: String::new(),
             report: String::new(),
+            started: now_secs(),
+            ended: 0,
         });
         self.pulse.beat();
         Ok(())
@@ -756,11 +769,14 @@ impl CreationDesk {
     }
 
     fn end(&self, outcome: Result<(), String>) {
-        self.update(|job| match outcome {
-            Ok(()) => job.state = State::Done,
-            Err(why) => {
-                job.state = State::Failed;
-                job.why = why;
+        self.update(|job| {
+            job.ended = now_secs();
+            match outcome {
+                Ok(()) => job.state = State::Done,
+                Err(why) => {
+                    job.state = State::Failed;
+                    job.why = why;
+                }
             }
         });
     }
@@ -976,12 +992,14 @@ impl CreationDesk {
             branch: branch.clone(),
             ..About::default()
         });
-        let prompt = mockups_prompt(&record, &rules, &kit);
+        let tokens_css = Self::design_tokens(&mockups).await;
+        let prompt = mockups_prompt(&record, &rules, &kit, &tokens_css);
         let model = self.setup.draw_model.clone();
         let desk = self.clone();
         self.step("opening the integration branch's mock-up");
         let poll_mockups = mockups.clone();
         let poll_branch = branch.clone();
+        let (mockups_after, branch_after) = (mockups.clone(), branch.clone());
         let (opened, at) = (mockups.clone(), branch.clone());
         let dir = tokio::task::spawn_blocking(move || {
             // A drawing starts from the branch as committed: one sent back
@@ -1010,6 +1028,8 @@ impl CreationDesk {
         .map_err(|e| format!("the session did not finish: {e}"));
         poll.abort();
         let said = said??;
+        self.kept_on_design(&mockups_after, &branch_after, &tokens_css)
+            .await;
         self.step("the mock-up is drawn");
         let facts = self.facts().await;
         let _held = self.record.lock().await;
@@ -1020,6 +1040,75 @@ impl CreationDesk {
             record.go(Step::Rules, facts)?;
         }
         self.keep(&record)
+    }
+
+    /// The design system's variables, as its own branch holds them: what a
+    /// mock-up session builds on. Empty when there are none yet.
+    async fn design_tokens(mockups: &Arc<dyn Mockups>) -> String {
+        let mockups = Arc::clone(mockups);
+        tokio::task::spawn_blocking(move || {
+            mockups.file(
+                harness_architecture::kit::DESIGN_BRANCH,
+                crate::domain::design::TOKENS_CSS,
+            )
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
+    }
+
+    /// After a session on the mock-up: what it wrote under `design/` and
+    /// `kit/` goes — the design system's own files are served there — and
+    /// the variables it uses that the design system has not are said.
+    async fn kept_on_design(&self, mockups: &Arc<dyn Mockups>, branch: &str, tokens_css: &str) {
+        let tokens = creation::token_names(tokens_css);
+        let (mockups, branch) = (Arc::clone(mockups), branch.to_string());
+        let checked = tokio::task::spawn_blocking(move || {
+            let files = mockups.files(&branch)?;
+            let mut removed = Vec::new();
+            let mut unknown = std::collections::BTreeSet::new();
+            for f in files {
+                if f.path.starts_with("design/") || f.path.starts_with("kit/") {
+                    mockups.remove(&branch, &f.path)?;
+                    removed.push(f.path);
+                } else if !tokens.is_empty()
+                    && std::path::Path::new(&f.path).extension().is_some_and(|e| {
+                        e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("css")
+                    })
+                {
+                    let text = mockups.file(&branch, &f.path)?.unwrap_or_default();
+                    unknown.extend(creation::unknown_tokens(
+                        &String::from_utf8_lossy(&text),
+                        &tokens,
+                    ));
+                }
+            }
+            Ok::<_, String>((removed, unknown))
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+        match checked {
+            Ok((removed, unknown)) => {
+                if !removed.is_empty() {
+                    self.step(&format!(
+                        "{} file(s) the session wrote under design/ and kit/ removed: the design system's own are served ({})",
+                        removed.len(),
+                        removed.join(", ")
+                    ));
+                }
+                if !unknown.is_empty() {
+                    self.step(&format!(
+                        "variables the design system has not, left to put right: {}",
+                        unknown.into_iter().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+            Err(why) => self.step(&format!("the design system could not be checked: {why}")),
+        }
     }
 
     /// The proof of concept accepted: the factory is initialized — the
@@ -1356,7 +1445,9 @@ impl CreationDesk {
             branch: branch.clone(),
             ..About::default()
         });
-        let prompt = componentize_prompt(record, &rules, &kit);
+        let (mockups_after, branch_after) = (mockups.clone(), branch.clone());
+        let tokens_css = Self::design_tokens(&mockups).await;
+        let prompt = componentize_prompt(record, &rules, &kit, &tokens_css);
         let model = self.setup.draw_model.clone();
         self.step("a Claude Code session makes the mock-up again of micro-frontends");
         // Seeded with whatever is already there: a retry's own earlier
@@ -1416,6 +1507,8 @@ impl CreationDesk {
             ));
         }
         self.step("every page is made of micro-frontends");
+        self.kept_on_design(&mockups_after, &branch_after, &tokens_css)
+            .await;
         let _held = self.record.lock().await;
         let mut kept = self.existing()?;
         kept.componentized = Some(said);
@@ -1690,7 +1783,17 @@ mod tests {
                 prompt.contains("## Goal\nproof"),
                 "the scope is in the prompt"
             );
-            write("mock/pages/home.html", "<main>home</main>")?;
+            assert!(
+                prompt.contains("--color-primary:#2b6cb0"),
+                "the design system's variables are in the prompt"
+            );
+            // A session that copies the design system and reaches for a
+            // variable it has not: the copy goes, the variable is said.
+            write("mock/design/tokens.css", ":root{--made-up:red;}")?;
+            write(
+                "mock/pages/home.html",
+                r#"<main style="color: var(--color-primary); background: var(--made-up)">home</main>"#,
+            )?;
             write(
                 "mock/pages.json",
                 r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home"}],"components":[]}"#,
@@ -1973,6 +2076,7 @@ mod tests {
             job.why
         );
         assert!(dir.join("main_agent/mock/pages/home.html").is_file());
+        kept_on_the_design_system(&job, &dir);
         let drawn = desk.record().expect("read").expect("a record");
         assert_eq!(drawn.mocked.as_deref(), Some("one page: home"));
         assert_eq!(drawn.step, Step::Rules);
@@ -2353,6 +2457,26 @@ mod tests {
         });
         record.validate_data().expect("nothing keeps it");
         desk.keep(&record).expect("kept");
+    }
+
+    /// What the story's drawing left of the design system: its copy gone,
+    /// the variable it has not said, the job's time kept.
+    fn kept_on_the_design_system(job: &Job, dir: &Path) {
+        for step in [
+            "1 file(s) the session wrote under design/ and kit/ removed: the design system's own are served (design/tokens.css)",
+            "variables the design system has not, left to put right: --made-up",
+        ] {
+            assert!(
+                job.steps.iter().any(|s| s == step),
+                "{step}: {:?}",
+                job.steps
+            );
+        }
+        assert!(!dir.join("main_agent/mock/design/tokens.css").exists());
+        assert!(
+            job.started > 0 && job.ended >= job.started,
+            "a job keeps its time"
+        );
     }
 
     /// The second half of the flow above: accepted, the record is kept in
