@@ -126,7 +126,7 @@
     const st = { branch: (opts && opts.branch) || '', page: (opts && opts.page) || '', view: (opts && opts.view) || 'page', versions: null, state: null, stamp: '', pinned: false, readOnly: !!(opts && opts.readOnly),
       timer: null, gone: false, interact: false, mf: !!kept(MF_ON, false),
       // The micro-frontends' list beside the page (off where a step hides it); the one pointed at, on the page and in the list.
-      strip: !(opts && opts.strip === false), hot: '',
+      strip: !(opts && opts.strip === false), hot: '', locked: '', toldPage: null,
       // A rule picked on the creation's rules step: only its micro-frontends listed, its parts marked on the page.
       focus: null, board: null, frame: null, shield: null, doc: null, armed: null, proxies: new WeakMap(), fitted: false, saving: false,
       cards: [],
@@ -391,7 +391,9 @@
       injectStyle(doc);
       outline();
       st.hot = '';
+      if (st.locked) setHot(st.locked);
       marksFocus();
+      tellPage();
       // In interact mode the pointer is in the frame itself: the part under it lights its entry.
       doc.addEventListener('pointermove', (ev) => { const el = ev.target && ev.target.closest ? ev.target.closest('[data-component]') : null; setHot(el ? el.dataset.component : ''); });
       doc.addEventListener('pointerleave', () => setHot(''));
@@ -1436,12 +1438,27 @@
         + section('the rest', list.filter((c) => !here.has(c.name)), 'none')
         + '<button type="button" class="mini" data-mk="design">+ micro-frontend</button>';
     }
+    // A click on a micro-frontend locks its light and tells the desk; a
+    // second click on it lets go. Only for a desk that listens (onLock).
+    function setLocked(name) {
+      st.locked = name || '';
+      setHot(st.locked);
+      if (opts && typeof opts.onLock === 'function') opts.onLock(st.locked || null);
+    }
+    // The page on the board, told to the desk once per change.
+    function tellPage() {
+      if (!opts || typeof opts.onPage !== 'function' || st.view !== 'page' || st.toldPage === st.page) return;
+      st.toldPage = st.page;
+      opts.onPage(st.page);
+    }
     // The picked rule's micro-frontends, marked on the page.
     function marksFocus() {
       if (st.doc) st.doc.querySelectorAll('[data-component]').forEach((el) => el.classList.toggle('mf-focus', !!st.focus && st.focus.includes(el.dataset.component)));
     }
     // One micro-frontend pointed at — from the list or on the page — lit in both.
+    // A locked one stays lit whatever the pointer does.
     function setHot(name) {
+      if (st.locked) name = st.locked;
       if (st.hot === name) return;
       st.hot = name;
       if (st.doc) st.doc.querySelectorAll('[data-component]').forEach((el) => el.classList.toggle('mf-hot', !!name && el.dataset.component === name));
@@ -1786,6 +1803,13 @@
       setHot(el ? el.dataset.component : '');
     });
     boardHost.addEventListener('pointerleave', () => setHot(''));
+    // A drag swallows its click (board.js), so this is a click, not a pan.
+    boardHost.addEventListener('click', (e) => {
+      if (!opts || typeof opts.onLock !== 'function' || !st.strip || st.view !== 'page' || st.interact) return;
+      const el = elementAt(e.clientX, e.clientY, '[data-component]');
+      if (!el) return;
+      setLocked(st.locked === el.dataset.component ? '' : el.dataset.component);
+    });
     boardHost.addEventListener('pointerdown', onViewportDown, true);
     boardHost.addEventListener('pointermove', onViewportMove, true);
     boardHost.addEventListener('pointerup', onViewportUp, true);
@@ -1814,6 +1838,8 @@
         marksFocus();
         drawStrip();
       },
+      // The micro-frontend locked from the desk; null lets go. Not told back.
+      lock(name) { st.locked = name || ''; setHot(st.locked); },
       // One micro-frontend's fragment generated again from its spec.
       async regenerate(name) { const c = componentOf(name); if (c) await generateMfs([c]); },
       // The draft's steps written into the workspace, so what the human

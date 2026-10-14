@@ -1589,6 +1589,9 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-rules-split > .cr-embed.cr-full { position: fixed; inset: 0; z-index: 90; height: auto; border-radius: 0; }
 .cr-rules-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 10px; }
 .cr-rules-head .spacer { flex: 1; }
+.cr-rules-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.cr-rules-search { flex: 1 1 220px; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font: 13px var(--sans); padding: 5px 8px; }
+.cr-rules-search:focus { outline: none; border-color: var(--accent); }
 .cr-rules { display: flex; flex-direction: column; gap: 14px; }
 .cr-rule-group h3 { font: 600 12px var(--sans); text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 0 0 6px; cursor: help; }
 .cr-rule-group h3 small { font: 11px var(--mono); }

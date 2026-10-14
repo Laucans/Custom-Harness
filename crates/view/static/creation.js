@@ -895,23 +895,48 @@
     }).join('');
     return head + `<div class="cr-findings">${findings}</div><h3 class="cr-sub">The cut</h3><div class="cr-slices">${slices}</div>`;
   }
+  // The rules the filters let through: this page only, the micro-frontend
+  // locked on the easel, the words searched (a rule, a page, a micro-frontend).
+  function shownRules(list, mock) {
+    const pages = mock.pages || [];
+    const here = C.rulesHere ? C.canvasPage : '';
+    const onHere = new Set(here ? (pages.find((p) => p.path === here) || {}).components || [] : []);
+    const titleOf = (path) => (pages.find((p) => p.path === path) || {}).title || '';
+    const words = String(C.rulesQuery || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return list.filter((q) => {
+      if (here && !q.pages.includes(here) && !q.components.some((c) => onHere.has(c))) return false;
+      if (C.rulesMf && !q.components.includes(C.rulesMf)) return false;
+      const text = [`r${q.id}`, q.title, ...q.pages, ...q.pages.map(titleOf), ...q.components].join(' ').toLowerCase();
+      return words.every((w) => text.includes(w));
+    });
+  }
+  function rulesFilter(shown, total) {
+    const filtering = (C.rulesHere && C.canvasPage) || C.rulesMf || String(C.rulesQuery || '').trim();
+    return `<div class="cr-rules-filter">
+        <input type="search" class="cr-rules-search" data-cr-rules-q value="${esc(C.rulesQuery || '')}" placeholder="Filter by micro-frontend, page or rule" aria-label="Filter the rules">
+        <label class="cr-simple" title="Only the rules tied to the page the mock-up shows, or to one of its micro-frontends"><input type="checkbox" data-cr-rules-here${C.rulesHere ? ' checked' : ''}${C.canvasPage ? '' : ' disabled'}> this page only</label>
+        ${C.rulesMf ? `<span class="cr-tie on" title="Locked on the mock-up: click it there again to let go"><span class="cr-tie-name">${esc(C.rulesMf)}</span><button type="button" class="mini" data-cr-rules-unlock title="Let go of this micro-frontend" aria-label="let go of ${esc(C.rulesMf)}">✕</button></span>` : ''}
+        ${filtering ? `<span class="muted">${shown} of ${total}</span>` : ''}</div>`;
+  }
   function rulesPanel(r) {
     const mock = C.mock || { pages: [], components: [] };
-    const list = rules();
+    const all = rules();
+    const list = shownRules(all, mock);
     const gaps = (q) => { const d = danglingOf(q); return [critMissing(q).length ? 'criterion to complete' : '', !(q.pages.length || q.components.length) ? 'carried by nothing' : '', d.pages.length + d.components.length ? 'broken links' : ''].filter(Boolean); };
     const broken = danglingGaps().length;
-    const lacking = list.filter((q) => gaps(q).length).length;
+    const lacking = all.filter((q) => gaps(q).length).length;
     const group = ([family, label, hint]) => {
       const items = list.filter((q) => (q.family || 'journey') === family);
       return `<section class="cr-rule-group"><h3 title="${esc(hint)}">${label} <small>${items.length}</small></h3>${items.map((q) => ruleCard(q, gaps(q), mock)).join('') || '<p class="muted">none</p>'}</section>`;
     };
     return `<div class="cr-rules-head">
-        ${r.rules_validated ? '<span class="tag ok">validated</span>' : lacking ? `<span class="tag bad">${lacking} rule${lacking > 1 ? 's' : ''} to complete</span>` : list.length ? '<span class="tag">ready to validate</span>' : ''}
+        ${r.rules_validated ? '<span class="tag ok">validated</span>' : lacking ? `<span class="tag bad">${lacking} rule${lacking > 1 ? 's' : ''} to complete</span>` : all.length ? '<span class="tag">ready to validate</span>' : ''}
         <span class="spacer"></span>
         ${broken ? `<button type="button" class="cr-btn" data-cr-unbreak title="Untie every rule from the pages and micro-frontends the mock-up has not">Remove ${broken} broken link${broken > 1 ? 's' : ''}</button>` : ''}
         <button type="button" class="cr-btn" data-cr-req-add>+ rule</button>
-        <button type="button" class="cr-btn" data-cr-reqs title="The AI reads the rules again off the scope and the mock-up as it stands; yours are kept"${C.busy ? ' disabled' : ''}>${list.length ? 'Read all again' : 'Read the rules'}</button></div>
-      <div class="cr-rules">${list.length ? FAMILIES.map(group).join('') : (C.busy ? '' : '<p class="muted">No rule yet.</p>')}</div>`;
+        <button type="button" class="cr-btn" data-cr-reqs title="The AI reads the rules again off the scope and the mock-up as it stands; yours are kept"${C.busy ? ' disabled' : ''}>${all.length ? 'Read all again' : 'Read the rules'}</button></div>
+      ${all.length ? rulesFilter(list.length, all.length) : ''}
+      <div class="cr-rules">${all.length ? FAMILIES.map(group).join('') : (C.busy ? '' : '<p class="muted">No rule yet.</p>')}</div>`;
   }
   // A rule's ties to what the mock-up has not (gone with a discard or a new
   // drawing): shown red, counted as gaps, removed on a click.
@@ -981,7 +1006,7 @@
     const canvas = C.embed && C.embed.canvas;
     if (!canvas || typeof canvas.focus !== 'function') return;
     const q = C.route === 'rules' && C.ruleSel ? ruleOf(C.ruleSel) : null;
-    canvas.focus(q ? { names: q.components, page: C.rulePage || q.pages[0] || '' } : null);
+    canvas.focus(q ? { names: q.components, page: C.rulePage || (q.pages.includes(C.canvasPage) ? C.canvasPage : q.pages[0]) || '' } : null);
   }
   function rulesFoot() {
     // Both outward choices call the real backend (regenerate scraps the
@@ -1174,8 +1199,17 @@
     // The mock-ups step reworks the pages: no micro-frontends' list beside them.
     mockups: { kind: 'mockup', face: 'mockup-pages', title: "The mock-up — rework it: edit, pin a request, add a page", foot: mockupsFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO, strip: false }) },
     data: { kind: 'data_model', face: 'data-draft', title: 'The data model drafted for the proof of concept', foot: dataFoot, opts: () => ({ kind: 'data_model', source: '/api/creation/data-model' }) },
-    rules: { kind: 'mockup', face: 'mockup', title: "The mock-up — pick a rule to see what carries it", foot: rulesFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO }) },
+    rules: { kind: 'mockup', face: 'mockup', title: "The mock-up — pick a rule to see what carries it, click a micro-frontend to filter by it", foot: rulesFoot, opts: () => ({ kind: 'mockup', branch: C.data.branch, readOnly: DEMO, onLock: lockedMf, onPage: canvasPage }) },
   };
+  // The easel tells the rules step what it shows: the page, the micro-frontend locked.
+  function canvasPage(path) {
+    C.canvasPage = path || '';
+    if (C.route === 'rules') draw();
+  }
+  function lockedMf(name) {
+    C.rulesMf = name || '';
+    if (C.route === 'rules') draw();
+  }
   // The easel a step mounts right now: the mock-up's only once it is drawn.
   function embedFor(route) {
     if (!record()) return undefined;
@@ -1200,6 +1234,9 @@
     if (!C.embed) return;
     try { C.embed.canvas.destroy(); } catch (e) { /* already gone */ }
     C.embed = null;
+    // What the easel told is gone with it.
+    C.canvasPage = '';
+    C.rulesMf = '';
   }
   // A part of the page takes the whole screen; Esc gives it back.
   function toggleFull(el) {
@@ -1414,6 +1451,12 @@
       draw();
       return;
     }
+    if (t.matches('[data-cr-rules-unlock]')) {
+      C.rulesMf = '';
+      if (C.embed && C.embed.canvas && typeof C.embed.canvas.lock === 'function') C.embed.canvas.lock(null);
+      draw();
+      return;
+    }
     if (t.dataset.crRulePage) { const card = t.closest('[data-rule]'); C.ruleSel = Number(card.dataset.rule); C.rulePage = t.dataset.crRulePage; draw(); return; }
     if (t.dataset.crMfRedo) {
       const canvas = C.embed && C.embed.canvas;
@@ -1546,6 +1589,7 @@
       editData({ texts: [{ table: e.target.dataset.crPurpose, field: e.target.dataset.field || '', purpose: e.target.value }] });
       return;
     }
+    if (e.target.matches('[data-cr-rules-here]')) { C.rulesHere = e.target.checked; draw(); return; }
     if (e.target.matches('[data-cr-simple]')) {
       try { localStorage.setItem(SIMPLE, e.target.checked ? '1' : '0'); } catch (err) { /* a preference, not a record */ }
       draw();
@@ -1603,6 +1647,7 @@
     setPreviewHeight(h);
   });
   page.addEventListener('input', (e) => {
+    if (e.target.matches('[data-cr-rules-q]')) { C.rulesQuery = e.target.value; draw(); return; }
     if (e.target.closest('[data-q]')) answersOpen();
     const field = e.target.dataset && e.target.dataset.crRuleField;
     const card = e.target.closest('[data-rule]');
