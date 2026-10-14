@@ -763,7 +763,7 @@
       say(`<span class="spin"></span> the AI applies ${asked.length} request(s)…`);
       try {
         const summary = components().map((c) => `- ${c.name} (${c.system || '?'}): ${c.description || ''}${c.needs.length ? ' · needs ' + c.needs.join(', ') : ''}${c.actions.length ? ' · triggers ' + c.actions.join(', ') : ''}`).join('\n');
-        const res = await fetch(`/api/notes/${encodeURIComponent(board)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page: st.page, html: st.engine.materialized(), components: summary, requests: asked }) });
+        const res = await fetch(`/api/notes/${encodeURIComponent(board)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page: st.page, objective: (currentPage() || {}).objective || '', html: st.engine.materialized(), components: summary, requests: asked }) });
         const text = await res.text();
         if (!res.ok) throw new Error(text);
         const got = JSON.parse(text);
@@ -774,7 +774,8 @@
         // Nothing the page or a micro-frontend can carry: said, not swallowed.
         if (!ops.length && !mfs.length) {
           const why = skipped.map((x) => x.skip).filter(Boolean).join('; ');
-          throw new Error(why ? `the AI left it: ${why}` : 'the AI changed nothing');
+          const layout = skipped.some((x) => /^layout:/i.test(x.skip || '')) ? ' — Rework with AI can make it in the files' : '';
+          throw new Error(why ? `the AI left it: ${why}${layout}` : 'the AI changed nothing');
         }
         // A request applied again: its former operations go, the new ones
         // come — one undoable step, which knows the pins it marked.
@@ -901,9 +902,11 @@
       if (!c) throw new Error(`no micro-frontend ${name}`);
       const page = currentPage();
       const spec = { name: c.name, system: c.system || '', description: c.description || '', needs: c.needs || [], actions: c.actions || [], props: c.props || {} };
-      const asked = `${String(text).trim()}\n\n(Asked on the page ${page ? page.title : st.page}, where ${name} is shown.)`;
       const target = mfOfPin(n) === name ? partIn(n, name) : '';
-      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: H(g), body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text: asked, target }], pin: n.id, board: boardOf() }) });
+      // The request as the human pinned it travels with the part handed
+      // over: the rewrite knows where the micro-frontend goes, and why.
+      const context = `the human pinned it on the page ${page ? `"${page.title}"` : st.page}${page && page.objective ? ` (${page.objective})` : ''}, where ${name} is shown${String(text).trim() !== String(n.text).trim() ? `. The request as they wrote it: ${String(n.text).trim()}` : ''}`;
+      const res = await fetch(`/api/mockup/mf/${encodeURIComponent(name)}/apply`, { method: 'POST', headers: H(g), body: JSON.stringify({ branch: st.branch, spec, requests: [{ id: n.id, text: String(text).trim(), target }], pin: n.id, board: boardOf(), page: st.page, context }) });
       const body = await res.text();
       if (!res.ok) throw new Error(body);
       const left = (JSON.parse(body).skipped || []).find(([id]) => id === n.id);

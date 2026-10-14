@@ -236,13 +236,25 @@ pub struct Asked {
 /// shape of the answer — a JSON list of operations, each signed with the
 /// request it answers.
 #[must_use]
-pub fn apply_prompt(
-    page: &str,
-    html: &str,
-    components: &str,
-    kit: &str,
-    asked: &[Asked],
-) -> String {
+pub fn apply_prompt(page: &Page<'_>, asked: &[Asked]) -> String {
+    let Page {
+        path: page,
+        html,
+        components,
+        kit,
+        objective,
+        rules,
+    } = *page;
+    let objective = if objective.trim().is_empty() {
+        "(none written)"
+    } else {
+        objective.trim()
+    };
+    let rules = if rules.trim().is_empty() {
+        "(none)"
+    } else {
+        rules.trim()
+    };
     let requests = asked
         .iter()
         .map(|a| {
@@ -309,7 +321,18 @@ pub fn apply_prompt(
          the kit component itself (its `props`, or what goes before, after or around it). A \
          request's `where` says where the human pointed — use it to choose `before`, `after` or \
          `into`. Use only elements that exist in the page. Keep the changes \
-         small and faithful to each request.\n\n\
+         small and faithful to each request.\n\
+         These operations only reorder, size in twelfths, add and remove: they cannot make a new \
+         layout — columns side by side, a sticky or fixed part, a drawer, a breakpoint, any style. \
+         When a request needs one, never approximate it with a placement that looks nothing like \
+         it: answer for that part `{{\"kind\":\"add\",\"by\":\"<id>\",\"skip\":\"layout: <what layout it \
+         needs, one line>\"}}` — the human reworks it with an AI that edits the files.\n\
+         The mock-up's conventions: a micro-frontend is injected as `<div data-component=\"<Name>\">` \
+         and drawn by its own fragment; the page's look comes from the design system — the kit's \
+         components and the `var(--…)` tokens, never a colour of its own; a part a human may point \
+         at keeps a stable `id`.\n\n\
+         The page's objective: {objective}\n\n\
+         The product's rules this page or its micro-frontends carry — a change must keep them:\n{rules}\n\n\
          The micro-frontends on this branch:\n{components}\n\n\
          The kit's components:\n{kit}\n\n\
          The requests:\n{requests}\n\n<page>\n{html}\n</page>"
@@ -354,6 +377,24 @@ pub fn answered(answer: &str, asked: &[Asked]) -> Result<(Vec<Value>, Vec<MfAsk>
     }
     checked_ops(&ops)?;
     Ok((ops, mfs))
+}
+
+/// What a page's requests are applied to: the page as the draft shows it,
+/// and what the AI must know of it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Page<'a> {
+    /// Its path under `mock/`.
+    pub path: &'a str,
+    /// Its markup, as the draft shows it.
+    pub html: &'a str,
+    /// The branch's micro-frontends, in short.
+    pub components: &'a str,
+    /// The kit's components, in short.
+    pub kit: &'a str,
+    /// What the page is for.
+    pub objective: &'a str,
+    /// The product's rules it carries, one a line.
+    pub rules: &'a str,
 }
 
 /// The operations an answer carries: a JSON array, alone or inside a code
@@ -409,7 +450,14 @@ mod tests {
                 ..Asked::default()
             },
         ];
-        let prompt = apply_prompt("pages/a.html", "<main></main>", "", "", &asked);
+        let prompt = apply_prompt(
+            &Page {
+                path: "pages/a.html",
+                html: "<main></main>",
+                ..Page::default()
+            },
+            &asked,
+        );
         assert!(prompt.contains("- request `r1` (on kit:Menu): add the logo here\n  it points inside that element, at a part rendered at run time and not in the page's source: inside the kit component Menu, rendered at run time — <nav>…</nav>\n  where: 10% across and 50% down in kit:Menu, in an empty space before id:search"));
         assert!(
             prompt.contains("- request `r2`: bigger\n"),
@@ -526,13 +574,20 @@ mod tests {
         );
         assert!(ops_from_answer("no list here", &asked).is_err());
         let prompt = apply_prompt(
-            "pages/home.html",
-            "<main></main>",
-            "- Campagnes",
-            "- Menu (Navigation menu): a bar",
+            &Page {
+                path: "pages/home.html",
+                html: "<main></main>",
+                components: "- Campagnes",
+                kit: "- Menu (Navigation menu): a bar",
+                objective: "the campaigns, at a glance",
+                rules: "- R3 — Archive: a campaign archived leaves the list",
+            },
             &asked,
         );
         assert!(prompt.contains("request `r1` (on component:Campagnes): add an archive button"));
+        assert!(prompt.contains("The page's objective: the campaigns, at a glance"));
+        assert!(prompt.contains("- R3 — Archive: a campaign archived leaves the list"));
+        assert!(prompt.contains("\"skip\":\"layout: "));
         assert!(prompt.contains("The kit's components:\n- Menu (Navigation menu): a bar"));
         assert!(prompt.contains(r#""kind":"mf""#));
         assert!(prompt.contains("`what: component`"));

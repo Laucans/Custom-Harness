@@ -200,6 +200,24 @@ pub fn preview_page(name: &str) -> String {
     )
 }
 
+/// The micro-frontends a page's markup injects, by name, in order, once
+/// each: every `data-component="<Name>"`, quoted either way.
+#[must_use]
+pub fn injected(html: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (i, _) in html.match_indices("data-component=") {
+        let rest = html.get(i + "data-component=".len()..).unwrap_or_default();
+        let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+            continue;
+        };
+        let name: String = rest.chars().skip(1).take_while(|c| *c != quote).collect();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// What a file of the mock-up is, by where it lies under `mock/`: what
 /// the page counts while a session draws. A micro-frontend's draft is a
 /// proposal, not a micro-frontend.
@@ -265,6 +283,13 @@ pub fn save_branch(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_s_micro_frontends_are_read_off_its_markup() {
+        let html = r#"<div data-component="Rail"></div><p data-component='Sheet'></p><i data-component="Rail"></i><b data-component=></b>"#;
+        assert_eq!(injected(html), ["Rail", "Sheet"]);
+        assert!(injected("<main></main>").is_empty());
+    }
 
     #[test]
     fn a_file_s_kind_is_where_it_lies() {

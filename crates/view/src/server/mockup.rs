@@ -330,6 +330,13 @@ pub(super) struct MfApplyAsk {
     /// The board the pin is on.
     #[serde(default)]
     board: String,
+    /// The page the request was pinned on (`pages/…`): its rules go with it.
+    #[serde(default)]
+    page: String,
+    /// Where and why, in words: the request as the human pinned it, the
+    /// page, its objective, the spot — told with each request.
+    #[serde(default)]
+    context: String,
 }
 
 /// Keeps, in each pin's step, the files as they were before a write — the
@@ -382,6 +389,8 @@ pub(super) async fn mf_apply(
         .map(|c| c.entries)
         .unwrap_or_default();
     let units = mf_gen::units_brief(&ask.spec, &entries);
+    let rules = rules_for(&state, &ask.page, std::slice::from_ref(&name)).await;
+    let requests = told_with(ask.requests, &ask.context, &rules);
     let paths = vec![mf_gen::draft_path(&name)];
     let before = match state.mockups.clone() {
         Some(mockups) => mock_history::files(mockups, branch.clone(), paths.clone())
@@ -390,7 +399,7 @@ pub(super) async fn mf_apply(
         None => None,
     };
     let steps_before = mock_history::steps_now(&state, &branch);
-    match desk.apply(&branch, ask.spec, units, ask.requests).await {
+    match desk.apply(&branch, ask.spec, units, requests).await {
         Ok(skipped) => {
             if let Some(files) = &before {
                 if !ask.pin.is_empty()
@@ -556,6 +565,55 @@ fn pending_again(state: &AppState, board: &str, pin: &str) -> Result<(), String>
         state.pins.put(board, &note)?;
     }
     Ok(())
+}
+
+/// Requests told where and why they were made, and the product's rules
+/// they must keep: what a micro-frontend's rewrite reads with each.
+fn told_with(requests: Vec<drafts::Asked>, context: &str, rules: &str) -> Vec<drafts::Asked> {
+    requests
+        .into_iter()
+        .map(|mut a| {
+            if !context.trim().is_empty() {
+                a.text = format!("{}\n\nWhere and why: {}", a.text.trim(), context.trim());
+            }
+            if !rules.trim().is_empty() {
+                a.text = format!(
+                    "{}\n\nThe product's rules it carries — keep them:\n{}",
+                    a.text,
+                    rules.trim()
+                );
+            }
+            a
+        })
+        .collect()
+}
+
+/// The product's rules a page or its micro-frontends carry, one a line, as
+/// the creation keeps them; none without a creation.
+pub(super) async fn rules_for(state: &AppState, page: &str, names: &[String]) -> String {
+    let Some(rules) = mock_history::rules_now(state).await else {
+        return String::new();
+    };
+    rules
+        .requirements
+        .iter()
+        .filter(|r| {
+            (!page.is_empty() && r.pages.iter().any(|p| p == page))
+                || r.components.iter().any(|c| names.contains(c))
+        })
+        .map(|r| {
+            format!(
+                "- R{} — {}: {} (given {}, when {}, then {})",
+                r.id,
+                r.title.trim(),
+                r.body.trim().replace('\n', " "),
+                r.criterion.given.trim(),
+                r.criterion.when.trim(),
+                r.criterion.then.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A request pin's Undo, as the page asks it.
@@ -786,7 +844,19 @@ pub(super) async fn apply_requests(
         Some(desk) => desk.summary().await.unwrap_or_default(),
         None => String::new(),
     };
-    let prompt = drafts::apply_prompt(&ask.page, &html, &ask.components, &kit, &ask.requests);
+    let names = mockup::injected(&html);
+    let rules = rules_for(&state, &ask.page, &names).await;
+    let prompt = drafts::apply_prompt(
+        &drafts::Page {
+            path: &ask.page,
+            html: &html,
+            components: &ask.components,
+            kit: &kit,
+            objective: &ask.objective,
+            rules: &rules,
+        },
+        &ask.requests,
+    );
     let answer = match desks.ask(prompt).await {
         Ok(answer) => answer,
         Err(why) => return (StatusCode::BAD_GATEWAY, why).into_response(),
@@ -848,6 +918,9 @@ pub(super) async fn mockup_write(
 /// draft shows it, the micro-frontends in short, and the requests.
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct ApplyAsk {
+    /// What the page is for, as the manifest says.
+    #[serde(default)]
+    objective: String,
     #[serde(default)]
     page: String,
     #[serde(default)]
@@ -869,4 +942,32 @@ pub(super) struct WriteAsk {
     path: String,
     #[serde(default)]
     text: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_request_handed_to_a_micro_frontend_says_where_why_and_the_rules_to_keep() {
+        let asked = vec![drafts::Asked {
+            id: "p1".into(),
+            text: "a folded mode".into(),
+            ..drafts::Asked::default()
+        }];
+        let told = told_with(
+            asked.clone(),
+            "pinned on Fiche d'entité: a rail on the left",
+            "- R3 — Rail: …",
+        );
+        assert_eq!(
+            told[0].text,
+            "a folded mode\n\nWhere and why: pinned on Fiche d'entité: a rail on the left\n\nThe product's rules it carries — keep them:\n- R3 — Rail: …"
+        );
+        assert_eq!(
+            told_with(asked, " ", "")[0].text,
+            "a folded mode",
+            "nothing to add"
+        );
+    }
 }
