@@ -451,6 +451,40 @@ pub enum Source {
     Generated,
 }
 
+/// An interface example: a screen the human gives, whose structure — the
+/// layout, the navigation, the density — the mock-up and the kit take
+/// after, never its colours, its fonts or its texts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Example {
+    /// The image, relative to `mock/design/` (`examples/<file>`).
+    pub file: String,
+    /// What to take from it, in the human's words.
+    #[serde(default)]
+    pub note: String,
+    /// What it is an example of.
+    #[serde(default)]
+    pub scope: ExampleScope,
+}
+
+/// What an interface example is an example of.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "on", rename_all = "snake_case")]
+pub enum ExampleScope {
+    /// The whole product: read by the mock-up and by every kit component.
+    #[default]
+    App,
+    /// One page of the mock-up, by its title.
+    Page {
+        /// The page's title.
+        name: String,
+    },
+    /// One kit component, by its name.
+    Component {
+        /// The component's name.
+        name: String,
+    },
+}
+
 /// `mock/design/design.json`: the design system's record (contract O).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Design {
@@ -472,6 +506,10 @@ pub struct Design {
     /// The logo, relative to `mock/design/`, or empty.
     #[serde(default)]
     pub logo: String,
+    /// The interface examples the product takes its structure after —
+    /// optional, never its colours: the tokens keep the last word.
+    #[serde(default)]
+    pub examples: Vec<Example>,
     /// A candidate waits beside the validated tokens
     /// (`mock/design/candidate.json`): generated or injected again.
     #[serde(default)]
@@ -498,6 +536,7 @@ impl Default for Design {
             brief: String::new(),
             moodboard: Vec::new(),
             logo: String::new(),
+            examples: Vec::new(),
             candidate: false,
             validated_at: String::new(),
             issue: String::new(),
@@ -1537,6 +1576,18 @@ mod tests {
         let design = Design::default();
         let text = serde_json::to_string(&design).expect("json");
         assert_eq!(serde_json::from_str::<Design>(&text).expect("back"), design);
+        // An example's scope reads as `{"on": …, "name": …}`; one without is the whole app.
+        let read: Design = serde_json::from_str(
+            r#"{"examples":[{"file":"examples/a.png","scope":{"on":"page","name":"Login"}},{"file":"examples/b.png"}]}"#,
+        )
+        .expect("examples");
+        assert_eq!(
+            read.examples[0].scope,
+            ExampleScope::Page {
+                name: "Login".into()
+            }
+        );
+        assert_eq!(read.examples[1].scope, ExampleScope::App);
         assert_eq!(
             summary_of(&[Token {
                 path: "color.primary".into(),

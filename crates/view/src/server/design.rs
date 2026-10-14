@@ -184,7 +184,7 @@ pub(super) async fn design_drop_candidate(State(state): State<AppState>) -> Resp
     }
 }
 
-/// `?kind=moodboard|logo|reference&name=<file>&component=<Name>`: the
+/// `?kind=moodboard|logo|example|reference&name=<file>&component=<Name>`: the
 /// image's bytes are the body.
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct AssetQuery {
@@ -200,13 +200,14 @@ pub(super) fn asset_of(query: &AssetQuery) -> Result<Asset, Box<Response>> {
     match query.kind.as_str() {
         "moodboard" => Ok(Asset::Moodboard),
         "logo" => Ok(Asset::Logo),
+        "example" => Ok(Asset::Example),
         "reference" if kit::is_name(&query.component) => Ok(Asset::Reference {
             component: query.component.clone(),
         }),
         _ => Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
-                "an image is a moodboard's, the logo, or a component's reference",
+                "an image is a moodboard's, the logo, an interface example, or a component's reference",
             )
                 .into_response(),
         )),
@@ -243,6 +244,27 @@ pub(super) async fn design_asset_remove(State(state): State<AppState>, body: Byt
         Err(r) => return *r,
     };
     outcome(desk.remove_asset(asset, &query.name).await)
+}
+
+/// What an interface example is of and what to take from it.
+#[derive(Debug, Deserialize)]
+pub(super) struct ExampleAsk {
+    file: String,
+    #[serde(default)]
+    note: String,
+    #[serde(default)]
+    scope: kit::ExampleScope,
+}
+
+pub(super) async fn design_example(State(state): State<AppState>, body: Bytes) -> Response {
+    let desk = match kit_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match serde_json::from_slice::<ExampleAsk>(&body) {
+        Ok(ask) => outcome(desk.describe_example(ask.file, ask.note, ask.scope).await),
+        Err(why) => (StatusCode::BAD_REQUEST, why.to_string()).into_response(),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

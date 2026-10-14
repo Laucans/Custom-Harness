@@ -242,7 +242,13 @@ It has two sections:
      branch's mock-up workspace (`Oneshot::work_in`: read and write, nothing
      that runs) draws a page per screen of the scope, on the kit and the
      tokens (`mockups_prompt`, the mock-up's own rules first) — fast, its
-     markup inline: the proposal loop is what is optimised here. While it
+     markup inline: the proposal loop is what is optimised here. The design
+     system's **interface examples** of the whole app and of its pages are
+     lent beside the pages first (`examples_lent`: copied under
+     `design/examples/`, taken back with the rest by `kept_on_design`, never
+     reported), named in the prompt (`examples_part`), and each line the
+     session ends on — `example <file>: <what it took>` — is a step of the
+     job; the cut into micro-frontends reads them the same way. While it
      runs, a concurrent poller (`poll_mockup_pages`, every `DRAW_POLL`, 2s)
      reads `Mockups::state` — safe alongside an active write, no locking
      either side needs — and reports each page the manifest lists once it
@@ -990,6 +996,17 @@ the design system is given its material, not looked at):
   shows its own copy of the page, the candidate's variables laid over the
   tokens, beside its sheet — and injecting or generating again is folded
   under *regenerate the design system*.
+  Beside the moodboard, optional, up to six **interface examples**
+  (`design.json` `examples`, images under `mock/design/examples/`, kept by
+  `KitDesk::keep_asset(Asset::Example)`, described by `describe_example`,
+  `POST /api/design/example`): screens whose structure — layout,
+  navigation, density — the product takes after, never their colours,
+  fonts or texts. Each is of the whole app, of a page (by its title) or of
+  a kit component (by its name): a component's generation reads its own
+  and the whole app's (`examples_for_component`, the session then run in
+  `mock/` with `Read`), the mock-up's drawing the whole app's and the
+  pages' (`examples_for_pages`). The tokens are never drawn from them —
+  that is the moodboard's part.
 - **catalogue** — the kit's components: the harness's sixteen **bases**
   (`crates/architecture/assets/kit/`, neutral fragments every application
   starts from: button, input, drop list, checkbox, radio, toggle, menu, tabs,

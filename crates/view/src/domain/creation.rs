@@ -1295,6 +1295,42 @@ pub fn design_brief(tokens_css: &str) -> String {
     text
 }
 
+/// What a mock-up session is told of the interface examples lent beside
+/// the pages (`mock/design/examples/`): each image and what to take from it,
+/// and to say in its last message what it took. Empty when there is none.
+#[must_use]
+pub fn examples_part(examples: &[harness_architecture::kit::Example]) -> String {
+    if examples.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from("\n");
+    text.push_str(&super::design::examples_brief(examples, "mock/design/"));
+    text.push_str(
+        "They are read where they are: never copy one, never link one from a page. In your \
+         last message, say what you took from each, one line per example: \
+         `example <file>: <what you took>`.\n",
+    );
+    text
+}
+
+/// The lines of a session's last message that say what it took from an
+/// interface example, `example <file>: <what>`, without their list marks.
+#[must_use]
+pub fn examples_taken(said: &str) -> Vec<String> {
+    said.lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(['-', '*', ' '])
+                .replace('`', "")
+        })
+        .filter(|l| {
+            l.get(..8)
+                .is_some_and(|w| w.eq_ignore_ascii_case("example "))
+                && l.contains(':')
+        })
+        .collect()
+}
+
 /// The variables a stylesheet declares, `--name`, in their order.
 #[must_use]
 pub fn token_names(css: &str) -> Vec<String> {
@@ -2232,6 +2268,26 @@ mod tests {
         assert!(brief.contains("Never write anything under `mock/design/` or `mock/kit/`"));
         assert!(brief.contains("```css\n:root {\n  --color-text: #fff;"));
         assert!(design_brief(" ").contains("has no variable yet"));
+        assert!(examples_part(&[]).is_empty());
+        let lent = [harness_architecture::kit::Example {
+            file: "examples/a.png".into(),
+            note: "the side nav".into(),
+            scope: harness_architecture::kit::ExampleScope::App,
+        }];
+        let part = examples_part(&lent);
+        assert!(part.contains(
+            "- `mock/design/examples/a.png` — an example of the whole product: the side nav"
+        ));
+        assert!(part.contains("`example <file>: <what you took>`"));
+        assert_eq!(
+            examples_taken(
+                "Done.\n- `example examples/a.png: the side nav`\nExample b.png: nothing\nexamples are fine\n* example c.png no colon"
+            ),
+            [
+                "example examples/a.png: the side nav",
+                "Example b.png: nothing"
+            ]
+        );
         let c = ready();
         assert!(mockups_prompt(&c, "R", "", css).contains("--space-1: 4px;"));
         assert!(

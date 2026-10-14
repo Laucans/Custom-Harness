@@ -199,6 +199,50 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
         return `<tr><td class="mono">${esc(t.path)}</td><td>${colour && /^#[0-9a-f]{6}$/i.test(t.value) ? `<input type="color" data-token="${esc(t.path)}" value="${esc(t.value)}">` : ''}<input type="text" class="kt-token" data-token="${esc(t.path)}" value="${esc(t.value)}" maxlength="300"></td></tr>`;
       }).join('')}</tbody></table>`;
     }
+    // The interface examples: screens whose structure the mock-up and the
+    // kit take after, never their colours, fonts or texts.
+    const MAX_EXAMPLES = 6;
+    function examplePick(on, named, file) {
+      if (on === 'page') return `<input type="text" data-kt="example-name" data-file="${esc(file)}" value="${esc(named)}" placeholder="the page's title" maxlength="120">`;
+      if (on !== 'component') return '';
+      const names = catalog().map((e) => e.name);
+      if (named && !names.includes(named)) names.unshift(named);
+      return `<select data-kt="example-name" data-file="${esc(file)}">${names.map((n) => `<option${n === named ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
+    }
+    function examplesBlock(d, r) {
+      const examples = d.examples || [];
+      const list = examples.map((x) => {
+        const on = (x.scope && x.scope.on) || 'app';
+        const named = (x.scope && x.scope.name) || '';
+        const src = `/mock/${SLUG}/design/${esc(x.file)}?v=${esc(r.stamp)}`;
+        const opt = (v, label) => `<option value="${v}"${on === v ? ' selected' : ''}>${label}</option>`;
+        return `<div class="kt-example" data-file="${esc(x.file)}">
+          <figure class="kt-thumb"><a href="${src}" target="_blank" rel="noopener"><img src="${src}" alt="${esc(x.file)}"></a><button type="button" class="mini" data-kt="remove-asset" data-kind="example" data-name="${esc(x.file)}" title="remove">×</button></figure>
+          <div class="kt-example-what">
+            <div class="kt-row"><span class="muted">an example of</span><select data-kt="example-on" data-file="${esc(x.file)}">${opt('app', 'the whole app')}${opt('page', 'a page')}${opt('component', 'a kit component')}</select><span class="kt-example-pick">${examplePick(on, named, x.file)}</span></div>
+            <textarea data-kt="example-note" data-file="${esc(x.file)}" rows="2" maxlength="500" placeholder="what to take from it: the side nav, the dense tables, the empty states…">${esc(x.note || '')}</textarea>
+          </div>
+        </div>`;
+      }).join('');
+      return `<section class="kt-block kt-examples">
+        <h3>Interface examples <span class="muted">optional</span></h3>
+        <p class="muted">Screens to take the structure after — the layout, the navigation, the density — never their colours, fonts or texts: the tokens keep the last word. The mock-up's drawing reads the whole app's and the pages'; each kit component its own and the whole app's. At most ${MAX_EXAMPLES}.</p>
+        <div class="kt-row"><input type="file" accept="image/*" multiple data-kt="example-files"${examples.length >= MAX_EXAMPLES ? ' disabled' : ''}></div>
+        <div class="kt-examples-list">${list || '<span class="muted">no example yet</span>'}</div>
+      </section>`;
+    }
+    // Keeps what an example is of and what to take from it; a page waits for its title.
+    function saveExample(file) {
+      const row = [...host.querySelectorAll('.kt-example')].find((x) => x.dataset.file === file);
+      if (!row) return;
+      const on = row.querySelector('[data-kt="example-on"]').value;
+      const pick = row.querySelector('[data-kt="example-name"]');
+      const name = pick ? pick.value.trim() : '';
+      if (on !== 'app' && !name) return;
+      const scope = on === 'app' ? { on } : { on, name };
+      act('keeping the example', () => call('/api/design/example', { file, note: row.querySelector('[data-kt="example-note"]').value, scope }));
+    }
+
     function drawSystem() {
       const pane = q('.kt-system');
       const r = st.reply;
@@ -232,6 +276,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       // design system's step, which mounts the easel whole.
       if (st.material) {
         pane.innerHTML = `${sources}
+        ${examplesBlock(d, r)}
         <div class="callout">${none
           ? 'The tokens are drawn from this material. You find them at the design system\'s step, on their sheet, to validate.'
           : 'A design system is already drawn from this material: generate again and it waits as a candidate, validated at the design system\'s step.'}</div>`;
@@ -261,7 +306,8 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
           </div>
         </div>
       </section>
-      <details class="kt-block kt-regen" data-keep="regen"><summary>regenerate the design system</summary>${sources}</details>` : ''}`;
+      <details class="kt-block kt-regen" data-keep="regen"><summary>regenerate the design system</summary>${sources}</details>` : ''}
+      ${examplesBlock(d, r)}`;
       pane.querySelectorAll('details[data-keep]').forEach((x) => { if (open.has(x.dataset.keep)) x.open = true; });
       // The candidate's page is the validated one with the candidate's variables laid over the tokens.
       const trial = pane.querySelector('.kt-candidate .kt-showcase');
@@ -977,6 +1023,16 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       const t = e.target;
       if (t.matches('[data-kt="tokens-file"]') && t.files[0]) { q('.kt-json').value = await t.files[0].text(); return; }
       if (t.matches('[data-kt="mood-files"]') && t.files.length) { const files = [...t.files]; act(`keeping ${files.length} image(s)`, async () => { for (const f of files) await upload('moodboard', f); }); return; }
+      if (t.matches('[data-kt="example-files"]') && t.files.length) { const files = [...t.files]; act(`keeping ${files.length} example(s)`, async () => { for (const f of files) await upload('example', f); }); return; }
+      if (t.matches('[data-kt="example-on"]')) {
+        const slot = t.closest('.kt-example').querySelector('.kt-example-pick');
+        const named = t.value === 'component' ? (catalog()[0] || {}).name || '' : '';
+        slot.innerHTML = examplePick(t.value, named, t.dataset.file);
+        if (t.value === 'page') { const field = slot.querySelector('input'); if (field) field.focus(); }
+        saveExample(t.dataset.file);
+        return;
+      }
+      if (t.matches('[data-kt="example-name"], [data-kt="example-note"]')) { saveExample(t.dataset.file); return; }
       if (t.matches('[data-kt="logo-file"]') && t.files[0]) { act('keeping the logo', () => upload('logo', t.files[0])); return; }
       if (t.matches('.kt-check')) {
         const checked = [...host.querySelectorAll('.kt-check[data-base]')].filter((c) => c.checked).map((c) => c.dataset.base);

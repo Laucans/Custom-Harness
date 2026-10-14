@@ -21,9 +21,9 @@ use crate::domain::annotations::Kind as PinKind;
 use crate::domain::audit::{audit_of, audit_prompt, fix_prompt};
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
-    componentize_prompt, decompose_prompt, grill_prompt, manifest_repair_prompt, mockups_prompt,
-    not_componentized, parse_brief, parse_requirements, parse_round, requirements_prompt,
-    rule_prompt, scope_prompt, unfenced,
+    componentize_prompt, decompose_prompt, examples_part, examples_taken, grill_prompt,
+    manifest_repair_prompt, mockups_prompt, not_componentized, parse_brief, parse_requirements,
+    parse_round, requirements_prompt, rule_prompt, scope_prompt, unfenced,
 };
 use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
 use crate::domain::design::Entry;
@@ -32,7 +32,7 @@ use crate::domain::note_session::{About, mockup_rules};
 use crate::kit_desk::{JobState, KitDesk};
 use crate::ports::{Foundry, MockState, Mockups, NoteStore, Oneshot, Plant};
 use crate::pulse::Pulse;
-use harness_architecture::kit::{ComponentState, DesignState};
+use harness_architecture::kit::{ComponentState, DESIGN_BRANCH, Design, DesignState, Example};
 use harness_core::domain::Slug;
 use harness_core::ports::store::factories::{Factories, id_from};
 
@@ -993,7 +993,7 @@ impl CreationDesk {
             ..About::default()
         });
         let tokens_css = Self::design_tokens(&mockups).await;
-        let prompt = mockups_prompt(&record, &rules, &kit, &tokens_css);
+        let mut prompt = mockups_prompt(&record, &rules, &kit, &tokens_css);
         let model = self.setup.draw_model.clone();
         let desk = self.clone();
         self.step("opening the integration branch's mock-up");
@@ -1009,6 +1009,7 @@ impl CreationDesk {
         })
         .await
         .map_err(|e| format!("the step did not finish: {e}"))??;
+        prompt.push_str(&examples_part(&self.examples_lent(&mockups, &branch).await));
         let put_away = self.pins_put_away(&branch).await;
         if put_away > 0 {
             self.step(&format!(
@@ -1034,6 +1035,7 @@ impl CreationDesk {
         .map_err(|e| format!("the session did not finish: {e}"));
         poll.abort();
         let said = said??;
+        self.said_of_examples(&said);
         self.kept_on_design(&mockups_after, &branch_after, &tokens_css)
             .await;
         self.step("the mock-up is drawn");
@@ -1079,6 +1081,54 @@ impl CreationDesk {
         .unwrap_or(0)
     }
 
+    /// The interface examples of the design system a drawing of `branch`
+    /// reads — the whole product's and its pages' — lent beside its pages
+    /// under `design/examples/`, where `kept_on_design` takes them back.
+    /// Answers the ones lent; none when the design system has none.
+    async fn examples_lent(&self, mockups: &Arc<dyn Mockups>, branch: &str) -> Vec<Example> {
+        let (mockups, branch) = (Arc::clone(mockups), branch.to_string());
+        let lent = tokio::task::spawn_blocking(move || {
+            let design: Design = mockups
+                .file(DESIGN_BRANCH, crate::domain::design::DESIGN_JSON)?
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+            let mut lent = Vec::new();
+            for example in crate::domain::design::examples_for_pages(&design.examples) {
+                let path = format!("design/{}", example.file);
+                if let Some(bytes) = mockups.file(DESIGN_BRANCH, &path)? {
+                    mockups.write(&branch, &path, &bytes)?;
+                    lent.push(example);
+                }
+            }
+            Ok::<_, String>(lent)
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+        match lent {
+            Ok(lent) => {
+                if !lent.is_empty() {
+                    self.step(&format!(
+                        "{} interface example(s) of the design system lent to the session",
+                        lent.len()
+                    ));
+                }
+                lent
+            }
+            Err(why) => {
+                self.step(&format!("the interface examples could not be lent: {why}"));
+                Vec::new()
+            }
+        }
+    }
+
+    /// What a session said it took from each interface example, one step each.
+    fn said_of_examples(&self, said: &str) {
+        for line in examples_taken(said) {
+            self.step(&line);
+        }
+    }
+
     /// The design system's variables, as its own branch holds them: what a
     /// mock-up session builds on. Empty when there are none yet.
     async fn design_tokens(mockups: &Arc<dyn Mockups>) -> String {
@@ -1110,7 +1160,10 @@ impl CreationDesk {
             for f in files {
                 if f.path.starts_with("design/") || f.path.starts_with("kit/") {
                     mockups.remove(&branch, &f.path)?;
-                    removed.push(f.path);
+                    // The examples lent are taken back, not reported.
+                    if !f.path.starts_with("design/examples/") {
+                        removed.push(f.path);
+                    }
                 } else if !tokens.is_empty()
                     && std::path::Path::new(&f.path).extension().is_some_and(|e| {
                         e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("css")
@@ -1484,7 +1537,8 @@ impl CreationDesk {
         });
         let (mockups_after, branch_after) = (mockups.clone(), branch.clone());
         let tokens_css = Self::design_tokens(&mockups).await;
-        let prompt = componentize_prompt(record, &rules, &kit, &tokens_css);
+        let mut prompt = componentize_prompt(record, &rules, &kit, &tokens_css);
+        prompt.push_str(&examples_part(&self.examples_lent(&mockups, &branch).await));
         let model = self.setup.draw_model.clone();
         self.step("a Claude Code session makes the mock-up again of micro-frontends");
         // Seeded with whatever is already there: a retry's own earlier
@@ -1537,6 +1591,10 @@ impl CreationDesk {
         .map_err(|e| format!("the session did not finish: {e}"));
         poll.abort();
         let (said, problems) = said??;
+        self.said_of_examples(&said);
+        // Before the verdict: a cut refused leaves no example lent behind.
+        self.kept_on_design(&mockups_after, &branch_after, &tokens_css)
+            .await;
         if !problems.is_empty() {
             return Err(format!(
                 "the mock-up is not made of micro-frontends yet: {}",
@@ -1544,8 +1602,6 @@ impl CreationDesk {
             ));
         }
         self.step("every page is made of micro-frontends");
-        self.kept_on_design(&mockups_after, &branch_after, &tokens_css)
-            .await;
         let _held = self.record.lock().await;
         let mut kept = self.existing()?;
         kept.componentized = Some(said);
@@ -2514,6 +2570,72 @@ mod tests {
             job.started > 1_700_000_000 && job.ended >= job.started,
             "a job keeps when it started and ended, on the clock"
         );
+    }
+
+    // The design system's interface examples a drawing reads are lent beside
+    // its pages, the component's left to the kit; taken back unreported,
+    // what the session took from each said.
+    #[tokio::test]
+    async fn interface_examples_are_lent_to_a_drawing_and_taken_back() {
+        let dir = product("examples");
+        let write = |rel: &str, bytes: &[u8]| {
+            let full = dir.join(rel);
+            std::fs::create_dir_all(full.parent().expect("a folder")).expect("folder");
+            std::fs::write(full, bytes).expect("write");
+        };
+        write(
+            "design-system/mock/design/design.json",
+            br#"{"version":1,"state":"validated","examples":[
+                {"file":"examples/app.png","note":"side nav"},
+                {"file":"examples/login.png","scope":{"on":"page","name":"Login"}},
+                {"file":"examples/table.png","scope":{"on":"component","name":"Table"}},
+                {"file":"examples/gone.png"}]}"#,
+        );
+        for f in ["app", "login", "table"] {
+            write(
+                &format!("design-system/mock/design/examples/{f}.png"),
+                b"png",
+            );
+        }
+        let desk = desk_drawing_in(&dir);
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let lent = desk.examples_lent(&mockups, "main_agent").await;
+        assert_eq!(
+            lent.iter().map(|e| e.file.as_str()).collect::<Vec<_>>(),
+            ["examples/app.png", "examples/login.png"],
+            "the component's goes to the kit, a missing image is not lent"
+        );
+        assert!(dir.join("main_agent/mock/design/examples/app.png").exists());
+        assert!(
+            !dir.join("main_agent/mock/design/examples/table.png")
+                .exists()
+        );
+        desk.said_of_examples("done\n- example examples/app.png: the side nav");
+        desk.kept_on_design(&mockups, "main_agent", "").await;
+        assert!(!dir.join("main_agent/mock/design/examples/app.png").exists());
+        let steps = desk.job().expect("a job").steps;
+        assert!(
+            steps.contains(
+                &"2 interface example(s) of the design system lent to the session".to_string()
+            ),
+            "{steps:?}"
+        );
+        assert!(
+            steps.contains(&"example examples/app.png: the side nav".to_string()),
+            "{steps:?}"
+        );
+        assert!(
+            !steps.iter().any(|s| s.contains("removed")),
+            "the examples lent are not reported: {steps:?}"
+        );
+        // A design system with none: nothing lent, nothing said.
+        let bare = product("no-examples");
+        let desk = desk_drawing_in(&bare);
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&bare));
+        assert!(desk.examples_lent(&mockups, "main_agent").await.is_empty());
+        assert!(desk.job().map(|j| j.steps).unwrap_or_default().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bare);
     }
 
     // With no design system's variables to hold them to, a session's

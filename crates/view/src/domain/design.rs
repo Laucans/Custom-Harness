@@ -8,7 +8,9 @@
 
 use std::fmt::Write as _;
 
-use harness_architecture::kit::{self, Base, Component, ComponentState, Design, Kit, Token};
+use harness_architecture::kit::{
+    self, Base, Component, ComponentState, Design, Example, ExampleScope, Kit, Token,
+};
 use serde::Serialize;
 
 use crate::domain::annotations::{Kind, Note};
@@ -37,6 +39,11 @@ pub const MAX_PROMPT: usize = 4_000;
 pub const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 /// The most images a moodboard holds.
 pub const MAX_MOODBOARD: usize = 12;
+/// The most interface examples a design system holds: each is an image a
+/// session reads, so a few.
+pub const MAX_EXAMPLES: usize = 6;
+/// The longest note on an interface example, in characters.
+pub const MAX_EXAMPLE_NOTE: usize = 500;
 
 /// The image types the easel takes, by extension.
 const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "svg"];
@@ -272,7 +279,12 @@ pub fn tokens_from_answer(answer: &str) -> Result<(String, Vec<&'static str>), S
 /// to start from (or nothing, for a custom one), the tokens, the rules a
 /// fragment keeps, and the shape of the answer.
 #[must_use]
-pub fn component_prompt(component: &Component, base: Option<&Base>, tokens_css: &str) -> String {
+pub fn component_prompt(
+    component: &Component,
+    base: Option<&Base>,
+    tokens_css: &str,
+    examples: &[Example],
+) -> String {
     let mut text = format!(
         "You make one component of a product's kit of visual components, `{name}`: {title} — \
          {what}. A kit component is a visual primitive for the product's mock-up and, when it \
@@ -310,11 +322,12 @@ pub fn component_prompt(component: &Component, base: Option<&Base>, tokens_css: 
     if !component.reference.is_empty() {
         let _ = writeln!(
             text,
-            "A reference image is beside you: `{}`. Read it with your Read tool and reproduce \
+            "A reference image is beside you: `kit/{}`. Read it with your Read tool and reproduce \
              its layout and feel with the tokens.\n",
             component.reference
         );
     }
+    text.push_str(&examples_brief(examples, "design/"));
     let _ = writeln!(
         text,
         "The design system's variables (mock/design/tokens.css):\n```css\n{}\n```",
@@ -339,6 +352,66 @@ pub fn component_prompt(component: &Component, base: Option<&Base>, tokens_css: 
         "\nAnswer ONLY the fragment — the HTML, with its `<style>` and its `<script>` when \
          it has one — no prose, no code fence.",
     );
+    text
+}
+
+/// The interface examples a component is made after: the whole product's
+/// and its own.
+#[must_use]
+pub fn examples_for_component(examples: &[Example], name: &str) -> Vec<Example> {
+    examples
+        .iter()
+        .filter(|e| match &e.scope {
+            ExampleScope::App => true,
+            ExampleScope::Component { name: of } => of == name,
+            ExampleScope::Page { .. } => false,
+        })
+        .cloned()
+        .collect()
+}
+
+/// The interface examples a mock-up's drawing reads: the whole product's
+/// and its pages' — a component's is its kit generation's.
+#[must_use]
+pub fn examples_for_pages(examples: &[Example]) -> Vec<Example> {
+    examples
+        .iter()
+        .filter(|e| !matches!(e.scope, ExampleScope::Component { .. }))
+        .cloned()
+        .collect()
+}
+
+/// What a session is told of the interface examples it reads, `at` the
+/// folder of the design system from where it runs: each image, what it is
+/// an example of and what to take from it — the structure, never the look
+/// or the words. Empty when there is none.
+#[must_use]
+pub fn examples_brief(examples: &[Example], at: &str) -> String {
+    if examples.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from(
+        "Interface examples the human gave, screens to take the structure after: the layout, \
+         the navigation, the density, the way a part behaves. Read each image with your Read \
+         tool before you start. Take its structure only — never its colours, fonts, spacings \
+         or radii (the design system's variables keep the last word), never its texts, logos \
+         or brand.\n",
+    );
+    for e in examples {
+        let of = match &e.scope {
+            ExampleScope::App => "the whole product".to_string(),
+            ExampleScope::Page { name } => format!("the page \"{name}\""),
+            ExampleScope::Component { name } => format!("the component `{name}`"),
+        };
+        let note = e.note.trim();
+        let _ = write!(text, "- `{at}{}` — an example of {of}", e.file);
+        if note.is_empty() {
+            text.push('\n');
+        } else {
+            let _ = writeln!(text, ": {note}");
+        }
+    }
+    text.push('\n');
     text
 }
 
@@ -626,7 +699,8 @@ mod tests {
             prompt: "rounder".into(),
             ..Component::default()
         };
-        let prompt = component_prompt(&c, Some(base), ":root { --color-primary: #1; }");
+        let prompt = component_prompt(&c, Some(base), ":root { --color-primary: #1; }", &[]);
+        assert!(!prompt.contains("Interface examples"));
         assert!(prompt.contains("kit-button"));
         assert!(prompt.contains("rounder"));
         assert!(prompt.contains("Start from this neutral base"));
@@ -636,9 +710,9 @@ mod tests {
             reference: "Hero.reference.png".into(),
             ..Component::default()
         };
-        let prompt = component_prompt(&custom, None, "");
+        let prompt = component_prompt(&custom, None, "", &[]);
         assert!(prompt.contains("no base"));
-        assert!(prompt.contains("Hero.reference.png"));
+        assert!(prompt.contains("`kit/Hero.reference.png`"));
         assert_eq!(
             fragment_from_answer("```html\n<div class=\"kit-x\">hi</div>\n```").expect("ok"),
             "<div class=\"kit-x\">hi</div>\n"
@@ -669,6 +743,65 @@ mod tests {
         assert_eq!(
             skipped_in("<div></div>\n<!-- skipped r1: needs data -->"),
             [("r1".to_string(), "needs data".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_component_reads_its_own_examples_and_the_drawing_the_pages_ones() {
+        let examples = [
+            Example {
+                file: "examples/a.png".into(),
+                note: "dense rows".into(),
+                scope: ExampleScope::App,
+            },
+            Example {
+                file: "examples/b.png".into(),
+                note: String::new(),
+                scope: ExampleScope::Component {
+                    name: "Hero".into(),
+                },
+            },
+            Example {
+                file: "examples/c.png".into(),
+                note: String::new(),
+                scope: ExampleScope::Component {
+                    name: "Table".into(),
+                },
+            },
+            Example {
+                file: "examples/d.png".into(),
+                note: String::new(),
+                scope: ExampleScope::Page {
+                    name: "Login".into(),
+                },
+            },
+        ];
+        let own = examples_for_component(&examples, "Hero");
+        assert_eq!(
+            own.iter().map(|e| e.file.as_str()).collect::<Vec<_>>(),
+            ["examples/a.png", "examples/b.png"]
+        );
+        let pages = examples_for_pages(&examples);
+        assert_eq!(
+            pages.iter().map(|e| e.file.as_str()).collect::<Vec<_>>(),
+            ["examples/a.png", "examples/d.png"]
+        );
+        let hero = Component {
+            name: "Hero".into(),
+            ..Component::default()
+        };
+        let prompt = component_prompt(&hero, None, "", &own);
+        assert!(
+            prompt.contains(
+                "- `design/examples/a.png` — an example of the whole product: dense rows\n"
+            )
+        );
+        assert!(
+            prompt.contains("- `design/examples/b.png` — an example of the component `Hero`\n")
+        );
+        assert!(
+            examples_brief(&pages, "mock/design/")
+                .contains("- `mock/design/examples/d.png` — an example of the page \"Login\"\n")
         );
     }
 

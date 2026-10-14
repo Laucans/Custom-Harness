@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use harness_architecture::kit::{
-    self, Component, ComponentState, Design, DesignState, Kit, Source,
+    self, Component, ComponentState, Design, DesignState, Example, ExampleScope, Kit, Source,
 };
 use serde::Serialize;
 
@@ -105,6 +105,8 @@ pub enum Asset {
     Moodboard,
     /// The logo.
     Logo,
+    /// An interface example.
+    Example,
     /// A custom component's reference drawing.
     Reference {
         /// The component.
@@ -499,6 +501,27 @@ impl KitDesk {
                     Self::write_json(mockups, design::DESIGN_JSON, &design)?;
                     Ok(path)
                 }
+                Asset::Example => {
+                    let mut design = Self::design_of(mockups)?;
+                    let rel = format!("examples/{name}");
+                    if !design.examples.iter().any(|e| e.file == rel) {
+                        if design.examples.len() >= design::MAX_EXAMPLES {
+                            return Err(format!(
+                                "the design system holds at most {} interface examples",
+                                design::MAX_EXAMPLES
+                            ));
+                        }
+                        design.examples.push(Example {
+                            file: rel.clone(),
+                            note: String::new(),
+                            scope: ExampleScope::App,
+                        });
+                    }
+                    let path = format!("design/{rel}");
+                    mockups.write(BRANCH, &path, &bytes)?;
+                    Self::write_json(mockups, design::DESIGN_JSON, &design)?;
+                    Ok(path)
+                }
                 Asset::Reference { component } => {
                     let mut kit = Self::kit_of(mockups)?;
                     let entry = kit
@@ -540,6 +563,13 @@ impl KitDesk {
                         mockups.remove(BRANCH, &format!("design/{}", design.logo))?;
                     }
                     design.logo.clear();
+                }
+                Asset::Example => {
+                    let rel = name.strip_prefix("examples/").unwrap_or(&name).to_string();
+                    design
+                        .examples
+                        .retain(|e| e.file != format!("examples/{rel}"));
+                    mockups.remove(BRANCH, &format!("design/examples/{rel}"))?;
                 }
                 Asset::Reference { component } => {
                     let mut kit = Self::kit_of(mockups)?;
@@ -634,6 +664,39 @@ impl KitDesk {
             let mut design = Self::design_of(mockups)?;
             mockups.remove(BRANCH, design::CANDIDATE_JSON)?;
             design.candidate = false;
+            Self::write_json(mockups, design::DESIGN_JSON, &design)?;
+            Self::view_of(mockups)
+        })
+        .await
+    }
+
+    /// Says what an interface example is of and what to take from it.
+    ///
+    /// # Errors
+    ///
+    /// No such example, a page or a component with no name, or the
+    /// workspace could not be written.
+    pub async fn describe_example(
+        &self,
+        file: String,
+        note: String,
+        scope: ExampleScope,
+    ) -> Result<DesignView, String> {
+        if matches!(&scope, ExampleScope::Page { name } | ExampleScope::Component { name } if name.trim().is_empty())
+        {
+            return Err("a page or a component is named".to_string());
+        }
+        let note: String = note.trim().chars().take(design::MAX_EXAMPLE_NOTE).collect();
+        self.blocking(move |mockups, files| {
+            let _held = lock(files);
+            let mut design = Self::design_of(mockups)?;
+            let example = design
+                .examples
+                .iter_mut()
+                .find(|e| e.file == file)
+                .ok_or_else(|| format!("no interface example {file}"))?;
+            example.note = note;
+            example.scope = scope;
             Self::write_json(mockups, design::DESIGN_JSON, &design)?;
             Self::view_of(mockups)
         })
@@ -904,7 +967,7 @@ impl KitDesk {
     /// one question, the fragment written, the kit told.
     fn generate_one(&self, oneshot: &dyn Oneshot, name: &str) -> Result<(), String> {
         let mockups = self.setup.mockups.as_ref();
-        let (component, css, folder) = {
+        let (component, css, folder, examples) = {
             let _held = lock(&self.files);
             let mut kit = Self::kit_of(mockups)?;
             let entry = kit
@@ -914,14 +977,19 @@ impl KitDesk {
             let component = entry.clone();
             Self::write_json(mockups, design::KIT_JSON, &kit)?;
             let css = Self::text_of(mockups, design::TOKENS_CSS)?.unwrap_or_default();
-            (component, css, mockups.workspace(BRANCH)?)
+            let examples =
+                design::examples_for_component(&Self::design_of(mockups)?.examples, name);
+            (component, css, mockups.workspace(BRANCH)?, examples)
         };
         let base = kit::base(&component.base);
-        let prompt = design::component_prompt(&component, base, &css);
-        let answer = if component.reference.is_empty() {
+        let prompt = design::component_prompt(&component, base, &css, &examples);
+        // An image to read: the session runs in `mock/`, where the kit's
+        // reference and the design system's examples both are.
+        let answer = if component.reference.is_empty() && examples.is_empty() {
             oneshot.ask(&self.setup.model, &prompt)
         } else {
-            oneshot.ask_in(&self.setup.model, &prompt, &folder.join(kit::KIT_DIR))
+            let mock = folder.join(kit::KIT_DIR).join("..");
+            oneshot.ask_in(&self.setup.model, &prompt, &mock)
         };
         let written = answer
             .and_then(|a| design::fragment_from_answer(&a))
@@ -1694,6 +1762,72 @@ pub mod tests {
             .await
             .expect("removed");
         assert!(view.design.moodboard.is_empty());
+        // An interface example: kept as the whole product's, described, bounded, removed.
+        let path = desk
+            .keep_asset(Asset::Example, "Linear app.png", vec![1])
+            .await
+            .expect("example kept");
+        assert_eq!(path, "design/examples/linear-app.png");
+        desk.keep_asset(Asset::Example, "Linear app.png", vec![2])
+            .await
+            .expect("the same one again");
+        let view = desk
+            .describe_example(
+                "examples/linear-app.png".into(),
+                format!("  the side nav{}", "x".repeat(design::MAX_EXAMPLE_NOTE)),
+                ExampleScope::Page {
+                    name: "Login".into(),
+                },
+            )
+            .await
+            .expect("described");
+        assert_eq!(view.design.examples.len(), 1);
+        let example = &view.design.examples[0];
+        assert!(example.note.starts_with("the side nav"));
+        assert_eq!(example.note.chars().count(), design::MAX_EXAMPLE_NOTE);
+        assert_eq!(
+            example.scope,
+            ExampleScope::Page {
+                name: "Login".into()
+            }
+        );
+        assert!(
+            desk.describe_example("examples/none.png".into(), String::new(), ExampleScope::App)
+                .await
+                .is_err()
+        );
+        assert!(
+            desk.describe_example(
+                "examples/linear-app.png".into(),
+                String::new(),
+                ExampleScope::Component { name: " ".into() }
+            )
+            .await
+            .is_err(),
+            "a component is named"
+        );
+        for i in 1..design::MAX_EXAMPLES {
+            desk.keep_asset(Asset::Example, &format!("e{i}.png"), vec![1])
+                .await
+                .expect("under the bound");
+        }
+        assert!(
+            desk.keep_asset(Asset::Example, "one-more.png", vec![1])
+                .await
+                .is_err()
+        );
+        let view = desk
+            .remove_asset(Asset::Example, "examples/linear-app.png")
+            .await
+            .expect("removed");
+        assert_eq!(view.design.examples.len(), design::MAX_EXAMPLES - 1);
+        assert!(
+            !view
+                .design
+                .examples
+                .iter()
+                .any(|e| e.file == "examples/linear-app.png")
+        );
         assert!(
             desk.publish(String::new()).await.is_err(),
             "the sample has no repository"
