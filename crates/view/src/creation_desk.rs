@@ -1028,7 +1028,11 @@ impl CreationDesk {
             model: self.setup.exec_model.clone(),
         };
         let mut failed = writers.write_all(component_writings(&plan, &index)).await;
-        failed.extend(writers.write_all(page_writings(&record, &plan)).await);
+        failed.extend(
+            writers
+                .write_all(page_writings(&record, &plan, &index))
+                .await,
+        );
         let said = format!(
             "planned by {}, written by {}: {} pages, {} micro-frontends{}",
             self.setup.model,
@@ -1522,13 +1526,14 @@ fn component_writings(plan: &mock_plan::MockPlan, index: &Arc<KitIndex>) -> Vec<
                 label: format!("micro-frontend {}", c.name),
                 prompt: mf_gen::generate_prompt(
                     &c.spec(),
-                    &mock_plan::units_of(&c),
+                    &mock_plan::units_of(&c, &plan.world),
                     &index.skeletons(&c.uses),
                     &index.tokens.join(", "),
                     None,
                 ),
                 land: Arc::new(move |answer: &str| {
                     let generated = mf_gen::generated_of(answer)?;
+                    mock_plan::on_tokens(&generated.fragment, &index.tokens)?;
                     let mut files = vec![(mf_gen::fragment_path(&c.name), generated.fragment)];
                     if let Some(fixture) = generated.fixture {
                         files.push((mf_gen::fixture_path(&c.name), fixture));
@@ -1542,19 +1547,23 @@ fn component_writings(plan: &mock_plan::MockPlan, index: &Arc<KitIndex>) -> Vec<
 
 /// What the writers of a plan's pages are asked, and what each answer
 /// lands as: the page.
-fn page_writings(record: &Creation, plan: &mock_plan::MockPlan) -> Vec<Written> {
+fn page_writings(
+    record: &Creation,
+    plan: &mock_plan::MockPlan,
+    index: &Arc<KitIndex>,
+) -> Vec<Written> {
     plan.pages
         .iter()
         .map(|p| {
             let page = p.clone();
+            let tokens = index.tokens.clone();
             Written {
                 label: format!("page {}", page.path),
-                prompt: mock_plan::page_prompt(record, plan, p),
+                prompt: mock_plan::page_prompt(record, plan, p, &index.tokens),
                 land: Arc::new(move |answer: &str| {
-                    Ok(vec![(
-                        page.path.clone(),
-                        mock_plan::page_of(answer, &page)?,
-                    )])
+                    let html = mock_plan::page_of(answer, &page)?;
+                    mock_plan::on_tokens(&html, &tokens)?;
+                    Ok(vec![(page.path.clone(), html)])
                 }),
             }
         })
@@ -1613,8 +1622,14 @@ impl Writers {
                 let wrote = tokio::task::spawn_blocking(move || {
                     let mut last = String::new();
                     for _ in 0..WRITER_TRIES {
+                        // A second try is told why the first was refused.
+                        let prompt = if last.is_empty() {
+                            item.prompt.clone()
+                        } else {
+                            mock_plan::retry_prompt(&item.prompt, &last)
+                        };
                         let tried = oneshot
-                            .ask(&model, &item.prompt)
+                            .ask(&model, &prompt)
                             .and_then(|answer| (item.land)(&answer))
                             .and_then(|files| {
                                 for (path, text) in &files {
@@ -3110,6 +3125,8 @@ mod tests {
         now: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         asked: Mutex<Vec<String>>,
+        /// Asked again, told why the first answer was refused.
+        retried: std::sync::atomic::AtomicUsize,
     }
 
     impl Oneshot for Counted {
@@ -3117,6 +3134,9 @@ mod tests {
             use std::sync::atomic::Ordering::SeqCst;
             if prompt.contains("You plan the mock-up of a proof of concept") {
                 return Ok(r#"{"pages":[{"path":"pages/a.html","title":"A","components":["One","Two"]},{"path":"pages/b.html","title":"B","components":["Three"]}],"components":[{"name":"One"},{"name":"Two"},{"name":"Three"},{"name":"Broken"}]}"#.to_string());
+            }
+            if prompt.contains("Your last answer was refused: the writer stumbled") {
+                self.retried.fetch_add(1, SeqCst);
             }
             let n = self.now.fetch_add(1, SeqCst) + 1;
             self.most.fetch_max(n, SeqCst);
@@ -3144,6 +3164,11 @@ mod tests {
     fn written_two_at_once(writers: &Counted, job: &Job) {
         use std::sync::atomic::Ordering::SeqCst;
         assert_eq!(writers.most.load(SeqCst), 2, "two at once, never more");
+        assert_eq!(
+            writers.retried.load(SeqCst),
+            WRITER_TRIES - 1,
+            "a retry is told why"
+        );
         let asked = lock(&writers.asked).clone();
         let first_page = asked.iter().position(|a| a == "page").expect("pages asked");
         assert!(asked[..first_page].iter().all(|a| a != "page"), "{asked:?}");

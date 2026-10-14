@@ -26,6 +26,10 @@ pub struct MockPlan {
     pub pages: Vec<PlannedPage>,
     /// Every micro-frontend the pages inject, each once.
     pub components: Vec<PlannedComponent>,
+    /// The example world every writer shares: each entity the fixtures and
+    /// the pages' props name, with its fixed id — so a page hands a
+    /// micro-frontend an id its fixture has.
+    pub world: String,
 }
 
 /// One page of the plan.
@@ -102,13 +106,17 @@ pub fn plan_prompt(c: &Creation, kit_index: &str) -> String {
          DataCapabilities it triggers (`actions`), named `<system>.<verbThing>`, the props a page \
          hands it, the kit's components it is built of (`uses`, by their exact names below), and \
          the example data its fixture holds (`data`: believable, in the language of the brief — \
-         never a lorem ipsum).\n\n\
+         never a lorem ipsum). Then fix the example world they all share (`world`): every entity \
+         a fixture holds or a page hands as a prop — the campaign, its sessions, its people, its \
+         places, its media… — each with its fixed id, one line each (`cmp-1 — the campaign …`): \
+         the writers never see each other, and only these ids let a page's props find a \
+         fixture's rows.\n\n\
          Answer with one JSON object and nothing else: {\"pages\": [{\"path\": \"pages/home.html\", \
          \"title\": \"…\", \"objective\": \"…\", \"components\": [\"Name\"], \"links\": \
          [\"pages/other.html\"], \"layout\": \"…\"}], \"components\": [{\"name\": \"Name\", \
          \"system\": \"…\", \"description\": \"…\", \"needs\": [\"system.readThing\"], \"actions\": \
          [\"system.doThing\"], \"props\": {\"id\": \"ID\"}, \"uses\": [\"Button\"], \"data\": \
-         \"…\"}]}.\n\n",
+         \"…\"}], \"world\": \"cmp-1 — …\"}.\n\n",
     );
     if kit_index.trim().is_empty() {
         text.push_str("The kit has no generated component yet: `uses` stays empty.\n\n");
@@ -186,7 +194,11 @@ pub fn parse_plan(answer: &str, kit: &[String]) -> Result<MockPlan, String> {
     if components.is_empty() {
         return Err("the plan has no micro-frontend".to_string());
     }
-    Ok(MockPlan { pages, components })
+    Ok(MockPlan {
+        pages,
+        components,
+        world: read.world.trim().to_string(),
+    })
 }
 
 /// `PascalCase`: a capital, then letters and digits.
@@ -251,20 +263,83 @@ pub fn manifest(plan: &MockPlan) -> Result<String, String> {
 }
 
 /// What a micro-frontend's writer is told of its units and of its fixture:
-/// the planner's words, standing in for Capabilities not built yet.
+/// the planner's words, standing in for Capabilities not built yet, and the
+/// world every fixture shares.
 #[must_use]
-pub fn units_of(component: &PlannedComponent) -> String {
+pub fn units_of(component: &PlannedComponent, world: &str) -> String {
     let mut text = String::new();
     if !component.data.trim().is_empty() {
         let _ = writeln!(text, "Its fixture holds: {}", component.data.trim());
     }
+    if !world.trim().is_empty() {
+        let _ = write!(
+            text,
+            "Its fixture's rows are of this example world, with these ids exactly — the pages hand them as props:\n{}\n",
+            world.trim()
+        );
+    }
     text
+}
+
+/// The design system's variables a text uses and the design system has
+/// not — those the text itself defines (`--cols: 3`) aside.
+#[must_use]
+pub fn unknown_tokens(text: &str, tokens: &[String]) -> Vec<String> {
+    let defined: BTreeSet<&str> = text
+        .split([';', '{', '\n', '"', '\''])
+        .filter_map(|decl| decl.trim().split_once(':'))
+        .map(|(name, _)| name.trim())
+        .filter(|name| name.starts_with("--"))
+        .collect();
+    let mut unknown = BTreeSet::new();
+    for (at, _) in text.match_indices("var(--") {
+        let name: String = text
+            .get(at + 4..)
+            .unwrap_or_default()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if !tokens.contains(&name) && !defined.contains(name.as_str()) {
+            unknown.insert(name);
+        }
+    }
+    unknown.into_iter().collect()
+}
+
+/// A writer's answer checked against the design system: refused, with the
+/// variables it may use, when it uses one the design system has not. No
+/// design system to check against: nothing is refused.
+///
+/// # Errors
+///
+/// The variables it uses the design system has not.
+pub fn on_tokens(text: &str, tokens: &[String]) -> Result<(), String> {
+    if tokens.is_empty() {
+        return Ok(());
+    }
+    let unknown = unknown_tokens(text, tokens);
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "it uses variables the design system has not: {}; the design system's are: {}",
+        unknown.join(", "),
+        tokens.join(", ")
+    ))
+}
+
+/// A writer asked again: its question, and why its last answer was refused.
+#[must_use]
+pub fn retry_prompt(prompt: &str, why: &str) -> String {
+    format!(
+        "{prompt}\n\nYour last answer was refused: {why}. Answer again, the whole answer, with that corrected.\n"
+    )
 }
 
 /// A page's writer's question: the page's plan, its micro-frontends' specs,
 /// the pages it links to — answered with the page alone.
 #[must_use]
-pub fn page_prompt(c: &Creation, plan: &MockPlan, page: &PlannedPage) -> String {
+pub fn page_prompt(c: &Creation, plan: &MockPlan, page: &PlannedPage, tokens: &[String]) -> String {
     let mut text = String::from(
         "You write one page of a product's static mock-up: plain HTML, no build, no backend. The \
          page is layout only — its regions, headings and the links of the journeys — and its \
@@ -273,7 +348,8 @@ pub fn page_prompt(c: &Creation, plan: &MockPlan, page: &PlannedPage) -> String 
          expects, and write none of its markup yourself. In `<head>`: `<link rel=\"stylesheet\" \
          href=\"../design/tokens.css\">` and `<link rel=\"stylesheet\" href=\"../kit/kit.css\">`; \
          style the layout through the design system's variables (`var(--…)`), never a colour or \
-         a size written by hand. At the end of `<body>`: `<script src=\"../mock.js\"></script>`. \
+         a size written by hand — the page's own background, text colour and font included, set \
+         on `body` from those variables. At the end of `<body>`: `<script src=\"../mock.js\"></script>`. \
          Link the other pages by their relative path (`other.html`). Write its texts in the \
          language of the brief. Answer ONLY a ```html block with the whole page.\n\n",
     );
@@ -302,6 +378,22 @@ pub fn page_prompt(c: &Creation, plan: &MockPlan, page: &PlannedPage) -> String 
                 }
             );
         }
+    }
+    if tokens.is_empty() {
+        text.push_str("\nThe design system has no variable yet: use none.\n");
+    } else {
+        let _ = write!(
+            text,
+            "\nThe design system's variables — use these and no other:\n{}\n",
+            tokens.join(", ")
+        );
+    }
+    if !plan.world.trim().is_empty() {
+        let _ = write!(
+            text,
+            "\nThe example world: every id a prop hands is one of these, exactly:\n{}\n",
+            plan.world.trim()
+        );
     }
     if !page.links.is_empty() {
         text.push_str("\nThe pages it links to:\n\n");
@@ -393,7 +485,7 @@ mod tests {
         {"name": "CampaignList", "system": "campagne", "description": "the campaigns", "needs": ["campagne.lister"], "actions": ["campagne.creer"], "props": {"id": "ID"}, "uses": ["Card", "Unknown"], "data": "three campaigns"},
         {"name": "CampaignList", "description": "twice"},
         {"name": "lower"}
-    ]}"#;
+    ], "world": " cmp-1 — the campaign "}"#;
 
     fn plan() -> MockPlan {
         parse_plan(ANSWER, &["Card".to_string()]).expect("read")
@@ -401,6 +493,15 @@ mod tests {
 
     #[test]
     fn the_plan_is_kept_to_what_agrees_with_itself() {
+        for (path, ok) in [
+            ("pages/a-b.html", true),
+            ("pages/a_b.html", true),
+            ("pages/a b.html", false),
+            ("pages/.html", false),
+            ("pages/a.htm", false),
+        ] {
+            assert_eq!(page_path(path), ok, "{path}");
+        }
         let p = plan();
         assert_eq!(
             p.pages.iter().map(|x| x.path.as_str()).collect::<Vec<_>>(),
@@ -426,6 +527,7 @@ mod tests {
             p.components[0].spec().needs,
             vec!["campagne.lister".to_string()]
         );
+        assert_eq!(p.world, "cmp-1 — the campaign");
         assert!(parse_plan("no plan", &[]).is_err());
         assert!(parse_plan("{\"pages\": 3}", &[]).is_err());
         assert!(parse_plan(r#"{"pages": [], "components": [{"name": "A"}]}"#, &[]).is_err());
@@ -443,6 +545,17 @@ mod tests {
         let manifest: serde_json::Value =
             serde_json::from_str(&manifest(&plan()).expect("json")).expect("json");
         assert_eq!(manifest["version"], 1);
+        assert_eq!(manifest["pages"][0]["title"], "Home");
+        assert_eq!(manifest["pages"][0]["objective"], "see the campaigns");
+        assert_eq!(manifest["components"][0]["description"], "the campaigns");
+        assert_eq!(
+            manifest["components"][0]["needs"],
+            serde_json::json!(["campagne.lister"])
+        );
+        assert_eq!(
+            manifest["components"][0]["props"],
+            serde_json::json!({"id": "ID"})
+        );
         assert_eq!(manifest["pages"][0]["components"][0], "CampaignList");
         assert_eq!(
             manifest["components"][0]["fragment"],
@@ -459,10 +572,15 @@ mod tests {
             vec!["campagne.creer".to_string()]
         );
         assert_eq!(
-            units_of(&plan().components[0]),
+            units_of(&plan().components[0], " "),
             "Its fixture holds: three campaigns\n"
         );
-        assert_eq!(units_of(&PlannedComponent::default()), "");
+        assert_eq!(units_of(&PlannedComponent::default(), ""), "");
+        let with = units_of(&PlannedComponent::default(), " cmp-1 — the campaign ");
+        assert!(
+            with.ends_with("the pages hand them as props:\ncmp-1 — the campaign\n"),
+            "{with}"
+        );
     }
 
     #[test]
@@ -493,6 +611,29 @@ mod tests {
     }
 
     #[test]
+    fn a_variable_the_design_system_has_not_is_refused_with_those_it_has() {
+        let tokens = ["--color-text".to_string(), "--space-1".to_string()];
+        let text = "body { color: var(--color-text); background: var(--color-background); margin: var(--space-1) var(--space-6); } .g { --cols: 3; width: var(--cols); }";
+        assert_eq!(
+            unknown_tokens(text, &tokens),
+            vec!["--color-background".to_string(), "--space-6".to_string()]
+        );
+        assert_eq!(
+            on_tokens(text, &tokens),
+            Err("it uses variables the design system has not: --color-background, --space-6; the design system's are: --color-text, --space-1".to_string())
+        );
+        assert!(on_tokens("a { color: var(--color-text) }", &tokens).is_ok());
+        assert!(
+            on_tokens(text, &[]).is_ok(),
+            "no design system: nothing to check against"
+        );
+        assert_eq!(
+            retry_prompt("ASK", "WHY"),
+            "ASK\n\nYour last answer was refused: WHY. Answer again, the whole answer, with that corrected.\n"
+        );
+    }
+
+    #[test]
     fn the_questions_carry_what_each_hand_needs() {
         let c = Creation {
             name: "Forge".to_string(),
@@ -514,11 +655,19 @@ mod tests {
         );
         assert!(plan_prompt(&c, " ").contains("`uses` stays empty"));
         let p = plan();
-        let page = page_prompt(&c, &p, &p.pages[0]);
+        let tokens = ["--color-text".to_string(), "--space-1".to_string()];
+        let page = page_prompt(&c, &p, &p.pages[0], &tokens);
+        assert!(page.contains("use these and no other:\n--color-text, --space-1\n"));
+        assert!(
+            page.contains(
+                "every id a prop hands is one of these, exactly:\ncmp-1 — the campaign\n"
+            )
+        );
+        assert!(page_prompt(&c, &p, &p.pages[0], &[]).contains("has no variable yet"));
         assert!(page.contains("The application: A campaign manager\n"));
         assert!(page.contains("- `CampaignList` — the campaigns — props: id: ID"));
         assert!(page.contains("- `campaign.html` — Campaign"));
-        let alone = page_prompt(&c, &p, &p.pages[1]);
+        let alone = page_prompt(&c, &p, &p.pages[1], &tokens);
         assert!(!alone.contains("links to"));
         let index = index_html(&c, &p);
         assert!(index.contains("<title>Forge — mock-up</title>"));
