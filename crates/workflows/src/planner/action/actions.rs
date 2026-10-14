@@ -15,6 +15,7 @@ use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
+use crate::common::dossier::{Dossier, Filter};
 use crate::common::explore;
 use crate::planner::data::state::PlannerState;
 use crate::planner::data::{grounding, plan};
@@ -28,6 +29,8 @@ pub struct ReadContext {
     pub disk: Rc<dyn Disk>,
     /// Where the two digests live.
     pub grill_dir: PathBuf,
+    /// The checkout's root, where the design dossier is read.
+    pub root: PathBuf,
 }
 
 #[async_trait(?Send)]
@@ -52,6 +55,17 @@ impl Action<PlannerState> for ReadContext {
             .disk
             .read_to_string(&self.grill_dir.join("technical-digest.md"));
         ctx.state.grounding = grounding::combine(business.as_deref(), technical.as_deref());
+        let dossier = Dossier::read(self.disk.as_ref(), &self.root);
+        if !dossier.is_empty() {
+            ctx.traces.say(&format!(
+                "design dossier: {} micro-frontend(s), {} write(s), {} aggregate(s), {} rule(s)",
+                dossier.micro_uis.len(),
+                dossier.writes.len(),
+                dossier.aggregates.len(),
+                dossier.rules.len()
+            ));
+        }
+        ctx.state.dossier = dossier.block(&Filter::default());
         Ok(Verdict::Continue)
     }
 }
@@ -143,6 +157,7 @@ impl SessionAction<PlannerState> for AskForPlan {
                 ("body", &body),
                 ("existing", &existing),
                 ("grounding", &grounding),
+                ("dossier", &open.state.dossier),
             ],
         );
         let map_file = explore::map_file_path(&self.artifacts_dir);

@@ -98,8 +98,13 @@ gh issue edit <n> --add-label harness:read-side   # or harness:write-side
 Long bodies go through `--body-file`, never inline: a body typed on the
 command line gets mangled by the shell.
 
-**The task body** has two sections, both written once and never rewritten
-by a refinement. `## Scope` opens with a `branch: <type>/<slug>` line
+**The task body** is the whole SPEC: no refinement runs after a split
+unless a human asks for one. `## Scope`, `## Architecture` and `## Rules`
+are written once and never rewritten by a refinement; then `## Business
+Goal`, `## Acceptance Criteria` (given/when/then, each rule the task
+completes cited `(R<id>)`), `## Business Rules` and `## Technical` (a
+sketch: paths, manifests, contracts). Every agent task is opened with
+`harness:ready`; the human holds one by taking it off. `## Scope` opens with a `branch: <type>/<slug>` line
 (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `AIchore` — per
 `.claude/skills/commit/SKILL.md`), a blank line, then a brief: what this
 slice covers and what it explicitly does not — the next slice's territory,

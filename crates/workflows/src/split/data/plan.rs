@@ -60,6 +60,20 @@ pub struct TaskItem {
     /// names them — their tests already written, never changed by the task.
     #[serde(default)]
     pub rules: Vec<String>,
+    /// What the user gets, in a few sentences: the task's `## Business Goal`.
+    #[serde(default)]
+    pub goal: String,
+    /// The checks that say it is done, given/when/then, each rule it
+    /// completes cited `(R3)`: its `## Acceptance Criteria`.
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+    /// The invariants and rule criteria it must hold: its `## Business Rules`.
+    #[serde(default)]
+    pub business_rules: Vec<String>,
+    /// The paths, manifests and contracts it opens — a sketch: its
+    /// `## Technical`.
+    #[serde(default)]
+    pub technical: String,
 }
 
 impl TaskItem {
@@ -115,6 +129,48 @@ fn ids(list: &[String]) -> Vec<String> {
 /// was found does not deserialize into `Vec<TaskItem>`.
 pub fn parse(text: &str) -> Result<Vec<TaskItem>, ParseError> {
     crate::common::json_reply::parse_array(text)
+}
+
+/// What keeps a plan's agent slices from being whole SPECs, in words.
+///
+/// A slice with no goal, one with no acceptance criterion, a rule it claims
+/// that no criterion of it cites. Empty when every slice is whole; a slice
+/// for a human is not judged — a human reads it.
+#[must_use]
+pub fn spec_gaps(items: &[TaskItem]) -> Vec<String> {
+    let mut gaps = Vec::new();
+    for (index, item) in items.iter().enumerate().filter(|(_, i)| !i.needs_human) {
+        let named = format!("slice {index} ({:?})", item.title);
+        if item.goal.trim().is_empty() {
+            gaps.push(format!("{named} has no `goal`"));
+        }
+        let criteria: Vec<&str> = item
+            .acceptance
+            .iter()
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .collect();
+        if criteria.is_empty() {
+            gaps.push(format!("{named} has no `acceptance` criterion"));
+        }
+        for rule in item
+            .rules
+            .iter()
+            .map(|r| r.trim())
+            .filter(|r| !r.is_empty())
+        {
+            if !criteria.iter().any(|c| {
+                crate::common::dossier::rule_ids(c)
+                    .iter()
+                    .any(|id| id == rule)
+            }) {
+                gaps.push(format!(
+                    "{named} claims {rule}, which no acceptance criterion cites"
+                ));
+            }
+        }
+    }
+    gaps
 }
 
 #[cfg(test)]

@@ -50,17 +50,20 @@ impl Verification<Loop> for TechAlreadyWritten {
     }
 }
 
-/// The technical stage builds on the business sections: without them it
-/// would plan a guess.
+/// The session builds on the SPEC: without its goal and its acceptance
+/// criteria it would plan a guess.
 ///
-/// Refuses rather than writing the business half itself: that half is the
-/// human's to ask for (`harness:refinement`), and the loop never invents it.
-pub struct TaskHasABusinessSpec;
+/// `split` writes them in every task it opens; a refinement a human asked
+/// for writes them too (`harness:spec-written`). A task opened by hand
+/// without them stops here, and says what to write — never which label to
+/// ask for: nothing waits on a human gesture but the body itself.
+pub struct TaskHasASpec;
 
 #[async_trait(?Send)]
-impl Verification<Loop> for TaskHasABusinessSpec {
+impl Verification<Loop> for TaskHasASpec {
     fn purpose(&self) -> String {
-        "the issue body carries its business sections (Business Goal, Acceptance Criteria, Business Rules) before the technical ones are planned".to_string()
+        "the issue body carries its SPEC (Business Goal, Acceptance Criteria) before it is built"
+            .to_string()
     }
 
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
@@ -68,12 +71,9 @@ impl Verification<Loop> for TaskHasABusinessSpec {
             return Ok(Verdict::Continue);
         }
         Err(Halt::Halted(format!(
-            "issue #{} does not carry {} — its business sections are not \
-             written. Ask for them with `gh issue edit {} --add-label {}`",
-            ctx.state.task.number,
-            labels::SPEC_WRITTEN,
-            ctx.state.task.number,
-            labels::REFINEMENT
+            "issue #{} carries no SPEC — write its `## Business Goal` and \
+             `## Acceptance Criteria` in the body, and the loop takes it on the next tick",
+            ctx.state.task.number
         )))
     }
 }
@@ -317,18 +317,19 @@ mod tests {
 
     #[tokio::test]
     async fn the_technical_stage_refuses_a_task_without_a_business_spec() {
-        let err = TaskHasABusinessSpec
+        let err = TaskHasASpec
             .verify(&ctx(with_task("34", "raw request")))
             .await
             .expect_err("must stop");
-        assert!(err.reason().contains(labels::REFINEMENT));
+        assert!(err.reason().contains("## Acceptance Criteria"));
+        assert!(
+            !err.reason().contains("label"),
+            "no gesture asked of a human"
+        );
         let mut state = with_task("34", "raw request");
         state.spec_written = true;
         assert_eq!(
-            TaskHasABusinessSpec
-                .verify(&ctx(state))
-                .await
-                .expect("a verdict"),
+            TaskHasASpec.verify(&ctx(state)).await.expect("a verdict"),
             Verdict::Continue
         );
     }

@@ -200,6 +200,24 @@ pub enum Event {
         /// The commit read.
         sha: String,
     },
+    /// The planner opened a roadmap item's milestones, each ready to split:
+    /// the tap the harness opens, a human closes it on one by taking its
+    /// `harness:ready` off.
+    MilestonesPlanned {
+        /// The roadmap item.
+        roadmap: u64,
+        /// The milestones opened, in order.
+        milestones: Vec<u64>,
+    },
+    /// `split` opened a milestone's tasks, each agent task ready to build.
+    MilestoneSplit {
+        /// The milestone.
+        milestone: u64,
+        /// Every task opened, in order.
+        tasks: Vec<u64>,
+        /// Those that only a human can do.
+        human_tasks: Vec<u64>,
+    },
     /// A workflow stopped. Told in the run's own log as `STOP: …` — the line
     /// a reader of that log jumps to — and kept.
     Halted {
@@ -320,6 +338,28 @@ impl Event {
                 verdict,
                 ..
             } => format!("gate \"{gate}\" · {check}: {verdict}"),
+            Self::MilestonesPlanned {
+                roadmap,
+                milestones,
+            } => format!(
+                "planner: #{roadmap} -> {} milestone(s) opened, ready to split: {}",
+                milestones.len(),
+                tasks(milestones)
+            ),
+            Self::MilestoneSplit {
+                milestone,
+                tasks: opened,
+                human_tasks,
+            } => format!(
+                "split: #{milestone} -> {} task(s) opened, {} for a human{}",
+                opened.len(),
+                human_tasks.len(),
+                if human_tasks.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", tasks(human_tasks))
+                }
+            ),
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
@@ -353,6 +393,28 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_plan_and_the_split_are_told_in_the_journal() {
+        let planned = Event::MilestonesPlanned {
+            roadmap: 2,
+            milestones: vec![3, 4],
+        };
+        assert_eq!(
+            planned.line().as_deref(),
+            Some("planner: #2 -> 2 milestone(s) opened, ready to split: #3, #4")
+        );
+        let split = Event::MilestoneSplit {
+            milestone: 3,
+            tasks: vec![5, 6],
+            human_tasks: vec![6],
+        };
+        assert_eq!(
+            split.line().as_deref(),
+            Some("split: #3 -> 2 task(s) opened, 1 for a human (#6)")
+        );
+        assert_eq!(split.level(), Level::Info);
+    }
 
     #[test]
     fn a_gate_s_verdict_names_the_gate_and_the_check() {

@@ -34,7 +34,8 @@ pub fn from_events(events: &[Stored]) -> Board {
     board
 }
 
-fn tell(board: &mut Board, event: &Event, at: &str) {
+/// The watch's own life: started, stopping, stopped.
+fn watch(board: &mut Board, event: &Event, at: &str) {
     match event {
         Event::WatchStarted { target, .. } => {
             board.clear("watch");
@@ -55,6 +56,73 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
             "every lane finished; start it again from the status button".to_string(),
             at,
         ),
+        _ => {}
+    }
+}
+
+/// The plant's progress the harness made without asking: told, with the
+/// gesture that takes it back.
+fn progress(board: &mut Board, event: &Event, at: &str) {
+    match event {
+        Event::MilestonesPlanned {
+            roadmap,
+            milestones,
+        } => board.add(Notification::once(
+            format!("planned:#{roadmap}"),
+            Level::Info,
+            format!(
+                "#{roadmap}: {} milestone(s) planned, ready to split",
+                milestones.len()
+            ),
+            format!(
+                "{} — to hold one, take its harness:ready off",
+                numbers(milestones)
+            ),
+            at,
+            Some(issue(*roadmap)),
+        )),
+        Event::MilestoneSplit {
+            milestone,
+            tasks,
+            human_tasks,
+        } => board.add(Notification::once(
+            format!("split:#{milestone}"),
+            if human_tasks.is_empty() {
+                Level::Info
+            } else {
+                Level::Warning
+            },
+            format!("#{milestone}: {} task(s) opened", tasks.len()),
+            if human_tasks.is_empty() {
+                "each agent task is ready to build — to hold one, take its harness:ready off; \
+                     to cut the milestone again, take harness:triggered off it"
+                    .to_string()
+            } else {
+                format!(
+                    "{} only a human can do — do it, then close it; the others are ready to build",
+                    numbers(human_tasks)
+                )
+            },
+            at,
+            Some(issue(*milestone)),
+        )),
+        _ => {}
+    }
+}
+
+/// Issue numbers as a reader names them: `#3, #4`.
+fn numbers(list: &[u64]) -> String {
+    list.iter()
+        .map(|n| format!("#{n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn tell(board: &mut Board, event: &Event, at: &str) {
+    match event {
+        Event::WatchStarted { .. } | Event::WatchDraining { .. } | Event::WatchStopped => {
+            watch(board, event, at);
+        }
         Event::ChangesApplied { prompts } => changes_applied(board, prompts, at),
         Event::QuotaRest { ticks, strikes } => quota_rest(board, *ticks, *strikes, at),
         Event::TickFailed { reason } => board.add(Notification::once(
@@ -125,6 +193,9 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
             kind,
             reason,
         } => halted(board, workflow, kind, reason, at),
+        Event::MilestonesPlanned { .. } | Event::MilestoneSplit { .. } => {
+            progress(board, event, at);
+        }
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }
@@ -337,6 +408,49 @@ mod tests {
                 code,
             },
         )
+    }
+
+    #[test]
+    fn the_taps_the_harness_opens_are_told_with_the_gesture_that_closes_them() {
+        let board = from_events(&[
+            stored(
+                1,
+                Event::MilestonesPlanned {
+                    roadmap: 2,
+                    milestones: vec![3, 4],
+                },
+            ),
+            stored(
+                2,
+                Event::MilestoneSplit {
+                    milestone: 3,
+                    tasks: vec![5, 6],
+                    human_tasks: vec![],
+                },
+            ),
+            stored(
+                3,
+                Event::MilestoneSplit {
+                    milestone: 4,
+                    tasks: vec![7, 8],
+                    human_tasks: vec![8],
+                },
+            ),
+        ]);
+        let planned = board.get("planned:#2").expect("planned");
+        assert_eq!(planned.level, Level::Info);
+        assert!(planned.detail.contains("#3, #4") && planned.detail.contains("harness:ready off"));
+        assert_eq!(planned.link, Some(Link::Issue { number: 2 }));
+        let split = board.get("split:#3").expect("split");
+        assert_eq!(split.level, Level::Info);
+        assert!(split.detail.contains("harness:triggered off"));
+        let human = board.get("split:#4").expect("split with a human task");
+        assert_eq!(human.level, Level::Warning, "a human has something to do");
+        assert!(
+            human.detail.contains("#8 only a human can do"),
+            "{}",
+            human.detail
+        );
     }
 
     fn diverged(minute: u32, branch: &str, diagnosis: &str) -> Stored {

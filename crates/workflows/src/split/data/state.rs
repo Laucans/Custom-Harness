@@ -14,6 +14,8 @@ pub struct SplitState {
     /// Concepts, Capabilities, aggregates, `DataCapabilities`, Micro-UIs —
     /// rendered for the prompt, so the plan names what exists.
     pub inventory: String,
+    /// The milestone's slice of the design dossier, as the prompt reads it.
+    pub dossier: String,
 }
 
 impl SplitState {

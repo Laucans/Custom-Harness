@@ -602,7 +602,8 @@ fn planner_line() -> Line {
         "planner",
         "Planner",
         "harness:ready on a roadmap item",
-        "Turns a ready roadmap item into the chain of milestones that delivers it.",
+        "Turns a ready roadmap item into the chain of milestones that delivers it, read off \
+         the design dossier, each ready to split.",
         vec![
             vec![free(
                 "ground",
@@ -654,8 +655,8 @@ fn split_line() -> Line {
         "split",
         "Split",
         "harness:ready on a milestone",
-        "Turns a ready, refined milestone into its tasks — once the milestone before it is \
-         delivered.",
+        "Turns a ready milestone into its tasks, each a whole SPEC read off the design dossier \
+         and ready to build — once the milestone before it is delivered.",
         vec![
             vec![free(
                 "context",

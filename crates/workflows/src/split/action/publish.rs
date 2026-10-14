@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
+use harness_core::traces::Event;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -37,11 +38,14 @@ use harness_architecture::vocabulary::{Declaration, Side};
 
 /// A task's body and labels, from its slice.
 ///
-/// Under their own headings, and `SCOPE` and `ARCHITECTURE` are the two
-/// sections no refinement phase rewrites: the boundary this slice states and
-/// its place in the architecture survive every later round instead of being
-/// replaced by the five sections a refinement knows. A write-side slice is
-/// the data layer, and labelled as such.
+/// Under their own headings, and `SCOPE`, `ARCHITECTURE` and `RULES` are the
+/// sections no refinement phase rewrites: the boundary this slice states, its
+/// place in the architecture and the rules it makes pass survive any later
+/// round. Then the SPEC the slice carries — goal, acceptance criteria,
+/// business rules, a technical sketch — which a refinement asked for by a
+/// human may rework. A write-side slice is the data layer, and labelled as
+/// such; an agent task is `harness:ready` at once, the harness opening the
+/// tap a human closes.
 fn body_and_labels(
     item: &plan::TaskItem,
     declaration: &Declaration,
@@ -63,11 +67,36 @@ fn body_and_labels(
             sections::heading_of(sections::RULES)
         );
     }
-    let labels = if side == Side::Write {
+    // The SPEC the session builds from, written here: no refinement runs
+    // after a split unless a human asks for one.
+    let bullets = |items: &[String]| -> String {
+        items
+            .iter()
+            .map(|i| i.trim())
+            .filter(|i| !i.is_empty())
+            .map(|i| format!("- {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for (key, text) in [
+        ("business-goal", item.goal.trim().to_string()),
+        ("acceptance-criteria", bullets(&item.acceptance)),
+        ("business-rules", bullets(&item.business_rules)),
+        ("technical", item.technical.trim().to_string()),
+    ] {
+        if !text.is_empty() {
+            let _ = write!(body, "\n\n## {}\n\n{text}", sections::heading_of(key));
+        }
+    }
+    let mut labels = if side == Side::Write {
         vec![kind, side.label(), labels::DATA_LAYER]
     } else {
         vec![kind, side.label()]
     };
+    // The tap is opened here: a human closes it by taking the label off.
+    if kind == labels::AGENT {
+        labels.push(labels::READY);
+    }
     (body, labels)
 }
 
@@ -218,6 +247,17 @@ impl Action<SplitState> for Write {
         self.gh
             .add_label(milestone_number, labels::TRIGGERED)
             .await?;
+        let human_tasks: Vec<u64> = items
+            .iter()
+            .zip(&created)
+            .filter(|(item, _)| item.needs_human)
+            .map(|(_, number)| *number)
+            .collect();
+        ctx.traces.event(&Event::MilestoneSplit {
+            milestone: milestone_number,
+            tasks: created,
+            human_tasks,
+        });
         Ok(Verdict::Continue)
     }
 }
@@ -257,6 +297,50 @@ mod tests {
     use harness_core::ports::agent::Reply;
     use harness_core::traces::Logbook;
     use std::collections::HashMap;
+
+    #[test]
+    fn a_task_carries_its_whole_spec_and_an_agent_one_is_ready_at_once() {
+        let items = plan::parse(
+            r#"[{"title": "List", "brief": "the list", "branch": "feat/list", "unit": "capability", "system": "campagne",
+                 "goal": " The DM sees every PJ. ", "acceptance": ["given PJs, when opened, then all listed (R3)", " "],
+                 "business_rules": ["names are unique"], "technical": "crates/campagne/capabilities/lister-pjs/"}]"#,
+        )
+        .expect("parse");
+        let item = &items[0];
+        let (body, labels) = body_and_labels(item, &item.declaration(), labels::AGENT, Side::Read);
+        let found = sections::parse(&body);
+        assert_eq!(
+            found.get("business-goal").map(String::as_str),
+            Some("The DM sees every PJ.")
+        );
+        assert_eq!(
+            found.get("acceptance-criteria").map(String::as_str),
+            Some("- given PJs, when opened, then all listed (R3)")
+        );
+        assert_eq!(
+            found.get("business-rules").map(String::as_str),
+            Some("- names are unique")
+        );
+        assert_eq!(
+            found.get("technical").map(String::as_str),
+            Some("crates/campagne/capabilities/lister-pjs/")
+        );
+        assert!(labels.contains(&labels::READY));
+        let (_, human) = body_and_labels(item, &item.declaration(), labels::HUMAN, Side::Read);
+        assert!(
+            !human.contains(&labels::READY),
+            "a human's task waits on the human"
+        );
+        let bare =
+            plan::parse(r#"[{"title": "t", "brief": "b", "branch": "feat/t", "unit": "tooling"}]"#)
+                .expect("parse");
+        let (body, _) =
+            body_and_labels(&bare[0], &bare[0].declaration(), labels::AGENT, Side::Read);
+        assert!(
+            !body.contains("## Business Goal") && !body.contains("## Technical"),
+            "{body}"
+        );
+    }
 
     #[test]
     fn a_task_names_the_rules_it_makes_pass_in_a_section_no_refinement_rewrites() {
@@ -349,7 +433,11 @@ mod tests {
                     "## Scope\n\nbranch: feat/a\n\ndo A\n\n## Architecture\n\n\
                      unit: capability\nsystem: credit\nconcept: Risk@3\nprofile: mid\nside: harness:read-side"
                         .to_string(),
-                    vec![labels::AGENT.to_string(), labels::READ_SIDE.to_string()]
+                    vec![
+                        labels::AGENT.to_string(),
+                        labels::READ_SIDE.to_string(),
+                        labels::READY.to_string()
+                    ]
                 ),
                 Wrote::SubIssueLink(4, 1),
                 Wrote::CreatedIssue(

@@ -60,6 +60,16 @@ aggregates open together, and so do their tasks: cut the roadmap so that
 what can be built apart touches different aggregates. A milestone that
 only reads names no aggregate and waits on nothing.
 
+**The design dossier** — what the factory's creation decided: every
+micro-frontend with what it reads and triggers, every write with its effect
+and the fields it touches, every aggregate drafted, every rule:
+<dossier>
+{dossier}
+</dossier>
+Plan so that every aggregate, write, micro-frontend and rule of it falls in
+exactly one milestone; the ids, effects and touched fields are the
+dossier's, never invented.
+
 **The rules come first.** The product's rules are in `rules.json` at the
 repository's root (contract P): each `R<id>` with its criterion, its tests
 already written under `tests/rules/` by the rules' task — the code is what
@@ -97,6 +107,7 @@ pub fn context(ports: &Ports, config: &Config) -> Stage<PlannerState> {
                 gh: Rc::clone(&ports.gh),
                 disk: Rc::clone(&ports.disk),
                 grill_dir: config.grill_dir.clone(),
+                root: config.root.clone(),
             })],
         },
     }
@@ -170,7 +181,14 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_every_placeholder_the_action_fills() {
-        for placeholder in ["{num}", "{title}", "{body}", "{existing}", "{grounding}"] {
+        for placeholder in [
+            "{num}",
+            "{title}",
+            "{body}",
+            "{existing}",
+            "{grounding}",
+            "{dossier}",
+        ] {
             assert!(
                 PLAN_PROMPT.contains(placeholder),
                 "{placeholder} missing from PLAN_PROMPT"

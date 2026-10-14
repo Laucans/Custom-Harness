@@ -315,7 +315,7 @@ pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<
     .body(ports, config, turn);
     let mut pre = always("technical-refinement");
     pre.push(Box::new(gates::TechAlreadyWritten));
-    pre.push(Box::new(gates::TaskHasABusinessSpec));
+    pre.push(Box::new(gates::TaskHasASpec));
     Stage {
         name: "technical-refinement".to_string(),
         pre: Some(Gate {

@@ -15,6 +15,7 @@ use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
+use crate::common::dossier::{Dossier, Filter};
 use crate::split::data::plan;
 use crate::split::data::state::SplitState;
 use harness_architecture::tree::Tree;
@@ -104,6 +105,48 @@ impl Action<SplitState> for ReadInventory {
             tree.micro_uis.len()
         ));
         Ok(Verdict::Continue)
+    }
+}
+
+/// Reads, for free, the milestone's slice of the design dossier.
+///
+/// The micro-frontends, writes, aggregates and rules of its systems,
+/// aggregates and rules: what the slices copy their ids, effects and
+/// criteria from.
+pub struct ReadDossier {
+    /// What reads the dossier's files.
+    pub disk: Rc<dyn Disk>,
+    /// The checkout's root.
+    pub root: PathBuf,
+}
+
+#[async_trait(?Send)]
+impl Action<SplitState> for ReadDossier {
+    async fn run(&self, ctx: &mut Context<SplitState>) -> Outcome<Verdict> {
+        let dossier = Dossier::read(self.disk.as_ref(), &self.root);
+        let filter = Filter::of_milestone(&ctx.state.milestone().body);
+        if dossier.is_empty() {
+            ctx.traces
+                .say("no design dossier: the slices are cut from the milestone alone");
+        } else {
+            ctx.traces.say(&format!(
+                "design dossier: systems {}, aggregates {}, rules {}",
+                list_or_all(&filter.systems),
+                list_or_all(&filter.aggregates),
+                list_or_all(&filter.rules)
+            ));
+        }
+        ctx.state.dossier = dossier.block(&filter);
+        Ok(Verdict::Continue)
+    }
+}
+
+/// A list, or `all` when it is empty.
+fn list_or_all(items: &[String]) -> String {
+    if items.is_empty() {
+        "all".to_string()
+    } else {
+        items.join(", ")
     }
 }
 
@@ -371,17 +414,31 @@ impl SessionAction<SplitState> for AskForSlice {
                     &crate::split::orchestration::stages::profile_block(&self.profile),
                 ),
                 ("inventory", &open.state.inventory),
+                ("dossier", &open.state.dossier),
             ],
         );
         let task = format!("#{}", milestone.number);
 
         let reply =
             ask_and_record(open, &prompt, &self.stage, 1, &task, self.spending.as_ref()).await?;
-        if plan::parse(&reply.text).is_ok() {
-            return Ok(Verdict::Continue);
-        }
-        let error = plan::parse(&reply.text).expect_err("just failed above");
-        let retry_prompt = crate::common::json_reply::retry_prompt(&error);
+        // One retry, for a reply that does not parse or whose slices are not
+        // whole SPECs: it carries the error alone, the session has the rest.
+        let retry_prompt = match plan::parse(&reply.text) {
+            Ok(items) => {
+                let gaps = plan::spec_gaps(&items);
+                if gaps.is_empty() {
+                    return Ok(Verdict::Continue);
+                }
+                format!(
+                    "Your previous answer's slices are not whole SPECs: {}. Reply again with \
+                     the whole JSON array, each agent slice carrying its `goal`, its \
+                     `acceptance` criteria and every rule it claims cited `(R<id>)` in one \
+                     of them — ONLY the JSON array, no prose.",
+                    gaps.join("; ")
+                )
+            }
+            Err(error) => crate::common::json_reply::retry_prompt(&error),
+        };
         ask_and_record(
             open,
             &retry_prompt,

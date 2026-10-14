@@ -80,6 +80,7 @@ pub async fn run(
         prompts: Rc::clone(&prompts),
         planner_dir,
         grill_dir,
+        root: workspace.root().to_path_buf(),
         artifacts_dir: artifacts_dir.clone(),
         explore: false,
         plan: SessionSpec {

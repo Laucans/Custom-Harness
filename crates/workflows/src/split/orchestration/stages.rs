@@ -8,9 +8,9 @@ use std::rc::Rc;
 use harness_core::execution::{Gate, Stage, StageBody};
 
 use crate::prompts;
-use crate::split::action::actions::{AskForSlice, ReadExistingTasks, ReadInventory};
+use crate::split::action::actions::{AskForSlice, ReadDossier, ReadExistingTasks, ReadInventory};
 use crate::split::action::publish::Write;
-use crate::split::checks::gates::SliceParses;
+use crate::split::checks::gates::{SliceParses, SlicesCarryASpec};
 use crate::split::config::Config;
 use crate::split::data::state::SplitState;
 use crate::split::ports::Ports;
@@ -87,6 +87,28 @@ build` and `npm run serve`) as a `tooling` slice, at exactly those paths:
 
 {inventory}
 
+**The design dossier** — the milestone's part of what the factory's
+creation decided:
+<dossier>
+{dossier}
+</dossier>
+Ids in `produces` and `needs`, a write's `effect` and `touches`, are copied
+from it, never invented. A micro-frontend slice names its fragment and its
+fixtures (`mock/fixtures/<Capability>.json`, one per Capability it needs).
+An aggregate slice installs its draft `mock/data/aggregates/<Aggregate>.aggregate.json`
+as `crates/dataguard/aggregates/<Aggregate>/aggregate.json` and moves its
+tables from `mock/data/model.json` into `data/model.json` with its
+migration.
+
+**Each slice is the whole SPEC its session builds from** — no one refines
+it after you. `goal`: three to six sentences on what the user gets.
+`acceptance`: the checks that say it is done, each one a given/when/then a
+person can answer yes or no to; every rule the slice completes restated
+with its criterion and cited `(R<id>)`. `business_rules`: the invariants
+and rule criteria it must hold, from the dossier. `technical`: the paths,
+manifests and contracts it opens, as the inventory and the layout name
+them — a sketch; the session plans.
+
 Every unit ships its manifest, validated in CI against `contracts/`; a slice
 that opens one must say so in its brief, with the required fields:
 `capability.json` (capability, system, version, description, reads),
@@ -99,7 +121,7 @@ touches, payload, mode, invariants, permissions, callableBy, idempotencyKey),
 Answer with a JSON array and nothing else, one object per slice, in the
 order tasks must be taken:
 ```json
-[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false, "unit": "capability", "system": "credit", "concept": "Risk@3", "effect": null, "touches": [], "aggregate": null, "produces": ["credit.calculateRisk"], "needs": ["Account", "Risk@3"], "depends_on": [], "rules": ["R3"]}]
+[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false, "unit": "capability", "system": "credit", "concept": "Risk@3", "effect": null, "touches": [], "aggregate": null, "produces": ["credit.calculateRisk"], "needs": ["Account", "Risk@3"], "depends_on": [], "rules": ["R3"], "goal": "what the user gets", "acceptance": ["given …, when …, then … (R3)"], "business_rules": ["…"], "technical": "crates/credit/capabilities/calculate-risk/ with its capability.json …"}]
 ```
 An empty array `[]` means this milestone needs no further task."#;
 
@@ -148,6 +170,10 @@ pub fn context(ports: &Ports, config: &Config) -> Stage<SplitState> {
                     disk: Rc::clone(&ports.disk),
                     root: config.root.clone(),
                 }),
+                Box::new(ReadDossier {
+                    disk: Rc::clone(&ports.disk),
+                    root: config.root.clone(),
+                }),
             ],
         },
     }
@@ -162,9 +188,14 @@ pub fn slice(ports: &Ports, config: &Config) -> Stage<SplitState> {
         pre: None,
         post: Some(Gate {
             name: "slice must parse",
-            checks: vec![Box::new(SliceParses {
-                stage: SLICE.to_string(),
-            })],
+            checks: vec![
+                Box::new(SliceParses {
+                    stage: SLICE.to_string(),
+                }),
+                Box::new(SlicesCarryASpec {
+                    stage: SLICE.to_string(),
+                }),
+            ],
         }),
         body: StageBody::Session {
             spec: config.slice.clone(),
@@ -231,6 +262,7 @@ mod tests {
             "{existing}",
             "{inventory}",
             "{profile}",
+            "{dossier}",
         ] {
             assert!(
                 SLICE_PROMPT.contains(placeholder),

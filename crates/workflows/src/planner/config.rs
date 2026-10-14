@@ -15,6 +15,8 @@ use harness_core::ports::agent::SessionSpec;
 pub struct Config {
     /// This roadmap item's lock directory — one planning run at a time.
     pub planner_dir: PathBuf,
+    /// The checkout's root — where the design dossier is read.
+    pub root: PathBuf,
     /// Where `business-digest.md`/`technical-digest.md` are read from, if
     /// either exists: `<state_root>/.llocal/grill/<owner>/<name>`.
     pub grill_dir: PathBuf,
@@ -46,6 +48,7 @@ pub(crate) mod fake {
             prompts: std::rc::Rc::default(),
             artifacts_dir: planner_dir.join("7"),
             grill_dir: planner_dir.join("grill"),
+            root: planner_dir.join("repo"),
             planner_dir,
             explore: false,
             plan: SessionSpec {

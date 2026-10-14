@@ -14,6 +14,8 @@ pub struct PlannerState {
     pub existing: Vec<Issue>,
     /// The combined business/technical grilling digests, if either exists.
     pub grounding: String,
+    /// What the factory's creation decided, as the prompt reads it.
+    pub dossier: String,
     /// What the free `explore` entry read from the repo. Only the explorer
     /// reads it.
     pub brief: String,

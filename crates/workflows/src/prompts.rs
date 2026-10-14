@@ -290,6 +290,7 @@ mod tests {
                 &[
                     "crates/server",
                     "apps/shell",
+                    "{dossier}",
                     "rules.json",
                     "\"rules\": [\"R3\"]",
                 ][..],
@@ -302,6 +303,9 @@ mod tests {
                     "crates/server",
                     "apps/shell",
                     "\"rules\": [\"R3\"]",
+                    "\"acceptance\"",
+                    "{dossier}",
+                    "never invented",
                 ][..],
             ),
             (

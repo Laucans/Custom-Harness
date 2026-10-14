@@ -50,10 +50,17 @@ pub fn is_ready(issue: &Issue) -> bool {
     issue.has(labels::READY)
 }
 
-/// True if the SPEC is already written in the body.
+/// True if the SPEC is already written in the body: `split` wrote its goal
+/// and acceptance criteria, or a refinement marked it `harness:spec-written`.
 #[must_use]
 pub fn spec_written(issue: &Issue) -> bool {
-    issue.has(labels::SPEC_WRITTEN)
+    if issue.has(labels::SPEC_WRITTEN) {
+        return true;
+    }
+    let found = sections::parse(&issue.body);
+    ["business-goal", "acceptance-criteria"]
+        .iter()
+        .all(|key| found.get(*key).is_some_and(|text| !text.trim().is_empty()))
 }
 
 /// True if the technical sections are already written in the body.
@@ -388,6 +395,21 @@ mod tests {
     fn closed(mut issue: Issue) -> Issue {
         issue.state = "closed".to_string();
         issue
+    }
+
+    #[test]
+    fn a_spec_is_written_by_its_label_or_by_the_sections_split_wrote() {
+        let mut issue = Issue {
+            body: "## Business Goal\n\nthe DM sees the PJs\n\n## Acceptance Criteria\n\n- given, when, then"
+                .to_string(),
+            ..Issue::default()
+        };
+        assert!(spec_written(&issue), "split's sections");
+        issue.body =
+            "## Business Goal\n\nthe DM sees the PJs\n\n## Acceptance Criteria\n\n  ".to_string();
+        assert!(!spec_written(&issue), "no criterion, no spec");
+        issue.labels = vec![labels::SPEC_WRITTEN.to_string()];
+        assert!(spec_written(&issue), "a refinement's label");
     }
 
     #[test]

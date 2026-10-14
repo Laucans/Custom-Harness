@@ -5,7 +5,9 @@
 //! item, chained by `blocked_by` on every milestone that touches one of
 //! its aggregates — already open or opened just before — so two
 //! milestones on different aggregates open together and a milestone with
-//! none waits on nothing; labelled for refinement. The side of the
+//! none waits on nothing; `harness:ready` at once, so `split` takes each
+//! when its blockers are delivered — a human holds one by taking the label
+//! off. The side of the
 //! architecture is stated in the body's `## Architecture` only: no label
 //! carries it at this level — `split` decides it task by task, and a
 //! milestone label would contradict the tasks it holds.
@@ -16,6 +18,7 @@ use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
+use harness_core::traces::Event;
 
 use crate::common::labels;
 use crate::planner::data::plan;
@@ -65,6 +68,7 @@ impl Action<PlannerState> for Write {
             .iter()
             .map(|issue| (issue.number, plan::aggregates_of(&issue.body)))
             .collect();
+        let mut opened: Vec<u64> = Vec::new();
         for item in &items {
             let number = self
                 .gh
@@ -82,7 +86,9 @@ impl Action<PlannerState> for Write {
             for blocker in &blockers {
                 self.gh.add_blocked_by(number, *blocker).await?;
             }
-            self.gh.add_label(number, labels::REFINEMENT).await?;
+            // The tap opened: `split` takes it once its blockers are delivered,
+            // unless a human takes the label off to hold it.
+            self.gh.add_label(number, labels::READY).await?;
             ctx.traces.say(&format!(
                 "opened milestone #{number}: {} ({})",
                 item.title,
@@ -101,7 +107,12 @@ impl Action<PlannerState> for Write {
                 }
             ));
             touched.push((number, mine));
+            opened.push(number);
         }
+        ctx.traces.event(&Event::MilestonesPlanned {
+            roadmap: roadmap_number,
+            milestones: opened,
+        });
         Ok(Verdict::Continue)
     }
 }
@@ -166,7 +177,7 @@ mod tests {
                     vec![labels::MILESTONE.to_string()]
                 ),
                 Wrote::SubIssueLink(4, 1),
-                Wrote::Label(1, labels::REFINEMENT.to_string()),
+                Wrote::Label(1, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "B".to_string(),
                     "do B\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: Campagne\nside: harness:read-side"
@@ -174,7 +185,7 @@ mod tests {
                     vec![labels::MILESTONE.to_string()]
                 ),
                 Wrote::SubIssueLink(4, 2),
-                Wrote::Label(2, labels::REFINEMENT.to_string()),
+                Wrote::Label(2, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "C".to_string(),
                     "do C\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: pj, Campagne\nside: harness:read-side"
@@ -184,7 +195,7 @@ mod tests {
                 Wrote::SubIssueLink(4, 3),
                 Wrote::BlockedByLink(3, 1),
                 Wrote::BlockedByLink(3, 2),
-                Wrote::Label(3, labels::REFINEMENT.to_string()),
+                Wrote::Label(3, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "D".to_string(),
                     "do D\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: -\nside: harness:read-side"
@@ -192,7 +203,7 @@ mod tests {
                     vec![labels::MILESTONE.to_string()]
                 ),
                 Wrote::SubIssueLink(4, 4),
-                Wrote::Label(4, labels::REFINEMENT.to_string()),
+                Wrote::Label(4, labels::READY.to_string()),
             ]
         );
     }

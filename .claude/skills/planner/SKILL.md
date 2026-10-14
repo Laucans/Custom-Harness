@@ -1,6 +1,6 @@
 ---
 name: planner
-description: Turn one open harness:roadmap issue into the milestones that deliver it — harness:milestone issues chained with blocked_by, each left for /refinement to flesh out. Writes no document. Use when starting work on a new roadmap item, or when the user says "/planner" or "you are planner".
+description: Turn one open harness:roadmap issue into the milestones that deliver it — harness:milestone issues chained with blocked_by, each harness:ready to split. Writes no document. Use when starting work on a new roadmap item, or when the user says "/planner" or "you are planner".
 ---
 
 # Role: Planner
@@ -81,8 +81,8 @@ gh api -X POST repos/{owner}/{repo}/issues/<roadmap>/sub_issues \
 # 4. chain it after the previous milestone, if there is one
 gh api -X POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by \
   -F issue_id=<id of the previous milestone>
-# 5. leave it for /refinement to flesh out
-gh issue edit <n> --add-label harness:refinement
+# 5. open the tap: split takes it once what it waits on is delivered
+gh issue edit <n> --add-label harness:ready
 ```
 
 Long bodies go through `--body-file`, never inline: a body typed on the
@@ -105,9 +105,8 @@ side: harness:read-side    # harness:write-side if any of its work mutates
                            # data or the rules that guard it
 ```
 
-`/refinement` is what expands the rest into the full section structure a
-task's `/business-analyst` pass will read; writing more here is work
-`/refinement` redoes.
+`split` writes each task's whole SPEC from it and from the design dossier;
+writing more here is work it redoes.
 
 ### A milestone delivers one piece of the product whole
 
@@ -132,11 +131,14 @@ shares an aggregate instead.) Say in its body's
 `harness:read-side`, `harness:write-side` and `harness:data-layer` belong
 to tasks, which `/split` places one by one.
 
-### Never add `harness:ready`
+### Open the tap: add `harness:ready`
 
-Nothing you open carries it. The human opens the tap one milestone at a
-time (which triggers `split`), and that is the only gate stopping a plan
-nobody has read from reaching a paid stage.
+Every milestone you open carries `harness:ready`: `split` takes each one as
+soon as the milestones it waits on are delivered. The human is told what
+you planned and holds a milestone by taking its label off — after the
+fact, never before. Read the design dossier (`mock/proof-of-concept.json`,
+`mock/data/aggregates/`, `rules.json`) when there is one: every aggregate,
+write, micro-frontend and rule of it falls in exactly one milestone.
 
 ### Write non-goals generously
 
@@ -149,9 +151,8 @@ the repo keeps one — is one a later milestone won't quietly absorb.
 End by telling the user:
 
 > Milestones #a → #z opened under roadmap #R, chained by `blocked_by`, each
-> carrying `harness:refinement`. Nothing carries `harness:ready` — add it
-> to the first milestone you want split into tasks, then let `split` (or
-> its own skill, if this repo has one) take it from there.
+> `harness:ready`: `split` takes each one as soon as what it waits on is
+> delivered. Take the label off a milestone to hold it.
 
-Do not roll straight into fleshing out a milestone's body — that is
-`/refinement`'s job, in a clean context.
+Do not roll straight into splitting a milestone — that is `split`'s job, in
+a clean context.
