@@ -43,6 +43,12 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "scopeStale": record.as_ref().is_some_and(Creation::scope_stale),
         "mockupStale": record.as_ref().is_some_and(Creation::mockup_stale),
         "rulesStale": record.as_ref().is_some_and(Creation::rules_stale),
+        // The rules moved since the factory received them: what "Send to the
+        // factory" would send. Nothing before Initialize opened its task.
+        "rulesMoved": record
+            .as_ref()
+            .filter(|r| !r.rules_issue.is_empty())
+            .map(crate::domain::creation::rules_moved),
         "marks": record.as_ref().map(|r| r.marks(facts)),
         "ruleGaps": record.as_ref().map(Creation::rule_gaps),
         "auditStale": record.as_ref().is_some_and(Creation::audit_stale),
@@ -495,6 +501,19 @@ pub(super) async fn validate_rules(State(state): State<AppState>) -> Response {
         Err(r) => return *r,
     };
     match desk.validate_rules().await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The rules changed since the factory received them, sent: a rules' task
+/// and a conformity task opened.
+pub(super) async fn send_rules(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.send_rules().await {
         Ok(record) => view(desk, Some(record)).await,
         Err(why) => refused(why),
     }

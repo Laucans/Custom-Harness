@@ -21,9 +21,9 @@ use crate::domain::annotations::Kind as PinKind;
 use crate::domain::audit::{audit_of, audit_prompt, fix_prompt};
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, RuleChange,
-    Step, componentize_prompt, decompose_prompt, examples_part, examples_taken, grill_prompt,
-    manifest_repair_prompt, mockups_prompt, not_componentized, parse_brief, parse_proposals,
-    parse_requirements, parse_round, parse_ties, requirements_prompt, rule_prompt,
+    RulesSent, Step, componentize_prompt, decompose_prompt, examples_part, examples_taken,
+    grill_prompt, manifest_repair_prompt, mockups_prompt, not_componentized, parse_brief,
+    parse_proposals, parse_requirements, parse_round, parse_ties, requirements_prompt, rule_prompt,
     rules_change_prompt, scope_prompt, unfenced,
 };
 use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
@@ -1552,7 +1552,73 @@ impl CreationDesk {
         let _held = self.record.lock().await;
         let mut kept = self.existing()?;
         kept.rules_issue = url;
+        kept.rules_sent.clone_from(&record.requirements);
         self.keep(&kept)
+    }
+
+    /// The rules changed since the factory received them, sent once they
+    /// are validated again: a rules' task — every rule, the changed ones
+    /// marked `conform` — and a conformity task, under the milestone the
+    /// development works on so that its end waits on it, or a roadmap item
+    /// when none is open.
+    ///
+    /// # Errors
+    ///
+    /// Not initialized, rules not validated, nothing changed, no board, or
+    /// GitHub refused.
+    pub async fn send_rules(&self) -> Result<Creation, String> {
+        // Held throughout: a second click waits, and finds nothing to send.
+        let _held = self.record.lock().await;
+        let record = self.existing()?;
+        if record.rules_issue.is_empty() {
+            return Err("initialize the factory first".to_string());
+        }
+        if !record.rules_validated {
+            return Err("validate the rules first".to_string());
+        }
+        let (title, body) = creation::rules_change_issue(&record)?;
+        let data = self
+            .setup
+            .data
+            .clone()
+            .ok_or("this factory's board cannot be reached")?;
+        let rules_url = data
+            .open_issue(Issue {
+                title,
+                body,
+                labels: vec![labels::RULES.to_string(), labels::READY.to_string()],
+            })
+            .await?;
+        let (title, body) = creation::conformity_issue(&record, &rules_url);
+        let conformity_url = match data.current_milestone().await? {
+            Some(milestone) => {
+                data.open_task(
+                    milestone,
+                    Issue {
+                        title,
+                        body,
+                        labels: vec![labels::AGENT.to_string(), labels::READY.to_string()],
+                    },
+                )
+                .await?
+            }
+            None => {
+                data.open_issue(Issue {
+                    title,
+                    body,
+                    labels: vec![labels::ROADMAP.to_string(), labels::READY.to_string()],
+                })
+                .await?
+            }
+        };
+        let mut kept = self.existing()?;
+        kept.rules_sent = record.requirements;
+        kept.rules_changes.push(RulesSent {
+            rules: rules_url,
+            conformity: conformity_url,
+        });
+        self.keep(&kept)?;
+        Ok(kept)
     }
 
     /// The record written in the repository beside the mock-up, then the

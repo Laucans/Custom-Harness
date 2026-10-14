@@ -1058,8 +1058,29 @@
           : `<p class="muted">Every rule with its criterion and carried by the mock-up. Nothing is published.</p>${gaps.length ? `<ul class="cr-gaps">${shown}</ul>` : ''}<button type="button" class="cr-btn on" data-cr-validate${lock || (gaps.length ? ' disabled title="Complete the rules first"' : '')}>Validate</button>`}</section>
         <section class="cr-card"><h3>b · Regenerate</h3><p class="muted">Back to the brief with everything filled in; the grilling keeps its questions and their answers, and may ask more.</p><button type="button" class="cr-btn" data-cr-regenerate${lock}>${C.confirm === 'regenerate' ? 'The mock-ups go. Click again' : 'Regenerate'}</button></section>
         <section class="cr-card"><h3>c · The data</h3><p class="muted">The data model the rules need, drafted by the AI — the business rules become its invariants.</p><button type="button" class="cr-btn on" data-cr-next="data"${validated && !waiting ? '' : ' disabled title="Validate the rules first"'}>Data →</button></section>
+        ${rulesSendCard(r, validated)}
       </div>
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="mockups">← Back to the mock-up</button></div>`;
+  }
+
+  // Once the factory runs, a rule changed here reaches it only when sent:
+  // a rules' task rewrites its tests ahead of the code, a conformity task
+  // brings the code to them.
+  function rulesSendCard(r, validated) {
+    const moved = C.data && C.data.rulesMoved;
+    if (!r || !r.rules_issue || !moved) return '';
+    const [changed, removed] = moved;
+    const ids = (list) => list.map((id) => 'R' + id).join(', ');
+    const sent = (r.rules_changes || []).map((c) => `<li><a href="${esc(c.rules)}" target="_blank" rel="noopener">rules' task ↗</a> · <a href="${esc(c.conformity)}" target="_blank" rel="noopener">conformity ↗</a></li>`).join('');
+    const what = [changed.length ? `changed: ${ids(changed)}` : '', removed.length ? `removed: ${ids(removed)}` : ''].filter(Boolean).join(' · ');
+    const lock = DEMO ? ' disabled title="Disabled in the demo"'
+      : !what ? ' disabled title="No rule changed since the factory received them"'
+      : !validated ? ' disabled title="Validate the rules first"'
+      : running() || C.busy ? ' disabled' : '';
+    return `<section class="cr-card" data-cr-rules-sent><h3>d · Send to the factory</h3>
+        <p class="muted">The factory runs on the rules it received (<a href="${esc(r.rules_issue)}" target="_blank" rel="noopener">their task ↗</a>). ${what ? `Since then — ${esc(what)}. Sending opens a rules' task that rewrites their tests ahead of the code, and a conformity task that brings the code to them; development waits on the first.` : 'No rule changed since.'}</p>
+        ${sent ? `<ul class="cr-gaps">${sent}</ul>` : ''}
+        <button type="button" class="cr-btn on" data-cr-send-rules${lock}>Send the changed rules</button></section>`;
   }
 
   // ---- the data step ------------------------------------------------------------
@@ -1571,6 +1592,7 @@
       act(how === 'apply' ? 'a session applies the fix to the mock-up' : 'dismissing', async () => { await post(`audit/${t.dataset.crFinding}/${how}`); await loadMock(); if (C.embed && C.embed.canvas && C.embed.canvas.reload) C.embed.canvas.reload(); });
       return;
     }
+    if (t.matches('[data-cr-send-rules]')) { act('sending the changed rules', async () => { await flushRules(); await post('rules/send'); }); return; }
     if (t.matches('[data-cr-validate]')) { act('validating the rules', async () => { await flushRules(); await post('rules/validate'); }); return; }
     if (t.matches('[data-cr-reqs]')) {
       const body = fields();

@@ -9,7 +9,9 @@ use std::rc::Rc;
 use async_trait::async_trait;
 use harness_core::domain::{Halt, Outcome};
 use harness_core::ports::shell::github::GitHub;
+use harness_workflows::common::labels;
 use harness_workflows::data_snapshot::config::ARCHIVE_BRANCH;
+use harness_workflows::dev_loop::data::tasks::current_milestone;
 
 use crate::ports::Product;
 
@@ -29,6 +31,17 @@ impl GhProduct {
             gh,
             slug: slug.to_string(),
             branch: branch.to_string(),
+        }
+    }
+}
+
+impl GhProduct {
+    /// Where an issue of the product is.
+    fn url_of(&self, number: u64) -> String {
+        if self.slug.is_empty() {
+            format!("#{number}")
+        } else {
+            format!("https://github.com/{}/issues/{number}", self.slug)
         }
     }
 }
@@ -57,11 +70,24 @@ impl Product for GhProduct {
 
     async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String> {
         let number = self.gh.create_issue(title, body, labels).await?;
-        Ok(if self.slug.is_empty() {
-            format!("#{number}")
-        } else {
-            format!("https://github.com/{}/issues/{number}", self.slug)
-        })
+        Ok(self.url_of(number))
+    }
+
+    async fn current_milestone(&self) -> Outcome<Option<u64>> {
+        let open = self.gh.issues_labelled(labels::MILESTONE, "open").await?;
+        Ok(current_milestone(&open).map(|issue| issue.number))
+    }
+
+    async fn open_task(
+        &self,
+        milestone: u64,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> Outcome<String> {
+        let number = self.gh.create_issue(title, body, labels).await?;
+        self.gh.create_sub_issue_link(milestone, number).await?;
+        Ok(self.url_of(number))
     }
 }
 

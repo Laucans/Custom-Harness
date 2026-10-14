@@ -407,6 +407,7 @@ pub fn router(state: AppState) -> Router {
             "/api/creation/rules/validate",
             post(creation::validate_rules),
         )
+        .route("/api/creation/rules/send", post(creation::send_rules))
         .route("/api/creation/audit", post(creation::audit))
         .route(
             "/api/creation/data",

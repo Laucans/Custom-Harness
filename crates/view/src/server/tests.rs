@@ -2272,6 +2272,42 @@ async fn the_mockups_and_the_acceptance_wait_for_their_gates() {
 }
 
 #[tokio::test]
+async fn changed_rules_are_sent_only_once_the_factory_runs_and_they_are_validated() {
+    use crate::domain::creation::{Creation, Criterion, Requirement};
+    let roll = Arc::new(Roll::default());
+    let rule = |id: u32, then: &str| Requirement {
+        id,
+        title: format!("Rule {id}"),
+        criterion: Criterion::from_sentence(&format!("given a debt, when paid, then {then}")),
+        ..Requirement::default()
+    };
+    let mut record = Creation::new("alpha", "me/alpha");
+    record.requirements = vec![rule(1, "settled")];
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state.clone(), "/api/creation/rules/send", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "initialize the factory first");
+    let (_, body) = get(state.clone(), "/api/creation").await;
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert!(
+        view["rulesMoved"].is_null(),
+        "nothing to send before Initialize"
+    );
+
+    record.rules_issue = "https://github.com/me/alpha/issues/3".to_string();
+    record.rules_sent = vec![rule(1, "settled")];
+    record.requirements = vec![rule(1, "closed"), rule(2, "kept")];
+    being_created(&roll, &record);
+    let (_, body) = get(state.clone(), "/api/creation").await;
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["rulesMoved"], serde_json::json!([[1, 2], []]));
+    let (status, body) = post(state, "/api/creation/rules/send", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "validate the rules first");
+}
+
+#[tokio::test]
 async fn the_rules_are_validated_once_complete_and_read_again_behind_their_gate() {
     use crate::domain::creation::{Creation, Requirement};
     let roll = Arc::new(Roll::default());

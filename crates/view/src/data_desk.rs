@@ -52,6 +52,8 @@ enum Ask {
     Versions(oneshot::Sender<Arc<Versions>>),
     Model(Wanted, oneshot::Sender<Result<Shown, String>>),
     Issue(Issue, oneshot::Sender<Result<String, String>>),
+    Task(u64, Issue, oneshot::Sender<Result<String, String>>),
+    Milestone(oneshot::Sender<Result<Option<u64>, String>>),
     Schema(Wanted, oneshot::Sender<Option<String>>),
 }
 
@@ -98,6 +100,38 @@ impl DataDesk {
         let (reply, answer) = oneshot::channel();
         self.tx
             .send(Ask::Issue(issue, reply))
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?;
+        answer
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?
+    }
+
+    /// Opens a task under a milestone and says where it is.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or the desk is gone.
+    pub async fn open_task(&self, milestone: u64, issue: Issue) -> Result<String, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Ask::Task(milestone, issue, reply))
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?;
+        answer
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?
+    }
+
+    /// The milestone the development works on now, if any.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or the desk is gone.
+    pub async fn current_milestone(&self) -> Result<Option<u64>, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Ask::Milestone(reply))
             .await
             .map_err(|_| "the data desk is closed".to_string())?;
         answer
@@ -187,6 +221,17 @@ async fn serve(
                     .await
                     .map_err(|h| h.to_string());
                 let _ = reply.send(opened);
+            }
+            Ask::Task(milestone, issue, reply) => {
+                let labels: Vec<&str> = issue.labels.iter().map(String::as_str).collect();
+                let opened = product
+                    .open_task(milestone, &issue.title, &issue.body, &labels)
+                    .await
+                    .map_err(|h| h.to_string());
+                let _ = reply.send(opened);
+            }
+            Ask::Milestone(reply) => {
+                let _ = reply.send(product.current_milestone().await.map_err(|h| h.to_string()));
             }
         }
     }

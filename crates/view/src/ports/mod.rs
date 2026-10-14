@@ -10,7 +10,7 @@ use std::io::{self, Read};
 
 use async_trait::async_trait;
 use harness_core::domain::quota::Reading;
-use harness_core::domain::{Issue, Outcome};
+use harness_core::domain::{Halt, Issue, Outcome};
 use serde::{Deserialize, Serialize};
 
 /// One row of the cost ledger, typed. `None` reads as "not observed", as the
@@ -444,6 +444,35 @@ pub trait Product {
     ///
     /// GitHub refused, or there is no GitHub behind this product.
     async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String>;
+
+    /// The milestone the development works on now: the lowest open
+    /// `harness:milestone`. `None` when there is none, or no board.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused.
+    async fn current_milestone(&self) -> Outcome<Option<u64>> {
+        Ok(None)
+    }
+
+    /// Opens a task under a milestone — a sub-issue of it — and says where
+    /// it is.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or there is no GitHub behind this product.
+    async fn open_task(
+        &self,
+        milestone: u64,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> Outcome<String> {
+        let _ = (milestone, title, body, labels);
+        Err(Halt::Failed(
+            "no board here: a task cannot be opened".to_string(),
+        ))
+    }
 }
 
 /// One pin as kept: the pin, and when it was deleted, if it was.

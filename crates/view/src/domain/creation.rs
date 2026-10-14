@@ -207,6 +207,21 @@ pub struct Creation {
     /// The rules' task the initialization opened: the rules and their tests,
     /// before any development.
     pub rules_issue: String,
+    /// The rules as the factory last received them — at Initialize, then at
+    /// each change sent: what a change is measured against.
+    pub rules_sent: Vec<Requirement>,
+    /// Each change of the rules sent to the factory, in order.
+    pub rules_changes: Vec<RulesSent>,
+}
+
+/// A change of the rules sent to the factory: the two tasks it opened.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RulesSent {
+    /// The rules' task: the changed rules' tests, ahead of the code.
+    pub rules: String,
+    /// The conformity task: the code brought to them.
+    pub conformity: String,
 }
 
 /// One requirement of the proof of concept: what it must do, and where
@@ -2189,6 +2204,132 @@ pub fn rules_contract(c: &Creation, conform: &[u32]) -> (serde_json::Value, Vec<
     )
 }
 
+/// What moved in the rules since the factory last received them: the rules
+/// new or whose title, family or criterion changed — what their tests
+/// prove — and the rules removed, by id.
+#[must_use]
+pub fn rules_moved(c: &Creation) -> (Vec<u32>, Vec<u32>) {
+    let proved = |r: &Requirement| {
+        (
+            r.title.trim().to_string(),
+            r.family,
+            r.criterion.given.trim().to_string(),
+            r.criterion.when.trim().to_string(),
+            r.criterion.then.trim().to_string(),
+        )
+    };
+    let changed = c
+        .requirements
+        .iter()
+        .filter(|r| {
+            c.rules_sent
+                .iter()
+                .find(|sent| sent.id == r.id)
+                .is_none_or(|sent| proved(sent) != proved(r))
+        })
+        .map(|r| r.id)
+        .collect();
+    let removed = c
+        .rules_sent
+        .iter()
+        .filter(|sent| !c.requirements.iter().any(|r| r.id == sent.id))
+        .map(|sent| sent.id)
+        .collect();
+    (changed, removed)
+}
+
+/// The ids, as the rules name them: `R3, R5`.
+fn named(ids: &[u32]) -> String {
+    ids.iter()
+        .map(|id| format!("R{id}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The rules' task a change of the rules opens, once the factory runs:
+/// every rule again, the changed ones marked `conform` — their tests are
+/// rewritten ahead of the code.
+///
+/// # Errors
+///
+/// Nothing moved, or the rules do not keep contract P.
+pub fn rules_change_issue(c: &Creation) -> Result<(String, String), String> {
+    let (changed, removed) = rules_moved(c);
+    if changed.is_empty() && removed.is_empty() {
+        return Err("no rule changed since the factory received them".to_string());
+    }
+    let (rules, untestable) = rules_contract(c, &changed);
+    let mut moved = Vec::new();
+    if !changed.is_empty() {
+        moved.push(format!("changed or new: {}", named(&changed)));
+    }
+    if !removed.is_empty() {
+        moved.push(format!("removed: {}", named(&removed)));
+    }
+    let mut intro = format!(
+        "The rules of `{}` changed in the factory's design after it was initialized — {}. \
+         Their tests are rewritten ahead of the code, the changed rules marked `conform`; \
+         a removed rule's tests are removed. A conformity task brings the code to them. \
+         No development task starts while this issue is open.",
+        c.name,
+        moved.join("; ")
+    );
+    if !untestable.is_empty() {
+        let _ = write!(
+            intro,
+            "\n\nLeft out, their criterion not whole: {}.",
+            named(&untestable)
+        );
+    }
+    let mut ids = changed;
+    ids.extend(removed);
+    let title = format!(
+        "{} {}",
+        harness_workflows::rules::data::request::CHANGED_TITLE,
+        named(&ids)
+    );
+    let body = harness_workflows::rules::data::request::body(&intro, &rules)?;
+    Ok((title, body))
+}
+
+/// The conformity task a change of the rules opens beside its rules'
+/// task: the code brought to the changed rules' tests. Its title and body.
+#[must_use]
+pub fn conformity_issue(c: &Creation, rules_issue: &str) -> (String, String) {
+    let (changed, removed) = rules_moved(c);
+    let title = format!("Conform to the changed rules: {}", named(&changed));
+    let mut body = format!(
+        "The rules {} of `{}` changed in the factory's design; the rules' task ({rules_issue}) \
+         rewrites their tests, marked `conform` in `rules.json`, ahead of the code.\n\n\
+         Bring the product to them: their tests under `tests/rules/` pass. Never change \
+         `rules.json` or `tests/rules/` — a test that cannot hold is contested with \
+         `CONTEST.md`.\n",
+        named(&changed),
+        c.name
+    );
+    if !removed.is_empty() {
+        let _ = write!(
+            body,
+            "\nRemoved: {} — remove what only they asked for.\n",
+            named(&removed)
+        );
+    }
+    body.push_str("\nThe rules as they stand:\n");
+    for r in c.requirements.iter().filter(|r| changed.contains(&r.id)) {
+        let _ = write!(
+            body,
+            "\n- **R{} {}** — given {}, when {}, then {}",
+            r.id,
+            r.title.trim(),
+            r.criterion.given.trim(),
+            r.criterion.when.trim(),
+            r.criterion.then.trim()
+        );
+    }
+    body.push('\n');
+    (title, body)
+}
+
 /// The rules' task the initialization opens, first of the roadmap: every
 /// rule, to be written as `rules.json` and proved by tests before any
 /// development.
@@ -2634,6 +2775,51 @@ mod tests {
         assert!(
             matches!(read, Ok(harness_workflows::rules::data::request::Ask::Write(r)) if r.ids == ["R3", "R7"] && r.conform.is_empty())
         );
+    }
+
+    #[test]
+    fn a_rule_changed_after_initialize_opens_its_rules_task_and_its_conformity() {
+        let sent = vec![
+            rule(1, "given a, when b, then c", &[]),
+            rule(2, "given a, when b, then c", &[]),
+            rule(3, "given a, when b, then c", &[]),
+        ];
+        let mut c = Creation {
+            name: "app".to_string(),
+            requirements: sent.clone(),
+            rules_sent: sent,
+            ..Creation::default()
+        };
+        assert_eq!(rules_moved(&c), (vec![], vec![]));
+        assert!(rules_change_issue(&c).is_err(), "nothing to send");
+        // A page moved: nothing its tests prove.
+        c.requirements[0].pages = vec!["pages/b.html".to_string()];
+        assert_eq!(rules_moved(&c), (vec![], vec![]));
+        c.requirements[1].criterion = crit("given a, when b, then d");
+        c.requirements.remove(2);
+        c.requirements.push(rule(4, "given x, when y, then z", &[]));
+        assert_eq!(rules_moved(&c), (vec![2, 4], vec![3]));
+
+        let (title, body) = rules_change_issue(&c).expect("sent");
+        assert_eq!(title, "Rules changed: R2, R4, R3");
+        assert!(
+            body.contains("changed or new: R2, R4; removed: R3"),
+            "{body}"
+        );
+        let Ok(harness_workflows::rules::data::request::Ask::Write(read)) =
+            harness_workflows::rules::data::request::read(&title, &body)
+        else {
+            panic!("the rules' task reads it");
+        };
+        assert_eq!(read.ids, ["R1", "R2", "R4"]);
+        assert_eq!(read.conform, ["R2", "R4"]);
+
+        let (title, body) = conformity_issue(&c, "https://x/issues/9");
+        assert_eq!(title, "Conform to the changed rules: R2, R4");
+        assert!(body.contains("https://x/issues/9"));
+        assert!(body.contains("Removed: R3"));
+        assert!(body.contains("CONTEST.md") && body.contains("Never change"));
+        assert!(body.contains("**R4 rule 4**"), "{body}");
     }
 
     #[test]
