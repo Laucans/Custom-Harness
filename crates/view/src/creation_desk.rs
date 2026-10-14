@@ -1105,6 +1105,12 @@ impl CreationDesk {
                         c.name
                     }),
             };
+            // In the kit's catalogue already, not generated yet: that one,
+            // generated below like the others.
+            let named = match named {
+                Err(why) if why.ends_with("is already in the kit") => Ok(need.name.clone()),
+                other => other,
+            };
             match named {
                 Ok(name) => {
                     rename_uses(&mut plan, &need.name, &name);
@@ -1128,9 +1134,9 @@ impl CreationDesk {
         if !waiting.is_empty() {
             match kit.start_generation(waiting.clone()).await {
                 // Generating already: the wait follows it all the same.
-                Ok(_) => lost.extend(self.kit_waited(&kit, &waiting).await),
+                Ok(_) => lost.extend(self.kit_waited(&kit, &waiting, KIT_WAIT).await),
                 Err(why) if why.starts_with("nothing to generate") => {
-                    lost.extend(self.kit_waited(&kit, &waiting).await);
+                    lost.extend(self.kit_waited(&kit, &waiting, KIT_WAIT).await);
                 }
                 Err(why) => {
                     self.step(&format!("the kit could not make its components: {why}"));
@@ -1152,8 +1158,13 @@ impl CreationDesk {
 
     /// The kit's components waited for, each said as it is made; answers
     /// those that failed or were not made in time.
-    async fn kit_waited(&self, kit: &KitDesk, waiting: &[String]) -> Vec<String> {
-        let deadline = tokio::time::Instant::now() + KIT_WAIT;
+    async fn kit_waited(
+        &self,
+        kit: &KitDesk,
+        waiting: &[String],
+        patience: Duration,
+    ) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + patience;
         let mut said: Vec<String> = Vec::new();
         let mut lost: Vec<String> = Vec::new();
         loop {
@@ -1172,6 +1183,14 @@ impl CreationDesk {
                         said.push(name.clone());
                         lost.push(name.clone());
                         self.step(&format!("kit component {name} could not be made: {why}"));
+                    }
+                    // No generation for it: it will not come.
+                    None => {
+                        said.push(name.clone());
+                        lost.push(name.clone());
+                        self.step(&format!(
+                            "kit component {name} could not be made: the kit is not generating it"
+                        ));
                     }
                     _ => {}
                 }
@@ -1192,7 +1211,8 @@ impl CreationDesk {
                 lost.extend(late);
                 return lost;
             }
-            tokio::time::sleep(KIT_POLL).await;
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            tokio::time::sleep(KIT_POLL.min(left)).await;
         }
     }
 
@@ -3333,6 +3353,230 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The kit's generator: each component drawn from its name, one named
+    /// in `fail` refused, every one `slow` to come.
+    struct KitMaker {
+        fail: Vec<String>,
+        slow: Duration,
+    }
+
+    impl Oneshot for KitMaker {
+        fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
+            std::thread::sleep(self.slow);
+            let name = prompt.split('`').nth(1).unwrap_or("X").to_string();
+            if self.fail.iter().any(|f| prompt.contains(f.as_str())) {
+                return Err("cannot draw it".to_string());
+            }
+            Ok(format!("<div class=\"kit-x\">{name}</div>"))
+        }
+    }
+
+    /// A creation desk over a validated design system whose kit generates
+    /// with `maker`.
+    fn kit_desk_with(tag: &str, maker: KitMaker) -> (CreationDesk, KitDesk, PathBuf) {
+        let dir = product(tag);
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let kit = KitDesk::new(kit_desk::Setup {
+            mockups: Arc::clone(&mockups),
+            oneshot: Some(Arc::new(maker)),
+            model: "k".into(),
+            sessions: 3,
+            pins: Arc::new(Shelf::default()),
+            integration_branch: "main_agent".into(),
+        });
+        let book = Arc::new(Book::default());
+        book.keep_creation(
+            "alpha",
+            &serde_json::to_string(&Creation::new("alpha", "me/alpha")).expect("json"),
+        )
+        .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: None,
+            model: "m".to_string(),
+            exec_model: "s".to_string(),
+            exec_sessions: 2,
+            mockups: Some(mockups),
+            kit: Some(kit.clone()),
+            data: None,
+            plant: None,
+            pins: None,
+        });
+        desk.begin(Work::Mockups).expect("nothing under way");
+        (desk, kit, dir)
+    }
+
+    // What a plan asks the kit for is made before any writer: one found by
+    // its title and renamed, one made, one refused — out of the plan and of
+    // the kit — each said as it comes.
+    #[tokio::test]
+    async fn the_kit_makes_what_the_plan_asks_before_the_writers() {
+        let (desk, kit, dir) = kit_desk_with(
+            "kit-first",
+            KitMaker {
+                fail: vec!["Broken".to_string()],
+                slow: Duration::ZERO,
+            },
+        );
+        kit.custom(
+            "Lines".to_string(),
+            "Line table".to_string(),
+            "rows".to_string(),
+        )
+        .await
+        .expect("added");
+        let plan = mock_plan::parse_plan(
+            r#"{"pages":[{"path":"pages/a.html","components":["A"]}],"components":[{"name":"A","uses":["LineTable","Broken","Badge"]}],
+            "kit":[{"name":"LineTable","title":"Line table","what":"rows"},{"name":"Broken","title":"Broken thing","what":"never"},{"name":"Badge","title":"Badge","what":"a badge"}]}"#,
+            &[],
+        )
+        .expect("a plan");
+        let index = kit.index().await.expect("an index");
+        let (plan, index) = desk.kit_made(plan, index).await;
+        let steps = desk.job().expect("a job").steps;
+        assert_eq!(
+            plan.components[0].uses,
+            vec!["Lines".to_string()],
+            "{steps:?}"
+        );
+        assert!(
+            steps.iter().any(|s| s == "kit component Badge could not be made: the kit is not generating it"),
+            "in the catalogue, not ticked: never generated, never waited for: {steps:?}"
+        );
+        assert!(
+            index.components.iter().any(|(n, _, _)| n == "Lines"),
+            "the index read again"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| s == "kit component Broken removed: not made"),
+            "{steps:?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.starts_with("kit component Broken could not be made: ")),
+            "{steps:?}"
+        );
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|s| s.starts_with("kit component ") && s.contains(" made ("))
+                .count(),
+            1,
+            "Lines: {steps:?}"
+        );
+        assert!(
+            !steps.iter().any(|s| s.contains("could not be added")),
+            "one in the catalogue is used: {steps:?}"
+        );
+        assert!(
+            kit.titled("Broken thing".to_string())
+                .await
+                .expect("read")
+                .is_none(),
+            "taken out of the kit"
+        );
+        assert_eq!(
+            kit.titled("Line table".to_string())
+                .await
+                .expect("read")
+                .as_deref(),
+            Some("Lines"),
+            "found, not added again"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A component already generating is waited for, not refused; one that
+    // takes longer than the patience given is given up and said.
+    #[tokio::test]
+    async fn a_kit_component_under_way_is_waited_for_and_a_late_one_given_up() {
+        let (desk, kit, dir) = kit_desk_with(
+            "kit-busy",
+            KitMaker {
+                fail: Vec::new(),
+                slow: Duration::from_millis(400),
+            },
+        );
+        kit.custom(
+            "Busy".to_string(),
+            "Busy thing".to_string(),
+            "it".to_string(),
+        )
+        .await
+        .expect("added");
+        kit.start_generation(vec!["Busy".to_string()])
+            .await
+            .expect("under way");
+        let plan = mock_plan::parse_plan(
+            r#"{"pages":[{"path":"pages/a.html","components":["A"]}],"components":[{"name":"A","uses":["BusyThing"]}],"kit":[{"name":"BusyThing","title":"Busy thing","what":"it"}]}"#,
+            &[],
+        )
+        .expect("a plan");
+        let index = kit.index().await.expect("an index");
+        let (plan, _) = desk.kit_made(plan, index).await;
+        let steps = desk.job().expect("a job").steps;
+        assert_eq!(
+            plan.components[0].uses,
+            vec!["Busy".to_string()],
+            "{steps:?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| s == "kit component Busy made (1 of 1)"),
+            "{steps:?}"
+        );
+
+        kit.custom(
+            "Late".to_string(),
+            "Late thing".to_string(),
+            "it".to_string(),
+        )
+        .await
+        .expect("added");
+        kit.start_generation(vec!["Late".to_string()])
+            .await
+            .expect("under way");
+        let lost = desk
+            .kit_waited(&kit, &["Late".to_string()], Duration::from_millis(50))
+            .await;
+        assert_eq!(lost, vec!["Late".to_string()]);
+        let steps = desk.job().expect("a job").steps;
+        assert!(
+            steps
+                .iter()
+                .any(|s| s
+                    == "the kit took too long for Late: the micro-frontends build without them"),
+            "{steps:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_kit_component_s_name_follows_into_every_use_and_one_not_made_leaves() {
+        let mut plan = mock_plan::parse_plan(
+            r#"{"pages":[{"path":"pages/a.html","components":["A","B"]}],"components":[{"name":"A","uses":["Old","Keep"]},{"name":"B","uses":["Old"]}],"kit":[{"name":"Old","title":"o"},{"name":"Keep","title":"k"}]}"#,
+            &[],
+        )
+        .expect("a plan");
+        rename_uses(&mut plan, "Old", "New");
+        assert_eq!(
+            plan.components[0].uses,
+            vec!["New".to_string(), "Keep".to_string()]
+        );
+        assert_eq!(plan.components[1].uses, vec!["New".to_string()]);
+        strip_uses(&mut plan, &["New".to_string()]);
+        assert_eq!(plan.components[0].uses, vec!["Keep".to_string()]);
+        assert!(plan.components[1].uses.is_empty());
     }
 
     /// Writers that keep count of how many ask at once, the order they are

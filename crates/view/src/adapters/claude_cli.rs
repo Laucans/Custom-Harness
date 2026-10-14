@@ -11,8 +11,9 @@ use serde::Deserialize;
 
 use crate::ports::{Oneshot, Spend, Transcripts, Usage};
 
-/// The longest a one-shot answer may take: a summary of a long conversation.
-const TIMEOUT: Duration = Duration::from_secs(300);
+/// The longest a one-shot answer may take — a whole mock-up's plan is one
+/// such answer: only a process that died silently is cut short.
+const TIMEOUT: Duration = Duration::from_mins(40);
 
 /// The longest a session at work may take: a mock-up of several pages.
 const WORK_TIMEOUT: Duration = Duration::from_mins(40);
