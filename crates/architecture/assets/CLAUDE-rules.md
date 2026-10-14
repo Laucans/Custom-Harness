@@ -111,7 +111,8 @@ scripts/rules-runtime.sh           how the rules' tests reach the product: serve
     touching them. A rule's test you cannot meet — it contradicts another
     rule or the architecture — is **contested**: stop, and write
     `CONTEST.md` at the repository's root (the rule's id, the test, why it
-    cannot hold) instead of changing it. The task that builds the server
+    cannot hold) instead of changing it: the CI opens the issue the rules'
+    task settles, and your change waits for its decision. The task that builds the server
     keeps `scripts/rules-runtime.sh serve` serving it.
 12. **Contracts first.** A unit lands with its manifest or contract file and
     passes the gate that validates it. A change to a contract schema is its

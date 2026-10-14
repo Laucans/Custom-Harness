@@ -44,20 +44,7 @@ pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
             }),
         ));
     }
-    for waiting in &facts.waiting {
-        board.add(Notification::once(
-            format!("human:#{}", waiting.number),
-            Level::Warning,
-            format!("#{} needs you", waiting.number),
-            format!("{} — {}", waiting.title, waiting.label),
-            // When the label was posed is not known: such a notification
-            // sorts after the timed ones of its level.
-            "",
-            Some(Link::Issue {
-                number: waiting.number,
-            }),
-        ));
-    }
+    issues(&mut board, facts);
     if let Some(window) = facts
         .claude
         .as_ref()
@@ -111,6 +98,40 @@ pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
         });
     }
     board.into_sorted()
+}
+
+/// The issues that wait on the human, and the contested rules they are
+/// warned of.
+fn issues(board: &mut crate::notification::Board, facts: &Facts) {
+    for waiting in &facts.waiting {
+        board.add(Notification::once(
+            format!("human:#{}", waiting.number),
+            Level::Warning,
+            format!("#{} needs you", waiting.number),
+            format!("{} — {}", waiting.title, waiting.label),
+            // When the label was posed is not known: such a notification
+            // sorts after the timed ones of its level.
+            "",
+            Some(Link::Issue {
+                number: waiting.number,
+            }),
+        ));
+    }
+    for contest in &facts.contested {
+        board.add(Notification::once(
+            format!("contested:#{}", contest.number),
+            Level::Warning,
+            format!("#{}: a rule's test is contested", contest.number),
+            format!(
+                "{} — the rules' task decides; read its decision and act if it is not yours",
+                contest.title
+            ),
+            "",
+            Some(Link::Issue {
+                number: contest.number,
+            }),
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +226,25 @@ mod tests {
             unknown.iter().all(|n| n.key != "watch-dead"),
             "nobody looked"
         );
+    }
+
+    #[test]
+    fn a_contested_rule_warns_the_human_and_leads_to_the_decision() {
+        let contested = Facts {
+            contested: vec![Waiting {
+                number: 9,
+                title: "Rules contested: PR #12".to_string(),
+                label: "harness:rules".to_string(),
+            }],
+            ..facts()
+        };
+        let all = feed(&[], &contested);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].level, Level::Warning);
+        assert_eq!(all[0].key, "contested:#9");
+        assert!(all[0].title.contains("contested"), "{}", all[0].title);
+        assert!(all[0].detail.contains("PR #12"), "{}", all[0].detail);
+        assert_eq!(all[0].link, Some(Link::Issue { number: 9 }));
     }
 
     #[test]

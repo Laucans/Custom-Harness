@@ -158,6 +158,9 @@ pub struct BoardReading {
     /// Open issues labelled `bug`: what turns a unit of the capabilities
     /// list red.
     pub bugs: Vec<Issue>,
+    /// Open rules' tasks (`harness:rules`): development waits on them, and
+    /// a contested one warns the human.
+    pub rules: Vec<Issue>,
 }
 
 /// Where the board is read from.

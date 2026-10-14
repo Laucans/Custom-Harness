@@ -35,6 +35,8 @@ src/dispatch/     one module per thing that can be run, plus what they share
   pr_fix.rs         one repair attempt on a red PR — a writable checkout of its own
   test_debt.rs      the tests one file owes, from its test-debt issue — writable too,
                      on the integration branch
+  rules.rs          the rules and their tests, or a contest settled, from a rules'
+                     issue — writable, on the integration branch
   data_diagnosis.rs  a version of main or main_agent whose two sides disagree, right after
                      its snapshot: one Opus session in the snapshot clone says why; its
                      answer is the `DataModelDiverged` event, an error in the view
@@ -92,7 +94,7 @@ code` keeps meaning the dev loop). Eight subcommands today: `init-repo`,
 `watch`, `doctor`, `refine`, `split`, `trial`, `data-snapshot` and
 `data-model-draft`. `refine` and `split` exist for the lanes of a parallel
 watch — one child process per issue — and for a human who wants one issue
-done now; `planner`, `pr_review`, `pr_fix`, `arbiter`, `test_debt`, the merges and `data_diagnosis`
+done now; `planner`, `pr_review`, `pr_fix`, `arbiter`, `test_debt`, `rules`, the merges and `data_diagnosis`
 have **no** subcommand on purpose: they are reached by the router, whose own
 arguments (`--interval`, `--once`, `--dry-run`, `--parallel`) are what a
 human tunes instead.
@@ -255,6 +257,7 @@ Three checkouts, and the difference is whether the tenant commits:
 | shared, read-only | `router-readonly` | `planner`, `split`, `refinement`, `arbiter`, `pr_review` | none of them commits, so none can conflict |
 | its own, writable | `router-prfix` | `pr_fix` | it commits; `force_reset`, on the PR's branch |
 | its own, writable | `router-testdebt` | `test_debt` | it commits; `force_reset`, on the integration branch |
+| its own, writable | `router-rules` | `rules` | it commits; `force_reset`, on the integration branch |
 
 `init_repo` and `main_agent_merge` mount nothing: both only talk to GitHub.
 

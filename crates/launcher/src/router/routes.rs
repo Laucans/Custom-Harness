@@ -164,6 +164,7 @@ async fn dispatched(
             refine_here(args, here, gh, Phase::Technical, issue, log).await
         }
         Route::Arbiter { issue } => arbitrate_here(args, here, issue, log).await,
+        Route::Rules { issue } => rules_here(args, here, issue, log).await,
         Route::TestDebt { issue } => report_failure(
             "test_debt",
             crate::dispatch::test_debt::run(
@@ -178,6 +179,28 @@ async fn dispatched(
             log,
         ),
     }
+}
+
+/// One rules' task in this process, in a writable checkout of its own.
+async fn rules_here(
+    args: &WatchArgs,
+    here: &Path,
+    issue: u64,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    report_failure(
+        "rules",
+        crate::dispatch::rules::run(
+            issue,
+            here,
+            &args.target_repo_url,
+            &args.branch,
+            &args.permission_mode,
+            args.dry_run,
+        )
+        .await,
+        log,
+    )
 }
 
 /// One arbitration in this process, on the shared checkout: one short

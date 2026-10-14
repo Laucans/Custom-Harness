@@ -174,6 +174,15 @@ pub const REVIEW_PENDING: &str = "harness:review-pending";
 /// [`LOOP`]: the dev loop does not read it.
 pub const TEST_DEBT: &str = "harness:test-debt";
 
+/// The rules' task: the rules the human validated, written as `rules.json`
+/// (contract P) and proved by tests before any development.
+///
+/// Opened by the factory at Initialize and when a rule changes, and by the
+/// CI when a development contests a rule's test (`CONTEST.md`). The router
+/// sends it to `rules` once it is `harness:ready`; **while one is open, no
+/// development task starts** — the tests come first. Not in [`LOOP`].
+pub const RULES: &str = "harness:rules";
+
 /// The eleven the loop requires.
 ///
 /// `REFINEMENT` is not among them: the loop does not read it, and its
@@ -205,12 +214,12 @@ pub struct Label {
     pub description: &'static str,
 }
 
-/// The nineteen labels `init-repo` creates when they are missing.
+/// The twenty-one labels `init-repo` creates when they are missing.
 ///
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 20] = [
+pub const ALL: [Label; 21] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -310,6 +319,11 @@ pub const ALL: [Label; 20] = [
         name: TEST_DEBT,
         color: "5319e7",
         description: "Code cargo-mutants can break without a test failing",
+    },
+    Label {
+        name: RULES,
+        color: "b60205",
+        description: "The rules and their tests, written before any development",
     },
 ];
 

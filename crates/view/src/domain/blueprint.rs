@@ -290,6 +290,7 @@ pub fn lines() -> Vec<Line> {
         pr_review_line(),
         pr_fix_line(),
         test_debt_line(),
+        rules_line(),
         arbiter_line(),
         milestone_merge_line(),
         main_agent_merge_line(),
@@ -786,6 +787,48 @@ fn test_debt_line() -> Line {
                     "cover requires",
                     "The issue names the Rust source file whose mutants no test catches.",
                 )),
+                None,
+            ),
+        ],
+    )
+}
+
+fn rules_line() -> Line {
+    line(
+        "rules",
+        "Rules",
+        "harness:rules and harness:ready on the rules' issue",
+        "Writes the rules the human validated as rules.json and the tests that prove them, \
+         before any development — or settles a contested test. Development waits while one \
+         is open.",
+        vec![
+            vec![free(
+                "context",
+                "read the rules",
+                Kind::Printer,
+                "Reads the rules the issue carries, or the contest, and takes the request.",
+            )],
+            paid(
+                "write",
+                "write the tests",
+                Kind::Builder,
+                "sonnet",
+                "Writes rules.json and each rule's tests, its criterion copied as it is, and \
+                 opens their pull request — never product code, never a merge.",
+                Some(gate(
+                    "write requires",
+                    "The issue says what it asks: rules keeping contract P, or a contest.",
+                )),
+                None,
+            ),
+            paid(
+                "fidelity",
+                "judge the tests",
+                Kind::Inspector,
+                "opus",
+                "A fresh session reads each test against its criterion only, and merges when \
+                 every one is faithful — otherwise the issue waits on a human.",
+                Some(gate("fidelity requires", "The issue says what it asks.")),
                 None,
             ),
         ],

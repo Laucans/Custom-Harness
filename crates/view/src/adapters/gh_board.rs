@@ -54,11 +54,18 @@ impl Board for GhBoard {
             .issues_labelled("bug", "open")
             .await
             .unwrap_or_default();
+        // A repository initialized before the rules had no such label.
+        let rules = self
+            .gh
+            .issues_labelled(labels::RULES, "open")
+            .await
+            .unwrap_or_default();
         Ok(BoardReading {
             slug,
             roadmap,
             milestones,
             bugs,
+            rules,
         })
     }
 }

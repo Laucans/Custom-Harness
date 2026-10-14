@@ -36,6 +36,7 @@ use crate::pulse::Pulse;
 use harness_architecture::kit::{ComponentState, DESIGN_BRANCH, Design, DesignState, Example};
 use harness_core::domain::Slug;
 use harness_core::ports::store::factories::{Factories, id_from};
+use harness_workflows::common::labels;
 
 /// Why nothing asks the AI.
 const NO_CLAUDE: &str = "no Claude at hand: the view found no `claude` to ask";
@@ -1473,6 +1474,8 @@ impl CreationDesk {
         self.publish_mockup(&record, &ctx).await?;
         self.publish_design(&record).await?;
         let record = self.existing()?;
+        self.open_rules_task(&record).await?;
+        let record = self.existing()?;
         if record.issue.is_empty() {
             let data = self
                 .setup
@@ -1521,6 +1524,35 @@ impl CreationDesk {
             }
         }
         Ok(())
+    }
+
+    /// The rules' task, opened once, first of the roadmap: the rules and
+    /// their tests come before any development.
+    async fn open_rules_task(&self, record: &Creation) -> Result<(), String> {
+        if !record.rules_issue.is_empty() {
+            self.step(&format!(
+                "the rules' task is open already: {}",
+                record.rules_issue
+            ));
+            return Ok(());
+        }
+        let Some(data) = self.setup.data.clone() else {
+            return Ok(());
+        };
+        self.step("opening the rules' task");
+        let (title, body) = creation::rules_issue(record)?;
+        let url = data
+            .open_issue(Issue {
+                title,
+                body,
+                labels: vec![labels::RULES.to_string(), labels::READY.to_string()],
+            })
+            .await?;
+        self.step(&format!("the rules' task: {url}"));
+        let _held = self.record.lock().await;
+        let mut kept = self.existing()?;
+        kept.rules_issue = url;
+        self.keep(&kept)
     }
 
     /// The record written in the repository beside the mock-up, then the

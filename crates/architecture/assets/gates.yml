@@ -595,7 +595,9 @@ jobs:
         shell: bash
         env:
           RULES_STATUS: ${{ github.workspace }}/target/rules-status.jsonl
-          STRICT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main_agent' && '--strict' || '' }}
+          # Strict where a milestone lands (its pull request into main_agent),
+          # never on the rules' own change: a changed rule's test lands red.
+          STRICT: ${{ github.event_name == 'pull_request' && github.base_ref == 'main_agent' && !contains(github.event.pull_request.labels.*.name, 'harness:rules') && '--strict' || '' }}
         run: node scripts/rules-gate.mjs status $STRICT
       - uses: actions/upload-artifact@v4
         if: always()
@@ -605,10 +607,15 @@ jobs:
           if-no-files-found: ignore
 
   # Contract P — only the rules' task (label harness:rules) writes rules.json
-  # and the rules' tests: a development conforms to them, or contests them.
+  # and the rules' tests: a development conforms to them, or contests them
+  # with CONTEST.md — which opens a `Rules contested` issue for the rules'
+  # task, and holds the change until it is settled.
   rule-tests-untouched:
     if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'harness:rules')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -618,3 +625,8 @@ jobs:
           node-version: 22
       - name: The rules and their tests are left alone
         run: node scripts/rules-gate.mjs untouched "origin/${{ github.base_ref }}"
+      - name: No rule's test is contested
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/rules-gate.mjs contest "${{ github.event.pull_request.number }}"

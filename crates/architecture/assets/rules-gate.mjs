@@ -21,6 +21,14 @@
 //   node scripts/rules-gate.mjs untouched <base>
 //       A change measured against <base> leaves tests/rules/ and rules.json
 //       alone: only the rules' task writes them.
+//
+//   node scripts/rules-gate.mjs contest <pr>
+//       A development that cannot meet a rule's test writes CONTEST.md at the
+//       root instead of changing it. Its pull request opens, once, the issue
+//       `Rules contested: PR #<pr>` (harness:rules, harness:ready) the rules'
+//       task settles, and fails while CONTEST.md is there: waiting while the
+//       issue is open, pointing to the decision once it is closed. Needs `gh`
+//       and GH_TOKEN.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -119,7 +127,28 @@ function untouched(base) {
   return touched.length ? 1 : 0;
 }
 
+function contest(pr) {
+  const path = join(root, 'CONTEST.md');
+  if (!existsSync(path)) { say('no CONTEST.md: no rule contested'); return 0; }
+  if (!/^[1-9][0-9]*$/.test(pr || '')) { fail('contest needs the pull request number'); return 1; }
+  const title = `Rules contested: PR #${pr}`;
+  const gh = (args) => execFileSync('gh', args, { encoding: 'utf8' });
+  const found = JSON.parse(gh(['issue', 'list', '--state', 'all', '--label', 'harness:rules', '--search', `"${title}" in:title`, '--json', 'number,state,title']));
+  const mine = found.find((i) => i.title === title);
+  if (!mine) {
+    const said = readFileSync(path, 'utf8').trim();
+    const body = `${said}\n\n— \`CONTEST.md\` of #${pr}, copied by the rules' gate.`;
+    const url = gh(['issue', 'create', '--label', 'harness:rules', '--label', 'harness:ready', '--title', title, '--body', body]).trim();
+    fail(`a rule's test is contested: the rules' task settles it (${url}); this change waits`);
+  } else if (mine.state === 'OPEN') {
+    fail(`contested in #${mine.number}: this change waits for the rules' task`);
+  } else {
+    fail(`the contest was settled in #${mine.number}: read its decision, remove CONTEST.md and conform`);
+  }
+  return 1;
+}
+
 const [mode, ...rest] = process.argv.slice(2);
-const run = { coverage: () => coverage(), status: () => status(rest), untouched: () => untouched(rest[0]) }[mode];
-if (!run) { say('usage: rules-gate.mjs coverage | status [--strict] [<status.jsonl>…] | untouched <base>'); process.exit(2); }
+const run = { coverage: () => coverage(), status: () => status(rest), untouched: () => untouched(rest[0]), contest: () => contest(rest[0]) }[mode];
+if (!run) { say('usage: rules-gate.mjs coverage | status [--strict] [<status.jsonl>…] | untouched <base> | contest <pr>'); process.exit(2); }
 process.exit(run());

@@ -326,6 +326,26 @@ issue; no resume, no tolerance. It never changes the code under test and
 never claims the mutants caught: the next rotation that judges the file
 says so, and labels the issue again if not.
 
+**The one that writes the rules first:** `rules` — the rules the human
+validated in the factory's design, as `rules.json` (contract P) and the
+tests that prove them, before any development. Opened by the factory at
+Initialize (`Rules: write the rules and their tests`) and when a rule
+changes (`Rules changed:`, the changed rules marked `conform`), and by the
+CI when a development writes `CONTEST.md` (`Rules contested: PR #<n>`,
+`scripts/rules-gate.mjs contest`). Trigger: `harness:rules` and
+`harness:ready`, routed right after the planner; **while any rules' issue
+is open, the router starts no development task** (`routing::rules_first`).
+State `RulesState`; `remaining` 1; core's `Round<S>`; stages `context`
+(reads the rules from the body's `json` block, or the contest, then
+consumes `harness:ready` — an unreadable body is said on the issue and
+handed to `harness:human`), `write` (a session writes the rules and their
+tests, or settles the contest, and opens a `harness:rules` PR it never
+merges) and `fidelity` (a fresh session judges each test against its
+criterion only, merges when all are faithful, hands the issue to a human
+otherwise), both gated by `AsksSomething`; lock per issue; no resume, no
+tolerance. The body's format is `rules::data::request` — the view writes
+it with `body`, the workflow reads it with `read`.
+
 **The one that works a task's graph:** `arbiter` — a task whose technical
 refinement found the design could not hold its `## Architecture` as `split`
 cut it: an id it builds on that `needs` does not name, written as a question

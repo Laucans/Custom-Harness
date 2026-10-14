@@ -204,6 +204,9 @@ pub struct Creation {
     pub design_refused: String,
     /// The roadmap task the initialization opened.
     pub issue: String,
+    /// The rules' task the initialization opened: the rules and their tests,
+    /// before any development.
+    pub rules_issue: String,
 }
 
 /// One requirement of the proof of concept: what it must do, and where
@@ -2138,6 +2141,84 @@ fn data_section(c: &Creation) -> String {
     body
 }
 
+/// The rules as contract P has them (`rules.json`): `R<id>`, with its
+/// family and criterion; those in `conform` marked so — changed, their
+/// tests ahead of the code. A rule whose criterion is not whole cannot be
+/// tested, and is answered apart rather than written.
+#[must_use]
+pub fn rules_contract(c: &Creation, conform: &[u32]) -> (serde_json::Value, Vec<u32>) {
+    let mut rules = Vec::new();
+    let mut untestable = Vec::new();
+    for r in &c.requirements {
+        let k = &r.criterion;
+        if [&k.given, &k.when, &k.then]
+            .iter()
+            .any(|part| part.trim().is_empty())
+            || r.title.trim().is_empty()
+        {
+            untestable.push(r.id);
+            continue;
+        }
+        let mut rule = serde_json::json!({
+            "id": format!("R{}", r.id),
+            "title": r.title.trim(),
+            "family": r.family,
+            "criterion": {
+                "given": k.given.trim(),
+                "when": k.when.trim(),
+                "then": k.then.trim(),
+            },
+        });
+        if !r.body.trim().is_empty() {
+            rule["body"] = serde_json::json!(r.body.trim());
+        }
+        if !r.pages.is_empty() {
+            rule["pages"] = serde_json::json!(r.pages);
+        }
+        if !r.components.is_empty() {
+            rule["components"] = serde_json::json!(r.components);
+        }
+        if conform.contains(&r.id) {
+            rule["state"] = serde_json::json!("conform");
+        }
+        rules.push(rule);
+    }
+    (
+        serde_json::json!({ "version": 1, "rules": rules }),
+        untestable,
+    )
+}
+
+/// The rules' task the initialization opens, first of the roadmap: every
+/// rule, to be written as `rules.json` and proved by tests before any
+/// development.
+///
+/// # Errors
+///
+/// The rules do not keep contract P.
+pub fn rules_issue(c: &Creation) -> Result<(String, String), String> {
+    let (rules, untestable) = rules_contract(c, &[]);
+    let mut intro = format!(
+        "The first task of `{}`'s roadmap: the rules validated in the factory's Rules step, \
+         written as `rules.json` (contract P) and proved by tests before any development. \
+         No development task starts while this issue is open.",
+        c.name
+    );
+    if !untestable.is_empty() {
+        let ids: Vec<String> = untestable.iter().map(|id| format!("R{id}")).collect();
+        let _ = write!(
+            intro,
+            "\n\nLeft out, their criterion not whole: {}.",
+            ids.join(", ")
+        );
+    }
+    let body = harness_workflows::rules::data::request::body(&intro, &rules)?;
+    Ok((
+        harness_workflows::rules::data::request::FIRST_TITLE.to_string(),
+        body,
+    ))
+}
+
 /// The rules, as the roadmap task lists them: each with its family, what it
 /// asks for, its criterion and what carries it. Empty when there is none.
 fn rules_section(c: &Creation) -> String {
@@ -2504,6 +2585,55 @@ mod tests {
             pages: pages.iter().map(ToString::to_string).collect(),
             ..Requirement::default()
         }
+    }
+
+    #[test]
+    fn the_rules_task_carries_every_testable_rule_as_contract_p() {
+        let mut business = rule(
+            3,
+            "given lines, when opened, then all show",
+            &["pages/a.html"],
+        );
+        business.family = Family::Business;
+        business.body = "  every line ".to_string();
+        business.components = vec!["Lines".to_string()];
+        let c = Creation {
+            name: "app".to_string(),
+            requirements: vec![
+                business,
+                rule(5, "", &[]),
+                rule(7, "given a, when b, then c", &[]),
+            ],
+            ..Creation::default()
+        };
+        let (rules, untestable) = rules_contract(&c, &[7]);
+        assert_eq!(untestable, [5], "a criterion not whole cannot be tested");
+        assert_eq!(rules["version"], 1);
+        assert_eq!(rules["rules"][0]["id"], "R3");
+        assert_eq!(rules["rules"][0]["family"], "business");
+        assert_eq!(rules["rules"][0]["body"], "every line");
+        assert_eq!(rules["rules"][0]["pages"][0], "pages/a.html");
+        assert_eq!(rules["rules"][0]["components"][0], "Lines");
+        assert_eq!(
+            rules["rules"][0]["criterion"]["when"],
+            crit("given lines, when opened, then all show")
+                .when
+                .as_str()
+        );
+        assert!(rules["rules"][0].get("state").is_none());
+        assert_eq!(rules["rules"][1]["id"], "R7");
+        assert_eq!(rules["rules"][1]["state"], "conform");
+        assert!(rules["rules"][1].get("body").is_none());
+
+        let (title, body) = rules_issue(&c).expect("contract P");
+        assert_eq!(title, harness_workflows::rules::data::request::FIRST_TITLE);
+        assert!(
+            body.contains("`app`") && body.contains("Left out, their criterion not whole: R5.")
+        );
+        let read = harness_workflows::rules::data::request::read(&title, &body);
+        assert!(
+            matches!(read, Ok(harness_workflows::rules::data::request::Ask::Write(r)) if r.ids == ["R3", "R7"] && r.conform.is_empty())
+        );
     }
 
     #[test]

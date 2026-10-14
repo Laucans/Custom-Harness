@@ -5,7 +5,7 @@
 //! routing decision — a lightweight read, no checkout mounted for it.
 //! Dispatching to a workflow is each workflow's own launcher module's job
 //! (`dev_loop.rs`, `planner.rs`, `split.rs`, `refinement.rs`,
-//! `pr_review.rs`, `pr_fix.rs`, `arbiter.rs`, `test_debt.rs`) — each mounts what it needs
+//! `pr_review.rs`, `pr_fix.rs`, `arbiter.rs`, `test_debt.rs`, `rules.rs`) — each mounts what it needs
 //! itself, and only
 //! when actually dispatched to. A tick that routes to [`Route::Nothing`]
 //! therefore never touches disk.
@@ -205,13 +205,14 @@ async fn tick(
     // wrong: the counts are the whole input to `routing::decide`.
     log.debug(&format!(
         "saw: {} roadmap, {} milestone(s), {} refining, {} tech-refining, {} arbitrating, \
-         {} test-debt, pr_fix={:?}, pr_review={:?}, ready_to_merge={:?}, dev_loop={:?}",
+         {} test-debt, {} rules, pr_fix={:?}, pr_review={:?}, ready_to_merge={:?}, dev_loop={:?}",
         found.roadmap.len(),
         found.milestones.len(),
         found.refining.len(),
         found.tech_refining.len(),
         found.arbitrating.len(),
         found.test_debt.len(),
+        found.rules.len(),
         found.pr_to_fix.as_ref().map(|pr| pr.num.clone()),
         found.pr_to_review.as_ref().map(|pr| pr.num.clone()),
         found.ready_to_merge,
@@ -344,6 +345,7 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>, bool)> 
         .issues_labelled(labels::NEEDS_AI_DECISION, "open")
         .await?;
     let test_debt = gh.issues_labelled(labels::TEST_DEBT, "open").await?;
+    let rules = gh.issues_labelled(labels::RULES, "open").await?;
     // Tolerant on purpose: "no open milestone at all" is this probe's most
     // common answer, not a failure — `dev_loop::run` itself is where that
     // distinction matters and is already made.
@@ -373,7 +375,17 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>, bool)> 
         arbitrating,
         dev_loop_milestone,
         test_debt,
+        rules,
     };
+    // The tests come first: a development that waits on them says so.
+    let idle = routing::rules_first(&snapshot)
+        .map(|n| {
+            format!(
+                "development waits on the rules' task #{n} — {} on it asks for an attempt",
+                labels::READY
+            )
+        })
+        .or(idle);
     Ok((snapshot, idle, watching_ci))
 }
 

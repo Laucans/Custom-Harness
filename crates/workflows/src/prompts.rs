@@ -22,6 +22,7 @@ use crate::planner::orchestration::stages as planner;
 use crate::pr_fix::orchestration::stages as pr_fix;
 use crate::pr_review::orchestration::stages as pr_review;
 use crate::refinement::orchestration::prompts as refinement;
+use crate::rules::orchestration::stages as rules;
 use crate::split::orchestration::stages as split;
 use crate::test_debt::orchestration::stages as test_debt;
 
@@ -65,6 +66,12 @@ pub const BRIEF: &str = "pr-review/brief";
 pub const FIX: &str = "pr-fix/fix";
 /// Test debt's tests for the mutants of one file.
 pub const COVER: &str = "test-debt/cover";
+/// The rules' task: the rules and their tests.
+pub const RULES_WRITE: &str = "rules/write";
+/// The rules' task: a contested test settled.
+pub const RULES_CONTEST: &str = "rules/contest";
+/// The rules' task: each test judged against its criterion.
+pub const RULES_FIDELITY: &str = "rules/fidelity";
 /// The arbiter's one session: which task produces each open id.
 pub const ARBITRATE: &str = "arbiter/arbitrate";
 
@@ -203,6 +210,24 @@ const CATALOG: &[Prompt] = &[
         title: "Tests for the mutants",
         stations: &[("test-debt", "cover")],
         default: test_debt::COVER_PROMPT,
+    },
+    Prompt {
+        key: RULES_WRITE,
+        title: "The rules and their tests",
+        stations: &[("rules", "write")],
+        default: rules::WRITE_PROMPT,
+    },
+    Prompt {
+        key: RULES_CONTEST,
+        title: "A contested rule's test, settled",
+        stations: &[("rules", "write")],
+        default: rules::CONTEST_PROMPT,
+    },
+    Prompt {
+        key: RULES_FIDELITY,
+        title: "Each rule's test judged against its criterion",
+        stations: &[("rules", "fidelity")],
+        default: rules::FIDELITY_PROMPT,
     },
     Prompt {
         key: ARBITRATE,

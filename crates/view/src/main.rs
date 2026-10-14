@@ -747,7 +747,7 @@ fn notifications(
         .unwrap_or_default();
     let waiting = board.map_or_else(Vec::new, |board| {
         harness_notify::waiting_on_a_human(
-            board.roadmap.iter().chain(
+            board.roadmap.iter().chain(board.rules.iter()).chain(
                 board
                     .milestones
                     .iter()
@@ -755,6 +755,7 @@ fn notifications(
             ),
         )
     });
+    let contested = board.map_or_else(Vec::new, |board| harness_notify::contested(&board.rules));
     // The freshest of what the runs kept and what the page probed.
     let probed = hands
         .claude_read
@@ -802,6 +803,7 @@ fn notifications(
             claude_at,
             now: u64::try_from(now.as_second()).unwrap_or(0),
             diagnoses,
+            contested,
         },
     )
 }

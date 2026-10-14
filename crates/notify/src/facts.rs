@@ -4,6 +4,7 @@
 use harness_core::domain::Issue;
 use harness_core::domain::quota::Reading;
 use harness_workflows::common::labels;
+use harness_workflows::rules::data::request::CONTESTED;
 
 /// An issue that waits on a human.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,9 @@ pub struct Facts {
     pub now: u64,
     /// The diagnoses the doctor was asked for that have ended.
     pub diagnoses: Vec<Diagnosed>,
+    /// The open rules' tasks that settle a contested test: the AI decides,
+    /// the human is warned and may act.
+    pub contested: Vec<Waiting>,
 }
 
 /// The open issues among `issues` that carry `harness:human` or
@@ -69,6 +73,28 @@ pub fn waiting_on_a_human<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> Ve
     waiting
 }
 
+/// The open rules' tasks among `issues` that settle a contested test —
+/// `harness:rules`, titled `Rules contested…` — in number order.
+#[must_use]
+pub fn contested<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> Vec<Waiting> {
+    let mut contested: Vec<Waiting> = issues
+        .into_iter()
+        .filter(|issue| {
+            issue.is_open()
+                && issue.has(labels::RULES)
+                && issue.title.trim_start().starts_with(CONTESTED)
+        })
+        .map(|issue| Waiting {
+            number: issue.number,
+            title: issue.title.clone(),
+            label: labels::RULES.to_string(),
+        })
+        .collect();
+    contested.sort_by_key(|w| w.number);
+    contested.dedup_by_key(|w| w.number);
+    contested
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +107,37 @@ mod tests {
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
             ..Issue::default()
         }
+    }
+
+    #[test]
+    fn only_open_rules_tasks_titled_as_a_contest_are_contested() {
+        let titled = |number, state, labels: &[&str], title: &str| {
+            let mut issue = issue(number, state, labels);
+            issue.title = title.to_string();
+            issue
+        };
+        let issues = [
+            titled(9, "open", &[labels::RULES], "Rules contested: PR #12"),
+            titled(
+                4,
+                "open",
+                &[labels::RULES],
+                "Rules: write the rules and their tests",
+            ),
+            titled(5, "closed", &[labels::RULES], "Rules contested: PR #3"),
+            titled(6, "open", &[labels::AGENT], "Rules contested: PR #4"),
+            titled(
+                2,
+                "open",
+                &[labels::RULES, labels::READY],
+                "Rules contested: PR #1",
+            ),
+        ];
+        let found = contested(&issues);
+        let numbers: Vec<u64> = found.iter().map(|w| w.number).collect();
+        assert_eq!(numbers, [2, 9]);
+        assert_eq!(found[1].label, labels::RULES);
+        assert_eq!(found[1].title, "Rules contested: PR #12");
     }
 
     #[test]

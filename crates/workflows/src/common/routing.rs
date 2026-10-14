@@ -8,7 +8,10 @@
 //!
 //! Priority, top to bottom: a roadmap item that's `harness:ready` and has no
 //! milestone yet outranks everything, because nothing else can be planned
-//! against it; a milestone ready to split comes next, once no refinement is
+//! against it; then a `harness:ready` rules' task, since its tests are what
+//! every development conforms to — and **while a rules' task is open, ready
+//! or not, no development task starts** ([`rules_first`]); a milestone ready
+//! to split comes next, once no refinement is
 //! pending on it; then the two things
 //! that can be wrong with a pull request already in flight — a red one to
 //! repair before a green one to review, since reviewing a change whose CI
@@ -103,6 +106,11 @@ pub enum Route {
         /// a fixed integration branch.
         milestone: u64,
     },
+    /// Write the rules and their tests, or settle a contest — `rules`.
+    Rules {
+        /// The rules' issue number.
+        issue: u64,
+    },
     /// Write the tests this issue's file owes — `test_debt`.
     TestDebt {
         /// The test-debt issue's number.
@@ -151,6 +159,16 @@ pub struct Snapshot {
     pub dev_loop_milestone: Option<u64>,
     /// Open `harness:test-debt` issues, any order.
     pub test_debt: Vec<Issue>,
+    /// Open `harness:rules` issues, any order.
+    pub rules: Vec<Issue>,
+}
+
+/// The rules' task development waits on: the lowest open `harness:rules`
+/// issue, ready or not — a failed attempt hands it to a human, and the
+/// tests still come first.
+#[must_use]
+pub fn rules_first(snapshot: &Snapshot) -> Option<u64> {
+    lowest_open(&snapshot.rules).map(|issue| issue.number)
 }
 
 /// Decides the next route from a snapshot.
@@ -162,6 +180,11 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     {
         return Route::Planner {
             roadmap: lowest.number,
+        };
+    }
+    if let Some(issue) = lowest_open(&snapshot.rules).filter(|issue| issue.has(labels::READY)) {
+        return Route::Rules {
+            issue: issue.number,
         };
     }
     if let Some(ready) = snapshot
@@ -203,7 +226,9 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     }
     // Delivering before preparing: a runnable task is work already decided,
     // and a pending refinement only ever prepares the next one.
-    if let Some(milestone) = snapshot.dev_loop_milestone {
+    if let Some(milestone) = snapshot.dev_loop_milestone
+        && rules_first(snapshot).is_none()
+    {
         return Route::DevLoop { milestone };
     }
     if let Some(issue) = lowest_open(&snapshot.refining) {
@@ -243,7 +268,9 @@ pub struct LaneWork {
 #[must_use]
 pub fn lane_work(snapshot: &Snapshot) -> LaneWork {
     LaneWork {
-        tasks_of: snapshot.dev_loop_milestone,
+        tasks_of: snapshot
+            .dev_loop_milestone
+            .filter(|_| rules_first(snapshot).is_none()),
         preparation: snapshot.refining.iter().any(Issue::is_open)
             || snapshot.milestones.iter().any(splittable),
     }
@@ -414,6 +441,7 @@ mod tests {
             arbitrating: Vec::new(),
             dev_loop_milestone: None,
             test_debt: Vec::new(),
+            rules: Vec::new(),
         }
     }
 
@@ -461,8 +489,41 @@ mod tests {
             arbitrating: Vec::new(),
             dev_loop_milestone: Some(3),
             test_debt: vec![issue(8, &[labels::TEST_DEBT])],
+            rules: vec![issue(2, &[labels::RULES, labels::READY])],
         };
         assert_eq!(decide(&snapshot), Route::Planner { roadmap: 4 });
+    }
+
+    #[test]
+    fn a_ready_rules_task_comes_next_and_an_open_one_holds_every_development() {
+        let mut settled = issue(1, &[labels::RULES, labels::READY]);
+        settled.state = "closed".to_string();
+        let ready = Snapshot {
+            rules: vec![settled.clone(), issue(5, &[labels::RULES, labels::READY])],
+            milestones: vec![issue(9, &[labels::MILESTONE, labels::READY])],
+            dev_loop_milestone: Some(3),
+            ..empty()
+        };
+        assert_eq!(decide(&ready), Route::Rules { issue: 5 });
+        // Taken, failed, waiting on a human: the development still waits.
+        let waiting = Snapshot {
+            rules: vec![issue(5, &[labels::RULES, labels::HUMAN])],
+            dev_loop_milestone: Some(3),
+            refining: vec![issue(6, &[labels::REFINEMENT])],
+            ..empty()
+        };
+        assert_eq!(rules_first(&waiting), Some(5));
+        assert_eq!(decide(&waiting), Route::Refinement { issue: 6 });
+        assert_eq!(lane_work(&waiting).tasks_of, None);
+        // Settled: the development goes on.
+        let settled = Snapshot {
+            rules: vec![settled],
+            dev_loop_milestone: Some(3),
+            ..empty()
+        };
+        assert_eq!(rules_first(&settled), None);
+        assert_eq!(decide(&settled), Route::DevLoop { milestone: 3 });
+        assert_eq!(lane_work(&settled).tasks_of, Some(3));
     }
 
     #[test]

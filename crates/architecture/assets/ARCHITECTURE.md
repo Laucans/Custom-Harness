@@ -777,7 +777,7 @@ off until an agent implements them.
 | Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page; every Micro-UI has a micro-frontend whose listing says its needs and actions; the bundles are rebuilt from the Micro-UIs' code | D, E, N |
 | Rules covered | Every rule of `rules.json` has a test of its family naming it, its criterion copied as it is; no test names a rule `rules.json` has not (`scripts/rules-gate.mjs coverage`) | P |
 | Rules hold | Every rule's test whose units are built runs on the product the runtime serves, and passes; each rule's state (pending, green, red) is kept as `rules-status.json`; a rule marked `conform` may be red in a task, never where a milestone lands (`scripts/rules-gate.mjs status`) | P |
-| Rule tests untouched | A change that is not the rules' task leaves `rules.json` and `tests/rules/` alone (`scripts/rules-gate.mjs untouched`) | P |
+| Rule tests untouched | A change that is not the rules' task leaves `rules.json` and `tests/rules/` alone (`scripts/rules-gate.mjs untouched`), and carries no `CONTEST.md` — which opens the `Rules contested` issue the rules' task settles (`contest`) | P |
 
 Beside the gates, the project's own CI (`.github/workflows/ci.yml`) judges
 the code and its tests, not the contracts: format and lint; the tests a
