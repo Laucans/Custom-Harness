@@ -97,14 +97,17 @@ mod tests {
         // by no phase, so no round can rewrite or erase them.
         assert!(!all.contains(&sections::SCOPE));
         assert!(!all.contains(&sections::ARCHITECTURE));
+        // `rules` is the slice's rules, written by `split` from the plan.
+        assert!(!all.contains(&sections::RULES));
         // `decision` is raised by the graph pass and settled by the arbiter
         // or a human: no phase writes it as a section either.
         assert!(!all.contains(&sections::DECISION));
-        assert_eq!(all.len(), sections::KEYS.len() - 3);
+        assert_eq!(all.len(), sections::KEYS.len() - 4);
         for key in sections::KEYS {
             assert!(
                 key == sections::SCOPE
                     || key == sections::ARCHITECTURE
+                    || key == sections::RULES
                     || key == sections::DECISION
                     || all.contains(&key),
                 "{key} belongs to no phase and is neither scope, architecture nor decision"

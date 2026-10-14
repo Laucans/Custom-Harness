@@ -59,7 +59,11 @@ Read the milestone issue it hangs under only if you need to place the task.
 The spec is not committed alongside the code, so it cannot drift inside the
 diff. What is worth checking instead is the gap between what the issue asks
 for and what the branch does: scope quietly dropped, or quietly widened, is
-the drift this comment exists to surface.
+the drift this comment exists to surface. Two drifts come first when they
+are there: a task's PR that changes `rules.json`, `tests/rules/` or
+`scripts/rules-runtime.sh` (only the rules' task writes them), and a rule
+the issue's `## Rules` names whose test the `rules-hold` check still shows
+red.
 
 A line-by-line bug hunt already ran and posted its findings inline. Here is
 what it reported — reference it, do not repeat it:

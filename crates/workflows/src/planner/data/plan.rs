@@ -34,6 +34,10 @@ pub struct MilestoneItem {
     /// milestones on different aggregates open together.
     #[serde(default)]
     pub aggregates: Vec<String>,
+    /// The rules (`R3`) whose tests turn green when it lands, as
+    /// `rules.json` names them: what `split` hands its tasks.
+    #[serde(default)]
+    pub rules: Vec<String>,
 }
 
 impl MilestoneItem {
@@ -58,7 +62,7 @@ impl MilestoneItem {
                 kept.join(", ")
             }
         };
-        format!(
+        let body = format!(
             "{}\n\n## {}\n\nsystems: {}\nconcepts: {}\naggregates: {}\nside: {}",
             self.goal.trim(),
             sections::heading_of(sections::ARCHITECTURE),
@@ -66,7 +70,16 @@ impl MilestoneItem {
             list(&self.concepts),
             list(&self.aggregates),
             self.side().label()
-        )
+        );
+        let rules = list(&self.rules);
+        if rules == "-" {
+            body
+        } else {
+            format!(
+                "{body}\n\n## {}\n\n{rules}",
+                sections::heading_of(sections::RULES)
+            )
+        }
     }
 
     /// The aggregates, trimmed and lower-cased: what two milestones compare.
@@ -130,6 +143,7 @@ mod tests {
             concepts: vec!["Risk@3".to_string()],
             writes: true,
             aggregates: vec!["Account".to_string(), " ".to_string()],
+            rules: Vec::new(),
         };
         assert_eq!(
             item.body(),
@@ -151,6 +165,26 @@ mod tests {
                 .ends_with("systems: -\nconcepts: -\naggregates: -\nside: harness:read-side")
         );
         assert_eq!(bare.side(), Side::Read);
+    }
+
+    #[test]
+    fn the_rules_a_milestone_turns_green_follow_its_architecture() {
+        let items =
+            parse(r#"[{"title": "Campaigns", "goal": "List them.", "rules": ["R3", " ", "R5"]}]"#)
+                .expect("parse");
+        let body = items[0].body();
+        assert!(
+            body.ends_with("side: harness:read-side\n\n## Rules\n\nR3, R5"),
+            "{body}"
+        );
+        assert_eq!(
+            sections::parse(&body)
+                .get(sections::RULES)
+                .map(String::as_str),
+            Some("R3, R5")
+        );
+        let none = parse(r#"[{"title": "t", "goal": "g"}]"#).expect("parse");
+        assert!(!none[0].body().contains("## Rules"), "no rule, no section");
     }
 
     #[test]

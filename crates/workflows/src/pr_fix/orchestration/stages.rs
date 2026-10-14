@@ -59,6 +59,12 @@ Hard rules, and they are the point of this run:
   answering what its review called blocking, not improving the code around
   it — the review's non-blocking remarks are not yours to address. An adjacent problem is something you
   name in your answer, not something you commit here.
+- **The rules' tests are not yours.** A red `rules-hold` is fixed in the
+  product's code, never in `rules.json`, `tests/rules/` or
+  `scripts/rules-runtime.sh` (a gate refuses it). When
+  `rule-tests-untouched` says a contest was settled, read the decision on
+  the issue it names, remove `CONTEST.md`, and conform to the test as it
+  stands; one that still cannot hold is a finding to report.
 - **Never merge the PR itself, never force-push, never rebase, never close
   the PR, and never touch a `harness:*` label.** Merging the base *into*
   the branch to resolve a conflict is the one merge you may make. Something else

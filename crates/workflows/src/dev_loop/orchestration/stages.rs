@@ -146,6 +146,18 @@ and without it the round stops rather than replay a task nothing marks as
 delivered. The issue will stay open under `{waiting_merge}` until a
 human merges the integration branch — that is expected, not a failure. Do
 not close the issue yourself.
+If the SPEC has a `## Rules` section, the tests of those rules, under
+tests/rules/ (contract P), are written already and are what this task
+turns green: start the product with `bash scripts/rules-runtime.sh serve`
+(export the KEY=value lines it prints), run `cargo test --manifest-path
+tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
+test` in tests/rules/journey, then `bash scripts/rules-runtime.sh stop`. A
+rule stays pending while a unit its test needs is not built. Never change
+rules.json, tests/rules/ or scripts/rules-runtime.sh — a gate refuses it.
+A rule's test you cannot meet is contested: write CONTEST.md at the root
+(the rule, the test, why it cannot hold) and say so in your reply. The
+server is crates/server, the frontend's host apps/shell, as the layout of
+CLAUDE.md says: the runtime starts them from there.
 /code's steps 1-3 are what you just did as the tech analyst; adopt your own
 findings instead of re-deriving them. Nothing outside this session can read
 your plan, so a gate finding or a risk you do not act on now is lost — put it
@@ -184,6 +196,18 @@ green. The PR body MUST carry the line `Closes #{num}` on its own: the loop
 reads that line off the PR to know the task is delivered once it is merged.
 The issue will carry `{review_pending}` until then —
 that is expected, not a failure. Do not close the issue yourself.
+If the SPEC has a `## Rules` section, the tests of those rules, under
+tests/rules/ (contract P), are written already and are what this task
+turns green: start the product with `bash scripts/rules-runtime.sh serve`
+(export the KEY=value lines it prints), run `cargo test --manifest-path
+tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
+test` in tests/rules/journey, then `bash scripts/rules-runtime.sh stop`. A
+rule stays pending while a unit its test needs is not built. Never change
+rules.json, tests/rules/ or scripts/rules-runtime.sh — a gate refuses it.
+A rule's test you cannot meet is contested: write CONTEST.md at the root
+(the rule, the test, why it cannot hold) and say so in your reply. The
+server is crates/server, the frontend's host apps/shell, as the layout of
+CLAUDE.md says: the runtime starts them from there.
 /code's steps 1-3 are what you just did as the tech analyst; adopt your own
 findings instead of re-deriving them. Nothing outside this session can read
 your plan, so a gate finding or a risk you do not act on now is lost — put it

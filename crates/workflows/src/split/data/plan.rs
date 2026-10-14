@@ -56,6 +56,10 @@ pub struct TaskItem {
     /// layer.
     #[serde(default)]
     pub depends_on: Vec<usize>,
+    /// The rules (`R3`) whose tests this slice makes pass, as `rules.json`
+    /// names them — their tests already written, never changed by the task.
+    #[serde(default)]
+    pub rules: Vec<String>,
 }
 
 impl TaskItem {

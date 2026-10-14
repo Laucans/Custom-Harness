@@ -185,7 +185,10 @@ what still holds and fixing what does not, rather than rewriting from
 scratch. Keep it consistent with the Business Goal above it, and with any
 Technical section already in the body: a criterion nothing in this issue asks
 for does not belong here. This round has no access to the code — state
-behaviour a person can observe, not how it is built.
+behaviour a person can observe, not how it is built. A `## Rules` section
+names rules (`R3`) already decided, their tests written before this issue:
+cite each by its id in the criterion it backs, and write none that
+contradicts them.
 
 {additional_context}
 

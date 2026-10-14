@@ -47,6 +47,14 @@ pub const SCOPE: &str = "scope";
 /// across the read/write frontier behind the labels' back.
 pub const ARCHITECTURE: &str = "architecture";
 
+/// The key of the third section `split` writes and no phase touches.
+///
+/// The rules (contract P, `rules.json`) whose tests the task makes pass:
+/// `R3, R5`. Their tests are written before the task by the rules' task,
+/// and a refinement that rewrote the list could hand the task a rule it
+/// never builds, or take one away from it.
+pub const RULES: &str = "rules";
+
 /// The key of the section a graph question is raised in and answered under.
 ///
 /// What the task's `## Architecture` could not hold
@@ -56,7 +64,7 @@ pub const ARCHITECTURE: &str = "architecture";
 pub const DECISION: &str = "decision";
 
 /// The canonical order: how the body is rewritten, and how stages run.
-pub const SECTIONS: [Section; 8] = [
+pub const SECTIONS: [Section; 9] = [
     Section {
         key: SCOPE,
         heading: "Scope",
@@ -64,6 +72,10 @@ pub const SECTIONS: [Section; 8] = [
     Section {
         key: ARCHITECTURE,
         heading: "Architecture",
+    },
+    Section {
+        key: RULES,
+        heading: "Rules",
     },
     Section {
         key: "business-goal",
@@ -92,9 +104,10 @@ pub const SECTIONS: [Section; 8] = [
 ];
 
 /// The keys, in canonical order.
-pub const KEYS: [&str; 8] = [
+pub const KEYS: [&str; 9] = [
     SCOPE,
     ARCHITECTURE,
+    RULES,
     "business-goal",
     "acceptance-criteria",
     "business-rules",

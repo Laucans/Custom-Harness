@@ -69,6 +69,18 @@ id (`monde`) and the aggregates `need` it — or it is not a slice, and its
 work goes into the first aggregate's. `depends_on` (0-based indexes in
 this array) is only for a wait `needs` cannot express, and should be rare.
 
+**The rules' tests are already written.** The milestone's `## Rules`
+section names the rules (`R<id>`, their criteria in `rules.json`) whose
+tests under `tests/rules/` turn green once it lands. Name in each slice's
+`rules` those its work completes — a rule whose test needs several slices
+goes to the last of them — so that every rule of the milestone falls in
+one slice. A slice never writes or changes a rule's test. A skeleton
+milestone cuts `crates/server` (the one binary serving the wire protocol,
+`GET /health`, the fixtures loaded from `FIXTURES_DIR`) as an
+`infrastructure` slice and `apps/shell` (the frontend's host, `npm run
+build` and `npm run serve`) as a `tooling` slice, at exactly those paths:
+`scripts/rules-runtime.sh` starts them from there.
+
 {profile}
 
 {existing}
@@ -87,7 +99,7 @@ touches, payload, mode, invariants, permissions, callableBy, idempotencyKey),
 Answer with a JSON array and nothing else, one object per slice, in the
 order tasks must be taken:
 ```json
-[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false, "unit": "capability", "system": "credit", "concept": "Risk@3", "effect": null, "touches": [], "aggregate": null, "produces": ["credit.calculateRisk"], "needs": ["Account", "Risk@3"], "depends_on": []}]
+[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false, "unit": "capability", "system": "credit", "concept": "Risk@3", "effect": null, "touches": [], "aggregate": null, "produces": ["credit.calculateRisk"], "needs": ["Account", "Risk@3"], "depends_on": [], "rules": ["R3"]}]
 ```
 An empty array `[]` means this milestone needs no further task."#;
 

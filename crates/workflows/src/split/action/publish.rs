@@ -28,6 +28,7 @@ use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use crate::common::{branching, labels, sections};
 use crate::split::data::plan;
@@ -47,7 +48,7 @@ fn body_and_labels(
     kind: &'static str,
     side: Side,
 ) -> (String, Vec<&'static str>) {
-    let body = format!(
+    let mut body = format!(
         "## {}\n\nbranch: {}\n\n{}\n\n## {}\n\n{}",
         sections::heading_of(sections::SCOPE),
         item.branch,
@@ -55,12 +56,38 @@ fn body_and_labels(
         sections::heading_of(sections::ARCHITECTURE),
         declaration.render()
     );
+    if let Some(rules) = rules_section(&item.rules) {
+        let _ = write!(
+            body,
+            "\n\n## {}\n\n{rules}",
+            sections::heading_of(sections::RULES)
+        );
+    }
     let labels = if side == Side::Write {
         vec![kind, side.label(), labels::DATA_LAYER]
     } else {
         vec![kind, side.label()]
     };
     (body, labels)
+}
+
+/// The `## Rules` section of a task: the rules whose tests it makes pass,
+/// and what it may not do with them. `None` when the slice names none.
+fn rules_section(rules: &[String]) -> Option<String> {
+    let ids: Vec<&str> = rules
+        .iter()
+        .map(|r| r.trim())
+        .filter(|r| !r.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}\n\nTheir tests, under `tests/rules/` (contract P, `rules.json`), are written \
+         already: this task makes them pass — or leaves them pending on a unit another task \
+         builds. Never change them; one you cannot meet is contested with `CONTEST.md`.",
+        ids.join(", ")
+    ))
 }
 
 /// What a task waits on: the task of this plan that produces each id it
@@ -230,6 +257,28 @@ mod tests {
     use harness_core::ports::agent::Reply;
     use harness_core::traces::Logbook;
     use std::collections::HashMap;
+
+    #[test]
+    fn a_task_names_the_rules_it_makes_pass_in_a_section_no_refinement_rewrites() {
+        let items = plan::parse(
+            r#"[{"title": "List", "brief": "the list", "branch": "feat/list", "unit": "capability", "system": "campagne", "rules": ["R3", "", " R5 "]}]"#,
+        )
+        .expect("parse");
+        let item = &items[0];
+        let (body, _) = body_and_labels(item, &item.declaration(), labels::AGENT, Side::Read);
+        let found = sections::parse(&body);
+        let rules = found.get(sections::RULES).cloned().unwrap_or_default();
+        assert!(rules.starts_with("R3, R5\n\n"), "{rules}");
+        assert!(rules.contains("Never change them") && rules.contains("CONTEST.md"));
+        assert!(found.contains_key(sections::ARCHITECTURE), "{body}");
+        assert_eq!(rules_section(&[" ".to_string()]), None);
+        let bare =
+            plan::parse(r#"[{"title": "t", "brief": "b", "branch": "feat/t", "unit": "tooling"}]"#)
+                .expect("parse");
+        let (body, _) =
+            body_and_labels(&bare[0], &bare[0].declaration(), labels::AGENT, Side::Read);
+        assert!(!body.contains("## Rules"), "{body}");
+    }
 
     fn ctx(dry_run: bool, text: &str) -> Context<SplitState> {
         let mut ctx = Context::new(

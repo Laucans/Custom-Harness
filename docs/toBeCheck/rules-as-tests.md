@@ -110,3 +110,15 @@ exercised on a real product.
   - The server loads `FIXTURES_DIR`, otherwise the givens have no data.
 - [ ] A dev PR touching `scripts/rules-runtime.sh` is refused by
       `rule-tests-untouched`.
+- [ ] The plant's prompts know the rules come first (commit "the plant's
+      prompts").
+  - The planner's first milestone on a fresh product lays `crates/server`
+    and `apps/shell`. Each milestone carries a `## Rules` section, and
+    every rule of `rules.json` falls in exactly one milestone.
+  - Split hands each task its `rules`: a `## Rules` section, kept through
+    both refinements.
+  - Code sessions run `rules-runtime.sh serve` and the rules' suites, and
+    write `CONTEST.md` rather than edit a test.
+  - `pr_fix` never edits `tests/rules/`, and removes `CONTEST.md` once a
+    contest is settled.
+  - The review brief names a task PR touching the rules first.

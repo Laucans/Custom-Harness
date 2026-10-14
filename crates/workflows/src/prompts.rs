@@ -282,6 +282,71 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn every_station_of_the_plant_knows_the_rules_come_first() {
+        for (name, text, says) in [
+            (
+                "plan",
+                planner::PLAN_PROMPT,
+                &[
+                    "crates/server",
+                    "apps/shell",
+                    "rules.json",
+                    "\"rules\": [\"R3\"]",
+                ][..],
+            ),
+            (
+                "slice",
+                split::SLICE_PROMPT,
+                &[
+                    "## Rules",
+                    "crates/server",
+                    "apps/shell",
+                    "\"rules\": [\"R3\"]",
+                ][..],
+            ),
+            (
+                "code",
+                dev_loop::CODE,
+                &[
+                    "## Rules",
+                    "rules-runtime.sh serve",
+                    "CONTEST.md",
+                    "Never change",
+                ][..],
+            ),
+            (
+                "code write side",
+                dev_loop::CODE_WRITE_SIDE,
+                &[
+                    "## Rules",
+                    "rules-runtime.sh serve",
+                    "CONTEST.md",
+                    "Never change",
+                ][..],
+            ),
+            (
+                "fix",
+                pr_fix::FIX_PROMPT,
+                &["rules-hold", "CONTEST.md", "tests/rules/"][..],
+            ),
+            (
+                "acceptance",
+                refinement::ACCEPTANCE_CRITERIA_PROMPT,
+                &["## Rules", "contradicts"][..],
+            ),
+            (
+                "brief",
+                pr_review::BRIEF_PROMPT,
+                &["tests/rules/", "rules-hold"][..],
+            ),
+        ] {
+            for said in says {
+                assert!(text.contains(said), "{name} says {said}");
+            }
+        }
+    }
+
+    #[test]
     fn every_key_is_unique_and_every_default_says_something() {
         let all = catalog();
         let keys: BTreeSet<&str> = all.iter().map(|p| p.key).collect();

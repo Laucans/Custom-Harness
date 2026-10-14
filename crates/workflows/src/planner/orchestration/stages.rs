@@ -60,6 +60,18 @@ aggregates open together, and so do their tasks: cut the roadmap so that
 what can be built apart touches different aggregates. A milestone that
 only reads names no aggregate and waits on nothing.
 
+**The rules come first.** The product's rules are in `rules.json` at the
+repository's root (contract P): each `R<id>` with its criterion, its tests
+already written under `tests/rules/` by the rules' task — the code is what
+makes them pass. When the product has no skeleton yet, **the first
+milestone lays it**: `crates/server`, the one binary serving the shell's
+wire protocol and `GET /health`, loading the mock-up's fixtures from
+`FIXTURES_DIR` as it starts, and `apps/shell`, the frontend's host
+(`npm run build`, `npm run serve`). `scripts/rules-runtime.sh` starts them
+from there; until they exist every rule's test stays pending. Name in each
+milestone's `rules` the rules whose tests turn green once it lands: every
+rule in exactly one milestone, the earliest that builds all it needs.
+
 {existing}
 
 {grounding}
@@ -67,7 +79,7 @@ only reads names no aggregate and waits on nothing.
 Answer with a JSON array and nothing else, one object per milestone, in
 delivery order:
 ```json
-[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "aggregates": ["Account"], "writes": false}]
+[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "aggregates": ["Account"], "writes": false, "rules": ["R3"]}]
 ```
 An empty array `[]` means this roadmap item needs no further milestone right
 now."#;
