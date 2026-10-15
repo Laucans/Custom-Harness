@@ -55,6 +55,10 @@ pub struct Cli {
     #[arg(long, env = "CREATION_MODEL", default_value = "claude-opus-5-5")]
     pub creation_model: String,
 
+    /// How many sessions draw or cut the proof of concept's pages at once.
+    #[arg(long, env = "CREATION_SESSIONS", default_value_t = 4)]
+    pub creation_sessions: usize,
+
     /// Never call `gh`: the sign and the store stay empty.
     #[arg(long)]
     pub no_board: bool,

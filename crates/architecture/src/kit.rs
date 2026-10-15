@@ -847,20 +847,7 @@ pub const BASE: [Base; 16] = [
 ];
 
 /// The bases ticked by default: the ones every application starts with.
-pub const DEFAULT_CHECKED: [&str; 12] = [
-    "button",
-    "input",
-    "select",
-    "checkbox",
-    "radio",
-    "toggle",
-    "menu",
-    "tabs",
-    "card",
-    "table",
-    "badge",
-    "breadcrumb",
-];
+pub const DEFAULT_CHECKED: [&str; 5] = ["button", "input", "card", "table", "menu"];
 
 /// The base with this id.
 #[must_use]
@@ -1526,9 +1513,10 @@ mod tests {
         assert!(uses(page, "Carousel") && uses(page, "Menu") && !uses(page, "Card"));
         assert_eq!(used_in(page), ["Carousel", "Menu"]);
         assert!(preview_page("Carousel").contains("data-kit=\"Carousel\""));
-        // The showcase is made of bases only, each a default the human starts with.
+        // The showcase is made of bases only, each a default the human
+        // starts with, and shows every one of them.
         let uses = showcase_uses();
-        assert!(uses.len() >= 8);
+        assert_eq!(uses.len(), DEFAULT_CHECKED.len(), "{uses:?}");
         for name in &uses {
             let base = BASE.iter().find(|b| b.name == name).expect("a base");
             assert!(

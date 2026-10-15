@@ -20,11 +20,10 @@ body { margin: 0; background: var(--color-surface-2, #f3f4f6); color: var(--colo
 .sc-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--space-4, 24px); align-items: start; }
 .sc-form { background: var(--color-surface, #ffffff); border: var(--border-width, 1px) solid var(--color-border, #d1d5db); border-radius: var(--radius-large, 16px); padding: var(--space-4, 24px); display: flex; flex-direction: column; gap: var(--space-3, 16px); }
 .sc-form h2, .sc-more h2 { font-family: var(--font-family-heading, system-ui, sans-serif); font-size: var(--font-size-large, 20px); margin: 0; }
-.sc-choices { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3, 16px); }
 .sc-more { display: flex; flex-direction: column; gap: var(--space-3, 16px); }
 .sc-art { width: 100%; height: 100%; display: block; align-self: stretch; justify-self: stretch; overflow: hidden; }
 .kit-missing { margin: 0; padding: var(--space-2, 8px) var(--space-3, 16px); border: var(--border-width, 1px) dashed var(--color-border, #d1d5db); border-radius: var(--radius-medium, 8px); color: var(--color-text-muted, #6b7280); font-size: var(--font-size-small, 12px); }
-@media (max-width: 760px) { .sc-grid, .sc-choices { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .sc-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -38,12 +37,6 @@ body { margin: 0; background: var(--color-surface-2, #f3f4f6); color: var(--colo
     <form class="sc-form" onsubmit="return false">
       <h2>Write to us</h2>
       <div data-kit="Input"></div>
-      <div data-kit="Select"></div>
-      <div class="sc-choices">
-        <div data-kit="Radio"></div>
-        <div data-kit="Checkbox"></div>
-      </div>
-      <div data-kit="Toggle"></div>
       <div data-kit="Button"></div>
     </form>
     <div data-kit="Card"></div>

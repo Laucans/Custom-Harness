@@ -220,11 +220,15 @@
     if (C.route === 'scope' && !running('prepare') && (!r.scope.trim() || (C.data.scopeStale && !r.scope_edited))) once(`scope-${r.regenerations}-${r.scope_from}`, () => act('the AI proposes the scope', () => post('scope')));
     if (C.route === 'mockups' && !r.mocked && !running() && !(job() && job().work === 'mockups')) once(`mock-${r.regenerations}`, () => act('starting the drawing', () => start('mockups')));
     const kit = C.data.kit;
+    // The reference page draws during the scope's review, once the design system is ready.
+    if ((C.route === 'scope' || C.route === 'design') && r.grilled && r.scope.trim() && !r.reference && !r.mocked && kit && kit.validated && !kit.waiting && !running()) once(`ref-${r.regenerations}`, () => act('drawing the reference page', () => start('reference')));
+    // The micro-frontends are cut in the background as soon as the drafts are there, again for a page retouched since.
+    const cutKey = `mf-${r.regenerations}-${(r.cut || []).map((c) => c.hash).join(',')}-${C.data.cutStale}`;
+    if ((C.route === 'mockups' || C.route === 'review') && r.mocked && (!r.componentized || C.data.cutStale) && !running()) once(cutKey, () => act('starting the micro-frontends', () => start('componentize')));
     if ((C.route === 'design' || C.route === 'brief') && kit && kit.validated && kit.waiting && !kit.running && !kit.noClaude) once(`kit-${r.regenerations}`, generateKit);
     if (C.route === 'review') {
       if (!C.mock) loadMock();
-      if (!r.componentized && !running()) once(`mf-${r.regenerations}`, () => act('starting the micro-frontends', () => start('componentize')));
-      else if (r.componentized && !r.requirements.length && !running()) once(`req-${r.regenerations}`, () => act('the AI reads the requirements', async () => { await post('requirements'); await loadMock(); }));
+      if (r.componentized && !C.data.cutStale && !r.requirements.length && !running()) once(`req-${r.regenerations}`, () => act('the AI reads the requirements', async () => { await post('requirements'); await loadMock(); }));
     }
   }
   // The mock-up as it stands: its pages and micro-frontends, for the review's requirements.
@@ -268,7 +272,7 @@
   function jobPanel() {
     const j = job();
     if (!j) return '';
-    const title = { found: 'Founding the factory', connect: 'Connecting the repository', prepare: 'Preparing the design system and a first scope', mockups: 'Drawing the mock-ups', componentize: 'Making the micro-frontends', initialize: 'Initializing the factory' }[j.work] || j.work;
+    const title = { found: 'Founding the factory', connect: 'Connecting the repository', prepare: 'Preparing the design system and a first scope', reference: 'Drawing the reference page', mockups: 'Drawing the mock-ups', componentize: 'Making the micro-frontends', initialize: 'Initializing the factory' }[j.work] || j.work;
     const state = j.state === 'running' ? '<span class="cr-spin" aria-hidden="true"></span> under way' : j.state === 'done' ? '<span class="tag ok">done</span>' : '<span class="tag bad">stopped</span>';
     // Every step but the last one of a still-running job is done — the
     // last is whatever is under way right now, so it stays plain.
@@ -619,7 +623,22 @@
     return `<p class="muted">The requirements the proof of concept must meet, read off the scope and the mock-up, each tied to the pages and the micro-frontends that carry it. Retouch them, add yours, tie them to the right parts; click through the mock-up below and pin what you still want changed — then decide.</p>
       ${making && j.state !== 'done' ? `<div data-cr-job>${jobPanel()}</div>` : ''}
       ${making && j.state === 'failed' ? '<div class="cr-actions"><span></span><button type="button" class="cr-btn" data-cr-mf>Make the micro-frontends again</button></div>' : ''}
+      ${draftsPanel(r)}
       ${r.componentized ? requirementsPanel(r) : '<p class="muted">The requirements come once the mock-up is made of micro-frontends: they are tied to them.</p>'}`;
+  }
+  // The data and the ports drafted off the scope, and where the micro-frontends disagree.
+  function draftsPanel(r) {
+    const d = r.drafts;
+    if (!d) return '';
+    const tables = ((d.model && d.model.tables) || []).map((t) => t.name).filter(Boolean);
+    const ports = (d.ports || []).map((p) => `<code title="${esc(p.purpose || '')}">${esc(p.id)}</code>`).join(' ');
+    const g = C.data.gaps || { unused: [], undrafted: [] };
+    const gap = (label, ids) => ids && ids.length ? `<div>${label}: ${ids.map((id) => `<code>${esc(id)}</code>`).join(' ')}</div>` : '';
+    return `<div class="callout"><b>Drafted from the scope</b>
+        ${tables.length ? `<div>Tables: ${tables.map(esc).join(', ')}</div>` : ''}
+        ${ports ? `<div>Ports: ${ports}</div>` : ''}
+        ${gap('Drafted, used by no micro-frontend', g.unused)}
+        ${gap('Used by a micro-frontend, drafted by no journey', g.undrafted)}</div>`;
   }
   function requirementsPanel(r) {
     const mock = C.mock || { pages: [], components: [] };

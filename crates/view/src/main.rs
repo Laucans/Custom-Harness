@@ -442,6 +442,7 @@ fn creation_for(
         data: hold.data,
         plant: hold.plant,
         pins: Some(hold.pins),
+        sessions: cli.creation_sessions,
     }))
 }
 

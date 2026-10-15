@@ -1438,6 +1438,7 @@ fn state_creating(roll: Arc<Roll>, forge: Arc<Forge>, says: &str) -> AppState {
         data: None,
         plant: None,
         pins: None,
+        sessions: 2,
     });
     AppState {
         factories: Some(roll),

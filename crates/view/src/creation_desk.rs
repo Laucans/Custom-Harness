@@ -20,12 +20,17 @@ use crate::data_desk::{DataDesk, Issue};
 use crate::domain::annotations::Kind as PinKind;
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, Step,
-    componentize_prompt, grill_prompt, mockups_prompt, not_componentized, parse_requirements,
-    parse_round, requirements_prompt, scope_prompt, unfenced,
+    grill_prompt, injected, not_componentized, parse_requirements, parse_round,
+    requirements_prompt, scope_prompt, unfenced,
 };
 use crate::domain::design::Entry;
 use crate::domain::divergence;
+use crate::domain::drawing::{
+    Cut, Planned, Reference, cut_prompt, index_html, parse_cut, planned, reference_prompt,
+    screen_prompt, screens, screens_changed, to_cut, with_cut, with_pages,
+};
 use crate::domain::note_session::{About, mockup_rules};
+use crate::domain::poc_model::{Drafts, Gaps, drafts_prompt, gaps, parse_drafts};
 use crate::kit_desk::{JobState, KitDesk};
 use crate::ports::{Foundry, Mockups, NoteStore, Oneshot, Plant};
 use harness_architecture::kit::{ComponentState, DesignState};
@@ -69,6 +74,8 @@ pub struct Setup {
     /// The pins left on the mock-up: those no backlog issue carries go in
     /// the roadmap task.
     pub pins: Option<Arc<dyn NoteStore>>,
+    /// How many sessions draw or cut pages at once.
+    pub sessions: usize,
 }
 
 /// The design system and its kit, counted.
@@ -101,9 +108,14 @@ pub enum Work {
     /// grilling: the design system's tokens (the kit follows), a first
     /// scope.
     Prepare,
-    /// The proof of concept drawn as mock-ups.
+    /// The first page, drawn while the scope is reviewed: the look every
+    /// other page follows.
+    Reference,
+    /// The proof of concept drawn as mock-ups: every other page at once,
+    /// and the data and the ports drafted beside them.
     Mockups,
-    /// The accepted mock-up made again of micro-frontends.
+    /// The mock-up made again of micro-frontends, page by page: those not
+    /// cut yet, or moved since.
     Componentize,
     /// The factory initialized.
     Initialize,
@@ -625,24 +637,192 @@ impl CreationDesk {
         Ok(())
     }
 
+    /// The kit's components, one line each, as the drawing prompts list them.
+    async fn kit_lines(&self) -> String {
+        match &self.setup.kit {
+            Some(kit) => kit.index().await.map(|i| i.lines()).unwrap_or_default(),
+            None => String::new(),
+        }
+    }
+
+    fn rules(&self) -> String {
+        mockup_rules(&About {
+            branch: self.setup.integration_branch.clone(),
+            ..About::default()
+        })
+    }
+
+    /// Draws the reference page while the human reviews the scope: the
+    /// first screen of the proposed scope, on the design system — the look
+    /// every other page then follows.
+    ///
+    /// # Errors
+    ///
+    /// The grilling is not over, no scope yet, the design system not ready,
+    /// a reference drawn already, nothing can draw, or another job under way.
+    pub async fn draw_reference(&self) -> Result<(), String> {
+        let record = self.existing()?;
+        record.may_draw_reference(self.facts().await)?;
+        let oneshot = self.setup.oneshot.clone().ok_or(NO_CLAUDE)?;
+        let mockups = self.setup.mockups.clone().ok_or(NO_PRODUCT)?;
+        self.begin(Work::Reference)?;
+        let desk = self.clone();
+        self.spawn(async move { desk.referenced(record, oneshot, mockups).await });
+        Ok(())
+    }
+
+    async fn referenced(
+        &self,
+        record: Creation,
+        oneshot: Arc<dyn Oneshot>,
+        mockups: Arc<dyn Mockups>,
+    ) -> Result<(), String> {
+        let now = screens(&record.scope);
+        let all = planned(&now);
+        let first = all
+            .first()
+            .cloned()
+            .ok_or("the scope lists no screen under `## Screens`: nothing to draw")?;
+        let branch = self.setup.integration_branch.clone();
+        let prompt = reference_prompt(
+            &record,
+            &self.rules(),
+            &self.kit_lines().await,
+            &first,
+            &all,
+            false,
+        );
+        self.step("opening the integration branch's mock-up");
+        let fresh = mockups.clone();
+        let at = branch.clone();
+        tokio::task::spawn_blocking(move || {
+            // A drawing starts from the branch as committed.
+            let _ = fresh.discard(&at);
+            fresh.workspace(&at)
+        })
+        .await
+        .map_err(|e| format!("the step did not finish: {e}"))??;
+        self.step(&format!(
+            "a Claude Code session draws the reference page, \"{}\"",
+            first.screen.name
+        ));
+        let said = self
+            .draw_pages(oneshot, mockups.clone(), vec![(first.clone(), prompt)])
+            .await?;
+        list_pages(
+            mockups,
+            &branch,
+            &record.name,
+            std::slice::from_ref(&first),
+            &[],
+        )
+        .await?;
+        self.step(&format!("the reference page is drawn: {said}"));
+        let _held = self.record.lock().await;
+        let mut kept = self.existing()?;
+        kept.reference = Some(Reference {
+            screen: first.screen.name.clone(),
+            path: first.path.clone(),
+            screens: now,
+        });
+        self.keep(&kept)
+    }
+
+    /// Runs one drawing session per page, `sessions` at a time, reporting
+    /// each page as its file lands; answers what the sessions said, one
+    /// line a page.
+    async fn draw_pages(
+        &self,
+        oneshot: Arc<dyn Oneshot>,
+        mockups: Arc<dyn Mockups>,
+        pages: Vec<(Planned, String)>,
+    ) -> Result<String, String> {
+        let branch = self.setup.integration_branch.clone();
+        let model = self.setup.model.clone();
+        let watched: Vec<(String, String)> = pages
+            .iter()
+            .map(|(p, _)| (p.path.clone(), p.screen.name.clone()))
+            .collect();
+        let poll = tokio::spawn(poll_pages(
+            self.clone(),
+            mockups.clone(),
+            branch.clone(),
+            watched,
+        ));
+        let dir_of = mockups.clone();
+        let at = branch.clone();
+        let dir = tokio::task::spawn_blocking(move || dir_of.workspace(&at))
+            .await
+            .map_err(|e| format!("the step did not finish: {e}"))??;
+        let jobs: Vec<_> = pages
+            .into_iter()
+            .map(|(page, prompt)| {
+                let (oneshot, model, dir) = (Arc::clone(&oneshot), model.clone(), dir.clone());
+                let (mockups, branch) = (Arc::clone(&mockups), branch.clone());
+                move || {
+                    let said = oneshot
+                        .work_in(&model, &prompt, &dir)
+                        .map_err(|why| format!("{}: {why}", page.screen.name))?;
+                    let drawn = mockups
+                        .file(&branch, &page.path)
+                        .map_err(|why| format!("{}: {why}", page.screen.name))?
+                        .is_some_and(|bytes| !bytes.is_empty());
+                    if !drawn {
+                        return Err(format!(
+                            "{}: the session wrote no `mock/{}`",
+                            page.screen.name, page.path
+                        ));
+                    }
+                    Ok(format!("{}: {}", page.screen.name, said.trim()))
+                }
+            })
+            .collect();
+        let outcomes = in_parallel(self.setup.sessions, jobs).await;
+        poll.abort();
+        let (said, failed): (Vec<_>, Vec<_>) = outcomes.into_iter().partition(Result::is_ok);
+        let failed: Vec<String> = failed.into_iter().filter_map(Result::err).collect();
+        if !failed.is_empty() {
+            return Err(format!("a page was not drawn — {}", failed.join("; ")));
+        }
+        Ok(said
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
     /// Draws the proof of concept as the product's mock-up, on the
-    /// integration branch's workspace: one session at work, then the review.
+    /// integration branch's workspace: every page at once, on the
+    /// reference's model, then the review.
     ///
     /// # Errors
     ///
     /// The step's gate is closed, nothing can draw, or another job is under
     /// way.
     pub async fn draw_mockups(&self) -> Result<(), String> {
-        let record = self.existing()?;
+        let mut record = self.existing()?;
         record.may_enter(Step::Mockups, self.facts().await)?;
         let oneshot = self.setup.oneshot.clone().ok_or(NO_CLAUDE)?;
         let mockups = self.setup.mockups.clone().ok_or(NO_PRODUCT)?;
         self.begin(Work::Mockups)?;
+        if record.mocked.is_some() {
+            // Drawn again: everything goes, the reference too.
+            let _held = self.record.lock().await;
+            let mut kept = self.existing()?;
+            kept.reference = None;
+            kept.mocked = None;
+            kept.componentized = None;
+            kept.cut.clear();
+            self.keep(&kept)?;
+            record = kept;
+        }
         let desk = self.clone();
         self.spawn(async move { desk.drawn(record, oneshot, mockups).await });
         Ok(())
     }
 
+    // One job, read top to bottom: the reference, the other pages, the drafts.
+    #[allow(clippy::too_many_lines)]
     async fn drawn(
         &self,
         record: Creation,
@@ -650,43 +830,168 @@ impl CreationDesk {
         mockups: Arc<dyn Mockups>,
     ) -> Result<(), String> {
         let branch = self.setup.integration_branch.clone();
-        let kit = match &self.setup.kit {
-            Some(kit) => kit.index().await.map(|i| i.lines()).unwrap_or_default(),
-            None => String::new(),
+        let now = screens(&record.scope);
+        let mut all = planned(&now);
+        if all.is_empty() {
+            return Err(
+                "the scope lists no screen under `## Screens`: nothing to draw".to_string(),
+            );
+        }
+        let (rules, kit) = (self.rules(), self.kit_lines().await);
+        let there = match &record.reference {
+            Some(r) => {
+                let (m, at, path) = (mockups.clone(), branch.clone(), r.path.clone());
+                tokio::task::spawn_blocking(move || m.file(&at, &path))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten()
+                    .is_some_and(|bytes| !bytes.is_empty())
+            }
+            None => false,
         };
-        let rules = mockup_rules(&About {
-            branch: branch.clone(),
-            ..About::default()
-        });
-        let prompt = mockups_prompt(&record, &rules, &kit);
-        let model = self.setup.model.clone();
-        self.step("opening the integration branch's mock-up");
-        let poll_mockups = mockups.clone();
-        let poll_branch = branch.clone();
-        let dir = tokio::task::spawn_blocking(move || {
-            // A drawing starts from the branch as committed: one sent back
-            // leaves nothing of the last behind.
-            let _ = mockups.discard(&branch);
-            mockups.workspace(&branch)
-        })
-        .await
-        .map_err(|e| format!("the step did not finish: {e}"))??;
-        self.step("a Claude Code session draws the proof of concept's pages");
-        // The workspace was just discarded above: nothing of a page is
-        // there yet, so the poller starts from an empty `seen`.
-        let poll = tokio::spawn(poll_mockup_pages(self.clone(), poll_mockups, poll_branch));
-        let said = tokio::task::spawn_blocking(move || oneshot.work_in(&model, &prompt, &dir))
-            .await
-            .map_err(|e| format!("the session did not finish: {e}"));
-        poll.abort();
-        let said = said??;
+        let mut drop: Vec<String> = Vec::new();
+        let mut reference: Option<Reference> = record.reference.clone().filter(|_| there);
+        // What the reference's own session said, when it drew this time.
+        let mut first_said = String::new();
+        let model = match &reference {
+            None => {
+                self.step("opening the integration branch's mock-up");
+                let (m, at) = (mockups.clone(), branch.clone());
+                tokio::task::spawn_blocking(move || {
+                    let _ = m.discard(&at);
+                    m.workspace(&at)
+                })
+                .await
+                .map_err(|e| format!("the step did not finish: {e}"))??;
+                let first = all[0].clone();
+                self.step(&format!(
+                    "a Claude Code session draws the reference page, \"{}\"",
+                    first.screen.name
+                ));
+                let prompt = reference_prompt(&record, &rules, &kit, &first, &all, false);
+                first_said = self
+                    .draw_pages(
+                        oneshot.clone(),
+                        mockups.clone(),
+                        vec![(first.clone(), prompt)],
+                    )
+                    .await?;
+                reference = Some(Reference {
+                    screen: first.screen.name.clone(),
+                    path: first.path.clone(),
+                    screens: now.clone(),
+                });
+                first.path
+            }
+            Some(r) => {
+                let changes = screens_changed(&r.screens, &now);
+                let same = |name: &str| name.to_lowercase() == r.screen.to_lowercase();
+                if let Some(i) = all.iter().position(|p| same(&p.screen.name)) {
+                    // Its page stays where it was drawn.
+                    if !all.iter().any(|p| p.path == r.path) {
+                        all[i].path.clone_from(&r.path);
+                    }
+                    let page = all[i].clone();
+                    if changes.changed.iter().any(|n| same(n)) {
+                        self.step(&format!(
+                                "the scope changed \"{}\": the reference page is drawn again, on its own look",
+                                page.screen.name
+                            ));
+                        let prompt = reference_prompt(&record, &rules, &kit, &page, &all, true);
+                        first_said = self
+                            .draw_pages(
+                                oneshot.clone(),
+                                mockups.clone(),
+                                vec![(page.clone(), prompt)],
+                            )
+                            .await?;
+                    } else {
+                        self.step(&format!(
+                            "the reference page \"{}\" is kept: the scope did not change it",
+                            page.screen.name
+                        ));
+                    }
+                    page.path
+                } else {
+                    self.step(&format!(
+                        "the scope dropped \"{}\": its page lends its look, then goes",
+                        r.screen
+                    ));
+                    drop.push(r.path.clone());
+                    r.path.clone()
+                }
+            }
+        };
+        let others: Vec<(Planned, String)> = all
+            .iter()
+            .filter(|p| p.path != model)
+            .map(|p| {
+                (
+                    p.clone(),
+                    screen_prompt(&record, &rules, &kit, p, &model, &all),
+                )
+            })
+            .collect();
+        self.step(&format!(
+            "{} Claude Code session(s) draw the other pages, {} at a time, while the data and the ports are drafted",
+            others.len(),
+            self.setup.sessions.max(1)
+        ));
+        let drafting = {
+            let (oneshot, model, prompt) = (
+                Arc::clone(&oneshot),
+                self.setup.model.clone(),
+                drafts_prompt(&record),
+            );
+            tokio::task::spawn_blocking(move || oneshot.ask(&model, &prompt))
+        };
+        let drawn = self.draw_pages(oneshot, mockups.clone(), others).await;
+        let drafts = match drafting.await {
+            Ok(Ok(answer)) => match parse_drafts(&answer) {
+                Ok(drafts) => {
+                    self.step(&format!(
+                        "drafted {} table(s) and {} port(s) from the scope",
+                        drafts.tables().len(),
+                        drafts.ports.len()
+                    ));
+                    Some(drafts)
+                }
+                Err(why) => {
+                    self.step(&format!("the drafts are left out: {why}"));
+                    None
+                }
+            },
+            Ok(Err(why)) => {
+                self.step(&format!("the drafts are left out: {why}"));
+                None
+            }
+            Err(e) => {
+                self.step(&format!("the drafts are left out: {e}"));
+                None
+            }
+        };
+        let said = [first_said, drawn?]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for path in &drop {
+            let (m, at, path) = (mockups.clone(), branch.clone(), path.clone());
+            tokio::task::spawn_blocking(move || m.remove(&at, &path))
+                .await
+                .map_err(|e| format!("the step did not finish: {e}"))??;
+        }
+        list_pages(mockups, &branch, &record.name, &all, &drop).await?;
         self.step("the mock-up is drawn");
         let facts = self.facts().await;
         let _held = self.record.lock().await;
-        let mut record = self.existing()?;
-        record.mocked = Some(said);
-        record.go(Step::Review, facts)?;
-        self.keep(&record)
+        let mut kept = self.existing()?;
+        kept.reference = reference;
+        kept.drafts = drafts.or(kept.drafts);
+        kept.mocked = Some(said);
+        kept.go(Step::Review, facts)?;
+        self.keep(&kept)
     }
 
     /// The proof of concept accepted: the factory is initialized — the
@@ -712,8 +1017,8 @@ impl CreationDesk {
     }
 
     /// The mock-up made again of micro-frontends, as its own job — before
-    /// the review, so the requirements can be tied to them. Done already:
-    /// nothing runs.
+    /// the review, so the requirements can be tied to them: the pages not
+    /// cut yet, or whose file moved since. None of them: nothing runs.
     ///
     /// # Errors
     ///
@@ -721,7 +1026,7 @@ impl CreationDesk {
     pub async fn componentize_now(&self) -> Result<(), String> {
         let record = self.existing()?;
         record.may_enter(Step::Review, self.facts().await)?;
-        if record.componentized.is_some() {
+        if record.componentized.is_some() && !self.cut_stale(&record).await {
             return Ok(());
         }
         let oneshot = self.setup.oneshot.clone().ok_or(NO_CLAUDE)?;
@@ -730,6 +1035,33 @@ impl CreationDesk {
         let desk = self.clone();
         self.spawn(async move { desk.componentize(&record, oneshot, mockups).await });
         Ok(())
+    }
+
+    /// The pages of the mock-up and their fingerprints, as they stand.
+    async fn page_hashes(&self) -> Vec<(String, String)> {
+        let Some(mockups) = self.setup.mockups.clone() else {
+            return Vec::new();
+        };
+        let branch = self.setup.integration_branch.clone();
+        tokio::task::spawn_blocking(move || mockups.state(&branch))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .map(|state| state.pages.into_iter().map(|p| (p.path, p.hash)).collect())
+            .unwrap_or_default()
+    }
+
+    /// A page moved since it was cut, or was never cut.
+    pub async fn cut_stale(&self, record: &Creation) -> bool {
+        record.componentized.is_some() && !to_cut(&self.page_hashes().await, &record.cut).is_empty()
+    }
+
+    /// Where the drafted ports and the micro-frontends disagree; `None`
+    /// before anything is drafted.
+    pub async fn gaps(&self, record: &Creation) -> Option<Gaps> {
+        let drafts: &Drafts = record.drafts.as_ref()?;
+        let ctx = self.context(record).await;
+        Some(gaps(&drafts.ports, &ctx.components))
     }
 
     /// The boards of `branch`'s mock-up, as the easel names them.
@@ -988,9 +1320,13 @@ impl CreationDesk {
         self.keep(&kept)
     }
 
-    /// Makes the accepted mock-up again of micro-frontends, in the
-    /// integration branch's workspace, then checks every page is made of
-    /// listed ones: what the micro-frontends' view and the code stage read.
+    /// Makes the mock-up again of micro-frontends, page by page, in the
+    /// integration branch's workspace: the pages not cut yet or moved since
+    /// — the first page alone when nothing is cut yet, so the parts every
+    /// page shares are made once — then checks every page is made of listed
+    /// ones: what the micro-frontends' view and the code stage read.
+    // One job, read top to bottom: the batches, the merge, the gate.
+    #[allow(clippy::too_many_lines)]
     async fn componentize(
         &self,
         record: &Creation,
@@ -998,43 +1334,110 @@ impl CreationDesk {
         mockups: Arc<dyn Mockups>,
     ) -> Result<(), String> {
         let branch = self.setup.integration_branch.clone();
-        let kit = match &self.setup.kit {
-            Some(kit) => kit.index().await.map(|i| i.lines()).unwrap_or_default(),
-            None => String::new(),
-        };
-        let rules = mockup_rules(&About {
-            branch: branch.clone(),
-            ..About::default()
-        });
-        let prompt = componentize_prompt(record, &rules, &kit);
-        let model = self.setup.model.clone();
-        self.step("a Claude Code session makes the mock-up again of micro-frontends");
+        let (rules, kit) = (self.rules(), self.kit_lines().await);
+        let (m, at) = (mockups.clone(), branch.clone());
+        let state = tokio::task::spawn_blocking(move || m.state(&at))
+            .await
+            .map_err(|e| format!("the step did not finish: {e}"))??;
+        let hashes: Vec<(String, String)> = state
+            .pages
+            .iter()
+            .map(|p| (p.path.clone(), p.hash.clone()))
+            .collect();
+        let todo = to_cut(&hashes, &record.cut);
         // Seeded with whatever is already there: a retry's own earlier
-        // components are never reported as newly made.
-        let seed_mockups = mockups.clone();
-        let seed_branch = branch.clone();
-        let seen: HashSet<String> = tokio::task::spawn_blocking(move || {
-            seed_mockups
-                .state(&seed_branch)
-                .map(|state| state.components.into_iter().map(|c| c.name).collect())
-        })
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
-        let poll = tokio::spawn(poll_componentize(
-            self.clone(),
-            mockups.clone(),
-            branch.clone(),
-            seen,
-        ));
-        let said = tokio::task::spawn_blocking(move || {
-            let dir = mockups.workspace(&branch)?;
-            let said = oneshot.work_in(&model, &prompt, &dir)?;
-            let state = mockups.state(&branch)?;
+        // micro-frontends are never reported as newly made.
+        let mut seen: HashSet<String> = state.components.iter().map(|c| c.name.clone()).collect();
+        let mut batches: Vec<Vec<String>> = Vec::new();
+        match todo.split_first() {
+            Some((first, rest)) if state.components.is_empty() && !rest.is_empty() => {
+                batches.push(vec![first.clone()]);
+                batches.push(rest.to_vec());
+            }
+            _ => batches.push(todo.clone()),
+        }
+        let mut said: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for batch in batches.into_iter().filter(|b| !b.is_empty()) {
+            self.step(&format!(
+                "{} Claude Code session(s) make {} again of micro-frontends",
+                batch.len(),
+                batch.join(", ")
+            ));
+            let (m, at) = (mockups.clone(), branch.clone());
+            let existing = tokio::task::spawn_blocking(move || m.state(&at))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .map(|state| {
+                    state
+                        .components
+                        .iter()
+                        .map(|c| format!("- {} ({}) — {}", c.name, c.system, c.description))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            let (m, at) = (mockups.clone(), branch.clone());
+            let dir = tokio::task::spawn_blocking(move || m.workspace(&at))
+                .await
+                .map_err(|e| format!("the step did not finish: {e}"))??;
+            let jobs: Vec<_> = batch
+                .iter()
+                .map(|page| {
+                    let prompt = cut_prompt(record, &rules, &kit, page, &existing);
+                    let (oneshot, model, dir, page) = (
+                        Arc::clone(&oneshot),
+                        self.setup.model.clone(),
+                        dir.clone(),
+                        page.clone(),
+                    );
+                    move || {
+                        oneshot
+                            .work_in(&model, &prompt, &dir)
+                            .map(|said| (page.clone(), said))
+                            .map_err(|why| format!("{page}: {why}"))
+                    }
+                })
+                .collect();
+            for outcome in in_parallel(self.setup.sessions, jobs).await {
+                match outcome {
+                    Ok((page, answer)) => {
+                        let (m, at, p) = (mockups.clone(), branch.clone(), page.clone());
+                        let listed = tokio::task::spawn_blocking(move || {
+                            let html = m.file(&at, &p)?.unwrap_or_default();
+                            let names = injected(&String::from_utf8_lossy(&html));
+                            let pages = m
+                                .file(&at, "pages.json")?
+                                .map(|b| String::from_utf8_lossy(&b).into_owned());
+                            let text = with_cut(pages.as_deref(), &p, &names, &parse_cut(&answer))?;
+                            m.write(&at, "pages.json", text.as_bytes())?;
+                            Ok::<_, String>(names.len())
+                        })
+                        .await
+                        .map_err(|e| format!("the step did not finish: {e}"))?;
+                        match listed {
+                            Ok(n) => said.push(format!("{page}: {n} micro-frontend(s)")),
+                            Err(why) => failed.push(format!("{page}: {why}")),
+                        }
+                        self.report_made(&mockups, &mut seen).await;
+                    }
+                    Err(why) => failed.push(why),
+                }
+            }
+        }
+        if !failed.is_empty() {
+            return Err(format!(
+                "a page was not made of micro-frontends — {}",
+                failed.join("; ")
+            ));
+        }
+        let (m, at) = (mockups.clone(), branch.clone());
+        let (problems, cut) = tokio::task::spawn_blocking(move || {
+            let state = m.state(&at)?;
             let mut pages = Vec::new();
             for page in &state.pages {
-                let html = mockups.file(&branch, &page.path)?.unwrap_or_default();
+                let html = m.file(&at, &page.path)?.unwrap_or_default();
                 pages.push((
                     page.path.clone(),
                     String::from_utf8_lossy(&html).into_owned(),
@@ -1043,15 +1446,21 @@ impl CreationDesk {
             let mut components = Vec::new();
             for c in &state.components {
                 // An empty path is no file: the port reads nothing there.
-                let there = mockups.file(&branch, &c.fragment)?.is_some();
+                let there = m.file(&at, &c.fragment)?.is_some();
                 components.push((c.name.clone(), there));
             }
-            Ok::<_, String>((said, not_componentized(&pages, &components)))
+            let cut: Vec<Cut> = state
+                .pages
+                .into_iter()
+                .map(|p| Cut {
+                    path: p.path,
+                    hash: p.hash,
+                })
+                .collect();
+            Ok::<_, String>((not_componentized(&pages, &components), cut))
         })
         .await
-        .map_err(|e| format!("the session did not finish: {e}"));
-        poll.abort();
-        let (said, problems) = said??;
+        .map_err(|e| format!("the step did not finish: {e}"))??;
         if !problems.is_empty() {
             return Err(format!(
                 "the mock-up is not made of micro-frontends yet: {}",
@@ -1061,8 +1470,45 @@ impl CreationDesk {
         self.step("every page is made of micro-frontends");
         let _held = self.record.lock().await;
         let mut kept = self.existing()?;
-        kept.componentized = Some(said);
+        let summary = if said.is_empty() {
+            "every page was cut already".to_string()
+        } else {
+            said.join("\n")
+        };
+        kept.componentized = Some(match kept.componentized.take() {
+            Some(before) if said.is_empty() => before,
+            _ => summary,
+        });
+        kept.cut = cut;
         self.keep(&kept)
+    }
+
+    /// Reports each micro-frontend listed with its fragment that `seen` has
+    /// not reported yet.
+    async fn report_made(&self, mockups: &Arc<dyn Mockups>, seen: &mut HashSet<String>) {
+        let (m, at) = (Arc::clone(mockups), self.setup.integration_branch.clone());
+        let Ok(Ok((total, built))) = tokio::task::spawn_blocking(move || {
+            let state = m.state(&at)?;
+            let mut built = Vec::new();
+            for c in &state.components {
+                built.push((c.name.clone(), m.file(&at, &c.fragment)?.is_some()));
+            }
+            Ok::<_, String>((state.components.len(), built))
+        })
+        .await
+        else {
+            return;
+        };
+        for (name, there) in built {
+            if !there || seen.contains(&name) {
+                continue;
+            }
+            seen.insert(name.clone());
+            self.step(&format!(
+                "made the \"{name}\" micro-frontend real ({} of {total})",
+                seen.len()
+            ));
+        }
     }
 
     /// Stops what is under way.
@@ -1078,72 +1524,112 @@ impl CreationDesk {
 /// polled for a page or a component that just landed.
 const DRAW_POLL: Duration = Duration::from_secs(2);
 
-/// Reports each page of `branch`'s mock-up as it gets a real fragment,
-/// starting from nothing: `drawn()` always calls this on a freshly
-/// discarded workspace, so no page is there yet to seed `seen` with. Runs
-/// until aborted — `drawn()` stops it once `work_in` returns, success or
-/// not; a read that fails is skipped, never reported as a reason the job
-/// failed, since the real outcome is `work_in`'s alone.
-async fn poll_mockup_pages(desk: CreationDesk, mockups: Arc<dyn Mockups>, branch: String) {
+/// Reports each page of `pages` (path, title) as its file lands in
+/// `branch`'s workspace. Runs until aborted — the drawing stops it once its
+/// sessions returned; a read that fails is skipped, never a reason the job
+/// failed, since the real outcome is the sessions' own.
+async fn poll_pages(
+    desk: CreationDesk,
+    mockups: Arc<dyn Mockups>,
+    branch: String,
+    pages: Vec<(String, String)>,
+) {
     let mut seen: HashSet<String> = HashSet::new();
+    let total = pages.len();
     loop {
         tokio::time::sleep(DRAW_POLL).await;
-        let (mockups, at) = (mockups.clone(), branch.clone());
-        let Ok(Ok(state)) = tokio::task::spawn_blocking(move || mockups.state(&at)).await else {
-            continue;
-        };
-        let total = state.pages.len();
-        for page in &state.pages {
-            if page.hash.is_empty() || seen.contains(&page.path) {
+        for (path, title) in &pages {
+            if seen.contains(path) {
                 continue;
             }
-            seen.insert(page.path.clone());
+            let (m, at, p) = (mockups.clone(), branch.clone(), path.clone());
+            let Ok(Ok(Some(bytes))) = tokio::task::spawn_blocking(move || m.file(&at, &p)).await
+            else {
+                continue;
+            };
+            if bytes.is_empty() {
+                continue;
+            }
+            seen.insert(path.clone());
             desk.step(&format!(
-                "drew the mock-up's \"{}\" page ({} of {total})",
-                page.title,
+                "drew the mock-up's \"{title}\" page ({} of {total})",
                 seen.len()
             ));
         }
     }
 }
 
-/// Reports each micro-frontend of `branch`'s mock-up as it gets a real
-/// fragment, `seen` seeded with whatever `componentize()` found already
-/// there before it started — a retry's own earlier components are not
-/// reported as newly made. Runs until aborted, the same as above.
-async fn poll_componentize(
-    desk: CreationDesk,
-    mockups: Arc<dyn Mockups>,
-    branch: String,
-    mut seen: HashSet<String>,
-) {
-    loop {
-        tokio::time::sleep(DRAW_POLL).await;
-        let (mockups, at) = (mockups.clone(), branch.clone());
-        let Ok(Ok(state)) = tokio::task::spawn_blocking(move || {
-            let state = mockups.state(&at)?;
-            let mut built = Vec::new();
-            for c in &state.components {
-                built.push((c.name.clone(), mockups.file(&at, &c.fragment)?.is_some()));
+/// Runs `jobs` on blocking threads, at most `limit` at a time, and answers
+/// their outcomes in the order given.
+async fn in_parallel<T, F>(limit: usize, jobs: Vec<F>) -> Vec<Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let gate = Arc::new(tokio::sync::Semaphore::new(limit.max(1)));
+    let mut set = tokio::task::JoinSet::new();
+    let count = jobs.len();
+    for (i, job) in jobs.into_iter().enumerate() {
+        let permit = Arc::clone(&gate).acquire_owned().await;
+        set.spawn_blocking(move || {
+            let outcome = job();
+            drop(permit);
+            (i, outcome)
+        });
+    }
+    let mut outcomes: Vec<Option<Result<T, String>>> = (0..count).map(|_| None).collect();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((i, outcome)) => {
+                if let Some(slot) = outcomes.get_mut(i) {
+                    *slot = Some(outcome);
+                }
             }
-            Ok::<_, String>((state.components.len(), built))
-        })
-        .await
-        else {
-            continue;
-        };
-        let (total, built) = state;
-        for (name, there) in built {
-            if !there || seen.contains(&name) {
-                continue;
+            Err(e) => {
+                if let Some(slot) = outcomes.iter_mut().find(|o| o.is_none()) {
+                    *slot = Some(Err(format!("a session did not finish: {e}")));
+                }
             }
-            seen.insert(name.clone());
-            desk.step(&format!(
-                "made the \"{name}\" micro-frontend real ({} of {total})",
-                seen.len()
-            ));
         }
     }
+    outcomes
+        .into_iter()
+        .map(|o| o.unwrap_or_else(|| Err("a session did not finish".to_string())))
+        .collect()
+}
+
+/// The pages listed in `branch`'s `mock/pages.json` — those of `drop` gone
+/// — and its `mock/index.html` written, by the desk: the sessions drawing
+/// in parallel never write either.
+async fn list_pages(
+    mockups: Arc<dyn Mockups>,
+    branch: &str,
+    name: &str,
+    pages: &[Planned],
+    drop: &[String],
+) -> Result<(), String> {
+    let (branch, name, pages, drop) = (
+        branch.to_string(),
+        name.to_string(),
+        pages.to_vec(),
+        drop.to_vec(),
+    );
+    tokio::task::spawn_blocking(move || {
+        let current = mockups
+            .file(&branch, "pages.json")?
+            .map(|b| String::from_utf8_lossy(&b).into_owned());
+        let listed = with_pages(current.as_deref(), &pages, &drop)?;
+        mockups.write(&branch, "pages.json", listed.as_bytes())?;
+        let state = mockups.state(&branch)?;
+        let all: Vec<Planned> = state
+            .pages
+            .iter()
+            .filter_map(|p| pages.iter().find(|q| q.path == p.path).cloned())
+            .collect();
+        mockups.write(&branch, "index.html", index_html(&name, &all).as_bytes())
+    })
+    .await
+    .map_err(|e| format!("the step did not finish: {e}"))?
 }
 
 #[cfg(test)]
@@ -1213,11 +1699,38 @@ mod tests {
         }
     }
 
-    /// A session that draws one page where it is put to work, then makes
-    /// it again of one micro-frontend — or, `lazy`, lists it and never
-    /// writes its fragment.
+    /// The page a drawing prompt asks for, relative to the folder.
+    fn asked_page(prompt: &str) -> Option<String> {
+        let rest = prompt.split("Write `mock/").nth(1)?;
+        Some(format!("mock/{}", rest.split('`').next()?))
+    }
+
+    /// The page a cutting prompt asks for, relative to the folder.
+    fn cut_page(prompt: &str) -> Option<String> {
+        let rest = prompt.split("Make the page `mock/").nth(1)?;
+        Some(format!("mock/{}", rest.split('`').next()?))
+    }
+
+    /// A session that draws the page it is asked for, then cuts it into
+    /// one micro-frontend — or, `lazy`, injects it and never writes its
+    /// fragment. Every prompt it is put to work with is kept.
+    #[derive(Default)]
     struct Drawer {
         lazy: bool,
+        prompts: Mutex<Vec<String>>,
+    }
+
+    impl Drawer {
+        fn new(lazy: bool) -> Self {
+            Self {
+                lazy,
+                ..Self::default()
+            }
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            lock(&self.prompts).clone()
+        }
     }
 
     impl Oneshot for Drawer {
@@ -1225,10 +1738,14 @@ mod tests {
             if prompt.contains("read the requirements") {
                 return Ok(r#"{"requirements":[{"title":"See the ledger","body":"the lines","pages":["pages/home.html"],"components":["Home","Ghost"]}]}"#.to_string());
             }
+            if prompt.contains("You draft the foundations") {
+                return Ok(r#"{"model":{"version":1,"tables":[{"name":"line"}]},"ports":[{"id":"ledger.listLines","kind":"capability"},{"id":"ledger.addLine","kind":"data_capability"}]}"#.to_string());
+            }
             Ok("## Goal\nfirst".to_string())
         }
 
         fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
+            lock(&self.prompts).push(prompt.to_string());
             let write = |path: &str, text: &str| -> Result<(), String> {
                 let full = dir.join(path);
                 std::fs::create_dir_all(full.parent().ok_or("no folder")?)
@@ -1239,31 +1756,18 @@ mod tests {
                 prompt.contains("the branch `main_agent`"),
                 "the branch is in the prompt"
             );
-            if prompt.contains("Make it again of **micro-frontends**") {
-                assert!(prompt.contains("a ledger"), "the brief is in the prompt");
+            assert!(prompt.contains("a ledger"), "the brief is in the prompt");
+            if let Some(page) = cut_page(prompt) {
                 if !self.lazy {
                     write("mock/components/Home.html", "<section>home</section>")?;
                 }
-                write(
-                    "mock/pages/home.html",
-                    r#"<div data-component="Home"></div>"#,
-                )?;
-                write(
-                    "mock/pages.json",
-                    r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","components":["Home"]}],"components":[{"name":"Home","fragment":"components/Home.html"}]}"#,
-                )?;
-                return Ok("one micro-frontend: Home".to_string());
+                write(&page, r#"<div data-component="Home"></div>"#)?;
+                return Ok(r#"one micro-frontend: Home {"components":[{"name":"Home","system":"ledger","description":"the ledger","needs":["ledger.listLines"],"actions":[]}]}"#.to_string());
             }
-            assert!(
-                prompt.contains("## Goal\nproof"),
-                "the scope is in the prompt"
-            );
-            write("mock/pages/home.html", "<main>home</main>")?;
-            write(
-                "mock/pages.json",
-                r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home"}],"components":[]}"#,
-            )?;
-            Ok("one page: home".to_string())
+            assert!(prompt.contains("## Screens"), "the scope is in the prompt");
+            let page = asked_page(prompt).ok_or("no page asked")?;
+            write(&page, "<main>home</main>")?;
+            Ok("one page".to_string())
         }
     }
 
@@ -1340,8 +1844,12 @@ mod tests {
             Ok(String::new())
         }
 
-        fn work_in(&self, _: &str, _: &str, _: &Path) -> Result<String, String> {
+        fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
             std::thread::sleep(Duration::from_millis(300));
+            if let Some(page) = asked_page(prompt) {
+                std::fs::create_dir_all(dir.join("mock/pages")).map_err(|e| e.to_string())?;
+                std::fs::write(dir.join(page), "<main>late</main>").map_err(|e| e.to_string())?;
+            }
             Ok("late".to_string())
         }
     }
@@ -1359,6 +1867,9 @@ mod tests {
     fn an_ai_that_only_answers_refuses_to_write() {
         assert!(Talker.work_in("m", "p", Path::new("/")).is_err());
     }
+
+    /// A scope with one screen.
+    const SCOPE: &str = "## Goal\nproof\n\n## Screens\n\n- **Home** — the ledger\n";
 
     fn product(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1391,7 +1902,7 @@ mod tests {
     }
 
     async fn settled(desk: &CreationDesk) -> Job {
-        for _ in 0..200 {
+        for _ in 0..1000 {
             if let Some(job) = desk.job().filter(|j| j.state != State::Running) {
                 return job;
             }
@@ -1403,6 +1914,7 @@ mod tests {
     // One story: the gates read the design system, the mock-ups are drawn
     // in the branch's workspace, the review opens, the initialization runs
     // until the board it cannot reach.
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn a_proof_of_concept_is_drawn_reviewed_and_initialized_up_to_the_board() {
         let dir = product("story");
@@ -1425,7 +1937,7 @@ mod tests {
                 answer: "the client".to_string(),
                 ..Question::default()
             }],
-            scope: "## Goal\nproof".to_string(),
+            scope: SCOPE.to_string(),
             step: Step::Mockups,
             ..Creation::new("alpha", "me/alpha")
         };
@@ -1437,13 +1949,14 @@ mod tests {
             foundry: Arc::new(Nothing),
             factories_dir: dir.join("factories"),
             integration_branch: "main_agent".to_string(),
-            oneshot: Some(Arc::new(Drawer { lazy: false })),
+            oneshot: Some(Arc::new(Drawer::new(false))),
             model: "m".to_string(),
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
             plant: None,
             pins: Some(Arc::new(Pins)),
+            sessions: 2,
         });
         assert!(desk.facts().await.design_validated);
         assert!(desk.accept().await.is_err(), "nothing drawn yet");
@@ -1460,8 +1973,17 @@ mod tests {
         );
         assert!(dir.join("main_agent/mock/pages/home.html").is_file());
         let drawn = desk.record().expect("read").expect("a record");
-        assert_eq!(drawn.mocked.as_deref(), Some("one page: home"));
+        assert_eq!(drawn.mocked.as_deref(), Some("Home: one page"));
         assert_eq!(drawn.step, Step::Review);
+        assert_eq!(
+            drawn.reference.as_ref().map(|r| r.path.as_str()),
+            Some("pages/home.html"),
+            "drawn first, as the reference"
+        );
+        let drafts = drawn.drafts.as_ref().expect("drafted beside the pages");
+        assert_eq!(drafts.tables(), ["line"]);
+        assert_eq!(drafts.ports.len(), 2);
+        assert!(dir.join("main_agent/mock/index.html").is_file());
 
         // The micro-frontends before the review, so the requirements tie to them.
         desk.componentize_now().await.expect("started");
@@ -1485,11 +2007,21 @@ mod tests {
                 .expect("a record")
                 .componentized
                 .as_deref(),
-            Some("one micro-frontend: Home")
+            Some("pages/home.html: 1 micro-frontend(s)")
         );
+        let cut = desk.record().expect("read").expect("a record");
+        assert!(!desk.cut_stale(&cut).await, "every page is cut");
+        let gaps = desk.gaps(&cut).await.expect("drafts read");
+        assert_eq!(
+            gaps.unused,
+            ["ledger.addLine"],
+            "no micro-frontend adds a line"
+        );
+        assert!(gaps.undrafted.is_empty(), "{gaps:?}");
         desk.componentize_now()
             .await
             .expect("done already: nothing runs");
+        assert_eq!(desk.job().map(|j| j.work), Some(Work::Componentize));
         let read = desk.read_requirements().await.expect("read");
         assert_eq!(read.requirements.len(), 1);
         assert_eq!(read.requirements[0].title, "See the ledger");
@@ -1581,6 +2113,7 @@ mod tests {
             data: None,
             plant: None,
             pins: None,
+            sessions: 2,
         });
         assert!(!desk.facts().await.design_validated);
         assert_eq!(desk.record(), Ok(None));
@@ -1618,13 +2151,14 @@ mod tests {
             foundry: Arc::new(Nothing),
             factories_dir: dir.join("factories"),
             integration_branch: "main_agent".to_string(),
-            oneshot: Some(Arc::new(Drawer { lazy: false })),
+            oneshot: Some(Arc::new(Drawer::new(false))),
             model: "m".to_string(),
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
             plant: None,
             pins: None,
+            sessions: 2,
         });
         desk.prepare().await.expect("started");
         let job = settled(&desk).await;
@@ -1766,6 +2300,7 @@ mod tests {
             data: None,
             plant: None,
             pins: None,
+            sessions: 2,
         });
         desk.prepare().await.expect("started");
         let job = settled(&desk).await;
@@ -1919,7 +2454,7 @@ mod tests {
                 answer: "a".to_string(),
                 ..Question::default()
             }],
-            scope: "s".to_string(),
+            scope: SCOPE.to_string(),
             ..Creation::new("alpha", "me/alpha")
         };
         book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
@@ -1946,6 +2481,7 @@ mod tests {
                 data: None,
                 plant: None,
                 pins: None,
+                sessions: 2,
             })
         };
         let left = make();
@@ -1970,12 +2506,23 @@ mod tests {
     async fn a_micro_frontend_without_its_fragment_stops_the_initialization_before_anything_is_published()
      {
         let dir = product("inline");
+        std::fs::write(
+            dir.join("main_agent/mock/pages.json"),
+            r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home"}],"components":[]}"#,
+        )
+        .expect("seeded");
+        std::fs::create_dir_all(dir.join("main_agent/mock/pages")).expect("dir");
+        std::fs::write(
+            dir.join("main_agent/mock/pages/home.html"),
+            "<main>inline</main>",
+        )
+        .expect("seeded");
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
         let book = Arc::new(Book::default());
         let record = Creation {
             kind: Some(Kind::Vertical),
             brief: "a ledger".to_string(),
-            scope: "## Goal\nproof".to_string(),
+            scope: SCOPE.to_string(),
             mocked: Some("drawn".to_string()),
             questions: vec![Question {
                 id: 1,
@@ -1993,7 +2540,7 @@ mod tests {
             foundry: Arc::new(Nothing),
             factories_dir: dir.join("factories"),
             integration_branch: "main_agent".to_string(),
-            oneshot: Some(Arc::new(Drawer { lazy: true })),
+            oneshot: Some(Arc::new(Drawer::new(true))),
             model: "m".to_string(),
             mockups: Some(Arc::clone(&mockups)),
             kit: Some(KitDesk::new(kit_desk::Setup {
@@ -2007,6 +2554,7 @@ mod tests {
             data: None,
             plant: None,
             pins: None,
+            sessions: 2,
         });
         let kit = desk.kit().await.expect("a kit");
         assert!(kit.validated);
@@ -2033,9 +2581,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A session that draws two pages, several seconds apart — slow enough
-    /// that a poller's own 2s tick lands on each page in turn, not just the
-    /// end of a fast call.
+    /// Sessions that draw slowly enough for a poller's own 2s tick to land
+    /// on each page in turn: the reference "A" at once, "B" seconds later,
+    /// and "C" never — its session returns having written nothing.
     struct StagedPages;
 
     impl Oneshot for StagedPages {
@@ -2043,33 +2591,29 @@ mod tests {
             Ok(String::new())
         }
 
-        fn work_in(&self, _: &str, _: &str, dir: &Path) -> Result<String, String> {
-            let write = |name: &str, manifest: &str| -> Result<(), String> {
+        fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
+            let page = asked_page(prompt).ok_or("no page asked")?;
+            let write = || -> Result<(), String> {
                 std::fs::create_dir_all(dir.join("mock/pages")).map_err(|e| e.to_string())?;
-                std::fs::write(dir.join(format!("mock/pages/{name}.html")), "<main></main>")
-                    .map_err(|e| e.to_string())?;
-                std::fs::write(dir.join("mock/pages.json"), manifest).map_err(|e| e.to_string())
+                std::fs::write(dir.join(&page), "<main></main>").map_err(|e| e.to_string())
             };
-            // "C" is listed from the start but never gets a file: it must
-            // never be reported, whatever a mutated `||` would let through.
-            write(
-                "a",
-                r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A"},{"path":"pages/c.html","title":"C"}],"components":[]}"#,
-            )?;
-            std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
-            write(
-                "b",
-                r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A"},{"path":"pages/b.html","title":"B"},{"path":"pages/c.html","title":"C"}],"components":[]}"#,
-            )?;
+            if page.ends_with("/a.html") {
+                write()?;
+            } else if page.ends_with("/b.html") {
+                std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
+                write()?;
+            } else {
+                return Ok("nothing".to_string());
+            }
             // Left on disk long enough for the poller's next tick to see it
-            // before the call returns and the poller is aborted.
+            // before the session returns and the poller is aborted.
             std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
-            Ok("two pages".to_string())
+            Ok("drawn".to_string())
         }
     }
 
     #[tokio::test]
-    async fn drawing_the_mock_up_reports_each_page_live_as_it_is_written() {
+    async fn drawing_the_mock_up_reports_each_page_live_and_names_one_never_drawn() {
         let dir = product("staged-pages");
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
         let kit = KitDesk::new(kit_desk::Setup {
@@ -2090,7 +2634,7 @@ mod tests {
                 answer: "the client".to_string(),
                 ..Question::default()
             }],
-            scope: "## Goal\nproof".to_string(),
+            scope: "## Screens\n- **A** — first\n- **B** — second\n- **C** — third\n".to_string(),
             step: Step::Mockups,
             ..Creation::new("alpha", "me/alpha")
         };
@@ -2109,39 +2653,269 @@ mod tests {
             data: None,
             plant: None,
             pins: None,
+            sessions: 2,
         });
         desk.draw_mockups().await.expect("started");
-        // The first page's own line shows up while the session is still
-        // mid-write, well before `work_in` itself returns.
+        // The reference's own line shows up while its session is still
+        // running, well before it returns.
         let mut seen_a = false;
         for _ in 0..80 {
             if desk
                 .job()
-                .is_some_and(|j| j.steps.iter().any(|s| s.contains("\"A\" page (1 of 2)")))
+                .is_some_and(|j| j.steps.iter().any(|s| s.contains("\"A\" page (1 of 1)")))
             {
                 seen_a = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(seen_a, "the first page's step never showed up live");
-        assert_eq!(
-            desk.job().map(|j| j.state),
-            Some(State::Running),
-            "the session itself had not returned yet"
-        );
+        assert!(seen_a, "the reference's step never showed up live");
+        assert_eq!(desk.job().map(|j| j.state), Some(State::Running));
         let job = settled(&desk).await;
-        assert_eq!((job.work, job.state), (Work::Mockups, State::Done));
+        assert_eq!((job.work, job.state), (Work::Mockups, State::Failed));
         assert!(
-            job.steps.iter().any(|s| s.contains("\"B\" page (2 of 3)")),
+            job.steps.iter().any(|s| s.contains("\"B\" page (1 of 2)")),
             "{:?}",
             job.steps
         );
         assert!(
             !job.steps.iter().any(|s| s.contains("\"C\" page")),
-            "listed with no file ever written: never reported done — {:?}",
+            "never written: never reported drawn — {:?}",
             job.steps
         );
+        assert!(
+            job.steps.iter().any(|s| s.contains("2 at a time")),
+            "{:?}",
+            job.steps
+        );
+        assert_eq!(
+            job.why,
+            "a page was not drawn — C: the session wrote no `mock/pages/c.html`"
+        );
+        assert!(
+            desk.record()
+                .expect("read")
+                .expect("a record")
+                .mocked
+                .is_none(),
+            "a page missing: not drawn"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A desk over a product whose design system is validated, with a
+    /// creation at the scope's review and two screens.
+    fn reviewing(tag: &str, scope: &str, drawer: Arc<Drawer>) -> (CreationDesk, PathBuf) {
+        let dir = product(tag);
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let book = Arc::new(Book::default());
+        let record = Creation {
+            kind: Some(Kind::Vertical),
+            brief: "a ledger".to_string(),
+            questions: vec![Question {
+                id: 1,
+                title: "who".to_string(),
+                answer: "the client".to_string(),
+                ..Question::default()
+            }],
+            scope: scope.to_string(),
+            step: Step::Scope,
+            ..Creation::new("alpha", "me/alpha")
+        };
+        book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        let desk = CreationDesk::new(Setup {
+            register: book,
+            factory: "alpha".to_string(),
+            foundry: Arc::new(Nothing),
+            factories_dir: dir.join("factories"),
+            integration_branch: "main_agent".to_string(),
+            oneshot: Some(drawer),
+            model: "m".to_string(),
+            mockups: Some(Arc::clone(&mockups)),
+            kit: Some(KitDesk::new(kit_desk::Setup {
+                mockups,
+                oneshot: None,
+                model: "m".into(),
+                sessions: 1,
+                pins: Arc::new(Shelf::default()),
+                integration_branch: "main_agent".into(),
+            })),
+            data: None,
+            plant: None,
+            pins: None,
+            sessions: 2,
+        });
+        (desk, dir)
+    }
+
+    const TWO: &str = "## Screens\n\n- **Home** — the ledger\n- **Lines** — every line\n";
+
+    async fn scope_settled(desk: &CreationDesk, scope: &str) {
+        desk.save(
+            Edit {
+                scope: Some(scope.to_string()),
+                ..Edit::default()
+            },
+            None,
+        )
+        .await
+        .expect("saved");
+    }
+
+    fn listed(dir: &Path) -> Vec<String> {
+        let text =
+            std::fs::read_to_string(dir.join("main_agent/mock/pages.json")).expect("pages.json");
+        let root: serde_json::Value = serde_json::from_str(&text).expect("json");
+        root["pages"]
+            .as_array()
+            .expect("pages")
+            .iter()
+            .filter_map(|p| p["path"].as_str().map(ToString::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_reference_is_drawn_during_the_scope_review_then_kept_and_followed() {
+        let drawer = Arc::new(Drawer::new(false));
+        let (desk, dir) = reviewing("reference-kept", TWO, Arc::clone(&drawer));
+        desk.draw_reference().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(
+            (job.work, job.state),
+            (Work::Reference, State::Done),
+            "{}",
+            job.why
+        );
+        let record = desk.record().expect("read").expect("a record");
+        let reference = record.reference.clone().expect("kept");
+        assert_eq!(
+            (reference.screen.as_str(), reference.path.as_str()),
+            ("Home", "pages/home.html")
+        );
+        assert_eq!(listed(&dir), ["pages/home.html"]);
+        assert!(drawer.prompts()[0].contains("**reference**"));
+        assert!(desk.draw_reference().await.is_err(), "drawn once");
+
+        desk.draw_mockups().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(
+            (job.work, job.state),
+            (Work::Mockups, State::Done),
+            "{}",
+            job.why
+        );
+        assert!(
+            job.steps.iter().any(|s| s.contains("\"Home\" is kept")),
+            "{:?}",
+            job.steps
+        );
+        let prompts = drawer.prompts();
+        assert_eq!(prompts.len(), 2, "the reference is not drawn twice");
+        assert!(prompts[1].contains("Read `mock/pages/home.html` first"));
+        assert!(prompts[1].contains("Write `mock/pages/lines.html`"));
+        assert_eq!(listed(&dir), ["pages/home.html", "pages/lines.html"]);
+        let record = desk.record().expect("read").expect("a record");
+        assert_eq!(record.mocked.as_deref(), Some("Lines: one page"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_reference_the_settled_scope_changed_is_redrawn_and_one_it_dropped_goes() {
+        let drawer = Arc::new(Drawer::new(false));
+        let (desk, dir) = reviewing("reference-changed", TWO, Arc::clone(&drawer));
+        desk.draw_reference().await.expect("started");
+        assert_eq!(settled(&desk).await.state, State::Done);
+        scope_settled(
+            &desk,
+            "## Screens\n\n- **Home** — the ledger and its total\n- **Lines** — every line\n",
+        )
+        .await;
+        desk.draw_mockups().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(job.state, State::Done, "{}", job.why);
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.contains("drawn again, on its own look")),
+            "{:?}",
+            job.steps
+        );
+        let prompts = drawer.prompts();
+        assert_eq!(prompts.len(), 3);
+        assert!(prompts[1].contains("keeping its look"), "{}", prompts[1]);
+        assert!(prompts[1].contains("the ledger and its total"));
+        assert_eq!(listed(&dir), ["pages/home.html", "pages/lines.html"]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let drawer = Arc::new(Drawer::new(false));
+        let (desk, dir) = reviewing("reference-dropped", TWO, Arc::clone(&drawer));
+        desk.draw_reference().await.expect("started");
+        assert_eq!(settled(&desk).await.state, State::Done);
+        scope_settled(&desk, "## Screens\n\n- **Lines** — every line\n").await;
+        desk.draw_mockups().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(job.state, State::Done, "{}", job.why);
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.contains("lends its look, then goes")),
+            "{:?}",
+            job.steps
+        );
+        assert!(drawer.prompts()[1].contains("Read `mock/pages/home.html` first"));
+        assert_eq!(listed(&dir), ["pages/lines.html"]);
+        assert!(!dir.join("main_agent/mock/pages/home.html").is_file());
+        let index = std::fs::read_to_string(dir.join("main_agent/mock/index.html")).expect("index");
+        assert!(index.contains("pages/lines.html") && !index.contains("pages/home.html"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn only_the_pages_moved_since_they_were_cut_are_cut_again() {
+        let drawer = Arc::new(Drawer::new(false));
+        let (desk, dir) = reviewing("recut", TWO, Arc::clone(&drawer));
+        desk.draw_mockups().await.expect("started");
+        assert_eq!(settled(&desk).await.state, State::Done);
+        desk.componentize_now().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(job.state, State::Done, "{}", job.why);
+        // Nothing cut yet: the first page alone, then the others.
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.contains("make pages/home.html again")),
+            "{:?}",
+            job.steps
+        );
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.contains("make pages/lines.html again")),
+            "{:?}",
+            job.steps
+        );
+        let record = desk.record().expect("read").expect("a record");
+        assert_eq!(record.cut.len(), 2);
+        assert!(!desk.cut_stale(&record).await);
+        // The human retouches one page: only that one is cut again.
+        std::fs::write(
+            dir.join("main_agent/mock/pages/lines.html"),
+            "<main>retouched</main>",
+        )
+        .expect("retouched");
+        assert!(desk.cut_stale(&record).await);
+        let before = drawer.prompts().len();
+        desk.componentize_now().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(job.state, State::Done, "{}", job.why);
+        let cut: Vec<String> = drawer.prompts()[before..]
+            .iter()
+            .filter_map(|p| cut_page(p))
+            .collect();
+        assert_eq!(cut, ["mock/pages/lines.html"]);
+        let record = desk.record().expect("read").expect("a record");
+        assert!(!desk.cut_stale(&record).await);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2156,8 +2930,12 @@ mod tests {
 
         fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
             assert!(
-                prompt.contains("Make it again of **micro-frontends**"),
+                prompt.contains("again of **micro-frontends**"),
                 "the right prompt"
+            );
+            assert!(
+                prompt.contains("- Old ("),
+                "the micro-frontends made already are listed"
             );
             std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
             let write = |path: &str, text: &str| -> Result<(), String> {
@@ -2168,17 +2946,11 @@ mod tests {
             };
             write("mock/components/New.html", "<section>new</section>")?;
             write(
-                "mock/pages.json",
-                r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","components":["Old","New"]}],"components":[{"name":"Old","fragment":"components/Old.html"},{"name":"New","fragment":"components/New.html"}]}"#,
-            )?;
-            write(
                 "mock/pages/home.html",
                 r#"<div data-component="Old"></div><div data-component="New"></div>"#,
             )?;
-            // Left on disk long enough for the poller's next tick to see it
-            // before the call returns and the poller is aborted.
             std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
-            Ok("one new micro-frontend".to_string())
+            Ok(r#"{"components":[{"name":"New","system":"ledger"}]}"#.to_string())
         }
     }
 
@@ -2222,7 +2994,7 @@ mod tests {
                 answer: "the client".to_string(),
                 ..Question::default()
             }],
-            scope: "## Goal\nproof".to_string(),
+            scope: SCOPE.to_string(),
             mocked: Some("drawn".to_string()),
             ..Creation::new("alpha", "me/alpha")
         };
@@ -2241,21 +3013,17 @@ mod tests {
             data: None,
             plant: None,
             pins: None,
+            sessions: 2,
         });
         desk.accept().await.expect("accepted");
-        let mut seen_new = false;
-        for _ in 0..80 {
-            if desk
-                .job()
-                .is_some_and(|j| j.steps.iter().any(|s| s.contains("\"New\" micro-frontend")))
-            {
-                seen_new = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(seen_new, "the new component's step never showed up live");
         let job = settled(&desk).await;
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.contains("\"New\" micro-frontend")),
+            "{:?}",
+            job.steps
+        );
         assert!(
             !job.steps
                 .iter()

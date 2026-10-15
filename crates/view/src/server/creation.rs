@@ -33,7 +33,13 @@ fn refused(why: String) -> Response {
 async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
     let kit = desk.kit().await;
     let facts = CreationDesk::facts_of(kit);
+    let (cut_stale, gaps) = match &record {
+        Some(r) => (desk.cut_stale(r).await, desk.gaps(r).await),
+        None => (false, None),
+    };
     json(&serde_json::json!({
+        "cutStale": cut_stale,
+        "gaps": gaps,
         "record": record,
         "reachable": record.as_ref().map(|r| r.reachable(facts)),
         "scopeStale": record.as_ref().is_some_and(Creation::scope_stale),
@@ -193,6 +199,23 @@ pub(super) async fn requirements(State(state): State<AppState>) -> Response {
     };
     match desk.read_requirements().await {
         Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The reference page drawn while the scope is reviewed: answers at once,
+/// the job follows.
+pub(super) async fn reference(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.draw_reference().await {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job": desk.job() })),
+        )
+            .into_response(),
         Err(why) => refused(why),
     }
 }

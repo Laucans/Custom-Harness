@@ -9,6 +9,9 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::drawing::{Cut, Reference};
+use crate::domain::poc_model::{Drafts, drafts_section};
+
 /// The most questions one grilling round may bring.
 pub const ROUND_MAX: usize = 8;
 
@@ -158,6 +161,14 @@ pub struct Creation {
     pub design_refused: String,
     /// The roadmap task the initialization opened.
     pub issue: String,
+    /// The first page drawn — while the scope is still being reviewed —
+    /// whose look every other page follows.
+    pub reference: Option<Reference>,
+    /// The pages made of micro-frontends, each with its fingerprint once
+    /// cut: a page whose file moved since is cut again.
+    pub cut: Vec<Cut>,
+    /// The data model and the ports drafted from the settled scope.
+    pub drafts: Option<Drafts>,
 }
 
 /// One requirement of the proof of concept: what it must do, and where
@@ -250,6 +261,30 @@ impl Creation {
             .take_while(|s| **s <= step)
             .find_map(|s| needs(self, *s, facts))
             .map_or(Ok(()), |why| Err(why.to_string()))
+    }
+
+    /// Whether the reference page may be drawn now: the grilling over, a
+    /// scope proposed, the design system validated with its kit made, and
+    /// no reference drawn yet.
+    ///
+    /// # Errors
+    ///
+    /// What is missing first, in words.
+    pub fn may_draw_reference(&self, facts: Facts) -> Result<(), String> {
+        self.may_enter(Step::Scope, facts)?;
+        if self.scope.trim().is_empty() {
+            return Err("wait for the scope to be proposed".to_string());
+        }
+        if !facts.design_validated {
+            return Err("validate the design system".to_string());
+        }
+        if facts.kit_waiting > 0 {
+            return Err("let the kit's components be generated".to_string());
+        }
+        if self.reference.is_some() {
+            return Err("the reference page is drawn already".to_string());
+        }
+        Ok(())
     }
 
     /// The furthest step that may be entered now.
@@ -408,6 +443,9 @@ impl Creation {
         self.mocked = None;
         self.accepted = false;
         self.componentized = None;
+        self.reference = None;
+        self.cut.clear();
+        self.drafts = None;
         self.grilled = false;
         self.step = Step::Brief;
     }
@@ -559,7 +597,7 @@ pub fn unfenced(answer: &str) -> String {
 }
 
 /// What the human wants built: the kind, the brief, the decisions taken.
-fn product(c: &Creation) -> String {
+pub fn product(c: &Creation) -> String {
     let mut text = format!(
         "The application is `{name}`, built by a {kind}.\n\nWhat the application does, in the human's words:\n\n{brief}\n",
         name = c.name,
@@ -634,82 +672,6 @@ pub fn scope_prompt(c: &Creation) -> String {
             c.scope.trim()
         );
     }
-    text
-}
-
-/// The session that draws the proof of concept as the product's mock-up:
-/// `rules` are the mock-up's own (`note_session::mockup_rules`), `kit` the
-/// design system's components, one line each.
-#[must_use]
-pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str) -> String {
-    let mut text = rules.to_string();
-    text.push_str(
-        "\nDraw the proof of concept below as the product's mock-up: one page per screen of its \
-         scope under `mock/pages/`, each registered in `mock/pages.json` with its title and its \
-         objective (what the user does there), a `mock/index.html` that lists them, the fixtures \
-         they read under `mock/fixtures/` with believable example data in the language of the \
-         brief — never a lorem ipsum — and the links between the pages that carry the journeys, \
-         so a human can click through them. Build every page from the design system: \
-         `mock/design/tokens.css` holds its variables (`var(--…)`, never a colour or a size \
-         written by hand), and its kit components are dropped as \
-         `<div data-kit=\"<Name>\" data-props='{…}'></div>`, which `../mock.js` fills — use one \
-         wherever it fits rather than writing that markup again. When there is no page yet, \
-         start the mock-up. When pages already exist from an earlier draft, replace them: this \
-         proof of concept is the one to show. Say in a few lines which pages you made.\n\n",
-    );
-    if kit.trim().is_empty() {
-        text.push_str(
-            "The kit has no generated component yet: style the pages with the tokens alone.\n\n",
-        );
-    } else {
-        let _ = write!(
-            text,
-            "The kit's components, one line each:\n\n{}\n\n",
-            kit.trim()
-        );
-    }
-    text.push_str(&product(c));
-    let _ = write!(
-        text,
-        "\nThe proof of concept's scope:\n\n{}\n",
-        c.scope.trim()
-    );
-    text
-}
-
-/// The session that makes the accepted mock-up again of micro-frontends,
-/// keeping what the human saw: `rules` are the mock-up's own, `kit` the
-/// design system's components.
-#[must_use]
-pub fn componentize_prompt(c: &Creation, rules: &str, kit: &str) -> String {
-    let mut text = rules.to_string();
-    text.push_str(
-        "\nThe human accepted this proof of concept's mock-up, drawn fast: its pages may carry \
-         their markup inline. Make it again of **micro-frontends**, as the product's architecture \
-         wants it, without changing what the human sees. Read every page listed in \
-         `mock/pages.json`; cut each into the Micro-UIs it is made of — a unit a user recognises \
-         (an invoice list, an upload form, a balance), named in PascalCase, its system the bounded \
-         context it belongs to — and for each one: write its fragment \
-         `mock/components/<Name>.html` (its markup, its style on the design system's variables, its \
-         script finding its root as `document.currentScript.closest('[data-component]')`, its data \
-         read from `mock/fixtures/<Name>.json`, the kit's components kept as `data-kit` elements), \
-         and list it under `components` of `mock/pages.json` (name, system, description, fragment, \
-         fixture, props; `needs` and `actions` named as the Capabilities and DataCapabilities it \
-         would read and trigger, `<system>.<verb><Thing>`). A micro-frontend shared by several pages \
-         is written once. Then rewrite each page as layout only: its regions, and in them \
-         `<div data-component=\"<Name>\" data-props='{…}'></div>` for each micro-frontend, with \
-         `<script src=\"../mock.js\"></script>` — no business markup left inline. Keep each page's \
-         look, texts, links and example data as they are. List each page's micro-frontends under its \
-         `components` in `mock/pages.json`. Say in a few lines which micro-frontends you made.\n\n",
-    );
-    if !kit.trim().is_empty() {
-        let _ = write!(
-            text,
-            "The kit's components, one line each:\n\n{}\n\n",
-            kit.trim()
-        );
-    }
-    text.push_str(&product(c));
     text
 }
 
@@ -865,6 +827,8 @@ pub fn record_json(c: &Creation, ctx: &Context) -> Result<String, String> {
         design: &'a DesignRef,
         mockup_at: &'a str,
         design_at: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        drafts: Option<&'a Drafts>,
     }
     serde_json::to_string_pretty(&Kept {
         version: 1,
@@ -881,6 +845,7 @@ pub fn record_json(c: &Creation, ctx: &Context) -> Result<String, String> {
         design: &ctx.design,
         mockup_at: &c.mockup_at,
         design_at: &c.design_at,
+        drafts: c.drafts.as_ref(),
     })
     .map_err(|e| e.to_string())
 }
@@ -1007,6 +972,9 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
             }
             body.push('\n');
         }
+    }
+    if let Some(drafts) = &c.drafts {
+        body.push_str(&drafts_section(drafts, &ctx.components));
     }
     body.push_str(&design_section(c, &ctx.design));
     if !ctx.pins.is_empty() {
@@ -1408,16 +1376,6 @@ mod tests {
     }
 
     #[test]
-    fn the_mockups_prompt_carries_the_rules_the_kit_and_the_scope() {
-        let c = ready();
-        let with = mockups_prompt(&c, "RULES", "Button: a button");
-        assert!(with.starts_with("RULES"));
-        assert!(with.contains("Button: a button"));
-        assert!(with.ends_with("## Goal\n"));
-        assert!(mockups_prompt(&c, "RULES", " ").contains("no generated component yet"));
-    }
-
-    #[test]
     fn the_roadmap_issue_carries_the_decisions_the_requirements_and_the_mock_up() {
         let mut c = ready();
         c.questions[0].body = "the client or the bank?".to_string();
@@ -1709,17 +1667,6 @@ mod tests {
             ]
         );
         assert_eq!(not_componentized(&[], &listed), ["the mock-up has no page"]);
-    }
-
-    #[test]
-    fn the_componentize_prompt_keeps_the_look_and_carries_the_kit_and_the_brief() {
-        let c = ready();
-        let text = componentize_prompt(&c, "RULES", "Button: a button");
-        assert!(text.starts_with("RULES"));
-        assert!(text.contains("without changing what the human sees"));
-        assert!(text.contains("Button: a button"));
-        assert!(text.contains("a ledger"));
-        assert!(!componentize_prompt(&c, "RULES", "  ").contains("The kit's components"));
     }
 
     #[test]
