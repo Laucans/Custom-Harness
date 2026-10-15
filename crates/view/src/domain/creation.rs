@@ -1618,6 +1618,37 @@ mod tests {
     }
 
     #[test]
+    fn the_reference_waits_for_the_scope_the_design_and_the_kit_then_draws_once() {
+        let mut c = ready();
+        c.mocked = None;
+        assert_eq!(c.may_draw_reference(DESIGNED), Ok(()));
+        let waiting = Facts {
+            design_validated: true,
+            kit_waiting: 1,
+        };
+        assert_eq!(
+            c.may_draw_reference(waiting),
+            Err("let the kit's components be generated".to_string())
+        );
+        let undesigned = Facts {
+            design_validated: false,
+            kit_waiting: 0,
+        };
+        assert_eq!(
+            c.may_draw_reference(undesigned),
+            Err("validate the design system".to_string())
+        );
+        c.reference = Some(Reference::default());
+        assert_eq!(
+            c.may_draw_reference(DESIGNED),
+            Err("the reference page is drawn already".to_string())
+        );
+        c.reference = None;
+        c.scope = " ".to_string();
+        assert!(c.may_draw_reference(DESIGNED).is_err());
+    }
+
+    #[test]
     fn regenerating_forgets_the_micro_frontends_too() {
         let mut c = ready();
         c.componentized = Some("three".to_string());

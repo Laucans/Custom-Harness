@@ -691,6 +691,11 @@ mod tests {
             Vec::<Screen>::new()
         );
         assert_eq!(screens("## Screens\n- **Open** bold\n")[0].name, "Open");
+        // A list nested by a tab goes with the screen above; a line that only
+        // looks numbered is a paragraph.
+        let nested = screens("## Screens\n- **Home** — start\n\t- the total\n. not a list\n");
+        assert_eq!(nested.len(), 1, "{nested:?}");
+        assert_eq!(nested[0].description, "start the total . not a list");
     }
 
     #[test]
@@ -773,6 +778,7 @@ mod tests {
         assert_eq!(root["pages"][0]["title"], "Invoices");
         assert_eq!(root["pages"][0]["components"], serde_json::json!(["Kept"]));
         assert!(with_pages(Some("[]"), &all, &[]).is_err());
+        assert!(with_pages(Some(" \n"), &all, &[]).is_ok(), "blank is empty");
         assert!(with_pages(Some("nope"), &all, &[]).is_err());
         assert!(with_pages(Some(r#"{"pages":{}}"#), &all, &[]).is_err());
         assert!(listed.ends_with("}\n"));

@@ -1475,10 +1475,7 @@ impl CreationDesk {
         } else {
             said.join("\n")
         };
-        kept.componentized = Some(match kept.componentized.take() {
-            Some(before) if said.is_empty() => before,
-            _ => summary,
-        });
+        kept.componentized = Some(summary);
         kept.cut = cut;
         self.keep(&kept)
     }
@@ -2779,6 +2776,17 @@ mod tests {
     async fn the_reference_is_drawn_during_the_scope_review_then_kept_and_followed() {
         let drawer = Arc::new(Drawer::new(false));
         let (desk, dir) = reviewing("reference-kept", TWO, Arc::clone(&drawer));
+        // One generated kit component: the drawing prompts list it.
+        std::fs::write(
+            dir.join("design-system/mock/kit/kit.json"),
+            r#"{"version":1,"checked":[],"components":[{"name":"Button","base":"button","state":"generated"}]}"#,
+        )
+        .expect("kit");
+        std::fs::write(
+            dir.join("design-system/mock/kit/Button.html"),
+            r#"<div class="kit-button"><button class="primary">Pay</button></div>"#,
+        )
+        .expect("fragment");
         desk.draw_reference().await.expect("started");
         let job = settled(&desk).await;
         assert_eq!(
@@ -2795,6 +2803,10 @@ mod tests {
         );
         assert_eq!(listed(&dir), ["pages/home.html"]);
         assert!(drawer.prompts()[0].contains("**reference**"));
+        assert!(
+            drawer.prompts()[0].contains("kit-button"),
+            "the kit is listed"
+        );
         assert!(desk.draw_reference().await.is_err(), "drawn once");
 
         desk.draw_mockups().await.expect("started");
@@ -2916,6 +2928,61 @@ mod tests {
         assert_eq!(cut, ["mock/pages/lines.html"]);
         let record = desk.record().expect("read").expect("a record");
         assert!(!desk.cut_stale(&record).await);
+        assert!(
+            record
+                .componentized
+                .as_deref()
+                .is_some_and(|s| s.starts_with("pages/lines.html: ")),
+            "{:?}",
+            record.componentized
+        );
+        // Micro-frontends exist already: both pages retouched are cut at once.
+        for page in ["home", "lines"] {
+            std::fs::write(
+                dir.join(format!("main_agent/mock/pages/{page}.html")),
+                format!("<main>{page} again</main>"),
+            )
+            .expect("retouched");
+        }
+        desk.componentize_now().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(job.state, State::Done, "{}", job.why);
+        assert!(
+            job.steps
+                .iter()
+                .any(|s| s.starts_with("2 Claude Code session(s) make")),
+            "{:?}",
+            job.steps
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_reference_kept_stays_on_the_page_it_was_drawn_on() {
+        let drawer = Arc::new(Drawer::new(false));
+        let (desk, dir) = reviewing("reference-moved", TWO, Arc::clone(&drawer));
+        std::fs::create_dir_all(dir.join("main_agent/mock/pages")).expect("dir");
+        std::fs::write(
+            dir.join("main_agent/mock/pages/start.html"),
+            "<main>home</main>",
+        )
+        .expect("drawn");
+        let mut record = desk.record().expect("read").expect("a record");
+        record.reference = Some(Reference {
+            screen: "Home".to_string(),
+            path: "pages/start.html".to_string(),
+            screens: screens(TWO),
+        });
+        desk.setup
+            .register
+            .keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+            .expect("kept");
+        desk.draw_mockups().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!(job.state, State::Done, "{}", job.why);
+        assert_eq!(listed(&dir), ["pages/start.html", "pages/lines.html"]);
+        assert_eq!(drawer.prompts().len(), 1, "only Lines is drawn");
+        assert!(drawer.prompts()[0].contains("Read `mock/pages/start.html` first"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

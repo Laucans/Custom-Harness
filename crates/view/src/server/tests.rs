@@ -1771,6 +1771,9 @@ async fn the_mockups_and_the_acceptance_wait_for_their_gates() {
     let (status, body) = post(state.clone(), "/api/creation/mockups", "").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body, "validate the design system");
+    let (status, body) = post(state.clone(), "/api/creation/reference", "").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, "validate the design system");
     let (status, body) = post(state, "/api/creation/accept", "").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body, "validate the design system");
