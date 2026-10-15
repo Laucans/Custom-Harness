@@ -850,6 +850,10 @@ mod tests {
         );
         assert!(fresh.parked.is_none(), "not parked any more");
         assert!(fresh.confirmation.is_none(), "expected nothing");
+        assert!(
+            fresh.at_head_since.is_none(),
+            "a whole new grace once it reaches the head again"
+        );
         assert_eq!(
             kinds(&said),
             [Kind::CommandQueued, Kind::ValueDeclaredAhead]
