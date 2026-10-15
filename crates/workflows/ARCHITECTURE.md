@@ -352,7 +352,11 @@ decision, the arbiter could not settle one, a task's PR still does not merge
 after `MAX_FIXES` repairs (`milestone_merge::escalate`), a session stopped
 on an ambiguity or the breaker refused (`dev_loop::action::stop`, which
 writes `## Decision` with `kind: stop|breaker` and hands the third stop of a
-task to a `harness:human` task instead). Routed right after the rules' task,
+task to a `harness:human` task instead), or a person refused a port. A stop
+asking for a port ports.json has not (`AGENT_LOOP_STOP: port <id> — …`) is
+never decided: `stop` keeps it as `kind: port` and opens a `harness:human`
+"Approve the port …" task blocking the task, approved or refused from the
+view's Ports pane; a refusal comes here to do without it. Routed right after the rules' task,
 before any work it unblocks; a task carrying the label is not runnable.
 State `DecideState`; `remaining` 1; core's `Round<S>`; stages `context`
 (reads the issue, its `## Decision`, its comments, the task's PR and review,

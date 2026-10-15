@@ -42,6 +42,18 @@ sops + age. Tests always run on fakes. New initializations only.
   - The planner and split prompts build a port in the milestone of its
     first user. The decide prompt handles a refused port.
 
+- Milestone 5: the Ports pane, opened from the capabilities list's
+  *⇄ ports*.
+  - It reads `ports.json` on the integration branch and the
+    `harness:human` tasks: the approvals waiting, and each port's secrets
+    task, provided or not. A unit in `usedBy` opens its capability.
+  - *Approve* closes the approval with a comment.
+  - *Refuse* comments on the waiting task, labels it
+    `harness:needs-decision`, then closes the approval.
+  - *Change provider* opens a `harness:roadmap` + `harness:ready` item: a
+    new adapter, with a replay first for a port that keeps state.
+- Milestone 6: docs (workflows and view ARCHITECTURE, CLAUDE.md).
+
 ## To check on a fresh product
 
 - [ ] `init-repo` installs `ports.json`, contract Q, `.sops.yaml`,
@@ -73,3 +85,12 @@ sops + age. Tests always run on fakes. New initializations only.
       builds the crate, the fake and the contract tests before the adapter.
 - [ ] A refusal (comment + `harness:needs-decision`) is decided as "do
       without", or the task is cut.
+- [ ] The Ports pane on a real factory lists `ports.json` from
+      `main_agent`, with the secrets tasks' states. An approval appears
+      after a port stop.
+- [ ] *Approve* closes the approval on GitHub; the task is taken again at
+      the next tick and adds the port.
+- [ ] *Refuse* (with a reason) puts the task in `decide`, which answers
+      "without it" or cuts it.
+- [ ] *Change provider* opens a ready roadmap item; the planner and the
+      loop deliver a new adapter with the contract tests green.

@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::domain::{Halt, Outcome};
+use harness_core::domain::{Halt, Issue, Outcome};
 use harness_core::ports::shell::github::{GitHub, Kept};
 use harness_workflows::common::labels;
 use harness_workflows::data_snapshot::config::ARCHIVE_BRANCH;
@@ -99,6 +99,20 @@ impl Product for GhProduct {
         let number = self.gh.create_issue(title, body, labels).await?;
         self.gh.create_sub_issue_link(milestone, number).await?;
         Ok(self.url_of(number))
+    }
+
+    async fn human_tasks(&self) -> Outcome<Vec<Issue>> {
+        self.gh.issues_labelled(labels::HUMAN, "all").await
+    }
+
+    async fn close_issue(&self, number: u64, comment: &str) -> Outcome<()> {
+        self.gh.post_issue_comment(number, comment).await?;
+        self.gh.close_issue(number).await
+    }
+
+    async fn to_decide(&self, number: u64, comment: &str) -> Outcome<()> {
+        self.gh.post_issue_comment(number, comment).await?;
+        self.gh.add_label(number, labels::NEEDS_DECISION).await
     }
 }
 
@@ -208,5 +222,189 @@ mod tests {
             None
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A GitHub that answers the Ports pane's calls and writes each down;
+    /// every other call is refused.
+    #[derive(Default)]
+    struct Recorder(std::cell::RefCell<Vec<String>>);
+
+    impl Recorder {
+        fn note(&self, line: String) {
+            self.0.borrow_mut().push(line);
+        }
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl GitHub for Recorder {
+        async fn authenticated(&self) -> Outcome<bool> {
+            Err(refused())
+        }
+        async fn repo(&self) -> Outcome<String> {
+            Err(refused())
+        }
+        async fn labels(&self) -> Outcome<Vec<String>> {
+            Err(refused())
+        }
+        async fn issue(&self, _number: u64) -> Outcome<harness_core::domain::Issue> {
+            Err(refused())
+        }
+        async fn issues_labelled(
+            &self,
+            label: &str,
+            state: &str,
+        ) -> Outcome<Vec<harness_core::domain::Issue>> {
+            self.note(format!("list {label} {state}"));
+            Ok(vec![harness_core::domain::Issue {
+                number: 21,
+                ..harness_core::domain::Issue::default()
+            }])
+        }
+        async fn activity(
+            &self,
+            _etag: Option<&str>,
+        ) -> Outcome<harness_core::ports::shell::github::Activity> {
+            Err(refused())
+        }
+        async fn sub_issues(&self, _number: u64) -> Outcome<Vec<harness_core::domain::Issue>> {
+            Err(refused())
+        }
+        async fn blocked_by(&self, _number: u64) -> Outcome<Vec<harness_core::domain::Issue>> {
+            Err(refused())
+        }
+        async fn with_blockers(
+            &self,
+            _tasks: Vec<harness_core::domain::Issue>,
+        ) -> Outcome<Vec<harness_core::domain::Issue>> {
+            Err(refused())
+        }
+        async fn merged_prs(&self, _base: &str) -> Outcome<Vec<harness_core::domain::Issue>> {
+            Err(refused())
+        }
+        async fn issue_comments(&self, _number: u64) -> Outcome<Vec<String>> {
+            Err(refused())
+        }
+        async fn add_label(&self, number: u64, label: &str) -> Outcome<()> {
+            self.note(format!("label #{number} {label}"));
+            Ok(())
+        }
+        async fn remove_label(&self, _number: u64, _label: &str) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn set_body(&self, _number: u64, _body: &str) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn post_issue_comment(&self, number: u64, body: &str) -> Outcome<()> {
+            self.note(format!("comment #{number} {body}"));
+            Ok(())
+        }
+        async fn close_issue(&self, number: u64) -> Outcome<()> {
+            self.note(format!("close #{number}"));
+            Ok(())
+        }
+        async fn pr(&self, _pr_ref: &str) -> Outcome<harness_core::domain::Pr> {
+            Err(refused())
+        }
+        async fn pr_comments(&self, _num: &str) -> Outcome<String> {
+            Err(refused())
+        }
+        async fn post_pr_comment(&self, _num: &str, _body_file: &std::path::Path) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn create_label(&self, _name: &str, _color: &str, _description: &str) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn branch_sha(&self, _branch: &str) -> Outcome<Option<String>> {
+            Err(refused())
+        }
+        async fn branches(&self, _prefix: &str) -> Outcome<Vec<String>> {
+            Err(refused())
+        }
+        async fn create_branch(&self, _branch: &str, _sha: &str) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn default_branch(&self) -> Outcome<String> {
+            Err(refused())
+        }
+        async fn set_default_branch(&self, _branch: &str) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn protect_branch(&self, _branch: &str) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn require_squash_merges(&self) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn can_push(&self) -> Outcome<bool> {
+            Err(refused())
+        }
+        async fn file_text(&self, _path: &str, _git_ref: &str) -> Outcome<Option<String>> {
+            Err(refused())
+        }
+        async fn create_issue(&self, _title: &str, _body: &str, _labels: &[&str]) -> Outcome<u64> {
+            Err(refused())
+        }
+        async fn create_sub_issue_link(&self, _parent: u64, _child: u64) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn add_blocked_by(&self, _number: u64, _blocker: u64) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn create_pr(
+            &self,
+            _head: &str,
+            _base: &str,
+            _title: &str,
+            _body: &str,
+        ) -> Outcome<String> {
+            Err(refused())
+        }
+        async fn merge_pr(&self, _pr_ref: &str) -> Outcome<()> {
+            Err(refused())
+        }
+        async fn pr_checks_green(&self, _pr_ref: &str) -> Outcome<bool> {
+            Err(refused())
+        }
+        async fn open_prs_labelled(&self, _label: &str) -> Outcome<Vec<harness_core::domain::Pr>> {
+            Err(refused())
+        }
+        async fn pr_failing_checks(&self, _pr_ref: &str) -> Outcome<Vec<String>> {
+            Err(refused())
+        }
+
+        async fn pr_mergeable(&self, _pr_ref: &str) -> Outcome<Option<bool>> {
+            Err(refused())
+        }
+    }
+
+    fn refused() -> Halt {
+        Halt::Failed("no call should leave this test".to_string())
+    }
+
+    #[tokio::test]
+    async fn the_ports_pane_reads_the_human_tasks_closes_and_hands_over_on_github() {
+        let gh = Rc::new(Recorder::default());
+        let product = GhProduct::new(Rc::clone(&gh) as Rc<dyn GitHub>, "me/alpha", "main_agent");
+        let human = product.human_tasks().await.expect("read");
+        assert_eq!(human.len(), 1);
+        product.close_issue(21, "approved").await.expect("closed");
+        product.to_decide(11, "refused").await.expect("handed over");
+        assert_eq!(
+            gh.0.borrow().clone(),
+            vec![
+                format!("list {} all", labels::HUMAN),
+                "comment #21 approved".to_string(),
+                "close #21".to_string(),
+                "comment #11 refused".to_string(),
+                format!("label #11 {}", labels::NEEDS_DECISION),
+            ]
+        );
+        let folder = DirProduct::new(Path::new("/nowhere"), None, "main_agent");
+        assert!(
+            folder.human_tasks().await.is_err(),
+            "no board behind a folder"
+        );
+        assert!(folder.close_issue(1, "x").await.is_err());
+        assert!(folder.to_decide(1, "x").await.is_err());
     }
 }

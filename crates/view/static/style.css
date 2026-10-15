@@ -690,6 +690,12 @@ ul.prompt-history pre.md { font: 12px/1.45 var(--mono); max-height: 300px; overf
 .dv-resolution { display: block; width: 100%; box-sizing: border-box; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; font: 13px/1.5 var(--sans); }
 .dv-resolution:focus { outline: none; border-color: var(--accent); }
 .dv-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+.pt { max-width: 880px; }
+.pt h4 { margin: 18px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); font-weight: 600; }
+.pt-port, .pt-ask { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.pt-port header { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.pt-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.pt-row input { flex: 1 1 160px; min-width: 0; }
 
 /* The wrench: a change waits for the factory to start again. */
 #dock .sign.changes .shape { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }

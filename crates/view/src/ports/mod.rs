@@ -488,6 +488,38 @@ pub trait Product {
             "no board here: a task cannot be opened".to_string(),
         ))
     }
+
+    /// The tasks a person holds (`harness:human`), open and closed: a port
+    /// to approve, a port's secrets to provide.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or there is no GitHub behind this product.
+    async fn human_tasks(&self) -> Outcome<Vec<Issue>> {
+        Err(Halt::Failed("no board here: no task to read".to_string()))
+    }
+
+    /// Closes an issue, saying why in a comment — a port approved, or
+    /// refused, from the Ports pane.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or there is no GitHub behind this product.
+    async fn close_issue(&self, number: u64, comment: &str) -> Outcome<()> {
+        let _ = (number, comment);
+        Err(Halt::Failed("no board here: nothing to close".to_string()))
+    }
+
+    /// Hands a task to the harness's decision: `comment` on it, and the
+    /// `harness:needs-decision` label — a port refused.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or there is no GitHub behind this product.
+    async fn to_decide(&self, number: u64, comment: &str) -> Outcome<()> {
+        let _ = (number, comment);
+        Err(Halt::Failed("no board here: nothing to decide".to_string()))
+    }
 }
 
 /// The files the creation writes at the product's root, beside `mock/`.

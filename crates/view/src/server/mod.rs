@@ -30,6 +30,7 @@ mod mock_history;
 mod mockup;
 mod notes;
 mod plant;
+mod ports;
 mod prompts;
 pub mod rework;
 mod runs;
@@ -304,6 +305,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/data-model/builds", get(data_builds))
         .route("/api/data-model/builds/{id}/log", get(data_build_log))
         .route("/api/data-model/issue", post(data_issue))
+        .route("/api/ports", get(ports::ports))
+        .route("/api/ports/approve", post(ports::approve))
+        .route("/api/ports/refuse", post(ports::refuse))
+        .route("/api/ports/change", post(ports::change))
         .route("/api/mockup", get(mockup_state))
         .route("/api/mockup/save", post(mockup_save))
         .route("/api/mockup/generate", post(mf_generate))

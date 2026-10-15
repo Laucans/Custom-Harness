@@ -885,6 +885,83 @@
     });
   }
 
+  // ---- The Ports pane: what the product reaches outside itself ----------------------
+  // Read off ports.json on the integration branch (contract Q), beside the
+  // tasks a person holds: a port a session asked for, a port's secrets. The
+  // three gestures write to the board only: approve (the approval closed),
+  // refuse (the task to the harness's decision), change the provider (a
+  // roadmap item, ready).
+  async function portsLoad() {
+    let d = null;
+    let error = '';
+    try {
+      const res = await fetch('/api/ports');
+      if (res.ok) d = await res.json(); else error = await res.text();
+    } catch (e) { error = 'cannot reach the server'; }
+    const host = $('pt');
+    if (!host || !S.pane || S.pane.kind !== 'ports') return;
+    if (!d) { host.innerHTML = `<div class="callout">${esc(error || 'nothing reads the product here')}</div>`; return; }
+    const secretsOf = (id) => d.secrets.filter((x) => x.port === id);
+    const units = (list) => (list.length ? list.map((u) => `<button class="link" data-cap-open="${esc(u)}">${esc(u)}</button>`).join(', ') : '<span class="muted">no unit yet</span>');
+    const asked = d.approvals.length
+      ? '<h4>Asked, waiting on you</h4>' + d.approvals.map((a) => `<div class="pt-ask" data-approval="${a.number}">
+          <div><b>${esc(a.port)}</b> for <button class="link" data-issue="${a.task}">#${a.task}</button> <span class="muted">${esc(a.asked)}</span> <button class="link" data-issue="${a.number}">#${a.number}</button></div>
+          <div class="pt-row"><input type="text" class="pt-why" placeholder="why refused (optional)" aria-label="why the port is refused">
+          <button type="button" class="act primary" data-pt-approve="${a.number}">Approve</button><button type="button" class="act" data-pt-refuse="${a.number}">Refuse</button><span class="muted" data-pt-said></span></div></div>`).join('')
+      : '';
+    const card = (p) => {
+      const secrets = secretsOf(p.id);
+      const state = !p.secrets.length ? '' : secrets.length
+        ? secrets.map((x) => `<button class="link" data-issue="${x.number}">#${x.number}</button> ${tag(x.provided ? 'provided' : 'to provide', x.provided ? 'ok' : 'warn')}`).join(' ')
+        : tag('no task', 'warn');
+      const tech = [p.tech.kind, p.tech.name, p.tech.version].filter(Boolean).join(' · ');
+      const change = p.id === 'database' ? '' : `<div class="pt-row"><input type="text" class="pt-provider" placeholder="another provider" aria-label="the new provider of ${esc(p.id)}"><input type="text" class="pt-why" placeholder="why (optional)" aria-label="why change"><button type="button" class="act" data-pt-change="${esc(p.id)}">Change provider</button><span class="muted" data-pt-said></span></div>`;
+      return `<article class="pt-port" data-port="${esc(p.id)}"><header><code>${esc(p.id)}</code> <b>${esc(p.provider)}</b>${p.stateful ? ' ' + tag('keeps state', 'warn') : ''}<span class="muted"> ${esc(p.purpose)}</span></header>`
+        + kv([['wraps', esc(tech)], ['adapter', `<code>${esc(p.adapter)}</code>`], ['fake', p.fake ? `<code>${esc(p.fake)}</code>` : null], ['used by', units(p.usedBy)], ['secrets', p.secrets.length ? p.secrets.map((x) => `<code>${esc(x)}</code>`).join(' ') + ' ' + state : null], ['cost', esc(p.cost)]])
+        + change + '</article>';
+    };
+    host.innerHTML = (d.missing ? '<div class="callout">No ports.json on the integration branch: this product was initialized before the ports.</div>' : '')
+      + asked
+      + `<h4>The ports <span class="muted">· ${d.ports.length}</span></h4>`
+      + d.ports.map(card).join('')
+      + '<p class="muted">Every dependency outside the product goes through a port; a gate refuses a provider called anywhere else. A port that keeps state is written by DataCapabilities only. A change of provider opens a <code>harness:roadmap</code> item, ready: a new adapter behind the same port, its contract tests green.</p>';
+  }
+  async function portsAct(button, url, body, label) {
+    const said = button.parentElement.querySelector('[data-pt-said]');
+    if (button.getAttribute('aria-disabled') === 'true') return;
+    button.setAttribute('aria-disabled', 'true');
+    if (said) said.textContent = label + '…';
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text);
+      const reply = JSON.parse(text);
+      if (reply.url) { if (said) said.innerHTML = /^https?:/.test(reply.url) ? `opened <a href="${esc(reply.url)}" target="_blank" rel="noopener">${esc(reply.url)}</a>` : `opened ${esc(reply.url)}`; button.removeAttribute('aria-disabled'); return; }
+      portsLoad();
+    } catch (e) {
+      if (said) said.textContent = 'not done: ' + (e.message || e);
+      button.removeAttribute('aria-disabled');
+    }
+  }
+  $('pane-body').addEventListener('click', (e) => {
+    if (!S.pane || S.pane.kind !== 'ports') return;
+    const unit = e.target.closest('[data-cap-open]');
+    if (unit) { openPane({ kind: 'capability', id: unit.dataset.capOpen, branch: '' }); return; }
+    const approve = e.target.closest('[data-pt-approve]');
+    if (approve) { portsAct(approve, '/api/ports/approve', { approval: Number(approve.dataset.ptApprove) }, 'approving'); return; }
+    const refuse = e.target.closest('[data-pt-refuse]');
+    if (refuse) {
+      const why = refuse.closest('[data-approval]').querySelector('.pt-why').value;
+      portsAct(refuse, '/api/ports/refuse', { approval: Number(refuse.dataset.ptRefuse), why }, 'refusing');
+      return;
+    }
+    const change = e.target.closest('[data-pt-change]');
+    if (change) {
+      const row = change.closest('.pt-row');
+      portsAct(change, '/api/ports/change', { port: change.dataset.ptChange, provider: row.querySelector('.pt-provider').value, why: row.querySelector('.pt-why').value }, 'opening the item');
+    }
+  });
+
   // ---- The janitor: what the yard weighs, and a sweep ------------------------------
   // The yard is `.llocal/`: the clones, their build outputs and dependencies,
   // the runs' traces. The janitor weighs it every two hours on their own, or on a
@@ -2537,6 +2614,7 @@
       + `<button class="mini" data-cap-desc title="reverse the order">${p.desc ? '↑' : '↓'}</button>`
       + '<select data-cap-kind aria-label="kind"><option value="">all kinds</option>' + ['capability', 'data_capability'].map((k) => `<option value="${k}" ${p.unit === k ? 'selected' : ''}>${capKind(k)}</option>`).join('') + '</select>'
       + `<button class="mini ${p.fusion ? 'on' : ''}" data-cap-fusion title="pick two units and ask whether they could be one">⚭ fusion</button>`
+      + `<button class="mini" data-pane='${esc(JSON.stringify({ kind: 'ports' }))}' title="what the product reaches outside itself: its ports, their providers, what uses them">⇄ ports</button>`
       + `<button class="mini" data-cap-refresh title="fetch the product's branches again">${S.capsBusy ? '<span class="spin"></span>' : '↻'}</button></div>`;
     const html = `<div class="cap-switch" id="caps-switch">${capSwitch(p)}</div>` + bar + fusionBar(p) + `<div id="caps-list">${capList(p)}</div>`;
     const after = (again) => {
@@ -3067,6 +3145,11 @@
 
     // A diverging data model, diagnosed: the state of affairs, the actions
     // proposed, and the issue the human may open from it.
+    ports(p, refresh) {
+      const html = '<div id="pt" class="pt"><div class="muted">Reading ports.json…</div></div>';
+      return ['Ports · ' + S.snap.project.name, html, (again) => { if (!again) portsLoad(); }, true];
+    },
+
     data_divergence(p, refresh) {
       const html = '<div id="dv" class="dv"><div class="muted">Reading the diagnosis…</div></div>';
       return ['Data model diverges · ' + (p.branch || ''), html, (again) => { if (!again) divergenceLoad(p); }, true];

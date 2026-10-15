@@ -56,7 +56,9 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   janitor, who sweeps `.llocal/` of caches and old traces no run needs, by
   static rules, and the data pane's "Open the issue", which turns a
   diagnosed data-model divergence into a `harness:roadmap` issue on the
-  human's click (`crates/view/ARCHITECTURE.md`). The plant is a
+  human's click (`crates/view/ARCHITECTURE.md`). The Ports pane's Approve,
+  Refuse and Change provider write to the board the same way: a product's
+  ports (`ports.json`, contract Q) are listed there. The plant is a
   **development factory**; the office's second easel is the product's
   design system and its kit of visual components, on the product's
   `design-system` branch (`harness-architecture::kit`, contract O).

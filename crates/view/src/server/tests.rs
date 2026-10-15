@@ -3143,3 +3143,173 @@ async fn an_interface_example_is_uploaded_and_described() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A product with a board in memory: its `ports.json`, the tasks a person
+/// holds, and every write the Ports pane makes.
+#[derive(Default)]
+struct PortsBoard {
+    ports: Option<String>,
+    human: Vec<harness_core::domain::Issue>,
+    wrote: std::sync::Mutex<Vec<String>>,
+}
+
+impl PortsBoard {
+    fn note(&self, line: String) {
+        self.wrote.lock().expect("held").push(line);
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl crate::ports::Product for PortsBoard {
+    fn origin(&self) -> String {
+        "me/alpha".to_string()
+    }
+    fn live_ref(&self) -> String {
+        "main_agent".to_string()
+    }
+    async fn file(
+        &self,
+        path: &str,
+        git_ref: &str,
+    ) -> harness_core::domain::Outcome<Option<String>> {
+        assert_eq!((path, git_ref), ("ports.json", "main_agent"));
+        Ok(self.ports.clone())
+    }
+    async fn branches(&self, _: &str) -> harness_core::domain::Outcome<Vec<String>> {
+        Ok(Vec::new())
+    }
+    async fn open_issue(
+        &self,
+        title: &str,
+        _: &str,
+        labels: &[&str],
+    ) -> harness_core::domain::Outcome<String> {
+        self.note(format!("open {title} [{}]", labels.join(",")));
+        Ok("https://github.com/me/alpha/issues/30".to_string())
+    }
+    async fn human_tasks(&self) -> harness_core::domain::Outcome<Vec<harness_core::domain::Issue>> {
+        Ok(self.human.clone())
+    }
+    async fn close_issue(&self, number: u64, comment: &str) -> harness_core::domain::Outcome<()> {
+        self.note(format!("close #{number}: {comment}"));
+        Ok(())
+    }
+    async fn to_decide(&self, number: u64, comment: &str) -> harness_core::domain::Outcome<()> {
+        self.note(format!("decide #{number}: {comment}"));
+        Ok(())
+    }
+}
+
+/// A mail port on the integration branch, and an llm port asked for #11.
+fn ports_board() -> PortsBoard {
+    PortsBoard {
+        ports: Some(
+            r#"{"version": 1, "ports": [{"id": "mail", "purpose": "receipts", "provider": "Postmark",
+                "tech": {"kind": "rest", "name": "postmark"}, "adapter": "crates/ports/mail/postmark",
+                "fake": "crates/ports/mail", "secrets": ["POSTMARK_TOKEN"], "usedBy": ["billing.send"]}]}"#
+                .to_string(),
+        ),
+        human: vec![harness_core::domain::Issue {
+            number: 21,
+            title: "Approve the port llm for #11: Summaries".to_string(),
+            state: "open".to_string(),
+            body: "> llm — Anthropic, per token, summaries".to_string(),
+            ..harness_core::domain::Issue::default()
+        }],
+        ..PortsBoard::default()
+    }
+}
+
+#[tokio::test]
+async fn the_ports_pane_reads_the_ports_and_writes_only_the_human_s_three_gestures() {
+    let (status, _) = get(state_without_plant(), "/api/ports").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "nothing reads the product");
+    let board = std::rc::Rc::new(ports_board());
+    let shared = std::rc::Rc::clone(&board);
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let (desk, task) = crate::data_desk::open(
+                shared as std::rc::Rc<dyn crate::ports::Product>,
+                Duration::from_secs(60),
+                jiff::tz::TimeZone::UTC,
+            );
+            let task = tokio::task::spawn_local(task);
+            let mut with_board = state_without_plant();
+            with_board.data = Some(desk);
+            let (status, body) = get(with_board.clone(), "/api/ports").await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let read: serde_json::Value = serde_json::from_str(&body).expect("json");
+            assert_eq!(
+                read["ports"][0]["usedBy"],
+                serde_json::json!(["billing.send"])
+            );
+            assert_eq!(read["approvals"][0]["task"], 11);
+            assert_eq!(read["missing"], false);
+
+            let (status, body) = post(
+                with_board.clone(),
+                "/api/ports/approve",
+                r#"{"approval": 9}"#,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+            let (status, _) = post(with_board.clone(), "/api/ports/approve", "nope").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let (status, body) = post(
+                with_board.clone(),
+                "/api/ports/approve",
+                r#"{"approval": 21}"#,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (status, body) = post(
+                with_board.clone(),
+                "/api/ports/refuse",
+                r#"{"approval": 21, "why": "too dear"}"#,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (status, body) = post(
+                with_board.clone(),
+                "/api/ports/change",
+                r#"{"port": "mail", "provider": "Postmark"}"#,
+            )
+            .await;
+            assert_eq!(
+                (status, body.as_str()),
+                (StatusCode::BAD_REQUEST, "Postmark already serves mail")
+            );
+            let (status, _) = post(
+                with_board.clone(),
+                "/api/ports/change",
+                r#"{"port": "sms", "provider": "X"}"#,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            let (status, body) = post(
+                with_board,
+                "/api/ports/change",
+                r#"{"port": "mail", "provider": "Amazon SES", "why": "cost"}"#,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert!(body.contains("issues/30"), "{body}");
+            task.abort();
+        })
+        .await;
+    let wrote = board.wrote.lock().expect("held").clone();
+    assert_eq!(wrote.len(), 4, "{wrote:?}");
+    assert!(
+        wrote[0].starts_with("close #21: Approved from the plant's Ports pane"),
+        "{wrote:?}"
+    );
+    assert_eq!(
+        wrote[1],
+        "decide #11: The port asked — `llm` — is refused: too dear. Decide how this task does without it, or cut it."
+    );
+    assert!(wrote[2].starts_with("close #21: Refused"), "{wrote:?}");
+    assert_eq!(
+        wrote[3],
+        "open Change the provider of the mail port: Postmark → Amazon SES [harness:roadmap,harness:ready]"
+    );
+}

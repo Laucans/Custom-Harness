@@ -20,6 +20,7 @@ use jiff::tz::TimeZone;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::domain::data_versions::{self, FEATURE_PREFIX, Versions};
+use crate::domain::ports_pane;
 use crate::ports::Product;
 use harness_architecture::model::{self as data_model, DataModel, MODEL_PATH, SCHEMA_PATH};
 
@@ -61,6 +62,9 @@ enum Ask {
     Milestone(oneshot::Sender<Result<Option<u64>, String>>),
     RulesStatus(oneshot::Sender<Option<Artifact>>),
     Schema(Wanted, oneshot::Sender<Option<String>>),
+    Ports(oneshot::Sender<Result<ports_pane::Reading, String>>),
+    Close(u64, String, oneshot::Sender<Result<(), String>>),
+    Decide(u64, String, oneshot::Sender<Result<(), String>>),
 }
 
 /// An issue to open on the product's board.
@@ -106,6 +110,55 @@ impl DataDesk {
         let (reply, answer) = oneshot::channel();
         self.tx
             .send(Ask::Issue(issue, reply))
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?;
+        answer
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?
+    }
+
+    /// The product's ports on the integration branch, and the tasks a
+    /// person holds about them.
+    ///
+    /// # Errors
+    ///
+    /// `ports.json` does not read, the read failed, or the desk is gone.
+    pub async fn ports(&self) -> Result<ports_pane::Reading, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Ask::Ports(reply))
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?;
+        answer
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?
+    }
+
+    /// Closes an issue on the product's board, with `comment` saying why.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or the desk is gone.
+    pub async fn close_issue(&self, number: u64, comment: String) -> Result<(), String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Ask::Close(number, comment, reply))
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?;
+        answer
+            .await
+            .map_err(|_| "the data desk is closed".to_string())?
+    }
+
+    /// Hands a task to the harness's decision, with `comment` saying why.
+    ///
+    /// # Errors
+    ///
+    /// GitHub refused, or the desk is gone.
+    pub async fn to_decide(&self, number: u64, comment: String) -> Result<(), String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(Ask::Decide(number, comment, reply))
             .await
             .map_err(|_| "the data desk is closed".to_string())?;
         answer
@@ -190,6 +243,17 @@ pub fn open(
     (DataDesk { tx }, serve(product, rx, live_every, zone))
 }
 
+/// The ports on the live ref, and the tasks a person holds — none when
+/// there is no board to read them from.
+async fn ports(product: &dyn Product) -> Result<ports_pane::Reading, String> {
+    let file = product
+        .file(ports_pane::PATH, &product.live_ref())
+        .await
+        .map_err(|h| h.to_string())?;
+    let human = product.human_tasks().await.unwrap_or_default();
+    ports_pane::reading(file.as_deref(), &human)
+}
+
 struct Kept {
     index: Option<(Instant, Option<Index>)>,
     /// The milestone branches, read with the index.
@@ -238,6 +302,23 @@ async fn serve(
                     .await
                     .map_err(|h| h.to_string());
                 let _ = reply.send(opened);
+            }
+            Ask::Ports(reply) => {
+                let _ = reply.send(ports(&*product).await);
+            }
+            Ask::Close(number, comment, reply) => {
+                let closed = product
+                    .close_issue(number, &comment)
+                    .await
+                    .map_err(|h| h.to_string());
+                let _ = reply.send(closed);
+            }
+            Ask::Decide(number, comment, reply) => {
+                let handed = product
+                    .to_decide(number, &comment)
+                    .await
+                    .map_err(|h| h.to_string());
+                let _ = reply.send(handed);
             }
             Ask::Task(milestone, issue, reply) => {
                 let labels: Vec<&str> = issue.labels.iter().map(String::as_str).collect();
