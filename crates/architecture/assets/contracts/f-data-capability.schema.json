@@ -84,6 +84,12 @@
       },
       "description": "Namespaces that may trigger it: `credit.*`."
     },
+    "ports": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "uniqueItems": true,
+      "description": "The ports of `ports.json` (contract Q) it reaches the outside through, by id."
+    },
     "idempotencyKey": {
       "enum": [
         "required",

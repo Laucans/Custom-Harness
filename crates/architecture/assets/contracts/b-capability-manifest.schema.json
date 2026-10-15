@@ -24,6 +24,12 @@
       "minLength": 1,
       "description": "Read by the composer to pick Micro-UIs and by humans to find the unit."
     },
+    "ports": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "uniqueItems": true,
+      "description": "The ports of `ports.json` (contract Q) it reaches the outside through, by id."
+    },
     "implements": {
       "type": "string",
       "pattern": "^[A-Z][A-Za-z0-9]*@[0-9]+$",

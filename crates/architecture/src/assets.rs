@@ -2,7 +2,7 @@
 //!
 //! Compiled in, so every repository the plant works on carries the same
 //! architecture from the same source: the architecture document, the rules
-//! section of `CLAUDE.md`, the sixteen contracts, the CI gates, the project's
+//! section of `CLAUDE.md`, the seventeen contracts, the CI gates, the project's
 //! CI for its stack, the script that scopes its tests, the one that finds the
 //! dead code the compiler cannot see, the mutation gate's configuration and
 //! its rotation with the script that files what it misses, the script that
@@ -40,8 +40,9 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// The document, the gates, the CI, the test scope, the isolation check, the
 /// dead-code script, the mutants configuration, rotation and test-debt
 /// filing, the schema dump, the data model, the mock-up's files, the
-/// contracts A–P, the rules' gate, runtime and suites.
-pub const FILES: [Asset; 46] = [
+/// contracts A–Q, the ports and the secrets' scaffolding, the rules' gate,
+/// runtime and suites.
+pub const FILES: [Asset; 50] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -191,6 +192,22 @@ pub const FILES: [Asset; 46] = [
         content: include_str!("../assets/contracts/p-rules.schema.json"),
     },
     Asset {
+        path: "contracts/q-ports.schema.json",
+        content: include_str!("../assets/contracts/q-ports.schema.json"),
+    },
+    Asset {
+        path: "ports.json",
+        content: include_str!("../assets/ports.json"),
+    },
+    Asset {
+        path: ".sops.yaml",
+        content: include_str!("../assets/sops.yaml"),
+    },
+    Asset {
+        path: "secrets/README.md",
+        content: include_str!("../assets/secrets-readme.md"),
+    },
+    Asset {
         path: "scripts/rules-gate.mjs",
         content: include_str!("../assets/rules-gate.mjs"),
     },
@@ -286,6 +303,37 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(asset.content)
                 .unwrap_or_else(|e| panic!("{} is not JSON: {e}", asset.path));
         }
+    }
+
+    #[test]
+    fn the_ports_start_with_the_database_and_the_secrets_stay_encrypted() {
+        let ports: serde_json::Value =
+            serde_json::from_str(content_of("ports.json").unwrap_or_default()).expect("json");
+        assert_eq!(ports["version"], 1);
+        assert_eq!(ports["ports"][0]["id"], "database");
+        assert_eq!(ports["ports"][0]["stateful"], true);
+        assert!(content_of("contracts/q-ports.schema.json").is_some());
+        assert!(
+            content_of(".sops.yaml")
+                .unwrap_or_default()
+                .contains("secrets/.*\\.enc\\.yaml$")
+        );
+        assert!(content_of("secrets/README.md").is_some());
+        for contract in [
+            "contracts/b-capability-manifest.schema.json",
+            "contracts/f-data-capability.schema.json",
+        ] {
+            assert!(
+                content_of(contract)
+                    .unwrap_or_default()
+                    .contains("\"ports\""),
+                "{contract} names its ports"
+            );
+        }
+        assert!(
+            CLAUDE_RULES.contains("goes through a port")
+                && CLAUDE_RULES.contains("AGENT_LOOP_STOP: port")
+        );
     }
 
     #[test]

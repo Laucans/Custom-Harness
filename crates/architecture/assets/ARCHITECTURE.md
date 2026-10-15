@@ -412,6 +412,43 @@ reject at the head if an invariant or a cascade forbids it, and the
 Messages travel over **server-sent events** from the Integrity DataGuard, one
 subscription per author; infrastructure components subscribe the same way.
 
+## Ports: what the product reaches outside
+
+Everything outside the product — a third-party API, a SaaS, payment, mail,
+object storage, an LLM, identity, and the product's own PostgreSQL — is
+reached through a **port**, and `ports.json` (contract Q) lists them all:
+what is outside, who provides it, what wraps it, what it costs, which
+secrets it needs, and which units use it. Seeing the dependencies is the
+first purpose; switching a provider the second; refusing the calls that
+bypass a port is how the list stays true.
+
+- **Named by function, never by provider.** `payments`, `mail`,
+  `object-storage`, `llm`, `identity`, `database`. Changing Stripe for
+  Mollie renames nothing.
+- **A port is a crate, `crates/ports/<port>/`**: the trait the product
+  calls, its **contract tests** (one suite every adapter of the port must
+  pass), and a **fake** the tests, the CI, the rules' runtime and the
+  mock-up run on — no secret, no cost, no network. An **adapter** wraps one
+  provider in `crates/ports/<port>/<provider>/`.
+- **Stateful or not.** A provider that keeps state (a customer, a file, a
+  user) is `stateful`: our Data stays the truth. Only a DataCapability
+  writes through the port, after the DataGuard, and the Capabilities read
+  our mirror, never the provider. A stateless port (an LLM, a geocoder) may
+  be called by a Capability directly. Each unit names its ports in its
+  manifest (`ports`), and each port lists them back (`usedBy`).
+- **PostgreSQL is a port, listed, not abstracted.** The Data layer keeps
+  what PostgreSQL gives (the DataQueue as a table, `LISTEN/NOTIFY`, views):
+  the port makes it visible, not interchangeable.
+- **Secrets by name.** A port lists the secrets it needs; their values live
+  encrypted with sops in `secrets/<env>.enc.yaml`, provided by a human.
+  No agent ever sees one, and the tests never need one.
+- **A new port is a human's decision.** The factory's design proposes the
+  ports and the human chooses the providers; a port a development finds it
+  needs is approved by a human before it exists.
+- **Switching provider** is one task: a new adapter behind the same port,
+  green on the port's contract tests and the rules' tests; for a stateful
+  port, our state replayed to the new provider.
+
 ## Interface contracts
 
 Fourteen contracts define every frontier. They live as **JSON Schema (draft
@@ -437,6 +474,7 @@ writing: they are the first to stabilise.
 | N. Mock pages | Mock-up ↔ screens | Human, UI agents |
 | O. Design system and kit | Tokens and visual components ↔ every screen | Human, UI agents |
 | P. Rules | What the product keeps ↔ the tests that prove it | Human (in the factory's design), rules' agent |
+| Q. Ports | The product ↔ everything outside it | Human (in the factory's design, and every new port), the agents that build adapters |
 
 ### A. Concept
 
@@ -760,6 +798,18 @@ them; every development after conforms to them:
   meet is **contested**, and the rules' task settles it. A rule changed after
   the start is rewritten with its tests by the rules' task and marked
   `conform` until a task brings the code to it.
+
+### Q. Ports
+
+```json
+{"version": 1, "ports": [{
+  "id": "payments", "purpose": "charge the subscription", "stateful": true,
+  "provider": "Stripe", "tech": {"kind": "sdk", "name": "async-stripe", "version": "0.39"},
+  "adapter": "crates/ports/payments/stripe", "fake": "crates/ports/payments",
+  "secrets": ["STRIPE_SECRET_KEY"], "cost": "1.5% + 0.25€ per charge",
+  "usedBy": ["billing.chargeSubscription"]
+}]}
+```
 
 ## CI gates
 

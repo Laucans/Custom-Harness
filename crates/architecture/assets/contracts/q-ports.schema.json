@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.agent-native.dev/q-ports.schema.json",
+  "title": "Q. Ports",
+  "description": "`ports.json`: every dependency outside the product — a third-party API, a SaaS, payment, mail, object storage, an LLM, identity, the product's own Postgres — behind a port named by its business function, with the adapter that wraps the provider, the fake the tests and the mock-up run on, the secrets it needs (names only), its cost, and the units that use it. What the factory shows, and what a provider switch replaces.",
+  "type": "object",
+  "required": ["version", "ports"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "ports": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/port" }
+    }
+  },
+  "$defs": {
+    "port": {
+      "type": "object",
+      "required": ["id", "purpose", "stateful", "provider", "tech", "adapter", "fake", "secrets", "usedBy"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The business function, never the provider: `payments`, `mail`, `object-storage`, `llm`, `identity`, `database`.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "purpose": {
+          "description": "What the product needs from outside, in a sentence.",
+          "type": "string",
+          "minLength": 1
+        },
+        "stateful": {
+          "description": "The provider keeps state (a customer, a file, a user). Our Data is the truth: only DataCapabilities write through it, and Capabilities read our mirror, never the provider.",
+          "type": "boolean"
+        },
+        "provider": {
+          "description": "Who answers today: `Stripe`, `PostgreSQL 16`, `Anthropic`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "tech": {
+          "description": "What wraps the provider.",
+          "type": "object",
+          "required": ["kind", "name"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "enum": ["sdk", "rest", "graphql", "sql", "smtp", "grpc", "other"] },
+            "name": {
+              "description": "The SDK, crate, package or API: `stripe-rust`, `aws-sdk-s3`, `sqlx`, `api.mailgun.net v3`.",
+              "type": "string",
+              "minLength": 1
+            },
+            "version": { "type": "string" }
+          }
+        },
+        "adapter": {
+          "description": "The real adapter's crate, relative to the root: `crates/ports/payments/stripe`.",
+          "type": "string",
+          "pattern": "^crates/"
+        },
+        "fake": {
+          "description": "The fake every test, the rules' runtime and the mock-up run on: `crates/ports/payments` (its `fake` module). Postgres has none: it runs in Docker.",
+          "type": "string"
+        },
+        "secrets": {
+          "description": "The secrets it needs, by name, never their values: kept encrypted with sops in `secrets/<env>.enc.yaml`.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+        },
+        "cost": {
+          "description": "How it is paid, its quotas: `per transaction, 1.5% + 0.25€`.",
+          "type": "string"
+        },
+        "usedBy": {
+          "description": "The Capabilities (reads, stateless ports only) and DataCapabilities (writes) that name it in their manifests' `ports`.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*\\.[A-Za-z][A-Za-z0-9]*$" }
+        }
+      }
+    }
+  }
+}

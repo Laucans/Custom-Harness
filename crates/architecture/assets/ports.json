@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "ports": [
+    {
+      "id": "database",
+      "purpose": "The product's store: the Data, the DataQueue, the read models — listed, not abstracted.",
+      "stateful": true,
+      "provider": "PostgreSQL 16",
+      "tech": { "kind": "sql", "name": "postgres", "version": "16" },
+      "adapter": "crates/dataguard",
+      "fake": "",
+      "secrets": ["DATABASE_URL"],
+      "cost": "the host's",
+      "usedBy": []
+    }
+  ]
+}

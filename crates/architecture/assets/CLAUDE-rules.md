@@ -56,10 +56,14 @@ mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI (`source` in 
 mock/fixtures/*.json               what the Capabilities would answer
 mock/mock.js                       the loader: fills every data-component element from components/
 scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)
-contracts/*.schema.json            the sixteen contracts, JSON Schema 2020-12
+contracts/*.schema.json            the seventeen contracts, JSON Schema 2020-12
 rules.json                         the rules the product keeps, with their criteria (contract P)
 tests/rules/business/  tests/rules/journey/   the rules' tests, written before the code (contract P)
 scripts/rules-runtime.sh           installed, changed by nobody: starts the product for the rules' tests (serve, stop)
+ports.json                         every dependency outside the product, behind a port (contract Q)
+crates/ports/<port>/               a port: its trait, its contract tests, its `fake`
+crates/ports/<port>/<provider>/    the adapter that wraps one provider
+.sops.yaml  secrets/<env>.enc.yaml the secrets, encrypted with sops; names only in ports.json
 crates/server/                     the one binary serving the shell's wire protocol and GET /health; reads PORT, DATABASE_URL, FIXTURES_DIR
 apps/shell/                        the frontend's host: npm scripts build and serve (PORT, SERVER_URL), a frozen screen at /screens/<screen>
 ```
@@ -187,4 +191,28 @@ apps/shell/                        the frontend's host: npm scripts build and se
   keep it true to what gets built.
 - Run the gates locally where they exist (`npx ajv-cli validate` on the
   manifest, the isolation check), then the project's own tests.
+
+16. **Everything outside the product goes through a port.** A third-party
+    API, a SaaS, payment, mail, object storage, an LLM, identity, the
+    product's own Postgres: each is a **port** in `ports.json` (contract Q),
+    named by its business function (`payments`, never `stripe`), with the
+    adapter that wraps the provider (`crates/ports/<port>/<provider>/`), the
+    fake every test, the rules' runtime and the mock-up run on (the `fake`
+    module of `crates/ports/<port>/`, beside the port's trait and its
+    contract tests — the same tests for every adapter), the secrets it needs
+    by name, its cost, and the units that use it (`usedBy`, matching each
+    manifest's `ports`). No HTTP client, provider SDK or database client
+    outside a port's adapter (Postgres: the Data layer, declared as the
+    `database` port) — a gate refuses it. A provider that **keeps state** (a
+    customer, a file, a user) is `stateful`: our Data is the truth, only a
+    DataCapability writes through it and a Capability reads our mirror, never
+    the provider; a Capability may call a stateless port (an LLM, a
+    geocoder) directly. A port your task needs and `ports.json` has not is
+    **not yours to add**: stop with `AGENT_LOOP_STOP: port <id> — <provider>,
+    <cost>, <why>` and a human approves it. Secrets are never written in
+    clear: `secrets/<env>.enc.yaml`, encrypted with sops (`.sops.yaml`), the
+    values a human's to provide; tests never need them. Switching provider is
+    a new adapter behind the same port, its contract tests and the rules'
+    tests green.
+
 <!-- /harness:architecture -->

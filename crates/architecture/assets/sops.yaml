@@ -1,0 +1,7 @@
+# sops: the product's secrets, committed encrypted (secrets/<env>.enc.yaml).
+# Installed by `harness init-repo`. Put the human's age public key below
+# (`age-keygen -y ~/.config/sops/age/keys.txt`); the private key stays with
+# the human and in the GitHub Actions secret SOPS_AGE_KEY, never in the repo.
+creation_rules:
+  - path_regex: secrets/.*\.enc\.yaml$
+    age: REPLACE_WITH_THE_AGE_PUBLIC_KEY
