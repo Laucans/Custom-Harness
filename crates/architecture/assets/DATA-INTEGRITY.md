@@ -74,8 +74,10 @@ partitions advance in parallel.
 3. **Overwrite confirmation.** If a value is declared ahead of its command, the
    author is notified and confirms or cancels. A confirmed command overwrites
    in its turn.
-4. **Parked.** A command that reaches the head without confirmation is set
-   aside and the queue goes on. The author is notified.
+4. **Parked.** A command that reaches the head without confirmation waits
+   there for its author's answer a short grace (30 seconds, the time an
+   HTTP confirmation takes), then is set aside and the queue goes on. The
+   author is notified.
 5. **Back in the queue.** The author of a parked command may ask for a recompute
    of the projected state: the command returns to the end of the queue, with a
    new base, and they confirm against this new view.
@@ -100,6 +102,7 @@ invariants are checked, at application.
 |---|---|
 | A hold's `ttl` | 1 minute, renewable while the workflow that holds it is alive |
 | A parked command's `ttl` | 24 hours — a human confirmation takes hours, not seconds |
+| The grace at the head before parking | 30 seconds — the time an HTTP confirmation takes to arrive |
 
 ### Why a confirmation stays valid
 

@@ -416,6 +416,7 @@ mod tests {
                     state: crate::command::State::Queued,
                     confirmation: None,
                     parked: None,
+                    at_head_since: None,
                     requeued_from: None,
                     idempotency_key: None,
                 })
@@ -424,6 +425,21 @@ mod tests {
                 .unique_key
                 .as_deref(),
             Some("Account/881")
+        );
+        // The migration runs on every start: on the tables it made, it
+        // changes nothing.
+        store
+            .client()
+            .lock()
+            .await
+            .batch_execute(MIGRATION)
+            .await
+            .expect("idempotent");
+        assert_eq!(store.data_version().await.expect("read"), 1, "untouched");
+        assert_eq!(
+            store.row("Account/881").await.expect("read")["creditLimit"],
+            Value::from(8000),
+            "untouched"
         );
         driver.abort();
     }

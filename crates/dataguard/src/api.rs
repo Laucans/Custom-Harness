@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn a_submission_reads_the_shape_the_mock_server_sends() {
-        let json = r#"{"dataCapability":"credit.requestLimitChange@2","payload":{"newLimit":4500},"targetId":"881","basedOn":{"version":10,"values":{"creditLimit":5000}},"caller":{"by":"carol","from":"credit.LimitReviewForm","permissions":["credit.limit.write"]}}"#;
+        let json = r#"{"dataCapability":"credit.requestLimitChange@2","payload":{"creditLimit":4500},"targetId":"881","basedOn":{"version":10,"values":{"creditLimit":5000}},"caller":{"by":"carol","from":"credit.LimitReviewForm","permissions":["credit.limit.write"]}}"#;
         let submission: Submission = serde_json::from_str(json).expect("the wire shape");
         assert_eq!(submission.data_capability, "credit.requestLimitChange@2");
         assert_eq!(submission.target_id.as_deref(), Some("881"));

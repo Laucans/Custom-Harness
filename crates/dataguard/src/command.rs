@@ -142,6 +142,10 @@ pub struct Entry {
     /// Who confirmed, when confirmed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation: Option<String>,
+    /// The instant it reached the head unconfirmed: the grace to confirm
+    /// counts from it. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_head_since: Option<u64>,
     /// How it waits, when parked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parked: Option<Parked>,
@@ -232,6 +236,7 @@ mod tests {
             state: State::Queued,
             confirmation: None,
             parked: None,
+            at_head_since: None,
             requeued_from: None,
             idempotency_key: None,
         }

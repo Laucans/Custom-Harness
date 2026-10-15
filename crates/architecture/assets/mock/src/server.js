@@ -136,7 +136,7 @@ export function mockServer() {
   const resultOf = (entry) => ({ commandId: entry.commandId, status: entry.state, dataVersion: entry.dataVersion || null, violations: entry.violations || [], reviewId: entry.reviewId || null });
   const answer = (entry, replayed = false) => json({ commandId: entry.commandId, partition: entry.partition, replayed, warnings: entry.warnings || [], result: resultOf(entry) }, 202);
 
-  /** Applies every head that is ready, partition by partition; a head unconfirmed for `parkAfterMs` is parked (the real engine parks it when its applier passes). */
+  /** Applies every head that is ready, partition by partition; a head unconfirmed for `parkAfterMs` at the head is parked (the engine's grace, 30 s). */
   const drive = async () => {
     for (const partition of new Set([...s.queue.values()].filter((e) => !FINAL.has(e.state)).map((e) => e.partition))) {
       for (;;) {
@@ -144,7 +144,8 @@ export function mockServer() {
         if (!head) break;
         if (head.state === 'awaiting_review') break;
         if (head.state === 'awaiting_confirmation') {
-          if (Date.now() - head.since < s.parkAfterMs) break;
+          if (head.atHeadSince === undefined) head.atHeadSince = Date.now();
+          if (Date.now() - head.atHeadSince < s.parkAfterMs) break;
           head.state = 'parked';
           s.tell('Parked', head.by, head.commandId, { reason: 'reached the head unconfirmed', actions: ['requeue', 'cancel'] });
           continue;
@@ -192,7 +193,7 @@ export function mockServer() {
     const commandId = uuid();
     const aggregate = target.aggregate || null;
     const partition = `${aggregate || dataCapability}/${targetId || commandId}`;
-    const entry = { commandId, dataCapability, version: Number(version) || 1, aggregate, partition, targetId, by, payload, basedOn: body.basedOn, idempotencyKey: body.idempotencyKey, handler, position: s.next(), state: 'queued', warnings: [], since: Date.now() };
+    const entry = { commandId, dataCapability, version: Number(version) || 1, aggregate, partition, targetId, by, payload, basedOn: body.basedOn, idempotencyKey: body.idempotencyKey, handler, position: s.next(), state: 'queued', warnings: [] };
     s.queue.set(commandId, entry);
     s.commands.set(commandId, entry);
     if (!handler) {
@@ -240,7 +241,7 @@ export function mockServer() {
     } else if (verb === 'requeue') {
       if (entry.state !== 'parked') return refused(`${id} is ${entry.state}, not parked`);
       entry.state = 'cancelled';
-      const fresh = { ...entry, commandId: `${id}-r`, position: s.next(), state: 'queued', warnings: [], requeuedFrom: id, aheadOf: undefined, since: Date.now() };
+      const fresh = { ...entry, commandId: `${id}-r`, position: s.next(), state: 'queued', warnings: [], requeuedFrom: id, aheadOf: undefined, atHeadSince: undefined };
       s.queue.set(fresh.commandId, fresh);
       s.commands.set(fresh.commandId, fresh);
       const ahead = declaredAhead(fresh);

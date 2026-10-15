@@ -251,6 +251,7 @@ impl Engine {
             state: State::Queued,
             confirmation: None,
             parked: None,
+            at_head_since: None,
             requeued_from: None,
             idempotency_key: submission.idempotency_key.clone(),
         };
@@ -987,6 +988,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // The contract's scenario, whole: its length is the scenario's.
+    #[allow(clippy::too_many_lines)]
     async fn the_contract_s_scenario_end_to_end() {
         // Alice declares 8000, Bob 3000 on the same base: Bob is asked.
         let plant = plant(account(5000));
@@ -1021,18 +1024,39 @@ mod tests {
             plant.engine.confirm(&carol.command_id, "mallory").await,
             Err(Error::Forbidden(_))
         ));
-        // One run: Alice applied, Bob parked, Carol applied after.
+        // One run: Alice applied, Bob waits at the head for his grace, the
+        // partition with him. The grace over, a run parks Bob and applies
+        // Carol after.
+        let results = plant.engine.run_once().await.expect("ran");
+        assert_eq!(
+            results.iter().map(|r| r.status).collect::<Vec<_>>(),
+            [State::Applied],
+            "Alice alone: Bob holds the partition while he may still confirm"
+        );
+        assert_eq!(
+            plant
+                .engine
+                .status(&bob.command_id)
+                .await
+                .expect("waiting")
+                .status,
+            State::AwaitingConfirmation
+        );
+        plant.clock.set(1000 + crate::queue::CONFIRM_GRACE_SECONDS);
         let results = plant.engine.run_once().await.expect("ran");
         let statuses: Vec<(String, State)> = results
             .iter()
             .map(|r| (r.command_id.clone(), r.status))
             .collect();
+        assert_eq!(statuses, [(carol.command_id.clone(), State::Applied)]);
         assert_eq!(
-            statuses,
-            [
-                (alice.command_id.clone(), State::Applied),
-                (carol.command_id.clone(), State::Applied)
-            ]
+            plant
+                .engine
+                .status(&alice.command_id)
+                .await
+                .expect("journaled")
+                .status,
+            State::Applied
         );
         assert_eq!(
             plant.store.row_now("Account/881")["creditLimit"],
@@ -1091,6 +1115,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_author_who_confirms_during_the_grace_is_applied_not_parked() {
+        let plant = plant(account(5000));
+        plant
+            .engine
+            .submit(limit("alice", 8000, 5000))
+            .await
+            .expect("queued");
+        let bob = plant
+            .engine
+            .submit(limit("bob", 3000, 5000))
+            .await
+            .expect("asked");
+        plant
+            .engine
+            .run_once()
+            .await
+            .expect("ran: alice applied, bob at the head");
+        plant.clock.set(1000 + 10);
+        plant
+            .engine
+            .confirm(&bob.command_id, "bob")
+            .await
+            .expect("in time, over HTTP");
+        let results = plant.engine.run_once().await.expect("ran");
+        assert_eq!(
+            results.iter().map(|r| r.status).collect::<Vec<_>>(),
+            [State::Applied]
+        );
+        assert_eq!(
+            plant.store.row_now("Account/881")["creditLimit"],
+            Value::from(3000)
+        );
+        assert!(
+            !plant
+                .notifier
+                .to("bob")
+                .iter()
+                .any(|m| m.message == Kind::Parked),
+            "never parked"
+        );
+    }
+
+    #[tokio::test]
     async fn a_parked_command_left_alone_expires_after_a_day() {
         let plant = plant(account(5000));
         plant
@@ -1104,7 +1171,11 @@ mod tests {
             .await
             .expect("queued");
         plant.engine.run_once().await.expect("ran");
-        plant.clock.set(1000 + crate::queue::PARKED_TTL_SECONDS);
+        plant.clock.set(1000 + crate::queue::CONFIRM_GRACE_SECONDS);
+        plant.engine.run_once().await.expect("ran");
+        plant
+            .clock
+            .set(1000 + crate::queue::CONFIRM_GRACE_SECONDS + crate::queue::PARKED_TTL_SECONDS);
         let results = plant.engine.run_once().await.expect("ran");
         assert_eq!(
             results.iter().map(|r| r.status).collect::<Vec<_>>(),

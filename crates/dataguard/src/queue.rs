@@ -22,6 +22,11 @@ pub const PARKED_TTL_SECONDS: u64 = 24 * 3600;
 /// How long before a parked command's expiry its author is warned.
 pub const PARKED_WARNING_SECONDS: u64 = 3600;
 
+/// How long an unconfirmed command may sit at the head before it is
+/// parked: the time an HTTP `confirm` takes to arrive, as the mock gives
+/// it (`parkAfterMs`).
+pub const CONFIRM_GRACE_SECONDS: u64 = 30;
+
 /// How long before a hold's expiry its owner is warned.
 pub const HOLD_WARNING_SECONDS: u64 = 15;
 
@@ -244,6 +249,7 @@ impl Queue {
         }
         entry.state = State::Confirmed;
         entry.confirmation = Some(by.to_string());
+        entry.at_head_since = None;
         Ok(entry)
     }
 
@@ -351,6 +357,7 @@ impl Queue {
         let fresh = Entry {
             command: format!("{command}-r"),
             parked: None,
+            at_head_since: None,
             requeued_from: Some(command.to_string()),
             ..old.clone()
         };
@@ -419,8 +426,9 @@ impl Queue {
     }
 
     /// Looks at the head of `partition`: what it is ready for. A head that
-    /// reached the front unconfirmed is parked here, and the queue goes on:
-    /// a parked entry is set aside, never the head again.
+    /// reached the front unconfirmed waits [`CONFIRM_GRACE_SECONDS`] for its
+    /// author, then is parked here and the queue goes on: a parked entry is
+    /// set aside, never the head again.
     pub fn advance(&mut self, partition: &str, now: u64) -> (Step, Vec<Message>) {
         let head = self
             .pending_in(partition)
@@ -445,16 +453,23 @@ impl Queue {
             State::Queued | State::Confirmed => (Step::Ready(head), Vec::new()),
             State::AwaitingReview => (Step::Waiting(head), Vec::new()),
             State::AwaitingConfirmation => {
-                if let Ok(entry) = self.entry_mut(&head) {
-                    entry.state = State::Parked;
-                    entry.parked = Some(Parked {
-                        ttl_seconds: PARKED_TTL_SECONDS,
-                        since: now,
-                        warned: false,
-                    });
+                let Ok(entry) = self.entry_mut(&head) else {
+                    return (Step::Empty, Vec::new());
+                };
+                let since = *entry.at_head_since.get_or_insert(now);
+                if now.saturating_sub(since) < CONFIRM_GRACE_SECONDS {
+                    return (Step::Waiting(head), Vec::new());
                 }
+                entry.state = State::Parked;
+                entry.parked = Some(Parked {
+                    ttl_seconds: PARKED_TTL_SECONDS,
+                    since: now,
+                    warned: false,
+                });
                 let message = Message {
-                    reason: Some("reached the head unconfirmed".to_string()),
+                    reason: Some(format!(
+                        "reached the head unconfirmed, {CONFIRM_GRACE_SECONDS}s ago"
+                    )),
                     actions: vec![Action::Requeue, Action::Cancel],
                     ..Message::new(Kind::Parked, &[&by], &head)
                 };
@@ -586,6 +601,7 @@ mod tests {
             state: State::Queued,
             confirmation: None,
             parked: None,
+            at_head_since: None,
             requeued_from: None,
             idempotency_key: None,
         }
@@ -686,6 +702,36 @@ mod tests {
     }
 
     #[test]
+    fn a_head_confirmed_during_its_grace_is_never_parked() {
+        let mut queue = Queue::default();
+        queue.submit(
+            entry("c_1", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
+            row(5000),
+            false,
+        );
+        queue.submit(
+            entry("c_2", "bob", "creditLimit", 3000, Mode::ConfirmOnStale),
+            row(5000),
+            false,
+        );
+        queue.applied("c_1", 1).expect("applied");
+        let (step, _) = queue.advance("Account/881", 1000);
+        assert_eq!(step, Step::Waiting("c_2".to_string()), "the grace starts");
+        queue.confirm("c_2", "bob").expect("in time");
+        assert_eq!(
+            queue.entry("c_2").and_then(|e| e.at_head_since),
+            None,
+            "nothing left to count"
+        );
+        let (step, _) = queue.advance("Account/881", 1000 + CONFIRM_GRACE_SECONDS * 10);
+        assert_eq!(
+            step,
+            Step::Ready("c_2".to_string()),
+            "confirmed, whatever the clock says"
+        );
+    }
+
+    #[test]
     fn a_critical_field_waits_for_its_review() {
         let mut queue = Queue::default();
         let (waiting, _) = queue.submit(
@@ -756,13 +802,20 @@ mod tests {
         );
         assert_eq!(said[0].data_version, Some(11));
         assert_eq!(said[0].to, ["alice", "infrastructure"]);
-        // Bob reaches the head unconfirmed: parked, and the queue goes on to Carol.
+        // Bob reaches the head unconfirmed: the partition waits for him
+        // for the grace, then he is parked and the queue goes on to Carol.
+        assert_eq!(CONFIRM_GRACE_SECONDS, 30);
         let (step, said) = queue.advance("Account/881", 100);
+        assert_eq!(step, Step::Waiting("c_123".to_string()));
+        assert!(said.is_empty(), "expected nothing");
+        let (step, _) = queue.advance("Account/881", 100 + CONFIRM_GRACE_SECONDS - 1);
+        assert_eq!(step, Step::Waiting("c_123".to_string()), "still in grace");
+        let (step, said) = queue.advance("Account/881", 100 + CONFIRM_GRACE_SECONDS);
         assert_eq!(step, Step::Parked("c_123".to_string()));
         assert_eq!(kinds(&said), [Kind::Parked]);
         assert_eq!(
             said[0].reason.as_deref(),
-            Some("reached the head unconfirmed")
+            Some("reached the head unconfirmed, 30s ago")
         );
         assert_eq!(said[0].actions, [Action::Requeue, Action::Cancel]);
         assert_eq!(queue.entry("c_123").map(|e| e.state), Some(State::Parked));
@@ -778,7 +831,8 @@ mod tests {
             row(8000),
             false,
         );
-        let (_, _) = queue.advance("Account/881", 100);
+        queue.advance("Account/881", 100);
+        queue.advance("Account/881", 100 + CONFIRM_GRACE_SECONDS);
         assert_eq!(queue.entry("c_123").map(|e| e.state), Some(State::Parked));
         queue.submit(
             entry("c_140", "dave", "creditLimit", 6000, Mode::Overwrite),
@@ -815,6 +869,7 @@ mod tests {
             row(8000),
             false,
         );
+        other.advance("Account/881", 1000 - CONFIRM_GRACE_SECONDS);
         other.advance("Account/881", 1000);
         assert_eq!(PARKED_TTL_SECONDS, 86_400, "a day");
         assert_eq!(PARKED_WARNING_SECONDS, 3_600, "an hour before");
@@ -859,7 +914,8 @@ mod tests {
         assert_eq!(said[0].to, ["bob"]);
         assert_eq!(said[0].reason.as_deref(), Some("c_120 was resolved"));
         assert!(matches!(queue.cancel("c_120"), Err(Error::NotNow(_))));
-        let (step, _) = queue.advance("Account/881", 0);
+        queue.advance("Account/881", 0);
+        let (step, _) = queue.advance("Account/881", CONFIRM_GRACE_SECONDS);
         assert_eq!(
             step,
             Step::Parked("c_123".to_string()),
@@ -996,8 +1052,9 @@ mod tests {
             // Drive the partition to the end: every step either applies the
             // head, parks it, or finds the partition empty.
             let mut applied: Vec<u64> = Vec::new();
-            for _ in 0..40 {
-                match queue.advance("Account/881", 0).0 {
+            for tick in 0..40u64 {
+                // Time passes faster than the grace: a head left unconfirmed is parked.
+                match queue.advance("Account/881", tick * CONFIRM_GRACE_SECONDS).0 {
                     Step::Ready(head) => {
                         let position = queue.entry(&head).expect("entry").position;
                         applied.push(position);

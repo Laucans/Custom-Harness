@@ -62,7 +62,8 @@ engine; a new store is an implementation of `Store`, never a branch in it.
 1. Time passes: parked commands past their `ttl` expire, holds past theirs
    are released, their owners warned beforehand.
 2. For each partition with something pending, the head is looked at: blocked
-   by a hold, waiting for a review, or ready. An unconfirmed head is parked
+   by a hold, waiting for a review, or ready. An unconfirmed head holds its
+   partition for a grace of 30 s (`CONFIRM_GRACE_SECONDS`), then is parked
    and set aside; the next one is the head.
 3. A ready head is classified **at execution** (`guard::classify` on what the
    store reports: a unique key, a trigger, a dangling reference): a pure

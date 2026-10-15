@@ -279,6 +279,7 @@ mod tests {
             state: State::Confirmed,
             confirmation: None,
             parked: None,
+            at_head_since: None,
             requeued_from: None,
             idempotency_key: None,
         }
