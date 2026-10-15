@@ -22,7 +22,7 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   and how the dependencies form. Current detail per crate in
   `crates/<crate>/ARCHITECTURE.md`; read the one for the crate you are touching
   before moving a file or adding a module.
-- Cargo workspace, eight crates, one direction only:
+- Cargo workspace, nine crates, one direction only:
   `harness-launcher` (bin) → `harness-workflows` (lib) → `harness-core`
   (lib), and `harness-view` (bin) beside the launcher on the same arrow.
   `harness-adapters` (lib) is the outside: it depends on `core`, and only
@@ -62,7 +62,12 @@ The objective is to build a re-usable harness, first workflow will focus onto de
   `design-system` branch (`harness-architecture::kit`, contract O).
   The drawing is `harness-view-render`, a Bevy scene compiled to WebAssembly
   by `scripts/build-render.sh`; it depends on none of the other crates
-  (`crates/view-render/ARCHITECTURE.md`).
+  (`crates/view-render/ARCHITECTURE.md`). The ninth crate,
+  `harness-dataguard`, is the products' write side (DataQueue, DataGuard,
+  Resolver, messages) written once; it depends on none of the others, its
+  traits are `Send` because it runs in a product's server, and `init-repo`
+  installs the server skeleton that takes it by `git`
+  (`crates/dataguard/ARCHITECTURE.md`).
 - `edition = "2024"`, pinned `rust-version` (MSRV) at the workspace level
   (`[workspace.package]`); each crate's `Cargo.toml` inherits it
   (`edition.workspace = true`). Toolchain pinned via `rust-toolchain.toml`.

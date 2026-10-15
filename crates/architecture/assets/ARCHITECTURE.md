@@ -106,9 +106,13 @@ A **micro-frontend** is a Micro-UI as the mock shows it, declared in
 (contract D) carries. Once the Micro-UI is built, the micro-frontend is
 **its real code**: an entry `mock/src/<MicroUi>.js` mounts it on the shell
 client over the **mock server** `harness init-repo` installs
-(`mock/src/server.js`), which answers the shell's wire protocol in memory —
-reads from `mock/fixtures/` or the product's `mock/src/reads.js`, commands
-judged as the DataGuard would by `mock/src/commands.js`, applied,
+(`mock/src/server.js`), which answers the shell's wire protocol in memory
+and behaves as the DataGuard engine does — reads from `mock/fixtures/` or the
+product's `mock/src/reads.js`; commands judged by the aggregate's invariants
+(`mock/fixtures/aggregates/<Aggregate>.json`) and by `mock/src/commands.js`,
+one queue per partition with the states of contract G (`queued`,
+`awaiting_confirmation`, `parked`, `awaiting_review`, …), the messages of
+contract L, a DataCapability nobody handles **rejected**; applied,
 `dataVersion` bumped so every micro-frontend on the page refetches — with
 the installed **screen host** (`mock/src/screen.js`: the `$ctx.<name>`
 context a frozen screen composes with, contract E); `mock/build.sh` bundles

@@ -137,8 +137,9 @@ Where it lives: crates/<system>/data-capabilities/<name>/ — a folder, one
 Cargo crate named after its folder, with data-capability.json beside
 Cargo.toml (contract F, contracts/f-data-capability.schema.json). Its
 system is the DataGuard's. Adding one edits no shared file but the server's
-`[dependencies]` line (crates/<system>/server/Cargo.toml): the server's
-build script registers every folder.
+`[dependencies]` line (crates/dataguard/server/Cargo.toml, installed by
+the harness: its build script registers every manifest, and the engine it
+binds — harness-dataguard, taken by git — is never yours to read or edit).
 
 Its manifest: `dataCapability` (`<system>.<name>`), `owner: dataguard`,
 `version`, `effect` (insert | update | delete | upsert), `target` (the

@@ -200,8 +200,9 @@ le lisent jamais (il est hors de leur fermeture, seule son API publique y est).
 
 - Nouveau crate `harness-dataguard` (lib, `crates/dataguard/`), **hors du graphe
   du harness** comme `harness-view-render` : ne dépend d'aucun crate du workspace,
-  Postgres via `sqlx`, `#[async_trait(?Send)]` non requis (runtime produit, multi-
-  thread). Les produits le prennent par `git = …, tag = …` ; `init-repo` installe
+  Postgres via `tokio-postgres` (fait : `sqlx` verrouille un `libsqlite3-sys` qui
+  entre en conflit avec celui de `rusqlite` dans `harness-adapters`),
+  `#[async_trait(?Send)]` non requis (runtime produit, multi-thread). Les produits le prennent par `git = …, tag = …` ; `init-repo` installe
   le squelette `crates/dataguard/server/` (build script qui découvre
   `data-capabilities/*`, déjà attendu par la gate `data-capability-registered`).
   `scripts/dead-code.sh` et `cargo machete` l'excluent explicitement, avec le motif.
@@ -227,9 +228,11 @@ le lisent jamais (il est hors de leur fermeture, seule son API publique y est).
 - Ordre de livraison, chacun une tranche testable seule : `registry` → `guard`
   synchrone (fast path) → `applier` + journal → `queue` + `parked` → `holds` +
   `relative` → `resolver` → `messages` → `reconcile`.
-- Gates `queries-valid` et `schema-impact` activées quand `registry` et le
-  runner de migrations existent (expand/contract : chaque requête validée contre
-  le schéma courant et le suivant, `scripts/dump-schema.sh` existe déjà).
+- Gates `queries-valid` et `schema-impact` activées (fait : `queries-valid`
+  monte un Postgres de service, applique les migrations du commit et `PREPARE`
+  chaque requête SQL du registre ; `schema-impact` lit les colonnes qu'une
+  migration du diff supprime, renomme ou retype et exige que la même PR porte
+  la requête de chaque lecteur du registre).
 - **Mock fidèle** : `mock/src/server.js` prend les états `queued`,
   `awaiting_confirmation`, `parked`, les messages `ValueDeclaredAhead` et
   `CommandRejected` ; `commands.js` juge avec les invariants d'`aggregate.json`

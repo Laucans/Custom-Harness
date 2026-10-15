@@ -1,7 +1,7 @@
 # The CI gates of the agent-native architecture — see docs/ARCHITECTURE.md,
 # "CI gates". Installed by `harness init-repo`; the repository owns it from
-# here. A gate that is `if: false` is declared, not yet implemented: its rule
-# is in its name and its step, and implementing it is a task like any other.
+# here. Every gate runs: a rule is in its name and its step, and a rule the
+# product cannot keep yet is a task like any other, never a gate turned off.
 #
 # The two branch patterns are the harness's: `main_agent` is where finished
 # milestones land, `milestone/**` is what a task's pull request targets.
@@ -173,23 +173,93 @@ jobs:
         shell: bash
         run: bash scripts/queries.sh --check
 
-  # Contract C — every persisted query is valid against the current schema
-  # and the next one (expand/contract). Needs the schema the DataGuard engine
-  # owns: switched on with it.
+  # Contract C — every persisted SQL query of the registry prepares against
+  # the schema this checkout's migrations build (expand/contract: a column a
+  # query reads must exist after the migrations of this very commit). GraphQL
+  # queries are the read crate's to validate; they pass here.
   queries-valid:
-    if: false
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: gates
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - run: echo "not implemented — persisted queries validate against the current and the next schema"
+      - uses: actions/checkout@v4
+      - name: Every registered SQL query prepares against the migrated schema
+        shell: bash
+        env:
+          PGPASSWORD: gates
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          [ -f queries/registry.json ] || { echo "no registry: nothing to validate"; exit 0; }
+          psql="psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -q"
+          while IFS= read -r migration; do
+            [ -n "$migration" ] || continue
+            $psql -f "$migration" || { echo "::error file=$migration::the migration does not apply"; exit 1; }
+          done < <(git ls-files -- '*migrations/*.sql' | LC_ALL=C sort)
+          failed=0
+          n=0
+          while IFS=$'\t' read -r capability file; do
+            case "$file" in *.sql) ;; *) continue ;; esac
+            [ -f "$file" ] || { echo "::error file=$file::registered under $capability but absent"; failed=1; continue; }
+            n=$((n + 1))
+            body=$(grep -v '^[[:space:]]*--' "$file" | sed 's/;[[:space:]]*$//')
+            if ! $psql -c "PREPARE gate_q_$n AS $body" > /dev/null 2> err.txt; then
+              echo "::error file=$file::$capability reads through a query the schema refuses: $(tail -n 1 err.txt)"
+              failed=1
+            fi
+          done < <(jq -r '.queries[] | [.capability, .file] | @tsv' queries/registry.json)
+          exit $failed
 
-  # Contracts C, I — a schema change lists the Capabilities it touches (from
-  # queries/registry.json) and blocks until each one is migrated. Needs the
-  # engine's migration runner: switched on with it.
+  # Contracts C, I — a migration that drops, renames or retypes a column
+  # names the Capabilities that read it (from queries/registry.json), and
+  # the same change must carry their queries: a reader left behind blocks.
   schema-impact:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — a schema change names the readers it touches"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: A schema change carries every reader it touches
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          [ -f queries/registry.json ] || { echo "no registry: nothing to protect"; exit 0; }
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          [ -n "$base" ] && git cat-file -e "$base" 2>/dev/null || { echo "no base to compare with"; exit 0; }
+          changed=$(git diff --name-only "$base" HEAD)
+          norm() { tr '[:upper:]' '[:lower:]' <<< "$1" | tr -d '_'; }
+          failed=0
+          for migration in $(grep -E 'migrations/.*\.sql$' <<< "$changed" || true); do
+            [ -f "$migration" ] || continue
+            # table.column of every column removed, renamed or retyped.
+            while IFS= read -r touched; do
+              [ -n "$touched" ] || continue
+              key=$(norm "$touched")
+              while IFS=$'\t' read -r capability file fields; do
+                for field in $fields; do
+                  [ "$(norm "$field")" = "$key" ] || continue
+                  if ! grep -qxF "$file" <<< "$changed"; then
+                    echo "::error file=$migration::touches $touched, read by $capability through $file, which this change does not migrate"
+                    failed=1
+                  fi
+                done
+              done < <(jq -r '.queries[] | [.capability, .file, (.fields | join(" "))] | @tsv' queries/registry.json)
+            done < <(awk '
+              BEGIN { IGNORECASE = 1 }
+              /alter[[:space:]]+table/ { match($0, /alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?[^[:space:]]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); table = w[length(w)] }
+              /drop[[:space:]]+column[[:space:]]+/ { match($0, /drop[[:space:]]+column[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?[^[:space:],;]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); print table "." w[length(w)] }
+              /rename[[:space:]]+column[[:space:]]+/ { match($0, /rename[[:space:]]+column[[:space:]]+[^[:space:]]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); print table "." w[3] }
+              /alter[[:space:]]+column[[:space:]]+[^[:space:]]+[[:space:]]+(set[[:space:]]+data[[:space:]]+)?type/ { match($0, /alter[[:space:]]+column[[:space:]]+[^[:space:]]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); print table "." w[3] }
+              /drop[[:space:]]+table[[:space:]]+/ { match($0, /drop[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?[^[:space:],;]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); print w[length(w)] ".*" }
+            ' "$migration" | sed 's/"//g')
+          done
+          exit $failed
 
   # Contract B — a Micro-UI's `needs` reference only Capabilities of its own
   # system: each one is the `capability` of a capability.json whose `system`

@@ -1,0 +1,18 @@
+[package]
+name = "dataguard-server"
+version = "0.1.0"
+edition = "2024"
+description = "The product's write side: the DataGuard engine bound to this product's aggregates and DataCapabilities, over its PostgreSQL. Installed by `harness init-repo`; the product owns it from here."
+build = "build.rs"
+
+# The engine is the harness's, taken by git: this crate only binds it. The
+# DataCapabilities of the product are its dependencies — one line each, which
+# the gate `data-capability-registered` requires and `build.rs` turns into the
+# registry the server starts with.
+[dependencies]
+harness-dataguard = { git = "https://github.com/laucans/custom-harness", branch = "main", features = ["postgres"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
+# --- DataCapabilities (one per crates/<system>/data-capabilities/<name>) ---

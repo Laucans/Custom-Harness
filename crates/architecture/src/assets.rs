@@ -38,8 +38,8 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// The document, the gates, the CI, the test scope, the isolation check, the
 /// dead-code script, the mutants configuration, rotation and test-debt
 /// filing, the schema dump, the data model, the mock-up's files, the
-/// contracts A–O.
-pub const FILES: [Asset; 39] = [
+/// conformance runner, the `DataGuard` server's skeleton, the contracts A–O.
+pub const FILES: [Asset; 42] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -91,6 +91,18 @@ pub const FILES: [Asset; 39] = [
     Asset {
         path: "crates/platform/conformance/src/lib.rs",
         content: include_str!("../assets/conformance/src/lib.rs"),
+    },
+    Asset {
+        path: "crates/dataguard/server/Cargo.toml",
+        content: include_str!("../assets/dataguard-server/Cargo.toml"),
+    },
+    Asset {
+        path: "crates/dataguard/server/build.rs",
+        content: include_str!("../assets/dataguard-server/build.rs"),
+    },
+    Asset {
+        path: "crates/dataguard/server/src/main.rs",
+        content: include_str!("../assets/dataguard-server/src/main.rs"),
     },
     Asset {
         path: "data/model.json",
@@ -229,12 +241,17 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_gates_that_need_the_engine_stay_off() {
+    fn every_gate_is_on_now_that_the_engine_exists() {
         let gates = include_str!("../assets/gates.yml");
         assert_eq!(
             gates.lines().filter(|l| l.trim() == "if: false").count(),
-            2,
-            "queries-valid and schema-impact wait for the DataGuard engine"
+            0,
+            "queries-valid and schema-impact run with the DataGuard engine"
+        );
+        assert!(gates.contains("PREPARE gate_q_"), "queries prepare");
+        assert!(
+            gates.contains("drop[[:space:]]+column"),
+            "a dropped column names its readers"
         );
         assert!(
             gates.contains("platform_conformance::check"),
