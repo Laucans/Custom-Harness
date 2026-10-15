@@ -93,6 +93,24 @@ pub struct Tree {
     /// The root `Cargo.toml`, when there is one: what names the workspace's
     /// members, by glob or by name.
     pub root_manifest: Option<String>,
+    /// `queries/registry.json` (contract C), as `(capability, file, sha256)`
+    /// per entry; empty when there is no registry or it is not JSON.
+    pub registered_queries: Vec<(String, String, String)>,
+    /// The query files the Capabilities' `reads` name, resolved.
+    pub reads: Vec<Read>,
+}
+
+/// One `reads` entry of a Capability, resolved as `scripts/queries.sh`
+/// resolves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Read {
+    /// The Capability's id.
+    pub capability: String,
+    /// The path as the manifest wrote it.
+    pub written: String,
+    /// The path found, with the file's hash — `None` when the file is
+    /// nowhere under the repository, the folder or the system.
+    pub found: Option<(String, String)>,
 }
 
 /// A micro-frontend bundled from a Micro-UI's code.
@@ -226,6 +244,7 @@ impl Tree {
                 tree.aggregates.push(found);
             }
         }
+        read_queries(disk, root, &mut tree);
         read_mockup(disk, root, &mut tree);
         for concept in disk.dir_names(&root.join("concepts")) {
             for version in disk.dir_names(&root.join("concepts").join(&concept)) {
@@ -248,6 +267,66 @@ impl Tree {
             }
         }
         tree
+    }
+}
+
+/// The SHA-256 of `text`, as `scripts/queries.sh` records it.
+#[must_use]
+pub fn sha256(text: &str) -> String {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
+    let digest = sha2::Sha256::digest(text.as_bytes());
+    digest.iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    })
+}
+
+/// The registry and the `reads` of every Capability, resolved as the
+/// script resolves them: from the root, from the Capability's folder, from
+/// its system's folder.
+fn read_queries(disk: &dyn Disk, root: &Path, tree: &mut Tree) {
+    let text = |rel: &str| disk.read_to_string(&root.join(rel));
+    if let Some(registry) = text("queries/registry.json")
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .and_then(|json| json.get("queries")?.as_array().cloned())
+    {
+        for entry in registry {
+            if let (Some(capability), Some(file), Some(sha)) = (
+                str_of(&entry, "capability"),
+                str_of(&entry, "file"),
+                str_of(&entry, "sha256"),
+            ) {
+                tree.registered_queries.push((
+                    capability.to_string(),
+                    file.to_string(),
+                    sha.to_string(),
+                ));
+            }
+        }
+    }
+    for crate_ in &tree.capabilities {
+        let Some(json) = crate_.manifest.as_ref().and_then(|m| m.json.as_ref()) else {
+            continue;
+        };
+        let Some(id) = str_of(json, "capability") else {
+            continue;
+        };
+        for read in strings_of(json, "reads") {
+            let candidates = [
+                read.clone(),
+                format!("{}/{read}", crate_.dir),
+                format!("crates/{}/{read}", crate_.system),
+            ];
+            let found = candidates.iter().find_map(|candidate| {
+                text(candidate).map(|content| (candidate.clone(), sha256(&content)))
+            });
+            tree.reads.push(Read {
+                capability: id.to_string(),
+                written: read,
+                found,
+            });
+        }
     }
 }
 
@@ -515,6 +594,21 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
                         offending.join(" | ").trim()
                     ));
                 }
+                // Rule 4: read-only by the types — through its system's read
+                // crate, never a driver of its own (and a dev-dependency is
+                // not a dependency: a test-only crate reaches no store).
+                let drivers: Vec<&str> = runtime_dependencies(toml)
+                    .into_iter()
+                    .filter(|line| DRIVERS.iter().any(|driver| names_crate(line, driver)))
+                    .collect();
+                if !drivers.is_empty() {
+                    found.push(format!(
+                        "{}/Cargo.toml holds a database driver — a Capability reads through its \
+                         system's read crate, never a driver of its own: {}",
+                        crate_.dir,
+                        drivers.join(" | ").trim()
+                    ));
+                }
             }
         }
         match &crate_.manifest {
@@ -601,12 +695,128 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
                 manifest.path
             ));
         }
+        // Ownership (contracts F, I): a mutation targets an aggregate that
+        // declares every field it touches — the gate `ownership`.
+        let touches = strings_of(json, "touches");
+        let mutates = str_of(json, "effect").and_then(Effect::parse) != Some(Effect::Insert)
+            || !touches.is_empty();
+        if mutates {
+            let target = json
+                .get("target")
+                .and_then(|t| str_of(t, "aggregate"))
+                .unwrap_or_default();
+            let aggregate = tree.aggregates.iter().find(|a| {
+                a.json
+                    .as_ref()
+                    .and_then(|j| str_of(j, "aggregate"))
+                    .is_some_and(|name| name == target)
+            });
+            match aggregate.and_then(|a| a.json.as_ref()) {
+                None => found.push(format!(
+                    "{}: mutates `{target}`, which no aggregate.json declares (contract I)",
+                    manifest.path
+                )),
+                Some(declared) => {
+                    for field in &touches {
+                        let key = field.rsplit('.').next().unwrap_or(field);
+                        let known = declared
+                            .get("fields")
+                            .and_then(Value::as_object)
+                            .is_some_and(|fields| fields.contains_key(key));
+                        if !known {
+                            found.push(format!(
+                                "{}: touches `{field}`, which the aggregate `{target}` does not declare (contract I)",
+                                manifest.path
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     found.extend(mockup_kept(tree));
+    found.extend(queries_registered(tree));
 
     if let Some(task) = task {
         found.extend(unit_present(tree, task));
+    }
+    found
+}
+
+/// The database drivers a Capability must not hold (`scripts/isolation.sh`,
+/// rule 4): it reads through its system's read crate.
+pub const DRIVERS: [&str; 8] = [
+    "sqlx",
+    "tokio-postgres",
+    "postgres",
+    "diesel",
+    "sea-orm",
+    "rusqlite",
+    "mysql",
+    "mysql_async",
+];
+
+/// The lines of `[dependencies]` — not `[dev-dependencies]`, not
+/// `[build-dependencies]` — of a `Cargo.toml`, comments left out.
+fn runtime_dependencies(toml: &str) -> Vec<&str> {
+    let mut in_runtime = false;
+    let mut lines = Vec::new();
+    for line in toml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_runtime = trimmed == "[dependencies]";
+            continue;
+        }
+        if in_runtime && !trimmed.is_empty() && !trimmed.starts_with('#') {
+            lines.push(trimmed);
+        }
+    }
+    lines
+}
+
+/// True when a dependency line names this crate: `sqlx = …`, `sqlx.workspace`,
+/// `"sqlx" = …` — the name before `=` or `.`, underscores and dashes alike.
+fn names_crate(line: &str, name: &str) -> bool {
+    let key = line
+        .split(['=', '.'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"');
+    key.replace('_', "-") == name.replace('_', "-")
+}
+
+/// Contract C: every `reads` of a Capability is a file, registered under
+/// that Capability with the hash of the file as it is — what
+/// `scripts/queries.sh --check` refuses, read the same way here.
+fn queries_registered(tree: &Tree) -> Vec<String> {
+    let mut found = Vec::new();
+    for Read {
+        capability: id,
+        written: read,
+        found: resolved,
+    } in &tree.reads
+    {
+        let Some((path, sha)) = resolved else {
+            found.push(format!(
+                "{id} reads `{read}`, which is nowhere under the repository, its folder or its system (contract C)"
+            ));
+            continue;
+        };
+        match tree
+            .registered_queries
+            .iter()
+            .find(|(capability, file, _)| capability == id && file == path)
+        {
+            None => found.push(format!(
+                "{id} reads `{path}`, which queries/registry.json does not register — run scripts/queries.sh (contract C)"
+            )),
+            Some((_, _, registered)) if registered != sha => found.push(format!(
+                "{id} reads `{path}`, which changed since queries/registry.json was written — run scripts/queries.sh (contract C)"
+            )),
+            Some(_) => {}
+        }
     }
     found
 }
@@ -943,9 +1153,12 @@ mod tests {
             )],
             data_capabilities: vec![manifest(
                 "crates/dataguard/data-capabilities/request-limit-change/data-capability.json",
-                r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","effect":"update","touches":["Account.creditLimit"]}"#,
+                r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.creditLimit"]}"#,
             )],
-            aggregates: Vec::new(),
+            aggregates: vec![manifest(
+                "crates/dataguard/aggregates/Account/aggregate.json",
+                r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative"}},"invariants":[],"relations":[]}"#,
+            )],
             concepts: vec![("Risk".to_string(), 3)],
             has_query_registry: true,
             screens: vec!["credit-review".to_string()],
@@ -959,7 +1172,216 @@ mod tests {
             design: None,
             kit: Vec::new(),
             root_manifest: None,
+            registered_queries: Vec::new(),
+            reads: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_mutation_targets_an_aggregate_that_declares_what_it_touches() {
+        let with = |data_capability: &str, aggregate: Option<&str>| {
+            let mut tree = sound();
+            tree.data_capabilities = vec![manifest(
+                "crates/dataguard/data-capabilities/x/data-capability.json",
+                data_capability,
+            )];
+            tree.aggregates = aggregate
+                .map(|a| {
+                    vec![manifest(
+                        "crates/dataguard/aggregates/Account/aggregate.json",
+                        a,
+                    )]
+                })
+                .unwrap_or_default();
+            violations(&tree, None)
+        };
+        let account =
+            r#"{"aggregate":"Account","fields":{"creditLimit":{}},"invariants":[],"relations":[]}"#;
+        let update = r#"{"dataCapability":"credit.x","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.creditLimit"]}"#;
+        assert!(
+            !with(update, Some(account))
+                .iter()
+                .any(|v| v.contains("contract I")),
+            "a declared field"
+        );
+        let elsewhere = with(update, None);
+        assert!(
+            elsewhere
+                .iter()
+                .any(|v| v.contains("no aggregate.json declares")),
+            "{elsewhere:?}"
+        );
+        let undeclared = with(
+            r#"{"dataCapability":"credit.x","owner":"dataguard","effect":"insert","target":{"aggregate":"Account"},"touches":["Account.tags"]}"#,
+            Some(account),
+        );
+        assert!(
+            undeclared
+                .iter()
+                .any(|v| v.contains("touches `Account.tags`")),
+            "{undeclared:?}"
+        );
+        let pure = with(
+            r#"{"dataCapability":"credit.x","owner":"dataguard","effect":"insert","target":{"aggregate":"Nobody"},"touches":[]}"#,
+            None,
+        );
+        assert!(
+            !pure.iter().any(|v| v.contains("contract I")),
+            "a pure insert owns nothing: {pure:?}"
+        );
+    }
+
+    #[test]
+    fn a_capability_holding_a_database_driver_is_a_violation_but_a_dev_one_is_not() {
+        let with = |toml: &str| {
+            let mut tree = sound();
+            tree.capabilities[0].cargo_toml = Some(toml.to_string());
+            violations(&tree, None)
+        };
+        let driver = with("[package]\nname = \"risk\"\n\n[dependencies]\nsqlx = \"0.8\"\n");
+        assert!(
+            driver.iter().any(|v| v.contains("database driver")),
+            "{driver:?}"
+        );
+        let workspace = with("[dependencies]\ntokio_postgres.workspace = true\n");
+        assert!(
+            workspace.iter().any(|v| v.contains("database driver")),
+            "{workspace:?}"
+        );
+        let dev = with("[dependencies]\nserde = \"1\"\n\n[dev-dependencies]\nsqlx = \"0.8\"\n");
+        assert!(
+            !dev.iter().any(|v| v.contains("database driver")),
+            "{dev:?}"
+        );
+        let read = with("[dependencies]\ncredit-read = { path = \"../../read\" }\n");
+        assert!(
+            !read.iter().any(|v| v.contains("database driver")),
+            "{read:?}"
+        );
+    }
+
+    #[test]
+    fn a_dependency_line_names_its_crate_whatever_the_spelling() {
+        assert!(names_crate("sqlx = \"0.8\"", "sqlx"));
+        assert!(names_crate("sqlx.workspace = true", "sqlx"));
+        assert!(names_crate(
+            "tokio_postgres = { version = \"0.7\" }",
+            "tokio-postgres"
+        ));
+        assert!(!names_crate("sqlx-helper = \"1\"", "sqlx"));
+        assert!(!names_crate("serde = \"1\"", "sqlx"));
+        assert_eq!(
+            runtime_dependencies(
+                "[dependencies]\na = \"1\"\n# b = \"2\"\n\n[dev-dependencies]\nc = \"3\"\n[build-dependencies]\nd = \"4\"\n"
+            ),
+            ["a = \"1\""]
+        );
+    }
+
+    #[test]
+    fn a_read_is_registered_under_its_capability_with_the_hash_of_the_file_as_it_is() {
+        let sha = sha256("query X { a }");
+        let registered = |capability: &str, file: &str, sha: &str| Tree {
+            registered_queries: vec![(capability.to_string(), file.to_string(), sha.to_string())],
+            reads: vec![Read {
+                capability: "credit.calculateRisk".to_string(),
+                written: "queries/x.graphql".to_string(),
+                found: Some((
+                    "crates/credit/queries/x.graphql".to_string(),
+                    sha256("query X { a }"),
+                )),
+            }],
+            ..Tree::default()
+        };
+        let fine = queries_registered(&registered(
+            "credit.calculateRisk",
+            "crates/credit/queries/x.graphql",
+            &sha,
+        ));
+        assert!(fine.is_empty(), "{fine:?}");
+        let stale = queries_registered(&registered(
+            "credit.calculateRisk",
+            "crates/credit/queries/x.graphql",
+            "0000",
+        ));
+        assert!(stale[0].contains("changed since"), "{stale:?}");
+        let elsewhere = queries_registered(&registered(
+            "orders.list",
+            "crates/credit/queries/x.graphql",
+            &sha,
+        ));
+        assert!(elsewhere[0].contains("does not register"), "{elsewhere:?}");
+        let missing = queries_registered(&Tree {
+            reads: vec![Read {
+                capability: "credit.calculateRisk".to_string(),
+                written: "queries/gone.graphql".to_string(),
+                found: None,
+            }],
+            ..Tree::default()
+        });
+        assert!(missing[0].contains("nowhere"), "{missing:?}");
+    }
+
+    #[test]
+    fn the_reads_are_resolved_from_the_root_the_folder_or_the_system_and_hashed() {
+        let mut disk = crate::fake_disk::FakeDisk::default();
+        let put = |disk: &mut crate::fake_disk::FakeDisk, path: &str, text: &str| {
+            disk.existing
+                .insert(std::path::PathBuf::from(path), text.to_string());
+        };
+        put(&mut disk, "/r/contracts/README.md", "");
+        put(
+            &mut disk,
+            "/r/crates/credit/capabilities/risk/capability.json",
+            r#"{"capability":"credit.calculateRisk","system":"credit","reads":["queries/x.graphql","local.sql","nowhere.sql"]}"#,
+        );
+        put(
+            &mut disk,
+            "/r/crates/credit/capabilities/risk/Cargo.toml",
+            "[package]\n",
+        );
+        put(
+            &mut disk,
+            "/r/crates/credit/queries/x.graphql",
+            "query X { a }",
+        );
+        put(
+            &mut disk,
+            "/r/crates/credit/capabilities/risk/local.sql",
+            "select 1",
+        );
+        put(
+            &mut disk,
+            "/r/queries/registry.json",
+            &format!(
+                r#"{{"queries":[{{"query":"X","capability":"credit.calculateRisk","file":"crates/credit/queries/x.graphql","sha256":"{}","fields":["a"]}}]}}"#,
+                sha256("query X { a }")
+            ),
+        );
+        let tree = Tree::read(&disk, std::path::Path::new("/r"));
+        assert_eq!(tree.registered_queries.len(), 1);
+        assert_eq!(tree.reads.len(), 3);
+        assert_eq!(
+            tree.reads[0].found.as_ref().map(|(p, _)| p.as_str()),
+            Some("crates/credit/queries/x.graphql"),
+            "from the system's folder"
+        );
+        assert_eq!(
+            tree.reads[1].found.as_ref().map(|(p, _)| p.as_str()),
+            Some("crates/credit/capabilities/risk/local.sql"),
+            "from the Capability's folder"
+        );
+        assert_eq!(tree.reads[2].found, None, "nowhere");
+        let found = queries_registered(&tree);
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn the_hash_is_sha256_as_the_script_writes_it() {
+        assert_eq!(
+            sha256("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
@@ -1316,7 +1738,17 @@ mod tests {
             root.join("concepts/Risk/v2/concept.json"),
             "not json".to_string(),
         );
-        existing.insert(root.join("queries/registry.json"), "{}".to_string());
+        existing.insert(
+            root.join("crates/credit/capabilities/calculate-risk/q.graphql"),
+            "# fields: a.b\nquery Q { a }".to_string(),
+        );
+        existing.insert(
+            root.join("queries/registry.json"),
+            format!(
+                r#"{{"queries":[{{"query":"Q","capability":"credit.calculateRisk","file":"crates/credit/capabilities/calculate-risk/q.graphql","sha256":"{}","fields":["a.b"]}}]}}"#,
+                sha256("# fields: a.b\nquery Q { a }")
+            ),
+        );
         existing.insert(
             root.join("apps/screens/credit-review.json"),
             r#"{"screen":"credit-review"}"#.to_string(),

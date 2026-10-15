@@ -384,6 +384,12 @@ mod budget_tests {
         assert!(matches!(verdict, Verdict::Continue));
     }
 
+    #[test]
+    fn the_purpose_names_what_the_check_is_about() {
+        let purpose = check(0.0, None, false).purpose();
+        assert!(purpose.contains("cost"), "{purpose}");
+    }
+
     #[tokio::test]
     async fn a_round_on_no_task_has_no_budget_to_check() {
         let mut here = ctx("capability");

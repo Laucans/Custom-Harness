@@ -18,6 +18,16 @@
 #    DataCapability depends on — depends on no Capability, no DataCapability
 #    and no crate of another system: plumbing, never a bridge.
 #
+# 4. A Capability reads through its system's read crate (`<system>-read`,
+#    a read-only connection with no write API), never through a database
+#    driver of its own: `sqlx`, `tokio-postgres`, `postgres`, `diesel`,
+#    `sea-orm`, `rusqlite`, `mysql` are not among its dependencies. The
+#    read-only rule is then a fact of the types, and the read-only role is
+#    defence in depth.
+#
+# A dev-dependency counts for none of this: a test-only crate (the
+# conformance runner under crates/platform/) is not a bridge at run time.
+#
 # And code is shared through a crate or not at all: no `#[path]`,
 # `include!` or `include_str!` that leaves a slice's folder, no symlink
 # inside one. Shared *meaning* is a Concept with its fixtures, not a crate.
@@ -37,8 +47,13 @@ root=$(jq -r '.workspace_root' <<< "$metadata")
 # name<TAB>relative manifest path, one line per workspace crate.
 crates=$(jq -r --arg root "$root/" '.packages[] | [.name, (.manifest_path | ltrimstr($root))] | @tsv' <<< "$metadata")
 
-# Direct path dependencies: name<TAB>dependency name, one line each.
-edges=$(jq -r '.packages[] | .name as $n | .dependencies[] | select(.path != null) | "\($n)\t\(.name)"' <<< "$metadata")
+# Direct path dependencies: name<TAB>dependency name, one line each. Never a
+# dev-dependency: a test-only crate reaches nothing at run time.
+edges=$(jq -r '.packages[] | .name as $n | .dependencies[] | select(.path != null and .kind == null) | "\($n)\t\(.name)"' <<< "$metadata")
+
+# Direct registry dependencies, the same way: name<TAB>dependency name.
+drivers='sqlx tokio-postgres postgres diesel sea-orm rusqlite mysql mysql_async'
+registry=$(jq -r '.packages[] | .name as $n | .dependencies[] | select(.path == null and .kind == null) | "\($n)\t\(.name)"' <<< "$metadata")
 
 declare -A manifest system kind
 while IFS=$'\t' read -r name rel; do
@@ -104,6 +119,18 @@ for name in "${!kind[@]}"; do
       fi
     done
   done
+
+  # Rule 4: a Capability holds no database driver of its own.
+  if [ "$k" = "capability" ]; then
+    while IFS=$'\t' read -r from to; do
+      [ "$from" = "$name" ] || continue
+      for driver in $drivers; do
+        if [ "$to" = "$driver" ]; then
+          fail "${manifest[$name]}" "a Capability reads through its system's read crate, never a database driver: $name depends on $driver"
+        fi
+      done
+    done <<< "$registry"
+  fi
 
   # Code shared outside a crate is not shared: an inclusion resolves inside the slice's folder
   # (its own manifest beside src/ is inside), and no symlink sits in it.

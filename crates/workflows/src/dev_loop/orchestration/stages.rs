@@ -416,6 +416,8 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
                 Box::new(ArchitectureHolds {
                     disk: Rc::clone(&ports.disk),
                     root: config.root.clone(),
+                    repo: Rc::clone(&ports.repo),
+                    integration_branch: config.integration_branch.clone(),
                 }),
                 Box::new(ConceptsDocumented {
                     disk: Rc::clone(&ports.disk),
@@ -523,6 +525,23 @@ mod tests {
         Settings {
             dry_run: false,
             stages: stages.to_string(),
+        }
+    }
+
+    #[test]
+    fn every_paid_stage_has_a_turn_cap_unless_the_budget_is_ignored() {
+        let config = config_fake::config();
+        assert_eq!(turn_cap("technical-refinement", &config), Some(80));
+        assert_eq!(turn_cap("code", &config), Some(250));
+        assert_eq!(turn_cap("create-test", &config), Some(150));
+        assert_eq!(turn_cap("pick-task", &config), None, "not a paid stage");
+        let lifted = Config {
+            ignore_budget: true,
+            ..config_fake::config()
+        };
+        assert_eq!(turn_cap("code", &lifted), None);
+        for (name, cap) in TURN_CAPS {
+            assert!(cap >= 80, "{name}: a cap is a safety net, never a budget");
         }
     }
 

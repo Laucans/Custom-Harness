@@ -56,6 +56,8 @@ mock/src/<MicroUi>.js, mock/build.sh   an entry per built Micro-UI (`source` in 
 mock/fixtures/*.json               what the Capabilities would answer
 mock/mock.js                       the loader: fills every data-component element from components/
 scripts/dump-schema.sh             prints the schema the migrations build (pg_dump --schema-only)
+scripts/queries.sh                 writes queries/registry.json from the Capabilities' reads (--check in CI)
+crates/platform/conformance/       the conformance runner, a dev-dependency of every Capability that implements a Concept
 contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
 ```
 
@@ -76,7 +78,11 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
    DataCapability, directly or transitively, and only crates of its own
    system; a crate it depends on is plumbing — it reaches no slice and no
    other system — never a bridge; no `#[path]` or `include!` leaves its
-   folder. A DataCapability follows the same rule inside the DataGuard's
+   folder; it holds no database driver of its own (`sqlx`, `tokio-postgres`,
+   `diesel`, …): it reads through its system's read crate, `<system>-read`,
+   whose connection has no write API — read-only by the types, the read-only
+   role as defence in depth. A dev-dependency counts for none of this.
+   A DataCapability follows the same rule inside the DataGuard's
    system — and is a **folder**: `crates/<system>/data-capabilities/<name>/`,
    its library named after it, listed by glob in the workspace and
    discovered by the server's build script; adding one edits no shared file
@@ -84,16 +90,24 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
    in parallel without meeting.
 3. **A Capability's logic is local.** Shared *meaning* is a Concept with
    conformance fixtures, never a shared library of business code. Duplicate the
-   computation; declare the Concept it implements; pass its fixtures.
+   computation; declare the Concept it implements; pass its fixtures — from a
+   test of the Capability calling `platform_conformance::check("<Concept>@<n>",
+   |input| …)` (`crates/platform/conformance`, a dev-dependency), over
+   `concepts/<Concept>/v<n>/fixtures.json`: `{"concept", "version", "cases":
+   [{"name", "input", "output"}]}`. The gate `semantic-conformance` runs it.
 4. **Every read is a persisted query**, declared in its Capability's manifest
-   and registered by hash. No free-form query anywhere.
+   and registered by hash: the query file opens with `# fields: <entity>.<field>,
+   …`, `bash scripts/queries.sh` writes `queries/registry.json`, committed with
+   the query; the gate `queries-registered` refuses a registry that is not what
+   the script writes. No free-form query anywhere.
 5. **Only DataCapabilities write**, always behind the DataGuard, always through
    the DataQueue. A DataCapability declares its `effect` and the existing
    fields it `touches`. `insert` with empty `touches` is the fast path and may
    be proposed by a read agent; everything else is the DataGuard agent's and a
    human reviews it.
 6. **Invariants live in the DataGuard**, declared on the aggregate, each with
-   tests. Never in a Capability, never in a Micro-UI.
+   a test naming its id in a crate of the aggregate's own system. Never in a
+   Capability, never in a Micro-UI.
 7. **Every relation declares `onDelete` and `onUpdate`.** Deletion is a soft
    delete with a tombstone unless a human approves otherwise.
 8. **A command is never rejected for concurrency.** It queues per aggregate,

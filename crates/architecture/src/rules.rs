@@ -39,19 +39,29 @@ library, and declare the Concept it implements.
 What it must not know: any other Capability, any DataCapability, the
 DataQueue, the DataGuard, the Resolver — no import, no call, no `invokes`
 field, no dependency on their crates. It depends only on crates of its own
-system that are plumbing (they reach no slice and no other system). No
-write statement, no DATABASE_URL. No `#[path]`, `include!` or symlink that
-leaves its folder.
+system that are plumbing (they reach no slice and no other system), and
+reads through its system's read crate (`<system>-read`): never a database
+driver of its own (sqlx, tokio-postgres, postgres, diesel, sea-orm,
+rusqlite, mysql are not in its `[dependencies]`). No write statement, no
+DATABASE_URL. No `#[path]`, `include!` or symlink that leaves its folder.
 
-A Concept it implements must be documented: concepts/<Concept>/v<n>/
-concept.json naming it (contract A), with fixtures.json beside it.
+Its reads are registered: after adding or changing a query file, run
+`bash scripts/queries.sh` and commit queries/registry.json (contract C);
+each query file opens with a `# fields: <entity>.<field>, …` line.
+
+A Concept it implements must be documented and proved: concepts/<Concept>/
+v<n>/concept.json naming it (contract A), fixtures.json beside it, and a
+test of this crate calling `platform_conformance::check(\"<Concept>@<n>\",
+|input| …)` (crates/platform/conformance, a dev-dependency).
 
 Gates that judge it: manifests-conform-to-contracts (B), capability-isolation
 (scripts/isolation.sh on the cargo metadata graph, and no `invokes`),
-concepts-documented, read-only. The loop checks the same after the round.
+concepts-documented, semantic-conformance, queries-registered, read-only.
+The loop checks the same after the round, and that the round touched
+nothing outside the unit's closure.
 Run them before the PR: `npx --yes ajv-cli@5 validate --spec=draft2020 -s
-contracts/b-capability-manifest.schema.json -d <manifest>` and
-`bash scripts/isolation.sh`.";
+contracts/b-capability-manifest.schema.json -d <manifest>`,
+`bash scripts/isolation.sh` and `bash scripts/queries.sh --check`.";
 
 const MICRO_UI: &str = "\
 UNIT: Micro-UI — a screen fragment (TypeScript) that declares what it reads
@@ -104,17 +114,20 @@ authoritative), `definition`, `output` (the fields and their rules),
 replaces, kept available while a Capability still declares it).
 
 What is shared is meaning, not code: a Capability that implements
-`Risk@3` passes these fixtures with its own local logic. Concepts change
+`Risk@3` passes these fixtures with its own local logic. The fixtures file
+is `{\"concept\": \"Risk\", \"version\": 3, \"cases\": [{\"name\", \"input\",
+\"output\"}, …]}`: every case is an input and the output every
+implementation must answer, compared as JSON, run by
+crates/platform/conformance from a test of the Capability. Concepts change
 rarely; a new version is a new folder, never an edit of the old one.
 
 What a Concept must not do: name a Capability, a table, a crate, or a
 mutation. It is read by everything and depends on nothing.
 
-Gates that judge it: manifests-conform-to-contracts (A);
-concepts-documented checks that every `implements: <Concept>@<n>` of a
-Capability finds this file. semantic-conformance (the fixtures run against
-each implementation) is declared in gates.yml and switched on with the
-conformance runner.";
+Gates that judge it: manifests-conform-to-contracts (A),
+concepts-documented (every `implements: <Concept>@<n>` of a Capability
+finds this file), semantic-conformance (the fixtures run against each
+implementation, from its own test).";
 
 const DATA_CAPABILITY: &str = "\
 UNIT: DataCapability — a typed command, the only thing that writes, always
@@ -169,12 +182,18 @@ Resolver knows who depends structurally on a row.
 
 What it must not do: write, or read through anything but the read-only
 credentials. It belongs to one Capability; two Capabilities needing the
-same read each declare their own.
+same read each declare their own. Its first line declares what it reads:
+`# fields: customer.outstandingBalance, payment.dueAt` (`-- fields:` in
+SQL); `bash scripts/queries.sh` then writes the registry entry — the
+operation name, the file, its sha256, the fields — and the registry is
+committed with the query.
 
 Gates that judge it: manifests-conform-to-contracts (C, on
-queries/registry.json). queries-valid (valid against the current schema
-and the next) and schema-impact are declared in gates.yml and switched on
-with the DataGuard engine.";
+queries/registry.json), queries-registered (the registry is what the
+script writes: every read a file, every file registered, every hash
+current). queries-valid (valid against the current schema and the next)
+and schema-impact are declared in gates.yml and switched on with the
+DataGuard engine.";
 
 const COMPOSITION: &str = "\
 UNIT: Screen composition — Micro-UIs composed for one user goal, frozen in
@@ -219,7 +238,8 @@ one, `merge` for a set), `invariants` (each an `id`, a `rule`, an
 restrict | cascade | nullify | archive, `onUpdate`, `semantic` when the
 link is outside a foreign key), `holds` (maxTtl, renewable).
 
-Rules: every invariant has a test naming its id; every relation declares
+Rules: every invariant has a test naming its id, in a crate of the
+aggregate's own system; every relation declares
 onDelete and onUpdate; deletion is a soft delete with a tombstone unless a
 human approves otherwise; prefer a derived value to a stored authoritative
 one that other rows could recompute. Two tasks on one aggregate run one

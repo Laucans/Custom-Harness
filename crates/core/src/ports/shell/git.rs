@@ -183,6 +183,18 @@ pub trait Repo {
     /// tree — where a store that is not code (an archive) begins.
     ///
     /// Answers a refusal by default: only a real `git` and the fakes that
+    /// The files that differ between `from` and `to` (`git diff
+    /// --name-only from..to`), paths relative to the root. Empty by default:
+    /// an adapter that cannot compare reports no change, and the gate that
+    /// reads it says so rather than refusing.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn changed_between(&self, from: &str, to: &str) -> Outcome<Vec<String>> {
+        let _ = (from, to);
+        Ok(Vec::new())
+    }
+
     /// Keeps on the disk only what `patterns` name — `git sparse-checkout`
     /// in its non-cone syntax, one pattern per line: `/dir/`, `/file`,
     /// `!/dir/`. The index and `.git` stay whole; only the working tree

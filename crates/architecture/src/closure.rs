@@ -412,6 +412,50 @@ pub fn closure(
     }
 }
 
+/// Whether `path` (relative, no leading slash) is inside the closure.
+///
+/// The matching `git sparse-checkout` does, on the shapes [`closure`]
+/// writes: `/*` (every file at the root), `!/*/` (no folder), `/dir/` and
+/// `!/dir/` (a folder and its contents), `/dir/*/` (every folder directly
+/// under one), `/file`. Later lines win.
+#[must_use]
+pub fn allows(patterns: &[String], path: &str) -> bool {
+    let path = path.trim_start_matches('/');
+    let mut allowed = false;
+    for pattern in patterns {
+        let (negated, body) = pattern
+            .strip_prefix('!')
+            .map_or((false, pattern.as_str()), |rest| (true, rest));
+        if matches(body, path) {
+            allowed = !negated;
+        }
+    }
+    allowed
+}
+
+/// One pattern against one path.
+fn matches(pattern: &str, path: &str) -> bool {
+    let body = pattern.trim_start_matches('/');
+    if body == "*" {
+        return !path.contains('/');
+    }
+    if body == "*/" {
+        return path.contains('/');
+    }
+    if let Some(dir) = body.strip_suffix('/') {
+        return dir.strip_suffix("/*").map_or_else(
+            || path == dir || path.starts_with(&format!("{dir}/")),
+            // `/crates/s/capabilities/*/`: a folder directly under `parent`.
+            |parent| {
+                path.strip_prefix(parent)
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .is_some_and(|rest| rest.contains('/'))
+            },
+        );
+    }
+    path == body
+}
+
 /// The closure as a prompt tells it: one folder or file per line.
 #[must_use]
 pub fn describe(closure: &Closure) -> String {
@@ -885,6 +929,38 @@ mod tests {
                 .patterns
                 .contains(&"/crates/dataguard/server/".to_string())
         );
+    }
+
+    #[test]
+    fn a_path_is_allowed_by_the_last_pattern_that_matches_it() {
+        let patterns: Vec<String> = [
+            "/*",
+            "!/*/",
+            "/crates/credit/",
+            "!/crates/credit/capabilities/*/",
+            "/crates/credit/capabilities/risk/",
+            "/apps/credit/x/micro-ui.json",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert!(allows(&patterns, "Cargo.toml"), "a root file");
+        assert!(!allows(&patterns, "docs/x.md"), "a folder not given back");
+        assert!(allows(&patterns, "crates/credit/read/src/lib.rs"));
+        assert!(
+            !allows(&patterns, "crates/credit/capabilities/score/src/lib.rs"),
+            "another slice"
+        );
+        assert!(
+            allows(&patterns, "crates/credit/capabilities/risk/src/lib.rs"),
+            "its own, given back"
+        );
+        assert!(allows(&patterns, "apps/credit/x/micro-ui.json"), "one file");
+        assert!(
+            !allows(&patterns, "apps/credit/x/index.ts"),
+            "not its neighbour"
+        );
+        assert!(!allows(&[], "anything"), "no pattern, nothing");
     }
 
     #[test]

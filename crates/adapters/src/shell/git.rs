@@ -223,6 +223,13 @@ impl Repo for GitCli {
         self.git(&["push", "-u", "origin", branch]).await
     }
 
+    async fn changed_between(&self, from: &str, to: &str) -> Outcome<Vec<String>> {
+        Ok(self
+            .git(&["diff", "--name-only", &format!("{from}..{to}")])
+            .await?
+            .lines())
+    }
+
     async fn sparse_checkout(&self, patterns: &[String]) -> Outcome<Ran> {
         let args = sparse_set_args(patterns);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -363,6 +370,15 @@ mod tests {
                 "!/*/",
                 "/crates/s/"
             ]
+        );
+    }
+
+    #[test]
+    fn the_files_of_a_round_are_the_diff_between_two_references_by_name() {
+        let args = git().argv(&["diff", "--name-only", "abc..origin/milestone/3-x"]);
+        assert_eq!(
+            &args[2..],
+            ["diff", "--name-only", "abc..origin/milestone/3-x"]
         );
     }
 

@@ -113,7 +113,7 @@ async fn dispatched(
                 &args.permission_mode,
                 args.dry_run,
                 &harness_workflows::split::config::profile_for(&args.split_profile, ""),
-                !args.split_profile.trim().is_empty(),
+                explicit_profile(&args.split_profile),
             )
             .await,
             log,
@@ -446,5 +446,23 @@ pub(super) fn report_failure(
             log.error(&format!("watch: {name} -> {}", halt.reason()));
             Some((name, halt))
         }
+    }
+}
+
+/// Whether the human named the split's profile (`--split-profile`,
+/// `SPLIT_PROFILE`): a named profile is never adjusted by the ledger.
+fn explicit_profile(split_profile: &str) -> bool {
+    !split_profile.trim().is_empty()
+}
+
+#[cfg(test)]
+mod explicit_profile_tests {
+    use super::explicit_profile;
+
+    #[test]
+    fn a_named_profile_is_explicit_and_blank_is_not() {
+        assert!(explicit_profile("small"));
+        assert!(!explicit_profile(""));
+        assert!(!explicit_profile("   "));
     }
 }

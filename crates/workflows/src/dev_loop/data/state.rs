@@ -48,6 +48,9 @@ pub struct Loop {
     /// stage runs on the task's closure; empty when the tree is whole. Set
     /// by `Narrow`, read by `Ask` for the prompt, cleared by `Widen`.
     pub tree_note: String,
+    /// The checkout's head when the task was picked — what the round's
+    /// changes are measured from after `code`. Empty when unknown.
+    pub round_base: String,
 }
 
 impl Resumable for Loop {

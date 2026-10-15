@@ -19,6 +19,7 @@ use std::rc::Rc;
 use async_trait::async_trait;
 use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, prompts};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
+use harness_core::ports::shell::git::Repo;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
@@ -58,6 +59,9 @@ pub struct PickTask {
     /// What remembers a stage a previous run left interrupted on the task,
     /// so this run resumes its session rather than paying the turns again.
     pub spending: Rc<dyn Spending>,
+    /// The lane's checkout: its head when the task is picked is what the
+    /// round's changes are measured from.
+    pub repo: Rc<dyn Repo>,
     /// The task the resume point designates, if there is one.
     ///
     /// It **takes precedence** over the board's choice: a round interrupted
@@ -139,6 +143,7 @@ impl Action<Loop> for PickTask {
         ctx.state.resumed = resumed.is_some();
         ctx.state.write_side = tasks::is_write_side(task);
         ctx.tags = tasks::tags(task);
+        ctx.state.round_base = self.repo.head_sha().await.unwrap_or_default();
         // The sessions a quota cut on this task: one per stage, resumed by
         // the stage runner when it opens that stage.
         ctx.resume.clear();
@@ -518,6 +523,7 @@ mod tests {
         PickTask {
             gh,
             spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -540,6 +546,7 @@ mod tests {
         PickTask {
             gh,
             spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -561,6 +568,7 @@ mod tests {
         PickTask {
             gh,
             spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -590,6 +598,7 @@ mod tests {
         PickTask {
             gh,
             spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -626,6 +635,7 @@ mod tests {
         PickTask {
             gh,
             spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: Some("11".to_string()),
             wanted: None,
             data_layer: opus_high(),
@@ -650,6 +660,7 @@ mod tests {
         PickTask {
             gh,
             spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -673,6 +684,7 @@ mod tests {
         let err = PickTask {
             gh,
             spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -695,6 +707,7 @@ mod tests {
         let err = PickTask {
             gh,
             spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -1101,6 +1114,11 @@ mod tests {
             rows: spending.0.borrow().clone(),
             said: capture.0.borrow().join("\n"),
         }
+    }
+
+    fn test_repo() -> Rc<dyn harness_core::ports::shell::git::Repo> {
+        use harness_core::ports::shell::git::Repos as _;
+        crate::common::fake_git::FakeRepos::default().at(std::path::Path::new("/ws"))
     }
 
     const DECLARED: &str = "## Architecture\n\nunit: capability\nsystem: credit\n\

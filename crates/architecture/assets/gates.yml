@@ -99,15 +99,38 @@ jobs:
           exit $failed
 
   # Contracts A, B — `implements: Risk@3` ⇒ the Concept's fixtures pass
-  # against this Capability. Needs a conformance runner that feeds
-  # concepts/<Concept>/v<n>/fixtures.json to the Capability: it comes with
-  # the DataGuard engine the harness installs, and this gate is switched on
-  # with it.
+  # against this Capability. The runner is crates/platform/conformance
+  # (installed): a Capability that implements a Concept has a test that
+  # calls `platform_conformance::check("<Concept>@<n>", …)`, and that test
+  # runs here, crate by crate. A Capability with no such test fails: a
+  # Concept it claims and never proves is a copy nobody can check.
   semantic-conformance:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — every Capability that implements a Concept passes its fixtures"
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Every Capability that implements a Concept passes its fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          for manifest in crates/*/capabilities/*/capability.json; do
+            ref=$(jq -r '.implements // empty' "$manifest")
+            [ -n "$ref" ] || continue
+            dir=$(dirname "$manifest")
+            if ! grep -rqF 'platform_conformance::check' "$dir"/src "$dir"/tests 2>/dev/null; then
+              echo "::error file=$manifest::implements $ref and has no test calling platform_conformance::check(\"$ref\", …) — the Concept is claimed, never proved"
+              failed=1
+              continue
+            fi
+            name=$(grep -m1 -E '^\s*name\s*=' "$dir/Cargo.toml" | sed -E 's/^[^"]*"([^"]*)".*/\1/')
+            if ! cargo test -p "$name" -- conformance; then
+              echo "::error file=$manifest::$ref: the conformance fixtures fail against $name"
+              failed=1
+            fi
+          done
+          exit $failed
 
   # Contract B — no Capability has write access. Checked where it can be,
   # statically: no write statement in a Capability crate, and no use of the
@@ -134,6 +157,21 @@ jobs:
             fi
           done
           exit $failed
+
+  # Contract C — every read a Capability makes is a declared, persisted
+  # query, registered under the Capability's id with its hash and the
+  # fields it reads: `scripts/queries.sh` writes queries/registry.json from
+  # the manifests' `reads`, and this gate refuses a registry that is not
+  # what the script writes — a query changed, a `reads` entry points
+  # nowhere, a query declares no fields. What the read crate serves is what
+  # is registered.
+  queries-registered:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: queries/registry.json is what scripts/queries.sh writes
+        shell: bash
+        run: bash scripts/queries.sh --check
 
   # Contract C — every persisted query is valid against the current schema
   # and the next one (expand/contract). Needs the schema the DataGuard engine
@@ -236,7 +274,7 @@ jobs:
           set -euo pipefail
           [ -f Cargo.toml ] || exit 0
           failed=0
-          members=$(awk '/^\s*members\s*=\s*\[/,/\]/' Cargo.toml | tr -d '[]"'"'"' ' | tr ',' '\n' | sed 's/members=//' | grep -v '^\s*$' || true)
+          members=$(awk '/^[[:space:]]*members[[:space:]]*=[[:space:]]*\[/,/\]/' Cargo.toml | tr -d '[]"'"'"'' | tr ',' '\n' | sed -E 's/^[[:space:]]*members[[:space:]]*=//; s/^[[:space:]]+//; s/[[:space:]]+$//' | grep -v '^$' || true)
           while read -r member; do
             [ -n "$member" ] || continue
             case "$member" in
@@ -374,14 +412,16 @@ jobs:
             done
           }
           for aggregate in crates/**/aggregate.json; do
+            # The aggregate's own system: crates/<system>/aggregates/<Aggregate>/aggregate.json.
+            system_dir=$(dirname "$(dirname "$(dirname "$aggregate")")")
             for id in $(jq -r '.invariants[].id' "$aggregate"); do
               tested=0
-              for src in crates/**/*.rs; do
+              for src in "$system_dir"/**/*.rs; do
                 case "$src" in */tests/*) ;; *) grep -qE '#\[(tokio::)?test\]' "$src" || continue ;; esac
                 if grep -qF "$id" "$src"; then tested=1; break; fi
               done
               if [ "$tested" = "0" ]; then
-                echo "::error file=$aggregate::invariant $id is named in no test"
+                echo "::error file=$aggregate::invariant $id is named in no test of $system_dir — the aggregate's own system tests its invariants"
                 failed=1
               fi
             done

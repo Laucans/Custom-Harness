@@ -161,6 +161,12 @@ mod tests {
             "mid",
             "two tasks prove nothing"
         );
+        let at_the_ceiling = measured(4, PER_TASK_CEILING);
+        assert_eq!(
+            adjusted("mid", false, Some(&at_the_ceiling)),
+            "mid",
+            "past it, not at it"
+        );
         let dear = measured(9, PER_TASK_CEILING * 3.0);
         assert_eq!(
             adjusted("strong", true, Some(&dear)),

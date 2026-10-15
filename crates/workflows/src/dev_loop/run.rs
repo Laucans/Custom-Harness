@@ -228,6 +228,7 @@ fn rounds(
             pick: PickTask {
                 gh: Rc::clone(&gh),
                 spending: Rc::clone(&spending),
+                repo: Rc::clone(&repo),
                 resuming: if turn == 1 { resuming.clone() } else { None },
                 wanted,
                 data_layer: config.data_layer_spec(),

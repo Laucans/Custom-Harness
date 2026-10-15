@@ -39,7 +39,7 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// dead-code script, the mutants configuration, rotation and test-debt
 /// filing, the schema dump, the data model, the mock-up's files, the
 /// contracts A–O.
-pub const FILES: [Asset; 36] = [
+pub const FILES: [Asset; 39] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -79,6 +79,18 @@ pub const FILES: [Asset; 36] = [
     Asset {
         path: "scripts/isolation.sh",
         content: include_str!("../assets/isolation.sh"),
+    },
+    Asset {
+        path: "scripts/queries.sh",
+        content: include_str!("../assets/queries.sh"),
+    },
+    Asset {
+        path: "crates/platform/conformance/Cargo.toml",
+        content: include_str!("../assets/conformance/Cargo.toml"),
+    },
+    Asset {
+        path: "crates/platform/conformance/src/lib.rs",
+        content: include_str!("../assets/conformance/src/lib.rs"),
     },
     Asset {
         path: "data/model.json",
@@ -217,12 +229,20 @@ mod tests {
     }
 
     #[test]
-    fn only_the_three_gates_that_need_the_engine_stay_off() {
+    fn only_the_two_gates_that_need_the_engine_stay_off() {
         let gates = include_str!("../assets/gates.yml");
         assert_eq!(
             gates.lines().filter(|l| l.trim() == "if: false").count(),
-            3,
-            "semantic-conformance, queries-valid and schema-impact wait for the DataGuard engine"
+            2,
+            "queries-valid and schema-impact wait for the DataGuard engine"
+        );
+        assert!(
+            gates.contains("platform_conformance::check"),
+            "conformance runs"
+        );
+        assert!(
+            gates.contains("bash scripts/queries.sh --check"),
+            "the registry is checked"
         );
     }
 

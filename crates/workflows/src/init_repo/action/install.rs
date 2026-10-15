@@ -218,7 +218,14 @@ mod tests {
         assert!(written.iter().any(
             |(path, text)| path.ends_with("docs/ARCHITECTURE.md") && text.contains(MARKER_OPEN)
         ));
-        assert!(lines[0].starts_with("installed 37 file(s) on main_agent"));
+        assert!(
+            lines[0].starts_with(&format!(
+                "installed {} file(s) on main_agent",
+                harness_architecture::assets::FILES.len() + 1
+            )),
+            "{}",
+            lines[0]
+        );
         assert!(lines[0].contains("contracts/ (16 files)"));
     }
 
@@ -305,7 +312,10 @@ mod tests {
         assert!(disk.written.borrow().is_empty(), "expected nothing");
         assert_eq!(
             lines,
-            ["would install 37 file(s) on main_agent (read against an empty tree)"]
+            [format!(
+                "would install {} file(s) on main_agent (read against an empty tree)",
+                harness_architecture::assets::FILES.len() + 1
+            )]
         );
     }
 
