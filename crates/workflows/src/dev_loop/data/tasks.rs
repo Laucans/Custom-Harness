@@ -21,9 +21,10 @@
 //! 3. **a `harness:human` issue is not a separate mechanism.** It blocks
 //!    because it's in `blocked_by`, like any other dependency — the round's
 //!    human gate disappeared in this rule;
-//! 4. **`harness:ready` commands everything.** An open but not-ready task
-//!    stops the run; it especially does not read as "nothing left", which
-//!    would wrongly say the milestone is finished.
+//! 4. **`harness:ready` commands everything.** `split` opens every agent
+//!    task with it; a task without it — a human took it off, or opened the
+//!    task by hand — stops the run; it especially does not read as "nothing
+//!    left", which would wrongly say the milestone is finished.
 //!
 //! Pure business logic: no I/O, no subprocess.
 

@@ -29,12 +29,15 @@
 //! lane, the runnable tasks before splits and refinements ([`lane_work`]),
 //! so a pending refinement never keeps a task off a lane that sits free.
 //!
-//! `harness:ready` is the same human gate at every issue level: it means
-//! "plan this" on a roadmap item, "split this" on a milestone, and "build
-//! this" on a task. `harness:to-review` and `harness:pr-fix` are the same
-//! kind of gate on a **pull request**, and `harness:test-debt` on the issue
-//! the CI's mutants rotation opens. The router never acts on something
-//! nobody has opened the tap on.
+//! `harness:ready` is the same tap at every issue level: it means "plan
+//! this" on a roadmap item, "split this" on a milestone, and "build this" on
+//! a task. The factory's Initialize opens it on the roadmap item, the planner
+//! on its milestones, split on its agent tasks: **the harness opens the tap,
+//! a human closes it** by taking the label off — after the fact, told by the
+//! notifications. `harness:to-review` and `harness:pr-fix` are the same kind
+//! of tap on a **pull request**, `harness:test-debt` on the issue the CI's
+//! mutants rotation opens, `harness:needs-decision` on any issue a decision
+//! is asked on. The router never acts on something no tap is open on.
 
 use harness_core::domain::{Issue, Pr};
 use harness_core::ports::shell::github::Activity;

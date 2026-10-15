@@ -88,8 +88,8 @@ impl Board {
                    here is the harness's to do.";
         }
         head + &format!(
-            "Add {} to the one to work on next, or close what blocks it, then \
-             re-run.",
+            "A task without {} was held by a human or opened by hand: pose it on \
+             the one to work on next, or close what blocks it.",
             labels::READY
         )
     }
