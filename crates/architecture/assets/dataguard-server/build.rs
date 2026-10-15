@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(2)
-        .expect("crates/dataguard/server sits two levels under the root")
+        .nth(3)
+        .expect("crates/dataguard/server sits three levels under the root")
         .to_path_buf();
     println!("cargo:rerun-if-changed={}", root.join("crates").display());
     println!("cargo:rerun-if-changed={}", root.join("queries").display());

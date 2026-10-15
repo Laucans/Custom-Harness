@@ -5,7 +5,9 @@
 //!   dataguard-server migrate          applies the engine's own migration
 //!   dataguard-server serve [addr]     serves, 127.0.0.1:8800 by default
 //!
-//! `DATABASE_URL` names the database. The invariants a product executes
+//! `DATABASE_URL` names the database — or is `memory`, and the server runs
+//! on the engine's in-memory store, which forgets everything at exit: for
+//! a mock-up, a demo, a smoke test. The invariants a product executes
 //! beyond `aggregate.json`'s rules, and the AI that proposes
 //! reconciliations, are wired in `plant()` — the two places this file
 //! expects the product to grow.
@@ -19,10 +21,14 @@ use harness_dataguard::aggregate::Aggregate;
 use harness_dataguard::api::{HoldRequest, ReadRequest, ReadResponse, ReviewDecision, Submission};
 use harness_dataguard::engine::Engine;
 use harness_dataguard::manifest::DataCapability;
-use harness_dataguard::memory::MemoryNotifier;
+use harness_dataguard::memory::{MemoryNotifier, MemoryStore};
 use harness_dataguard::postgres::{PgStore, SystemClock};
 use harness_dataguard::registry::Registry;
+use harness_dataguard::store::Store;
 use harness_dataguard::Error;
+
+/// The `DATABASE_URL` that means no database: the in-memory store.
+const MEMORY: &str = "memory";
 
 mod registry {
     include!(concat!(env!("OUT_DIR"), "/registry.rs"));
@@ -32,13 +38,17 @@ type Shared = Arc<Engine>;
 
 /// The engine over this product's manifests and its database.
 async fn plant(url: &str) -> Result<Engine, Box<dyn std::error::Error>> {
-    let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls).await?;
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("postgres: {e}");
-        }
-    });
-    let store = Arc::new(PgStore::open(client).await?);
+    let store: Arc<dyn Store> = if url == MEMORY {
+        Arc::new(MemoryStore::default())
+    } else {
+        let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("postgres: {e}");
+            }
+        });
+        Arc::new(PgStore::open(client).await?)
+    };
     let mut engine = Engine::new(store, Arc::new(MemoryNotifier::default()), Arc::new(SystemClock))
         .with_registry(Registry::parse(registry::REGISTRY)?);
     for text in registry::AGGREGATES {
@@ -148,6 +158,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must name the database")?;
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
+        Some("migrate") if url == MEMORY => {
+            println!("nothing to migrate: the in-memory store");
+            Ok(())
+        }
         Some("migrate") => {
             let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls).await?;
             tokio::spawn(connection);

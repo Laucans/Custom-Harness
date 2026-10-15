@@ -1,6 +1,9 @@
-//! The `DataGuard`'s own judgements: who may trigger a command, what effect
-//! it really has, which invariants hold on a state. Pure; the invariants'
-//! code is the product's, behind a trait.
+//! The `DataGuard`'s own judgements, pure.
+//!
+//! Who may trigger a command, what effect it really has, which invariants
+//! hold on a state. A rule an `aggregate.json` writes as
+//! `<field> <op> <value>` is judged here, as the mock judges it; any other
+//! rule is code the product writes behind a trait, and the two add up.
 
 use std::collections::BTreeMap;
 
@@ -151,8 +154,64 @@ impl Verdict {
     }
 }
 
-/// Runs the aggregate's invariants on `state` and sorts the violations by
-/// what the aggregate says of each.
+/// Whether a rule of the shape `<field> <op> <value>` holds on `state`.
+///
+/// `None` when the rule is not of that shape (the product's code judges
+/// it) or the field is absent (a rule on a field the command does not
+/// set is not its violation). `op` is one of `<=`, `>=`, `<`, `>`, `==`,
+/// `=`, `!=`; the value a number, `true`/`false`, or a word, quoted or not.
+#[must_use]
+pub fn rule_holds(rule: &str, state: &BTreeMap<String, Value>) -> Option<bool> {
+    let mut parts = rule.split_whitespace();
+    let field = parts.next()?;
+    let op = parts.next()?;
+    let raw = parts.collect::<Vec<_>>().join(" ");
+    if raw.is_empty()
+        || !field
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        return None;
+    }
+    let left = state.get(field)?;
+    let right = literal(&raw);
+    let ordering = match (left.as_f64(), right.as_f64()) {
+        (Some(a), Some(b)) => a.partial_cmp(&b),
+        _ => match (left.as_str(), right.as_str()) {
+            (Some(a), Some(b)) => Some(a.cmp(b)),
+            _ => None,
+        },
+    };
+    let equal = left == &right;
+    Some(match op {
+        "==" | "=" => equal,
+        "!=" => !equal,
+        "<" => ordering.is_some_and(std::cmp::Ordering::is_lt),
+        "<=" => ordering.is_some_and(std::cmp::Ordering::is_le),
+        ">" => ordering.is_some_and(std::cmp::Ordering::is_gt),
+        ">=" => ordering.is_some_and(std::cmp::Ordering::is_ge),
+        _ => return None,
+    })
+}
+
+/// The value a rule's right-hand side names.
+fn literal(raw: &str) -> Value {
+    if let Ok(n) = raw.parse::<i64>() {
+        return Value::from(n);
+    }
+    if let Ok(n) = raw.parse::<f64>() {
+        return Value::from(n);
+    }
+    match raw {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        _ => Value::from(raw.trim_matches(|c| c == '"' || c == '\'')),
+    }
+}
+
+/// Runs the aggregate's invariants on `state` — its own rules of the simple
+/// shape, then the product's code — and sorts the violations by what the
+/// aggregate says of each.
 #[must_use]
 pub fn check(
     aggregate: &Aggregate,
@@ -161,7 +220,16 @@ pub fn check(
     entry: &Entry,
 ) -> Verdict {
     let mut verdict = Verdict::default();
-    for id in invariants.violated(&aggregate.aggregate, state, entry) {
+    let declared = aggregate
+        .invariants
+        .iter()
+        .filter(|i| rule_holds(&i.rule, state) == Some(false))
+        .map(|i| i.id.clone());
+    let coded = invariants.violated(&aggregate.aggregate, state, entry);
+    for id in declared.chain(coded) {
+        if verdict.rejecting.contains(&id) || verdict.reviewing.contains(&id) {
+            continue;
+        }
         match aggregate.invariant(&id).map(|i| i.on_violation) {
             Some(OnViolation::Reject) => verdict.rejecting.push(id),
             Some(OnViolation::HumanReview) => verdict.reviewing.push(id),
@@ -392,5 +460,128 @@ mod tests {
             .is_empty(),
             "expected nothing"
         );
+    }
+
+    #[test]
+    fn a_rule_of_the_simple_shape_is_judged_on_the_state() {
+        let state = BTreeMap::from([
+            ("creditLimit".to_string(), Value::from(5000)),
+            ("status".to_string(), Value::from("open")),
+            ("vip".to_string(), Value::Bool(true)),
+            ("ratio".to_string(), Value::from(0.5)),
+        ]);
+        let holds = |rule: &str| rule_holds(rule, &state);
+        assert_eq!(holds("creditLimit <= 10000"), Some(true));
+        assert_eq!(holds("creditLimit <= 4999"), Some(false));
+        assert_eq!(holds("creditLimit < 5000"), Some(false));
+        assert_eq!(holds("creditLimit >= 5000"), Some(true));
+        assert_eq!(holds("creditLimit > 5000"), Some(false));
+        assert_eq!(holds("creditLimit == 5000"), Some(true));
+        assert_eq!(holds("creditLimit = 5000"), Some(true));
+        assert_eq!(holds("creditLimit != 5000"), Some(false));
+        assert_eq!(holds("ratio < 0.75"), Some(true));
+        assert_eq!(holds("status == open"), Some(true));
+        assert_eq!(holds("status != \"closed\""), Some(true));
+        assert_eq!(
+            holds("status < closed"),
+            Some(false),
+            "words order as words"
+        );
+        assert_eq!(holds("vip == true"), Some(true));
+        assert_eq!(holds("vip != false"), Some(true));
+        assert_eq!(
+            holds("status < 3"),
+            Some(false),
+            "a word against a number orders nowhere"
+        );
+        assert_eq!(holds("status == 3"), Some(false));
+        assert_eq!(holds("missing <= 1"), None, "a field the state lacks");
+        assert_eq!(holds("creditLimit ~ 1"), None, "an unknown operator");
+        assert_eq!(holds("creditLimit <="), None, "no value");
+        assert_eq!(
+            holds("the limit stays under the ceiling"),
+            None,
+            "words: the product's code"
+        );
+        assert_eq!(holds("credit-limit <= 1"), None, "not a field name");
+        assert_eq!(holds(""), None);
+    }
+
+    /// A product's own rule, beside the aggregate's.
+    struct Coded;
+
+    impl Invariants for Coded {
+        fn violated(
+            &self,
+            _aggregate: &str,
+            state: &BTreeMap<String, Value>,
+            _entry: &Entry,
+        ) -> Vec<String> {
+            let limit = state
+                .get("creditLimit")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let mut found = vec!["unknown-to-the-aggregate".to_string()];
+            if limit > 7000 {
+                found.push("risk-fresh".to_string());
+            }
+            if limit > 10_000 {
+                found.push("limit-under-ceiling".to_string());
+            }
+            found
+        }
+    }
+
+    #[test]
+    fn declared_rules_and_the_product_s_code_add_up_once_each() {
+        let aggregate = Aggregate::parse(
+            r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative","criticality":"normal"}},"invariants":[{"id":"limit-under-ceiling","rule":"creditLimit <= 10000","onViolation":"reject"},{"id":"risk-fresh","rule":"the risk score is younger than the raise","onViolation":"human_review"},{"id":"positive","rule":"creditLimit >= 0","onViolation":"reject"}]}"#,
+        )
+        .expect("contract I");
+        let state = |limit: i64| BTreeMap::from([("creditLimit".to_string(), Value::from(limit))]);
+        let fine = check(
+            &aggregate,
+            &Coded,
+            &state(5000),
+            &entry(Mode::Overwrite, "creditLimit", 5000),
+        );
+        assert!(fine.holds(), "{fine:?}");
+        let risky = check(
+            &aggregate,
+            &Coded,
+            &state(8000),
+            &entry(Mode::Overwrite, "creditLimit", 8000),
+        );
+        assert_eq!(risky.reviewing, ["risk-fresh"], "the product's code");
+        assert!(risky.rejecting.is_empty(), "expected nothing");
+        let over = check(
+            &aggregate,
+            &Coded,
+            &state(20_000),
+            &entry(Mode::Overwrite, "creditLimit", 20_000),
+        );
+        assert_eq!(
+            over.rejecting,
+            ["limit-under-ceiling"],
+            "declared and coded alike, once"
+        );
+        assert_eq!(over.reviewing, ["risk-fresh"]);
+        let negative = check(
+            &aggregate,
+            &NoInvariants,
+            &state(-1),
+            &entry(Mode::Overwrite, "creditLimit", -1),
+        );
+        assert_eq!(negative.rejecting, ["positive"], "the declared rule alone");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn any_rule_is_judged_or_left_to_the_product_without_a_panic(rule in "[a-zA-Z0-9_. <>=!~\"'-]{0,24}", limit in -20_000i64..20_000) {
+            let state = BTreeMap::from([("creditLimit".to_string(), Value::from(limit))]);
+            let _ = rule_holds(&rule, &state);
+            let ceiling = rule_holds("creditLimit <= 10000", &state);
+            proptest::prop_assert_eq!(ceiling, Some(limit <= 10_000));
+        }
     }
 }

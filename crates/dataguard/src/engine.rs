@@ -863,9 +863,11 @@ mod tests {
     const REVIEWED: &str = r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative","criticality":"normal"}},"invariants":[],"relations":[{"from":"Invoice.accountId","onDelete":"review"}]}"#;
     const STATUS: &str = r#"{"dataCapability":"credit.setStatus","owner":"dataguard","version":1,"effect":"update","target":{"aggregate":"Account","id":"$accountId"},"touches":["Account.status"],"mode":"overwrite","callableBy":["*"]}"#;
 
-    struct Ceiling;
+    /// What a product codes beyond the rules its aggregate writes down:
+    /// here, a raise past 7000 wants a fresh risk score.
+    struct RiskFresh;
 
-    impl Invariants for Ceiling {
+    impl Invariants for RiskFresh {
         fn violated(
             &self,
             _aggregate: &str,
@@ -876,9 +878,9 @@ mod tests {
                 .get("creditLimit")
                 .and_then(Value::as_i64)
                 .unwrap_or(0)
-                > 10_000
+                > 7000
             {
-                vec!["limit-under-ceiling".to_string()]
+                vec!["risk-fresh".to_string()]
             } else {
                 Vec::new()
             }
@@ -901,8 +903,7 @@ mod tests {
             .with_data_capability(DataCapability::parse(LIMIT).expect("F"))
             .with_data_capability(DataCapability::parse(CLOSE).expect("F"))
             .with_data_capability(DataCapability::parse(ADD).expect("F"))
-            .with_data_capability(DataCapability::parse(STATUS).expect("F"))
-            .with_invariants(Arc::new(Ceiling));
+            .with_data_capability(DataCapability::parse(STATUS).expect("F"));
         Plant {
             engine,
             store,
@@ -1766,6 +1767,43 @@ mod tests {
             idempotency_key: None,
             caller: Engine::caller("alice", "credit.Form", &[], &[]),
         }
+    }
+
+    #[tokio::test]
+    async fn a_product_s_coded_invariant_adds_to_the_declared_rules() {
+        let plant = plant(account(5000));
+        let engine = Engine::new(
+            plant.store.clone(),
+            plant.notifier.clone(),
+            plant.clock.clone(),
+        )
+        .with_aggregate(
+            Aggregate::parse(
+                r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative","criticality":"normal"}},"invariants":[{"id":"limit-under-ceiling","rule":"creditLimit <= 10000","onViolation":"reject"},{"id":"risk-fresh","rule":"a raise past 7000 wants a risk score younger than it","onViolation":"human_review"}]}"#,
+            )
+            .expect("I"),
+        )
+        .with_data_capability(DataCapability::parse(LIMIT).expect("F"))
+        .with_invariants(Arc::new(RiskFresh));
+        let modest = engine
+            .submit(limit("alice", 6000, 5000))
+            .await
+            .expect("queued");
+        assert_eq!(modest.result.status, State::Queued);
+        let raise = engine
+            .submit(limit("bob", 8000, 5000))
+            .await
+            .expect("queued for review");
+        assert_eq!(
+            raise.result.status,
+            State::AwaitingReview,
+            "the coded rule asks a human"
+        );
+        assert!(
+            raise.warnings.iter().any(|w| w.contains("risk-fresh")),
+            "{:?}",
+            raise.warnings
+        );
     }
 
     #[tokio::test]

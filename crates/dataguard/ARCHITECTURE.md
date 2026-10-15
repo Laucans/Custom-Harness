@@ -43,7 +43,7 @@ sessions, not about a product's data.
 | `registry` | C | the persisted queries served, by Capability and hash; the readers of a field |
 | `command` | G, H | an entry of the queue, its projection, its states; the command result (five fields) |
 | `queue` | G | **pure**: one FIFO per partition, fixed positions, projected view, `ValueDeclaredAhead`, confirmations, parked (24 h), holds (1 min), expiry |
-| `guard` | F, H, I | **pure**: authorisation, static then dynamic classification of the effect, the invariants on a projected and on the real state |
+| `guard` | F, H, I | **pure**: authorisation, static then dynamic classification of the effect, the invariants on a projected and on the real state — a rule written `<field> <op> <value>` in `aggregate.json` is judged here (as the mock judges it), any other is the product's code behind `Invariants`, and the two add up |
 | `resolver` | J | **pure**: the impact plan — readers, holds, cascade by relation policy, the decision `auto / confirm / human_review / blocked / rejected` |
 | `reconcile` | K | **pure**: a review, the AI's proposal behind a trait, a human's decision by role |
 | `messages` | L | the twelve message kinds and the notifier port |
