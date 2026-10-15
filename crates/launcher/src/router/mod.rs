@@ -342,6 +342,7 @@ async fn snapshot(gh: &dyn GitHub, log: &Logbook) -> Outcome<(Snapshot, Option<S
         .await?;
     let test_debt = gh.issues_labelled(labels::TEST_DEBT, "open").await?;
     let rules = gh.issues_labelled(labels::RULES, "open").await?;
+    let deciding = gh.issues_labelled(labels::NEEDS_DECISION, "open").await?;
     // Tolerant on purpose: "no open milestone at all" is this probe's most
     // common answer, not a failure — `dev_loop::run` itself is where that
     // distinction matters and is already made.
@@ -372,6 +373,7 @@ async fn snapshot(gh: &dyn GitHub, log: &Logbook) -> Outcome<(Snapshot, Option<S
         dev_loop_milestone,
         test_debt,
         rules,
+        deciding,
     };
     // The tests come first: a development that waits on them says so.
     let idle = routing::rules_first(&snapshot)

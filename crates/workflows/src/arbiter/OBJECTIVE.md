@@ -1,8 +1,8 @@
 # Objective
 
-Settle, without a human where an agent may, a question a task's refinement
-raised about its place in the milestone's graph — and hand the rest to a
-human with the analysis already done.
+Settle, without a human, a question a task's refinement raised about its
+place in the milestone's graph — and hand what is no graph question to the
+`decide` workflow with the analysis already done.
 
 **Trigger.** A task carries `harness:needs-ai-decision`: its technical
 refinement found the design builds on an id its `needs` line does not
@@ -18,15 +18,15 @@ sibling's `produces` when the id was nobody's yet, and the verdict under
 
 **Why it matters.** Twenty tasks refined in parallel cannot each rebuild
 the milestone's dependency tree, and a human asked twenty graph questions
-answers none of them well. One writer of the graph at a time, with a human
-only where the plan itself is in question, keeps the board coherent and
-the human's attention for what is theirs.
+answers none of them well. One writer of the graph at a time, and a
+decision taken where the plan itself is in question, keeps the board
+coherent; the human reads both after the fact.
 
 **What it deliberately does not do.** It never changes what a task
 `produces`, never cuts a task, never touches a task that has started, and
-never pays a second session to disagree with a first: all of these go to a
-human under `harness:needs-decision`, with its reasoning in a comment.
+never pays a second session to disagree with a first: all of these go to
+`decide` under `harness:needs-decision`, with its reasoning in a comment.
 
 **What "done" looks like.** The task's `## Architecture` names every id
-it builds on and waits on every task that produces one — or a human knows
-exactly which decision is theirs.
+it builds on and waits on every task that produces one — or `decide` knows
+exactly which decision to take.

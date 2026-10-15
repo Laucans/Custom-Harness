@@ -346,6 +346,23 @@ otherwise), both gated by `AsksSomething`; lock per issue; no resume, no
 tolerance. The body's format is `rules::data::request` — the view writes
 it with `body`, the workflow reads it with `read`.
 
+**The one that decides where a human was asked:** `decide` — any open
+issue carrying `harness:needs-decision`: the business advice wanted a
+decision, the arbiter could not settle one, a task's PR still does not merge
+after `MAX_FIXES` repairs (`milestone_merge::escalate`), a session stopped
+on an ambiguity or the breaker refused (`dev_loop::action::stop`, which
+writes `## Decision` with `kind: stop|breaker` and hands the third stop of a
+task to a `harness:human` task instead). Routed right after the rules' task,
+before any work it unblocks; a task carrying the label is not runnable.
+State `DecideState`; `remaining` 1; core's `Round<S>`; stages `context`
+(reads the issue, its `## Decision`, its comments, the task's PR and review,
+then takes the label — one label, one decision), `decide` (opus: `answer`,
+`merge`, `repair` — the repairs counted anew from `review::DECIDED_MARKER` —
+or `cut`), gated by `NeedsASession` (an owner's answer, `decided-by: owner`,
+is never decided over) and `DecisionParses`, and `apply` (writes `## Decision`
+with `decided-by: ai`, carries it out, labels `harness:ai-decided`, records
+`DecisionTaken`); lock per issue.
+
 **The one that works a task's graph:** `arbiter` — a task whose technical
 refinement found the design could not hold its `## Architecture` as `split`
 cut it: an id it builds on that `needs` does not name, written as a question

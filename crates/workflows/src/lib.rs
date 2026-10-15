@@ -23,6 +23,7 @@ pub mod common;
 pub mod data_diagnosis;
 pub mod data_model_draft;
 pub mod data_snapshot;
+pub mod decide;
 pub mod dev_loop;
 pub mod init_repo;
 pub mod main_agent_merge;

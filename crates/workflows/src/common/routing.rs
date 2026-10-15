@@ -8,7 +8,8 @@
 //!
 //! Priority, top to bottom: a roadmap item that's `harness:ready` and has no
 //! milestone yet outranks everything, because nothing else can be planned
-//! against it; then a `harness:ready` rules' task, since its tests are what
+//! against it; then a `harness:ready` rules' task, then a decision asked
+//! (`harness:needs-decision`, the `decide` workflow), since its tests are what
 //! every development conforms to — and **while a rules' task is open, ready
 //! or not, no development task starts** ([`rules_first`]); a milestone ready
 //! to split comes next, once no refinement is
@@ -106,6 +107,11 @@ pub enum Route {
         /// a fixed integration branch.
         milestone: u64,
     },
+    /// Take the decision this issue asks for — `decide`.
+    Decide {
+        /// The issue's number.
+        issue: u64,
+    },
     /// Write the rules and their tests, or settle a contest — `rules`.
     Rules {
         /// The rules' issue number.
@@ -161,6 +167,8 @@ pub struct Snapshot {
     pub test_debt: Vec<Issue>,
     /// Open `harness:rules` issues, any order.
     pub rules: Vec<Issue>,
+    /// Open `harness:needs-decision` issues, any order.
+    pub deciding: Vec<Issue>,
 }
 
 /// The rules' task development waits on: the lowest open `harness:rules`
@@ -184,6 +192,13 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     }
     if let Some(issue) = lowest_open(&snapshot.rules).filter(|issue| issue.has(labels::READY)) {
         return Route::Rules {
+            issue: issue.number,
+        };
+    }
+    // A decision is cheap, and it unblocks a task, a PR or a split: before
+    // any of them.
+    if let Some(issue) = lowest_open(&snapshot.deciding) {
+        return Route::Decide {
             issue: issue.number,
         };
     }
@@ -453,6 +468,7 @@ mod tests {
             dev_loop_milestone: None,
             test_debt: Vec::new(),
             rules: Vec::new(),
+            deciding: Vec::new(),
         }
     }
 
@@ -501,6 +517,7 @@ mod tests {
             dev_loop_milestone: Some(3),
             test_debt: vec![issue(8, &[labels::TEST_DEBT])],
             rules: vec![issue(2, &[labels::RULES, labels::READY])],
+            deciding: vec![issue(3, &[labels::NEEDS_DECISION])],
         };
         assert_eq!(decide(&snapshot), Route::Planner { roadmap: 4 });
     }
@@ -569,6 +586,25 @@ mod tests {
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::Nothing);
+    }
+
+    #[test]
+    fn a_decision_comes_after_the_rules_and_before_any_work_it_unblocks() {
+        let mut decided = issue(2, &[labels::NEEDS_DECISION]);
+        decided.state = "closed".to_string();
+        let snapshot = Snapshot {
+            deciding: vec![decided, issue(8, &[labels::NEEDS_DECISION, labels::AGENT])],
+            milestones: vec![issue(9, &[labels::MILESTONE, labels::READY])],
+            pr_to_fix: Some(pr("32", "milestone/3-x")),
+            dev_loop_milestone: Some(3),
+            ..empty()
+        };
+        assert_eq!(decide(&snapshot), Route::Decide { issue: 8 });
+        let rules_first = Snapshot {
+            rules: vec![issue(5, &[labels::RULES, labels::READY])],
+            ..snapshot
+        };
+        assert_eq!(decide(&rules_first), Route::Rules { issue: 5 });
     }
 
     #[test]

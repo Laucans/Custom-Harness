@@ -291,6 +291,7 @@ pub fn lines() -> Vec<Line> {
         pr_fix_line(),
         test_debt_line(),
         rules_line(),
+        decide_line(),
         arbiter_line(),
         milestone_merge_line(),
         main_agent_merge_line(),
@@ -804,6 +805,48 @@ fn rules_line() -> Line {
                 Some(gate("fidelity requires", "The issue says what it asks.")),
                 None,
             ),
+        ],
+    )
+}
+
+fn decide_line() -> Line {
+    line(
+        "decide",
+        "Decide",
+        "harness:needs-decision on an issue",
+        "Takes the decision a human used to be asked for — a session that stopped, the breaker, \
+         a PR its repairs did not clear, a question on the plan — writes it under ## Decision, \
+         carries it out and tells the human, who may overrule it.",
+        vec![
+            vec![free(
+                "context",
+                "read the case",
+                Kind::Printer,
+                "Reads the issue, its ## Decision, its comments and its PR, then takes the request.",
+            )],
+            paid(
+                "decide",
+                "decide",
+                Kind::Inspector,
+                "opus",
+                "One session decides: answer, merge as it is, repair once more, or cut — never \
+                 asks, never spends.",
+                Some(gate(
+                    "decide requires",
+                    "No owner answered under ## Decision already.",
+                )),
+                Some(gate(
+                    "decide must answer",
+                    "The reply reads as a decision this issue can carry out.",
+                )),
+            ),
+            vec![free(
+                "apply",
+                "carry it out",
+                Kind::Arm,
+                "Writes the decision, merges, repairs or closes, labels harness:ai-decided and \
+                 tells the human.",
+            )],
         ],
     )
 }

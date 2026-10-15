@@ -106,6 +106,14 @@ fn progress(board: &mut Board, event: &Event, at: &str) {
             at,
             Some(issue(*milestone)),
         )),
+        Event::DecisionTaken { .. } | Event::HumanTaskOpened { .. } => decisions(board, event, at),
+        _ => delivery(board, event, at),
+    }
+}
+
+/// A task, a milestone, a roadmap item delivered — or a PR on its way.
+fn delivery(board: &mut Board, event: &Event, at: &str) {
+    match event {
         Event::PrOpened { task, pr, base } => board.add(Notification::once(
             format!("pr:#{task}"),
             Level::Info,
@@ -158,6 +166,42 @@ fn progress(board: &mut Board, event: &Event, at: &str) {
             format!("the roadmap item is delivered: release it, then close #{roadmap}"),
             at,
             Some(issue(*roadmap)),
+        )),
+        _ => {}
+    }
+}
+
+/// What the harness decided, and what it handed to a human.
+fn decisions(board: &mut Board, event: &Event, at: &str) {
+    match event {
+        Event::DecisionTaken {
+            issue: n,
+            kind,
+            action,
+            confidence,
+            summary,
+        } => {
+            board.clear(&format!("repairs:#{n}"));
+            board.add(Notification::once(
+                format!("decided:#{n}"),
+                Level::Warning,
+                format!("#{n}: the harness decided ({kind}) — {action}"),
+                format!(
+                    "{summary} ({confidence}/5). To overrule it: edit ## Decision \
+                     (decided-by: owner) and pose harness:needs-decision again; take \
+                     harness:ai-decided off once read"
+                ),
+                at,
+                Some(issue(*n)),
+            ));
+        }
+        Event::HumanTaskOpened { task, blocks, why } => board.add(Notification::once(
+            format!("human:#{task}"),
+            Level::Warning,
+            format!("#{task} needs you"),
+            format!("{why} — do it, then close #{task}; #{blocks} waits on it"),
+            at,
+            Some(issue(*task)),
         )),
         _ => {}
     }
@@ -252,7 +296,9 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::TaskDelivered { .. }
         | Event::RepairsExhausted { .. }
         | Event::MilestoneLanded { .. }
-        | Event::RoadmapDelivered { .. } => progress(board, event, at),
+        | Event::RoadmapDelivered { .. }
+        | Event::DecisionTaken { .. }
+        | Event::HumanTaskOpened { .. } => progress(board, event, at),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }

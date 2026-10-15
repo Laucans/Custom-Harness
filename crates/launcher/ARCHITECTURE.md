@@ -29,8 +29,10 @@ src/dispatch/     one module per thing that can be run, plus what they share
   planner.rs        a roadmap item into milestones
   split.rs          a milestone into tasks
   refinement.rs     an issue body into its five canonical sections
-  arbiter.rs        a task's graph question settled, or handed to a human — the shared
+  arbiter.rs        a task's graph question settled, or handed to `decide` — the shared
                      read-only checkout, for the manifests
+  decide.rs         a decision taken where a human was asked — the shared read-only
+                     checkout, the session reading the design dossier
   pr_review.rs      an advisory review on a PR
   pr_fix.rs         one repair attempt on a red PR — a writable checkout of its own
   test_debt.rs      the tests one file owes, from its test-debt issue — writable too,

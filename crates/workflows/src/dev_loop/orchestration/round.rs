@@ -24,6 +24,7 @@ use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Action, Context, Executable, Gate, Guarded, Stage};
 
 use crate::dev_loop::action::actions::{MarkWaitingMerge, PickTask};
+use crate::dev_loop::action::stop::RaiseDecision;
 use crate::dev_loop::data::state::Loop;
 
 /// A round of the development loop.
@@ -37,6 +38,9 @@ pub struct TaskRound {
     pub stages: Vec<Stage<Loop>>,
     /// What marks the task delivered when a merged PR proves it.
     pub delivered: MarkWaitingMerge,
+    /// What hands the task over when its session stopped or the breaker
+    /// refused: a decision asked rather than a human waited on.
+    pub raise: RaiseDecision,
     /// What the round must achieve.
     pub post: Gate<Loop>,
 }
@@ -59,7 +63,9 @@ impl Executable<Loop> for TaskRound {
             ));
         }
         for stage in &self.stages {
-            stage.execute(ctx).await?;
+            if let Err(halt) = stage.execute(ctx).await {
+                return self.raise.on_halt(ctx, halt).await;
+            }
         }
         // Last thing a round does: mark. The following gate judges.
         self.delivered.run(ctx).await
@@ -118,6 +124,9 @@ mod tests {
             delivered: MarkWaitingMerge {
                 gh: Rc::clone(&port),
                 integration_branch: config.integration_branch.clone(),
+            },
+            raise: RaiseDecision {
+                gh: Rc::clone(&port),
             },
             post: Gate {
                 name: "the round must deliver",

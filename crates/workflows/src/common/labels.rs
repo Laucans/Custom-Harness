@@ -63,16 +63,26 @@ pub const TECH_REFINEMENT: &str = "harness:tech-refinement";
 /// Derived state, re-decided on every round, so a later round that concludes
 /// `no` clears it rather than leaving the board claiming a blocker that is gone.
 ///
-/// **What it is for**: `gh issue list --label harness:needs-decision` answers
-/// "what is waiting on me" in one call. The advice already said so in a comment,
-/// but a comment is only found by opening the issue — on a board of twenty
-/// tasks, that is twenty issues to open.
+/// **What it is for now**: a decision is needed, and the `decide` workflow
+/// takes it at the next tick — nothing waits on a human during development.
+/// Posed by the business advice, the arbiter's hand-off, `milestone_merge`
+/// once a PR's repairs are used up, and the dev loop when a session stopped
+/// or the breaker refused ([`crate::common::decision`]). A human who wants to
+/// decide answers under `## Decision` (`decided-by: owner`) first; `decide`
+/// never decides over an owner's answer.
 ///
-/// **It is not read by any workflow**, hence not in [`LOOP`]: nothing is gated
-/// on it, and a task carrying it still runs the moment [`READY`] is set. The
-/// human removes it by hand when they have answered — the same gesture as
-/// adding [`READY`], which is how they say they decided.
+/// Read by the loop: a task carrying it is not runnable until it is decided
+/// — hence in [`LOOP`].
 pub const NEEDS_DECISION: &str = "harness:needs-decision";
+
+/// The harness took a decision on this issue, a human did not: what it
+/// decided is under `## Decision` (`decided-by: ai`) and in a comment.
+///
+/// Posed by the `decide` workflow, read by no workflow: it is what the board
+/// and the notifications show until the human has read it. Taking it off
+/// is how a human says they saw it; editing `## Decision` and posing
+/// [`NEEDS_DECISION`] again is how they overrule it.
+pub const AI_DECIDED: &str = "harness:ai-decided";
 
 /// The technical refinement raised a question on the task's graph that an
 /// agent may settle: an id the design builds on that `needs` does not name.
@@ -183,13 +193,13 @@ pub const TEST_DEBT: &str = "harness:test-debt";
 /// development task starts** — the tests come first. Not in [`LOOP`].
 pub const RULES: &str = "harness:rules";
 
-/// The eleven the loop requires.
+/// The thirteen the loop requires.
 ///
 /// `REFINEMENT` is not among them: the loop does not read it, and its
 /// preflight would refuse to run without it. The three architecture labels
 /// are: the loop reads the side of every task it picks, and `review-pending`
 /// is what keeps a write-side task from being replayed.
-pub const LOOP: [&str; 12] = [
+pub const LOOP: [&str; 13] = [
     ROADMAP,
     MILESTONE,
     AGENT,
@@ -202,6 +212,7 @@ pub const LOOP: [&str; 12] = [
     WRITE_SIDE,
     REVIEW_PENDING,
     NEEDS_AI_DECISION,
+    NEEDS_DECISION,
 ];
 
 /// One `harness:*` label, as `init-repo` creates it.
@@ -214,12 +225,12 @@ pub struct Label {
     pub description: &'static str,
 }
 
-/// The twenty-one labels `init-repo` creates when they are missing.
+/// The twenty-two labels `init-repo` creates when they are missing.
 ///
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 21] = [
+pub const ALL: [Label; 22] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -273,7 +284,7 @@ pub const ALL: [Label; 21] = [
     Label {
         name: NEEDS_DECISION,
         color: "ee0701",
-        description: "The refinement's advice says a human has a decision to make",
+        description: "A decision is needed: the harness takes it at the next tick unless ## Decision is answered first",
     },
     Label {
         name: NEEDS_AI_DECISION,
@@ -324,6 +335,11 @@ pub const ALL: [Label; 21] = [
         name: RULES,
         color: "b60205",
         description: "The rules and their tests, written before any development",
+    },
+    Label {
+        name: AI_DECIDED,
+        color: "c5def5",
+        description: "The harness decided here: read ## Decision; take the label off once read",
     },
 ];
 

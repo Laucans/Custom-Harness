@@ -18,8 +18,11 @@ pub const CLEAN: &str = "<!-- agent-review-verdict: clean -->";
 
 /// What every repair attempt leaves on the PR, whatever it pushed.
 pub const FIX_MARKER: &str = "<!-- agent-fix -->";
+/// What a decision to repair once more leaves on the PR: the repairs before
+/// it are no longer counted.
+pub const DECIDED_MARKER: &str = "<!-- harness-decided: repair -->";
 
-/// How many repairs a blocking review gets before a human decides.
+/// How many repairs a blocking review gets before the harness decides.
 pub const MAX_FIXES: usize = 2;
 
 /// The line the review's summary ends on, as the prompt asks for it.
@@ -47,7 +50,7 @@ impl Status {
         matches!(self, Self::Blocking { fixes } if fixes < MAX_FIXES)
     }
 
-    /// A blocking review its repairs did not clear: a human decides.
+    /// A blocking review its repairs did not clear: the harness decides.
     #[must_use]
     pub const fn exhausted(self) -> bool {
         matches!(self, Self::Blocking { fixes } if fixes >= MAX_FIXES)
@@ -64,7 +67,7 @@ pub fn status(comments: &str) -> Status {
     let Some(review_at) = comments.rfind(MARKER) else {
         return Status::Unreviewed;
     };
-    let fixes = comments.matches(FIX_MARKER).count();
+    let fixes = repairs(comments);
     if comments
         .rfind(FIX_MARKER)
         .is_some_and(|fix_at| fix_at > review_at)
@@ -84,7 +87,16 @@ pub fn status(comments: &str) -> Status {
 /// [`MAX_FIXES`] is on this count.
 #[must_use]
 pub fn repairs(comments: &str) -> usize {
-    comments.matches(FIX_MARKER).count()
+    since_decision(comments).matches(FIX_MARKER).count()
+}
+
+/// The comments since the last decision to repair once more: what the cap
+/// counts in.
+fn since_decision(comments: &str) -> &str {
+    comments
+        .rfind(DECIDED_MARKER)
+        .and_then(|at| comments.get(at..))
+        .unwrap_or(comments)
 }
 
 /// Whether a review summary asks for changes: its `VERDICT:` says `blocking`.
@@ -144,7 +156,19 @@ mod tests {
     }
 
     #[test]
-    fn repairs_are_counted_until_a_human_decides() {
+    fn a_decision_to_repair_once_more_counts_the_repairs_again() {
+        let review = format!("{MARKER}\n{BLOCKING}");
+        let used = format!("{FIX_MARKER} {review} {FIX_MARKER} {review}");
+        assert_eq!(repairs(&used), 2);
+        assert!(status(&used).exhausted());
+        let decided = format!("{used} {DECIDED_MARKER} repair once more");
+        assert_eq!(repairs(&decided), 0);
+        let again = format!("{decided} {review}");
+        assert!(status(&again).wants_a_fix(), "one more repair is owed");
+    }
+
+    #[test]
+    fn repairs_are_counted_until_the_harness_decides() {
         let once = format!("{}{FIX_MARKER}{}", review(BLOCKING), review(BLOCKING));
         assert_eq!(status(&once), Status::Blocking { fixes: 1 });
         assert!(status(&once).wants_a_fix());

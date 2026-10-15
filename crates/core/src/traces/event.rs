@@ -262,6 +262,32 @@ pub enum Event {
         /// The roadmap item.
         roadmap: u64,
     },
+    /// The harness took a decision a human used to take: what it decided is
+    /// under the issue's `## Decision`. Told so the human may overrule it.
+    DecisionTaken {
+        /// The issue decided.
+        issue: u64,
+        /// What was asked: `stop`, `breaker`, `review`, `conflict`, `graph`,
+        /// `spec`, `rules`.
+        kind: String,
+        /// What was done: `answer`, `merge`, `repair`, `cut`.
+        action: String,
+        /// How sure it was, out of 5.
+        confidence: u8,
+        /// The decision, in a sentence.
+        summary: String,
+    },
+    /// A task only a human can do was opened, and blocks another: an
+    /// account, a credential, a payment — or what the harness could not
+    /// settle after deciding twice.
+    HumanTaskOpened {
+        /// The task for the human.
+        task: u64,
+        /// The task it blocks.
+        blocks: u64,
+        /// Why, in a sentence.
+        why: String,
+    },
     /// A workflow stopped. Told in the run's own log as `STOP: …` — the line
     /// a reader of that log jumps to — and kept.
     Halted {
@@ -419,6 +445,16 @@ impl Event {
             Self::RoadmapDelivered { roadmap } => {
                 format!("#{roadmap} -> every milestone landed — ready to release")
             }
+            Self::DecisionTaken {
+                issue,
+                kind,
+                action,
+                confidence,
+                summary,
+            } => format!("decide: #{issue} ({kind}) -> {action}, {confidence}/5: {summary}"),
+            Self::HumanTaskOpened { task, blocks, why } => {
+                format!("#{task} opened for a human, blocking #{blocks}: {why}")
+            }
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
@@ -437,6 +473,8 @@ impl Event {
             Self::TickFailed { .. }
             | Self::QuotaRest { .. }
             | Self::DataSnapshotFailed { .. }
+            | Self::DecisionTaken { .. }
+            | Self::HumanTaskOpened { .. }
             | Self::Halted { .. }
             | Self::LaneEnded {
                 code: Some(1 | 3), ..

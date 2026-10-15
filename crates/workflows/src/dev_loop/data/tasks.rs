@@ -143,7 +143,16 @@ pub fn runnable(issue: &Issue) -> bool {
         && !waiting_merge(issue)
         && !review_pending(issue)
         && !awaits_arbitration(issue)
+        && !awaits_decision(issue)
         && blockers_pending(issue).is_empty()
+}
+
+/// A decision is asked on the task — a session stopped on an ambiguity, the
+/// breaker refused, its PR's repairs are used up: `decide` takes it at the
+/// next tick, and the task does not start before.
+#[must_use]
+pub fn awaits_decision(issue: &Issue) -> bool {
+    issue.has(labels::NEEDS_DECISION)
 }
 
 /// The task's graph is in question: its refinement raised what `needs`
@@ -196,6 +205,12 @@ pub fn why_not(issue: &Issue) -> String {
         reasons.push(format!(
             "{}: its graph is in question until the arbiter settles it",
             labels::NEEDS_AI_DECISION
+        ));
+    }
+    if awaits_decision(issue) {
+        reasons.push(format!(
+            "{}: a decision is asked — the harness takes it at the next tick",
+            labels::NEEDS_DECISION
         ));
     }
     for blocker in blockers_pending(issue) {

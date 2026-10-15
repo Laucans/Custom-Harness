@@ -17,6 +17,7 @@
 
 use crate::arbiter::orchestration::stages as arbiter;
 use crate::common::explore;
+use crate::decide::orchestration::stages as decide;
 use crate::dev_loop::orchestration::stages as dev_loop;
 use crate::planner::orchestration::stages as planner;
 use crate::pr_fix::orchestration::stages as pr_fix;
@@ -70,6 +71,8 @@ pub const RULES_WRITE: &str = "rules/write";
 pub const RULES_CONTEST: &str = "rules/contest";
 /// The rules' task: each test judged against its criterion.
 pub const RULES_FIDELITY: &str = "rules/fidelity";
+/// The decision the harness takes where a human was asked.
+pub const DECIDE: &str = "decide/decide";
 /// The arbiter's one session: which task produces each open id.
 pub const ARBITRATE: &str = "arbiter/arbitrate";
 
@@ -220,6 +223,12 @@ const CATALOG: &[Prompt] = &[
         title: "Each rule's test judged against its criterion",
         stations: &[("rules", "fidelity")],
         default: rules::FIDELITY_PROMPT,
+    },
+    Prompt {
+        key: DECIDE,
+        title: "A decision taken where a human was asked",
+        stations: &[("decide", "decide")],
+        default: decide::DECIDE_PROMPT,
     },
     Prompt {
         key: ARBITRATE,

@@ -2,15 +2,19 @@
 //! settle inside the task's `## Architecture`, and what was decided about it.
 //!
 //! The refinement raises it; the arbiter reads it, settles what it may and
-//! writes its verdict under it; a human reads what is left. `round` counts
-//! how many times the question was raised: the first time goes to the
-//! arbiter, the second to a human — a question raised again after an
-//! arbitration is one the arbitration did not settle, and no second agent
-//! is paid to disagree with the first.
+//! writes its verdict under it; what the arbiter may not settle goes to the
+//! `decide` workflow, which decides and tells the human. `round` counts how
+//! many times the question was raised. A `kind:` line says what kind of
+//! question it is when it is not the refinement's: a session that stopped
+//! (`stop`), the breaker (`breaker`), a review its repairs did not clear
+//! (`review`).
 
 /// What the refinement found it could not honour, and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Question {
+    /// What kind of question: `stop`, `breaker`, `review`, … — `None` for
+    /// the refinement's graph question.
+    pub kind: Option<String>,
     /// One sentence on what does not hold.
     pub blocks: String,
     /// The ids the design builds on that `needs` does not name.
@@ -21,10 +25,10 @@ pub struct Question {
     pub cut: Option<String>,
     /// How many times the question was raised, from 1.
     pub round: u32,
-    /// Who settled it: `harness` (mechanically), `ai` (the arbiter) — or
-    /// nobody yet.
+    /// Who settled it: `harness` (mechanically), `ai` (the arbiter or
+    /// `decide`), `owner` (a human) — or nobody yet.
     pub decided_by: Option<String>,
-    /// What was decided, or why it waits for a human.
+    /// What was decided.
     pub verdict: Option<String>,
 }
 
@@ -43,7 +47,9 @@ impl Question {
         let mut seen = false;
         for line in text.lines() {
             let line = line.trim();
-            if let Some(value) = line.strip_prefix(BLOCKS) {
+            if let Some(value) = line.strip_prefix("kind:") {
+                found.kind = Some(value.trim().to_string()).filter(|v| !v.is_empty() && v != "-");
+            } else if let Some(value) = line.strip_prefix(BLOCKS) {
                 found.blocks = value.trim().to_string();
                 seen = true;
             } else if let Some(value) = line.strip_prefix("needs:") {
@@ -67,7 +73,11 @@ impl Question {
     /// The section's text: one `key: value` line each.
     #[must_use]
     pub fn render(&self) -> String {
-        let mut lines = vec![format!("{BLOCKS} {}", self.blocks)];
+        let mut lines = Vec::new();
+        if let Some(kind) = &self.kind {
+            lines.push(format!("kind: {kind}"));
+        }
+        lines.push(format!("{BLOCKS} {}", self.blocks));
         if !self.needs.is_empty() {
             lines.push(format!("needs: {}", self.needs.join(", ")));
         }
@@ -95,10 +105,17 @@ impl Question {
         !self.produces.is_empty() || self.cut.is_some()
     }
 
-    /// Raised once already and settled, so this time goes to a human.
+    /// Raised once already and settled: the arbiter does not settle it a
+    /// second time, `decide` does.
     #[must_use]
     pub const fn raised_again(&self) -> bool {
         self.round >= 2
+    }
+
+    /// Whether `decided_by` is a human's: what no agent decides over again.
+    #[must_use]
+    pub fn decided_by_owner(&self) -> bool {
+        self.decided_by.as_deref() == Some("owner")
     }
 }
 
@@ -115,8 +132,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_kind_and_an_owner_s_decision_read_back() {
+        let question = Question {
+            kind: Some("stop".to_string()),
+            blocks: "which payment provider".to_string(),
+            round: 2,
+            decided_by: Some("owner".to_string()),
+            verdict: Some("Stripe".to_string()),
+            ..Question::default()
+        };
+        let read = Question::parse(&question.render()).expect("a question");
+        assert_eq!(read, question);
+        assert!(read.decided_by_owner());
+        assert!(question.render().starts_with("kind: stop\nblocks:"));
+        let graph = Question::parse("blocks: x").expect("a question");
+        assert_eq!(graph.kind, None);
+        assert!(!graph.decided_by_owner());
+    }
+
+    #[test]
     fn a_question_round_trips_through_its_text() {
         let question = Question {
+            kind: None,
             blocks: "the list needs the campaign's characters".to_string(),
             needs: vec!["Personnage".to_string(), "campagne.listPjs".to_string()],
             produces: Vec::new(),

@@ -11,8 +11,8 @@ use harness_core::domain::{Named, Resumable, Scope, Scoped, Sibling};
 ///
 /// Serializable because it's **this** that a run resumes: the two-line
 /// pointer says which task, this state says where it was.
-// Four facts of the round, each true or false on its own: resumed, the two
-// sections written, the side. A state machine would multiply their product.
+// Facts of the round, each true or false on its own: resumed, the SPEC
+// written, the side, handed over. A state machine would multiply their product.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -42,6 +42,10 @@ pub struct Loop {
     pub spec_written: bool,
     /// The stages already done for this task, across all runs.
     pub stages_done: Vec<String>,
+    /// The session stopped or the breaker refused, and the task was handed
+    /// over — a decision asked, or a task opened for a human: the round
+    /// achieved what it could.
+    pub handed_over: bool,
 }
 
 impl Resumable for Loop {

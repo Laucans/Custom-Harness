@@ -14,11 +14,17 @@ facts (watch process, board,     │
 
 - **Events** — what the harness itself recorded, once, where it happened
   (`harness_core::traces::Event`, kept in `.llocal/harness.db`): a lane that
-  ended, a task parked for a human, the breaker refusing, a halt, a board
-  read that failed, the watch's own life.
+  ended, a task parked, the breaker refusing, a halt, a board read that
+  failed, the watch's own life — and the plant's progress made without
+  asking: milestones planned, a milestone split, a PR opened, a task
+  delivered, a milestone landed, a decision taken, a task opened for a
+  human. Each names the gesture that takes it back.
 - **Facts** — what no part of the harness is there to tell: a watch process
-  that is gone (a dead process says nothing), an issue a human labelled, a
-  subscription window nearly spent. The reader observes them and passes them
+  that is gone (a dead process says nothing), an issue waiting on a human
+  (`harness:human` only — a needed decision is the harness's), an issue the
+  harness decided on not read yet (`harness:ai-decided`), the integration
+  branch ahead of `main` (ready to release), a subscription window nearly
+  spent. The reader observes them and passes them
   in (`Facts`).
 
 ## The modules

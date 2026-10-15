@@ -20,23 +20,7 @@ const WINDOW_ERROR: f64 = 0.95;
 #[must_use]
 pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
     let mut board = rules::from_events(events);
-    // Ready to release is told until the release is made: once `main` is
-    // where the integration branch is, every landing told is taken back; a
-    // landing no event told — older than the events read — is told from
-    // the branches alone.
-    match facts.unreleased {
-        Some(false) => board.clear_unless("release:", |_| false),
-        Some(true) if !board.has_prefix("release:") => board.add(Notification::once(
-            "release:main",
-            Level::Warning,
-            "Ready to release",
-            "the integration branch holds landed work main has not: merge it into main when \
-             you release",
-            "",
-            None,
-        )),
-        _ => {}
-    }
+    told_by_the_board(&mut board, facts);
     // A watch that is not running, and did not say it stopped, was killed or
     // crashed: the plant stopped on its own.
     let last_life = events.iter().rev().find_map(|stored| match &stored.event {
@@ -115,6 +99,54 @@ pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
         });
     }
     board.into_sorted()
+}
+
+/// What the board says is over takes back what the events told, and what
+/// the events no longer hold is told from the board: a decision until a
+/// human read it, a landing until it is released.
+fn told_by_the_board(board: &mut crate::notification::Board, facts: &Facts) {
+    // A decision is told until a human has read it: once `harness:ai-decided`
+    // is off, it is taken back; one the events no longer hold is told from
+    // the board alone.
+    if let Some(decided) = &facts.decided {
+        board.clear_unless("decided:#", |key| {
+            key.strip_prefix("decided:#")
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some_and(|n| decided.iter().any(|d| d.number == n))
+        });
+        for d in decided {
+            if board.get(&format!("decided:#{}", d.number)).is_none() {
+                board.add(Notification::once(
+                    format!("decided:#{}", d.number),
+                    Level::Warning,
+                    format!("#{}: the harness decided", d.number),
+                    format!(
+                        "{} — read ## Decision; take harness:ai-decided off once read",
+                        d.title
+                    ),
+                    "",
+                    Some(Link::Issue { number: d.number }),
+                ));
+            }
+        }
+    }
+    // Ready to release is told until the release is made: once `main` is
+    // where the integration branch is, every landing told is taken back; a
+    // landing no event told — older than the events read — is told from
+    // the branches alone.
+    match facts.unreleased {
+        Some(false) => board.clear_unless("release:", |_| false),
+        Some(true) if !board.has_prefix("release:") => board.add(Notification::once(
+            "release:main",
+            Level::Warning,
+            "Ready to release",
+            "the integration branch holds landed work main has not: merge it into main when \
+             you release",
+            "",
+            None,
+        )),
+        _ => {}
+    }
 }
 
 /// The issues that wait on the human, and the contested rules they are
@@ -243,6 +275,50 @@ mod tests {
             unknown.iter().all(|n| n.key != "watch-dead"),
             "nobody looked"
         );
+    }
+
+    #[test]
+    fn a_decision_is_told_until_a_human_has_read_it() {
+        let decided = [stored(
+            4,
+            Event::DecisionTaken {
+                issue: 9,
+                kind: "stop".to_string(),
+                action: "answer".to_string(),
+                confidence: 4,
+                summary: "Stripe, test mode".to_string(),
+            },
+        )];
+        let told = |decided_now: Option<Vec<Waiting>>| {
+            feed(
+                &decided,
+                &Facts {
+                    decided: decided_now,
+                    ..facts()
+                },
+            )
+        };
+        let open = told(None);
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].key, "decided:#9");
+        assert_eq!(open[0].level, Level::Warning);
+        assert!(
+            open[0].detail.contains("Stripe, test mode") && open[0].detail.contains("overrule")
+        );
+        assert!(told(Some(Vec::new())).is_empty(), "read: taken back");
+        let older = feed(
+            &[],
+            &Facts {
+                decided: Some(vec![Waiting {
+                    number: 7,
+                    title: "Pay".to_string(),
+                    label: "harness:ai-decided".to_string(),
+                }]),
+                ..facts()
+            },
+        );
+        assert_eq!(older.len(), 1, "told from the board alone");
+        assert_eq!(older[0].key, "decided:#7");
     }
 
     #[test]

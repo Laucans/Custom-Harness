@@ -22,6 +22,7 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::checkpoint::Checkpoints;
 
 use crate::dev_loop::action::actions::{MarkWaitingMerge, PickTask};
+use crate::dev_loop::action::stop::RaiseDecision;
 use crate::dev_loop::checks::{gates, preflight};
 use crate::dev_loop::config::Config;
 use crate::dev_loop::data::dependencies;
@@ -226,6 +227,7 @@ fn rounds(
                 gh: Rc::clone(&gh),
                 integration_branch: branch.clone(),
             },
+            raise: RaiseDecision { gh: Rc::clone(&gh) },
             post: Gate {
                 name: "round must have delivered",
                 checks: vec![Box::new(gates::AMergedPrClosesTheTask {

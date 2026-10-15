@@ -107,6 +107,7 @@ mod tests {
     use crate::common::fake_github::FakeGitHub;
     use crate::common::labels;
     use crate::dev_loop::action::actions::{MarkWaitingMerge, PickTask};
+    use crate::dev_loop::action::stop::RaiseDecision;
     use crate::dev_loop::config::fake as config_fake;
     use crate::dev_loop::orchestration::stages;
     use crate::dev_loop::ports::fake as ports_fake;
@@ -165,9 +166,10 @@ mod tests {
                     },
                     stages: stages::table(&ports, &config, turn),
                     delivered: MarkWaitingMerge {
-                        gh,
+                        gh: Rc::clone(&gh),
                         integration_branch: config.integration_branch.clone(),
                     },
+                    raise: RaiseDecision { gh },
                     post: Gate::empty("delivered"),
                 }
             }),

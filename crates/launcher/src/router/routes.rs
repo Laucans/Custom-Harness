@@ -164,6 +164,7 @@ async fn dispatched(
             refine_here(args, here, gh, Phase::Technical, issue, log).await
         }
         Route::Arbiter { issue } => arbitrate_here(args, here, issue, log).await,
+        Route::Decide { issue } => decide_here(args, here, issue, log).await,
         Route::Rules { issue } => rules_here(args, here, issue, log).await,
         Route::TestDebt { issue } => report_failure(
             "test_debt",
@@ -179,6 +180,27 @@ async fn dispatched(
             log,
         ),
     }
+}
+
+/// One decision in this process, on the shared checkout.
+async fn decide_here(
+    args: &WatchArgs,
+    here: &Path,
+    issue: u64,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    report_failure(
+        "decide",
+        crate::dispatch::decide::run(
+            issue,
+            here,
+            &shared_checkout(args),
+            &args.permission_mode,
+            args.dry_run,
+        )
+        .await,
+        log,
+    )
 }
 
 /// One rules' task in this process, in a writable checkout of its own.

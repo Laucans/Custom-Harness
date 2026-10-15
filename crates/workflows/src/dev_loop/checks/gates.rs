@@ -153,7 +153,9 @@ impl Verification<Loop> for AMergedPrClosesTheTask {
     }
 
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
-        if ctx.settings.dry_run || !ctx.state.has_task() {
+        // Handed over — a decision asked, or a task opened for a human — is
+        // what a round that stopped could achieve.
+        if ctx.settings.dry_run || !ctx.state.has_task() || ctx.state.handed_over {
             return Ok(Verdict::Continue);
         }
         let number: u64 = ctx.state.task.number.parse().map_err(|_| {
@@ -407,6 +409,24 @@ mod tests {
             .await
             .expect_err("must stop");
         assert!(format!("{err}").contains("left /code out"));
+    }
+
+    #[tokio::test]
+    async fn a_task_handed_over_needs_no_merged_pr() {
+        let gh = Rc::new(FakeGitHub::default());
+        let gate = AMergedPrClosesTheTask {
+            gh: gh.clone(),
+            integration_branch: "milestone/3-x".to_string(),
+            code_runs: true,
+            stages: String::new(),
+        };
+        let mut state = with_task("34", "");
+        state.handed_over = true;
+        assert_eq!(
+            gate.verify(&ctx(state)).await.expect("handed over"),
+            Verdict::Continue
+        );
+        assert!(gh.writes().is_empty());
     }
 
     #[tokio::test]

@@ -757,6 +757,16 @@ fn notifications(
     });
     let contested = board.map_or_else(Vec::new, |board| harness_notify::contested(&board.rules));
     let unreleased = board.and_then(|board| board.unreleased);
+    let decided = board.map(|board| {
+        harness_notify::decided(
+            board.roadmap.iter().chain(board.rules.iter()).chain(
+                board
+                    .milestones
+                    .iter()
+                    .flat_map(|m| std::iter::once(&m.issue).chain(m.tasks.iter())),
+            ),
+        )
+    });
     // The freshest of what the runs kept and what the page probed.
     let probed = hands
         .claude_read
@@ -806,6 +816,7 @@ fn notifications(
             diagnoses,
             contested,
             unreleased,
+            decided,
         },
     )
 }

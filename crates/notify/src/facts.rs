@@ -13,7 +13,7 @@ pub struct Waiting {
     pub number: u64,
     /// Its title.
     pub title: String,
-    /// The label that says why: `harness:human` or `harness:needs-decision`.
+    /// The label that says why: `harness:human`, `harness:ai-decided`, …
     pub label: String,
 }
 
@@ -51,29 +51,46 @@ pub struct Facts {
     /// The integration branch holds work `main` has not: ready to release.
     /// `None` when it is not known.
     pub unreleased: Option<bool>,
+    /// The open issues the harness decided on, not read yet by a human
+    /// (`harness:ai-decided`). `None` when the board was not read.
+    pub decided: Option<Vec<Waiting>>,
 }
 
-/// The open issues among `issues` that carry `harness:human` or
-/// `harness:needs-decision`, in number order, each once.
+/// The open issues among `issues` that carry `harness:human`, in number
+/// order, each once: the only issues that wait on a human during
+/// development — a `harness:needs-decision` is the harness's to take.
 #[must_use]
 pub fn waiting_on_a_human<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> Vec<Waiting> {
     let mut waiting: Vec<Waiting> = issues
         .into_iter()
-        .filter(|issue| issue.is_open())
-        .filter_map(|issue| {
-            [labels::HUMAN, labels::NEEDS_DECISION]
-                .into_iter()
-                .find(|label| issue.has(label))
-                .map(|label| Waiting {
-                    number: issue.number,
-                    title: issue.title.clone(),
-                    label: label.to_string(),
-                })
+        .filter(|issue| issue.is_open() && issue.has(labels::HUMAN))
+        .map(|issue| Waiting {
+            number: issue.number,
+            title: issue.title.clone(),
+            label: labels::HUMAN.to_string(),
         })
         .collect();
     waiting.sort_by_key(|w| w.number);
     waiting.dedup_by_key(|w| w.number);
     waiting
+}
+
+/// The open issues among `issues` the harness decided on and a human has not
+/// read yet — `harness:ai-decided` — in number order, each once.
+#[must_use]
+pub fn decided<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> Vec<Waiting> {
+    let mut decided: Vec<Waiting> = issues
+        .into_iter()
+        .filter(|issue| issue.is_open() && issue.has(labels::AI_DECIDED))
+        .map(|issue| Waiting {
+            number: issue.number,
+            title: issue.title.clone(),
+            label: labels::AI_DECIDED.to_string(),
+        })
+        .collect();
+    decided.sort_by_key(|w| w.number);
+    decided.dedup_by_key(|w| w.number);
+    decided
 }
 
 /// The open rules' tasks among `issues` that settle a contested test —
@@ -154,7 +171,20 @@ mod tests {
         ];
         let waiting = waiting_on_a_human(&issues);
         let numbers: Vec<u64> = waiting.iter().map(|w| w.number).collect();
-        assert_eq!(numbers, [12, 31]);
-        assert_eq!(waiting[0].label, labels::NEEDS_DECISION);
+        assert_eq!(numbers, [31], "a decision needed is the harness's to take");
+        assert_eq!(waiting[0].label, labels::HUMAN);
+    }
+
+    #[test]
+    fn only_open_issues_the_harness_decided_on_are_decided() {
+        let issues = [
+            issue(8, "open", &[labels::AI_DECIDED]),
+            issue(3, "closed", &[labels::AI_DECIDED]),
+            issue(5, "open", &[labels::NEEDS_DECISION]),
+            issue(8, "open", &[labels::AI_DECIDED]),
+        ];
+        let found = decided(&issues);
+        assert_eq!(found.iter().map(|w| w.number).collect::<Vec<_>>(), [8]);
+        assert_eq!(found[0].label, labels::AI_DECIDED);
     }
 }
