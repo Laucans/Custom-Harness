@@ -389,6 +389,11 @@ jobs:
               failed=1
             fi
             pkg=$(jq -r --arg m "$root/$toml" '.packages[] | select(.manifest_path == $m) | .name' <<< "$metadata")
+            # A hostless DataCapability (compiled to WebAssembly, loaded by a
+            # plugin or a static app) is nobody's dependency.
+            if [ -f "$dir/data-capability.json" ] && [ "$(jq -r '.host // "server"' "$dir/data-capability.json")" = "hostless" ]; then
+              continue
+            fi
             if ! jq -e --arg d "$pkg" '[.packages[] | select(.manifest_path | test("/serveur/Cargo.toml$|/server/Cargo.toml$")) | .dependencies[] | select(.name == $d)] | length > 0' <<< "$metadata" > /dev/null; then
               echo "::error file=$toml::no server depends on $pkg — add it to the server's [dependencies]; its registration is the build script's"
               failed=1

@@ -266,7 +266,7 @@ mod tests {
         assert!(
             claude
                 .1
-                .starts_with("# r\n\nmine.\n\n<!-- harness:architecture v1 -->")
+                .starts_with("# r\n\nmine.\n\n<!-- harness:architecture v2 -->")
         );
         assert!(lines[1].contains("kept as they were: contracts/a-concept.schema.json"));
     }

@@ -16,7 +16,7 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use harness_dataguard::aggregate::Aggregate;
-use harness_dataguard::api::{HoldRequest, ReviewDecision, Submission};
+use harness_dataguard::api::{HoldRequest, ReadRequest, ReadResponse, ReviewDecision, Submission};
 use harness_dataguard::engine::Engine;
 use harness_dataguard::manifest::DataCapability;
 use harness_dataguard::memory::MemoryNotifier;
@@ -119,6 +119,26 @@ async fn decide(State(engine): State<Shared>, Path(id): Path<String>, Json(body)
     )
 }
 
+/// A read through a persisted query: served only when the registry holds
+/// the Capability's query under this hash (contract C). What the query
+/// answers is the product's read crate's — `read()` is where it plugs in.
+async fn capability(State(engine): State<Shared>, Path(id): Path<String>, Json(body): Json<ReadRequest>) -> Reply<ReadResponse> {
+    let served = engine.served(&id, &body.sha256);
+    let answer = match served {
+        Ok(()) => engine.data_version().await.map(|as_of| ReadResponse {
+            as_of,
+            data: read(&id, &body.variables),
+        }),
+        Err(e) => Err(e),
+    };
+    reply(axum::http::StatusCode::OK, answer)
+}
+
+/// The product's read crate answers here: `<system>_read::run(capability, variables)`.
+fn read(_capability: &str, _variables: &std::collections::BTreeMap<String, serde_json::Value>) -> serde_json::Value {
+    serde_json::Value::Null
+}
+
 async fn version(State(engine): State<Shared>) -> Reply<serde_json::Value> {
     reply(axum::http::StatusCode::OK, engine.data_version().await.map(|v| serde_json::json!({ "dataVersion": v })))
 }
@@ -139,6 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let engine = Arc::new(plant(&url).await?);
             let addr = args.next().unwrap_or_else(|| "127.0.0.1:8800".to_string());
             let app = Router::new()
+                .route("/capabilities/{id}", post(capability))
                 .route("/commands", post(submit))
                 .route("/commands/{id}", get(status))
                 .route("/commands/{id}/confirm", post(confirm))

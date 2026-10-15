@@ -1,10 +1,11 @@
-<!-- harness:architecture v1 -->
+<!-- harness:architecture v2 -->
 ## Agent-native architecture — the rules every change is checked against
 
 This repository follows the agent-native application architecture described in
-`docs/ARCHITECTURE.md`. Read it once; these are the rules a diff is reviewed
-against, and the CI gates in `.github/workflows/gates.yml` enforce the ones
-that can be checked mechanically.
+`docs/ARCHITECTURE.md` (the layout and the contracts; the engine's manual,
+`docs/DATA-INTEGRITY.md`, is the write side's alone). Read it once; these are
+the rules a diff is reviewed against, and the CI gates in
+`.github/workflows/gates.yml` enforce every one of them.
 
 ### Stack
 
@@ -27,7 +28,9 @@ that can be checked mechanically.
   static app) is the Micro-UI shell; every Capability, DataCapability or
   infrastructure unit it gains is a Rust crate at its place in the layout.
   When no server runs it, the crate is compiled to WebAssembly
-  (`wasm-bindgen`, `wasm-pack`) and the TypeScript side loads it. Writing the
+  (`wasm-bindgen`, `wasm-pack`) and the TypeScript side loads it; the task
+  says `host: hostless` and the manifest `"host": "hostless"`, and no
+  server dependency line is asked of it. Writing the
   unit in TypeScript because that is where the code is today is a violation,
   not a pragmatic choice.
 

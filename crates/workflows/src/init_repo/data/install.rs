@@ -15,8 +15,14 @@
 //!   block between two markers, after whatever the project already says
 //!   about itself. `--force` rewrites the block in place and touches nothing
 //!   outside it.
+//! - **A marked block is versioned**: the opening marker carries the version
+//!   of the architecture that wrote it. An older block — in `CLAUDE.md` or in
+//!   a document the harness installs — is replaced in place by the current
+//!   one without `--force`, and never added twice.
 
-use harness_architecture::assets::{CLAUDE_RULES, FILES, MARKER_CLOSE, MARKER_OPEN};
+use harness_architecture::assets::{
+    CLAUDE_RULES, FILES, MARKER_CLOSE, MARKER_PREFIX, VERSION, installed_version,
+};
 
 /// The path of the file the rules are appended to.
 pub const CLAUDE_MD: &str = "CLAUDE.md";
@@ -41,7 +47,9 @@ impl InstallPlan {
         let mut plan = Self::default();
         for asset in &FILES {
             match existing(asset.path) {
-                Some(_) if !force => plan.kept.push(asset.path.to_string()),
+                Some(text) if !force && !outdated(&text) => {
+                    plan.kept.push(asset.path.to_string());
+                }
                 _ => plan
                     .writes
                     .push((asset.path.to_string(), asset.content.to_string())),
@@ -61,22 +69,28 @@ impl InstallPlan {
     }
 }
 
+/// True when a text carries a marked block of an older version than the one
+/// these assets install: a reinstall replaces it.
+fn outdated(text: &str) -> bool {
+    installed_version(text).is_some_and(|v| v < VERSION)
+}
+
 /// The `CLAUDE.md` a run must write, or `None` when it is to be left alone.
 ///
 /// Absent: the block alone. Present without the block: the block appended
 /// after the project's own text. Present with the block: left alone, unless
-/// `force` — then the block is rewritten in place, and nothing outside it
-/// moves.
+/// `force` or the block is of an older version — then the block is rewritten
+/// in place, and nothing outside it moves.
 #[must_use]
 pub fn merge_claude_md(existing: Option<&str>, force: bool) -> Option<String> {
     let block = CLAUDE_RULES.trim_end();
     let Some(text) = existing else {
         return Some(format!("{block}\n"));
     };
-    let Some(open) = text.find(MARKER_OPEN) else {
+    let Some(open) = text.find(MARKER_PREFIX) else {
         return Some(format!("{}\n\n{block}\n", text.trim_end()));
     };
-    if !force {
+    if !force && !outdated(text) {
         return None;
     }
     let close = text[open..]
@@ -92,6 +106,7 @@ pub fn merge_claude_md(existing: Option<&str>, force: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harness_architecture::assets::MARKER_OPEN;
 
     #[test]
     fn the_installed_ci_runs_on_the_integration_and_milestone_branches() {
@@ -134,9 +149,7 @@ mod tests {
     fn the_rules_are_appended_after_the_project_s_own_claude_md() {
         let merged =
             merge_claude_md(Some("# my project\n\nwhat it is.\n"), false).expect("appended");
-        assert!(
-            merged.starts_with("# my project\n\nwhat it is.\n\n<!-- harness:architecture v1 -->")
-        );
+        assert!(merged.starts_with(&format!("# my project\n\nwhat it is.\n\n{MARKER_OPEN}")));
         assert!(merged.trim_end().ends_with(MARKER_CLOSE));
     }
 
@@ -146,11 +159,45 @@ mod tests {
             format!("# mine\n\n{MARKER_OPEN}\nold rules\n{MARKER_CLOSE}\n\n## after\n\nkept too\n");
         assert_eq!(merge_claude_md(Some(&text), false), None);
         let forced = merge_claude_md(Some(&text), true).expect("rewritten");
-        assert!(forced.starts_with("# mine\n\n<!-- harness:architecture v1 -->"));
+        assert!(forced.starts_with(&format!("# mine\n\n{MARKER_OPEN}")));
         assert!(!forced.contains("old rules"));
         assert!(forced.ends_with("\n\n## after\n\nkept too\n"), "{forced}");
         let plan = InstallPlan::new(&|path| (path == CLAUDE_MD).then(|| text.clone()), false);
         assert!(plan.kept.contains(&CLAUDE_MD.to_string()));
+    }
+
+    #[test]
+    fn an_older_block_is_replaced_in_place_without_force_and_never_added_twice() {
+        let old = format!(
+            "# mine\n\n<!-- harness:architecture v1 -->\nold rules\n{MARKER_CLOSE}\n\n## after\n"
+        );
+        let merged = merge_claude_md(Some(&old), false).expect("replaced");
+        assert!(merged.starts_with(&format!("# mine\n\n{MARKER_OPEN}")));
+        assert!(!merged.contains("old rules"));
+        assert_eq!(merged.matches(MARKER_PREFIX).count(), 1, "one block");
+        assert!(merged.ends_with("\n\n## after\n"), "{merged}");
+        // The same for a document the harness installs: an older one is
+        // rewritten, a foreign file of the same name is kept.
+        let older_doc = "<!-- harness:architecture v1 -->\nold\n<!-- /harness:architecture -->\n";
+        let plan = InstallPlan::new(
+            &|path| match path {
+                "docs/ARCHITECTURE.md" => Some(older_doc.to_string()),
+                "docs/DATA-INTEGRITY.md" => Some("# theirs\n".to_string()),
+                _ => None,
+            },
+            false,
+        );
+        assert!(plan.writes.iter().any(|(p, _)| p == "docs/ARCHITECTURE.md"));
+        assert_eq!(plan.kept, ["docs/DATA-INTEGRITY.md"]);
+        let same = format!("{MARKER_OPEN}\ncurrent\n{MARKER_CLOSE}\n");
+        let kept = InstallPlan::new(
+            &|path| (path == "docs/ARCHITECTURE.md").then(|| same.clone()),
+            false,
+        );
+        assert!(
+            kept.kept.contains(&"docs/ARCHITECTURE.md".to_string()),
+            "the current version stays"
+        );
     }
 
     #[test]

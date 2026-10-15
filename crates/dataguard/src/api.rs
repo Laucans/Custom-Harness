@@ -123,6 +123,35 @@ mod tests {
     }
 
     #[test]
+    fn a_read_names_the_query_s_hash_and_answers_as_of_a_version() {
+        let request: ReadRequest =
+            serde_json::from_str(r#"{"sha256":"ab12","variables":{"accountId":"881"}}"#)
+                .expect("the wire shape");
+        assert_eq!(request.sha256, "ab12");
+        assert_eq!(request.variables["accountId"], "881");
+        let bare: ReadRequest = serde_json::from_str(r#"{"sha256":"ab12"}"#).expect("no variables");
+        assert!(bare.variables.is_empty(), "expected nothing");
+        let answer = ReadResponse {
+            as_of: 7,
+            data: serde_json::json!({ "creditLimit": 5000 }),
+        };
+        let json = serde_json::to_value(&answer).expect("json");
+        assert_eq!(json["asOf"], 7);
+        assert_eq!(json["data"]["creditLimit"], 5000);
+        let hold: HoldRequest = serde_json::from_str(
+            r#"{"partition":"Account/881","by":"credit.limitReview","ttl":"1m"}"#,
+        )
+        .expect("a hold");
+        assert_eq!(hold.ttl.as_deref(), Some("1m"));
+        let decision: ReviewDecision =
+            serde_json::from_str(r#"{"by":"dana","approved":true}"#).expect("a decision");
+        assert!(
+            decision.roles.is_empty() && decision.approved,
+            "roles default to none"
+        );
+    }
+
+    #[test]
     fn a_submitted_answer_carries_the_five_fields_of_the_mock() {
         let answer = Submitted {
             command_id: "c_1".to_string(),

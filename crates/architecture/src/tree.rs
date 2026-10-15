@@ -1566,6 +1566,7 @@ mod tests {
                 produces: Vec::new(),
                 needs: Vec::new(),
                 profile: None,
+                host: None,
             };
             let found = violations(&unmocked, Some(&task));
             assert!(found.iter().any(|f| f.contains("contract N")), "{found:?}");
@@ -1668,6 +1669,7 @@ mod tests {
             produces: Vec::new(),
             needs: Vec::new(),
             profile: None,
+            host: None,
         };
         assert_eq!(
             violations(&tree, Some(&capability)),

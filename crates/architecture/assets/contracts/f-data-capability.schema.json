@@ -84,6 +84,13 @@
       },
       "description": "Namespaces that may trigger it: `credit.*`."
     },
+    "host": {
+      "enum": [
+        "server",
+        "hostless"
+      ],
+      "description": "Where it runs: on the product's server (the default) or inside a host without one — a plugin, a static app — compiled to WebAssembly and loaded by the host. A hostless DataCapability is not a dependency of any server."
+    },
     "idempotencyKey": {
       "enum": [
         "required",

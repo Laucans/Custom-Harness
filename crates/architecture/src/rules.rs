@@ -140,6 +140,9 @@ system is the DataGuard's. Adding one edits no shared file but the server's
 `[dependencies]` line (crates/dataguard/server/Cargo.toml, installed by
 the harness: its build script registers every manifest, and the engine it
 binds — harness-dataguard, taken by git — is never yours to read or edit).
+When no server runs it (`host: hostless` in the task, `\"host\":
+\"hostless\"` in the manifest), it is compiled to WebAssembly for its host
+and no dependency line is asked of it.
 
 Its manifest: `dataCapability` (`<system>.<name>`), `owner: dataguard`,
 `version`, `effect` (insert | update | delete | upsert), `target` (the
@@ -302,9 +305,10 @@ A change to a contract schema (contracts/*.schema.json) is its own task
 and lists the units it touches. A change to a gate (.github/workflows/
 gates.yml) keeps the loop's own reading of the same rule true.
 
-Gates that judge it: capability-isolation when a slice depends on it; the
-project's own CI (format, lint, test-scope, dead code, mutants) for the
-rest.";
+Gates that judge it: capability-isolation when a slice depends on it,
+workspace-members-by-glob when it touches the root Cargo.toml (slices are
+listed by glob, never by name); the project's own CI (format, lint,
+test-scope, dead code, mutants) for the rest.";
 
 /// The rule card of `unit`: the forty lines a session building it needs.
 #[must_use]

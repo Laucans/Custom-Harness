@@ -126,7 +126,7 @@ pub struct Closure {
 /// What every closure carries: the root's files, the CI, the scripts, the
 /// contracts, the data model, the documents but the architecture's (the
 /// rule card stands for it), the query registry.
-const ALWAYS: [&str; 10] = [
+const ALWAYS: [&str; 11] = [
     "/*",
     "!/*/",
     "/.github/",
@@ -136,8 +136,16 @@ const ALWAYS: [&str; 10] = [
     "/data/",
     "/docs/",
     "!/docs/ARCHITECTURE.md",
+    "!/docs/DATA-INTEGRITY.md",
     "/queries/",
 ];
+
+/// The folder of the product's `DataGuard` server, installed by the
+/// harness: a `DataCapability` is a dependency line of it.
+const SERVER: &str = "crates/dataguard/server";
+
+/// The engine's manual: the write side reads it, nobody else.
+const ENGINE_MANUAL: &str = "/docs/DATA-INTEGRITY.md";
 
 /// The folders the root `Cargo.toml` lists as members by name — not by
 /// glob. A glob matches what is on the disk, so a sparse tree resolves; a
@@ -351,7 +359,11 @@ pub fn closure(
             }
             add(&mut patterns, folder(&format!("crates/{system}/queries")));
             if task.unit == Unit::DataCapability {
-                add(&mut patterns, folder(&format!("crates/{system}/server")));
+                // The server's dependency line is the one shared file it
+                // edits — unless no server runs it.
+                if !task.is_hostless() {
+                    add(&mut patterns, folder(SERVER));
+                }
                 if let Some(dir) = task
                     .aggregate
                     .as_deref()
@@ -364,6 +376,7 @@ pub fn closure(
             add(&mut patterns, folder("mock/fixtures"));
         }
         Unit::Aggregate | Unit::Infrastructure => {
+            add(&mut patterns, ENGINE_MANUAL.to_string());
             if system.is_empty() {
                 add(&mut patterns, folder("crates"));
             } else {
@@ -589,6 +602,7 @@ mod tests {
             produces: produces.iter().map(|s| (*s).to_string()).collect(),
             needs: needs.iter().map(|s| (*s).to_string()).collect(),
             profile: None,
+            host: None,
         }
     }
 
@@ -742,6 +756,23 @@ mod tests {
                 .patterns
                 .contains(&"/crates/dataguard/aggregates/Account/".to_string())
         );
+        assert!(
+            !found.patterns.contains(&ENGINE_MANUAL.to_string()),
+            "the engine's manual is the write side's: {:?}",
+            found.patterns
+        );
+        let hostless = Declaration {
+            host: Some("hostless".to_string()),
+            ..task
+        };
+        let found = closure(&tree(), &hostless, Some(&graph()), None);
+        assert!(
+            !found
+                .patterns
+                .contains(&"/crates/dataguard/server/".to_string()),
+            "no server runs it: {:?}",
+            found.patterns
+        );
     }
 
     #[test]
@@ -790,6 +821,11 @@ mod tests {
         let task = declared(Unit::Aggregate, "dataguard", &["Account"], &[]);
         let found = closure(&tree(), &task, Some(&graph()), None);
         assert!(found.patterns.contains(&"/crates/dataguard/".to_string()));
+        assert!(
+            found.patterns.contains(&ENGINE_MANUAL.to_string()),
+            "the write side reads the engine's manual: {:?}",
+            found.patterns
+        );
     }
 
     #[test]

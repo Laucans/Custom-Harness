@@ -254,8 +254,10 @@ impose.
   `gates.yml` est citée par une carte.
 - Hôtes sans serveur (plugin, app statique) : une section qui dit ce qui vaut
   (lecture, Concepts, mock, gates) et ce qui ne vaut pas (queue, credentials) ;
-  un `profile` d'architecture `hostless` dans la `Declaration` pour que
-  `violations` ne réclame pas un serveur.
+  un champ `host: hostless` dans la `Declaration` (fait : champ distinct du
+  `profile` de session ; la fermeture n'emporte pas le serveur, la gate
+  `data-capability-registered` n'exige pas la ligne de dépendance quand le
+  manifeste porte `"host": "hostless"`, contrat F étendu).
 - Réinstallation versionnée : marqueur `harness:architecture v2`,
   `init_repo::data::install` remplace les blocs marqués, n'ajoute jamais deux fois.
 - Contradiction résolue dans le texte : le principe 10 (« jamais rejetée pour
