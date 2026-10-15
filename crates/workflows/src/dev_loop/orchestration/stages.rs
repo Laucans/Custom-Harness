@@ -122,6 +122,17 @@ A rule's test you cannot meet is contested: write CONTEST.md at the root
 (the rule, the test, why it cannot hold) and say so in your reply. The
 server is crates/server, the frontend's host apps/shell, as the layout of
 CLAUDE.md says: the runtime starts them from there.
+Everything outside the product — a provider's API, payment, mail, storage,
+an LLM — goes through a port of ports.json (contract Q), named in the
+manifest's `ports`: its crate crates/ports/<port>/ (the trait, a fake, the
+contract tests), a real adapter under crates/ports/<port>/<provider>/. Tests
+and the rules' runtime run on the fake (`PORTS=fake`). A port that keeps
+state is written only by a DataCapability, and read from our mirror. Never
+call a provider outside a port. A port ports.json has not is a person's to
+approve: stop with `AGENT_LOOP_STOP: port <id> — <provider>, <cost>, <why>`
+instead of adding it. A `## Decision` of kind `port` with no verdict is
+approved — its approval task closed: add the port to ports.json and build
+it, its fake and contract tests first; with a verdict, follow it.
 No human is reachable while you work: every answer you had to assume goes
 in the PR body under `## Assumptions (autonomous run)`. Anything a human
 must do first becomes its own `{human}` issue, a sub-issue of
@@ -191,6 +202,17 @@ A rule's test you cannot meet is contested: write CONTEST.md at the root
 (the rule, the test, why it cannot hold) and say so in your reply. The
 server is crates/server, the frontend's host apps/shell, as the layout of
 CLAUDE.md says: the runtime starts them from there.
+Everything outside the product — a provider's API, payment, mail, storage,
+an LLM — goes through a port of ports.json (contract Q), named in the
+manifest's `ports`: its crate crates/ports/<port>/ (the trait, a fake, the
+contract tests), a real adapter under crates/ports/<port>/<provider>/. Tests
+and the rules' runtime run on the fake (`PORTS=fake`). A port that keeps
+state is written only by a DataCapability, and read from our mirror. Never
+call a provider outside a port. A port ports.json has not is a person's to
+approve: stop with `AGENT_LOOP_STOP: port <id> — <provider>, <cost>, <why>`
+instead of adding it. A `## Decision` of kind `port` with no verdict is
+approved — its approval task closed: add the port to ports.json and build
+it, its fake and contract tests first; with a verdict, follow it.
 No human is reachable while you work: every answer you had to assume goes
 in the PR body under `## Assumptions (autonomous run)`. Anything a human
 must do first becomes its own `{human}` issue, a sub-issue of

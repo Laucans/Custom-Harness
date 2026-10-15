@@ -64,6 +64,9 @@ What you may do here: {actions}.
   what to change.
 - `cut`: the task is closed — it is out of scope, or the plan no longer
   needs it; say why.
+For a port a person refused (`port`, the refusal in the comments): `answer`
+how the task does without it — inside the product, or through a port
+ports.json already has — or `cut` it when nothing of it stands without.
 Never decide what only a person can do — spending money, creating an
 account, a credential: `answer` that it waits on a `harness:human` task, and
 name it.

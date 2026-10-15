@@ -32,6 +32,16 @@ sops + age. Tests always run on fakes. New initializations only.
     `harness:human` secrets task per port that has secrets.
   - The roadmap task and the dossier carry the ports.
 
+- Milestone 4: development.
+  - The CODE prompts route every external call through a port. A port
+    ports.json does not have stops the session with
+    `AGENT_LOOP_STOP: port <id> — …`.
+  - That stop opens a `harness:human` task "Approve the port …", which
+    blocks the task, keeps `kind: port` in the task's `## Decision` and
+    notifies through `HumanTaskOpened`. No decision is taken.
+  - The planner and split prompts build a port in the milestone of its
+    first user. The decide prompt handles a refused port.
+
 ## To check on a fresh product
 
 - [ ] `init-repo` installs `ports.json`, contract Q, `.sops.yaml`,
@@ -56,3 +66,10 @@ sops + age. Tests always run on fakes. New initializations only.
       validates it), opens one secrets task per port with secrets (none for
       `database`), and opens them only once on a retried initialization.
 - [ ] The roadmap task's body and a planner's dossier show the ports.
+- [ ] A task that needs a new provider stops with `AGENT_LOOP_STOP: port …`
+      rather than calling it. The approval task opens, blocks it, and a
+      notification shows.
+- [ ] Approval closed, the next session adds the port to ports.json and
+      builds the crate, the fake and the contract tests before the adapter.
+- [ ] A refusal (comment + `harness:needs-decision`) is decided as "do
+      without", or the task is cut.

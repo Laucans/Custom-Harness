@@ -98,7 +98,10 @@ fixtures (`mock/fixtures/<Capability>.json`, one per Capability it needs).
 An aggregate slice installs its draft `mock/data/aggregates/<Aggregate>.aggregate.json`
 as `crates/dataguard/aggregates/<Aggregate>/aggregate.json` and moves its
 tables from `mock/data/model.json` into `data/model.json` with its
-migration.
+migration. A slice whose unit uses a port the milestone has not built yet
+builds it first, or a slice before it does: `crates/ports/<port>/` with its
+trait, its fake and contract tests, then its adapter as ports.json names it.
+Its manifest names the port under `ports`.
 
 **Each slice is the whole SPEC its session builds from** — no one refines
 it after you. `goal`: three to six sentences on what the user gets.

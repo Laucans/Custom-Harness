@@ -68,7 +68,9 @@ and the fields it touches, every aggregate drafted, every rule:
 </dossier>
 Plan so that every aggregate, write, micro-frontend and rule of it falls in
 exactly one milestone; the ids, effects and touched fields are the
-dossier's, never invented.
+dossier's, never invented. A port of the dossier (ports.json, contract Q)
+is built in the milestone of the first unit that uses it — its crate, its
+fake and contract tests, then its adapter; `database` is the Data layer's.
 
 **The rules come first.** The product's rules are in `rules.json` at the
 repository's root (contract P): each `R<id>` with its criterion, its tests
