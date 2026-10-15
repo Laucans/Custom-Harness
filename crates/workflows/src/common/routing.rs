@@ -174,7 +174,7 @@ pub fn rules_first(snapshot: &Snapshot) -> Option<u64> {
 /// Decides the next route from a snapshot.
 #[must_use]
 pub fn decide(snapshot: &Snapshot) -> Route {
-    if let Some(lowest) = lowest_open(&snapshot.roadmap)
+    if let Some(lowest) = plannable_roadmap(&snapshot.roadmap)
         && lowest.has(labels::READY)
         && !snapshot.lowest_roadmap_has_milestone
     {
@@ -406,6 +406,17 @@ pub fn splittable(milestone: &Issue) -> bool {
             .all(|blocker| blocker.is_closed() || blocker.has(labels::WAITING_MERGE))
 }
 
+/// The roadmap item the planner works on: the lowest open one not already
+/// delivered — `harness:waiting-merge`, every milestone landed, waiting for
+/// a human to release it and close it.
+#[must_use]
+pub fn plannable_roadmap(roadmap: &[Issue]) -> Option<&Issue> {
+    roadmap
+        .iter()
+        .filter(|issue| issue.is_open() && !issue.has(labels::WAITING_MERGE))
+        .min_by_key(|issue| issue.number)
+}
+
 /// The lowest-numbered open issue, if any.
 fn lowest_open(issues: &[Issue]) -> Option<&Issue> {
     issues
@@ -558,6 +569,19 @@ mod tests {
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::Nothing);
+    }
+
+    #[test]
+    fn a_delivered_roadmap_item_waiting_for_its_release_does_not_hold_the_next() {
+        let delivered = issue(4, &[labels::ROADMAP, labels::READY, labels::WAITING_MERGE]);
+        let next = issue(9, &[labels::ROADMAP, labels::READY]);
+        let snapshot = Snapshot {
+            roadmap: vec![delivered.clone(), next],
+            lowest_roadmap_has_milestone: false,
+            ..empty()
+        };
+        assert_eq!(decide(&snapshot), Route::Planner { roadmap: 9 });
+        assert_eq!(plannable_roadmap(&[delivered]), None);
     }
 
     #[test]

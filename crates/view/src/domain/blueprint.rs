@@ -380,8 +380,8 @@ fn milestone_merge_line() -> Line {
                 "deliver",
                 "mark delivered",
                 Kind::Arm,
-                "Takes review-pending off the task and marks it waiting for the milestone's \
-                 own merge.",
+                "Merges the reviewed, green PR into the milestone, takes review-pending off \
+                 and closes the task — no human gesture.",
             )],
         ],
     )

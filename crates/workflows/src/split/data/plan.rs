@@ -80,7 +80,7 @@ impl TaskItem {
     /// The slice's place in the architecture.
     ///
     /// A unit the architecture does not name is read as `infrastructure`:
-    /// the write side, where a human looks before anything merges — the
+    /// the write side, where an agent review runs before anything merges — the
     /// safe reading of a slice the session could not place, and one that
     /// shows in the issue's own section rather than being silently fixed.
     #[must_use]

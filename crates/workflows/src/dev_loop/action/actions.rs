@@ -21,6 +21,7 @@ use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, prompts};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
+use harness_core::traces::Event;
 
 use crate::common::{delivery, hierarchy, labels, sections};
 use crate::dev_loop::data::brief::Cut;
@@ -202,8 +203,8 @@ impl Action<Loop> for MarkWaitingMerge {
         let Some(shipped) = tasks::first_closing(&merged, number) else {
             return self.note_review_pending(ctx, &here, number).await;
         };
-        // The human merged what the write side had left open: the review
-        // is done, and the board says so.
+        // What the write side had left open is merged: the review is done,
+        // and the board says so.
         if tasks::review_pending(&here) {
             self.gh.remove_label(number, labels::REVIEW_PENDING).await?;
             if here.has(labels::NEEDS_DECISION) {
@@ -225,6 +226,11 @@ impl Action<Loop> for MarkWaitingMerge {
             )
             .await?;
         self.gh.close_issue(number).await?;
+        ctx.traces.event(&Event::TaskDelivered {
+            task: number,
+            pr: shipped.reference(),
+            branch: self.integration_branch.clone(),
+        });
         Ok(Verdict::Continue)
     }
 }
@@ -233,7 +239,8 @@ impl MarkWaitingMerge {
     /// The write side's own delivery: no merged PR, but an open one carrying
     /// `harness:to-review` on the task's declared branch. The task is then
     /// marked `review-pending` — the loop stops replaying it, the next task
-    /// waits, and `needs-decision` tells the human what is theirs to do.
+    /// waits, and `milestone_merge` merges it once its review is clean and
+    /// every check green. Nothing is asked of a human: they are told.
     ///
     /// Nothing is marked without the PR: a session that stopped before
     /// opening it leaves the round to its postcondition, which names it.
@@ -261,8 +268,8 @@ impl MarkWaitingMerge {
             return Ok(Verdict::Continue);
         };
         ctx.traces.say(&format!(
-            "#{number} is on the write side: PR {} is open and waits for a human \
-             merge — marked {}",
+            "#{number} is on the write side: PR {} is open, merged once reviewed and \
+             green — marked {}",
             pr.reference(),
             labels::REVIEW_PENDING
         ));
@@ -277,7 +284,11 @@ impl MarkWaitingMerge {
             )
             .await?;
         self.gh.add_label(number, labels::REVIEW_PENDING).await?;
-        self.gh.add_label(number, labels::NEEDS_DECISION).await?;
+        ctx.traces.event(&Event::PrOpened {
+            task: number,
+            pr: pr.reference(),
+            base: pr.base.clone(),
+        });
         Ok(Verdict::Continue)
     }
 }
@@ -715,10 +726,10 @@ mod tests {
             Wrote::Label(11, labels::REVIEW_PENDING.to_string())
         );
         assert_eq!(
-            writes[2],
-            Wrote::Label(11, labels::NEEDS_DECISION.to_string())
+            writes.len(),
+            2,
+            "never waiting-merge, never a decision asked of a human: {writes:?}"
         );
-        assert_eq!(writes.len(), 3, "never waiting-merge: nothing merged yet");
     }
 
     #[tokio::test]

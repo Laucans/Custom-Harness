@@ -217,7 +217,7 @@ Current contents:
 
 | module | what it is |
 | --- | --- |
-| `labels` | the `harness:*` labels, created by `init-repo`; each preflight checks they exist, because a misspelled label makes a list empty and an empty list reads as "nothing left to do". Three of them say which side of the agent-native architecture a task is on: `read-side` (runs in parallel, merges alone), `write-side` (a human merges its PR), `review-pending` (that PR is open and waits). |
+| `labels` | the `harness:*` labels, created by `init-repo`; each preflight checks they exist, because a misspelled label makes a list empty and an empty list reads as "nothing left to do". Three of them say which side of the agent-native architecture a task is on: `read-side` (runs in parallel, merges alone), `write-side` (runs alone; its PR merges once reviewed and green), `review-pending` (that PR is open and waits for its review and its checks). |
 | `sections` | the canonical sections of an issue body. `split` writes `Scope` and `Architecture`, which no refinement phase ever rewrites; the refinement writes the five after them. |
 | `explore` | the repo map: `Ground` (free — glues `CLAUDE.md`, `docs/ARCHITECTURE.md`, `docs/PROJECT.md` and the tracked-file list verbatim) then one paid session that condenses it. A workflow wires both by implementing `Explored` on its state. |
 | `fake_github` | `#[cfg(test)]` — an in-memory `GitHub` shared by the workflows' tests. A fake adapter, not a mock. |

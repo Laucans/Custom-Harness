@@ -91,8 +91,9 @@ apps/shell/                        the frontend's host: npm scripts build and se
 5. **Only DataCapabilities write**, always behind the DataGuard, always through
    the DataQueue. A DataCapability declares its `effect` and the existing
    fields it `touches`. `insert` with empty `touches` is the fast path and may
-   be proposed by a read agent; everything else is the DataGuard agent's and a
-   human reviews it.
+   be proposed by a read agent; everything else is the DataGuard agent's, and
+   its pull request merges only once the agent review is clean and every gate
+   green — the human is told, and may revert it.
 6. **Invariants live in the DataGuard**, declared on the aggregate, each with
    tests. Never in a Capability, never in a Micro-UI.
 7. **Every relation declares `onDelete` and `onUpdate`.** Deletion is a soft
@@ -122,10 +123,12 @@ apps/shell/                        the frontend's host: npm scripts build and se
 12. **Contracts first.** A unit lands with its manifest or contract file and
     passes the gate that validates it. A change to a contract schema is its
     own task and lists the units it touches.
-13. **Read side merges on green gates; write side waits for a human.** In the
+13. **Read side merges on green gates; write side after its review.** In the
     harness, `harness:read-side` tasks run in parallel and merge on their own;
-    `harness:write-side` tasks run one at a time and their pull request is
-    merged by a human.
+    `harness:write-side` tasks run one at a time, open their pull request with
+    `harness:to-review`, and the harness merges it once the agent review is
+    clean and every gate green. Nothing waits on a human during development:
+    the human is told what merged and may revert it.
 14. **The data model is described in the task that changes it.** A migration
     that adds, renames or changes a table or a field updates `data/model.json`
     (contract M) in the same pull request: the field's `type` and `nullable`

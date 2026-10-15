@@ -16,5 +16,11 @@ pub enum Outcome {
     WaitingOnChecks,
     /// A PR's checks were green; it was merged, and the milestone is now
     /// `harness:waiting-merge`.
-    Merged,
+    Merged {
+        /// The pull request merged, `#99`.
+        pr: String,
+        /// The roadmap item every milestone of which has now landed, if this
+        /// one was its last.
+        roadmap: Option<u64>,
+    },
 }

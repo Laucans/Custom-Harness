@@ -10,7 +10,7 @@ use harness_core::domain::doctor::Repair;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Issue, Outcome, Pr, Verdict};
 use harness_core::ports::shell::github::GitHub;
-use harness_core::traces::{Logbook, Sink, Verbosity};
+use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{Route, Snapshot};
 use harness_workflows::common::{branching, hierarchy, labels};
 use harness_workflows::main_agent_merge::data::report::Outcome as MergeReport;
@@ -338,6 +338,7 @@ pub(super) async fn run_milestone_merge(
     base: String,
     log: &Logbook,
 ) -> Option<(&'static str, Halt)> {
+    let told = (format!("#{pr}"), base.clone());
     let merged = async {
         let issue = gh.issue(task).await?;
         let pr = Pr {
@@ -352,6 +353,8 @@ pub(super) async fn run_milestone_merge(
             log.say(&format!(
                 "watch: milestone_merge -> #{task} merged into its milestone"
             ));
+            let (pr, branch) = told;
+            log.event(&Event::TaskDelivered { task, pr, branch });
             record_run(
                 here,
                 "milestone-merge",
@@ -392,9 +395,18 @@ pub(super) async fn run_main_agent_merge(
                 MergeReport::OpenedPr(url) => Some(format!(
                     "milestone #{milestone}: every task merged — opened {url} to the integration branch"
                 )),
-                MergeReport::Merged => Some(format!(
-                    "milestone #{milestone}: CI green — merged into the integration branch, its tasks closed"
-                )),
+                MergeReport::Merged { pr, roadmap } => {
+                    log.event(&Event::MilestoneLanded {
+                        milestone,
+                        pr: pr.clone(),
+                    });
+                    if let Some(roadmap) = roadmap {
+                        log.event(&Event::RoadmapDelivered { roadmap: *roadmap });
+                    }
+                    Some(format!(
+                        "milestone #{milestone}: CI green — merged into the integration branch, its tasks closed"
+                    ))
+                }
                 MergeReport::NotReady | MergeReport::WaitingOnChecks => None,
             };
             if let Some(line) = said {

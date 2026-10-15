@@ -107,8 +107,8 @@ under `recoded` in kit.json saying what changed, so the mock-up matches
 what shipped. The PR body MUST carry the line `Closes #{num}` on its
 own: the loop reads that line off the merged PR to confirm the task shipped,
 and without it the round stops rather than replay a task nothing marks as
-delivered. The issue will stay open under `{waiting_merge}` until a
-human merges the integration branch — that is expected, not a failure. Do
+delivered. The loop closes the issue once that PR is merged on the
+milestone's branch; the milestone itself lands under `{waiting_merge}`. Do
 not close the issue yourself.
 If the SPEC has a `## Rules` section, the tests of those rules, under
 tests/rules/ (contract P), are written already and are what this task
@@ -144,16 +144,18 @@ findings instead of re-deriving them. Nothing outside this session can read
 your plan, so a gate finding or a risk you do not act on now is lost — put it
 in your reply.";
 
-/// `code`, on the write side: the same work, and a PR left open for a human.
+/// `code`, on the write side: the same work, and a PR left open for its review.
 ///
-/// The architecture asks a human to review every mutation of existing data,
-/// so the session never merges: it opens the PR with `harness:to-review` —
-/// the agent review runs on it — and stops. The loop then marks the task
-/// `review-pending` and waits for the merge.
+/// The architecture reviews every mutation of existing data before it
+/// merges, so the session never merges: it opens the PR with
+/// `harness:to-review` — the agent review runs on it — and stops. The loop
+/// then marks the task `review-pending`, and `milestone_merge` merges it once
+/// the review is clean and every check green.
 pub(crate) const CODE_WRITE_SIDE: &str =
     "The task is issue #{num} (\"{title}\"); its body, below under SCOPE, is the
 SPEC. It is on the **write side** of the architecture ({write_side}): it
-mutates existing data or the rules that guard it, and a human merges it.
+mutates existing data or the rules that guard it, and it merges only once
+its review is clean and every check green.
 Plan it as /tech-analyst: the pre-flight gate, the ordered checklist against
 the real code, the stop line, the risks. Then, in this same session, without
 waiting for a go-ahead and without /clear, carry out

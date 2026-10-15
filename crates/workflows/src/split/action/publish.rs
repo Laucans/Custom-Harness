@@ -542,7 +542,7 @@ mod tests {
             bodies[8]
         );
         assert!(bodies[1].contains("unit: aggregate\nsystem: campagne\naggregate: PJ\nproduces: PJ\nprofile: small\nside: harness:write-side"), "{}", bodies[1]);
-        // The data layer's label still marks what a human merges.
+        // The data layer's label still marks what merges after its review.
         let labelled: Vec<Vec<String>> = gh
             .writes()
             .into_iter()

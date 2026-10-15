@@ -44,7 +44,11 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             ports.gh.merge_pr(&pr.num).await?;
             ports.gh.add_label(milestone, labels::WAITING_MERGE).await?;
             close_delivered(ports, &tasks, &pr.reference()).await?;
-            Ok(MergeOutcome::Merged)
+            let roadmap = roadmap_landed(ports, milestone).await?;
+            Ok(MergeOutcome::Merged {
+                pr: pr.reference(),
+                roadmap,
+            })
         } else {
             Ok(MergeOutcome::WaitingOnChecks)
         }
@@ -57,6 +61,43 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             .await?;
         Ok(MergeOutcome::OpenedPr(url))
     }
+}
+
+/// The roadmap item whose milestones have now all landed — this one the
+/// last — labelled `harness:waiting-merge` and told so, once: ready to
+/// release. A human closes it once released; until then it is no roadmap
+/// item to plan (`routing`).
+async fn roadmap_landed(ports: &Ports, milestone: u64) -> Outcome<Option<u64>> {
+    let open = ports.gh.issues_labelled(labels::ROADMAP, "open").await?;
+    for roadmap in open
+        .iter()
+        .filter(|r| r.is_open() && !r.has(labels::WAITING_MERGE))
+    {
+        let milestones = ports.gh.sub_issues(roadmap.number).await?;
+        if !milestones.iter().any(|m| m.number == milestone) {
+            continue;
+        }
+        let landed = milestones
+            .iter()
+            .all(|m| m.number == milestone || m.is_closed() || m.has(labels::WAITING_MERGE));
+        if !landed {
+            return Ok(None);
+        }
+        ports
+            .gh
+            .post_issue_comment(
+                roadmap.number,
+                "Every milestone of this roadmap item has landed on the integration branch: it \
+                 is ready to release. Close it once it is released.",
+            )
+            .await?;
+        ports
+            .gh
+            .add_label(roadmap.number, labels::WAITING_MERGE)
+            .await?;
+        return Ok(Some(roadmap.number));
+    }
+    Ok(None)
 }
 
 /// Closes every task still open once its milestone is in the integration
@@ -249,7 +290,13 @@ mod tests {
         let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
             .await
             .expect("a verdict");
-        assert_eq!(outcome, MergeOutcome::Merged);
+        assert_eq!(
+            outcome,
+            MergeOutcome::Merged {
+                pr: "#99".to_string(),
+                roadmap: None
+            }
+        );
         let writes = gh.writes();
         assert!(writes.contains(&crate::common::fake_github::Wrote::Closed(11)));
         assert!(
@@ -281,13 +328,76 @@ mod tests {
         let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
             .await
             .expect("a verdict");
-        assert_eq!(outcome, MergeOutcome::Merged);
+        assert_eq!(
+            outcome,
+            MergeOutcome::Merged {
+                pr: "#99".to_string(),
+                roadmap: None
+            }
+        );
         assert_eq!(
             gh.writes(),
             vec![
                 crate::common::fake_github::Wrote::MergedPr("99".to_string()),
                 crate::common::fake_github::Wrote::Label(4, labels::WAITING_MERGE.to_string()),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_last_milestone_of_a_roadmap_item_landing_marks_it_ready_to_release() {
+        let milestone =
+            |number, state: &str, labels: &[&str]| issue(number, state, "a milestone", labels);
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![
+                milestone(4, "open", &[labels::MILESTONE]),
+                issue(2, "open", "The PoC", &[labels::ROADMAP]),
+                issue(7, "open", "Elsewhere", &[labels::ROADMAP]),
+            ],
+            subs: vec![
+                (4, vec![task(11, "closed")]),
+                (
+                    2,
+                    vec![
+                        milestone(3, "closed", &[labels::MILESTONE]),
+                        milestone(4, "open", &[labels::MILESTONE]),
+                    ],
+                ),
+                (7, vec![milestone(8, "open", &[labels::MILESTONE])]),
+            ],
+            merged: merged_closing(&[11]),
+            prs: vec![(
+                "milestone/4-a-milestone".to_string(),
+                Pr {
+                    num: "99".to_string(),
+                    base: "main_agent".to_string(),
+                    head: "milestone/4-a-milestone".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            pr_checks: HashMap::from([("99".to_string(), true)]),
+            ..FakeGitHub::default()
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(
+            outcome,
+            MergeOutcome::Merged {
+                pr: "#99".to_string(),
+                roadmap: Some(2)
+            }
+        );
+        let writes = gh.writes();
+        assert!(writes.contains(&crate::common::fake_github::Wrote::Label(
+            2,
+            labels::WAITING_MERGE.to_string()
+        )));
+        assert!(
+            !writes
+                .iter()
+                .any(|w| matches!(w, crate::common::fake_github::Wrote::Label(7, _))),
+            "a roadmap item with a milestone still to land is not delivered"
         );
     }
 }

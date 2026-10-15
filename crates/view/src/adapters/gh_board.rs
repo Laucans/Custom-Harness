@@ -17,16 +17,23 @@ use crate::ports::{Board, BoardReading, Milestone};
 /// How many closed milestones the store keeps on its shelf.
 const CLOSED_KEPT: usize = 3;
 
+/// The branch a human releases the integration branch into.
+const RELEASE_BRANCH: &str = "main";
+
 /// The board on GitHub.
 pub struct GhBoard {
     gh: Rc<dyn GitHub>,
+    integration: String,
 }
 
 impl GhBoard {
-    /// Reads through this `GitHub`.
+    /// Reads through this `GitHub`; `integration` is where milestones land.
     #[must_use]
-    pub fn new(gh: Rc<dyn GitHub>) -> Self {
-        Self { gh }
+    pub fn new(gh: Rc<dyn GitHub>, integration: &str) -> Self {
+        Self {
+            gh,
+            integration: integration.to_string(),
+        }
     }
 }
 
@@ -60,12 +67,23 @@ impl Board for GhBoard {
             .issues_labelled(labels::RULES, "open")
             .await
             .unwrap_or_default();
+        // Released when `main` is where the integration branch is: a head
+        // that differs is landed work no release took yet. Unknown when
+        // either cannot be read.
+        let unreleased = match (
+            self.gh.branch_sha(&self.integration).await,
+            self.gh.branch_sha(RELEASE_BRANCH).await,
+        ) {
+            (Ok(Some(integration)), Ok(Some(release))) => Some(integration != release),
+            _ => None,
+        };
         Ok(BoardReading {
             slug,
             roadmap,
             milestones,
             bugs,
             rules,
+            unreleased,
         })
     }
 }

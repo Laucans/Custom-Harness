@@ -162,6 +162,9 @@ pub struct BoardReading {
     /// Open rules' tasks (`harness:rules`): development waits on them, and
     /// a contested one warns the human.
     pub rules: Vec<Issue>,
+    /// The integration branch holds work `main` has not: ready to release.
+    /// `None` when either branch could not be read.
+    pub unreleased: Option<bool>,
 }
 
 /// Where the board is read from.

@@ -25,8 +25,8 @@ pub struct MilestoneItem {
     #[serde(default)]
     pub concepts: Vec<String>,
     /// Whether any of its work is on the write side — a `DataCapability`
-    /// that mutates, an aggregate shaped. Such a milestone's tasks wait for
-    /// a human merge.
+    /// that mutates, an aggregate shaped. Such a milestone's tasks run one at
+    /// a time, each merged once its agent review is clean.
     #[serde(default)]
     pub writes: bool,
     /// The aggregates it shapes or writes (`PJ`, `Campagne`): what chains

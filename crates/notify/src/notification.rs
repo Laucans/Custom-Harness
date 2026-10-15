@@ -122,6 +122,19 @@ impl Board {
         self.by_key.retain(|n| n.key != key);
     }
 
+    /// Whether a notification's key starts with `prefix`.
+    #[must_use]
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        self.by_key.iter().any(|n| n.key.starts_with(prefix))
+    }
+
+    /// Takes back every notification whose key starts with `prefix` and
+    /// that `keep` does not keep: what a fact says is over.
+    pub fn clear_unless(&mut self, prefix: &str, keep: impl Fn(&str) -> bool) {
+        self.by_key
+            .retain(|n| !n.key.starts_with(prefix) || keep(&n.key));
+    }
+
     /// The notification under `key`, if any.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Notification> {

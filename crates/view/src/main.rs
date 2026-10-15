@@ -756,6 +756,7 @@ fn notifications(
         )
     });
     let contested = board.map_or_else(Vec::new, |board| harness_notify::contested(&board.rules));
+    let unreleased = board.and_then(|board| board.unreleased);
     // The freshest of what the runs kept and what the page probed.
     let probed = hands
         .claude_read
@@ -804,6 +805,7 @@ fn notifications(
             now: u64::try_from(now.as_second()).unwrap_or(0),
             diagnoses,
             contested,
+            unreleased,
         },
     )
 }
@@ -903,7 +905,7 @@ fn github_for(
     });
     let board = gh
         .clone()
-        .map(|gh| Rc::new(GhBoard::new(gh)) as Rc<dyn Board>);
+        .map(|gh| Rc::new(GhBoard::new(gh, &cli.integration_branch)) as Rc<dyn Board>);
     (board, product_for(cli, root, project, gh.as_ref()))
 }
 

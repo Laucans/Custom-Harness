@@ -48,6 +48,9 @@ pub struct Facts {
     /// The open rules' tasks that settle a contested test: the AI decides,
     /// the human is warned and may act.
     pub contested: Vec<Waiting>,
+    /// The integration branch holds work `main` has not: ready to release.
+    /// `None` when it is not known.
+    pub unreleased: Option<bool>,
 }
 
 /// The open issues among `issues` that carry `harness:human` or

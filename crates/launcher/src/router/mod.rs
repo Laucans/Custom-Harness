@@ -196,7 +196,7 @@ async fn tick(
         }
         Activity::Unchanged => pulse.etag.clone(),
     };
-    let (found, idle, watching_ci) = snapshot(gh.as_ref()).await?;
+    let (found, idle, watching_ci) = snapshot(gh.as_ref(), log).await?;
     pulse.read_in_full(etag, watching_ci);
     // The board moved: a merge may have moved a branch, whose data model is
     // archived before anything else is dispatched.
@@ -320,13 +320,9 @@ fn resolve_gh(args: &WatchArgs, here: &Path) -> Outcome<Rc<dyn GitHub>> {
 /// The snapshot, the idle reason if the board has nothing runnable, and
 /// whether a pull request the board waits on is open — what tells the next
 /// tick it cannot trust a quiet activity read.
-async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>, bool)> {
+async fn snapshot(gh: &dyn GitHub, log: &Logbook) -> Outcome<(Snapshot, Option<String>, bool)> {
     let roadmap = gh.issues_labelled(labels::ROADMAP, "open").await?;
-    let lowest_roadmap_has_milestone = match roadmap
-        .iter()
-        .filter(|issue| issue.is_open())
-        .min_by_key(|issue| issue.number)
-    {
+    let lowest_roadmap_has_milestone = match routing::plannable_roadmap(&roadmap) {
         Some(lowest) => !gh.sub_issues(lowest.number).await?.is_empty(),
         None => false,
     };
@@ -359,7 +355,7 @@ async fn snapshot(gh: &dyn GitHub) -> Outcome<(Snapshot, Option<String>, bool)> 
         .filter(|b| b.next().is_none())
         .map(|b| tasks::idle_reason(b.milestone.number, &b.tasks));
     let task_to_merge = match &board {
-        Some(board) => green_task_pr(gh, &board.tasks, &to_review).await?,
+        Some(board) => green_task_pr(gh, &board.tasks, &to_review, log).await?,
         None => None,
     };
     let snapshot = Snapshot {
@@ -471,6 +467,19 @@ async fn lowest_ready_to_merge(
     Ok(None)
 }
 
+/// A task's PR its repairs did not clear: a decision asked of the harness,
+/// once, and told.
+async fn exhausted(gh: &dyn GitHub, task: &Issue, pr: &Pr, log: &Logbook) -> Outcome<()> {
+    if harness_workflows::milestone_merge::escalate(gh, task, pr).await? {
+        log.event(&Event::RepairsExhausted {
+            task: task.number,
+            pr: pr.reference(),
+            fixes: u64::try_from(harness_workflows::common::review::MAX_FIXES).unwrap_or(u64::MAX),
+        });
+    }
+    Ok(())
+}
+
 /// The task whose PR is open on its milestone, reviewed and green, with that
 /// PR — what `milestone_merge` merges. A PR still owed its review is left to
 /// the review route, which outranks this one.
@@ -478,6 +487,7 @@ async fn green_task_pr(
     gh: &dyn GitHub,
     tasks: &[Issue],
     to_review: &[Pr],
+    log: &Logbook,
 ) -> Outcome<Option<(u64, Pr)>> {
     if !tasks
         .iter()
@@ -489,12 +499,12 @@ async fn green_task_pr(
         return Ok(None);
     };
     // Its last review must let it through: a blocking one is the repair
-    // route's, and one its repairs did not clear is a human's.
+    // route's, and one its repairs did not clear is the harness's to decide.
     let comments = gh.pr_comments(&pr.num).await?;
     match review::status(&comments) {
         review::Status::Clean => {}
         status if status.exhausted() => {
-            harness_workflows::milestone_merge::escalate(gh, task, pr).await?;
+            exhausted(gh, task, pr, log).await?;
             return Ok(None);
         }
         _ => return Ok(None),
@@ -503,7 +513,7 @@ async fn green_task_pr(
     // until the repairs are used up.
     if gh.pr_mergeable(&pr.num).await? == Some(false) {
         if review::repairs(&comments) >= review::MAX_FIXES {
-            harness_workflows::milestone_merge::escalate(gh, task, pr).await?;
+            exhausted(gh, task, pr, log).await?;
         }
         return Ok(None);
     }

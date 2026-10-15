@@ -159,8 +159,8 @@ pub const DATA_LAYER: &str = "harness:data-layer";
 /// Posed by the dev loop once the session has opened the PR (with
 /// `harness:to-review`, so the agent review runs on it) and stopped short of
 /// merging. While it is there the loop neither replays the task nor starts
-/// one that depends on it; the human merging the PR is the review, and the
-/// next poll trades this label for [`WAITING_MERGE`].
+/// one that depends on it; `milestone_merge` merges the PR once its review
+/// is clean and every check green, takes the label off and closes the task.
 pub const REVIEW_PENDING: &str = "harness:review-pending";
 
 /// An issue of **test debt**: code `cargo mutants` can break without a test

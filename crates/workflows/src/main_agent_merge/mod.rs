@@ -12,7 +12,7 @@
 //! stops; a PR exists but CI hasn't finished → waits; CI green → merges and
 //! poses `harness:waiting-merge` **on the milestone**, not a task — the
 //! porter the grilling session chose, since the milestone, not any one
-//! task, is what's actually waiting on a human merge to `main`.
+//! task, is what's actually waiting on the human's release to `main`.
 
 pub mod action;
 pub mod config;

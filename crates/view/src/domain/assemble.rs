@@ -1078,6 +1078,7 @@ mod tests {
             }],
             bugs: vec![],
             rules: vec![],
+            unreleased: None,
         };
         let observed = Observed::default();
         let lines = blueprint::lines();

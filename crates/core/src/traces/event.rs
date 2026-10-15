@@ -218,6 +218,50 @@ pub enum Event {
         /// Those that only a human can do.
         human_tasks: Vec<u64>,
     },
+    /// A write-side task's pull request is open: its review runs, and it is
+    /// merged into its milestone once the review is clean and every check
+    /// green — no human gesture asked.
+    PrOpened {
+        /// The task.
+        task: u64,
+        /// The pull request, as GitHub names it (`#31`).
+        pr: String,
+        /// The branch it targets.
+        base: String,
+    },
+    /// A task's code is merged into its milestone: the task is closed, the
+    /// tasks waiting on it may start.
+    TaskDelivered {
+        /// The task.
+        task: u64,
+        /// The pull request merged.
+        pr: String,
+        /// The branch it was merged into.
+        branch: String,
+    },
+    /// A task's pull request still does not merge after every repair it was
+    /// given: the decision is the harness's now.
+    RepairsExhausted {
+        /// The task.
+        task: u64,
+        /// The pull request.
+        pr: String,
+        /// How many repairs it had.
+        fixes: u64,
+    },
+    /// A milestone landed on the integration branch: ready to release, which
+    /// is the human's gesture (merging the integration branch into `main`).
+    MilestoneLanded {
+        /// The milestone.
+        milestone: u64,
+        /// The pull request that landed it.
+        pr: String,
+    },
+    /// Every milestone of a roadmap item has landed.
+    RoadmapDelivered {
+        /// The roadmap item.
+        roadmap: u64,
+    },
     /// A workflow stopped. Told in the run's own log as `STOP: …` — the line
     /// a reader of that log jumps to — and kept.
     Halted {
@@ -360,6 +404,21 @@ impl Event {
                     format!(" ({})", tasks(human_tasks))
                 }
             ),
+            Self::PrOpened { task, pr, base } => format!(
+                "dev_loop: #{task} -> PR {pr} open on {base}, merged once reviewed and green"
+            ),
+            Self::TaskDelivered { task, pr, branch } => {
+                format!("#{task} delivered by PR {pr}, merged on {branch} — closed")
+            }
+            Self::RepairsExhausted { task, pr, fixes } => format!(
+                "watch: PR {pr} of #{task} -> still blocked after {fixes} repair(s): the harness decides"
+            ),
+            Self::MilestoneLanded { milestone, pr } => {
+                format!("main_agent_merge: #{milestone} landed by PR {pr} — ready to release")
+            }
+            Self::RoadmapDelivered { roadmap } => {
+                format!("#{roadmap} -> every milestone landed — ready to release")
+            }
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }

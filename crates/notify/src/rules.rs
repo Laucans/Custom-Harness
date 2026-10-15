@@ -106,6 +106,59 @@ fn progress(board: &mut Board, event: &Event, at: &str) {
             at,
             Some(issue(*milestone)),
         )),
+        Event::PrOpened { task, pr, base } => board.add(Notification::once(
+            format!("pr:#{task}"),
+            Level::Info,
+            format!("#{task}: PR {pr} open on the write side"),
+            format!(
+                "its review runs, and it is merged into {base} once the review is clean and \
+                 every check green — to stop it, close the PR"
+            ),
+            at,
+            Some(issue(*task)),
+        )),
+        Event::TaskDelivered { task, pr, branch } => {
+            for key in ["failing", "parked", "pr", "repairs", "not-started"] {
+                board.clear(&format!("{key}:#{task}"));
+            }
+            board.add(Notification::once(
+                format!("delivered:#{task}"),
+                Level::Info,
+                format!("#{task} delivered"),
+                format!("PR {pr} merged on {branch} — to take it back, revert the PR"),
+                at,
+                Some(issue(*task)),
+            ));
+        }
+        Event::RepairsExhausted { task, pr, fixes } => board.add(Notification::once(
+            format!("repairs:#{task}"),
+            Level::Info,
+            format!("#{task}: PR {pr} still blocked after {fixes} repair(s)"),
+            "the harness decides now — merge as it is, repair once more, or cut the task — \
+             and tells you what it decided"
+                .to_string(),
+            at,
+            Some(issue(*task)),
+        )),
+        Event::MilestoneLanded { milestone, pr } => board.add(Notification::once(
+            format!("release:#{milestone}"),
+            Level::Warning,
+            format!("#{milestone} landed — ready to release"),
+            format!(
+                "PR {pr} merged it on the integration branch: merge the integration branch \
+                 into main when you release, then close #{milestone}"
+            ),
+            at,
+            Some(issue(*milestone)),
+        )),
+        Event::RoadmapDelivered { roadmap } => board.add(Notification::once(
+            format!("release:roadmap:#{roadmap}"),
+            Level::Warning,
+            format!("#{roadmap}: every milestone landed"),
+            format!("the roadmap item is delivered: release it, then close #{roadmap}"),
+            at,
+            Some(issue(*roadmap)),
+        )),
         _ => {}
     }
 }
@@ -193,9 +246,13 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
             kind,
             reason,
         } => halted(board, workflow, kind, reason, at),
-        Event::MilestonesPlanned { .. } | Event::MilestoneSplit { .. } => {
-            progress(board, event, at);
-        }
+        Event::MilestonesPlanned { .. }
+        | Event::MilestoneSplit { .. }
+        | Event::PrOpened { .. }
+        | Event::TaskDelivered { .. }
+        | Event::RepairsExhausted { .. }
+        | Event::MilestoneLanded { .. }
+        | Event::RoadmapDelivered { .. } => progress(board, event, at),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }
@@ -451,6 +508,73 @@ mod tests {
             "{}",
             human.detail
         );
+    }
+
+    #[test]
+    fn a_delivery_takes_back_what_was_told_of_its_task() {
+        let board = from_events(&[
+            ended(1, Some(2)),
+            stored(
+                2,
+                Event::PrOpened {
+                    task: 15,
+                    pr: "#40".to_string(),
+                    base: "milestone/3-x".to_string(),
+                },
+            ),
+            stored(
+                3,
+                Event::RepairsExhausted {
+                    task: 15,
+                    pr: "#40".to_string(),
+                    fixes: 2,
+                },
+            ),
+        ]);
+        assert!(board.get("failing:#15").is_some());
+        assert!(
+            board
+                .get("pr:#15")
+                .expect("open")
+                .detail
+                .contains("close the PR")
+        );
+        assert!(
+            board
+                .get("repairs:#15")
+                .expect("told")
+                .detail
+                .contains("harness decides")
+        );
+        let mut events = vec![ended(1, Some(2))];
+        events.push(stored(
+            4,
+            Event::TaskDelivered {
+                task: 15,
+                pr: "#40".to_string(),
+                branch: "milestone/3-x".to_string(),
+            },
+        ));
+        let delivered = from_events(&events);
+        assert!(delivered.get("failing:#15").is_none(), "taken back");
+        let told = delivered.get("delivered:#15").expect("told");
+        assert_eq!(told.level, Level::Info);
+        assert!(told.detail.contains("revert the PR"));
+        let landed = from_events(&[
+            stored(
+                5,
+                Event::MilestoneLanded {
+                    milestone: 3,
+                    pr: "#41".to_string(),
+                },
+            ),
+            stored(6, Event::RoadmapDelivered { roadmap: 2 }),
+        ]);
+        assert_eq!(
+            landed.get("release:#3").expect("landed").level,
+            Level::Warning
+        );
+        assert!(landed.get("release:roadmap:#2").is_some());
     }
 
     fn diverged(minute: u32, branch: &str, diagnosis: &str) -> Stored {

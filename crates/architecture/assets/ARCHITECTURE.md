@@ -252,7 +252,7 @@ A DataCapability is a **typed command** that declares its effect — `insert`,
 | DataCapability | Who may create it | Review |
 |---|---|---|
 | `effect: insert`, no `touches` | A read agent may propose it | Auto-approved if the CI gates pass |
-| `update`, `delete`, `upsert`, or with `touches` | The DataGuard agent | Human review mandatory |
+| `update`, `delete`, `upsert`, or with `touches` | The DataGuard agent | Agent review and CI gates, merged one at a time; the human is told and may revert |
 
 This split keeps the fast path open to parallel agents without opening the
 mutation of existing data.
@@ -779,7 +779,7 @@ off until an agent implements them.
 | System frontier | `needs:` — a Micro-UI references only the authorised Capabilities of its system | B |
 | Write actions | `actions:` references existing DataCapabilities, with compatible `callableBy` and `permissions`; no Capability has an `invokes` field | D, F |
 | Effect classification | An `insert` DataCapability without `touches` contains no update, upsert or trigger | F |
-| Ownership | An `update`, `delete`, `upsert` DataCapability, or one with `touches`, requires a DataGuard and a human review | F, I |
+| Ownership | An `update`, `delete`, `upsert` DataCapability, or one with `touches`, requires a DataGuard and the agent review of the write side | F, I |
 | Invariants | Every declared invariant has tests; every DataCapability lists the ones it may affect | F, I |
 | Relations | Every foreign key has a declared `onDelete` and `onUpdate` policy | I |
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
@@ -804,14 +804,15 @@ Dead code is removed, not allowed; a missed mutant is answered with a test.
 
 ## Organisation of the agents
 
-Many agents in parallel on the read side, few agents and a human review on the
-truth side.
+Many agents in parallel on the read side, few agents and an agent review on the
+truth side, one change at a time. During development no review waits on a
+human: each is told what landed, and acts after the fact.
 
 | Agent | Number | Produces | Review |
 |---|---|---|---|
 | Read agents | Many, one per system or per Capability | Capabilities, persisted queries, Micro-UIs, pure-addition DataCapabilities | CI gates only |
-| Semantic agent | One | Concepts, conformance fixtures | Human |
-| DataGuard agent | One | Mutating DataCapabilities, invariants, relations, schema, migrations | Human, mandatory |
+| Semantic agent | One | Concepts, conformance fixtures | Agent review and CI gates; the human is told |
+| DataGuard agent | One | Mutating DataCapabilities, invariants, relations, schema, migrations | Agent review and CI gates, one at a time; the human is told and may revert |
 | Composer agent | At run time or at design time | Screen compositions | Validation before freezing |
 | Reconciliation AI | At run time | Reconciliation proposals | Human approver |
 
@@ -821,8 +822,8 @@ touching a shared component outside the Concepts and the DataGuard.
 
 In the harness that drives this repository, a task on the read side carries
 `harness:read-side` and runs in parallel with its peers; a task on the write
-side carries `harness:write-side`, runs alone, and its pull request waits for a
-human merge.
+side carries `harness:write-side`, runs alone, and its pull request is merged
+by the harness once the agent review is clean and every gate green.
 
 ## Technology choices
 
@@ -850,7 +851,7 @@ Kept as simple as the rules allow:
 - **Write latency.** The asynchronous write, the holds and the human review
   suit a back office, not real-time transactional work.
 - **Point of concentration.** The DataGuard, the schema and the Concepts
-  concentrate the risk and the human review load. It is intended, but their
+  concentrate the risk and the review load. It is intended, but their
   throughput bounds that of the agents as soon as an evolution touches the
   write side.
 

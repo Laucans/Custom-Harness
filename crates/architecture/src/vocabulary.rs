@@ -151,7 +151,8 @@ impl Effect {
 pub enum Side {
     /// Reads only: runs in parallel with its peers, merges on its own.
     Read,
-    /// Mutates existing data or the rules that guard it: a human merges.
+    /// Mutates existing data or the rules that guard it: merged one at a
+    /// time, once its agent review is clean and every gate green.
     Write,
 }
 

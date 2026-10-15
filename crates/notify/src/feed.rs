@@ -20,6 +20,23 @@ const WINDOW_ERROR: f64 = 0.95;
 #[must_use]
 pub fn feed(events: &[Stored], facts: &Facts) -> Vec<Notification> {
     let mut board = rules::from_events(events);
+    // Ready to release is told until the release is made: once `main` is
+    // where the integration branch is, every landing told is taken back; a
+    // landing no event told — older than the events read — is told from
+    // the branches alone.
+    match facts.unreleased {
+        Some(false) => board.clear_unless("release:", |_| false),
+        Some(true) if !board.has_prefix("release:") => board.add(Notification::once(
+            "release:main",
+            Level::Warning,
+            "Ready to release",
+            "the integration branch holds landed work main has not: merge it into main when \
+             you release",
+            "",
+            None,
+        )),
+        _ => {}
+    }
     // A watch that is not running, and did not say it stopped, was killed or
     // crashed: the plant stopped on its own.
     let last_life = events.iter().rev().find_map(|stored| match &stored.event {
@@ -226,6 +243,46 @@ mod tests {
             unknown.iter().all(|n| n.key != "watch-dead"),
             "nobody looked"
         );
+    }
+
+    #[test]
+    fn ready_to_release_is_told_until_main_holds_what_landed() {
+        let landed = [stored(
+            3,
+            Event::MilestoneLanded {
+                milestone: 4,
+                pr: "#40".to_string(),
+            },
+        )];
+        let told = |unreleased| {
+            feed(
+                &landed,
+                &Facts {
+                    unreleased,
+                    ..facts()
+                },
+            )
+        };
+        let unknown = told(None);
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown[0].key, "release:#4");
+        assert_eq!(unknown[0].level, Level::Warning);
+        assert!(
+            unknown[0]
+                .detail
+                .contains("merge the integration branch into main")
+        );
+        assert_eq!(told(Some(true)).len(), 1, "still to release, told once");
+        assert!(told(Some(false)).is_empty(), "released: taken back");
+        let quiet = feed(
+            &[],
+            &Facts {
+                unreleased: Some(true),
+                ..facts()
+            },
+        );
+        assert_eq!(quiet.len(), 1, "a landing older than the events read");
+        assert_eq!(quiet[0].key, "release:main");
     }
 
     #[test]

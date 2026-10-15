@@ -58,27 +58,33 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
     gh.close_issue(task.number).await
 }
 
-/// Hands `task` to a human: its PR's review stayed blocking after every
-/// repair it gets. `needs-decision` on the task, once, with the PR named.
+/// Asks for a decision on `task`, once; answers whether it asked now.
+///
+/// Its PR's review stayed blocking, or its branch conflicting, after every
+/// repair it gets: `needs-decision` on the task, with the PR named — the
+/// `decide` workflow takes it at the next tick (merge as it is, repair once
+/// more, or cut the task) and tells the human what it decided.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from the label or the comment write.
-pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
+pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<bool> {
     if task.has(labels::NEEDS_DECISION) {
-        return Ok(());
+        return Ok(false);
     }
     gh.post_issue_comment(
         task.number,
         &format!(
             "PR {} still does not merge after {} repair attempts — its review blocks \
-             it, or its branch conflicts with the milestone's — a human decides: fix \
-             it by hand, or merge it as it is.",
+             it, or its branch conflicts with the milestone's. The harness decides at the \
+             next tick — repair it once more, merge it as it is, or cut the task — and says \
+             what it decided; answer under `## Decision` first to decide it yourself.",
             pr.reference(),
             crate::common::review::MAX_FIXES
         ),
     )
     .await?;
-    gh.add_label(task.number, labels::NEEDS_DECISION).await
+    gh.add_label(task.number, labels::NEEDS_DECISION).await?;
+    Ok(true)
 }
 
 #[cfg(test)]
