@@ -1919,13 +1919,13 @@ async fn without_a_register_there_is_no_creation_to_read() {
 }
 
 #[tokio::test]
-async fn a_factory_not_being_created_reads_no_record_and_the_ten_steps() {
+async fn a_factory_not_being_created_reads_no_record_and_the_eleven_steps() {
     let state = state_creating(Arc::default(), Arc::default(), "");
     let (status, body) = get(state, "/api/creation").await;
     assert_eq!(status, StatusCode::OK);
     let view: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert!(view["record"].is_null(), "{body}");
-    assert_eq!(view["steps"].as_array().map(Vec::len), Some(10));
+    assert_eq!(view["steps"].as_array().map(Vec::len), Some(11));
     assert_eq!(view["branch"], "main_agent");
 }
 
@@ -2461,6 +2461,72 @@ async fn the_data_step_draws_its_draft_takes_retouches_and_keeps_its_gates() {
     let view: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(view["record"]["data"]["validated"], true);
     assert_eq!(view["dataGaps"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn the_ports_step_keeps_its_gate_takes_retouches_and_validates_whole_ports() {
+    use crate::domain::creation::Creation;
+    use crate::domain::ports_draft::{PortsDraft, database, ports_print};
+    let roll = Arc::new(Roll::default());
+    let mut record = Creation::new("alpha", "me/alpha");
+    being_created(&roll, &record);
+    let state = state_creating(Arc::clone(&roll), Arc::default(), "");
+    let (status, body) = post(state.clone(), "/api/creation/ports", "").await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::BAD_REQUEST, "choose the kind of factory")
+    );
+    let (status, body) = json_call(state.clone(), "PUT", "/api/creation/ports", "{}").await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::BAD_REQUEST, "no port drafted yet")
+    );
+    let (_, body) = get(state.clone(), "/api/creation").await;
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert!(
+        view["portsGaps"].is_null(),
+        "nothing listed: no gap to show"
+    );
+
+    record.ports = Some(PortsDraft {
+        ports: vec![database()],
+        from: ports_print(&record),
+        validated: false,
+    });
+    being_created(&roll, &record);
+    let mail = r#"{"ports": [{"id": "mail", "purpose": "Receipts", "provider": "", "tech_kind": "rest", "tech_name": "postmark", "secrets": ["POSTMARK_TOKEN"]}]}"#;
+    let (status, body) = json_call(state.clone(), "PUT", "/api/creation/ports", mail).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        view["record"]["ports"]["ports"][0]["id"], "database",
+        "kept first"
+    );
+    let (_, body) = get(state.clone(), "/api/creation").await;
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        view["portsGaps"],
+        serde_json::json!(["mail has no provider"])
+    );
+    assert_eq!(view["portsStale"], false);
+    let (status, body) = post(state.clone(), "/api/creation/ports/validate", "").await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::BAD_REQUEST, "mail has no provider")
+    );
+    let (status, body) = json_call(
+        state.clone(),
+        "PUT",
+        "/api/creation/ports",
+        &mail.replace(r#""provider": """#, r#""provider": "Postmark""#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(state, "/api/creation/ports/validate", "").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["record"]["ports"]["validated"], true);
+    assert_eq!(view["portsGaps"], serde_json::json!([]));
 }
 
 /// A `Usage` kept in memory, for a test to read back.

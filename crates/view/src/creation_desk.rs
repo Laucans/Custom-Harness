@@ -30,6 +30,7 @@ use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data
 use crate::domain::design::Entry;
 use crate::domain::divergence;
 use crate::domain::note_session::{About, mockup_rules};
+use crate::domain::ports_draft::{PortsEdit, parse_ports, ports_print, ports_prompt};
 use crate::kit_desk::{JobState, KitDesk};
 use crate::ports::{Foundry, MockState, Mockups, NoteStore, Oneshot, Plant};
 use crate::pulse::Pulse;
@@ -729,6 +730,66 @@ impl CreationDesk {
         Ok(record)
     }
 
+    /// The ports the proof of concept needs, drafted by the AI off the
+    /// brief, the decisions, the rules, the micro-frontends and the data
+    /// model — `database` always first.
+    ///
+    /// # Errors
+    ///
+    /// No creation, the data model not validated, no Claude, or an answer
+    /// with no list of ports.
+    pub async fn draft_ports(&self) -> Result<Creation, String> {
+        let asked = self.existing()?;
+        asked.may_enter(Step::Ports, self.facts().await)?;
+        let ctx = self.context(&asked).await;
+        let answer = self.ask(ports_prompt(&asked, &ctx)).await?;
+        let draft = parse_ports(&answer, &ports_print(&asked))?;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.ports = Some(draft);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The human's ports: the providers chosen, a port added or removed.
+    ///
+    /// # Errors
+    ///
+    /// No creation, no draft yet, or the register refused.
+    pub async fn edit_ports(&self, edit: PortsEdit) -> Result<Creation, String> {
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record
+            .ports
+            .as_mut()
+            .ok_or("no port drafted yet")?
+            .edit(edit);
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// The ports validated: every port whole, nothing stateful read by a
+    /// Capability. Nothing is published.
+    ///
+    /// # Errors
+    ///
+    /// No creation, what keeps them, or the register refused.
+    pub async fn validate_ports(&self) -> Result<Creation, String> {
+        let ctx = self.context(&self.existing()?).await;
+        let _held = self.record.lock().await;
+        let mut record = self.existing()?;
+        record.validate_ports(&ctx)?;
+        self.keep(&record)?;
+        Ok(record)
+    }
+
+    /// What keeps the ports from validation, in words, against the
+    /// mock-up's units as they are.
+    pub async fn ports_gaps(&self, record: &Creation) -> Vec<String> {
+        let ctx = self.context(record).await;
+        record.ports_gaps(&ctx)
+    }
+
     /// The example data the mock-up's micro-frontends read, a dozen files
     /// at most, each cut short: what the data model is drafted from.
     async fn fixtures(&self) -> Vec<(String, String)> {
@@ -1332,6 +1393,9 @@ impl CreationDesk {
         if !record.data_validated() {
             return Err("validate the data model first".to_string());
         }
+        if !record.ports_validated() {
+            return Err("validate the ports first".to_string());
+        }
         // The job first: an acceptance nothing starts is not kept.
         self.begin(Work::Initialize)?;
         self.keep(&record)?;
@@ -1508,6 +1572,8 @@ impl CreationDesk {
         let record = self.existing()?;
         self.open_rules_task(&record).await?;
         let record = self.existing()?;
+        self.open_secret_tasks(&record).await?;
+        let record = self.existing()?;
         if record.issue.is_empty() {
             let data = self
                 .setup
@@ -1556,6 +1622,42 @@ impl CreationDesk {
             }
         }
         Ok(())
+    }
+
+    /// One task per port that needs secrets, opened once, for a human: the
+    /// values go encrypted with sops in `secrets/<env>.enc.yaml`. Nothing
+    /// in development waits on them — the tests run on the fakes — but the
+    /// product reaches no provider without them.
+    async fn open_secret_tasks(&self, record: &Creation) -> Result<(), String> {
+        if !record.secrets_issues.is_empty() {
+            return Ok(());
+        }
+        let (Some(data), Some(ports)) = (self.setup.data.clone(), record.ports.as_ref()) else {
+            return Ok(());
+        };
+        let mut opened = Vec::new();
+        for port in ports
+            .ports
+            .iter()
+            .filter(|p| !p.secrets.is_empty() && p.id != "database")
+        {
+            self.step(&format!("asking for the secrets of the {} port", port.id));
+            let url = data
+                .open_issue(Issue {
+                    title: format!(
+                        "Provide the secrets of the {} port ({})",
+                        port.id, port.provider
+                    ),
+                    body: crate::domain::ports_draft::secrets_body(port),
+                    labels: vec![labels::HUMAN.to_string()],
+                })
+                .await?;
+            opened.push(url);
+        }
+        let _held = self.record.lock().await;
+        let mut kept = self.existing()?;
+        kept.secrets_issues = opened;
+        self.keep(&kept)
     }
 
     /// The rules' task, opened once, first of the roadmap: the rules and
@@ -1681,6 +1783,11 @@ impl CreationDesk {
             )),
             None => None,
         };
+        let ports = record
+            .ports
+            .as_ref()
+            .map(crate::domain::ports_draft::PortsDraft::ports_json)
+            .transpose()?;
         let at = branch.clone();
         let wrote = mockups.clone();
         tokio::task::spawn_blocking(move || {
@@ -1690,6 +1797,9 @@ impl CreationDesk {
                 for (path, text) in aggregates {
                     wrote.write(&at, &path, text.as_bytes())?;
                 }
+            }
+            if let Some(ports) = ports {
+                wrote.write_product(&at, "ports.json", ports.as_bytes())?;
             }
             wrote.write(&at, creation::RECORD_MD, md.as_bytes())
         })
@@ -2876,6 +2986,7 @@ mod tests {
     /// or one of its own; a data model of one table.
     fn rules_validated(desk: &CreationDesk) {
         use crate::domain::data_draft::{Aggregate, Criticality, DataDraft, FieldRule, Table};
+        use crate::domain::ports_draft::{PortDraft, PortsDraft, database};
         let mut record = desk.existing().expect("a creation");
         if record.requirements.is_empty() {
             record.requirements.push(creation::Requirement {
@@ -2921,6 +3032,22 @@ mod tests {
             ..DataDraft::default()
         });
         record.validate_data().expect("nothing keeps it");
+        record.ports = Some(PortsDraft {
+            ports: vec![
+                database(),
+                PortDraft {
+                    id: "mail".to_string(),
+                    purpose: "Receipts".to_string(),
+                    provider: "Postmark".to_string(),
+                    tech_kind: "rest".to_string(),
+                    tech_name: "postmark".to_string(),
+                    secrets: vec!["POSTMARK_TOKEN".to_string()],
+                    ..PortDraft::default()
+                },
+            ],
+            from: ports_print(&record),
+            validated: true,
+        });
         desk.keep(&record).expect("kept");
     }
 
@@ -3933,6 +4060,16 @@ mod tests {
             pins: None,
         });
         rules_validated(&desk);
+        let mut unvalidated = desk.existing().expect("a creation");
+        if let Some(ports) = unvalidated.ports.as_mut() {
+            ports.validated = false;
+        }
+        desk.keep(&unvalidated).expect("kept");
+        assert_eq!(
+            desk.accept().await.expect_err("not yet"),
+            "validate the ports first"
+        );
+        rules_validated(&desk);
         desk.accept().await.expect("accepted");
         let mut seen_new = false;
         for _ in 0..80 {
@@ -3955,5 +4092,106 @@ mod tests {
             job.steps
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A board that keeps the issues opened on it.
+    #[derive(Default)]
+    struct Board(Mutex<Vec<(String, String, Vec<String>)>>);
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::ports::Product for Board {
+        fn origin(&self) -> String {
+            "me/alpha".to_string()
+        }
+        fn live_ref(&self) -> String {
+            "main_agent".to_string()
+        }
+        async fn file(&self, _: &str, _: &str) -> Outcome<Option<String>> {
+            Ok(None)
+        }
+        async fn branches(&self, _: &str) -> Outcome<Vec<String>> {
+            Ok(Vec::new())
+        }
+        async fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<String> {
+            let count = {
+                let mut opened = self.0.lock().expect("a board");
+                opened.push((
+                    title.to_string(),
+                    body.to_string(),
+                    labels.iter().map(|l| (*l).to_string()).collect(),
+                ));
+                opened.len()
+            };
+            Ok(format!("https://github.com/me/alpha/issues/{count}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn each_port_with_secrets_asks_a_human_for_them_once() {
+        use crate::domain::ports_draft::{PortDraft, PortsDraft, database};
+        let board = std::rc::Rc::new(Board::default());
+        let shared = std::rc::Rc::clone(&board);
+        tokio::task::LocalSet::new()
+            .run_until(async move {
+                let (data, task) = crate::data_desk::open(
+                    shared as std::rc::Rc<dyn crate::ports::Product>,
+                    Duration::from_secs(60),
+                    jiff::tz::TimeZone::UTC,
+                );
+                let task = tokio::task::spawn_local(task);
+                let port = |id: &str, provider: &str, secrets: &[&str]| PortDraft {
+                    id: id.to_string(),
+                    provider: provider.to_string(),
+                    secrets: secrets.iter().map(|s| (*s).to_string()).collect(),
+                    ..PortDraft::default()
+                };
+                let mut record = Creation::new("alpha", "me/alpha");
+                record.ports = Some(PortsDraft {
+                    ports: vec![
+                        database(),
+                        port("mail", "Postmark", &["POSTMARK_TOKEN"]),
+                        port("geocoding", "Nominatim", &[]),
+                    ],
+                    ..PortsDraft::default()
+                });
+                let book = Arc::new(Book::default());
+                book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+                    .expect("kept");
+                let desk = CreationDesk::new(Setup {
+                    register: book,
+                    factory: "alpha".to_string(),
+                    foundry: Arc::new(Nothing),
+                    factories_dir: std::env::temp_dir(),
+                    integration_branch: "main_agent".to_string(),
+                    oneshot: None,
+                    model: "m".to_string(),
+                    draw_model: "d".to_string(),
+                    mockups: None,
+                    kit: None,
+                    data: Some(data),
+                    plant: None,
+                    pins: None,
+                });
+                let record = desk.existing().expect("a creation");
+                desk.open_secret_tasks(&record).await.expect("opened");
+                let kept = desk.existing().expect("a creation");
+                assert_eq!(
+                    kept.secrets_issues,
+                    vec!["https://github.com/me/alpha/issues/1".to_string()]
+                );
+                desk.open_secret_tasks(&kept).await.expect("once");
+                task.abort();
+            })
+            .await;
+        let opened = board.0.lock().expect("a board").clone();
+        assert_eq!(
+            opened.len(),
+            1,
+            "the database and a port without secrets ask nothing"
+        );
+        let (title, body, labels) = &opened[0];
+        assert_eq!(title, "Provide the secrets of the mail port (Postmark)");
+        assert!(body.contains("POSTMARK_TOKEN"), "{body}");
+        assert_eq!(labels, &vec![labels::HUMAN.to_string()]);
     }
 }

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::audit::Audit;
 use super::data_draft::{DataDraft, rules_print};
+use super::ports_draft::PortsDraft;
 
 /// The most questions one grilling round may bring.
 pub const ROUND_MAX: usize = 8;
@@ -42,15 +43,19 @@ pub enum Step {
     #[serde(alias = "review")]
     Rules,
     /// The data model the proof of concept needs: drafted by the AI off
-    /// the rules, reviewed, validated; the proof of concept accepted.
+    /// the rules, reviewed, validated.
     Data,
+    /// The dependencies outside the product, each behind a port: drafted by
+    /// the AI, the providers chosen by the human, validated; the proof of
+    /// concept accepted.
+    Ports,
     /// The factory initialized: the roadmap task opened, the watch started.
     Initialize,
 }
 
 impl Step {
     /// Every step, in order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Repository,
         Self::Kind,
         Self::Brief,
@@ -60,6 +65,7 @@ impl Step {
         Self::Mockups,
         Self::Rules,
         Self::Data,
+        Self::Ports,
         Self::Initialize,
     ];
 }
@@ -181,6 +187,10 @@ pub struct Creation {
     pub applied: Vec<Applied>,
     /// The data model drafted for the proof of concept, once asked.
     pub data: Option<DataDraft>,
+    /// The ports drafted for the proof of concept, once asked.
+    pub ports: Option<PortsDraft>,
+    /// The tasks opened for a human to provide each port's secrets.
+    pub secrets_issues: Vec<String>,
     /// How many times the mock-ups were sent back to the brief.
     pub regenerations: u32,
     /// The mock-ups were drawn; what the session said of them.
@@ -522,7 +532,13 @@ pub enum Mark {
 
 /// The steps each made from the one before it: a step to review makes
 /// every later one of them to review too.
-const CHAIN: [Step; 4] = [Step::Scope, Step::Mockups, Step::Rules, Step::Data];
+const CHAIN: [Step; 5] = [
+    Step::Scope,
+    Step::Mockups,
+    Step::Rules,
+    Step::Data,
+    Step::Ports,
+];
 
 /// What a step needs done before it may be entered; `None` when nothing.
 fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
@@ -561,6 +577,9 @@ fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
         }
         Step::Rules => c.mocked.is_none().then_some("draw the mock-ups"),
         Step::Data => (!c.rules_validated).then_some("validate the rules"),
+        // Accepted, it went through every step: a later move shows as stale,
+        // never as a lock.
+        Step::Ports => (!c.accepted && !c.data_validated()).then_some("validate the data model"),
         Step::Initialize => (!c.accepted).then_some("accept the proof of concept"),
     }
 }
@@ -617,6 +636,7 @@ impl Creation {
                     Step::Mockups => self.mockup_stale(),
                     Step::Rules => self.rules_stale(),
                     Step::Data => self.data_stale(),
+                    Step::Ports => self.ports_stale(),
                     _ => false,
                 };
                 let chained = CHAIN.contains(&step);
@@ -1100,6 +1120,55 @@ impl Creation {
     #[must_use]
     pub fn data_validated(&self) -> bool {
         self.data.as_ref().is_some_and(|d| d.validated) && !self.data_stale()
+    }
+
+    /// The ports were drafted from rules or writes that moved since.
+    #[must_use]
+    pub fn ports_stale(&self) -> bool {
+        self.ports
+            .as_ref()
+            .is_some_and(|p| p.from != super::ports_draft::ports_print(self))
+    }
+
+    /// The ports are validated and still drafted from what is.
+    #[must_use]
+    pub fn ports_validated(&self) -> bool {
+        self.ports.as_ref().is_some_and(|p| p.validated) && !self.ports_stale()
+    }
+
+    /// The ports validated, when nothing keeps them: every port whole.
+    ///
+    /// # Errors
+    ///
+    /// No draft yet, or its gaps, in words.
+    pub fn validate_ports(&mut self, ctx: &Context) -> Result<(), String> {
+        let gaps = self.ports_gaps(ctx);
+        if !gaps.is_empty() {
+            return Err(gaps.join("; "));
+        }
+        if let Some(ports) = self.ports.as_mut() {
+            ports.validated = true;
+        }
+        Ok(())
+    }
+
+    /// What keeps the ports from validation, in words.
+    #[must_use]
+    pub fn ports_gaps(&self, ctx: &Context) -> Vec<String> {
+        let Some(ports) = &self.ports else {
+            return vec!["no port drafted yet".to_string()];
+        };
+        let reads = ctx
+            .components
+            .iter()
+            .flat_map(|m| m.needs.iter().cloned())
+            .collect();
+        let writes = ctx
+            .components
+            .iter()
+            .flat_map(|m| m.actions.iter().cloned())
+            .collect();
+        ports.gaps(&reads, &writes)
     }
 
     /// The architecture's guard looked at a cut that moved since.
@@ -1998,6 +2067,7 @@ pub fn record_json(c: &Creation, ctx: &Context) -> Result<String, String> {
         design_at: &'a str,
         writes: Vec<WriteRef>,
         aggregates: Vec<&'a str>,
+        ports: Option<&'a PortsDraft>,
     }
     serde_json::to_string_pretty(&Kept {
         version: 1,
@@ -2020,6 +2090,7 @@ pub fn record_json(c: &Creation, ctx: &Context) -> Result<String, String> {
             .iter()
             .flat_map(|d| d.aggregates.iter().map(|a| a.name.as_str()))
             .collect(),
+        ports: c.ports.as_ref(),
     })
     .map_err(|e| e.to_string())
 }
@@ -2148,6 +2219,7 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
     }
     body.push_str(&rules_section(c));
     body.push_str(&data_section(c));
+    body.push_str(&ports_section(c));
     if !ctx.pages.is_empty() {
         let _ = write!(
             body,
@@ -2201,6 +2273,38 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
         }
     }
     (title, body)
+}
+
+/// The ports, as the roadmap task names them: each dependency outside the
+/// product, its provider, who uses it. Empty when none was drafted.
+fn ports_section(c: &Creation) -> String {
+    let mut body = String::new();
+    let Some(p) = &c.ports else {
+        return body;
+    };
+    body.push_str(
+        "\n## Ports\n\nEverything outside the product, each behind a port (`ports.json`, \
+         contract Q): its adapter under `crates/ports/<port>/<provider>/`, its fake and contract \
+         tests in `crates/ports/<port>/`, its secrets by name — a human provides them.\n\n",
+    );
+    for port in &p.ports {
+        let _ = writeln!(
+            body,
+            "- **{}** — {} ({} {}){}: {}{}",
+            port.id,
+            port.provider,
+            port.tech_kind,
+            port.tech_name,
+            if port.stateful { ", keeps state" } else { "" },
+            port.purpose.trim(),
+            if port.used_by.is_empty() {
+                String::new()
+            } else {
+                format!(" — used by {}", port.used_by.join(", "))
+            }
+        );
+    }
+    body
 }
 
 /// The data model, as the roadmap task names it: where it lies, its tables
@@ -3502,6 +3606,36 @@ mod tests {
     }
 
     #[test]
+    fn ports_listed_from_rules_that_moved_are_stale_and_not_validated() {
+        use crate::domain::ports_draft::{PortsDraft, database, ports_print};
+        let mut c = ready();
+        c.accepted = false;
+        c.requirements = vec![Requirement {
+            id: 1,
+            title: "Pay".to_string(),
+            ..Requirement::default()
+        }];
+        c.data = Some(DataDraft {
+            from: rules_print(&c),
+            validated: true,
+            ..DataDraft::default()
+        });
+        assert_eq!(mark(&c, Step::Ports), Mark::Open);
+        assert!(!c.ports_stale() && !c.ports_validated(), "none listed");
+        c.ports = Some(PortsDraft {
+            ports: vec![database()],
+            from: ports_print(&c),
+            validated: true,
+        });
+        assert!(c.ports_validated());
+        c.requirements[0].title = "Pay twice".to_string();
+        assert!(c.ports_stale());
+        assert!(!c.ports_validated(), "validated, but from other rules");
+        c.accepted = true;
+        assert_eq!(mark(&c, Step::Ports), Mark::Stale);
+    }
+
+    #[test]
     fn a_new_creation_starts_at_the_kind_and_reaches_no_further() {
         let c = Creation::new("app", "me/app");
         assert_eq!(c.step, Step::Kind);
@@ -3546,8 +3680,8 @@ mod tests {
             ),
             (
                 |c| c.accepted = false,
-                Step::Initialize,
-                "accept the proof of concept",
+                Step::Ports,
+                "validate the data model",
             ),
         ];
         for (spoil, blocked, why) in cases {
@@ -3573,6 +3707,18 @@ mod tests {
             Err("validate the design system".to_string())
         );
         assert_eq!(full.reachable(Facts::default()), Step::Design);
+        let mut modelled = ready();
+        modelled.accepted = false;
+        modelled.data = Some(DataDraft {
+            from: rules_print(&modelled),
+            validated: true,
+            ..DataDraft::default()
+        });
+        assert_eq!(
+            modelled.may_enter(Step::Initialize, DESIGNED),
+            Err("accept the proof of concept".to_string())
+        );
+        assert_eq!(modelled.reachable(DESIGNED), Step::Ports);
     }
 
     #[test]

@@ -54,6 +54,11 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "auditStale": record.as_ref().is_some_and(Creation::audit_stale),
         "dataStale": record.as_ref().is_some_and(Creation::data_stale),
         "dataGaps": record.as_ref().map(Creation::data_gaps),
+        "portsStale": record.as_ref().is_some_and(Creation::ports_stale),
+        "portsGaps": match &record {
+            Some(r) if r.ports.is_some() => Some(desk.ports_gaps(r).await),
+            _ => None,
+        },
         "designValidated": facts.design_validated,
         "kit": kit,
         "job": desk.job(),
@@ -410,6 +415,45 @@ pub(super) async fn data(State(state): State<AppState>) -> Response {
         Err(r) => return *r,
     };
     match desk.draft_data().await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The ports drafted by the AI.
+pub(super) async fn ports(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.draft_ports().await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The human's ports, sent back whole.
+pub(super) async fn ports_edit(
+    State(state): State<AppState>,
+    Json(edit): Json<crate::domain::ports_draft::PortsEdit>,
+) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.edit_ports(edit).await {
+        Ok(record) => view(desk, Some(record)).await,
+        Err(why) => refused(why),
+    }
+}
+
+/// The ports validated.
+pub(super) async fn ports_validate(State(state): State<AppState>) -> Response {
+    let desk = match desk_of(&state) {
+        Ok(desk) => desk,
+        Err(r) => return *r,
+    };
+    match desk.validate_ports().await {
         Ok(record) => view(desk, Some(record)).await,
         Err(why) => refused(why),
     }

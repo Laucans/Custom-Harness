@@ -25,7 +25,7 @@ use std::time::UNIX_EPOCH;
 use crate::adapters::git_units::{Mirror, run};
 use crate::domain::drafts::fingerprint;
 use crate::domain::mockup;
-use crate::ports::{MockFile, MockPage, MockState, Mockups};
+use crate::ports::{MockFile, MockPage, MockState, Mockups, PRODUCT_FILES};
 
 /// The mock-up read through `git`, edited in a worktree.
 pub struct GitMockups {
@@ -84,8 +84,18 @@ impl GitMockups {
 
     /// Something under `mock/` differs from the commit.
     fn dirty(folder: &Path) -> Result<bool, String> {
-        let out = Self::at(folder, &["status", "--porcelain", "--", "mock"])?;
+        let mut paths = vec!["status", "--porcelain", "--", "mock"];
+        paths.extend(PRODUCT_FILES);
+        let out = Self::at(folder, &paths)?;
         Ok(!String::from_utf8_lossy(&out).trim().is_empty())
+    }
+
+    /// What a publish stages: `mock/`, and the creation's files at the root
+    /// that are there.
+    fn staged(folder: &Path) -> Vec<&'static str> {
+        let mut paths = vec!["add", "-A", "--", "mock"];
+        paths.extend(PRODUCT_FILES.iter().filter(|f| folder.join(f).exists()));
+        paths
     }
 
     /// The branch checked out, `HEAD` when detached.
@@ -343,6 +353,14 @@ impl Mockups for GitMockups {
         write_under(&folder, path, bytes)
     }
 
+    fn write_product(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
+        if !PRODUCT_FILES.contains(&path) {
+            return Err(format!("{path} is no file the creation writes at the root"));
+        }
+        let full = self.workspace(branch)?.join(path);
+        fs::write(&full, bytes).map_err(|e| format!("{}: {e}", full.display()))
+    }
+
     fn discard(&self, branch: &str) -> Result<(), String> {
         if let Some(folder) = self.worktree(branch) {
             // What the workspace changed is committed aside first, so the
@@ -485,7 +503,7 @@ impl Mockups for GitMockups {
         if !Self::dirty(&folder)? {
             return Err("nothing to publish: the branch is as committed".to_string());
         }
-        Self::at(&folder, &["add", "-A", "--", "mock"])?;
+        Self::at(&folder, &Self::staged(&folder))?;
         let message = if message.trim().is_empty() {
             format!("design: {branch}")
         } else {
@@ -723,6 +741,17 @@ impl Mockups for DirMockups {
             return Err(format!("not a path under mock/: {path}"));
         }
         write_under(&self.folder(branch), path, bytes)
+    }
+
+    fn write_product(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
+        if !PRODUCT_FILES.contains(&path) {
+            return Err(format!("{path} is no file the creation writes at the root"));
+        }
+        let full = self.folder(branch).join(path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        fs::write(&full, bytes).map_err(|e| format!("{}: {e}", full.display()))
     }
 
     fn discard(&self, _branch: &str) -> Result<(), String> {

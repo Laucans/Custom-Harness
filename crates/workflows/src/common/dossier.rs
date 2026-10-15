@@ -25,6 +25,8 @@ pub const RECORD: &str = "mock/proof-of-concept.json";
 pub const AGGREGATES_DIR: &str = "mock/data/aggregates";
 /// The rules (contract P).
 pub const RULES: &str = "rules.json";
+/// The ports (contract Q).
+pub const PORTS: &str = "ports.json";
 
 /// How long the dossier's block may run, in characters: past it, the lines
 /// stop and the block says so.
@@ -84,6 +86,21 @@ pub struct Rule {
     pub components: Vec<String>,
 }
 
+/// One port as `ports.json` holds it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Port {
+    /// Its business function.
+    pub id: String,
+    /// Its provider.
+    pub provider: String,
+    /// Whether the provider keeps state.
+    pub stateful: bool,
+    /// Its adapter's crate.
+    pub adapter: String,
+    /// The units that go through it.
+    pub used_by: Vec<String>,
+}
+
 /// Everything the creation decided, as read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Dossier {
@@ -95,6 +112,8 @@ pub struct Dossier {
     pub aggregates: Vec<Aggregate>,
     /// The rules.
     pub rules: Vec<Rule>,
+    /// The ports.
+    pub ports: Vec<Port>,
 }
 
 /// What part of the dossier a block shows: all of it when every list is
@@ -269,6 +288,22 @@ impl Dossier {
                 });
             }
         }
+        if let Some(ports) = json(&root.join(PORTS)) {
+            for p in ports
+                .get("ports")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                dossier.ports.push(Port {
+                    id: text(p.get("id")),
+                    provider: text(p.get("provider")),
+                    stateful: p.get("stateful").and_then(Value::as_bool) == Some(true),
+                    adapter: text(p.get("adapter")),
+                    used_by: strings(p.get("usedBy")),
+                });
+            }
+        }
         dossier
     }
 
@@ -281,11 +316,43 @@ impl Dossier {
             && self.rules.is_empty()
     }
 
+    /// The ports the units kept by `in_system` use — all of them when
+    /// `all` — under their heading; nothing when none.
+    fn port_lines(&self, in_system: impl Fn(&str) -> bool, all: bool) -> Vec<String> {
+        let ports: Vec<&Port> = self
+            .ports
+            .iter()
+            .filter(|p| all || p.used_by.iter().any(|u| in_system(u)))
+            .collect();
+        if ports.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec![
+            "Ports (ports.json, contract Q: everything outside the product goes through one):"
+                .to_string(),
+        ];
+        for p in ports {
+            lines.push(format!(
+                "- {}: {}{}, adapter {}; used by {}",
+                p.id,
+                p.provider,
+                if p.stateful {
+                    " (keeps state: DataCapabilities only)"
+                } else {
+                    ""
+                },
+                p.adapter,
+                or_none(&p.used_by)
+            ));
+        }
+        lines
+    }
+
     /// The dossier as a prompt reads it — one line per micro-frontend, write,
     /// aggregate and rule — kept to what `filter` names, cut at [`BUDGET`].
     #[must_use]
     pub fn block(&self, filter: &Filter) -> String {
-        if self.is_empty() {
+        if self.is_empty() && self.ports.is_empty() {
             return "No design dossier: this roadmap item was written by hand.".to_string();
         }
         let all = filter.is_all();
@@ -359,6 +426,7 @@ impl Dossier {
             .iter()
             .filter(|r| all || filter.rules.contains(&r.id))
             .collect();
+        lines.extend(self.port_lines(|u| in_system(u), all));
         if !rules.is_empty() {
             lines.push("Rules (rules.json, their tests already under tests/rules/):".to_string());
             for r in rules {
@@ -475,6 +543,39 @@ mod tests {
             whole.contains("Map (monde)")
                 && whole.contains("R4")
                 && whole.contains("effect not judged")
+        );
+    }
+
+    #[test]
+    fn the_ports_are_read_and_a_milestone_sees_those_its_units_use() {
+        let mut disk = disk();
+        disk.existing.insert(
+            PathBuf::from("/repo").join(PORTS),
+            r#"{"version":1,"ports":[
+                {"id":"database","provider":"PostgreSQL 16","stateful":true,"adapter":"crates/data","usedBy":[]},
+                {"id":"payments","provider":"Stripe","stateful":true,"adapter":"crates/ports/payments/stripe","usedBy":["campagne.ajouterPj"]},
+                {"id":"geocoding","provider":"Mapbox","stateful":false,"adapter":"crates/ports/geocoding/mapbox","usedBy":["monde.lireCarte"]}]}"#
+                .to_string(),
+        );
+        let read = Dossier::read(&disk, Path::new("/repo"));
+        assert_eq!(read.ports.len(), 3);
+        let block = read.block(&Filter {
+            systems: vec!["campagne".to_string()],
+            ..Filter::default()
+        });
+        assert!(
+            block.contains("- payments: Stripe (keeps state: DataCapabilities only)"),
+            "{block}"
+        );
+        assert!(!block.contains("geocoding"), "{block}");
+        let only_ports = Dossier {
+            ports: read.ports,
+            ..Dossier::default()
+        };
+        assert!(
+            !only_ports
+                .block(&Filter::default())
+                .contains("written by hand")
         );
     }
 

@@ -87,6 +87,10 @@ impl Mockups for PulsingMockups {
         self.beating(self.inner.write(branch, path, bytes))
     }
 
+    fn write_product(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
+        self.beating(self.inner.write_product(branch, path, bytes))
+    }
+
     fn remove(&self, branch: &str, path: &str) -> Result<(), String> {
         self.beating(self.inner.remove(branch, path))
     }

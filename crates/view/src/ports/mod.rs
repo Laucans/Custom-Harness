@@ -490,6 +490,9 @@ pub trait Product {
     }
 }
 
+/// The files the creation writes at the product's root, beside `mock/`.
+pub const PRODUCT_FILES: [&str; 1] = ["ports.json"];
+
 /// One pin as kept: the pin, and when it was deleted, if it was.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeptNote {
@@ -1106,6 +1109,20 @@ pub trait Mockups: Send + Sync {
     ///
     /// The workspace could not be made or written.
     fn write(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String>;
+
+    /// Writes one of the files the creation owns at the product's root
+    /// ([`PRODUCT_FILES`]: `ports.json`) in the branch's workspace, published
+    /// with the mock-up.
+    ///
+    /// # Errors
+    ///
+    /// Not such a file, or the workspace could not be made or written.
+    fn write_product(&self, branch: &str, path: &str, bytes: &[u8]) -> Result<(), String> {
+        let _ = (branch, bytes);
+        Err(format!(
+            "{path}: this mock-up cannot write at the product's root"
+        ))
+    }
 
     /// Removes `mock/<path>` from the branch's workspace, if it is there.
     ///

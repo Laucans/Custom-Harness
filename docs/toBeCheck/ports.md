@@ -23,6 +23,14 @@ sops + age. Tests always run on fakes. New initializations only.
   - The database client is allowed in `crates/data` (the `database` port's
     adapter) and `crates/dataguard` only.
   - `rules-runtime.sh` starts the server with `PORTS=fake`.
+- Milestone 3: the creation step **Ports**, between Data and Initialize.
+  - The AI lists the ports from the brief, decisions, rules and data model,
+    proposing a provider and alternatives for each. PostgreSQL always comes
+    first.
+  - The human edits the cards and validates. Accept needs validated ports.
+  - Initialize writes `ports.json` beside the mock-up and opens one
+    `harness:human` secrets task per port that has secrets.
+  - The roadmap task and the dossier carry the ports.
 
 ## To check on a fresh product
 
@@ -38,3 +46,13 @@ sops + age. Tests always run on fakes. New initializations only.
       key passes `secrets-encrypted`. A plain `.env` is refused.
 - [ ] The server honours `PORTS=fake`, and the rules' tests reach no
       provider.
+- [ ] A real creation reaches Ports after Data. The AI lists sensible ports
+      (PostgreSQL first, named by function, e.g. `mail` rather than
+      `postmark`) with alternatives. Editing a card, picking an alternative,
+      adding and removing a port all persist.
+- [ ] Changing a rule after the ports were validated marks Ports "to redo"
+      and blocks Accept until they are validated again.
+- [ ] Initialize commits `ports.json` on the integration branch (contract Q
+      validates it), opens one secrets task per port with secrets (none for
+      `database`), and opens them only once on a retried initialization.
+- [ ] The roadmap task's body and a planner's dossier show the ports.

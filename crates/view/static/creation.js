@@ -44,6 +44,7 @@
     ['mockups', 'Mock-ups'],
     ['rules', 'Rules'],
     ['data', 'Data'],
+    ['ports', 'Ports'],
     ['initialize', 'Initialize'],
   ];
   const KINDS = [
@@ -267,6 +268,7 @@
       if (!C.mock) loadMock();
       if (!r.data && r.rules_validated && !running()) once(`data-${r.regenerations}`, () => act('the AI drafts the data model', async () => { await post('data'); reloadEmbed(); }));
     }
+    if (C.route === 'ports' && !r.ports && r.data && r.data.validated && !running()) once(`ports-${r.regenerations}`, () => act('the AI lists the ports', () => post('ports')));
     if (C.route === 'rules') {
       if (!C.mock) loadMock();
       if (!r.componentized && !running()) once(`mf-${r.regenerations}`, () => act('starting the micro-frontends', () => start('componentize')));
@@ -1186,9 +1188,65 @@
           ? '<p><span class="tag ok">validated</span> Nothing is published: changing it takes it back.</p>'
           : `<p class="muted">Every business rule carried, every link with its policies, every write on a field the model has, every field with its criticality.</p>${gaps.length ? `<ul class="cr-gaps">${shown}</ul>` : ''}<button type="button" class="cr-btn on" data-cr-data-validate${lock || (gaps.length ? ' disabled title="Close the gaps first"' : '')}>Validate</button>`}</section>
         <section class="cr-card"><h3>b · Regenerate</h3><p class="muted">Back to the brief with everything filled in; the grilling keeps its questions and their answers, and may ask more.</p><button type="button" class="cr-btn" data-cr-regenerate${lock}>${C.confirm === 'regenerate' ? 'The mock-ups go. Click again' : 'Regenerate'}</button></section>
-        <section class="cr-card"><h3>c · Accept the proof of concept</h3><p class="muted">${r ? volumes(r) : ''}</p><p class="muted">The record — brief, decisions, scope, rules, pages, micro-frontends, the data model, the pins left — is written in the repository beside the mock-up; the mock-up and the design system are published, the roadmap task opened with all of it, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept${lock || (validated ? '' : ' disabled title="Validate the data model first"')}>Accept</button></section>
+        <section class="cr-card"><h3>c · The ports</h3><p class="muted">Everything the product reaches outside itself — payment, mail, storage, an LLM, its own PostgreSQL — each behind a port, its provider chosen.</p><button type="button" class="cr-btn on" data-cr-next="ports"${lock || (validated ? '' : ' disabled title="Validate the data model first"')}>Ports →</button></section>
       </div>
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="rules">← Back to the rules</button></div>`;
+  }
+
+  // ---- the ports step -------------------------------------------------------------
+  // Every dependency outside the product, behind a port named by its business
+  // function; the human picks each provider. PostgreSQL is always there.
+  const TECH_KINDS = ['sdk', 'rest', 'graphql', 'sql', 'smtp', 'grpc', 'other'];
+  function stepPorts(r) {
+    const p = r.ports;
+    const gaps = (C.data && C.data.portsGaps) || [];
+    const head = '<p class="muted">What the product reaches outside itself — a third-party API, payment, mail, object storage, an LLM, identity, its own PostgreSQL — each behind a <b>port</b> named by its business function. Pick the provider of each: switching later is a new adapter behind the same port. A port that <b>keeps state</b> is written only by DataCapabilities, our data staying the truth. Secrets are named here; a human provides their values, encrypted with sops.</p>';
+    if (!p) return head + (C.busy ? '' : '<div class="cr-actions"><span></span><button type="button" class="cr-btn on" data-cr-ports-draft>List the ports</button></div>');
+    const status = p.validated && !C.data.portsStale ? '<span class="tag ok">validated</span>' : gaps.length ? `<span class="tag bad">${gaps.length} gap${gaps.length > 1 ? 's' : ''}</span>` : '<span class="tag">ready to validate</span>';
+    const card = (port, i) => {
+      const db = port.id === 'database';
+      const lock = db ? ' disabled title="The product\'s own PostgreSQL: listed, not abstracted"' : '';
+      const field = (key, label, value, hint) => `<label class="cr-port-f"><span class="muted">${label}</span><input type="text" data-cr-port="${i}" data-key="${key}" value="${esc(value || '')}" placeholder="${esc(hint)}"${lock}></label>`;
+      const alts = (port.alternatives || []).filter(Boolean);
+      return `<article class="cr-rule cr-port" data-port="${i}">
+        <header><code>${esc(port.id || '?')}</code> <span class="muted">${esc(port.purpose || '')}</span><span class="spacer"></span>
+          <label class="cr-simple"><input type="checkbox" data-cr-port="${i}" data-key="stateful"${port.stateful ? ' checked' : ''}${lock}> keeps state</label>
+          ${db ? '' : `<button type="button" class="mini cr-del" data-cr-port-del="${i}" title="Remove this port" aria-label="remove the ${esc(port.id)} port">✕</button>`}</header>
+        <div class="cr-port-grid">
+          ${db ? '' : field('id', 'port', port.id, 'payments')}
+          ${field('provider', 'provider', port.provider, 'Stripe')}
+          <label class="cr-port-f"><span class="muted">wraps</span><select data-cr-port="${i}" data-key="tech_kind"${lock}>${TECH_KINDS.map((k) => `<option${k === port.tech_kind ? ' selected' : ''}>${k}</option>`).join('')}</select></label>
+          ${field('tech_name', 'SDK / API', port.tech_name, 'async-stripe')}
+          ${field('tech_version', 'version', port.tech_version, '0.39')}
+          ${field('secrets', 'secrets', (port.secrets || []).join(', '), 'STRIPE_SECRET_KEY')}
+          ${field('cost', 'cost', port.cost, 'per transaction')}
+          ${field('used_by', 'used by', (port.used_by || []).join(', '), 'billing.chargeSubscription')}
+        </div>
+        ${alts.length && !db ? `<p class="muted">Other providers: ${alts.map((a) => `<button type="button" class="mini" data-cr-port-alt="${i}" data-alt="${esc(a)}" title="Pick ${esc(a)}">${esc(a)}</button>`).join(' ')}</p>` : ''}
+      </article>`;
+    };
+    return head + `<div class="cr-rules-head">${status}${C.data.portsStale ? ' <span class="cr-chip warn" title="The rules or the writes moved since the ports were listed">to redo</span>' : ''}<span class="spacer"></span><button type="button" class="cr-btn" data-cr-port-add>+ port</button><button type="button" class="cr-btn" data-cr-ports-draft${C.busy ? ' disabled' : ''} title="The AI lists the ports again off the rules and the data model">List again</button></div>
+      <div class="cr-rules">${(p.ports || []).map(card).join('')}</div>${portsFoot(r, gaps)}`;
+  }
+  function portsFoot(r, gaps) {
+    const waiting = !r || running() || !!C.busy;
+    const lock = DEMO ? ' disabled title="Disabled in the demo"' : waiting ? ' disabled title="Wait for the AI"' : '';
+    const validated = !!(r.ports && r.ports.validated && !C.data.portsStale);
+    const shown = gaps.slice(0, 4).map((g) => `<li>${esc(g)}</li>`).join('') + (gaps.length > 4 ? `<li>and ${gaps.length - 4} more</li>` : '');
+    return `<div class="cr-choices">
+        <section class="cr-card"><h3>a · Validate the ports</h3>${validated
+          ? '<p><span class="tag ok">validated</span> Nothing is published: changing a port takes it back.</p>'
+          : `<p class="muted">Every port named by its function, with its provider and what wraps it; nothing that keeps state read by a Capability.</p>${gaps.length ? `<ul class="cr-gaps">${shown}</ul>` : ''}<button type="button" class="cr-btn on" data-cr-ports-validate${lock || (gaps.length ? ' disabled title="Close the gaps first"' : '')}>Validate</button>`}</section>
+        <section class="cr-card"><h3>b · Accept the proof of concept</h3><p class="muted">${volumes(r)} · <b>${(r.ports && r.ports.ports || []).length}</b> ports</p><p class="muted">The record — brief, decisions, scope, rules, pages, micro-frontends, the data model, the ports, the pins left — is written in the repository beside the mock-up, with <code>ports.json</code>; the mock-up and the design system are published, the rules' task, a task per port's secrets and the roadmap task opened, the watch started.</p><button type="button" class="cr-btn on" data-cr-accept${lock || (validated ? '' : ' disabled title="Validate the ports first"')}>Accept</button></section>
+      </div>
+      <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="data">← Back to the data</button></div>`;
+  }
+  // The ports as the page holds them, one field changed, sent back whole.
+  function editPorts(change) {
+    const r = record();
+    const ports = JSON.parse(JSON.stringify((r.ports && r.ports.ports) || []));
+    change(ports);
+    act('saving', async () => { C.data = await call('PUT', '/api/creation/ports', { ports }); });
   }
   // A retouch of the data model, kept at once.
   function editData(edit) {
@@ -1217,7 +1275,7 @@
         <button type="button" class="cr-btn on" data-cr-finish${done ? '' : ' disabled'}>Open the plant →</button></div>`;
   }
 
-  const BODIES = { kind: stepKind, brief: stepBrief, grilling: stepGrilling, scope: stepScope, design: stepDesign, mockups: stepMockups, rules: stepRules, data: stepData, initialize: stepInitialize };
+  const BODIES = { kind: stepKind, brief: stepBrief, grilling: stepGrilling, scope: stepScope, design: stepDesign, mockups: stepMockups, rules: stepRules, data: stepData, ports: stepPorts, initialize: stepInitialize };
 
   function draw() {
     if (page.hidden) { unmountEmbed(); return; }
@@ -1633,6 +1691,11 @@
       act('the AI changes the data model', async () => { C.data = await call('POST', '/api/creation/data/change', { request }); delete C.dirty['data-request']; if (field) field.value = ''; reloadEmbed(); });
       return;
     }
+    if (t.matches('[data-cr-ports-draft]')) { act('the AI lists the ports', () => post('ports')); return; }
+    if (t.matches('[data-cr-ports-validate]')) { act('validating the ports', () => post('ports/validate')); return; }
+    if (t.matches('[data-cr-port-add]')) { editPorts((ports) => ports.push({ id: 'new-port', purpose: '', stateful: false, provider: '', tech_kind: 'rest', tech_name: '', tech_version: '', secrets: [], cost: '', used_by: [], alternatives: [] })); return; }
+    if (t.matches('[data-cr-port-del]')) { const i = +t.dataset.crPortDel; editPorts((ports) => ports.splice(i, 1)); return; }
+    if (t.matches('[data-cr-port-alt]')) { const i = +t.dataset.crPortAlt; const alt = t.dataset.alt; editPorts((ports) => { const p = ports[i]; p.alternatives = [p.provider, ...(p.alternatives || []).filter((a) => a !== alt)].filter(Boolean); p.provider = alt; p.tech_name = ''; }); return; }
     if (t.matches('[data-cr-data-validate]')) { act('validating the data model', () => post('data/validate')); return; }
     if (t.matches('[data-cr-audit]')) { act('the guard reads the architecture', () => post('audit')); return; }
     if (t.dataset.crFinding) {
@@ -1750,6 +1813,15 @@
     }
     if (e.target.dataset.crPurpose !== undefined) {
       editData({ texts: [{ table: e.target.dataset.crPurpose, field: e.target.dataset.field || '', purpose: e.target.value }] });
+      return;
+    }
+    if (e.target.dataset.crPort !== undefined) {
+      const i = +e.target.dataset.crPort;
+      const key = e.target.dataset.key;
+      const value = key === 'stateful' ? e.target.checked
+        : key === 'secrets' || key === 'used_by' ? e.target.value.split(',').map((x) => x.trim()).filter(Boolean)
+        : e.target.value;
+      editPorts((ports) => { if (ports[i]) ports[i][key] = value; });
       return;
     }
     if (e.target.matches('[data-cr-rules-here]')) { C.rulesHere = e.target.checked; draw(); return; }

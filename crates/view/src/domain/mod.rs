@@ -28,6 +28,7 @@ pub mod note_session;
 pub mod observe;
 pub mod pin_journal;
 pub mod plant;
+pub mod ports_draft;
 pub mod prompts;
 pub mod rules_status;
 pub mod snapshot;
