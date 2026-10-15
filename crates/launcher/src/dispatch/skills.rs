@@ -284,7 +284,7 @@ mod tests {
             &Logbook::null(),
         )
         .expect("nothing to do");
-        assert!(disk.wrote.borrow().is_empty());
+        assert!(disk.wrote.borrow().is_empty(), "expected nothing");
     }
 
     #[test]

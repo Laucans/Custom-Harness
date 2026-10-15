@@ -773,7 +773,7 @@ mod tests {
         fs::create_dir_all(dir.join("main/mock/pages")).expect("temp dir");
         let sample = DirMockups::new(&dir);
         let none = sample.state("main").expect("read");
-        assert!(!none.present && none.pages.is_empty());
+        assert!(!none.present && none.pages.is_empty(), "expected something");
         fs::write(
             dir.join("main/mock/pages.json"),
             r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","objective":"o"}]}"#,
@@ -805,7 +805,10 @@ mod tests {
             sample.file("main", "pages/none.html").expect("absent"),
             None
         );
-        assert!(sample.state("gone").expect("no folder").pages.is_empty());
+        assert!(
+            sample.state("gone").expect("no folder").pages.is_empty(),
+            "expected nothing"
+        );
         assert!(sample.save("main", "x").is_err());
         let _ = fs::remove_dir_all(&dir);
     }

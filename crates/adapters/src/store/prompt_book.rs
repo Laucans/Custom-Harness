@@ -246,7 +246,10 @@ mod tests {
             PromptFile::new(&dir.0).load().expect("read"),
             PromptBook::default()
         );
-        assert!(DraftFile::new(&dir.0).take().expect("taken").is_empty());
+        assert!(
+            DraftFile::new(&dir.0).take().expect("taken").is_empty(),
+            "expected nothing"
+        );
     }
 
     #[test]
@@ -265,7 +268,7 @@ mod tests {
     fn a_shelf_round_trips_and_outlives_the_drafts_being_taken() {
         let dir = Dir::new("shelf");
         let store = ShelfFile::new(&dir.0);
-        assert!(store.load().expect("read").is_empty());
+        assert!(store.load().expect("read").is_empty(), "expected nothing");
         let mut drafts = drafted(&PromptBook::default());
         let mut shelf = Shelf::default();
         drafts.deactivate(&mut shelf, "agent-loop/code");
@@ -287,7 +290,7 @@ mod tests {
         store.save(&drafts).expect("saved");
         assert_eq!(store.load().expect("read"), drafts);
         assert_eq!(store.take().expect("taken"), drafts);
-        assert!(store.load().expect("read").is_empty());
+        assert!(store.load().expect("read").is_empty(), "expected nothing");
         store.save(&drafts).expect("saved");
         store.save(&Drafts::default()).expect("saved");
         assert!(!dir.0.join(".llocal").join(DRAFTS).exists());

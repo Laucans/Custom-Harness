@@ -1673,7 +1673,10 @@ mod tests {
             <section data-component='Balance'></section><div data-component="InvoiceList"></div>
             <p data-component=bare></p><i data-component=""></i><b data-component="Open"#;
         assert_eq!(injected(html), ["InvoiceList", "Balance"]);
-        assert!(injected("<main>inline</main>").is_empty());
+        assert!(
+            injected("<main>inline</main>").is_empty(),
+            "expected nothing"
+        );
     }
 
     #[test]
@@ -1685,7 +1688,8 @@ mod tests {
                 &[page("pages/a.html", r#"<div data-component="List"></div>"#)],
                 &listed
             )
-            .is_empty()
+            .is_empty(),
+            "expected nothing"
         );
         assert_eq!(
             not_componentized(

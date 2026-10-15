@@ -76,6 +76,7 @@ impl Spending for LedgerSpending {
             ran_on: self.host.clone(),
             outcome: entry.outcome.to_string(),
             fingerprint: entry.fingerprint.to_string(),
+            tags: entry.tags.clone(),
         })
     }
 
@@ -134,7 +135,7 @@ pub async fn hostname() -> String {
 mod tests {
     use super::*;
     use harness_adapters::store::ledger::{self, HEADER};
-    use harness_core::domain::{Spend, Tokens};
+    use harness_core::domain::{Spend, Tags, Tokens};
 
     struct Dir(std::path::PathBuf);
 
@@ -191,6 +192,11 @@ mod tests {
                 spend: &spend,
                 outcome: "ok",
                 fingerprint: "0123456789abcdef",
+                tags: &Tags {
+                    unit: "aggregate".to_string(),
+                    profile: "strong".to_string(),
+                    side: "harness:write-side".to_string(),
+                },
             })
             .expect("written");
         let text = std::fs::read_to_string(&path).expect("re-read");
@@ -208,6 +214,9 @@ mod tests {
         assert_eq!(at("ran_on"), "le-mac");
         assert_eq!(at("outcome"), "ok");
         assert_eq!(at("fingerprint"), "0123456789abcdef");
+        assert_eq!(at("unit"), "aggregate");
+        assert_eq!(at("profile"), "strong");
+        assert_eq!(at("side"), "harness:write-side");
         // Unobserved remains empty: a column of zeros would read as a free
         // session.
         assert_eq!(at("out"), "");
@@ -230,6 +239,7 @@ mod tests {
                     spend: &Spend::default(),
                     outcome: harness_core::domain::breaker::STOP,
                     fingerprint: "abcabcabcabcabca",
+                    tags: &Tags::default(),
                 })
                 .expect("written");
         }

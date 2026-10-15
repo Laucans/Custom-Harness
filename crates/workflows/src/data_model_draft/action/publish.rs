@@ -126,7 +126,10 @@ mod tests {
 
     #[test]
     fn the_model_or_its_new_folder_is_all_a_session_may_change() {
-        assert!(unexpected(vec!["data/model.json".into()]).is_empty());
+        assert!(
+            unexpected(vec!["data/model.json".into()]).is_empty(),
+            "expected nothing"
+        );
         assert!(
             unexpected(vec!["data/".into()]).is_empty(),
             "a new folder, as git names it"

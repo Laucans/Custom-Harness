@@ -453,7 +453,7 @@ mod tests {
                     .expect("opened");
                 assert_eq!(opened, "t [harness:roadmap]");
                 let shown = desk.model(Wanted::default()).await.expect("answered");
-                assert!(shown.dir.is_empty());
+                assert!(shown.dir.is_empty(), "expected nothing");
                 assert_eq!(shown.model.tables[0].name, "live");
                 task.abort();
             })
@@ -538,7 +538,10 @@ mod tests {
                     .await
                     .expect("answered");
                 assert_eq!(unbuilt.branch, "nowhere");
-                assert!(unbuilt.dir.is_empty() && unbuilt.model.tables.is_empty());
+                assert!(
+                    unbuilt.dir.is_empty() && unbuilt.model.tables.is_empty(),
+                    "expected nothing"
+                );
                 assert!(!unbuilt.model.sources[0].found, "schema.sql to build");
                 task.abort();
             })

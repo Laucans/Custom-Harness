@@ -59,18 +59,16 @@ pub(super) async fn data_model(
         dir: query.dir.filter(|d| !d.is_empty()),
         fresh: query.fresh.as_deref() == Some("1"),
     };
-    match desk.model(wanted).await {
+    let shown = desk.model(wanted).await;
+    match &shown {
         Ok(shown) => {
-            reply.branch = shown.branch;
-            reply.dir = shown.dir;
+            reply.branch.clone_from(&shown.branch);
+            reply.dir.clone_from(&shown.dir);
             reply.model = Some(&shown.model);
-            json(&reply)
         }
-        Err(why) => {
-            reply.error = Some(why);
-            json(&reply)
-        }
+        Err(why) => reply.error = Some(why.clone()),
     }
+    json(&reply)
 }
 
 /// What `/api/data-model/compare` is asked: the version shown, and the one

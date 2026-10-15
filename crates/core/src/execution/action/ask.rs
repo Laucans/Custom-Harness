@@ -81,6 +81,7 @@ pub async fn ask_and_record<S>(
             spend,
             outcome,
             fingerprint: &fingerprint,
+            tags: &open.ctx.tags,
         })?;
         log.record(&Event::SessionEnded {
             task: task.to_string(),

@@ -10,15 +10,14 @@
 //!
 //! # What is chained, and what is not
 //!
-//! A milestone is built in the architecture's layers ([`Layer`]): Concepts,
-//! the data layer, the contract, the Capabilities, the UI. A task waits on
-//! every task of the nearest earlier layer this split opened, plus whatever
-//! it named in `depends_on`; inside a layer nothing is chained, so the loop
-//! runs a layer's tasks in parallel. Two exceptions: the data layer is
-//! chained on itself (and its first task on the last task that already
-//! existed), because the architecture serializes mutations behind one
-//! `DataGuard` and so does the board; and a Composition also waits on the
-//! Micro-UIs before it, since it composes them.
+//! A task is chained on the task of this plan that `produces` an id it
+//! `needs` (`graph_blockers`), plus whatever it named in `depends_on`; an
+//! id no task of the plan produces is read as already in the repository.
+//! Nothing else is chained: two tasks that share no id run in parallel, and
+//! two that change the structure of one aggregate are kept apart at start
+//! time by the loop (`tasks::startable_tasks`), not by a link. The layers
+//! ([`Layer`]) order the plan's reading and the journal's wording, never a
+//! link. Tasks that existed before this split are never chained.
 
 use std::rc::Rc;
 

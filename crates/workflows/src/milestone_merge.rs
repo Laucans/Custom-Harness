@@ -3,9 +3,11 @@
 //! A **deterministic command, not a workflow** — like `main_agent_merge`, one
 //! level down: no session, no cost. A task on the write side leaves its pull
 //! request open on the milestone branch (`review-pending`); once the agent
-//! review has run and every check is green, this merges it and closes the
-//! task — which is what unblocks the tasks that wait on it. The CI and the
-//! review are what stand for the human review here.
+//! review has run, every check is green and a human has posed
+//! `harness:approved` on the task, this merges it and closes the task —
+//! which is what unblocks the tasks that wait on it. The human's label is
+//! the architecture's own rule: a mutation of existing data is reviewed by
+//! a person, never merged on an agent's word alone.
 //!
 //! The choice of *which* PR is pure ([`candidate`]); the router reads the
 //! board and the open PRs, asks this, and checks the CI before routing here.
@@ -34,9 +36,18 @@ pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &
     })
 }
 
+/// True while `task` still waits for a human's `harness:approved`.
+///
+/// Only a write-side task does. A read-side task never waits for one — its
+/// PR merges on green gates, as the architecture promises the read side.
+#[must_use]
+pub fn awaits_human(task: &Issue) -> bool {
+    tasks::is_write_side(task) && !task.has(labels::APPROVED)
+}
+
 /// Merges `pr` into its milestone branch and closes `task`:
-/// `review-pending` and `needs-decision` off, a comment naming the PR, then
-/// the close — what unblocks the tasks waiting on it.
+/// `review-pending`, `approved` and `needs-decision` off, a comment naming
+/// the PR, then the close — what unblocks the tasks waiting on it.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from the merge or any label write —
@@ -44,13 +55,16 @@ pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &
 pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
     gh.merge_pr(&pr.num).await?;
     gh.remove_label(task.number, labels::REVIEW_PENDING).await?;
+    if task.has(labels::APPROVED) {
+        gh.remove_label(task.number, labels::APPROVED).await?;
+    }
     if task.has(labels::NEEDS_DECISION) {
         gh.remove_label(task.number, labels::NEEDS_DECISION).await?;
     }
     gh.post_issue_comment(
         task.number,
         &format!(
-            "{} — reviewed and every check green, merged by `milestone_merge`.",
+            "{} — reviewed, approved and every check green, merged by `milestone_merge`.",
             delivery::merged_note(&pr.base, &pr.reference())
         ),
     )
@@ -158,5 +172,58 @@ mod tests {
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::REVIEW_PENDING.to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::NEEDS_DECISION.to_string())));
         assert!(writes.contains(&Wrote::Closed(64)));
+        assert!(
+            !writes.contains(&Wrote::Unlabelled(64, labels::APPROVED.to_string())),
+            "a label the task does not carry is not removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_takes_the_human_s_approval_off_with_the_rest() {
+        let gh = FakeGitHub::default();
+        let approved = task(
+            64,
+            &[labels::AGENT, labels::REVIEW_PENDING, labels::APPROVED],
+            "chore/rust",
+        );
+        run(&gh, &approved, &pr("68", "chore/rust"))
+            .await
+            .expect("merged");
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Unlabelled(64, labels::APPROVED.to_string()))
+        );
+    }
+
+    #[test]
+    fn a_write_side_task_waits_for_a_human_until_approved() {
+        let write = task(
+            64,
+            &[labels::AGENT, labels::WRITE_SIDE, labels::REVIEW_PENDING],
+            "chore/rust",
+        );
+        assert!(awaits_human(&write));
+        let approved = task(
+            64,
+            &[
+                labels::AGENT,
+                labels::WRITE_SIDE,
+                labels::REVIEW_PENDING,
+                labels::APPROVED,
+            ],
+            "chore/rust",
+        );
+        assert!(!awaits_human(&approved));
+    }
+
+    #[test]
+    fn a_read_side_task_never_waits_for_a_human() {
+        let read = task(65, &[labels::AGENT, labels::READ_SIDE], "chore/ts");
+        assert!(!awaits_human(&read));
+        let undeclared = task(66, &[labels::AGENT], "chore/ts");
+        assert!(
+            !awaits_human(&undeclared),
+            "nothing declared reads as read side"
+        );
     }
 }

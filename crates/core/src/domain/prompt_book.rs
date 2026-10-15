@@ -692,7 +692,7 @@ mod tests {
         drafts
             .propose(&book, "k", DEFAULT, Some("mine"), false, 3)
             .expect("proposed");
-        assert!(drafts.is_empty());
+        assert!(drafts.is_empty(), "expected nothing");
     }
 
     #[test]
@@ -729,7 +729,10 @@ mod tests {
         let mut book = PromptBook::default();
         applied(&mut book, "k", Some("a"), false, 1);
         applied(&mut book, "k", Some("b"), false, 2);
-        assert!(book.entry("k").expect("kept").reverted.is_empty());
+        assert!(
+            book.entry("k").expect("kept").reverted.is_empty(),
+            "expected nothing"
+        );
     }
 
     #[test]
@@ -739,7 +742,10 @@ mod tests {
         drafts
             .propose(&book, "gone", DEFAULT, Some("x"), false, 1)
             .expect("proposed");
-        assert!(book.apply(&drafts, |_| None, 2).is_empty());
+        assert!(
+            book.apply(&drafts, |_| None, 2).is_empty(),
+            "expected nothing"
+        );
         assert_eq!(book, PromptBook::default());
     }
 
@@ -756,7 +762,7 @@ mod tests {
             drafts.propose(&book, "k", DEFAULT, Some(&huge), false, 1),
             Err(BookError::TooLong(MAX_CHARS + 1))
         );
-        assert!(drafts.is_empty());
+        assert!(drafts.is_empty(), "expected nothing");
     }
 
     #[test]

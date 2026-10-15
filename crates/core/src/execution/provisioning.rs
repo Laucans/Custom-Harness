@@ -902,7 +902,7 @@ mod tests {
         assert!(!mount.mounted());
         assert_eq!(mount.workspace.root(), Path::new("/depot"));
         assert!(git.calls().is_empty(), "no git verbs");
-        assert!(disk.created.borrow().is_empty());
+        assert!(disk.created.borrow().is_empty(), "expected nothing");
     }
 
     #[tokio::test]
@@ -924,7 +924,7 @@ mod tests {
         assert_eq!(mount.branch, "");
         assert!(!mount.disposable);
         assert!(git.calls().is_empty(), "no git verbs: nothing checked out");
-        assert!(disk.created.borrow().is_empty());
+        assert!(disk.created.borrow().is_empty(), "expected nothing");
         assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
         // And the accounting stays home: a dry run must not write a ledger into
         // the target's checkout.

@@ -27,7 +27,7 @@
 //!
 //! Pure business logic: no I/O, no subprocess.
 
-use harness_core::domain::Issue;
+use harness_core::domain::{Issue, Tags};
 
 use crate::common::{labels, sections};
 use harness_architecture::vocabulary::{Declaration, Side};
@@ -259,6 +259,21 @@ pub fn held_aggregate(issue: &Issue) -> Option<String> {
         .and_then(|declaration| declaration.held_aggregate().map(ToString::to_string))
 }
 
+/// What the task is, for the ledger: its unit, the profile it was cut for,
+/// its side — read from its `## Architecture`. A task that declares nothing
+/// is tagged empty, never guessed.
+#[must_use]
+pub fn tags(issue: &Issue) -> Tags {
+    sections::parse(&issue.body)
+        .get(sections::ARCHITECTURE)
+        .and_then(|text| Declaration::parse(text))
+        .map_or_else(Tags::default, |declaration| Tags {
+            unit: declaration.unit.key().to_string(),
+            profile: declaration.profile.clone().unwrap_or_default(),
+            side: declaration.side().label().to_string(),
+        })
+}
+
 /// The runnable tasks a parallel watch may start now, given those on a lane.
 ///
 /// Two tasks that change the structure of the same aggregate run one after
@@ -379,6 +394,33 @@ mod tests {
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
             ..Issue::default()
         }
+    }
+
+    #[test]
+    fn the_tags_are_the_declaration_s_unit_profile_and_side() {
+        let declared = Issue {
+            body: "## Architecture\n\nunit: capability\nsystem: credit\nprofile: small\n"
+                .to_string(),
+            ..issue(7, &[labels::AGENT])
+        };
+        let got = tags(&declared);
+        assert_eq!(got.unit, "capability");
+        assert_eq!(got.profile, "small");
+        assert_eq!(got.side, labels::READ_SIDE);
+        let mutating = Issue {
+            body: "## Architecture\n\nunit: data-capability\nsystem: credit\neffect: update\n"
+                .to_string(),
+            ..issue(8, &[labels::AGENT])
+        };
+        let got = tags(&mutating);
+        assert_eq!(got.unit, "data-capability");
+        assert_eq!(got.profile, "", "no profile line, no profile invented");
+        assert_eq!(got.side, labels::WRITE_SIDE);
+    }
+
+    #[test]
+    fn a_task_that_declares_nothing_is_tagged_empty_not_guessed() {
+        assert_eq!(tags(&issue(9, &[labels::AGENT])), Tags::default());
     }
 
     fn task(number: u64) -> Issue {

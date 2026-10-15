@@ -130,6 +130,7 @@ impl Action<Loop> for PickTask {
         ctx.state.tech_written = tasks::tech_written(task);
         ctx.state.resumed = resumed.is_some();
         ctx.state.write_side = tasks::is_write_side(task);
+        ctx.tags = tasks::tags(task);
         // Set on every pick, cleared otherwise: the next round's task may
         // not be one.
         ctx.session_spec = task
@@ -306,8 +307,11 @@ impl MarkWaitingMerge {
                 number,
                 &format!(
                     "PR {} is open on the write side of the architecture: `milestone_merge` \
-                     merges it once its review has run and every check is green.",
-                    pr.url
+                     merges it once its review has run, every check is green and a human \
+                     has posed `{}` on this task — `gh issue edit {number} --add-label {}`.",
+                    pr.url,
+                    labels::APPROVED,
+                    labels::APPROVED
                 ),
             )
             .await?;

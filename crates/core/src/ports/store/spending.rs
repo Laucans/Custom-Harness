@@ -9,7 +9,7 @@
 //! alone holds a clock and machine name — and this is also what keeps
 //! `harness-core` free of time dependency.
 
-use crate::domain::{Outcome, Spend};
+use crate::domain::{Outcome, Spend, Tags};
 
 /// What a finished stage cost, as execution knows it.
 ///
@@ -33,6 +33,9 @@ pub struct Entry<'a> {
     /// merely "a session on the same stage": it is what lets the breaker
     /// forget a failure once the prompt changes.
     pub fingerprint: &'a str,
+    /// What the task is — unit, profile, side — so a report reads the cost
+    /// of a kind of unit, and the split can learn what one costs.
+    pub tags: &'a Tags,
 }
 
 /// Where spending is recorded, and what it remembers of past failures.

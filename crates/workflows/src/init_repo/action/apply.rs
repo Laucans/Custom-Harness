@@ -526,7 +526,7 @@ mod tests {
 
         let (report, _) = run(&ports, &config).await.expect("run");
         assert_eq!(report.env_line, "skipped (--no-env)");
-        assert!(disk.written.borrow().is_empty());
+        assert!(disk.written.borrow().is_empty(), "expected nothing");
     }
 
     #[tokio::test]

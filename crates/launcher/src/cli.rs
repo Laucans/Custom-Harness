@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use harness_core::domain::workspace::Strategy;
 
 /// The harness: runs an agentic workflow under verification gates, or
@@ -73,6 +73,51 @@ pub enum Command {
     /// Draft a first `data/model.json` for a branch that has none, and open
     /// its pull request (the view's data pane asks for it).
     DataModelDraft(DataModelDraftArgs),
+    /// What the harness spent, grouped by unit of the architecture, profile,
+    /// side, stage or task — read from the cost ledger, nothing is run.
+    Costs(CostsArgs),
+}
+
+/// What `harness costs` groups the ledger's rows by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum GroupBy {
+    /// The unit the task builds (`capability`, `aggregate`, …).
+    Unit,
+    /// The profile the slice was cut for.
+    Profile,
+    /// The side of the architecture.
+    Side,
+    /// The stage (`code`, `create-test`, …).
+    Stage,
+    /// The task number.
+    Task,
+}
+
+impl GroupBy {
+    /// The column's name, as the report heads it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unit => "unit",
+            Self::Profile => "profile",
+            Self::Side => "side",
+            Self::Stage => "stage",
+            Self::Task => "task",
+        }
+    }
+}
+
+/// `harness costs`'s own arguments.
+#[derive(Debug, Args)]
+pub struct CostsArgs {
+    /// What to group by.
+    #[arg(long, value_enum, default_value_t = GroupBy::Unit)]
+    pub by: GroupBy,
+
+    /// Keep the rows from this instant on (`2026-10-01`, or a full
+    /// ISO-8601 timestamp). Empty: every row.
+    #[arg(long, default_value = "")]
+    pub since: String,
 }
 
 /// `harness data-model-draft`'s own arguments.

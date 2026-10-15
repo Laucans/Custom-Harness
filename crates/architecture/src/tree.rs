@@ -970,7 +970,7 @@ mod tests {
         let found = violations(&tree, None);
         assert!(found[0].contains("is stale"), "{found:?}");
         tree.bundles[0].built_from = Some("c14e3564be9bd6b2".into());
-        assert!(violations(&tree, None).is_empty());
+        assert!(violations(&tree, None).is_empty(), "expected nothing");
     }
 
     #[test]
@@ -1046,7 +1046,7 @@ mod tests {
         // Nothing to mock yet — no screen, no Micro-UI: nothing to say.
         bare.screens.clear();
         bare.micro_uis.clear();
-        assert!(violations(&bare, None).is_empty());
+        assert!(violations(&bare, None).is_empty(), "expected nothing");
         // A Micro-UI or a composition task needs a mocked page.
         let mut unmocked = sound();
         unmocked.mocked.clear();

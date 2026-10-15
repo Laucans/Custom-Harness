@@ -606,7 +606,7 @@ mod tests {
         assert!(generate_prompt("", &[], "").contains("No image was given"));
         let answer = format!("Here:\n{}", kit::default_tokens_json());
         let (json, added) = tokens_from_answer(&answer).expect("read");
-        assert!(added.is_empty());
+        assert!(added.is_empty(), "expected nothing");
         assert!(kit::tokens_of(&json).is_ok());
         assert!(tokens_from_answer("nothing").is_err());
         assert!(
@@ -688,7 +688,10 @@ mod tests {
         );
         assert_eq!(entries.len(), kit::BASE.len() + 1);
         let button = entries.iter().find(|e| e.name == "Button").expect("button");
-        assert!(button.fragment && button.checked && !button.base.is_empty());
+        assert!(
+            button.fragment && button.checked && !button.base.is_empty(),
+            "expected nothing"
+        );
         assert!(
             !button.checks.is_empty(),
             "a literal colour fails the check"

@@ -57,7 +57,7 @@ mod tests {
     fn all_labels_present_means_zero_writes() {
         let present: Vec<String> = all_label_names().iter().map(ToString::to_string).collect();
         let plan = Plan::new(&present, Some("abc"), "def");
-        assert!(plan.missing_labels.is_empty());
+        assert!(plan.missing_labels.is_empty(), "expected nothing");
     }
 
     #[test]

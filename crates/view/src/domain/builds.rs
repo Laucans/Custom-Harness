@@ -126,7 +126,7 @@ mod tests {
                 "/r/.llocal/logs/data-diagnosis/2"
             ]
         );
-        assert!(journals("nothing").is_empty());
+        assert!(journals("nothing").is_empty(), "expected nothing");
     }
 
     #[test]

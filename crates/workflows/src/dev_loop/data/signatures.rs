@@ -884,7 +884,7 @@ mod turned_off {
         // `--no-signatures` passes `Index::default()` rather than threading a
         // boolean through four layers. This is the test that makes that safe.
         let off = Index::default();
-        assert!(off.is_empty());
+        assert!(off.is_empty(), "expected nothing");
         assert_eq!(off.ecosystem, Ecosystem::Unknown);
         assert_eq!(
             carried(

@@ -136,11 +136,21 @@ pub const READ_SIDE: &str = harness_architecture::vocabulary::READ_SIDE;
 /// relation policy, a schema migration, anything behind the `DataGuard`.
 /// The architecture asks a human to review every mutation of existing data,
 /// so its PR is never merged by the session: it waits under
-/// [`REVIEW_PENDING`] for its review and a green CI, then `milestone_merge`
-/// merges it into the milestone.
+/// [`REVIEW_PENDING`] for its agent review, a green CI **and a human's**
+/// [`APPROVED`], then `milestone_merge` merges it into the milestone.
 ///
 /// Posed by `split` on a task, like [`READ_SIDE`] — never on a milestone.
 pub const WRITE_SIDE: &str = harness_architecture::vocabulary::WRITE_SIDE;
+
+/// A human has reviewed a write-side task's PR and lets it merge.
+///
+/// The one gesture the architecture keeps for a human: every mutation of
+/// existing data is reviewed by a person, and the agent review, the green
+/// CI and this label are the three things `milestone_merge` waits for on a
+/// write-side task. A read-side task never needs it. Posed by the human on
+/// the **task**, beside [`REVIEW_PENDING`]; removed with it by the merge.
+/// Not in [`LOOP`]: the loop never reads it, only the router does.
+pub const APPROVED: &str = "harness:approved";
 
 /// The task builds a milestone's **data layer**.
 ///
@@ -148,19 +158,18 @@ pub const WRITE_SIDE: &str = harness_architecture::vocabulary::WRITE_SIDE;
 /// task of the milestone, where the data design is decided, and the one the
 /// loop runs on its strongest model (`--data-layer-model`, Opus by default).
 ///
-/// Posed by `split` on the write-side slices it opens first; a human poses
-/// it on a task made by hand to get the same treatment. Not in [`LOOP`]: a
+/// Posed by `split` on every write-side slice it opens; a human poses it
+/// on a task made by hand to get the same treatment. Not in [`LOOP`]: a
 /// task without it simply runs on the stages' own models.
 pub const DATA_LAYER: &str = "harness:data-layer";
 
-/// A write-side task's PR is open and waits for its review and a green CI,
-/// after which `milestone_merge` merges it.
+/// A write-side task's PR is open and waits for its agent review, a green
+/// CI and a human's [`APPROVED`], after which `milestone_merge` merges it.
 ///
 /// Posed by the dev loop once the session has opened the PR (with
 /// `harness:to-review`, so the agent review runs on it) and stopped short of
 /// merging. While it is there the loop neither replays the task nor starts
-/// one that depends on it; the human merging the PR is the review, and the
-/// next poll trades this label for [`WAITING_MERGE`].
+/// one that depends on it; the merge takes it off and closes the task.
 pub const REVIEW_PENDING: &str = "harness:review-pending";
 
 /// An issue of **test debt**: code `cargo mutants` can break without a test
@@ -205,12 +214,12 @@ pub struct Label {
     pub description: &'static str,
 }
 
-/// The nineteen labels `init-repo` creates when they are missing.
+/// The twenty-one labels `init-repo` creates when they are missing.
 ///
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 20] = [
+pub const ALL: [Label; 21] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -299,7 +308,12 @@ pub const ALL: [Label; 20] = [
     Label {
         name: REVIEW_PENDING,
         color: "f9d0c4",
-        description: "A write-side PR is open and waits for its review and a green CI",
+        description: "A write-side PR is open and waits for its review, a green CI and harness:approved",
+    },
+    Label {
+        name: APPROVED,
+        color: "0e8a16",
+        description: "A human reviewed this write-side task's PR and lets milestone_merge merge it",
     },
     Label {
         name: DATA_LAYER,

@@ -39,9 +39,9 @@ apps/screens/<screen>.json         one frozen screen composition (contract E)
 crates/<system>/capabilities/<name>/   one Capability crate + capability.json (contract B)
 crates/<system>/queries/<name>.graphql persisted queries, registered in queries/registry.json (contract C)
 crates/<system>/<name>/            one infrastructure crate of the system (an adapter, a source, the Data layer's plumbing)
-crates/dataguard/                  the write side: DataQueue, DataGuard, Resolver
-crates/dataguard/data-capabilities/<name>/  one DataCapability + data-capability.json (contract F)
-crates/dataguard/aggregates/<Aggregate>/aggregate.json   criticality, invariants, relations (contract I)
+crates/dataguard/                  the write side: DataQueue, DataGuard, Resolver — the DataGuard's own system
+crates/<system>/data-capabilities/<name>/  one DataCapability + data-capability.json (contract F); its system is the DataGuard's (`dataguard`)
+crates/<system>/aggregates/<Aggregate>/aggregate.json   criticality, invariants, relations (contract I), under the same system
 concepts/<Concept>/v<n>/concept.json + fixtures.json      a versioned Concept (contract A)
 data/model.json                    the data model: what every table and field is for (contract M)
 mock/pages.json                    the mock-up's pages, one per screen, and its micro-frontends (contract N)
@@ -108,7 +108,8 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
 12. **Read side merges on green gates; write side waits for a human.** In the
     harness, `harness:read-side` tasks run in parallel and merge on their own;
     `harness:write-side` tasks run one at a time and their pull request is
-    merged by a human.
+    merged only once a human poses `harness:approved` on the task, after the
+    agent review and a green CI.
 13. **The data model is described in the task that changes it.** A migration
     that adds, renames or changes a table or a field updates `data/model.json`
     (contract M) in the same pull request: the field's `type` and `nullable`

@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use crate::domain::Tags;
 use crate::ports::agent::{Reply, SessionSpec};
 use crate::traces::Logbook;
 
@@ -31,6 +32,10 @@ pub struct Context<S> {
     /// (the dev loop, on a task labelled for its strongest model), the
     /// stage runner reads it. `None`: each stage keeps its own.
     pub session_spec: Option<SessionSpec>,
+    /// What the task being worked is, for the ledger's `unit`, `profile`
+    /// and `side` columns — a workflow sets it when it picks a task, the
+    /// paid stage reads it. Empty for a run that works on no task.
+    pub tags: Tags,
 }
 
 impl<S> Context<S> {
@@ -43,6 +48,7 @@ impl<S> Context<S> {
             traces,
             results: HashMap::new(),
             session_spec: None,
+            tags: Tags::default(),
         }
     }
 }

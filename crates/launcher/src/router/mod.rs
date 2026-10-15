@@ -476,6 +476,11 @@ async fn green_task_pr(
     let Some((task, pr)) = harness_workflows::milestone_merge::candidate(tasks, to_review) else {
         return Ok(None);
     };
+    // A mutation of existing data merges on a human's word: without
+    // `harness:approved` on the task, nothing below is even read.
+    if harness_workflows::milestone_merge::awaits_human(task) {
+        return Ok(None);
+    }
     // Its last review must let it through: a blocking one is the repair
     // route's, and one its repairs did not clear is a human's.
     let comments = gh.pr_comments(&pr.num).await?;

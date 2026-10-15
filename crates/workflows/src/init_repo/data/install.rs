@@ -166,7 +166,7 @@ mod tests {
             }
         };
         let plan = InstallPlan::new(&full, false);
-        assert!(plan.is_empty());
+        assert!(plan.is_empty(), "expected nothing");
         assert_eq!(plan.kept.len(), FILES.len() + 1);
     }
 }

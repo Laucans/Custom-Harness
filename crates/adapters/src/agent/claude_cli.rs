@@ -621,7 +621,7 @@ mod tests {
             sent_prompts(&text),
             ["/code\nfirst", "second\n```rust\nfn f() {}\n```\nend"]
         );
-        assert!(sent_prompts("").is_empty());
+        assert!(sent_prompts("").is_empty(), "expected nothing");
     }
 
     fn cli() -> ClaudeCli {

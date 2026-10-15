@@ -559,7 +559,7 @@ mod tests {
         )
         .expect("proposed");
         deactivate(&book, &mut drafts, &mut shelf, &Deactivate { key }).expect("deactivated");
-        assert!(drafts.is_empty());
+        assert!(drafts.is_empty(), "expected nothing");
         let refused = propose(
             &book,
             &mut drafts,
@@ -581,7 +581,7 @@ mod tests {
             restore(&book, &mut drafts, &mut shelf, &far, 1),
             Err(Refused::NoSuchVersion(2))
         );
-        assert!(drafts.is_empty());
+        assert!(drafts.is_empty(), "expected nothing");
     }
 
     fn edit(key: &str, text: &str, shelve_waiting: bool) -> Edit {
@@ -614,7 +614,7 @@ mod tests {
             2,
         )
         .expect("saved");
-        assert!(shelf.is_empty());
+        assert!(shelf.is_empty(), "expected nothing");
         // Saving from an older version keeps the waiting one, deactivated.
         let shown = propose(
             &book,
@@ -659,7 +659,7 @@ mod tests {
         );
         assert_eq!(pending(&drafts).len(), 1);
         let shown = discard(&book, &drafts, &mut shelf, &pick(0)).expect("deleted");
-        assert!(shown.shelved.is_empty());
+        assert!(shown.shelved.is_empty(), "expected nothing");
         assert_eq!(
             discard(&book, &drafts, &mut shelf, &pick(0)),
             Err(Refused::NoSuchVersion(0))

@@ -1565,7 +1565,7 @@ pub mod tests {
             )
             .await
             .expect("applied");
-        assert!(skipped.is_empty());
+        assert!(skipped.is_empty(), "expected nothing");
         // A draft retouched on the easel: kept when it passes the check, refused otherwise.
         assert!(
             desk.write_draft(
@@ -1635,7 +1635,7 @@ pub mod tests {
             .remove_asset(Asset::Moodboard, "moodboard/mood-1.png")
             .await
             .expect("removed");
-        assert!(view.design.moodboard.is_empty());
+        assert!(view.design.moodboard.is_empty(), "expected nothing");
         assert!(
             desk.publish(String::new()).await.is_err(),
             "the sample has no repository"
@@ -1712,13 +1712,13 @@ pub mod tests {
             .expect("injected");
         let view = desk.validate().await.expect("validated");
         assert_eq!(view.design.state, DesignState::Validated);
-        assert!(!view.design.validated_at.is_empty());
+        assert!(!view.design.validated_at.is_empty(), "expected something");
         let view = desk
             .inject(kit::default_tokens_json(), true)
             .await
             .expect("edited");
         assert_eq!(view.design.state, DesignState::Candidate);
-        assert!(view.design.validated_at.is_empty());
+        assert!(view.design.validated_at.is_empty(), "expected nothing");
         let view = desk.validate().await.expect("validated again");
         assert_eq!(view.design.state, DesignState::Validated);
         let _ = std::fs::remove_dir_all(&dir);

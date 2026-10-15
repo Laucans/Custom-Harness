@@ -288,7 +288,7 @@ mod tests {
         .await
         .expect("nothing to do");
         assert!(!repos.asked("commit") && !repos.asked("push"));
-        assert!(disk.written.borrow().is_empty());
+        assert!(disk.written.borrow().is_empty(), "expected nothing");
         assert!(lines[0].starts_with("nothing to install"));
     }
 
@@ -302,7 +302,7 @@ mod tests {
             .await
             .expect("dry");
         assert_eq!(repos.calls(), [] as [std::string::String; 0]);
-        assert!(disk.written.borrow().is_empty());
+        assert!(disk.written.borrow().is_empty(), "expected nothing");
         assert_eq!(
             lines,
             ["would install 37 file(s) on main_agent (read against an empty tree)"]
