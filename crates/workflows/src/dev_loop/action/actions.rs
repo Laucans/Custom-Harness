@@ -19,14 +19,17 @@ use std::rc::Rc;
 use async_trait::async_trait;
 use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, prompts};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
+use harness_core::ports::shell::git::Repo;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 use harness_core::traces::Event;
 
 use crate::common::{delivery, hierarchy, labels, sections};
-use crate::dev_loop::data::brief::Cut;
+use crate::dev_loop::data::brief::{self, Cut};
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::data::{board, signatures, tasks};
+use harness_architecture::rules;
+use harness_architecture::vocabulary::Declaration;
 
 /// The number of the current task, or failure to read it.
 fn number_of(ctx: &Context<Loop>) -> Outcome<u64> {
@@ -54,6 +57,12 @@ fn number_of(ctx: &Context<Loop>) -> Outcome<u64> {
 pub struct PickTask {
     /// What reads the board.
     pub gh: Rc<dyn GitHub>,
+    /// What remembers a stage a previous run left interrupted on the task,
+    /// so this run resumes its session rather than paying the turns again.
+    pub spending: Rc<dyn Spending>,
+    /// The lane's checkout: its head when the task is picked is what the
+    /// round's changes are measured from.
+    pub repo: Rc<dyn Repo>,
     /// The task the resume point designates, if there is one.
     ///
     /// It **takes precedence** over the board's choice: a round interrupted
@@ -68,6 +77,9 @@ pub struct PickTask {
     /// `harness:data-layer` — the strongest model, for the data design.
     pub data_layer: harness_core::ports::agent::SessionSpec,
 }
+
+/// The stages whose interrupted session is worth resuming: the paid ones.
+const RESUMABLE: &[&str] = &["technical-refinement", "code", "create-test"];
 
 #[async_trait(?Send)]
 impl Action<Loop> for PickTask {
@@ -130,6 +142,20 @@ impl Action<Loop> for PickTask {
         ctx.state.spec_written = tasks::spec_written(task);
         ctx.state.resumed = resumed.is_some();
         ctx.state.write_side = tasks::is_write_side(task);
+        ctx.tags = tasks::tags(task);
+        ctx.state.round_base = self.repo.head_sha().await.unwrap_or_default();
+        // The sessions a quota cut on this task: one per stage, resumed by
+        // the stage runner when it opens that stage.
+        ctx.resume.clear();
+        for stage in RESUMABLE {
+            if let Some(id) = self.spending.interrupted(&ctx.state.task_key, stage)? {
+                ctx.traces.say(&format!(
+                    "task {}: stage {stage} was cut short last time — its session {id} will be resumed",
+                    task.reference()
+                ));
+                ctx.resume.insert((*stage).to_string(), id);
+            }
+        }
         // Set on every pick, cleared otherwise: the next round's task may
         // not be one.
         ctx.session_spec = task
@@ -339,6 +365,10 @@ pub struct Ask {
     pub injector: &'static str,
     /// Where spending is recorded.
     pub spending: Rc<dyn Spending>,
+    /// Whether the prompt carries the rule card of the unit the task builds
+    /// ([`rules::card`]) — the stages that plan or build it do, the one that
+    /// tests it does not.
+    pub rules: bool,
 }
 
 #[async_trait(?Send)]
@@ -349,18 +379,41 @@ impl SessionAction<Loop> for Ask {
         // the stage will touch, and its signature costs less than opening it.
         let carried =
             signatures::carried(&self.signatures, &open.state.task.body, signatures::BUDGET);
+        // The declaration is read before the cut, like the index slice: the
+        // card and the related neighbours come from `## Architecture`, which
+        // no cut drops, but the reduction below needs it whole.
+        let declaration = sections::parse(&open.state.task.body)
+            .get(sections::ARCHITECTURE)
+            .and_then(|text| Declaration::parse(text));
+        let card = match (&declaration, self.rules) {
+            (Some(declaration), true) => rules::card(declaration.unit),
+            _ => "",
+        };
         let mut scope = open.state.scope();
         scope.task.body = sections::without(&scope.task.body, self.cut.without());
+        let scope = match self.cut {
+            Cut::Executing(_) => brief::executing(scope, declaration.as_ref()),
+            _ => scope,
+        };
         let brief = match self.cut {
             Cut::Unscoped => prompts::Brief::Unscoped,
             Cut::Situated(_) => prompts::Brief::Situated(&scope),
             Cut::TaskOnly(_) => prompts::Brief::TaskOnly(&scope),
+            Cut::Executing(_) => prompts::Brief::Executing(&scope),
         };
         let instructions = match (&self.write_side_instructions, open.state.write_side) {
             (Some(text), true) => text.as_str(),
             _ => self.instructions.as_str(),
         };
-        let extra = prompts::extra_for(instructions, brief, &self.stack, &carried, self.injector);
+        let extra = prompts::extra_for(
+            instructions,
+            brief,
+            card,
+            &open.state.tree_note,
+            &self.stack,
+            &carried,
+            self.injector,
+        );
         let prompt = prompts::build(&self.lead, &self.branch, &extra, self.injector);
         let task = open.state.task_key.clone();
         ask_and_record(
@@ -442,6 +495,8 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -463,6 +518,8 @@ mod tests {
         context.session_spec = Some(opus_high());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -483,6 +540,8 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -511,6 +570,8 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -546,6 +607,8 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: Some("11".to_string()),
             wanted: None,
             data_layer: opus_high(),
@@ -569,6 +632,8 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -591,6 +656,8 @@ mod tests {
         let mut context = ctx(Loop::default());
         let err = PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -612,6 +679,8 @@ mod tests {
         let mut context = ctx(Loop::default());
         let err = PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
+            repo: test_repo(),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -883,6 +952,7 @@ mod tests {
                 title: "The fence".to_string(),
                 status: "open".to_string(),
                 gist: "covers the fence".to_string(),
+                ids: vec!["credit.fence".to_string()],
             }],
             task: Named {
                 number: "11".to_string(),
@@ -949,6 +1019,7 @@ mod tests {
             signatures: Rc::new(signatures::Index::default()),
             injector: "test",
             spending: Rc::clone(&spending) as Rc<dyn Spending>,
+            rules: true,
         };
         let verdict = {
             let mut open = Open {
@@ -963,6 +1034,92 @@ mod tests {
             rows: spending.0.borrow().clone(),
             said: capture.0.borrow().join("\n"),
         }
+    }
+
+    fn test_repo() -> Rc<dyn harness_core::ports::shell::git::Repo> {
+        use harness_core::ports::shell::git::Repos as _;
+        crate::common::fake_git::FakeRepos::default().at(std::path::Path::new("/ws"))
+    }
+
+    const DECLARED: &str = "## Architecture\n\nunit: capability\nsystem: credit\n\
+                            produces: credit.calculateRisk\n\n## Technical Implementation Plan\n\n1. build it\n";
+
+    #[tokio::test]
+    async fn a_declared_task_gets_the_rule_card_of_its_unit() {
+        let mut state = scoped_state();
+        state.task.body = DECLARED.to_string();
+        let run = ask_about(
+            state,
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(prompt.contains("--- ARCHITECTURE RULES"), "{prompt}");
+        assert!(prompt.contains("UNIT: Capability"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_task_gets_no_rule_card() {
+        let run = ask_with(
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+        )
+        .await;
+        assert!(
+            !run.prompts[0].contains("ARCHITECTURE RULES"),
+            "{}",
+            run.prompts[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_executing_cut_drops_the_roadmap_and_keeps_the_task() {
+        let mut state = scoped_state();
+        state.task.body = DECLARED.to_string();
+        state.roadmap = Some(Named {
+            number: "5".to_string(),
+            title: "the plan".to_string(),
+            body: "a long story nobody executes".to_string(),
+        });
+        let run = ask_about(
+            state,
+            Cut::Executing(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(!prompt.contains("a long story nobody executes"), "{prompt}");
+        assert!(
+            prompt.contains("NEIGHBOURS THIS TASK BUILDS ON OR DELIVERS TO"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("1. build it"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn a_narrowed_tree_is_said_in_the_prompt() {
+        let mut state = scoped_state();
+        state.tree_note = "- /crates/credit/".to_string();
+        let run = ask_about(
+            state,
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        assert!(
+            run.prompts[0].contains("--- WORKING TREE"),
+            "{}",
+            run.prompts[0]
+        );
+        assert!(run.prompts[0].contains("- /crates/credit/"));
     }
 
     #[tokio::test]
@@ -1074,6 +1231,7 @@ mod tests {
             signatures: Rc::new(index),
             injector: "test",
             spending: Rc::clone(&spending) as Rc<dyn Spending>,
+            rules: false,
         };
         {
             let mut open = Open {

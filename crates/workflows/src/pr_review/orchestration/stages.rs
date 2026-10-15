@@ -122,6 +122,7 @@ pub fn inline(ports: &Ports, config: &Config) -> Stage<ReviewState> {
         }),
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.inline.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskInline {
@@ -142,6 +143,7 @@ pub fn brief(ports: &Ports, config: &Config) -> Stage<ReviewState> {
         pre: None,
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.brief.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskBrief {

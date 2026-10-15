@@ -101,6 +101,7 @@ mod tests {
             },
             ran_on: "test-host".to_string(),
             outcome: "ok".to_string(),
+            tags: harness_core::domain::Tags::default(),
             fingerprint: String::new(),
         }
     }

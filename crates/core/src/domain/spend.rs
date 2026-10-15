@@ -23,6 +23,23 @@ pub struct Tokens {
     pub cache_write: Option<u64>,
 }
 
+/// What the billed task is, for the ledger: its unit of the architecture,
+/// the profile it was cut for, and its side.
+///
+/// Three plain strings, empty when unknown: `core` names no unit of the
+/// target's architecture, it only carries what the workflow read of it to
+/// the row. A run that works on no task (a review, a split) leaves them
+/// empty, and empty reads back as "not declared", never as a unit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tags {
+    /// The unit the task builds (`capability`, `aggregate`, …).
+    pub unit: String,
+    /// The profile the slice was cut for (`strong`, `mid`, `small`).
+    pub profile: String,
+    /// The side of the architecture (`harness:read-side`, `harness:write-side`).
+    pub side: String,
+}
+
 /// What a turn cost, and what it consumed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Spend {

@@ -58,7 +58,7 @@ mod tests {
         let state = ArbiterState::default();
         assert!(state.issue.is_none());
         assert!(state.question.is_none());
-        assert!(state.siblings.is_empty());
-        assert!(state.resolution.unresolved.is_empty());
+        assert!(state.siblings.is_empty(), "expected nothing");
+        assert!(state.resolution.unresolved.is_empty(), "expected nothing");
     }
 }

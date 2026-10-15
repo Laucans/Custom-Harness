@@ -5,6 +5,7 @@
 //! becoming conceivable.
 
 pub mod breaker;
+pub mod budget;
 pub mod doctor;
 pub mod markers;
 pub mod prompt_book;
@@ -26,5 +27,5 @@ pub use prompts::{Named, Scope, Scoped, Sibling};
 pub use pulls::Pr;
 pub use remote::{Slug, clone_url, same_repo};
 pub use resumable::Resumable;
-pub use spend::{Spend, Tokens};
+pub use spend::{Spend, Tags, Tokens};
 pub use verdict::{Outcome, Verdict};

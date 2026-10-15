@@ -90,6 +90,13 @@
       "uniqueItems": true,
       "description": "The ports of `ports.json` (contract Q) it reaches the outside through, by id."
     },
+    "host": {
+      "enum": [
+        "server",
+        "hostless"
+      ],
+      "description": "Where it runs: on the product's server (the default) or inside a host without one — a plugin, a static app — compiled to WebAssembly and loaded by the host. A hostless DataCapability is not a dependency of any server."
+    },
     "idempotencyKey": {
       "enum": [
         "required",

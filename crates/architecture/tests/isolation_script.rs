@@ -239,3 +239,50 @@ fn an_inclusion_leaving_the_slice_fails_but_its_own_manifest_is_fine() {
         "{said}"
     );
 }
+
+/// A crate with a registry dependency: `cargo metadata` resolves it, so the
+/// fixture needs a lockfile-free way to name one. `serde` is in every
+/// registry index the test machine has; the driver names are what the
+/// script looks for, and `cargo metadata --no-deps` never downloads them.
+fn krate_with_registry(root: &Path, dir: &str, name: &str, deps: &str, dev_deps: &str) {
+    write(
+        root,
+        &format!("{dir}/Cargo.toml"),
+        &format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{deps}\n[dev-dependencies]\n{dev_deps}"
+        ),
+    );
+    write(root, &format!("{dir}/src/lib.rs"), "");
+}
+
+#[test]
+fn a_capability_holding_a_database_driver_fails() {
+    let repo = repo("driver");
+    krate_with_registry(
+        &repo.root,
+        "crates/credit/capabilities/score",
+        "score",
+        "credit-query = { path = \"../../query\" }\nsqlx = \"0.8\"\n",
+        "",
+    );
+    let (ok, said) = check(&repo);
+    assert!(!ok);
+    assert!(said.contains("score depends on sqlx"), "{said}");
+    assert!(said.contains("never a database driver"), "{said}");
+}
+
+#[test]
+fn a_driver_or_a_slice_as_a_dev_dependency_is_not_a_dependency() {
+    let repo = repo("dev-dependency");
+    // The conformance runner is exactly this: a test-only crate from another
+    // folder, and a driver a test may open a fixture database with.
+    krate_with_registry(
+        &repo.root,
+        "crates/credit/capabilities/score",
+        "score",
+        "credit-query = { path = \"../../query\" }\n",
+        "sqlx = \"0.8\"\nrisk = { path = \"../risk\" }\n",
+    );
+    let (ok, said) = check(&repo);
+    assert!(ok, "{said}");
+}

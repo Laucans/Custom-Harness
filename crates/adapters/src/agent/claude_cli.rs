@@ -66,7 +66,7 @@ use serde::Deserialize;
 use crate::agent::stream_log;
 use crate::shell::process::{self, Limits};
 use harness_core::domain::{Halt, Outcome, Spend, Tokens, markers};
-use harness_core::ports::agent::{Base, Reply, Session, SessionFactory, SessionSpec};
+use harness_core::ports::agent::{Base, Opening, Reply, Session, SessionFactory, SessionSpec};
 use harness_core::ports::shell::process::{Ran, last_line};
 
 /// The called binary. Named here so a test can read it.
@@ -197,6 +197,9 @@ pub struct ClaudeCli {
     traces: Option<PathBuf>,
     /// Which turn of this session the next `ask` is, counted from 1.
     turn: u32,
+    /// How many model turns a call may take (`--max-turns`); `None` lets
+    /// the CLI decide.
+    max_turns: Option<u32>,
 }
 
 impl ClaudeCli {
@@ -218,6 +221,7 @@ impl ClaudeCli {
             permission_mode: permission_mode.to_string(),
             session_id: None,
             base: None,
+            max_turns: None,
             traces,
             turn: 0,
         }
@@ -299,6 +303,10 @@ impl ClaudeCli {
                 args.push("--fork-session".to_string());
             }
             (None, None) => {}
+        }
+        if let Some(cap) = self.max_turns {
+            args.push("--max-turns".to_string());
+            args.push(cap.to_string());
         }
         args.push("--".to_string());
         args.push(prompt.to_string());
@@ -540,6 +548,10 @@ impl Session for ClaudeCli {
     async fn ask(&mut self, prompt: &str) -> Outcome<Reply> {
         self.ask_within(prompt, LIMITS).await
     }
+
+    fn id(&self) -> Option<String> {
+        self.session_id.clone()
+    }
 }
 
 impl ClaudeCli {
@@ -594,6 +606,14 @@ impl ClaudeCli {
             return Err(failed_process(&out));
         }
 
+        // The identifier is learnt before the result is judged: a turn cut by
+        // a quota still names its conversation, and that is what the next run
+        // resumes instead of paying the turns again.
+        if let Some(id) = result_line(&out.stdout).map(|r| r.session_id)
+            && !id.is_empty()
+        {
+            self.session_id = Some(id);
+        }
         let (mut reply, session_id) = parse(&out.stdout, now_seconds())?;
         reply.spend.cost_usd = net_of_base(reply.spend.cost_usd, self.base.as_ref());
         // The first turn learns the identifier; later turns return it as-is,
@@ -665,6 +685,20 @@ impl SessionFactory for ClaudeCliFactory {
             base.clone(),
         )))
     }
+
+    /// Resumed: the first `ask` passes `--resume` with the conversation a
+    /// previous run left. Bounded: every `ask` passes `--max-turns`.
+    async fn open_with(&self, spec: &SessionSpec, opening: &Opening) -> Outcome<Box<dyn Session>> {
+        let mut session = ClaudeCli::new(
+            self.cwd.clone(),
+            spec,
+            &self.permission_mode,
+            self.traces.clone(),
+        );
+        session.session_id.clone_from(&opening.resume);
+        session.max_turns = opening.max_turns;
+        Ok(Box::new(session))
+    }
 }
 
 #[cfg(test)]
@@ -689,7 +723,7 @@ mod tests {
             sent_prompts(&text),
             ["/code\nfirst", "second\n```rust\nfn f() {}\n```\nend"]
         );
-        assert!(sent_prompts("").is_empty());
+        assert!(sent_prompts("").is_empty(), "expected nothing");
     }
 
     fn cli() -> ClaudeCli {
@@ -751,6 +785,55 @@ mod tests {
         let args = c.argv("/code");
         let at = args.iter().position(|a| a == "--resume").expect("--resume");
         assert_eq!(args[at + 1], "abc-123");
+    }
+
+    #[test]
+    fn a_turn_cap_is_passed_as_max_turns_before_the_prompt() {
+        let mut c = cli();
+        c.max_turns = Some(120);
+        let args = c.argv("go");
+        let at = args
+            .iter()
+            .position(|a| a == "--max-turns")
+            .expect("the cap");
+        assert_eq!(args[at + 1], "120");
+        assert!(at < args.iter().position(|a| a == "--").expect("the separator"));
+        let bare = cli().argv("go");
+        assert!(
+            !bare.contains(&"--max-turns".to_string()),
+            "none by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn opening_with_a_resume_and_a_cap_sets_both_on_the_session() {
+        let factory = ClaudeCliFactory::new(Path::new("/tmp/x"), "bypassPermissions", None);
+        let spec = SessionSpec {
+            model: "sonnet".to_string(),
+            effort: "high".to_string(),
+        };
+        let session = factory
+            .open_with(
+                &spec,
+                &Opening {
+                    resume: Some("sess-9".to_string()),
+                    max_turns: Some(40),
+                },
+            )
+            .await
+            .expect("opens");
+        assert_eq!(session.id().as_deref(), Some("sess-9"));
+        let fresh = factory.open(&spec).await.expect("opens");
+        assert_eq!(fresh.id(), None, "a fresh conversation has no id yet");
+    }
+
+    #[test]
+    fn a_quota_cut_turn_still_leaves_its_session_id_to_resume() {
+        let stdout = r#"{"type":"result","subtype":"error","is_error":true,"result":"Claude usage limit reached","session_id":"sess-cut"}"#;
+        assert_eq!(
+            result_line(stdout).map(|r| r.session_id).as_deref(),
+            Some("sess-cut")
+        );
     }
 
     #[test]

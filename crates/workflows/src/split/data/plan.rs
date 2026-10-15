@@ -110,6 +110,7 @@ impl TaskItem {
             produces: ids(&self.produces),
             needs: ids(&self.needs),
             profile: None,
+            host: None,
         }
     }
 }

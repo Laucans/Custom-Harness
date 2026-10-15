@@ -218,7 +218,14 @@ mod tests {
         assert!(written.iter().any(
             |(path, text)| path.ends_with("docs/ARCHITECTURE.md") && text.contains(MARKER_OPEN)
         ));
-        assert!(lines[0].starts_with("installed 52 file(s) on main_agent"));
+        assert!(
+            lines[0].starts_with(&format!(
+                "installed {} file(s) on main_agent",
+                harness_architecture::assets::FILES.len() + 1
+            )),
+            "{}",
+            lines[0]
+        );
         assert!(lines[0].contains("contracts/ (18 files)"));
     }
 
@@ -259,7 +266,7 @@ mod tests {
         assert!(
             claude
                 .1
-                .starts_with("# r\n\nmine.\n\n<!-- harness:architecture v1 -->")
+                .starts_with("# r\n\nmine.\n\n<!-- harness:architecture v2 -->")
         );
         assert!(lines[1].contains("kept as they were: contracts/a-concept.schema.json"));
     }
@@ -288,7 +295,7 @@ mod tests {
         .await
         .expect("nothing to do");
         assert!(!repos.asked("commit") && !repos.asked("push"));
-        assert!(disk.written.borrow().is_empty());
+        assert!(disk.written.borrow().is_empty(), "expected nothing");
         assert!(lines[0].starts_with("nothing to install"));
     }
 
@@ -302,10 +309,13 @@ mod tests {
             .await
             .expect("dry");
         assert_eq!(repos.calls(), [] as [std::string::String; 0]);
-        assert!(disk.written.borrow().is_empty());
+        assert!(disk.written.borrow().is_empty(), "expected nothing");
         assert_eq!(
             lines,
-            ["would install 52 file(s) on main_agent (read against an empty tree)"]
+            [format!(
+                "would install {} file(s) on main_agent (read against an empty tree)",
+                harness_architecture::assets::FILES.len() + 1
+            )]
         );
     }
 

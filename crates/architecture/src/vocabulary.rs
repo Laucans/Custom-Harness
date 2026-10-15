@@ -246,6 +246,10 @@ pub struct Declaration {
     /// How much one session is trusted to hold: `strong`, `mid` or `small`
     /// — what the slice was cut for, so the SPEC is calibrated the same way.
     pub profile: Option<String>,
+    /// Where the unit runs: `hostless` when no server does — a plugin, a
+    /// static app — and the unit is compiled to WebAssembly for its host.
+    /// Absent, the product's server.
+    pub host: Option<String>,
 }
 
 impl Declaration {
@@ -330,6 +334,9 @@ impl Declaration {
         if let Some(profile) = &self.profile {
             lines.push(format!("profile: {profile}"));
         }
+        if let Some(host) = &self.host {
+            lines.push(format!("host: {host}"));
+        }
         lines.push(format!("side: {}", self.side().label()));
         lines.join("\n")
     }
@@ -348,6 +355,7 @@ impl Declaration {
         let mut produces = Vec::new();
         let mut needs = Vec::new();
         let mut profile = None;
+        let mut host = None;
         let list = |value: &str| -> Vec<String> {
             value
                 .split(',')
@@ -391,6 +399,9 @@ impl Declaration {
                 "profile" => {
                     profile = (!value.is_empty() && value != "-").then(|| value.to_lowercase());
                 }
+                "host" => {
+                    host = (!value.is_empty() && value != "-").then(|| value.to_lowercase());
+                }
                 "touches" => {
                     touches = value
                         .split(',')
@@ -412,7 +423,15 @@ impl Declaration {
             produces,
             needs,
             profile,
+            host,
         })
+    }
+
+    /// True when no server runs the unit: it is compiled for its host, and
+    /// no server dependency line or server folder is asked of it.
+    #[must_use]
+    pub fn is_hostless(&self) -> bool {
+        self.host.as_deref() == Some("hostless")
     }
 }
 
@@ -431,6 +450,7 @@ mod tests {
             produces: Vec::new(),
             needs: Vec::new(),
             profile: None,
+            host: None,
         }
     }
 
@@ -537,15 +557,23 @@ mod tests {
             produces: vec!["credit.raiseLimit".to_string()],
             needs: vec!["Account".to_string(), "Risk@3".to_string()],
             profile: Some("small".to_string()),
+            host: Some("hostless".to_string()),
         };
         let text = written.render();
         assert_eq!(
             text,
             "unit: data-capability\nsystem: credit\neffect: update\n\
              touches: Account.creditLimit, Account.tags\naggregate: Account\n\
-             produces: credit.raiseLimit\nneeds: Account, Risk@3\nprofile: small\nside: harness:write-side"
+             produces: credit.raiseLimit\nneeds: Account, Risk@3\nprofile: small\nhost: hostless\nside: harness:write-side"
         );
         assert_eq!(Declaration::parse(&text), Some(written.clone()));
+        assert!(written.is_hostless());
+        for none in ["host: -", "host:"] {
+            let parsed = Declaration::parse(&format!("unit: capability\nsystem: credit\n{none}"))
+                .expect("parsed");
+            assert_eq!(parsed.host, None, "{none}: no host");
+            assert!(!parsed.is_hostless());
+        }
         // Held while it runs: it changes the aggregate's data. A pure insert and a reader hold nothing.
         assert_eq!(written.held_aggregate(), Some("Account"));
         let pure = Declaration {

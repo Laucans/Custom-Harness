@@ -13,7 +13,10 @@ use std::rc::Rc;
 
 use harness_core::ports::agent::SessionFactory;
 use harness_core::ports::shell::disk::Disk;
+use harness_core::ports::shell::git::Repo;
 use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::shell::process::Process;
+use harness_core::ports::store::costs::CostHistory;
 use harness_core::ports::store::spending::Spending;
 
 /// The ports that a loop round needs.
@@ -27,6 +30,13 @@ pub struct Ports {
     /// What the preflight gates check for — skill files, installed
     /// dependencies — through a port rather than a path alone.
     pub disk: Rc<dyn Disk>,
+    /// The lane's checkout, for narrowing the working tree to a task's
+    /// closure and widening it back.
+    pub repo: Rc<dyn Repo>,
+    /// What runs `cargo metadata` in it, for the closure's crate graph.
+    pub process: Rc<dyn Process>,
+    /// What tasks of a kind have cost — the budget gate reads it.
+    pub history: Rc<dyn CostHistory>,
 }
 
 #[cfg(test)]
@@ -76,6 +86,19 @@ pub(crate) mod fake {
         }
     }
 
+    /// A history that measured nothing.
+    pub struct NoHistory;
+
+    impl harness_core::ports::store::costs::CostHistory for NoHistory {
+        fn typical(
+            &self,
+            _unit: &str,
+            _profile: &str,
+        ) -> Outcome<Option<harness_core::domain::budget::Typical>> {
+            Ok(None)
+        }
+    }
+
     /// A disk that answers every read with absence — the normal case: most
     /// tests don't exercise a preflight disk read at all.
     pub struct NoDiskReads;
@@ -108,11 +131,15 @@ pub(crate) mod fake {
 
     /// Test ports against this GitHub.
     pub fn with(gh: Rc<FakeGitHub>) -> Ports {
+        use harness_core::ports::shell::git::Repos;
         Ports {
             gh,
             sessions: Rc::new(NoSessions),
             spending: Rc::new(Nowhere),
             disk: Rc::new(NoDiskReads),
+            repo: crate::common::fake_git::FakeRepos::default().at(Path::new("/ws")),
+            process: Rc::new(crate::common::fake_process::FakeProcess::default()),
+            history: Rc::new(NoHistory),
         }
     }
 }

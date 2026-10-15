@@ -68,7 +68,12 @@ pub async fn ask_and_record<S>(
         .ok()
         .and_then(|reply| markers::stop_line(&reply.text));
     if !dry_run {
-        let blind = Spend::default();
+        // Blind to the cost, not to the conversation: a session cut by a
+        // quota keeps its id, and the next run on this stage resumes it.
+        let blind = Spend {
+            session: open.session.id(),
+            ..Spend::default()
+        };
         let (spend, outcome) = match (&asked, &stopped) {
             (Ok(reply), None) => (&reply.spend, "ok"),
             (Ok(reply), Some(_)) => (&reply.spend, breaker::STOP),
@@ -81,6 +86,7 @@ pub async fn ask_and_record<S>(
             spend,
             outcome,
             fingerprint: &fingerprint,
+            tags: &open.ctx.tags,
         })?;
         log.record(&Event::SessionEnded {
             task: task.to_string(),
@@ -159,6 +165,10 @@ mod tests {
         async fn ask(&mut self, _prompt: &str) -> Outcome<Reply> {
             self.0.clone()
         }
+
+        fn id(&self) -> Option<String> {
+            Some("sess-scripted".to_string())
+        }
     }
 
     /// One row, as the in-memory ledger keeps it.
@@ -166,6 +176,7 @@ mod tests {
         outcome: String,
         cost_usd: Option<f64>,
         fingerprint: String,
+        session: Option<String>,
     }
 
     /// A ledger in memory: what it was told, and what it answers about the
@@ -182,6 +193,7 @@ mod tests {
                 outcome: entry.outcome.to_string(),
                 cost_usd: entry.spend.cost_usd,
                 fingerprint: entry.fingerprint.to_string(),
+                session: entry.spend.session.clone(),
             });
             Ok(())
         }
@@ -275,6 +287,22 @@ mod tests {
     async fn a_dead_stage_still_gets_its_line_with_nothing_observed() {
         let (result, _, _) = run(Err(Halt::Quota("exhausted".into())), false).await;
         assert!(matches!(result, Err(Halt::Quota(_))));
+    }
+
+    #[tokio::test]
+    async fn a_quota_cut_stage_keeps_its_session_in_the_row_to_be_resumed() {
+        let (result, _, _, spending) =
+            run_with(Err(Halt::Quota("exhausted".into())), false, 0).await;
+        assert!(result.is_err());
+        let rows = spending.rows.borrow();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].outcome, breaker::QUOTA);
+        assert_eq!(rows[0].cost_usd, None, "blind to the cost");
+        assert_eq!(
+            rows[0].session.as_deref(),
+            Some("sess-scripted"),
+            "not to the conversation"
+        );
     }
 
     #[tokio::test]

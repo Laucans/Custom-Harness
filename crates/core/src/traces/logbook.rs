@@ -248,7 +248,7 @@ mod tests {
     fn a_debug_line_only_shows_up_when_asked_for() {
         let quiet = Rc::new(Capture::default());
         Logbook::new(Rc::clone(&quiet) as Rc<dyn Sink>, Verbosity::Normal).debug("detail");
-        assert!(quiet.0.borrow().is_empty());
+        assert!(quiet.0.borrow().is_empty(), "expected nothing");
 
         let loud = Rc::new(Capture::default());
         Logbook::new(Rc::clone(&loud) as Rc<dyn Sink>, Verbosity::Verbose).debug("detail");
@@ -280,7 +280,7 @@ mod tests {
         // nobody thought to launch with `--verbose`.
         let shelf = Rc::new(Shelf::default());
         Logbook::new(Rc::clone(&shelf) as Rc<dyn Sink>, Verbosity::Normal).debug("saw: 3 tasks");
-        assert!(shelf.shown.borrow().is_empty());
+        assert!(shelf.shown.borrow().is_empty(), "expected nothing");
         assert_eq!(shelf.kept.borrow()[0], "saw: 3 tasks");
     }
 

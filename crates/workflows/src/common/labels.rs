@@ -158,8 +158,8 @@ pub const WRITE_SIDE: &str = harness_architecture::vocabulary::WRITE_SIDE;
 /// task of the milestone, where the data design is decided, and the one the
 /// loop runs on its strongest model (`--data-layer-model`, Opus by default).
 ///
-/// Posed by `split` on the write-side slices it opens first; a human poses
-/// it on a task made by hand to get the same treatment. Not in [`LOOP`]: a
+/// Posed by `split` on every write-side slice it opens; a human poses it
+/// on a task made by hand to get the same treatment. Not in [`LOOP`]: a
 /// task without it simply runs on the stages' own models.
 pub const DATA_LAYER: &str = "harness:data-layer";
 

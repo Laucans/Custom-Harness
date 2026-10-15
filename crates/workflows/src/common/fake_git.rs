@@ -24,6 +24,8 @@ pub struct FakeRepos {
     calls: Rc<RefCell<Vec<String>>>,
     /// Verbs that fail, by prefix (`"push"`).
     failing: Rc<Vec<&'static str>>,
+    /// What `changed_between` answers, whatever the references.
+    changed: Rc<Vec<String>>,
 }
 
 impl FakeRepos {
@@ -32,6 +34,16 @@ impl FakeRepos {
         Self {
             calls: Rc::default(),
             failing: Rc::new(prefixes.to_vec()),
+            changed: Rc::default(),
+        }
+    }
+
+    /// A `git` whose diff between any two references is these files.
+    pub fn changing(files: &[&str]) -> Self {
+        Self {
+            calls: Rc::default(),
+            failing: Rc::default(),
+            changed: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
         }
     }
 
@@ -135,6 +147,16 @@ impl Repo for FakeRepo {
     }
     async fn reset_hard(&self, reference: &str) -> Outcome<Ran> {
         Ok(self.note(&format!("reset_hard {reference}")))
+    }
+    async fn changed_between(&self, from: &str, to: &str) -> Outcome<Vec<String>> {
+        self.note(&format!("diff {from}..{to}"));
+        Ok(self.repos.changed.as_ref().clone())
+    }
+    async fn sparse_checkout(&self, patterns: &[String]) -> Outcome<Ran> {
+        Ok(self.note(&format!("sparse-checkout set {}", patterns.len())))
+    }
+    async fn sparse_checkout_off(&self) -> Outcome<Ran> {
+        Ok(self.note("sparse-checkout disable"))
     }
     async fn clean(&self) -> Outcome<Ran> {
         Ok(self.note("clean"))

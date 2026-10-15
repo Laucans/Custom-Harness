@@ -492,6 +492,13 @@ fn resumable(pointer: Option<String>, own: Option<u64>) -> Option<String> {
     pointer.filter(|task| own.is_none_or(|own| task.trim_start_matches('#') == own.to_string()))
 }
 
+/// Whether the stages narrow the working tree: the default, unless
+/// `--no-narrow` was given. Its own function so the double negative is
+/// read once, and tested.
+const fn narrowing(args: &RunArgs) -> bool {
+    !args.no_narrow
+}
+
 /// The workflow, wired against the mounted workspace, then executed.
 async fn turns(
     args: &RunArgs,
@@ -539,6 +546,9 @@ async fn turns(
         sessions,
         spending,
         disk: Rc::clone(&disk),
+        repo: Rc::new(GitCli::new(workspace.root())),
+        process: Rc::new(process::Processes),
+        history: Rc::new(LedgerSpending::new(&workspace.ledger(), run_id, "")),
     };
     let signatures = Rc::new(if args.no_signatures {
         // Said out loud, like every other gate that stops applying: a run whose
@@ -559,6 +569,8 @@ async fn turns(
         stack: configuration_digest(workspace, disk.as_ref(), log).await,
         signatures,
         root: workspace.root().to_path_buf(),
+        narrow: narrowing(args),
+        ignore_budget: args.ignore_budget,
         prompts: crate::dispatch::shared::prompts(
             workspace,
             log,
@@ -636,6 +648,15 @@ mod tests {
     //! `harness_workflows::dev_loop::run`, with the fakes of that crate.
 
     use super::*;
+
+    #[test]
+    fn narrowing_is_the_default_and_the_flag_turns_it_off() {
+        use clap::Parser as _;
+        let on = crate::cli::Cli::parse_from(["harness"]);
+        assert!(narrowing(&on.run));
+        let off = crate::cli::Cli::parse_from(["harness", "--no-narrow"]);
+        assert!(!narrowing(&off.run));
+    }
 
     #[test]
     fn a_lane_resumes_its_own_task_only() {

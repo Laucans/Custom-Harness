@@ -353,6 +353,16 @@ impl Provisioner {
                  give it another name, or remove it"
             )));
         }
+        // A previous run may have narrowed the tree to its task's closure;
+        // everything below — the guard, the digest, the index, the gates —
+        // reads the whole checkout, so it is widened first.
+        let widened = git.sparse_checkout_off().await?;
+        if !widened.ok() {
+            return Err(Halt::Halted(format!(
+                "cannot widen the workspace {name:?} back to the whole tree: {}",
+                widened.why()
+            )));
+        }
         log.debug(&format!("workspace {name}: fetch + reset on origin"));
         let fetched = git.fetch().await?;
         if !fetched.ok() {
@@ -902,7 +912,7 @@ mod tests {
         assert!(!mount.mounted());
         assert_eq!(mount.workspace.root(), Path::new("/depot"));
         assert!(git.calls().is_empty(), "no git verbs");
-        assert!(disk.created.borrow().is_empty());
+        assert!(disk.created.borrow().is_empty(), "expected nothing");
     }
 
     #[tokio::test]
@@ -924,7 +934,7 @@ mod tests {
         assert_eq!(mount.branch, "");
         assert!(!mount.disposable);
         assert!(git.calls().is_empty(), "no git verbs: nothing checked out");
-        assert!(disk.created.borrow().is_empty());
+        assert!(disk.created.borrow().is_empty(), "expected nothing");
         assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
         // And the accounting stays home: a dry run must not write a ledger into
         // the target's checkout.

@@ -66,6 +66,7 @@ pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<DraftState>> {
             pre: None,
             post: None,
             body: StageBody::Session {
+                turn_cap: None,
                 spec: config.spec.clone(),
                 sessions: Rc::clone(&ports.sessions),
                 actions: vec![Box::new(AskDraft {
@@ -90,4 +91,45 @@ pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<DraftState>> {
             },
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+
+    fn ports() -> Ports {
+        Ports {
+            gh: Rc::new(crate::common::fake_github::FakeGitHub::default()),
+            repos: Rc::new(crate::common::fake_git::FakeRepos::default()),
+            disk: Rc::new(crate::common::fake_disk::FakeDisk::default()),
+            process: Rc::new(crate::common::fake_process::FakeProcess::default()),
+            sessions: Rc::new(crate::dev_loop::ports::fake::NoSessions),
+            spending: Rc::new(crate::dev_loop::ports::fake::Nowhere),
+            now: || "2026-10-15T00:00:00Z".to_string(),
+        }
+    }
+
+    fn config() -> Config {
+        Config {
+            slug: harness_core::domain::Slug::parse("owner/repo").expect("a slug"),
+            base: "main_agent".to_string(),
+            workdir: std::path::PathBuf::from("/tmp/draft"),
+            script: String::new(),
+            timeout: std::time::Duration::from_secs(1),
+            spec: harness_core::ports::agent::SessionSpec {
+                model: "sonnet".to_string(),
+                effort: "high".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_table_is_the_three_stages_in_order() {
+        let names: Vec<String> = table(&ports(), &config())
+            .into_iter()
+            .map(|stage| stage.name)
+            .collect();
+        assert_eq!(names, [PREPARE, DRAFT, PUBLISH]);
+    }
 }

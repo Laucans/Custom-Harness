@@ -174,7 +174,7 @@ mod tests {
         let report = build(&ports, &config, request()).run().await.expect("ran");
         assert_eq!(report, Report::default());
         assert!(repos.calls().is_empty(), "{:?}", repos.calls());
-        assert!(process.ran.borrow().is_empty());
+        assert!(process.ran.borrow().is_empty(), "expected nothing");
     }
 
     #[tokio::test]

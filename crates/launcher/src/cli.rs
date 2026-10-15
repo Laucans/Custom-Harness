@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use harness_core::domain::workspace::Strategy;
 
 /// The harness: runs an agentic workflow under verification gates, or
@@ -73,6 +73,51 @@ pub enum Command {
     /// Draft a first `data/model.json` for a branch that has none, and open
     /// its pull request (the view's data pane asks for it).
     DataModelDraft(DataModelDraftArgs),
+    /// What the harness spent, grouped by unit of the architecture, profile,
+    /// side, stage or task — read from the cost ledger, nothing is run.
+    Costs(CostsArgs),
+}
+
+/// What `harness costs` groups the ledger's rows by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum GroupBy {
+    /// The unit the task builds (`capability`, `aggregate`, …).
+    Unit,
+    /// The profile the slice was cut for.
+    Profile,
+    /// The side of the architecture.
+    Side,
+    /// The stage (`code`, `create-test`, …).
+    Stage,
+    /// The task number.
+    Task,
+}
+
+impl GroupBy {
+    /// The column's name, as the report heads it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unit => "unit",
+            Self::Profile => "profile",
+            Self::Side => "side",
+            Self::Stage => "stage",
+            Self::Task => "task",
+        }
+    }
+}
+
+/// `harness costs`'s own arguments.
+#[derive(Debug, Args)]
+pub struct CostsArgs {
+    /// What to group by.
+    #[arg(long, value_enum, default_value_t = GroupBy::Unit)]
+    pub by: GroupBy,
+
+    /// Keep the rows from this instant on (`2026-10-01`, or a full
+    /// ISO-8601 timestamp). Empty: every row.
+    #[arg(long, default_value = "")]
+    pub since: String,
 }
 
 /// `harness data-model-draft`'s own arguments.
@@ -424,9 +469,30 @@ pub struct RunArgs {
     #[arg(long, env = "IGNORE_QUOTA", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub ignore_quota: bool,
 
+    /// Pay on past what tasks of the kind cost, and lift the turn caps.
+    ///
+    /// A task's budget is the third quartile of what tasks of its unit and
+    /// profile have cost, with half again on top — or a constant per unit
+    /// while fewer than three were measured. A task past it stops before
+    /// its next paid stage. Set this when the task is known to be larger
+    /// than its kind.
+    #[arg(long, env = "IGNORE_BUDGET", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub ignore_budget: bool,
+
     /// Resume the task that the checkpoint designates. Default: yes.
     #[arg(long)]
     pub no_resume: bool,
+
+    /// Keep the whole checkout on the disk for every stage.
+    ///
+    /// By default the stages that plan and build a unit run on a working
+    /// tree narrowed to that unit's closure — its folder, the plumbing it
+    /// reaches, the manifests it needs, its mock page — with
+    /// `git sparse-checkout`: the bound the architecture promises, made
+    /// physical. This turns it off, for a repository whose layout the
+    /// closure does not read yet.
+    #[arg(long, env = "NO_NARROW", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub no_narrow: bool,
 
     /// Run this task and no other, as a lane of a parallel `watch` does.
     ///

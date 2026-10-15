@@ -23,14 +23,17 @@
 //! [`tooling`] holds the gates [`dev_loop`] mounts around its run — the
 //! launcher's own `checks` layer, the only one in this crate.
 //!
-//! [`doctor`] is the odd one out: it mounts nothing and runs no session. It
-//! reads why the last run stopped and repairs what it can — the only module
-//! here whose subject is the harness itself rather than the target repository.
+//! [`doctor`] and [`costs`] are the odd ones out: they mount nothing and run
+//! no session. The first reads why the last run stopped and repairs what it
+//! can; the second reads what the runs cost, by unit of the architecture —
+//! the two modules here whose subject is the harness itself rather than the
+//! target repository.
 //!
 //! **Nothing here decides *whether* to run.** That is `cli` (a human typed
 //! it) or `router` (a poll found the conditions met).
 
 pub mod arbiter;
+pub mod costs;
 pub mod data_diagnosis;
 pub mod data_model_draft;
 pub mod data_snapshot;

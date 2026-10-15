@@ -1,7 +1,7 @@
 # The CI gates of the agent-native architecture — see docs/ARCHITECTURE.md,
 # "CI gates". Installed by `harness init-repo`; the repository owns it from
-# here. A gate that is `if: false` is declared, not yet implemented: its rule
-# is in its name and its step, and implementing it is a task like any other.
+# here. Every gate runs: a rule is in its name and its step, and a rule the
+# product cannot keep yet is a task like any other, never a gate turned off.
 #
 # The two branch patterns are the harness's: `main_agent` is where finished
 # milestones land, `milestone/**` is what a task's pull request targets.
@@ -102,15 +102,38 @@ jobs:
           exit $failed
 
   # Contracts A, B — `implements: Risk@3` ⇒ the Concept's fixtures pass
-  # against this Capability. Needs a conformance runner that feeds
-  # concepts/<Concept>/v<n>/fixtures.json to the Capability: it comes with
-  # the DataGuard engine the harness installs, and this gate is switched on
-  # with it.
+  # against this Capability. The runner is crates/platform/conformance
+  # (installed): a Capability that implements a Concept has a test that
+  # calls `platform_conformance::check("<Concept>@<n>", …)`, and that test
+  # runs here, crate by crate. A Capability with no such test fails: a
+  # Concept it claims and never proves is a copy nobody can check.
   semantic-conformance:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — every Capability that implements a Concept passes its fixtures"
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Every Capability that implements a Concept passes its fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          failed=0
+          for manifest in crates/*/capabilities/*/capability.json; do
+            ref=$(jq -r '.implements // empty' "$manifest")
+            [ -n "$ref" ] || continue
+            dir=$(dirname "$manifest")
+            if ! grep -rqF 'platform_conformance::check' "$dir"/src "$dir"/tests 2>/dev/null; then
+              echo "::error file=$manifest::implements $ref and has no test calling platform_conformance::check(\"$ref\", …) — the Concept is claimed, never proved"
+              failed=1
+              continue
+            fi
+            name=$(grep -m1 -E '^\s*name\s*=' "$dir/Cargo.toml" | sed -E 's/^[^"]*"([^"]*)".*/\1/')
+            if ! cargo test -p "$name" -- conformance; then
+              echo "::error file=$manifest::$ref: the conformance fixtures fail against $name"
+              failed=1
+            fi
+          done
+          exit $failed
 
   # Contract B — no Capability has write access. Checked where it can be,
   # statically: no write statement in a Capability crate, and no use of the
@@ -138,23 +161,108 @@ jobs:
           done
           exit $failed
 
-  # Contract C — every persisted query is valid against the current schema
-  # and the next one (expand/contract). Needs the schema the DataGuard engine
-  # owns: switched on with it.
-  queries-valid:
-    if: false
+  # Contract C — every read a Capability makes is a declared, persisted
+  # query, registered under the Capability's id with its hash and the
+  # fields it reads: `scripts/queries.sh` writes queries/registry.json from
+  # the manifests' `reads`, and this gate refuses a registry that is not
+  # what the script writes — a query changed, a `reads` entry points
+  # nowhere, a query declares no fields. What the read crate serves is what
+  # is registered.
+  queries-registered:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — persisted queries validate against the current and the next schema"
+      - uses: actions/checkout@v4
+      - name: queries/registry.json is what scripts/queries.sh writes
+        shell: bash
+        run: bash scripts/queries.sh --check
 
-  # Contracts C, I — a schema change lists the Capabilities it touches (from
-  # queries/registry.json) and blocks until each one is migrated. Needs the
-  # engine's migration runner: switched on with it.
+  # Contract C — every persisted SQL query of the registry prepares against
+  # the schema this checkout's migrations build (expand/contract: a column a
+  # query reads must exist after the migrations of this very commit). GraphQL
+  # queries are the read crate's to validate; they pass here.
+  queries-valid:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: gates
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every registered SQL query prepares against the migrated schema
+        shell: bash
+        env:
+          PGPASSWORD: gates
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          [ -f queries/registry.json ] || { echo "no registry: nothing to validate"; exit 0; }
+          psql="psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d postgres -q"
+          while IFS= read -r migration; do
+            [ -n "$migration" ] || continue
+            $psql -f "$migration" || { echo "::error file=$migration::the migration does not apply"; exit 1; }
+          done < <(git ls-files -- '*migrations/*.sql' | LC_ALL=C sort)
+          failed=0
+          n=0
+          while IFS=$'\t' read -r capability file; do
+            case "$file" in *.sql) ;; *) continue ;; esac
+            [ -f "$file" ] || { echo "::error file=$file::registered under $capability but absent"; failed=1; continue; }
+            n=$((n + 1))
+            body=$(grep -v '^[[:space:]]*--' "$file" | sed 's/;[[:space:]]*$//')
+            if ! $psql -c "PREPARE gate_q_$n AS $body" > /dev/null 2> err.txt; then
+              echo "::error file=$file::$capability reads through a query the schema refuses: $(tail -n 1 err.txt)"
+              failed=1
+            fi
+          done < <(jq -r '.queries[] | [.capability, .file] | @tsv' queries/registry.json)
+          exit $failed
+
+  # Contracts C, I — a migration that drops, renames or retypes a column
+  # names the Capabilities that read it (from queries/registry.json), and
+  # the same change must carry their queries: a reader left behind blocks.
   schema-impact:
-    if: false
     runs-on: ubuntu-latest
     steps:
-      - run: echo "not implemented — a schema change names the readers it touches"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: A schema change carries every reader it touches
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          [ -f queries/registry.json ] || { echo "no registry: nothing to protect"; exit 0; }
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          [ -n "$base" ] && git cat-file -e "$base" 2>/dev/null || { echo "no base to compare with"; exit 0; }
+          changed=$(git diff --name-only "$base" HEAD)
+          norm() { tr '[:upper:]' '[:lower:]' <<< "$1" | tr -d '_'; }
+          failed=0
+          for migration in $(grep -E 'migrations/.*\.sql$' <<< "$changed" || true); do
+            [ -f "$migration" ] || continue
+            # table.column of every column removed, renamed or retyped.
+            while IFS= read -r touched; do
+              [ -n "$touched" ] || continue
+              key=$(norm "$touched")
+              while IFS=$'\t' read -r capability file fields; do
+                for field in $fields; do
+                  [ "$(norm "$field")" = "$key" ] || continue
+                  if ! grep -qxF "$file" <<< "$changed"; then
+                    echo "::error file=$migration::touches $touched, read by $capability through $file, which this change does not migrate"
+                    failed=1
+                  fi
+                done
+              done < <(jq -r '.queries[] | [.capability, .file, (.fields | join(" "))] | @tsv' queries/registry.json)
+            done < <(awk '
+              BEGIN { IGNORECASE = 1 }
+              /alter[[:space:]]+table/ { match($0, /alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?[^[:space:]]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); table = w[length(w)] }
+              /drop[[:space:]]+column[[:space:]]+/ { match($0, /drop[[:space:]]+column[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?[^[:space:],;]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); print table "." w[length(w)] }
+              /rename[[:space:]]+column[[:space:]]+/ { match($0, /rename[[:space:]]+column[[:space:]]+[^[:space:]]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); print table "." w[3] }
+              /alter[[:space:]]+column[[:space:]]+[^[:space:]]+[[:space:]]+(set[[:space:]]+data[[:space:]]+)?type/ { match($0, /alter[[:space:]]+column[[:space:]]+[^[:space:]]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); print table "." w[3] }
+              /drop[[:space:]]+table[[:space:]]+/ { match($0, /drop[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?[^[:space:],;]+/); split(substr($0, RSTART, RLENGTH), w, /[[:space:]]+/); print w[length(w)] ".*" }
+            ' "$migration" | sed 's/"//g')
+          done
+          exit $failed
 
   # Contract B — a Micro-UI's `needs` reference only Capabilities of its own
   # system: each one is the `capability` of a capability.json whose `system`
@@ -224,6 +332,33 @@ jobs:
           done
           exit $failed
 
+  # Rule 2 — the slices are workspace members by glob, never by name. A
+  # glob matches what is on the disk: a sparse checkout that leaves a slice
+  # out still resolves, and adding one edits no shared file. A slice named
+  # in `members` would break both; a member named by name must be plumbing
+  # (the server, the engine), which every checkout carries.
+  workspace-members-by-glob:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No Capability or DataCapability is a workspace member by name
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f Cargo.toml ] || exit 0
+          failed=0
+          members=$(awk '/^[[:space:]]*members[[:space:]]*=[[:space:]]*\[/,/\]/' Cargo.toml | tr -d '[]"'"'"'' | tr ',' '\n' | sed -E 's/^[[:space:]]*members[[:space:]]*=//; s/^[[:space:]]+//; s/[[:space:]]+$//' | grep -v '^$' || true)
+          while read -r member; do
+            [ -n "$member" ] || continue
+            case "$member" in
+              *\**) ;;
+              crates/*/capabilities/*|crates/*/data-capabilities/*)
+                echo "::error file=Cargo.toml::$member is a slice listed by name — list slices by glob (crates/*/capabilities/*), so a narrowed checkout resolves and adding one edits no shared file"
+                failed=1 ;;
+            esac
+          done <<< "$members"
+          exit $failed
+
   # Contract F, rule 2 — a DataCapability is a folder, never an edit of a
   # shared file: every crates/<system>/data-capabilities/<name>/ is a workspace
   # member, its library is named after its folder (what the server's build
@@ -257,6 +392,11 @@ jobs:
               failed=1
             fi
             pkg=$(jq -r --arg m "$root/$toml" '.packages[] | select(.manifest_path == $m) | .name' <<< "$metadata")
+            # A hostless DataCapability (compiled to WebAssembly, loaded by a
+            # plugin or a static app) is nobody's dependency.
+            if [ -f "$dir/data-capability.json" ] && [ "$(jq -r '.host // "server"' "$dir/data-capability.json")" = "hostless" ]; then
+              continue
+            fi
             if ! jq -e --arg d "$pkg" '[.packages[] | select(.manifest_path | test("/serveur/Cargo.toml$|/server/Cargo.toml$")) | .dependencies[] | select(.name == $d)] | length > 0' <<< "$metadata" > /dev/null; then
               echo "::error file=$toml::no server depends on $pkg — add it to the server's [dependencies]; its registration is the build script's"
               failed=1
@@ -350,14 +490,16 @@ jobs:
             done
           }
           for aggregate in crates/**/aggregate.json; do
+            # The aggregate's own system: crates/<system>/aggregates/<Aggregate>/aggregate.json.
+            system_dir=$(dirname "$(dirname "$(dirname "$aggregate")")")
             for id in $(jq -r '.invariants[].id' "$aggregate"); do
               tested=0
-              for src in crates/**/*.rs; do
+              for src in "$system_dir"/**/*.rs; do
                 case "$src" in */tests/*) ;; *) grep -qE '#\[(tokio::)?test\]' "$src" || continue ;; esac
                 if grep -qF "$id" "$src"; then tested=1; break; fi
               done
               if [ "$tested" = "0" ]; then
-                echo "::error file=$aggregate::invariant $id is named in no test"
+                echo "::error file=$aggregate::invariant $id is named in no test of $system_dir — the aggregate's own system tests its invariants"
                 failed=1
               fi
             done

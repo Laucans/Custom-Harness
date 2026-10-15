@@ -9,7 +9,7 @@
 //! alone holds a clock and machine name — and this is also what keeps
 //! `harness-core` free of time dependency.
 
-use crate::domain::{Outcome, Spend};
+use crate::domain::{Outcome, Spend, Tags};
 
 /// What a finished stage cost, as execution knows it.
 ///
@@ -33,6 +33,9 @@ pub struct Entry<'a> {
     /// merely "a session on the same stage": it is what lets the breaker
     /// forget a failure once the prompt changes.
     pub fingerprint: &'a str,
+    /// What the task is — unit, profile, side — so a report reads the cost
+    /// of a kind of unit, and the split can learn what one costs.
+    pub tags: &'a Tags,
 }
 
 /// Where spending is recorded, and what it remembers of past failures.
@@ -61,6 +64,35 @@ pub trait Spending {
     fn failures(&self, task: &str, stage: &str, fingerprint: &str) -> Outcome<u32> {
         let _ = (task, stage, fingerprint);
         Ok(0)
+    }
+
+    /// The session a previous run left interrupted on this stage of this
+    /// task — the last row whose outcome is a quota and that names a
+    /// session — so the next run resumes it instead of paying again.
+    ///
+    /// `None` by default: a ledger that keeps nothing remembers no
+    /// interruption, and the stage starts afresh, as it always did.
+    ///
+    /// # Errors
+    ///
+    /// A read failure: an unreadable history is not an empty one.
+    fn interrupted(&self, task: &str, stage: &str) -> Outcome<Option<String>> {
+        let _ = (task, stage);
+        Ok(None)
+    }
+
+    /// What this task has cost so far, in dollars, across every run.
+    ///
+    /// Zero by default, the truthful answer for a ledger that keeps nothing.
+    /// An implementation that keeps rows answers from them, and the budget
+    /// gate reads this before paying for a stage.
+    ///
+    /// # Errors
+    ///
+    /// A read failure: an unreadable history is not a free task.
+    fn spent_on(&self, task: &str) -> Outcome<f64> {
+        let _ = task;
+        Ok(0.0)
     }
 
     /// Keeps the carrier's last view of its rate-limit windows, for the *next*

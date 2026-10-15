@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(read.kind, Kind::Note);
         let kept = shelf(Some(&format!("{{\"data-model\":[{old}]}}")));
         assert_eq!(kept["data-model"][0].text, "t");
-        assert!(shelf(Some("not json")).is_empty());
+        assert!(shelf(Some("not json")).is_empty(), "expected nothing");
     }
 
     #[test]
@@ -562,7 +562,7 @@ mod tests {
             .map(|k| (format!("n{k:02}"), format!("2026-10-09T12:{k:02}:00Z")))
             .collect();
         assert_eq!(beyond_undo(&deleted), ["n02", "n01", "n00"]);
-        assert!(beyond_undo(&deleted[..10]).is_empty());
+        assert!(beyond_undo(&deleted[..10]).is_empty(), "expected nothing");
     }
 
     proptest! {

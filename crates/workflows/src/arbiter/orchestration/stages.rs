@@ -122,6 +122,7 @@ pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<ArbiterState>> {
                 })],
             }),
             body: StageBody::Session {
+                turn_cap: None,
                 spec: config.arbitrate.clone(),
                 sessions: Rc::clone(&ports.sessions),
                 actions: vec![Box::new(AskArbiter {

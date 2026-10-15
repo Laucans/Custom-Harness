@@ -404,7 +404,10 @@ mod tests {
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].screen, "a");
         assert!(manifest_of("nope").is_err());
-        assert!(manifest_of("{}").expect("empty").pages.is_empty());
+        assert!(
+            manifest_of("{}").expect("empty").pages.is_empty(),
+            "expected nothing"
+        );
     }
 
     #[test]

@@ -9,14 +9,31 @@
 # wiring), the renderer (a Bevy scene, seen on a page and never asserted),
 # and the fakes a test injects (a fake that lies makes the test fail, which
 # is the test's finding, not the fake's).
-exclude_globs = ["**/main.rs", "crates/view-render/**", "**/fake_*.rs"]
+# `harness-dataguard`'s in-memory store, notifier and clock are the fakes
+# its tests inject (a lie there fails the engine's tests, the test's
+# finding); its PostgreSQL store is judged against a real PostgreSQL only
+# (`DATAGUARD_PG_URL`, an `#[ignore]`d test), not by the mutants.
+exclude_globs = [
+  "**/main.rs",
+  "crates/view-render/**",
+  "**/fake_*.rs",
+  "crates/dataguard/src/memory.rs",
+  "crates/dataguard/src/postgres.rs",
+]
 
 # The router's composition root: `dispatched` and the two helpers it hands
 # an issue to (`refine_here`, `arbitrate_here`) build the concrete adapters
 # and hand them to a workflow — wiring, like `main.rs`, that no unit test
 # runs (it would spawn `gh` and `claude`). What it decides is `routing::decide`,
 # which is mutated and tested.
-exclude_re = ["router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) "]
+# The null objects of `harness-dataguard` (`NoInvariants` violates
+# nothing, `NoProposer` proposes nothing): their body is what a mutant
+# writes, so no test can tell them apart.
+exclude_re = [
+  "router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) ",
+  "dataguard/src/guard\\.rs:.*NoInvariants",
+  "dataguard/src/reconcile\\.rs:.*NoProposer",
+]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI
 # tests with.

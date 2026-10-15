@@ -29,9 +29,11 @@
 //! Pure but for [`tree::Tree::read`], which reads through core's `Disk` port.
 
 pub mod assets;
+pub mod closure;
 pub mod compare;
 pub mod kit;
 pub mod model;
+pub mod rules;
 pub mod schema_sql;
 pub mod tree;
 pub mod vocabulary;

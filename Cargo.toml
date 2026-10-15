@@ -5,7 +5,9 @@ resolver = "3"
 # by a test. `adapters` is the outside: only `launcher` and `view`, the two
 # outer rings, depend on it. `view` reads what the harness leaves behind and
 # never drives a session. `architecture` is the target repositories' own
-# domain: `workflows` and `view` read it, `core` never names it.
+# domain: `workflows` and `view` read it, `core` never names it. `dataguard`
+# is the products' write-side engine: it depends on no crate here, and the
+# products take it by `git`.
 members = [
   "crates/core",
   "crates/adapters",
@@ -15,6 +17,7 @@ members = [
   "crates/notify",
   "crates/view",
   "crates/view-render",
+  "crates/dataguard",
 ]
 default-members = ["crates/launcher"]
 
@@ -46,6 +49,9 @@ thiserror = "2"
 # input space (e.g. domain::remote::Slug::parse).
 proptest = "1"
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
+# The hash the query registry records (contract C): pure Rust, no default
+# features, so the architecture crate stays a reader of files and nothing else.
+sha2 = { version = "0.11", default-features = false }
 serde_json = "1"
 tokio = { version = "1", default-features = false, features = [
   "rt",

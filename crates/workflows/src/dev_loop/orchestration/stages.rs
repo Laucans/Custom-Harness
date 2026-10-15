@@ -43,8 +43,10 @@ use harness_core::execution::{
 
 use crate::common::labels;
 use crate::dev_loop::action::actions::Ask;
+use crate::dev_loop::action::narrow::{Narrow, Widen};
 use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
 use crate::dev_loop::checks::gates;
+use crate::dev_loop::checks::preflight;
 use crate::dev_loop::config::Config;
 use crate::dev_loop::data::brief::Cut;
 use crate::dev_loop::data::state::Loop;
@@ -57,6 +59,26 @@ use crate::prompts;
 /// from, the acceptance criteria and the business rules what it verifies and
 /// tests against, the technical sketch where it starts.
 const CODE_SKIPS: &[&str] = &[];
+
+/// How many model turns each paid stage may take, at most.
+///
+/// The safety net against a stage that loops, not a budget: generous,
+/// because a cap hit mid-task wastes every turn before it. Measured: `code`
+/// on #64, the largest task of the series, took 60 turns before its quota
+/// cut; a three-stage round on #61 took 63 in all — the three are one
+/// session now. Lifted by `--ignore-budget`.
+pub const TURN_CAPS: [(&str, u32); 1] = [("code", 250)];
+
+/// The cap of this stage, unless the run lifted them.
+fn turn_cap(stage: &str, config: &Config) -> Option<u32> {
+    if config.ignore_budget {
+        return None;
+    }
+    TURN_CAPS
+        .iter()
+        .find(|(name, _)| *name == stage)
+        .map(|(_, cap)| *cap)
+}
 
 /// How `code` runs the Rust tests of a repository under the
 /// architecture: through the script `init-repo` installs, which the CI runs
@@ -269,6 +291,19 @@ fn always(stage: &str) -> Vec<Box<dyn Verification<Loop>>> {
     ]
 }
 
+/// The gates every paid stage opens with: the two of [`always`], then the
+/// task's budget — after them, so a stage that would not run anyway is not
+/// refused for its cost.
+fn paid(stage: &str, ports: &Ports, config: &Config) -> Vec<Box<dyn Verification<Loop>>> {
+    let mut checks = always(stage);
+    checks.push(Box::new(preflight::BudgetHasRoom {
+        spending: Rc::clone(&ports.spending),
+        history: Rc::clone(&ports.history),
+        ignored: config.ignore_budget,
+    }));
+    checks
+}
+
 /// What a paid stage demands from its session, and what comes after.
 ///
 /// `then` is local work following the session — re-reading, labeling. It
@@ -282,12 +317,27 @@ struct Paid<'a> {
     /// Other instructions for a write-side task, if the stage has any.
     write_side_instructions: Option<&'a str>,
     cut: Cut,
+    /// The prompt carries the rule card of the unit the task builds.
+    rules: bool,
+    /// The working tree is narrowed to the unit's closure around the
+    /// session, when the run asks for it (`Config::narrow`).
+    narrow: bool,
     then: Vec<Box<dyn SessionAction<Loop>>>,
 }
 
 impl Paid<'_> {
     fn body(self, ports: &Ports, config: &Config, turn: u32) -> StageBody<Loop> {
-        let mut actions: Vec<Box<dyn SessionAction<Loop>>> = vec![Box::new(Ask {
+        let narrowed = self.narrow && config.narrow;
+        let mut actions: Vec<Box<dyn SessionAction<Loop>>> = Vec::new();
+        if narrowed {
+            actions.push(Box::new(Unpaid(Narrow {
+                repo: Rc::clone(&ports.repo),
+                process: Rc::clone(&ports.process),
+                disk: Rc::clone(&ports.disk),
+                root: config.root.clone(),
+            })));
+        }
+        actions.push(Box::new(Ask {
             stage: self.stage.to_string(),
             lead: self.lead.to_string(),
             instructions: with_labels(self.instructions),
@@ -299,12 +349,19 @@ impl Paid<'_> {
             signatures: Rc::clone(&config.signatures),
             injector: config.injector(),
             spending: Rc::clone(&ports.spending),
-        })];
+            rules: self.rules,
+        }));
+        if narrowed {
+            actions.push(Box::new(Unpaid(Widen {
+                repo: Rc::clone(&ports.repo),
+            })));
+        }
         actions.extend(self.then);
         actions.push(Box::new(Unpaid(MarkDone {
             stage: self.stage.to_string(),
         })));
         StageBody::Session {
+            turn_cap: turn_cap(self.stage, config),
             spec: config.spec(self.model, "high"),
             sessions: Rc::clone(&ports.sessions),
             actions,
@@ -330,7 +387,7 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             .prompts
             .text(prompts::CODE_WRITE_SIDE, CODE_WRITE_SIDE)
     );
-    let mut pre = always("code");
+    let mut pre = paid("code", ports, config);
     pre.push(Box::new(gates::CodeAlreadyDelivered {
         gh: Rc::clone(&ports.gh),
         integration_branch: config.integration_branch.clone(),
@@ -353,6 +410,8 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
                 Box::new(ArchitectureHolds {
                     disk: Rc::clone(&ports.disk),
                     root: config.root.clone(),
+                    repo: Rc::clone(&ports.repo),
+                    integration_branch: config.integration_branch.clone(),
                 }),
                 Box::new(ConceptsDocumented {
                     disk: Rc::clone(&ports.disk),
@@ -372,7 +431,9 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             lead: "/tech-analyst",
             instructions: &instructions,
             write_side_instructions: Some(&write_side),
-            cut: Cut::Situated(CODE_SKIPS),
+            cut: Cut::Executing(CODE_SKIPS),
+            rules: true,
+            narrow: true,
             then: Vec::new(),
         }
         .body(ports, config, turn),
@@ -425,6 +486,21 @@ mod tests {
         Settings {
             dry_run: false,
             stages: stages.to_string(),
+        }
+    }
+
+    #[test]
+    fn every_paid_stage_has_a_turn_cap_unless_the_budget_is_ignored() {
+        let config = config_fake::config();
+        assert_eq!(turn_cap("code", &config), Some(250));
+        assert_eq!(turn_cap("pick-task", &config), None, "not a paid stage");
+        let lifted = Config {
+            ignore_budget: true,
+            ..config_fake::config()
+        };
+        assert_eq!(turn_cap("code", &lifted), None);
+        for (name, cap) in TURN_CAPS {
+            assert!(cap >= 80, "{name}: a cap is a safety net, never a budget");
         }
     }
 

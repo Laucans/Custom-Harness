@@ -22,11 +22,26 @@ pub struct Asset {
     pub content: &'static str,
 }
 
-/// The opening marker of the rules block in `CLAUDE.md`, and of the
-/// architecture document: the version is what a later `init-repo` compares.
-pub const MARKER_OPEN: &str = "<!-- harness:architecture v1 -->";
+/// The version of the architecture these assets install: what the markers
+/// carry, and what a later `init-repo` compares to replace an older block.
+pub const VERSION: u32 = 2;
+/// The opening marker of the rules block in `CLAUDE.md` and of the two
+/// documents, with the version.
+pub const MARKER_OPEN: &str = "<!-- harness:architecture v2 -->";
+/// What every version of the opening marker starts with.
+pub const MARKER_PREFIX: &str = "<!-- harness:architecture v";
 /// The closing marker.
 pub const MARKER_CLOSE: &str = "<!-- /harness:architecture -->";
+
+/// The version of the block a text carries, read from its opening marker:
+/// `None` when it carries none.
+#[must_use]
+pub fn installed_version(text: &str) -> Option<u32> {
+    let at = text.find(MARKER_PREFIX)?;
+    let rest = &text[at + MARKER_PREFIX.len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
 
 /// The rules section appended to `CLAUDE.md`, markers included.
 pub const CLAUDE_RULES: &str = include_str!("../assets/CLAUDE-rules.md");
@@ -37,15 +52,19 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 
 /// The files installed as they are.
 ///
-/// The document, the gates, the CI, the test scope, the isolation check, the
+/// The two documents, the gates, the CI, the test scope, the isolation check, the
 /// dead-code script, the mutants configuration, rotation and test-debt
 /// filing, the schema dump, the data model, the mock-up's files, the
-/// contracts A–Q, the ports and the secrets' scaffolding, the rules' gate,
-/// runtime and suites.
-pub const FILES: [Asset; 51] = [
+/// conformance runner, the `DataGuard` server's skeleton, the contracts A–Q, the
+/// ports and the secrets' scaffolding, the rules' gate, runtime and suites.
+pub const FILES: [Asset; 58] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
+    },
+    Asset {
+        path: "docs/DATA-INTEGRITY.md",
+        content: include_str!("../assets/DATA-INTEGRITY.md"),
     },
     Asset {
         path: ".github/workflows/gates.yml",
@@ -82,6 +101,30 @@ pub const FILES: [Asset; 51] = [
     Asset {
         path: "scripts/isolation.sh",
         content: include_str!("../assets/isolation.sh"),
+    },
+    Asset {
+        path: "scripts/queries.sh",
+        content: include_str!("../assets/queries.sh"),
+    },
+    Asset {
+        path: "crates/platform/conformance/Cargo.toml",
+        content: include_str!("../assets/conformance/Cargo.toml"),
+    },
+    Asset {
+        path: "crates/platform/conformance/src/lib.rs",
+        content: include_str!("../assets/conformance/src/lib.rs"),
+    },
+    Asset {
+        path: "crates/dataguard/server/Cargo.toml",
+        content: include_str!("../assets/dataguard-server/Cargo.toml"),
+    },
+    Asset {
+        path: "crates/dataguard/server/build.rs",
+        content: include_str!("../assets/dataguard-server/build.rs"),
+    },
+    Asset {
+        path: "crates/dataguard/server/src/main.rs",
+        content: include_str!("../assets/dataguard-server/src/main.rs"),
     },
     Asset {
         path: "data/model.json",
@@ -280,12 +323,84 @@ mod tests {
     }
 
     #[test]
-    fn only_the_three_gates_that_need_the_engine_stay_off() {
+    fn the_two_documents_split_the_layout_from_the_engine_s_manual() {
+        let layout = content_of("docs/ARCHITECTURE.md").expect("installed");
+        let manual = content_of("docs/DATA-INTEGRITY.md").expect("installed");
+        for engine_section in [
+            "## DataQueue and concurrency",
+            "### G. DataQueue entry",
+            "### J. Impact plan",
+            "### K. Reconciliation proposal",
+            "### L. Message",
+        ] {
+            assert!(manual.contains(engine_section), "{engine_section}");
+            assert!(
+                !layout.contains(engine_section),
+                "{engine_section} left the layout"
+            );
+        }
+        for layout_section in ["### F. DataCapability", "### I. Aggregate", "## CI gates"] {
+            assert!(layout.contains(layout_section), "{layout_section}");
+        }
+        assert!(
+            layout.contains("docs/DATA-INTEGRITY.md"),
+            "the layout points at the manual"
+        );
+        assert!(
+            layout.contains("never rejected **for concurrency**"),
+            "principle 10, reworded"
+        );
+        assert!(layout.contains("host: hostless"), "hosts without a server");
+    }
+
+    #[test]
+    fn every_gate_of_the_workflow_is_cited_by_a_rule_card() {
+        let gates = include_str!("../assets/gates.yml");
+        let mut in_jobs = false;
+        let cards: String = crate::vocabulary::Unit::ALL
+            .iter()
+            .map(|unit| crate::rules::card(*unit))
+            .collect();
+        for line in gates.lines() {
+            if line == "jobs:" {
+                in_jobs = true;
+                continue;
+            }
+            if !in_jobs
+                || !line.starts_with("  ")
+                || line.starts_with("   ")
+                || !line.ends_with(':')
+            {
+                continue;
+            }
+            let job = line.trim().trim_end_matches(':');
+            if job.starts_with('#') {
+                continue;
+            }
+            assert!(cards.contains(job), "no rule card names the gate `{job}`");
+        }
+    }
+
+    #[test]
+    fn every_gate_is_on_now_that_the_engine_exists() {
         let gates = include_str!("../assets/gates.yml");
         assert_eq!(
             gates.lines().filter(|l| l.trim() == "if: false").count(),
-            3,
-            "semantic-conformance, queries-valid and schema-impact wait for the DataGuard engine"
+            0,
+            "queries-valid and schema-impact run with the DataGuard engine"
+        );
+        assert!(gates.contains("PREPARE gate_q_"), "queries prepare");
+        assert!(
+            gates.contains("drop[[:space:]]+column"),
+            "a dropped column names its readers"
+        );
+        assert!(
+            gates.contains("platform_conformance::check"),
+            "conformance runs"
+        );
+        assert!(
+            gates.contains("bash scripts/queries.sh --check"),
+            "the registry is checked"
         );
     }
 
@@ -297,8 +412,16 @@ mod tests {
         }
         assert!(CLAUDE_RULES.starts_with(MARKER_OPEN));
         assert!(CLAUDE_RULES.trim_end().ends_with(MARKER_CLOSE));
-        let document = FILES[0].content;
-        assert!(document.contains(MARKER_OPEN) && document.contains(MARKER_CLOSE));
+        for document in [FILES[0].content, FILES[1].content] {
+            assert!(document.contains(MARKER_OPEN) && document.contains(MARKER_CLOSE));
+            assert_eq!(installed_version(document), Some(VERSION));
+        }
+        assert_eq!(installed_version("no marker"), None);
+        assert_eq!(
+            installed_version("<!-- harness:architecture v1 -->"),
+            Some(1)
+        );
+        assert_eq!(installed_version("<!-- harness:architecture vx -->"), None);
         for asset in FILES.iter().filter(|a| {
             std::path::Path::new(a.path)
                 .extension()

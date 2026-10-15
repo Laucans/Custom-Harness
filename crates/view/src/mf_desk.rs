@@ -786,6 +786,9 @@ mod tests {
         }]
     }
 
+    // One scenario, three outcomes on one fixture: splitting it would copy
+    // the fixture three times for no extra finding.
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn requests_rewrite_a_draft_saved_in_place_or_as_a_fork_or_dropped() {
         let dir = std::env::temp_dir().join(format!("harness-mf-draft-{}", std::process::id()));
@@ -889,7 +892,10 @@ mod tests {
         desk.drop_draft("main", "Pjs".into())
             .await
             .expect("dropped");
-        assert!(read("components/Pjs.draft.html").is_empty());
+        assert!(
+            read("components/Pjs.draft.html").is_empty(),
+            "expected nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

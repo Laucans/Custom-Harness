@@ -111,6 +111,7 @@ pub fn decide(ports: &Ports, config: &Config) -> Stage<DecideState> {
             })],
         }),
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.decide.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskDecider {

@@ -172,6 +172,7 @@ pub fn context(ports: &Ports, config: &Config) -> Stage<SplitState> {
                 Box::new(ReadInventory {
                     disk: Rc::clone(&ports.disk),
                     root: config.root.clone(),
+                    cost_note: config.cost_note.clone(),
                 }),
                 Box::new(ReadDossier {
                     disk: Rc::clone(&ports.disk),
@@ -201,6 +202,7 @@ pub fn slice(ports: &Ports, config: &Config) -> Stage<SplitState> {
             ],
         }),
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.slice.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskForSlice {

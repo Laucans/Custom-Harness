@@ -91,6 +91,7 @@ fn paid(
         pre: None,
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec,
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskRefine {
@@ -119,6 +120,7 @@ pub fn prime(ports: &Ports, config: &Config) -> Stage<RefinementState> {
         pre: None,
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.prime.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(Prime {

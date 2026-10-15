@@ -88,7 +88,7 @@ gh api repos/{owner}/{repo}/issues/<n> --jq .id
 # 3. parent it under the milestone
 gh api -X POST repos/{owner}/{repo}/issues/<m>/sub_issues \
   -F sub_issue_id=<id of the task>
-# 4. block it on each task of the layer before — and on a peer only if it builds on it
+# 4. block it on the task that produces an id it needs — and on a peer only if it builds on it
 gh api -X POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by \
   -F issue_id=<id of a task it depends on>
 # 5. its side of the architecture

@@ -160,6 +160,8 @@ mod tests {
                     turn,
                     pick: PickTask {
                         gh: Rc::clone(&gh),
+                        spending: Rc::clone(&ports.spending),
+                        repo: Rc::clone(&ports.repo),
                         resuming: None,
                         wanted: None,
                         data_layer: config.data_layer_spec(),

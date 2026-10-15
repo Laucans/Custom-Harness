@@ -87,13 +87,16 @@ pub struct ReadInventory {
     pub disk: Rc<dyn Disk>,
     /// The checkout's root.
     pub root: PathBuf,
+    /// What tasks of each unit have cost, for the prompt; empty when
+    /// nothing was measured.
+    pub cost_note: String,
 }
 
 #[async_trait(?Send)]
 impl Action<SplitState> for ReadInventory {
     async fn run(&self, ctx: &mut Context<SplitState>) -> Outcome<Verdict> {
         let tree = Tree::read(self.disk.as_ref(), &self.root);
-        ctx.state.inventory = inventory_block(&tree);
+        ctx.state.inventory = inventory_block(&tree, &self.cost_note);
         ctx.traces.say(&format!(
             "architecture inventory: {} system(s), {} concept(s), {} capabilit(ies), {} aggregate(s), \
              {} data-capabilit(ies), {} micro-ui(s)",
@@ -243,7 +246,18 @@ fn listed(items: &[String]) -> String {
 /// mocked or built, the pages and the frozen screens) — each with the rule
 /// its slices keep, so a slice of one kind is told what it writes against.
 #[must_use]
-pub fn inventory_block(tree: &Tree) -> String {
+pub fn inventory_block(tree: &Tree, cost_note: &str) -> String {
+    let inventory = inventory_of(tree);
+    if cost_note.trim().is_empty() {
+        return inventory;
+    }
+    format!(
+        "{inventory}\n\nWhat tasks of each unit have cost so far, under this harness — a slice \
+         is one session, and a unit whose third quartile runs high is one to cut finer:\n{cost_note}"
+    )
+}
+
+fn inventory_of(tree: &Tree) -> String {
     // A product may hold a design system and a mock-up before its first crate: that counts.
     let empty = tree.systems.is_empty()
         && tree.concepts.is_empty()
@@ -458,7 +472,7 @@ mod tests {
 
     #[test]
     fn an_empty_checkout_says_the_data_layer_is_the_first() {
-        let said = inventory_block(&Tree::default());
+        let said = inventory_block(&Tree::default(), "");
         assert!(said.contains("no unit of the architecture yet"));
     }
 
@@ -491,7 +505,7 @@ mod tests {
             )],
             ..Tree::default()
         };
-        let said = inventory_block(&tree);
+        let said = inventory_block(&tree, "");
         for expected in [
             "campagne, dataguard",
             "NiveauDuGroupe@1",
@@ -529,7 +543,7 @@ mod tests {
             screens: vec!["campagne".to_string()],
             ..Tree::default()
         };
-        let said = inventory_block(&tree);
+        let said = inventory_block(&tree, "");
         for expected in [
             "design system: validated (mock/design/tokens.css",
             "kit components generated: Button, HeroFrame (Hero frame)",
@@ -545,7 +559,19 @@ mod tests {
             path: String::new(),
             json: serde_json::from_str(r#"{"state":"candidate"}"#).ok(),
         });
-        assert!(inventory_block(&candidate).contains("not validated: no kit is generated"));
+        assert!(inventory_block(&candidate, "").contains("not validated: no kit is generated"));
+    }
+
+    #[test]
+    fn the_cost_note_follows_the_inventory_when_there_is_one() {
+        let said = inventory_block(&Tree::default(), "- capability: median 3.00 $");
+        assert!(said.starts_with("The repository holds no unit"), "{said}");
+        assert!(
+            said.contains("What tasks of each unit have cost so far"),
+            "{said}"
+        );
+        assert!(said.ends_with("- capability: median 3.00 $"), "{said}");
+        assert!(!inventory_block(&Tree::default(), "  ").contains("have cost"));
     }
 
     fn issue(number: u64, state: &str) -> Issue {

@@ -1,6 +1,6 @@
 # Architecture overview
 
-Eight crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
+Nine crates, one direction. Each crate's own `ARCHITECTURE.md` carries the
 detail; this file is only the split and why the dependencies form the way they
 do.
 
@@ -11,6 +11,7 @@ harness-launcher, harness-view  →  harness-adapters (lib)  →  harness-core (
 harness-view     (bin)  →  harness-notify    (lib)  →  harness-workflows, harness-core
 harness-workflows, harness-view  →  harness-architecture (lib)  →  harness-core (lib)
 harness-view-render (cdylib → wasm)   depends on none of them: it draws what harness-view serves
+harness-dataguard   (lib)             depends on none of them: the products' write side, taken by git
 ```
 
 ## The role of each crate
@@ -25,6 +26,7 @@ harness-view-render (cdylib → wasm)   depends on none of them: it draws what h
 | `harness-view` | **the plant**: a local web page that shows the harness as an isometric factory — a *development* factory: its rooms are the development workflow's; another family's harness would draw another kind — read from the traces a run leaves behind. A second outer ring; it writes nothing a run reads but the prompt drafts, which the watch applies itself when it starts — its other ways of acting on the world (a terminal, a switch, a broom, a mock-up workspace, an issue, a pin's session) are the human's gestures, listed in its `ARCHITECTURE.md`. | [crates/view/ARCHITECTURE.md](crates/view/ARCHITECTURE.md) |
 | `harness-notify` | **what to tell a human**: notifications from the harness's events (kept once, in `.llocal/harness.db`) and a few observed facts — severity, grouping, what a success clears. Pure: no I/O; the view hands it the events and shows what comes back. | [crates/notify/ARCHITECTURE.md](crates/notify/ARCHITECTURE.md) |
 | `harness-view-render` | **the drawing**: a Bevy scene compiled to WebAssembly, bound to the view's canvas. Shares no type with the rest; mirrors the picture it draws. | [crates/view-render/ARCHITECTURE.md](crates/view-render/ARCHITECTURE.md) |
+| `harness-dataguard` | **the products' write side**: the DataQueue, the DataGuard, the Resolver and the messages of the agent-native architecture, written once; a product's `crates/dataguard/server` (installed by `init-repo`) takes it by `git`. Shares no type with the rest, runs in the product's server. | [crates/dataguard/ARCHITECTURE.md](crates/dataguard/ARCHITECTURE.md) |
 
 ## The shape: hexagonal, and it is a rule
 

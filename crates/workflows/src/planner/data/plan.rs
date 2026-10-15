@@ -152,7 +152,7 @@ mod tests {
         );
         assert_eq!(item.aggregate_keys(), ["account"]);
         assert_eq!(aggregates_of(&item.body()), ["account"]);
-        assert!(aggregates_of("no section").is_empty());
+        assert!(aggregates_of("no section").is_empty(), "expected nothing");
         let bare = MilestoneItem {
             writes: false,
             aggregates: Vec::new(),

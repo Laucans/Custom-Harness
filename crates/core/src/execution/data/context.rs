@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use crate::domain::Tags;
 use crate::ports::agent::{Base, Reply, SessionSpec};
 use crate::traces::Logbook;
 
@@ -35,6 +36,15 @@ pub struct Context<S> {
     /// workflow has built one (refinement, after its map). `None`: each
     /// stage opens a fresh session.
     pub base: Option<Base>,
+    /// What the task being worked is, for the ledger's `unit`, `profile`
+    /// and `side` columns — a workflow sets it when it picks a task, the
+    /// paid stage reads it. Empty for a run that works on no task.
+    pub tags: Tags,
+    /// The conversations to resume, by stage name: a stage whose previous
+    /// run on this task was interrupted (a quota) reopens the same session
+    /// instead of paying its turns again. A workflow fills it when it picks
+    /// a task; the stage runner reads it when it opens the session.
+    pub resume: HashMap<String, String>,
 }
 
 impl<S> Context<S> {
@@ -48,6 +58,8 @@ impl<S> Context<S> {
             results: HashMap::new(),
             session_spec: None,
             base: None,
+            tags: Tags::default(),
+            resume: HashMap::new(),
         }
     }
 }

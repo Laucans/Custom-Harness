@@ -1,0 +1,33 @@
+[package]
+name = "harness-dataguard"
+description = "The write side of the agent-native architecture, once: the DataQueue, the DataGuard, the Resolver, the messages — what every product the harness builds runs its mutations through."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A product's runtime, not the harness's: it depends on no crate of the
+# workspace (like `harness-view-render`), and products take it by `git`.
+# It runs under a multi-thread server, so its traits are `Send` — the
+# harness's own `?Send` decision (#3) is about the harness driving one
+# session at a time, not about the plant it builds.
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# The Postgres store: the DataQueue as a table (`FOR UPDATE SKIP LOCKED`),
+# the journal, `LISTEN/NOTIFY` for the messages. Off by default so the
+# workspace builds without it; a product's server turns it on.
+# `tokio-postgres` and not `sqlx`: `sqlx` locks a `libsqlite3-sys` that
+# collides with the one `rusqlite` links in `harness-adapters`.
+tokio-postgres = { version = "0.7", optional = true, default-features = false, features = ["runtime", "with-serde_json-1"] }
+tokio = { workspace = true, optional = true, features = ["sync"] }
+
+[features]
+default = []
+postgres = ["dep:tokio-postgres", "dep:tokio"]
+
+[dev-dependencies]
+proptest.workspace = true
+tokio.workspace = true
