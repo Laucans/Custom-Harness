@@ -466,8 +466,11 @@ mod tests {
     fn a_rule_of_the_simple_shape_is_judged_on_the_state() {
         let state = BTreeMap::from([
             ("creditLimit".to_string(), Value::from(5000)),
+            ("credit_limit".to_string(), Value::from(5000)),
+            ("account.limit".to_string(), Value::from(5000)),
             ("status".to_string(), Value::from("open")),
             ("vip".to_string(), Value::Bool(true)),
+            ("flagged".to_string(), Value::Bool(false)),
             ("ratio".to_string(), Value::from(0.5)),
         ]);
         let holds = |rule: &str| rule_holds(rule, &state);
@@ -481,6 +484,21 @@ mod tests {
         assert_eq!(holds("creditLimit != 5000"), Some(false));
         assert_eq!(holds("ratio < 0.75"), Some(true));
         assert_eq!(holds("status == open"), Some(true));
+        assert_eq!(
+            holds("status == \"open\""),
+            Some(true),
+            "quotes are not the word"
+        );
+        assert_eq!(holds("status == 'open'"), Some(true));
+        assert_eq!(holds("status > closed"), Some(true), "words order as words");
+        assert_eq!(
+            holds("credit_limit <= 5000"),
+            Some(true),
+            "underscores name a field"
+        );
+        assert_eq!(holds("account.limit <= 5000"), Some(true), "so do dots");
+        assert_eq!(holds("flagged == false"), Some(true));
+        assert_eq!(holds("flagged != true"), Some(true));
         assert_eq!(holds("status != \"closed\""), Some(true));
         assert_eq!(
             holds("status < closed"),
