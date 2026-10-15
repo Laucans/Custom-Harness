@@ -48,6 +48,7 @@ jobs:
           validate c-persisted-query.schema.json queries/registry.json
           validate m-data-model.schema.json data/model.json
           validate n-mock-pages.schema.json mock/pages.json
+          validate q-ports.schema.json ports.json
 
   # Contract B, principle 5 — a slice knows no other slice. Checked on the
   # graph `cargo metadata` answers, not on a Cargo.toml's text: a Capability
@@ -570,6 +571,46 @@ jobs:
 
   # Contract P — every rule of rules.json has its test, of its family, its
   # criterion copied as it is (scripts/rules-gate.mjs coverage).
+  # Contract Q — every dependency outside the product is a port: the units
+  # name theirs and each port lists them back, a Capability never reads a
+  # stateful one, and every port has its fake and its contract tests.
+  ports-declared:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The ports and the units that use them agree
+        run: node scripts/ports-gate.mjs declared
+      - name: Every port has its fake and its contract tests
+        run: node scripts/ports-gate.mjs contracts
+
+  # Contract Q — nothing reaches outside the product but through a port's
+  # adapter: no HTTP client, provider SDK or database client elsewhere, no
+  # network call from a Micro-UI. What keeps ports.json true.
+  externals-behind-ports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Nothing reaches outside the product but through a port
+        run: node scripts/ports-gate.mjs behind
+
+  # Contract Q — the ports' secrets are committed encrypted with sops, or
+  # not at all.
+  secrets-encrypted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Every committed secret is sops-encrypted
+        run: node scripts/ports-gate.mjs secrets
+
   rules-covered:
     runs-on: ubuntu-latest
     steps:

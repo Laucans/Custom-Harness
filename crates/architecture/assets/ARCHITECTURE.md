@@ -834,6 +834,9 @@ off until an agent implements them.
 | Relations | Every foreign key has a declared `onDelete` and `onUpdate` policy | I |
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
 | Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page; every Micro-UI has a micro-frontend whose listing says its needs and actions; the bundles are rebuilt from the Micro-UIs' code | D, E, N |
+| Ports declared | Every port a unit names is in `ports.json`, every port lists its users back, a Capability never reads a stateful port, every port has its fake and contract tests (`scripts/ports-gate.mjs declared`, `contracts`) | Q, B, F |
+| Externals behind ports | No HTTP client, provider SDK or database client outside a port's adapter (the Data layer and the DataGuard for PostgreSQL), no network call from a Micro-UI (`behind`) | Q |
+| Secrets encrypted | Only sops-encrypted `secrets/<env>.enc.yaml` and no `.env` file are committed (`secrets`) | Q |
 | Rules covered | Every rule of `rules.json` has a test of its family naming it, its criterion copied as it is; no test names a rule `rules.json` has not (`scripts/rules-gate.mjs coverage`) | P |
 | Rules hold | Every rule's test whose units are built runs on the product the runtime serves, and passes; each rule's state (pending, green, red) is kept as `rules-status.json`; a rule marked `conform` may be red in a task, never where a milestone lands (`scripts/rules-gate.mjs status`) | P |
 | Rule tests untouched | A change that is not the rules' task leaves `rules.json` and `tests/rules/` alone (`scripts/rules-gate.mjs untouched`), and carries no `CONTEST.md` — which opens the `Rules contested` issue the rules' task settles (`contest`) | P |

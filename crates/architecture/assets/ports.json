@@ -3,11 +3,11 @@
   "ports": [
     {
       "id": "database",
-      "purpose": "The product's store: the Data, the DataQueue, the read models — listed, not abstracted.",
+      "purpose": "The product's store: the Data layer reads it (persisted queries), the DataGuard writes it (the DataQueue) — listed, not abstracted.",
       "stateful": true,
       "provider": "PostgreSQL 16",
       "tech": { "kind": "sql", "name": "postgres", "version": "16" },
-      "adapter": "crates/dataguard",
+      "adapter": "crates/data",
       "fake": "",
       "secrets": ["DATABASE_URL"],
       "cost": "the host's",

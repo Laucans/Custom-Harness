@@ -12,9 +12,12 @@
 #   crates/server/        the one binary serving the shell's wire protocol
 #                         (POST /capabilities/<id>, POST /commands,
 #                         GET /commands/<id>) and GET /health. It reads
-#                         PORT, DATABASE_URL and, when set, FIXTURES_DIR:
-#                         the mock-up's fixtures (mock/fixtures/*.json),
-#                         loaded into its store as it starts.
+#                         PORT, DATABASE_URL, PORTS — `fake`: every port of
+#                         ports.json wired to its fake adapter, nothing
+#                         reaches outside, no secret needed — and, when set,
+#                         FIXTURES_DIR: the mock-up's fixtures
+#                         (mock/fixtures/*.json), loaded into its store as it
+#                         starts.
 #   apps/shell/           the frontend's host: package.json with the scripts
 #                         `build` and `serve`; `serve` listens on PORT, reaches
 #                         the server at SERVER_URL, and shows a frozen screen
@@ -107,7 +110,7 @@ serve() {
   fi
   local fixtures=""
   [ -d "$root/mock/fixtures" ] && fixtures="$root/mock/fixtures"
-  PORT="$SERVER_PORT" DATABASE_URL="$database" FIXTURES_DIR="$fixtures" \
+  PORT="$SERVER_PORT" DATABASE_URL="$database" FIXTURES_DIR="$fixtures" PORTS=fake \
     nohup "$binary" >"$state/server.log" 2>&1 &
   echo $! > "$state/server.pid"
   local server_url="http://127.0.0.1:$SERVER_PORT"

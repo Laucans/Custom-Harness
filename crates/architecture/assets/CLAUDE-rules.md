@@ -39,6 +39,7 @@ apps/screens/<screen>.json         one frozen screen composition (contract E)
 crates/<system>/capabilities/<name>/   one Capability crate + capability.json (contract B)
 crates/<system>/queries/<name>.graphql persisted queries, registered in queries/registry.json (contract C)
 crates/<system>/<name>/            one infrastructure crate of the system (an adapter, a source, the Data layer's plumbing)
+crates/data/                       the Data layer: runs the persisted queries; the `database` port's adapter
 crates/dataguard/                  the write side: DataQueue, DataGuard, Resolver
 crates/dataguard/data-capabilities/<name>/  one DataCapability + data-capability.json (contract F)
 crates/dataguard/aggregates/<Aggregate>/aggregate.json   criticality, invariants, relations (contract I)
@@ -64,7 +65,7 @@ ports.json                         every dependency outside the product, behind 
 crates/ports/<port>/               a port: its trait, its contract tests, its `fake`
 crates/ports/<port>/<provider>/    the adapter that wraps one provider
 .sops.yaml  secrets/<env>.enc.yaml the secrets, encrypted with sops; names only in ports.json
-crates/server/                     the one binary serving the shell's wire protocol and GET /health; reads PORT, DATABASE_URL, FIXTURES_DIR
+crates/server/                     the one binary serving the shell's wire protocol and GET /health; reads PORT, DATABASE_URL, FIXTURES_DIR, PORTS (`fake`: every port on its fake)
 apps/shell/                        the frontend's host: npm scripts build and serve (PORT, SERVER_URL), a frozen screen at /screens/<screen>
 ```
 
@@ -202,8 +203,8 @@ apps/shell/                        the frontend's host: npm scripts build and se
     contract tests — the same tests for every adapter), the secrets it needs
     by name, its cost, and the units that use it (`usedBy`, matching each
     manifest's `ports`). No HTTP client, provider SDK or database client
-    outside a port's adapter (Postgres: the Data layer, declared as the
-    `database` port) — a gate refuses it. A provider that **keeps state** (a
+    outside a port's adapter (Postgres: the Data layer, `crates/data`, declared
+    as the `database` port, and the DataGuard) — a gate refuses it. A provider that **keeps state** (a
     customer, a file, a user) is `stateful`: our Data is the truth, only a
     DataCapability writes through it and a Capability reads our mirror, never
     the provider; a Capability may call a stateless port (an LLM, a

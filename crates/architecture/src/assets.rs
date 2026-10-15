@@ -42,7 +42,7 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// filing, the schema dump, the data model, the mock-up's files, the
 /// contracts A–Q, the ports and the secrets' scaffolding, the rules' gate,
 /// runtime and suites.
-pub const FILES: [Asset; 50] = [
+pub const FILES: [Asset; 51] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -200,6 +200,10 @@ pub const FILES: [Asset; 50] = [
         content: include_str!("../assets/ports.json"),
     },
     Asset {
+        path: "scripts/ports-gate.mjs",
+        content: include_str!("../assets/ports-gate.mjs"),
+    },
+    Asset {
         path: ".sops.yaml",
         content: include_str!("../assets/sops.yaml"),
     },
@@ -334,6 +338,17 @@ mod tests {
             CLAUDE_RULES.contains("goes through a port")
                 && CLAUDE_RULES.contains("AGENT_LOOP_STOP: port")
         );
+        let gates = content_of(".github/workflows/gates.yml").unwrap_or_default();
+        for step in [
+            "validate q-ports.schema.json ports.json",
+            "node scripts/ports-gate.mjs declared",
+            "node scripts/ports-gate.mjs contracts",
+            "node scripts/ports-gate.mjs behind",
+            "node scripts/ports-gate.mjs secrets",
+        ] {
+            assert!(gates.contains(step), "the gates run {step}");
+        }
+        assert!(content_of("scripts/ports-gate.mjs").is_some());
     }
 
     #[test]
