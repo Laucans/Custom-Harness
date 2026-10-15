@@ -23,6 +23,7 @@
 //! task was *not* meant to do disappeared with it.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use harness_core::ports::agent::Reply;
 
@@ -279,6 +280,51 @@ pub fn keeping(body: &str, markers: &[&str]) -> String {
         return body.trim().to_string();
     }
     kept.join("\n\n")
+}
+
+/// The body kept under `budget` characters, whole sections at a time.
+///
+/// Sections are taken in the order written — the text before the first
+/// heading counts as one — until the next would not fit; what is left out is
+/// named in one closing line, with `fetch` as the gesture that reads it
+/// (`gh issue view 65`). A section is never cut in the middle: a plan whose
+/// last steps vanished mid-sentence reads as a plan with fewer steps.
+///
+/// Counted in characters, never bytes: the bodies are written in French, and
+/// a budget that fell inside an accented letter has already panicked a run.
+#[must_use]
+pub fn within(body: &str, budget: usize, fetch: &str) -> String {
+    let marks = heading_marks(body);
+    let mut pieces: Vec<(String, &str)> = Vec::new();
+    let first = marks.first().map_or(body.len(), |mark| mark.line_start);
+    if !body[..first].trim().is_empty() {
+        pieces.push(("(the opening text)".to_string(), &body[..first]));
+    }
+    for (i, mark) in marks.iter().enumerate() {
+        let end = marks.get(i + 1).map_or(body.len(), |next| next.line_start);
+        pieces.push((mark.title.clone(), &body[mark.line_start..end]));
+    }
+    let mut kept = String::new();
+    let mut spent = 0usize;
+    let mut dropped: Vec<String> = Vec::new();
+    for (title, text) in pieces {
+        let size = text.chars().count();
+        if !dropped.is_empty() || spent + size > budget {
+            dropped.push(title);
+            continue;
+        }
+        spent += size;
+        kept.push_str(text);
+    }
+    let mut out = kept.trim().to_string();
+    if !dropped.is_empty() {
+        let _ = write!(
+            out,
+            "\n\n(left out for room: {} — `{fetch}` reads them whole)",
+            dropped.join(", ")
+        );
+    }
+    out
 }
 
 /// The canonical body: non-empty sections, in order.
@@ -550,6 +596,60 @@ mod tests {
         let left = keeping(ROADMAP, &["nothing here"]);
         assert!(left.contains("un long récit"), "{left}");
         assert!(left.contains("peut-être"));
+    }
+
+    #[test]
+    fn within_keeps_whole_sections_in_order_until_the_budget() {
+        // A and B are 11 characters each, C is 9: 25 holds two of them.
+        let body = "## A\n\n1234\n\n## B\n\n5678\n\n## C\n\n90\n";
+        let kept = within(body, 25, "gh issue view 7");
+        assert!(kept.starts_with("## A\n\n1234"), "{kept}");
+        assert!(kept.contains("## B"), "{kept}");
+        assert!(!kept.contains("## C"), "the third did not fit: {kept}");
+        assert!(
+            kept.ends_with("(left out for room: C — `gh issue view 7` reads them whole)"),
+            "{kept}"
+        );
+    }
+
+    #[test]
+    fn within_never_skips_a_section_to_fit_a_later_smaller_one() {
+        // Order is meaning: a plan's step 3 before its step 2 is not a plan.
+        let body = "## A\n\n1234\n\n## B\n\n56789012345678901234\n\n## C\n\n9\n";
+        let kept = within(body, 20, "x");
+        assert!(kept.contains("## A"), "{kept}");
+        assert!(!kept.contains("## B"), "{kept}");
+        assert!(
+            !kept.contains("## C"),
+            "C fit, but B before it did not: {kept}"
+        );
+        assert!(kept.contains("left out for room: B, C"), "{kept}");
+    }
+
+    #[test]
+    fn within_leaves_a_body_that_fits_alone() {
+        let body = "intro\n\n## A\n\nshort\n";
+        assert_eq!(within(body, 1_000, "x"), body.trim());
+    }
+
+    #[test]
+    fn within_counts_characters_not_bytes() {
+        // A is 18 characters but 28 bytes; with B's 8, the two fit in 26
+        // characters and would not in 26 bytes.
+        let body = format!("## A\n\n{}\n\n## B\n\nx\n", "é".repeat(10));
+        let kept = within(&body, 26, "x");
+        assert!(kept.contains("## A"), "{kept}");
+        assert!(kept.contains("## B"), "{kept}");
+    }
+
+    #[test]
+    fn within_names_the_opening_text_when_it_is_the_part_left_out() {
+        let body = format!("{}\n\n## A\n\nx\n", "o".repeat(30));
+        let kept = within(&body, 10, "x");
+        assert!(
+            kept.contains("left out for room: (the opening text), A"),
+            "{kept}"
+        );
     }
 
     #[test]

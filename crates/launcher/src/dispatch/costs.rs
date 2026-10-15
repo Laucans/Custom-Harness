@@ -288,6 +288,32 @@ mod tests {
     }
 
     #[test]
+    fn a_row_at_the_very_instant_of_since_is_kept() {
+        // `--since 2026-10-02T10:00:00Z` means that second included: a row
+        // stamped exactly then is the first one wanted, not the last one dropped.
+        let lines = report(&rows(), GroupBy::Task, "2026-10-02T10:00:00Z");
+        assert!(lines.contains_key("62"), "{:?}", lines.keys());
+        assert!(!lines.contains_key("61"));
+    }
+
+    #[test]
+    fn the_total_line_sums_every_column() {
+        let lines = report(&rows(), GroupBy::Unit, "");
+        let text = render(&lines, GroupBy::Unit);
+        let last = text.lines().last().expect("a total");
+        let cells: Vec<&str> = last.split_whitespace().collect();
+        // total | calls | usd | usd/call | turns | in | out | cache_read | failed
+        assert_eq!(cells[1], "4", "{last}");
+        assert_eq!(cells[2], "16.00", "{last}");
+        assert_eq!(cells[3], "4.00", "{last}");
+        assert_eq!(cells[4], "40", "turns: {last}");
+        assert_eq!(cells[5], "4000", "input: {last}");
+        assert_eq!(cells[6], "800", "output: {last}");
+        assert_eq!(cells[7], "200000", "cache read: {last}");
+        assert_eq!(cells[8], "1", "failed: {last}");
+    }
+
+    #[test]
     fn a_row_without_the_column_is_counted_under_none_not_dropped() {
         let mut old = row("2026-10-01T10:00:00Z", "1", "code", "", 1.0, "ok");
         old.tags = Tags::default();

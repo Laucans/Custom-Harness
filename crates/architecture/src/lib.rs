@@ -32,6 +32,7 @@ pub mod assets;
 pub mod compare;
 pub mod kit;
 pub mod model;
+pub mod rules;
 pub mod schema_sql;
 pub mod tree;
 pub mod vocabulary;

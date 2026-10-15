@@ -160,7 +160,11 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
 
 ### What a session does before writing code
 
-- Read `docs/ARCHITECTURE.md` and the `## Architecture` section of the issue.
+- Read the `## Architecture` section of the issue, and the rule card of its
+  unit: the harness injects it into the prompt (`--- ARCHITECTURE RULES ---`)
+  — where it lives, its manifest, what it may know, the gate that judges it.
+  `docs/ARCHITECTURE.md` is the reference behind the card: open it only where
+  the card sends you there, or when no card was injected.
 - Find the unit's place in the layout above; create its manifest from the
   matching `contracts/*.schema.json` first, the code second.
 - For a Micro-UI or a screen: open the mock-up page under `mock/pages/`

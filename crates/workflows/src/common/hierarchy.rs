@@ -8,6 +8,7 @@ use harness_core::domain::{Issue, Named, Outcome, Scope, Sibling};
 use harness_core::ports::shell::github::GitHub;
 
 use crate::common::{labels, sections};
+use harness_architecture::vocabulary::Declaration;
 
 /// How much of a neighbour's own words to carry, at most.
 ///
@@ -161,7 +162,22 @@ pub fn sibling(task: &Issue) -> Sibling {
         title: task.title.clone(),
         status: status.to_string(),
         gist: gist_of(&task.body),
+        ids: ids_of(&task.body),
     }
+}
+
+/// The ids a task `produces` and `needs`, as its `## Architecture` names
+/// them; none for a task that declares nothing.
+fn ids_of(body: &str) -> Vec<String> {
+    sections::parse(body)
+        .get(sections::ARCHITECTURE)
+        .and_then(|text| Declaration::parse(text))
+        .map(|declaration| {
+            let mut ids = declaration.produces;
+            ids.extend(declaration.needs);
+            ids
+        })
+        .unwrap_or_default()
 }
 
 /// What sits above a milestone: its roadmap item and every milestone of it.

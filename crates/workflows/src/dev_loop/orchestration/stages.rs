@@ -60,7 +60,7 @@ use crate::prompts;
 /// edit what is there rather than write the section the gate asks for.
 const REFINEMENT_WRITES: &[&str] = &["Technical", "Technical Implementation Plan", "Assumptions"];
 
-/// What `code` leaves out: the business goal.
+/// What `code` leaves out of the task's body: the business goal.
 ///
 /// 1 557 characters, and the only section `code` cannot act on — it executes a
 /// plan that was derived from it, by the stage above. The acceptance criteria
@@ -69,6 +69,14 @@ const REFINEMENT_WRITES: &[&str] = &["Technical", "Technical Implementation Plan
 /// The smallest of the three cuts, and the most arguable: the goal is also the
 /// cheapest insurance against a session drifting out of scope. One line to
 /// restore if a run ever reads as though it lost the point.
+///
+/// Around the body, `code` is on
+/// [`Cut::Executing`](crate::dev_loop::data::brief::Cut::Executing): no
+/// roadmap (a third of SCOPE, the same for every task of every milestone),
+/// the milestone's goal and architecture only, and the neighbours the task
+/// builds on or delivers to. The plan it executes was written against the
+/// whole hierarchy by the stage above; re-reading it on every turn told the
+/// session what the plan had already settled.
 const CODE_SKIPS: &[&str] = &["Business Goal"];
 
 /// What `/create-test` leaves out: everything but the spec it asserts against.
@@ -236,6 +244,8 @@ struct Paid<'a> {
     /// Other instructions for a write-side task, if the stage has any.
     write_side_instructions: Option<&'a str>,
     cut: Cut,
+    /// The prompt carries the rule card of the unit the task builds.
+    rules: bool,
     then: Vec<Box<dyn SessionAction<Loop>>>,
 }
 
@@ -253,6 +263,7 @@ impl Paid<'_> {
             signatures: Rc::clone(&config.signatures),
             injector: config.injector(),
             spending: Rc::clone(&ports.spending),
+            rules: self.rules,
         })];
         actions.extend(self.then);
         actions.push(Box::new(Unpaid(MarkDone {
@@ -282,6 +293,7 @@ pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<
         instructions: &instructions,
         write_side_instructions: None,
         cut: Cut::Situated(REFINEMENT_WRITES),
+        rules: true,
         // Recording is local work, and it goes *in* the stage — not in a
         // gate, which would have no right to write.
         then: vec![Box::new(Unpaid(RecordTechWritten {
@@ -363,7 +375,8 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             lead: "/tech-analyst",
             instructions: &instructions,
             write_side_instructions: Some(&write_side),
-            cut: Cut::Situated(CODE_SKIPS),
+            cut: Cut::Executing(CODE_SKIPS),
+            rules: true,
             then: Vec::new(),
         }
         .body(ports, config, turn),
@@ -392,6 +405,7 @@ pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             instructions: &instructions,
             write_side_instructions: None,
             cut: Cut::TaskOnly(TEST_SKIPS),
+            rules: false,
             then: Vec::new(),
         }
         .body(ports, config, turn),

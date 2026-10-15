@@ -23,9 +23,11 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
 use crate::common::{delivery, hierarchy, labels, sections};
-use crate::dev_loop::data::brief::Cut;
+use crate::dev_loop::data::brief::{self, Cut};
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::data::{board, signatures, tasks};
+use harness_architecture::rules;
+use harness_architecture::vocabulary::Declaration;
 
 /// The number of the current task, or failure to read it.
 fn number_of(ctx: &Context<Loop>) -> Outcome<u64> {
@@ -367,6 +369,10 @@ pub struct Ask {
     pub injector: &'static str,
     /// Where spending is recorded.
     pub spending: Rc<dyn Spending>,
+    /// Whether the prompt carries the rule card of the unit the task builds
+    /// ([`rules::card`]) — the stages that plan or build it do, the one that
+    /// tests it does not.
+    pub rules: bool,
 }
 
 #[async_trait(?Send)]
@@ -377,18 +383,40 @@ impl SessionAction<Loop> for Ask {
         // the stage will touch, and its signature costs less than opening it.
         let carried =
             signatures::carried(&self.signatures, &open.state.task.body, signatures::BUDGET);
+        // The declaration is read before the cut, like the index slice: the
+        // card and the related neighbours come from `## Architecture`, which
+        // no cut drops, but the reduction below needs it whole.
+        let declaration = sections::parse(&open.state.task.body)
+            .get(sections::ARCHITECTURE)
+            .and_then(|text| Declaration::parse(text));
+        let card = match (&declaration, self.rules) {
+            (Some(declaration), true) => rules::card(declaration.unit),
+            _ => "",
+        };
         let mut scope = open.state.scope();
         scope.task.body = sections::without(&scope.task.body, self.cut.without());
+        let scope = match self.cut {
+            Cut::Executing(_) => brief::executing(scope, declaration.as_ref()),
+            _ => scope,
+        };
         let brief = match self.cut {
             Cut::Unscoped => prompts::Brief::Unscoped,
             Cut::Situated(_) => prompts::Brief::Situated(&scope),
             Cut::TaskOnly(_) => prompts::Brief::TaskOnly(&scope),
+            Cut::Executing(_) => prompts::Brief::Executing(&scope),
         };
         let instructions = match (&self.write_side_instructions, open.state.write_side) {
             (Some(text), true) => text.as_str(),
             _ => self.instructions.as_str(),
         };
-        let extra = prompts::extra_for(instructions, brief, &self.stack, &carried, self.injector);
+        let extra = prompts::extra_for(
+            instructions,
+            brief,
+            card,
+            &self.stack,
+            &carried,
+            self.injector,
+        );
         let prompt = prompts::build(&self.lead, &self.branch, &extra, self.injector);
         let task = open.state.task_key.clone();
         ask_and_record(
@@ -964,6 +992,7 @@ mod tests {
                 title: "The fence".to_string(),
                 status: "open".to_string(),
                 gist: "covers the fence".to_string(),
+                ids: vec!["credit.fence".to_string()],
             }],
             task: Named {
                 number: "11".to_string(),
@@ -1030,6 +1059,7 @@ mod tests {
             signatures: Rc::new(signatures::Index::default()),
             injector: "test",
             spending: Rc::clone(&spending) as Rc<dyn Spending>,
+            rules: true,
         };
         let verdict = {
             let mut open = Open {
@@ -1155,6 +1185,7 @@ mod tests {
             signatures: Rc::new(index),
             injector: "test",
             spending: Rc::clone(&spending) as Rc<dyn Spending>,
+            rules: false,
         };
         {
             let mut open = Open {

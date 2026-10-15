@@ -99,6 +99,37 @@ CURRENT ISSUE #{num} — {title}
 {body}
 --- END SCOPE ---";
 
+const EXECUTING: &str = "--- SCOPE (injected by {injector}) ---
+ISSUE #{num} below is the whole brief, and the whole of your work. It is a
+GitHub issue: what you produce goes back into the issue, never into a file
+under docs/.
+
+It sits in milestone #{milestone}, whose goal and architecture are given so
+you know what the batch delivers. Of its sibling tasks, only the ones this
+task builds on or delivers to are listed; a neighbour's internals are not
+part of this stage, and the roadmap is not reproduced — the plan below was
+written from both. If you do need one, read it rather than guess:
+`gh issue view <number>`. Do not implement, plan or rewrite any of them.
+
+MILESTONE #{milestone} — {milestone_title}
+{milestone_body}
+
+NEIGHBOURS THIS TASK BUILDS ON OR DELIVERS TO
+{siblings}
+
+CURRENT ISSUE #{num} — {title}
+{body}
+--- END SCOPE ---";
+
+const RULES: &str = "--- ARCHITECTURE RULES (injected by {injector}) ---
+The rules of the one unit this task builds, as the gates check them: its
+place in the layout, its manifest, what it may know and what it must not,
+and the gate that judges it. This card stands for docs/ARCHITECTURE.md —
+open that document only where the card sends you there.
+
+{card}
+--- END ARCHITECTURE RULES ---";
+
 const STACK: &str = "--- REPOSITORY CONFIGURATION (injected by {injector}) ---
 This checkout's own configuration, verbatim: how the project is built, tested
 and linted. Read the scripts and runner settings from here instead of opening
@@ -183,6 +214,11 @@ pub struct Sibling {
     ///
     /// Empty is normal: a task nobody has written anything about yet.
     pub gist: String,
+    /// The ids this neighbour `produces` and `needs`, as its
+    /// `## Architecture` names them — what lets a stage keep only the
+    /// neighbours its task builds on or delivers to.
+    #[serde(default)]
+    pub ids: Vec<String>,
 }
 
 /// What a session works on: a task, in a milestone, in a roadmap.
@@ -223,6 +259,16 @@ pub enum Brief<'a> {
     /// block says how to fetch a neighbour — `gh issue view` — so the cut is a
     /// cheaper default rather than a removal.
     TaskOnly(&'a Scope),
+    /// The task, its milestone's goal and architecture, and the neighbours
+    /// it builds on or delivers to — no roadmap.
+    ///
+    /// For a stage that executes a plan already written against the whole
+    /// hierarchy: the roadmap was a third of SCOPE, identical for every task
+    /// of every milestone, re-read on every turn to say what the plan had
+    /// already settled. The caller hands a `Scope` already reduced — the
+    /// milestone body to its goal and architecture, the siblings to the
+    /// related ones — this layer prints what it is given.
+    Executing(&'a Scope),
 }
 
 /// Carried by the state of a workflow whose sessions work on an issue.
@@ -335,8 +381,13 @@ fn neighbours(siblings: &[Sibling], current: &str) -> String {
         } else {
             ""
         };
+        let delivers = if task.ids.is_empty() {
+            String::new()
+        } else {
+            format!(" — ids: {}", task.ids.join(", "))
+        };
         lines.push(format!(
-            "- #{} — {} [{}]{here}",
+            "- #{} — {} [{}]{delivers}{here}",
             task.number, task.title, task.status
         ));
         // The current issue's own body is injected whole, further down: its
@@ -399,6 +450,37 @@ pub fn task_block(scope: &Scope, injector: &str) -> String {
             ("body", &non_empty(&scope.task.body)),
         ],
     )
+}
+
+/// The task with its milestone and related neighbours, no roadmap — see
+/// [`Brief::Executing`].
+#[must_use]
+pub fn executing_block(scope: &Scope, injector: &str) -> String {
+    splice(
+        EXECUTING,
+        &[
+            ("injector", injector),
+            ("siblings", &siblings_list(scope)),
+            ("milestone", &scope.milestone.number),
+            ("milestone_title", &scope.milestone.title),
+            ("milestone_body", &non_empty(&scope.milestone.body)),
+            ("num", &scope.task.number),
+            ("title", &scope.task.title),
+            ("body", &non_empty(&scope.task.body)),
+        ],
+    )
+}
+
+/// The rule card of the unit the task builds, as a block, or nothing at all.
+///
+/// Nothing when the task declares no unit: a session then reads the
+/// architecture document itself, as it did before the cards existed.
+#[must_use]
+pub fn rules_block(card: &str, injector: &str) -> String {
+    if card.trim().is_empty() {
+        return String::new();
+    }
+    splice(RULES, &[("injector", injector), ("card", card)])
 }
 
 /// The same hierarchy without the current issue's body, for a prompt that
@@ -477,13 +559,14 @@ pub fn signatures_block(signatures: &str, injector: &str) -> String {
     splice(SIGNATURES, &[("injector", injector), ("files", signatures)])
 }
 
-/// A stage's `extra`: its instructions, the repository's configuration, then the
-/// scope it works on.
+/// A stage's `extra`: its instructions, the unit's rule card, the repository's
+/// configuration, the signatures, then the scope it works on.
 ///
 /// The scope comes last because it is the long part — the instructions
-/// stay where a reader, and a model, find them: at the top. The configuration
-/// sits between them: it is reference material, not the brief, and putting it
-/// after the issue would leave the session's own task buried in the middle.
+/// stay where a reader, and a model, find them: at the top. The card and the
+/// configuration sit between them: reference material, not the brief, and
+/// putting it after the issue would leave the session's own task buried in
+/// the middle.
 ///
 /// `brief` says which of the three shapes the scope block takes, including the
 /// shape that is no block at all — see [`Brief`]. Which one a stage gets is the
@@ -492,6 +575,7 @@ pub fn signatures_block(signatures: &str, injector: &str) -> String {
 pub fn extra_for(
     instructions: &str,
     brief: Brief<'_>,
+    rules: &str,
     stack: &str,
     signatures: &str,
     injector: &str,
@@ -500,6 +584,7 @@ pub fn extra_for(
         Brief::Unscoped => return instructions.to_string(),
         Brief::Situated(found) => (found, scope_block(found, injector)),
         Brief::TaskOnly(found) => (found, task_block(found, injector)),
+        Brief::Executing(found) => (found, executing_block(found, injector)),
     };
     let filled = splice(
         instructions,
@@ -511,6 +596,7 @@ pub fn extra_for(
     );
     let parts = [
         filled,
+        rules_block(rules, injector),
         stack_block(stack, injector),
         signatures_block(signatures, injector),
         block,
@@ -547,6 +633,7 @@ mod tests {
                 title: format!("task {n}"),
                 status: "open".to_string(),
                 gist: "x".repeat(gist_len),
+                ids: Vec::new(),
             })
             .collect();
         here
@@ -602,12 +689,14 @@ mod tests {
                     title: "The sibling".to_string(),
                     status: "done".to_string(),
                     gist: "covers the fence, not the gate".to_string(),
+                    ids: vec!["credit.fence".to_string()],
                 },
                 Sibling {
                     number: "34".to_string(),
                     title: "The grid".to_string(),
                     status: "open".to_string(),
                     gist: "the SPEC".to_string(),
+                    ids: Vec::new(),
                 },
             ],
             milestone: Named {
@@ -624,6 +713,74 @@ mod tests {
     }
 
     // --- the two halves of the verbal contract ----------------------------
+
+    #[test]
+    fn the_executing_block_has_no_roadmap_but_the_milestone_and_the_task() {
+        let said = executing_block(&scope(), "test");
+        assert!(!said.contains("ROADMAP #5"), "{said}");
+        assert!(!said.contains("what the roadmap says"), "{said}");
+        assert!(said.contains("MILESTONE #12"), "{said}");
+        assert!(said.contains("CURRENT ISSUE #34 — The grid"), "{said}");
+        assert!(
+            said.contains("gh issue view <number>"),
+            "names how to fetch"
+        );
+        assert!(said.contains("NEIGHBOURS THIS TASK BUILDS ON OR DELIVERS TO"));
+    }
+
+    #[test]
+    fn a_neighbour_s_ids_are_listed_on_its_line() {
+        let said = executing_block(&scope(), "test");
+        assert!(
+            said.contains("- #33 — The sibling [done] — ids: credit.fence"),
+            "{said}"
+        );
+        assert!(
+            said.contains("- #34 — The grid [open] <- CURRENT"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn an_executing_brief_sits_between_the_two_other_shapes() {
+        let executing = extra_for("", Brief::Executing(&scope()), "", "", "", INJECTOR);
+        let situated = extra_for("", Brief::Situated(&scope()), "", "", "", INJECTOR);
+        let alone = extra_for("", Brief::TaskOnly(&scope()), "", "", "", INJECTOR);
+        assert!(executing.len() < situated.len());
+        assert!(executing.len() > alone.len());
+        assert!(executing.contains("CURRENT ISSUE #34"), "{executing}");
+    }
+
+    #[test]
+    fn the_rule_card_sits_between_the_instructions_and_the_configuration() {
+        let said = extra_for(
+            "do this",
+            Brief::Situated(&scope()),
+            "A Capability reads, and only reads.",
+            "<file path=\"a\">x</file>",
+            "",
+            INJECTOR,
+        );
+        let instructions = said.find("do this").expect("the instructions");
+        let rules = said.find("--- ARCHITECTURE RULES").expect("the card");
+        let config = said.find("--- REPOSITORY CONFIGURATION").expect("config");
+        assert!(instructions < rules && rules < config, "{said}");
+        assert!(said.contains("A Capability reads, and only reads."));
+        assert!(said.contains("stands for docs/ARCHITECTURE.md"));
+    }
+
+    #[test]
+    fn a_task_declaring_no_unit_gets_no_rules_block() {
+        let said = extra_for("do this", Brief::Situated(&scope()), "  ", "", "", INJECTOR);
+        assert!(!said.contains("ARCHITECTURE RULES"), "{said}");
+        assert_eq!(rules_block("", INJECTOR), "");
+    }
+
+    #[test]
+    fn a_card_that_mentions_a_field_is_not_substituted() {
+        let said = rules_block("the manifest's {card} field", INJECTOR);
+        assert!(said.contains("the manifest's {card} field"), "{said}");
+    }
 
     #[test]
     fn the_preamble_names_the_same_markers_the_domain_reads() {
@@ -761,6 +918,7 @@ mod tests {
             Brief::TaskOnly(&scope()),
             "",
             "",
+            "",
             INJECTOR,
         );
         assert!(said.contains("work on #34 of milestone #12"), "{said}");
@@ -795,7 +953,7 @@ mod tests {
 
     #[test]
     fn instructions_come_before_the_scope_because_scope_is_the_long_part() {
-        let said = extra_for("do this", Brief::Situated(&scope()), "", "", INJECTOR);
+        let said = extra_for("do this", Brief::Situated(&scope()), "", "", "", INJECTOR);
         let instructions = said.find("do this").expect("the instructions");
         let block = said.find("--- SCOPE").expect("the scope");
         assert!(instructions < block);
@@ -805,7 +963,7 @@ mod tests {
     fn a_stage_without_instructions_still_gets_its_scope() {
         // /create-test has no instructions of its own, and would otherwise be the only
         // paid session of the round that ignores which task it is testing.
-        let said = extra_for("", Brief::Situated(&scope()), "", "", INJECTOR);
+        let said = extra_for("", Brief::Situated(&scope()), "", "", "", INJECTOR);
         assert!(said.contains("ISSUE #34"));
         assert!(!said.starts_with('\n'));
     }
@@ -817,6 +975,7 @@ mod tests {
         let said = extra_for(
             "do this",
             Brief::Situated(&scope()),
+            "",
             "<file path=\"a\">x</file>",
             "",
             INJECTOR,
@@ -834,6 +993,7 @@ mod tests {
         let said = extra_for(
             "do this",
             Brief::Situated(&scope()),
+            "",
             "<file path=\"a\">x</file>",
             "<signatures path=\"src/a.rs\">pub fn alpha()</signatures>",
             INJECTOR,
@@ -847,7 +1007,14 @@ mod tests {
 
     #[test]
     fn a_task_naming_no_indexed_file_gets_no_signatures_block() {
-        let said = extra_for("do this", Brief::Situated(&scope()), "", "   ", INJECTOR);
+        let said = extra_for(
+            "do this",
+            Brief::Situated(&scope()),
+            "",
+            "",
+            "   ",
+            INJECTOR,
+        );
         assert!(!said.contains("PUBLIC SIGNATURES"), "{said}");
         assert_eq!(signatures_block("", INJECTOR), "");
     }
@@ -865,7 +1032,7 @@ mod tests {
         // Not a stated absence: it asks the session for no gesture and changes
         // nothing about its work, so a paragraph saying so would be paid for on
         // every turn to say "carry on as usual".
-        let said = extra_for("do this", Brief::Situated(&scope()), "", "", INJECTOR);
+        let said = extra_for("do this", Brief::Situated(&scope()), "", "", "", INJECTOR);
         assert!(!said.contains("REPOSITORY CONFIGURATION"), "{said}");
         assert_eq!(stack_block("   \n ", INJECTOR), "");
     }
@@ -891,7 +1058,7 @@ mod tests {
     fn an_unscoped_stage_gets_no_issue_block_to_hunt_for() {
         // A stage that works on no task: giving it an empty ISSUE block
         // would give it something to hunt for.
-        let said = extra_for("open the next item", Brief::Unscoped, "", "", INJECTOR);
+        let said = extra_for("open the next item", Brief::Unscoped, "", "", "", INJECTOR);
         assert_eq!(said, "open the next item");
         assert!(!said.contains("ISSUE #"));
     }
@@ -901,6 +1068,7 @@ mod tests {
         let said = extra_for(
             "work on #{num} ({title})",
             Brief::Situated(&scope()),
+            "",
             "",
             "",
             INJECTOR,
