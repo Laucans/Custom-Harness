@@ -137,7 +137,6 @@ impl RaiseDecision {
         let question = Question {
             kind: Some("port".to_string()),
             blocks: format!("port {port}"),
-            round: 1,
             ..Question::default()
         };
         let kept = sections::replace(body, &[(sections::DECISION, &question.render())]);
@@ -369,6 +368,7 @@ mod tests {
         )
         .expect("a question");
         assert_eq!(kept.kind.as_deref(), Some("port"));
+        assert_eq!(kept.round, 1);
         assert!(
             kept.blocks
                 .starts_with("port payments — Stripe, 2.9% a charge"),

@@ -380,6 +380,8 @@ mod tests {
             Err("Stripe already serves payments".to_string())
         );
         assert!(change(&ports[0], "MySQL", "").is_err());
+        assert_eq!(slug("Amazon  SES"), "amazon-ses");
+        assert_eq!(slug("!Adyen."), "adyen");
     }
 
     proptest! {

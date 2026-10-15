@@ -421,7 +421,17 @@ mod tests {
             used_by: vec!["nowhere.sendMail".to_string()],
             ..PortDraft::default()
         });
+        bad.ports.push(PortDraft {
+            id: "sms".to_string(),
+            provider: "Twilio".to_string(),
+            tech_kind: "rest".to_string(),
+            ..PortDraft::default()
+        });
         let gaps = bad.gaps(&reads, &writes);
+        assert!(
+            gaps.contains(&"sms does not say what wraps its provider".to_string()),
+            "a kind without its name: {gaps:?}"
+        );
         for said in [
             "payments has no provider",
             "payments keeps state: billing.listInvoices reads our mirror",
@@ -456,7 +466,7 @@ mod tests {
 
     #[test]
     fn the_ports_are_written_as_contract_q_has_them() {
-        let draft = parse_ports(answer(), "").expect("read");
+        let mut draft = parse_ports(answer(), "").expect("read");
         let json: serde_json::Value =
             serde_json::from_str(&draft.ports_json().expect("json")).expect("json");
         assert_eq!(json["version"], 1);
@@ -476,6 +486,117 @@ mod tests {
                 .and_then(|t| t.get("version"))
                 .is_none()
         );
+        assert_eq!(json["ports"][0]["tech"]["version"], "16");
+        assert_eq!(json["ports"][1]["cost"], "1.5%");
+        draft.ports[1].cost = " ".to_string();
+        let json: serde_json::Value =
+            serde_json::from_str(&draft.ports_json().expect("json")).expect("json");
+        assert!(json["ports"][1].get("cost").is_none(), "no cost said");
+    }
+
+    #[test]
+    fn the_prompt_carries_the_brief_the_decisions_the_rules_the_screens_and_the_tables() {
+        use crate::domain::creation::{ComponentRef, Question, Requirement};
+        use crate::domain::data_draft::{DataDraft, Table};
+        let mut c = Creation::new("app", "me/app");
+        c.brief = " a ledger ".to_string();
+        c.scope = "## Goal".to_string();
+        assert!(
+            !ports_prompt(&c, &Context::default()).contains("## Decisions"),
+            "none answered"
+        );
+        c.questions = vec![
+            Question {
+                title: "Pay online?".to_string(),
+                answer: " yes ".to_string(),
+                ..Question::default()
+            },
+            Question {
+                title: "Open?".to_string(),
+                ..Question::default()
+            },
+        ];
+        c.requirements = vec![
+            Requirement {
+                id: 1,
+                title: "Pay".to_string(),
+                body: "by card".to_string(),
+                family: Family::Business,
+                ..Requirement::default()
+            },
+            Requirement {
+                id: 2,
+                title: "Browse".to_string(),
+                family: Family::Journey,
+                ..Requirement::default()
+            },
+        ];
+        c.data = Some(DataDraft {
+            tables: vec![
+                Table {
+                    name: "invoice".to_string(),
+                    ..Table::default()
+                },
+                Table {
+                    name: "line".to_string(),
+                    ..Table::default()
+                },
+            ],
+            ..DataDraft::default()
+        });
+        let ctx = Context {
+            components: vec![ComponentRef {
+                name: "InvoiceList".to_string(),
+                system: "billing".to_string(),
+                needs: vec!["billing.listInvoices".to_string()],
+                actions: vec!["billing.payInvoice".to_string()],
+                ..ComponentRef::default()
+            }],
+            ..Context::default()
+        };
+        let prompt = ports_prompt(&c, &ctx);
+        assert!(prompt.starts_with("You list the dependencies a product needs OUTSIDE itself"));
+        assert!(prompt.contains("## What the application does\n\na ledger\n\n"));
+        assert!(
+            prompt.contains("## Decisions\n\n- Pay online? — yes\n\n"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("Open?"), "only the answered");
+        assert!(prompt.contains("## Scope\n\n## Goal\n\n## Rules\n\n"));
+        assert!(prompt.contains("- R1 (business) Pay — by card\n"));
+        assert!(prompt.contains("- R2 (journey) Browse — \n"));
+        assert!(prompt.contains(
+            "- InvoiceList (billing): reads billing.listInvoices; triggers billing.payInvoice\n"
+        ));
+        assert!(prompt.ends_with("\n## Data model\n\nTables: invoice, line\n"));
+    }
+
+    #[test]
+    fn an_id_is_kebab_case_from_a_letter_and_a_secret_upper_snake_from_one() {
+        for (id, is) in [
+            ("mail", true),
+            ("object-storage-2", true),
+            ("2mail", false),
+            ("-mail", false),
+            ("Mail", false),
+            ("mail_box", false),
+            ("", false),
+        ] {
+            assert_eq!(is_id(id), is, "{id}");
+        }
+        for (name, is) in [
+            ("STRIPE_KEY_2", true),
+            ("2KEY", false),
+            ("_KEY", false),
+            ("Key", false),
+            ("KEY-2", false),
+            ("", false),
+        ] {
+            assert_eq!(is_secret(name), is, "{name}");
+        }
+        assert_eq!(slug("  Google  Cloud! "), "google-cloud");
+        assert_eq!(slug("Amazon SES"), "amazon-ses");
+        assert_eq!(slug("--"), "");
     }
 
     proptest! {

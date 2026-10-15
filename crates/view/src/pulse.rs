@@ -238,6 +238,12 @@ mod tests {
         // A write refused may still have touched the workspace: it beats too.
         assert!(mockups.write("b", "x", b"").is_err());
         assert!(heard(&mut ears), "write, refused");
+        assert_eq!(
+            mockups.write_product("b", "ports.json", b"{}"),
+            Err("ports.json: this mock-up cannot write at the product's root".to_string()),
+            "a mock-up that cannot, by default"
+        );
+        assert!(heard(&mut ears), "write at the root, refused");
     }
 
     #[test]

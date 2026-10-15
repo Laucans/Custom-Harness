@@ -1088,6 +1088,76 @@ mod tests {
     }
 
     #[test]
+    fn the_creation_s_files_at_the_root_are_written_and_published_beside_the_mock_up() {
+        let dir = std::env::temp_dir().join(format!("harness-view-product-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let origin = dir.join("origin.git");
+        let work = dir.join("work");
+        fs::create_dir_all(work.join("mock")).expect("dir");
+        let git = |at: &Path, args: &[&str]| -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(at)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(
+            &dir,
+            &["init", "-q", "--bare", "-b", "main_agent", "origin.git"],
+        );
+        git(&work, &["init", "-q", "-b", "main_agent"]);
+        for (key, value) in [
+            ("user.name", "t"),
+            ("user.email", "t@t"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git(&work, &["config", key, value]);
+        }
+        git(
+            &work,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        fs::write(work.join("mock/pages.json"), "{}").expect("write");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-q", "-m", "base"]);
+        git(&work, &["push", "-q", "origin", "main_agent"]);
+        git(&work, &["checkout", "-q", "--detach"]);
+
+        let mockups = GitMockups::new(Arc::new(Mirror::local(&work)), &dir.join("ws"));
+        let folder = mockups.workspace("main_agent").expect("a workspace");
+        assert_eq!(
+            GitMockups::staged(&folder),
+            vec!["add", "-A", "--", "mock"],
+            "no ports.json yet: mock/ alone"
+        );
+        assert_eq!(
+            mockups.write_product("main_agent", "notes.txt", b"x"),
+            Err("notes.txt is no file the creation writes at the root".to_string())
+        );
+        assert!(!folder.join("notes.txt").exists());
+        mockups
+            .write_product("main_agent", "ports.json", b"{\"version\": 1}")
+            .expect("written");
+        assert_eq!(
+            GitMockups::staged(&folder),
+            vec!["add", "-A", "--", "mock", "ports.json"]
+        );
+        let published = mockups.publish("main_agent", "ports").expect("published");
+        let on_origin = git(&origin, &["rev-parse", "main_agent"]);
+        let shown = git(&origin, &["show", "main_agent:ports.json"]);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(published, on_origin);
+        assert_eq!(shown, "{\"version\": 1}");
+    }
+
+    #[test]
     fn a_splice_takes_the_named_entries_from_the_source() {
         let base = b"040000 tree a\tdesign\x00100644 blob b\tpages.json\x00040000 tree c\tkit\x00";
         let source = b"040000 tree d\tdesign\x00100644 blob e\tpages.json\x00";
@@ -1096,6 +1166,23 @@ mod tests {
             out,
             "100644 blob b\tpages.json\x00040000 tree d\tdesign\x00"
         );
+    }
+
+    #[test]
+    fn a_folder_writes_only_the_creation_s_files_at_its_root() {
+        let dir = std::env::temp_dir().join(format!("harness-dir-product-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mockups = DirMockups::new(&dir);
+        assert_eq!(
+            mockups.write_product("main_agent", "mock/x.html", b"x"),
+            Err("mock/x.html is no file the creation writes at the root".to_string())
+        );
+        mockups
+            .write_product("main_agent", "ports.json", b"{}")
+            .expect("written");
+        let written = fs::read_to_string(dir.join(mockup::slug("main_agent")).join("ports.json"));
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(written.expect("there"), "{}");
     }
 
     #[test]

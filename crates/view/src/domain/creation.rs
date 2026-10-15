@@ -3367,6 +3367,38 @@ mod tests {
     }
 
     #[test]
+    fn the_roadmap_issue_lists_the_ports_and_who_uses_them() {
+        use crate::domain::ports_draft::{PortDraft, PortsDraft, database};
+        let mut c = ready();
+        assert_eq!(ports_section(&c), "", "no ports drafted");
+        c.ports = Some(PortsDraft {
+            ports: vec![
+                database(),
+                PortDraft {
+                    id: "mail".to_string(),
+                    purpose: " Receipts ".to_string(),
+                    provider: "Postmark".to_string(),
+                    tech_kind: "rest".to_string(),
+                    tech_name: "postmark".to_string(),
+                    used_by: vec!["billing.send".to_string(), "billing.remind".to_string()],
+                    ..PortDraft::default()
+                },
+            ],
+            ..PortsDraft::default()
+        });
+        let section = ports_section(&c);
+        assert!(section.starts_with("\n## Ports\n\nEverything outside the product"));
+        assert!(
+            section.contains("\n- **mail** — Postmark (rest postmark): Receipts — used by billing.send, billing.remind\n"),
+            "{section}"
+        );
+        assert!(
+            section.contains("- **database** — PostgreSQL 16 (sql postgres), keeps state: "),
+            "{section}"
+        );
+    }
+
+    #[test]
     fn the_roadmap_issue_names_the_data_model_and_its_invariants() {
         use super::super::data_draft::{Aggregate, DataDraft, Invariant, Table};
         let mut c = ready();
@@ -3628,11 +3660,22 @@ mod tests {
             validated: true,
         });
         assert!(c.ports_validated());
-        c.requirements[0].title = "Pay twice".to_string();
-        assert!(c.ports_stale());
-        assert!(!c.ports_validated(), "validated, but from other rules");
         c.accepted = true;
+        assert_eq!(mark(&c, Step::Ports), Mark::Done);
+        if let Some(data) = c.data.as_mut() {
+            data.writes
+                .insert("billing.pay".to_string(), vec!["line.total".to_string()]);
+        }
+        assert!(c.ports_stale());
+        assert!(!c.ports_validated(), "validated, but from other writes");
+        assert_eq!(
+            mark(&c, Step::Data),
+            Mark::Done,
+            "the data model is not stale"
+        );
         assert_eq!(mark(&c, Step::Ports), Mark::Stale);
+        c.requirements[0].title = "Pay twice".to_string();
+        assert!(c.ports_stale(), "the rules moved too");
     }
 
     #[test]
