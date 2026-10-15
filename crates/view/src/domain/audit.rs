@@ -132,6 +132,18 @@ impl Audit {
     }
 }
 
+impl Audit {
+    /// The parts-unnamed findings of a micro-frontend whose fragment, as
+    /// read now (`live`, from [`unnamed_parts`]), names all its parts: gone,
+    /// whoever named them.
+    pub fn named_since(&mut self, live: &[Finding]) {
+        self.findings.retain(|f| {
+            f.check != Some(Check::PartUnnamed)
+                || live.iter().any(|l| l.units.first() == f.units.first())
+        });
+    }
+}
+
 /// The micro-frontends whose fragment, as read, names no part for one of
 /// its needs or actions: what a part must carry for the gates and the
 /// rules' tests to find it (contract D). A fragment not read is not judged.

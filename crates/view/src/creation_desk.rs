@@ -18,13 +18,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::data_desk::{DataDesk, Issue};
 use crate::domain::annotations::Kind as PinKind;
-use crate::domain::audit::{audit_of, audit_prompt, fix_prompt};
+use crate::domain::audit::{audit_of, audit_prompt, fix_prompt, unnamed_parts};
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, RuleChange,
-    RulesSent, Step, componentize_prompt, decompose_prompt, examples_part, examples_taken,
-    grill_prompt, manifest_repair_prompt, mockups_prompt, not_componentized, parse_brief,
-    parse_proposals, parse_requirements, parse_round, parse_ties, requirements_prompt, rule_prompt,
-    rules_change_prompt, scope_prompt, unfenced,
+    RulesSent, Step, componentize_prompt, cut_repair_prompt, decompose_prompt, examples_part,
+    examples_taken, grill_prompt, manifest_repair_prompt, mockups_prompt, not_componentized,
+    parse_brief, parse_proposals, parse_requirements, parse_round, parse_ties, requirements_prompt,
+    rule_prompt, rules_change_prompt, scope_prompt, unfenced,
 };
 use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
 use crate::domain::design::Entry;
@@ -645,12 +645,27 @@ impl CreationDesk {
             });
             let prompt = fix_prompt(&rules, &finding);
             let model = self.setup.model.clone();
-            tokio::task::spawn_blocking(move || {
+            let desk = self.clone();
+            let left = tokio::task::spawn_blocking(move || {
                 let dir = mockups.workspace(&branch)?;
-                oneshot.work_in(&model, &prompt, &dir)
+                oneshot.work_in(&model, &prompt, &dir)?;
+                let at = Session {
+                    oneshot: oneshot.as_ref(),
+                    model: &model,
+                    rules: &rules,
+                    dir: &dir,
+                };
+                gated(&desk, &at, mockups.as_ref(), &branch)
             })
             .await
             .map_err(|e| format!("the session did not finish: {e}"))??;
+            if !left.is_empty() {
+                return Err(format!(
+                    "the fix is applied, but the gates still refuse the mock-up after \
+                     {CUT_REPAIRS} repairs: {}",
+                    left.join("; ")
+                ));
+            }
         }
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
@@ -838,26 +853,37 @@ impl CreationDesk {
         // too, where there is a mock-up to read.
         // So is a micro-frontend that names no part for one of its needs or
         // actions: nothing a gate or a rule's test could find.
-        let dangling = match &self.setup.mockups {
+        let (dangling, unnamed) = match &self.setup.mockups {
             Some(_) => {
                 let ctx = self.context(&self.existing()?).await;
                 let pages: Vec<String> = ctx.pages.iter().map(|p| p.path.clone()).collect();
                 let components: Vec<String> =
                     ctx.components.iter().map(|c| c.name.clone()).collect();
-                let mut gaps = self.existing()?.dangling(&pages, &components);
-                gaps.extend(
-                    crate::domain::audit::unnamed_parts(&ctx.components)
-                        .into_iter()
-                        .map(|f| f.why),
-                );
-                gaps
+                (
+                    self.existing()?.dangling(&pages, &components),
+                    Some(unnamed_parts(&ctx.components)),
+                )
             }
-            None => Vec::new(),
+            None => (Vec::new(), None),
         };
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
+        // A part named since the guard ran no longer blocks: the fragments
+        // as they are now say so.
+        if let (Some(audit), Some(live)) = (record.audit.as_mut(), &unnamed) {
+            audit.named_since(live);
+        }
         let gaps: Vec<String> = record.rule_gaps().into_iter().chain(dangling).collect();
+        // The guard's own findings already said stand once.
+        let gaps: Vec<String> = unnamed
+            .into_iter()
+            .flatten()
+            .map(|f| f.why)
+            .filter(|why| !gaps.iter().any(|g| g.contains(why.trim())))
+            .chain(gaps.clone())
+            .collect();
         if !gaps.is_empty() {
+            self.keep(&record)?;
             return Err(gaps.join("; "));
         }
         record.validate_rules()?;
@@ -1922,22 +1948,8 @@ impl CreationDesk {
                 rules: &rules,
                 dir: &dir,
             };
-            let state = read_back(&desk, &at, mockups.as_ref(), &branch)?;
-            let mut pages = Vec::new();
-            for page in &state.pages {
-                let html = mockups.file(&branch, &page.path)?.unwrap_or_default();
-                pages.push((
-                    page.path.clone(),
-                    String::from_utf8_lossy(&html).into_owned(),
-                ));
-            }
-            let mut components = Vec::new();
-            for c in &state.components {
-                // An empty path is no file: the port reads nothing there.
-                let there = mockups.file(&branch, &c.fragment)?.is_some();
-                components.push((c.name.clone(), there));
-            }
-            Ok::<_, String>((said, not_componentized(&pages, &components)))
+            let problems = gated(&desk, &at, mockups.as_ref(), &branch)?;
+            Ok::<_, String>((said, problems))
         })
         .await
         .map_err(|e| format!("the session did not finish: {e}"));
@@ -1949,11 +1961,11 @@ impl CreationDesk {
             .await;
         if !problems.is_empty() {
             return Err(format!(
-                "the mock-up is not made of micro-frontends yet: {}",
+                "the gates still refuse the mock-up after {CUT_REPAIRS} repairs: {}",
                 problems.join("; ")
             ));
         }
-        self.step("every page is made of micro-frontends");
+        self.step("every page is made of micro-frontends, every part named");
         let _held = self.record.lock().await;
         let mut kept = self.existing()?;
         kept.componentized = Some(said);
@@ -2006,6 +2018,79 @@ fn read_back(
             Err(why) => return Err(why),
         }
     }
+}
+
+/// How many times a session is sent back to what the cut's gates refuse
+/// before the job stops on what is left.
+const CUT_REPAIRS: u32 = 3;
+
+/// The cut's gates run on what a session left in `branch`, and the session
+/// sent back to fix what they refuse until they pass, `CUT_REPAIRS` times
+/// at most: what they still refuse. A session that writes the cut never
+/// hands the human a mock-up the rules cannot be validated on.
+fn gated(
+    desk: &CreationDesk,
+    session: &Session<'_>,
+    mockups: &dyn Mockups,
+    branch: &str,
+) -> Result<Vec<String>, String> {
+    let mut repairs = 0;
+    loop {
+        let gaps = cut_gaps(desk, session, mockups, branch)?;
+        if gaps.is_empty() || repairs >= CUT_REPAIRS {
+            return Ok(gaps);
+        }
+        repairs += 1;
+        desk.step(&format!(
+            "the gates refuse {} point(s) — the session fixes them ({repairs} of {CUT_REPAIRS})",
+            gaps.len()
+        ));
+        session.oneshot.work_in(
+            session.model,
+            &cut_repair_prompt(session.rules, &gaps),
+            session.dir,
+        )?;
+    }
+}
+
+/// What the cut's gates refuse on `branch`'s mock-up: a page not made of
+/// listed micro-frontends, and a fragment naming no part for one of its
+/// needs or actions (contract D) — the same the rules' validation refuses.
+fn cut_gaps(
+    desk: &CreationDesk,
+    session: &Session<'_>,
+    mockups: &dyn Mockups,
+    branch: &str,
+) -> Result<Vec<String>, String> {
+    let state = read_back(desk, session, mockups, branch)?;
+    let mut pages = Vec::new();
+    for page in &state.pages {
+        let html = mockups.file(branch, &page.path)?.unwrap_or_default();
+        pages.push((
+            page.path.clone(),
+            String::from_utf8_lossy(&html).into_owned(),
+        ));
+    }
+    let mut components = Vec::new();
+    let mut cut = Vec::new();
+    for c in &state.components {
+        // An empty path is no file: the port reads nothing there.
+        let markup = mockups.file(branch, &c.fragment)?;
+        components.push((c.name.clone(), markup.is_some()));
+        // The gap said is the fix: the fragment and the units it names.
+        cut.push(ComponentRef {
+            needs: c.needs.clone(),
+            actions: c.actions.clone(),
+            fragment: c.fragment.clone(),
+            markup: markup
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default(),
+            ..ComponentRef::default()
+        });
+    }
+    let mut gaps = not_componentized(&pages, &components);
+    gaps.extend(unnamed_parts(&cut).into_iter().map(|f| f.fix));
+    Ok(gaps)
 }
 
 /// How often the mock-up's drawing and the micro-frontends' remake are
@@ -2199,6 +2284,12 @@ mod tests {
                 prompt.contains("the branch `main_agent`"),
                 "the branch is in the prompt"
             );
+            // Sent back to what the gates refuse: a lazy session fixes
+            // nothing.
+            if prompt.contains("The factory's gates refuse the mock-up") {
+                assert!(self.lazy, "only the lazy session leaves a gap");
+                return Ok("nothing fixed".to_string());
+            }
             // The mock-up is drawn and cut by the drawing's model; a guard's
             // fix is the creation's own.
             let drawing = !prompt.contains("The architecture's guard found this");
@@ -2629,7 +2720,7 @@ mod tests {
         assert!(
             job.steps
                 .iter()
-                .any(|s| s == "every page is made of micro-frontends"),
+                .any(|s| s == "every page is made of micro-frontends, every part named"),
             "{:?}",
             job.steps
         );
@@ -3172,6 +3263,10 @@ mod tests {
 
     /// A creation desk with a drawing under way, over the mock-ups in `dir`.
     fn desk_drawing_in(dir: &Path) -> CreationDesk {
+        desk_with(dir, None)
+    }
+
+    fn desk_with(dir: &Path, oneshot: Option<Arc<dyn Oneshot>>) -> CreationDesk {
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(dir));
         let book = Arc::new(Book::default());
         book.keep_creation(
@@ -3185,7 +3280,7 @@ mod tests {
             foundry: Arc::new(Nothing),
             factories_dir: dir.join("factories"),
             integration_branch: "main_agent".to_string(),
-            oneshot: None,
+            oneshot,
             model: "m".to_string(),
             draw_model: "d".to_string(),
             mockups: Some(mockups),
@@ -3196,6 +3291,213 @@ mod tests {
         });
         desk.begin(Work::Mockups).expect("nothing under way");
         desk
+    }
+
+    /// A session sent back to the gates' gaps: it names the part on the
+    /// repair it is told to fix it on, never before; counts its repairs.
+    struct Tagger {
+        fixes_on: u32,
+        repairs: Mutex<u32>,
+    }
+
+    impl Oneshot for Tagger {
+        fn ask(&self, _: &str, _: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+
+        fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
+            if prompt.contains("The architecture's guard found this") {
+                return Ok("applied".to_string());
+            }
+            assert!(prompt.contains("The factory's gates refuse the mock-up"));
+            assert!(
+                prompt.contains("components/Lines.html") && prompt.contains("ledger.addLine"),
+                "the gap names the file and the unit: {prompt}"
+            );
+            let repairs = {
+                let mut count = self.repairs.lock().expect("a count");
+                *count += 1;
+                *count
+            };
+            if repairs == self.fixes_on {
+                std::fs::write(
+                    dir.join("mock/components/Lines.html"),
+                    r#"<ul data-reads="ledger.listLines"></ul><button data-writes="ledger.addLine">+</button>"#,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok("fixed".to_string())
+        }
+    }
+
+    /// A cut whose fragment names no part for its read nor its write.
+    fn half_named(tag: &str) -> PathBuf {
+        let dir = product(tag);
+        let write = |path: &str, text: &str| {
+            let full = dir.join("main_agent/mock").join(path);
+            std::fs::create_dir_all(full.parent().expect("a folder")).expect("folder");
+            std::fs::write(full, text).expect("write");
+        };
+        write(
+            "pages.json",
+            r#"{"version":1,"pages":[{"path":"pages/home.html","title":"Home","components":["Lines"]}],"components":[{"name":"Lines","system":"ledger","fragment":"components/Lines.html","needs":["ledger.listLines"],"actions":["ledger.addLine"]}]}"#,
+        );
+        write("pages/home.html", r#"<div data-component="Lines"></div>"#);
+        write("components/Lines.html", "<ul></ul><button>+</button>");
+        dir
+    }
+
+    // What the gates refuse goes back to the session until they pass, and
+    // a session that never fixes it stops after `CUT_REPAIRS` repairs.
+    #[test]
+    fn the_cut_s_gates_send_the_session_back_until_they_pass() {
+        let first = half_named("gated");
+        let desk = desk_drawing_in(&first);
+        let mockups = DirMockups::new(&first);
+        let workspace = first.join("main_agent");
+        let tagger = Tagger {
+            fixes_on: 2,
+            repairs: Mutex::new(0),
+        };
+        let at = Session {
+            oneshot: &tagger,
+            model: "d",
+            rules: "R",
+            dir: &workspace,
+        };
+        assert!(
+            gated(&desk, &at, &mockups, "main_agent")
+                .expect("read")
+                .is_empty()
+        );
+        assert_eq!(*tagger.repairs.lock().expect("a count"), 2);
+        assert!(desk.job().is_some_and(|j| {
+            j.steps
+                .iter()
+                .any(|s| s == "the gates refuse 1 point(s) — the session fixes them (2 of 3)")
+        }));
+
+        let dir = half_named("gated-never");
+        let desk = desk_drawing_in(&dir);
+        let mockups = DirMockups::new(&dir);
+        let workspace = dir.join("main_agent");
+        let never = Tagger {
+            fixes_on: 0,
+            repairs: Mutex::new(0),
+        };
+        let at = Session {
+            oneshot: &never,
+            model: "d",
+            rules: "R",
+            dir: &workspace,
+        };
+        let left = gated(&desk, &at, &mockups, "main_agent").expect("read");
+        assert_eq!(*never.repairs.lock().expect("a count"), CUT_REPAIRS);
+        assert_eq!(left.len(), 1);
+        assert!(
+            left[0].contains("`mock/components/Lines.html`")
+                && left[0].ends_with(": ledger.addLine, ledger.listLines"),
+            "{}",
+            left[0]
+        );
+        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A desk on the half-named cut, its record carrying a finding the
+    /// guard made: a write passed off as a read.
+    fn guarded(tag: &str, fixes_on: u32) -> (PathBuf, CreationDesk) {
+        let dir = half_named(tag);
+        let desk = desk_with(
+            &dir,
+            Some(Arc::new(Tagger {
+                fixes_on,
+                repairs: Mutex::new(0),
+            })),
+        );
+        let mut record = desk.existing().expect("a creation");
+        record.audit = Some(crate::domain::audit::Audit {
+            findings: vec![crate::domain::audit::Finding {
+                id: 1,
+                check: Some(crate::domain::audit::Check::WriteAsRead),
+                units: vec!["ledger.listLines".to_string()],
+                why: "it saves".to_string(),
+                fix: "move it".to_string(),
+            }],
+            ..crate::domain::audit::Audit::default()
+        });
+        desk.keep(&record).expect("kept");
+        (dir, desk)
+    }
+
+    // A finding's fix goes through the cut's gates too: one they still
+    // refuse keeps the finding; one they pass takes it away.
+    #[tokio::test]
+    async fn a_finding_applied_is_resolved_only_once_the_gates_pass() {
+        let (dir, desk) = guarded("finding-refused", 0);
+        let why = desk.resolve_finding(1, true).await.expect_err("refused");
+        assert!(
+            why.starts_with("the fix is applied, but the gates still refuse")
+                && why.contains("ledger.addLine"),
+            "{why}"
+        );
+        let kept = desk.existing().expect("a creation");
+        assert_eq!(kept.audit.expect("an audit").findings.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (dir, desk) = guarded("finding-passed", 1);
+        let fixed = desk.resolve_finding(1, true).await.expect("applied");
+        assert!(fixed.audit.expect("an audit").findings.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The validation reads the fragments as they are: a part unnamed is
+    // said once, and a guard's finding on a part named since is gone.
+    #[tokio::test]
+    async fn the_validation_drops_a_part_unnamed_once_it_is_named() {
+        let (dir, desk) = guarded("named-since", 0);
+        let mut record = desk.existing().expect("a creation");
+        let ctx = desk.context(&record).await;
+        let live = unnamed_parts(&ctx.components);
+        assert_eq!(live.len(), 1);
+        if let Some(audit) = record.audit.as_mut() {
+            audit.findings.push(crate::domain::audit::Finding {
+                id: 2,
+                ..live[0].clone()
+            });
+        }
+        desk.keep(&record).expect("kept");
+        let why = desk.validate_rules().await.expect_err("unnamed");
+        assert_eq!(why.matches(live[0].why.as_str()).count(), 1, "{why}");
+        assert_eq!(
+            desk.existing()
+                .expect("a creation")
+                .audit
+                .expect("an audit")
+                .findings
+                .len(),
+            2,
+            "still unnamed, still there"
+        );
+
+        std::fs::write(
+            dir.join("main_agent/mock/components/Lines.html"),
+            r#"<ul data-reads="ledger.listLines"></ul><button data-writes="ledger.addLine">+</button>"#,
+        )
+        .expect("named");
+        let why = desk.validate_rules().await.expect_err("no rule yet");
+        assert!(!why.contains("names no part"), "{why}");
+        let left = desk
+            .existing()
+            .expect("a creation")
+            .audit
+            .expect("an audit");
+        assert_eq!(
+            left.findings.iter().map(|f| f.id).collect::<Vec<_>>(),
+            [1],
+            "the write passed off as a read stays"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Pins on two boards of this branch's mock-up and one of another
@@ -3831,7 +4133,7 @@ mod tests {
         assert_eq!(job.state, State::Failed);
         assert_eq!(
             job.why,
-            "the mock-up is not made of micro-frontends yet: `Home` has no fragment"
+            "the gates still refuse the mock-up after 3 repairs: `Home` has no fragment"
         );
         assert!(
             !job.steps.iter().any(|s| s.starts_with("publishing")),

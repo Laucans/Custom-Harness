@@ -517,6 +517,28 @@ pub fn generated_of(answer: &str, missing: &[String]) -> Result<Generated, Strin
     })
 }
 
+/// How many times a fragment naming no part for one of its units is asked
+/// again before it is written as it is.
+pub const RETAGS: u32 = 2;
+
+/// The generation asked again: `prompt` as first asked, the fragment it
+/// answered, and the units no part of it names.
+#[must_use]
+pub fn retag_prompt(prompt: &str, fragment: &str, untagged: &[String]) -> String {
+    let mut text = prompt.to_string();
+    let _ = write!(
+        text,
+        "\n\nYour last answer was refused by the gates: no part of its fragment names {}. \
+         Every actuator carries `data-writes=\"<DataCapability>\"` and every part that shows a \
+         read `data-reads=\"<Capability>\"`, on the element itself — each of the actions and needs \
+         at least once. Answer again, whole, in the same shape. The fragment refused:\n\n\
+         ```html\n{}\n```\n",
+        untagged.join(", "),
+        fragment.trim()
+    );
+    text
+}
+
 /// The body of the first fenced block of a language in a text.
 fn block(text: &str, lang: &str) -> Option<String> {
     let open = format!("```{lang}");

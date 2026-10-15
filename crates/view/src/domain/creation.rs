@@ -1846,6 +1846,28 @@ pub fn manifest_repair_prompt(rules: &str, why: &str) -> String {
     text
 }
 
+/// The session sent back to what the cut's gates refuse on the mock-up it
+/// left: each gap with the file and the units it is about.
+#[must_use]
+pub fn cut_repair_prompt(rules: &str, gaps: &[String]) -> String {
+    let mut text = rules.to_string();
+    text.push_str(
+        "\nThe factory's gates refuse the mock-up as you left it; the rules cannot be validated \
+         while one of these stands:\n\n",
+    );
+    for gap in gaps {
+        let _ = writeln!(text, "- {}", gap.trim());
+    }
+    text.push_str(
+        "\nFix every one in the files under `mock/`. Keep every page, every micro-frontend's name \
+         and what the human sees. Before you finish, read again each fragment you touched and \
+         check each of its `actions` has an element carrying `data-writes=\"<DataCapability>\"` \
+         and each of its `needs` one carrying `data-reads=\"<Capability>\"` — on the element \
+         itself, a `data-kit` one included. Say in one line what you fixed.\n",
+    );
+    text
+}
+
 /// The session that makes the accepted mock-up again of micro-frontends,
 /// keeping what the human saw: `rules` are the mock-up's own, `kit` the
 /// design system's components.
@@ -4392,6 +4414,23 @@ mod tests {
             ]
         );
         assert_eq!(not_componentized(&[], &listed), ["the mock-up has no page"]);
+    }
+
+    #[test]
+    fn the_cut_repair_prompt_lists_each_gap_after_the_rules() {
+        let text = cut_repair_prompt(
+            "RULES",
+            &[
+                " `Home` has no fragment ".to_string(),
+                "in `mock/x`".to_string(),
+            ],
+        );
+        assert!(text.starts_with("RULES\nThe factory's gates refuse"));
+        assert!(
+            text.contains("\n- `Home` has no fragment\n- in `mock/x`\n"),
+            "{text}"
+        );
+        assert!(text.contains("data-writes=\"<DataCapability>\""));
     }
 
     #[test]

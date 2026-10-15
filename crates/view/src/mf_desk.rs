@@ -453,8 +453,18 @@ impl MfDesk {
             &index.tokens.join(", "),
             &fixtures,
         );
-        let generated = mf_gen::generated_of(&ask(&oneshot, &model, prompt).await?, &missing)?;
-        let untagged = mf_gen::untagged(&generated.fragment, &spec);
+        let mut generated =
+            mf_gen::generated_of(&ask(&oneshot, &model, prompt.clone()).await?, &missing)?;
+        let mut untagged = mf_gen::untagged(&generated.fragment, &spec);
+        // The gates' check on the fragment, the answer asked again until it
+        // passes.
+        let mut retags = 0;
+        while !untagged.is_empty() && retags < mf_gen::RETAGS {
+            retags += 1;
+            let again = mf_gen::retag_prompt(&prompt, &generated.fragment, &untagged);
+            generated = mf_gen::generated_of(&ask(&oneshot, &model, again).await?, &missing)?;
+            untagged = mf_gen::untagged(&generated.fragment, &spec);
+        }
         let mockups = Arc::clone(&self.setup.mockups);
         let files = Arc::clone(&self.files);
         let branch_owned = branch.to_string();
@@ -609,11 +619,16 @@ mod tests {
     #[derive(Default)]
     struct Model {
         asked: Mutex<Vec<String>>,
+        /// It never names its actuator, however often it is asked.
+        stubborn: bool,
     }
 
     impl Oneshot for Model {
         fn ask(&self, _model: &str, prompt: &str) -> Result<String, String> {
             lock(&self.asked).push(prompt.to_string());
+            if prompt.starts_with("You plan one micro-frontend") && self.stubborn {
+                return Ok(r#"{"uses": [], "missing": []}"#.to_string());
+            }
             if prompt.starts_with("You plan one micro-frontend") {
                 return Ok(r#"{"uses": ["Button"], "missing": [{"title": "Fiche", "what": "a character sheet"}]}"#.to_string());
             }
@@ -623,6 +638,13 @@ mod tests {
                     "```html\n<ul data-reads=\"campagne.listerPjs\" data-v=\"{n}\"></ul>\n<!-- skipped r2: needs data it does not read -->\n```"
                 ));
             }
+            // The first answer forgets its actuator's name; the gates send
+            // it back.
+            if prompt.starts_with("You write one micro-frontend")
+                && (self.stubborn || !prompt.contains("refused by the gates"))
+            {
+                return Ok("```html\n<section><button class=\"primary\">Ajouter</button><ul data-reads=\"campagne.listerPjs\"></ul></section>\n```\n```json\n{\"campagne.listerPjs\": []}\n```".to_string());
+            }
             if prompt.starts_with("You write one micro-frontend") {
                 return Ok("```html\n<section><button class=\"primary\" data-writes=\"campagne.ajouterPj\">Ajouter</button><ul data-reads=\"campagne.listerPjs\"></ul></section>\n```\n```json\n{\"campagne.listerPjs\": [{\"id\": 1, \"nom\": \"Aldric\"}]}\n```".to_string());
             }
@@ -630,8 +652,9 @@ mod tests {
         }
     }
 
-    fn product() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("harness-mf-desk-{}", std::process::id()));
+    fn product(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("harness-mf-desk-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let write = |path: &str, text: &str| {
             let full = dir.join(path);
@@ -668,7 +691,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn a_micro_frontend_is_planned_its_missing_component_made_then_written() {
-        let dir = product();
+        let dir = product("planned");
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
         let model = Arc::new(Model::default());
         let pins: Arc<dyn NoteStore> = Arc::new(Shelf::default());
@@ -774,6 +797,69 @@ mod tests {
             "{write}"
         );
         assert!(write.contains("--color-primary") && !write.contains(".kit-button {"));
+        let again: Vec<&String> = asked
+            .iter()
+            .filter(|p| p.contains("refused by the gates"))
+            .collect();
+        assert_eq!(again.len(), 1, "asked again once");
+        assert!(
+            again[0].contains("names campagne.ajouterPj.")
+                && again[0].contains("<button class=\"primary\">Ajouter</button>"),
+            "{}",
+            again[0]
+        );
+    }
+
+    // A model that never names its actuator is asked again `RETAGS` times,
+    // then the fragment is written and the gap said.
+    #[tokio::test]
+    async fn a_fragment_the_gates_keep_refusing_is_asked_again_then_said() {
+        let dir = product("stubborn");
+        let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
+        let model = Arc::new(Model {
+            stubborn: true,
+            ..Model::default()
+        });
+        let desk = MfDesk::new(Setup {
+            mockups: Arc::clone(&mockups),
+            kit: None,
+            oneshot: Some(model.clone() as Arc<dyn Oneshot>),
+            model: "m".into(),
+            sessions: 1,
+        });
+        let spec = Spec {
+            name: "Pjs".into(),
+            system: "campagne".into(),
+            description: "Liste et ajoute les PJ".into(),
+            needs: vec!["campagne.listerPjs".into()],
+            actions: vec!["campagne.ajouterPj".into()],
+            props: BTreeMap::new(),
+        };
+        desk.start("main", vec![(spec, String::new())])
+            .expect("queued");
+        let mut job = None;
+        for _ in 0..200 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let now = desk.jobs("main").into_iter().next();
+            if now.as_ref().is_some_and(|j| !j.step.busy()) {
+                job = now;
+                break;
+            }
+        }
+        let job = job.expect("the generation ended");
+        let written = dir.join("main/mock/components/Pjs.html").is_file();
+        let _ = std::fs::remove_dir_all(&dir);
+        let again = lock(&model.asked)
+            .iter()
+            .filter(|p| p.contains("refused by the gates"))
+            .count();
+        assert_eq!(again, mf_gen::RETAGS as usize);
+        assert_eq!(job.step, Step::Done, "{}", job.why);
+        assert_eq!(
+            job.why,
+            "no part names campagne.ajouterPj: ask for it with a request"
+        );
+        assert!(written);
     }
 
     /// One request asking a micro-frontend's list to be bolder.

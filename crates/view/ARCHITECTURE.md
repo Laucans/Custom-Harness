@@ -281,8 +281,15 @@ It has two sections:
      for each micro-frontend (`poll_componentize`, seeded with whatever the
      branch already had — this call has no `discard()`, components persist
      across a retry, so one already there is never reported as just made),
-     and a gate refusing a page that injects none or one unlisted or
-     without a fragment (`not_componentized`). Then the **rules**
+     and the cut's gates run on what the session left (`gated`,
+     `cut_gaps`): a page that injects none or one unlisted or without a
+     fragment (`not_componentized`), a fragment naming no part for one of
+     its needs or actions (`audit::unnamed_parts`, contract D) — the same
+     the validation refuses. What they refuse goes back to the session
+     (`cut_repair_prompt`), `CUT_REPAIRS` times at most, before the job
+     stops on what is left; a guard's fix applied goes through them too,
+     and a micro-frontend generated alone is asked again
+     (`mf_gen::retag_prompt`, `RETAGS`) while a part is unnamed. Then the **rules**
      (`Requirement` in the code): read by the AI off the scope and the
      mock-up (`requirements_prompt`, `parse_requirements`,
      `POST /api/creation/requirements`), each a step of a `journey` or a
@@ -297,7 +304,9 @@ It has two sections:
      micro-frontend is generated again from there (`MockupPane.regenerate`).
      Validated (`Creation::validate_rules`, `POST /api/creation/rules/validate`)
      once each has its criterion and a support and no blocking finding is
-     left; any change takes it back; read off a cut that moved, they are
+     left — the fragments read as they are, so a guard's part-unnamed
+     finding on a part named since is gone (`Audit::named_since`); any
+     change takes it back; read off a cut that moved, they are
      stale (`rules_for`). An **Architecture** tab holds the guard
      (`domain::audit`, `POST /api/creation/audit`, run once by itself):
      names, systems' sizes and micro-frontends reaching into another
