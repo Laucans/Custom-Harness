@@ -963,6 +963,62 @@ mod tests {
     }
 
     #[test]
+    fn the_root_manifest_is_read_with_the_tree() {
+        let mut disk = crate::fake_disk::FakeDisk::default();
+        disk.existing.insert(
+            std::path::PathBuf::from("/r/Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*/capabilities/*\"]\n".to_string(),
+        );
+        disk.existing.insert(
+            std::path::PathBuf::from("/r/contracts/README.md"),
+            String::new(),
+        );
+        let tree = Tree::read(&disk, std::path::Path::new("/r"));
+        assert!(
+            tree.root_manifest
+                .as_deref()
+                .is_some_and(|toml| toml.contains("members")),
+            "{:?}",
+            tree.root_manifest
+        );
+        let bare = Tree::read(
+            &crate::fake_disk::FakeDisk::default(),
+            std::path::Path::new("/none"),
+        );
+        assert_eq!(bare.root_manifest, None);
+    }
+
+    #[test]
+    fn a_slice_listed_as_a_member_by_name_is_a_violation_and_plumbing_is_not() {
+        let listed = |members: &str| Tree {
+            root_manifest: Some(format!("[workspace]\nmembers = [{members}]\n")),
+            ..sound()
+        };
+        let by_name = violations(&listed("\"crates/credit/capabilities/risk\""), None);
+        assert!(
+            by_name
+                .iter()
+                .any(|v| v.contains("listed as a member by name")),
+            "{by_name:?}"
+        );
+        let data = violations(&listed("\"crates/dataguard/data-capabilities/add\""), None);
+        assert!(data.iter().any(|v| v.contains("by name")), "{data:?}");
+        for fine in [
+            "\"crates/*/capabilities/*\"",
+            "\"crates/dataguard/server\"",
+            "\"crates/credit/capabilities\"",
+            "\"apps/credit/capabilities/risk\"",
+            "\"crates/credit/queries/x\"",
+        ] {
+            let found = violations(&listed(fine), None);
+            assert!(
+                !found.iter().any(|v| v.contains("by name")),
+                "{fine}: {found:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_digest_is_the_one_build_mjs_writes() {
         assert_eq!(digest(&[]), "cbf29ce484222325");
         let files = vec![

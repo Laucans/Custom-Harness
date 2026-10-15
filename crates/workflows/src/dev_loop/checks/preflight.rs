@@ -12,10 +12,12 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::domain::{Halt, Outcome, Verdict, doctor, quota};
+use harness_core::domain::{Halt, Outcome, Verdict, budget, doctor, quota};
 use harness_core::execution::{Context, Verification};
 use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::costs::CostHistory;
+use harness_core::ports::store::spending::Spending;
 
 use crate::common::labels;
 use crate::dev_loop::data::board;
@@ -178,6 +180,218 @@ impl Verification<Loop> for DependenciesAreInstalled {
                 .collect::<Vec<_>>()
                 .join("; ")
         )))
+    }
+}
+
+/// The task has not yet spent what tasks of its kind cost.
+///
+/// Read before every paid stage of a task: what the task has cost so far,
+/// every run counted, against the budget of its unit — the third quartile
+/// of its kind's totals with half again on top, or a constant per unit
+/// while fewer than three were measured ([`budget::budget_for`]). A task
+/// past its budget stops before paying more, and the message says the two
+/// ways on: `--ignore-budget`, or cutting the task.
+///
+/// Fails open on an unknown unit: a task that declares nothing is judged
+/// against the default constant, never refused for lack of a tag.
+pub struct BudgetHasRoom {
+    /// What the task has spent.
+    pub spending: Rc<dyn Spending>,
+    /// What its kind costs.
+    pub history: Rc<dyn CostHistory>,
+    /// `--ignore-budget`: the human has decided the ceiling does not apply.
+    pub ignored: bool,
+}
+
+#[async_trait(?Send)]
+impl Verification<Loop> for BudgetHasRoom {
+    fn purpose(&self) -> String {
+        "the task has not spent more than tasks of its kind cost".to_string()
+    }
+
+    async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
+        if self.ignored {
+            ctx.traces
+                .say("--ignore-budget — paying whatever the task has already cost");
+            return Ok(Verdict::Continue);
+        }
+        let task = ctx.state.task_key.as_str();
+        if task.is_empty() {
+            return Ok(Verdict::Continue);
+        }
+        let unit = ctx.tags.unit.as_str();
+        let typical = self.history.typical(unit, &ctx.tags.profile)?;
+        let ceiling = budget::budget_for(unit, typical.as_ref());
+        let spent = self.spending.spent_on(task)?;
+        if spent >= ceiling {
+            return Err(Halt::Halted(format!(
+                "task #{task} has spent {spent:.2} $ of its {ceiling:.2} $ budget ({}) — \
+                 run with --ignore-budget to pay on, or cut the task",
+                match typical {
+                    Some(found) if found.count >= budget::ENOUGH => format!(
+                        "the third quartile of {} {} tasks, {:.2} $, with headroom",
+                        found.count,
+                        if unit.is_empty() { "untagged" } else { unit },
+                        found.p75
+                    ),
+                    _ => format!(
+                        "the default for a {} — fewer than {} measured",
+                        if unit.is_empty() {
+                            "task without a unit"
+                        } else {
+                            unit
+                        },
+                        budget::ENOUGH
+                    ),
+                }
+            )));
+        }
+        ctx.traces.debug(&format!(
+            "budget: #{task} has spent {spent:.2} $ of {ceiling:.2} $"
+        ));
+        Ok(Verdict::Continue)
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    use harness_core::domain::Tags;
+    use harness_core::execution::Settings;
+    use harness_core::ports::store::spending::Entry;
+    use harness_core::traces::Logbook;
+
+    struct Spent(f64);
+
+    impl Spending for Spent {
+        fn record(&self, _entry: &Entry<'_>) -> Outcome<()> {
+            Ok(())
+        }
+        fn spent_on(&self, _task: &str) -> Outcome<f64> {
+            Ok(self.0)
+        }
+    }
+
+    struct Costs(Option<budget::Typical>);
+
+    impl CostHistory for Costs {
+        fn typical(&self, _unit: &str, _profile: &str) -> Outcome<Option<budget::Typical>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn ctx(unit: &str) -> Context<Loop> {
+        let mut ctx = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            Loop {
+                task_key: "61".to_string(),
+                ..Loop::default()
+            },
+            Logbook::null(),
+        );
+        ctx.tags = Tags {
+            unit: unit.to_string(),
+            profile: "mid".to_string(),
+            side: String::new(),
+        };
+        ctx
+    }
+
+    fn check(spent: f64, typical: Option<budget::Typical>, ignored: bool) -> BudgetHasRoom {
+        BudgetHasRoom {
+            spending: Rc::new(Spent(spent)),
+            history: Rc::new(Costs(typical)),
+            ignored,
+        }
+    }
+
+    fn measured(count: usize, p75: f64) -> budget::Typical {
+        budget::Typical {
+            count,
+            median: p75 * 0.8,
+            p75,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_task_under_its_kind_s_budget_goes_on() {
+        let verdict = check(5.0, Some(measured(4, 4.0)), false)
+            .verify(&ctx("capability"))
+            .await
+            .expect("continues");
+        assert!(matches!(verdict, Verdict::Continue));
+    }
+
+    #[tokio::test]
+    async fn a_task_past_its_kind_s_budget_stops_and_names_both_ways_on() {
+        let err = check(6.0, Some(measured(4, 4.0)), false)
+            .verify(&ctx("capability"))
+            .await
+            .expect_err("stops at 4 * 1.5");
+        assert!(matches!(err, Halt::Halted(_)));
+        let why = err.reason();
+        assert!(why.contains("6.00 $ of its 6.00 $"), "{why}");
+        assert!(why.contains("--ignore-budget"), "{why}");
+        assert!(
+            why.contains("third quartile of 4 capability tasks"),
+            "{why}"
+        );
+    }
+
+    #[tokio::test]
+    async fn too_few_measured_tasks_fall_back_on_the_unit_s_constant() {
+        let err = check(9.0, Some(measured(2, 1.0)), false)
+            .verify(&ctx("capability"))
+            .await
+            .expect_err("8 $ is the capability default");
+        assert!(
+            err.reason().contains("fewer than 3 measured"),
+            "{}",
+            err.reason()
+        );
+        check(7.0, None, false)
+            .verify(&ctx("capability"))
+            .await
+            .expect("under the default");
+    }
+
+    #[tokio::test]
+    async fn a_task_without_a_unit_is_judged_against_the_default_not_refused() {
+        check(9.0, None, false)
+            .verify(&ctx(""))
+            .await
+            .expect("10 $ is the default for an untagged task");
+        let err = check(11.0, None, false)
+            .verify(&ctx(""))
+            .await
+            .expect_err("past it");
+        assert!(
+            err.reason().contains("task without a unit"),
+            "{}",
+            err.reason()
+        );
+    }
+
+    #[tokio::test]
+    async fn ignoring_the_budget_is_said_and_continues() {
+        let verdict = check(100.0, None, true)
+            .verify(&ctx("capability"))
+            .await
+            .expect("continues");
+        assert!(matches!(verdict, Verdict::Continue));
+    }
+
+    #[tokio::test]
+    async fn a_round_on_no_task_has_no_budget_to_check() {
+        let mut here = ctx("capability");
+        here.state.task_key = String::new();
+        check(100.0, None, false)
+            .verify(&here)
+            .await
+            .expect("nothing to judge");
     }
 }
 

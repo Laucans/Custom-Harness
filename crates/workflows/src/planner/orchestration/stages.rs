@@ -104,6 +104,7 @@ pub fn plan(ports: &Ports, config: &Config) -> Stage<PlannerState> {
             })],
         }),
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.plan.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskForPlan {

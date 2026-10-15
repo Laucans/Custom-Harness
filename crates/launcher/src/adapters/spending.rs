@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 use harness_adapters::shell::process;
 use harness_adapters::store::ledger::{Ledger, Row};
-use harness_core::domain::{Halt, Outcome, quota};
+use harness_core::domain::{Halt, Outcome, budget, quota};
+use harness_core::ports::store::costs::CostHistory;
 use harness_core::ports::store::spending::{Entry, Spending};
 
 /// The ledger for this run.
@@ -82,6 +83,20 @@ impl Spending for LedgerSpending {
 
     fn failures(&self, task: &str, stage: &str, fingerprint: &str) -> Outcome<u32> {
         self.ledger.failures(task, stage, fingerprint)
+    }
+
+    fn interrupted(&self, task: &str, stage: &str) -> Outcome<Option<String>> {
+        self.ledger.interrupted(task, stage)
+    }
+
+    fn spent_on(&self, task: &str) -> Outcome<f64> {
+        self.ledger.spent_on(task)
+    }
+}
+
+impl CostHistory for LedgerSpending {
+    fn typical(&self, unit: &str, profile: &str) -> Outcome<Option<budget::Typical>> {
+        self.ledger.typical(unit, profile)
     }
 }
 

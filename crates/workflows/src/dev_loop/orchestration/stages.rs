@@ -48,6 +48,7 @@ use crate::dev_loop::action::actions::{Ask, RecordTechWritten};
 use crate::dev_loop::action::narrow::{Narrow, Widen};
 use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
 use crate::dev_loop::checks::gates;
+use crate::dev_loop::checks::preflight;
 use crate::dev_loop::config::Config;
 use crate::dev_loop::data::brief::Cut;
 use crate::dev_loop::data::state::Loop;
@@ -88,6 +89,30 @@ const CODE_SKIPS: &[&str] = &["Business Goal"];
 /// hierarchy, which is why this is the one stage on
 /// [`Cut::TaskOnly`](crate::dev_loop::data::brief::Cut::TaskOnly).
 const TEST_SKIPS: &[&str] = &["Business Goal", "Technical", "Assumptions"];
+
+/// How many model turns each paid stage may take, at most.
+///
+/// The safety net against a stage that loops, not a budget: generous,
+/// because a cap hit mid-task wastes every turn before it. Measured: `code`
+/// on #64, the largest task of the series, took 60 turns before its quota
+/// cut; a three-stage round on #61 took 63 in all. Lifted by
+/// `--ignore-budget`.
+pub const TURN_CAPS: [(&str, u32); 3] = [
+    ("technical-refinement", 80),
+    ("code", 250),
+    ("create-test", 150),
+];
+
+/// The cap of this stage, unless the run lifted them.
+fn turn_cap(stage: &str, config: &Config) -> Option<u32> {
+    if config.ignore_budget {
+        return None;
+    }
+    TURN_CAPS
+        .iter()
+        .find(|(name, _)| *name == stage)
+        .map(|(_, cap)| *cap)
+}
 
 /// How `code` and `/create-test` run the Rust tests of a repository under the
 /// architecture: through the script `init-repo` installs, which the CI runs
@@ -232,6 +257,19 @@ fn always(stage: &str) -> Vec<Box<dyn Verification<Loop>>> {
     ]
 }
 
+/// The gates every paid stage opens with: the two of [`always`], then the
+/// task's budget — after them, so a stage that would not run anyway is not
+/// refused for its cost.
+fn paid(stage: &str, ports: &Ports, config: &Config) -> Vec<Box<dyn Verification<Loop>>> {
+    let mut checks = always(stage);
+    checks.push(Box::new(preflight::BudgetHasRoom {
+        spending: Rc::clone(&ports.spending),
+        history: Rc::clone(&ports.history),
+        ignored: config.ignore_budget,
+    }));
+    checks
+}
+
 /// What a paid stage demands from its session, and what comes after.
 ///
 /// `then` is local work following the session — re-reading, labeling. It
@@ -289,6 +327,7 @@ impl Paid<'_> {
             stage: self.stage.to_string(),
         })));
         StageBody::Session {
+            turn_cap: turn_cap(self.stage, config),
             spec: config.spec(self.model, "high"),
             sessions: Rc::clone(&ports.sessions),
             actions,
@@ -321,7 +360,7 @@ pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<
         }))],
     }
     .body(ports, config, turn);
-    let mut pre = always("technical-refinement");
+    let mut pre = paid("technical-refinement", ports, config);
     pre.push(Box::new(gates::TechAlreadyWritten));
     pre.push(Box::new(gates::TaskHasABusinessSpec));
     Stage {
@@ -355,7 +394,7 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             .prompts
             .text(prompts::CODE_WRITE_SIDE, CODE_WRITE_SIDE)
     );
-    let mut pre = always("code");
+    let mut pre = paid("code", ports, config);
     pre.push(Box::new(gates::CodeAlreadyDelivered {
         gh: Rc::clone(&ports.gh),
         integration_branch: config.integration_branch.clone(),
@@ -416,7 +455,7 @@ pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
         name: "create-test".to_string(),
         pre: Some(Gate {
             name: "create-test requires",
-            checks: always("create-test"),
+            checks: paid("create-test", ports, config),
         }),
         post: None,
         body: Paid {

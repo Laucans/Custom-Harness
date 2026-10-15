@@ -113,6 +113,7 @@ async fn dispatched(
                 &args.permission_mode,
                 args.dry_run,
                 &harness_workflows::split::config::profile_for(&args.split_profile, ""),
+                !args.split_profile.trim().is_empty(),
             )
             .await,
             log,

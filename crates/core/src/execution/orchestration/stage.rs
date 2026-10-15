@@ -31,6 +31,10 @@ pub enum StageBody<S> {
         /// In order. Multiple actions in the same session, where Python burned
         /// `/tech-analyst` and `/code` in a single prompt via `StageSpec.lead`.
         actions: Vec<Box<dyn SessionAction<S>>>,
+        /// How many model turns the session may take, at most. `None`: the
+        /// carrier's own limit. The safety net against a stage that loops —
+        /// generous, because a cap hit mid-task wastes every turn before it.
+        turn_cap: Option<u32>,
     },
     /// One or more local calls — nothing is paid.
     Local {
@@ -73,10 +77,21 @@ impl<S> Executable<S> for Stage<S> {
                 spec,
                 sessions,
                 actions,
+                turn_cap,
             } => {
                 ctx.traces.say(&crate::traces::session_opens(&self.name));
                 let spec = ctx.session_spec.as_ref().unwrap_or(spec);
-                let mut backend = sessions.open(spec).await?;
+                let opening = crate::ports::agent::Opening {
+                    resume: ctx.resume.get(&self.name).cloned(),
+                    max_turns: *turn_cap,
+                };
+                if let Some(id) = &opening.resume {
+                    ctx.traces.say(&format!(
+                        "{}: resuming the session {id} a previous run left interrupted",
+                        self.name
+                    ));
+                }
+                let mut backend = sessions.open_with(spec, &opening).await?;
                 let mut open = Open {
                     ctx,
                     session: &mut *backend,
@@ -178,6 +193,7 @@ mod tests {
             pre: None,
             post: None,
             body: StageBody::Session {
+                turn_cap: None,
                 spec: SessionSpec {
                     model: "opus".into(),
                     effort: "high".into(),
@@ -229,6 +245,7 @@ mod tests {
             }),
             post: None,
             body: StageBody::Session {
+                turn_cap: None,
                 spec: SessionSpec {
                     model: "opus".into(),
                     effort: "high".into(),

@@ -314,6 +314,51 @@ mod tests {
         assert_eq!(ran[0].2, Path::new("/ws"));
     }
 
+    const CAPABILITY: &str =
+        "## Architecture\n\nunit: capability\nsystem: credit\nproduces: credit.calculateRisk\n";
+
+    #[tokio::test]
+    async fn a_cargo_that_does_not_answer_narrows_by_folder() {
+        let repos = Rc::new(FakeRepos::default());
+        let mut ctx = context(CAPABILITY);
+        narrow(
+            &repos,
+            FakeProcess::answering(vec![FakeProcess::ran("", "no workspace", 101)]),
+        )
+        .run(&mut ctx)
+        .await
+        .expect("narrowed");
+        assert!(
+            ctx.state.tree_note.contains("- /crates/credit/"),
+            "{}",
+            ctx.state.tree_note
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cargo_that_answers_narrows_by_what_the_crate_reaches() {
+        let repos = Rc::new(FakeRepos::default());
+        let metadata = r#"{"workspace_root":"/ws","packages":[
+            {"name":"calculate-risk","manifest_path":"/ws/crates/credit/capabilities/calculate-risk/Cargo.toml",
+             "dependencies":[{"name":"credit-read","path":"/ws/crates/credit/read"}]},
+            {"name":"credit-read","manifest_path":"/ws/crates/credit/read/Cargo.toml","dependencies":[]}
+        ]}"#;
+        let mut ctx = context(CAPABILITY);
+        narrow(
+            &repos,
+            FakeProcess::answering(vec![FakeProcess::ran(metadata, "", 0)]),
+        )
+        .run(&mut ctx)
+        .await
+        .expect("narrowed");
+        let note = &ctx.state.tree_note;
+        assert!(note.contains("- /crates/credit/read/"), "{note}");
+        assert!(
+            !note.contains("- /crates/credit/\n"),
+            "by the graph, not the folder: {note}"
+        );
+    }
+
     #[tokio::test]
     async fn widening_puts_the_tree_back_and_clears_the_note() {
         let repos = Rc::new(FakeRepos::default());

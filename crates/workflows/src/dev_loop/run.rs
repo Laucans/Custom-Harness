@@ -186,6 +186,7 @@ fn rounds(
     let disk = Rc::clone(&ports.disk);
     let repo = Rc::clone(&ports.repo);
     let process = Rc::clone(&ports.process);
+    let history = Rc::clone(&ports.history);
     let branch = config.integration_branch.clone();
     let model = config.model.clone();
     let effort = config.effort.clone();
@@ -196,6 +197,7 @@ fn rounds(
     let signatures = Rc::clone(&config.signatures);
     let root = config.root.clone();
     let narrow = config.narrow;
+    let ignore_budget = config.ignore_budget;
     let prompts = Rc::clone(&config.prompts);
     Box::new(move |turn| {
         let ports = Ports {
@@ -205,6 +207,7 @@ fn rounds(
             disk: Rc::clone(&disk),
             repo: Rc::clone(&repo),
             process: Rc::clone(&process),
+            history: Rc::clone(&history),
         };
         let config = Config {
             integration_branch: branch.clone(),
@@ -217,12 +220,14 @@ fn rounds(
             signatures: Rc::clone(&signatures),
             root: root.clone(),
             narrow,
+            ignore_budget,
             prompts: Rc::clone(&prompts),
         };
         TaskRound {
             turn,
             pick: PickTask {
                 gh: Rc::clone(&gh),
+                spending: Rc::clone(&spending),
                 resuming: if turn == 1 { resuming.clone() } else { None },
                 wanted,
                 data_layer: config.data_layer_spec(),

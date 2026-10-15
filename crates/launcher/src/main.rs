@@ -91,6 +91,7 @@ async fn main() -> ExitCode {
                 &sub.lane.permission_mode,
                 sub.lane.dry_run,
                 &harness_workflows::split::config::profile_for(&sub.lane.split_profile, ""),
+                !sub.lane.split_profile.trim().is_empty(),
             )
             .await;
             lane_exit(&here, "split", sub.milestone, ran)
@@ -107,13 +108,7 @@ async fn main() -> ExitCode {
             .await;
             lane_exit(&here, "arbitrate", sub.issue, ran)
         }
-        Some(cli::Command::Costs(sub)) => match dispatch::costs::run(sub, &here) {
-            Ok(table) => {
-                print!("{table}");
-                ExitCode::SUCCESS
-            }
-            Err(halt) => halt_to_code(&halt),
-        },
+        Some(cli::Command::Costs(sub)) => costs_by_hand(sub, &here),
         Some(cli::Command::Trial(sub)) => match dispatch::trial::run(sub, &here).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(halt) => halt_to_code(&halt),
@@ -129,6 +124,17 @@ async fn main() -> ExitCode {
             // Its run told the halt in its own log, and kept it as an event.
             Err(halt) => halt_to_code(&halt),
         },
+    }
+}
+
+/// `harness costs`: the table on stdout, or the halt's code.
+fn costs_by_hand(sub: &cli::CostsArgs, here: &Path) -> ExitCode {
+    match dispatch::costs::run(sub, here) {
+        Ok(table) => {
+            print!("{table}");
+            ExitCode::SUCCESS
+        }
+        Err(halt) => halt_to_code(&halt),
     }
 }
 

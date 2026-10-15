@@ -833,6 +833,49 @@ mod tests {
     }
 
     #[test]
+    fn a_single_explicit_member_is_read_whole() {
+        assert_eq!(
+            explicit_members("members = [\"crates/dataguard/server\"]"),
+            ["crates/dataguard/server"]
+        );
+    }
+
+    #[test]
+    fn a_concept_is_known_by_name_and_version_together() {
+        let index = Index { tree: &tree() };
+        assert_eq!(
+            index.concept_dir("Risk@3").as_deref(),
+            Some("concepts/Risk/v3")
+        );
+        assert!(
+            index.concept_dir("Risk@2").is_none(),
+            "the version is not documented"
+        );
+        assert!(index.concept_dir("Other@3").is_none(), "the name is not");
+        assert!(
+            index.concept_dir("Risk").is_none(),
+            "no version, no concept"
+        );
+    }
+
+    #[test]
+    fn an_id_is_known_by_any_one_kind_of_unit() {
+        let index = Index { tree: &tree() };
+        for id in [
+            "credit.calculateRisk",
+            "credit.requestLimitChange",
+            "Account",
+            "LatePaymentsList",
+            "Risk@3",
+            "credit-review",
+            "RiskBadge",
+        ] {
+            assert!(index.knows(id), "{id}");
+        }
+        assert!(!index.knows("nobody.knows"));
+    }
+
+    #[test]
     fn an_explicit_member_enters_every_closure() {
         let task = declared(Unit::Capability, "credit", &["credit.calculateRisk"], &[]);
         let toml = "members = [\"crates/*/capabilities/*\", \"crates/dataguard/server\"]";

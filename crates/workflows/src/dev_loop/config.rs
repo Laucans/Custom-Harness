@@ -48,6 +48,9 @@ pub struct Config {
     /// plan and build it (`--no-narrow` turns it off): the bound the
     /// architecture promises, made physical.
     pub narrow: bool,
+    /// `--ignore-budget`: pay on past what tasks of the kind cost, and lift
+    /// the turn caps with it.
+    pub ignore_budget: bool,
     /// The human's prompt edits, read once per run — a stage sends
     /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
     pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
@@ -111,6 +114,7 @@ pub(crate) mod fake {
             signatures: std::rc::Rc::default(),
             root: std::path::PathBuf::from("/ws"),
             narrow: false,
+            ignore_budget: false,
         }
     }
 }

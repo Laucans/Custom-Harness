@@ -10,6 +10,7 @@
 //! `harness_adapters::store`.
 
 pub mod checkpoint;
+pub mod costs;
 pub mod events;
 pub mod factories;
 pub mod lock;

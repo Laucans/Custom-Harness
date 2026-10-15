@@ -105,6 +105,7 @@ pub fn cover(ports: &Ports, config: &Config) -> Stage<DebtState> {
         }),
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.cover.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskForTests {

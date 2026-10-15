@@ -68,7 +68,12 @@ pub async fn ask_and_record<S>(
         .ok()
         .and_then(|reply| markers::stop_line(&reply.text));
     if !dry_run {
-        let blind = Spend::default();
+        // Blind to the cost, not to the conversation: a session cut by a
+        // quota keeps its id, and the next run on this stage resumes it.
+        let blind = Spend {
+            session: open.session.id(),
+            ..Spend::default()
+        };
         let (spend, outcome) = match (&asked, &stopped) {
             (Ok(reply), None) => (&reply.spend, "ok"),
             (Ok(reply), Some(_)) => (&reply.spend, breaker::STOP),

@@ -41,6 +41,24 @@ pub struct Reply {
 pub trait Session {
     /// Sends a message to the open session, waits for the full turn.
     async fn ask(&mut self, prompt: &str) -> Outcome<Reply>;
+
+    /// The conversation's identifier, once the carrier has one — what a
+    /// later run passes back to resume it after an interruption. `None` by
+    /// default: a carrier with no conversations to resume has no id to give.
+    fn id(&self) -> Option<String> {
+        None
+    }
+}
+
+/// How a session is opened beyond its spec: resumed, and bounded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Opening {
+    /// The conversation to resume, when a previous run was interrupted in
+    /// the same stage of the same task: the turns already paid stay paid.
+    pub resume: Option<String>,
+    /// How many model turns the session may take, at most — the safety net
+    /// against a stage that loops. `None`: the carrier's own limit.
+    pub max_turns: Option<u32>,
 }
 
 /// What is needed to open a session: the model, the effort.
@@ -64,4 +82,13 @@ pub struct SessionSpec {
 pub trait SessionFactory {
     /// Opens a new session for this `spec`.
     async fn open(&self, spec: &SessionSpec) -> Outcome<Box<dyn Session>>;
+
+    /// Opens a session for this `spec`, resumed and bounded as `opening`
+    /// says. By default the same as [`Self::open`]: a carrier that cannot
+    /// resume starts afresh and ignores the cap — honest for a fake, and
+    /// said in the log by the caller.
+    async fn open_with(&self, spec: &SessionSpec, opening: &Opening) -> Outcome<Box<dyn Session>> {
+        let _ = opening;
+        self.open(spec).await
+    }
 }

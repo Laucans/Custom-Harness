@@ -5,6 +5,7 @@
 //! becoming conceivable.
 
 pub mod breaker;
+pub mod budget;
 pub mod doctor;
 pub mod markers;
 pub mod prompt_book;

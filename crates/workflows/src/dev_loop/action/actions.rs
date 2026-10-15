@@ -55,6 +55,9 @@ fn number_of(ctx: &Context<Loop>) -> Outcome<u64> {
 pub struct PickTask {
     /// What reads the board.
     pub gh: Rc<dyn GitHub>,
+    /// What remembers a stage a previous run left interrupted on the task,
+    /// so this run resumes its session rather than paying the turns again.
+    pub spending: Rc<dyn Spending>,
     /// The task the resume point designates, if there is one.
     ///
     /// It **takes precedence** over the board's choice: a round interrupted
@@ -69,6 +72,9 @@ pub struct PickTask {
     /// `harness:data-layer` — the strongest model, for the data design.
     pub data_layer: harness_core::ports::agent::SessionSpec,
 }
+
+/// The stages whose interrupted session is worth resuming: the paid ones.
+const RESUMABLE: &[&str] = &["technical-refinement", "code", "create-test"];
 
 #[async_trait(?Send)]
 impl Action<Loop> for PickTask {
@@ -133,6 +139,18 @@ impl Action<Loop> for PickTask {
         ctx.state.resumed = resumed.is_some();
         ctx.state.write_side = tasks::is_write_side(task);
         ctx.tags = tasks::tags(task);
+        // The sessions a quota cut on this task: one per stage, resumed by
+        // the stage runner when it opens that stage.
+        ctx.resume.clear();
+        for stage in RESUMABLE {
+            if let Some(id) = self.spending.interrupted(&ctx.state.task_key, stage)? {
+                ctx.traces.say(&format!(
+                    "task {}: stage {stage} was cut short last time — its session {id} will be resumed",
+                    task.reference()
+                ));
+                ctx.resume.insert((*stage).to_string(), id);
+            }
+        }
         // Set on every pick, cleared otherwise: the next round's task may
         // not be one.
         ctx.session_spec = task
@@ -499,6 +517,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -520,6 +539,7 @@ mod tests {
         context.session_spec = Some(opus_high());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -540,6 +560,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -568,6 +589,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -603,6 +625,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
             resuming: Some("11".to_string()),
             wanted: None,
             data_layer: opus_high(),
@@ -626,6 +649,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -648,6 +672,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         let err = PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
@@ -669,6 +694,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         let err = PickTask {
             gh,
+            spending: Rc::new(Recorded::default()),
             resuming: None,
             wanted: None,
             data_layer: opus_high(),

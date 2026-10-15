@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use harness_core::domain::{Halt, Outcome, Spend, Tags, breaker};
+use harness_core::domain::{Halt, Outcome, Spend, Tags, breaker, budget};
 
 /// The header, frozen character for character.
 ///
@@ -247,6 +247,78 @@ impl Ledger {
             .collect())
     }
 
+    /// The rows as the budget reads them: task, run, stage, cost.
+    fn charges(&self) -> Outcome<Vec<budget::Charge>> {
+        Ok(self
+            .read()?
+            .into_iter()
+            .map(|row| budget::Charge {
+                task: row.task,
+                run: row.run,
+                stage: row.stage,
+                cost_usd: row.spend.cost_usd,
+            })
+            .collect())
+    }
+
+    /// What `task` has cost so far, every run counted, a resumed session
+    /// counted once ([`budget::totals`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Unreadable`] as [`Self::rows`].
+    pub fn spent_on(&self, task: &str) -> Outcome<f64> {
+        Ok(budget::totals(&self.charges()?)
+            .get(task)
+            .copied()
+            .unwrap_or(0.0))
+    }
+
+    /// The session the last quota-cut row of this task and stage names,
+    /// if it is more recent than any row that finished the stage.
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Unreadable`] as [`Self::rows`].
+    pub fn interrupted(&self, task: &str, stage: &str) -> Outcome<Option<String>> {
+        let last = self
+            .read()?
+            .into_iter()
+            .rfind(|row| row.task == task && row.stage == stage);
+        Ok(last.and_then(|row| {
+            (row.outcome == breaker::QUOTA)
+                .then_some(row.spend.session)
+                .flatten()
+                .filter(|id| !id.is_empty())
+        }))
+    }
+
+    /// What tasks tagged `unit` and `profile` have cost, as a distribution
+    /// of their totals; either empty means "any".
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Unreadable`] as [`Self::rows`].
+    pub fn typical(&self, unit: &str, profile: &str) -> Outcome<Option<budget::Typical>> {
+        let rows = self.read()?;
+        let tagged: Vec<&Row> = rows
+            .iter()
+            .filter(|row| unit.is_empty() || row.tags.unit == unit)
+            .filter(|row| profile.is_empty() || row.tags.profile == profile)
+            .collect();
+        let charges: Vec<budget::Charge> = tagged
+            .iter()
+            .map(|row| budget::Charge {
+                task: row.task.clone(),
+                run: row.run.clone(),
+                stage: row.stage.clone(),
+                cost_usd: row.spend.cost_usd,
+            })
+            .collect();
+        let totals: Vec<f64> = budget::totals(&charges).into_values().collect();
+        Ok(budget::typical(&totals))
+    }
+
     /// How many times this exact session already ended in error.
     ///
     /// The identity is the three cells `task`, `stage` and `fingerprint`;
@@ -447,6 +519,108 @@ mod tests {
         assert_eq!(raw.matches(HEADER).count(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tagged(task: &str, run: &str, stage: &str, cost: f64, outcome: &str, unit: &str) -> Row {
+        Row {
+            task: task.to_string(),
+            run: run.to_string(),
+            stage: stage.to_string(),
+            spend: Spend {
+                cost_usd: Some(cost),
+                session: Some(format!("sess-{task}-{stage}")),
+                ..Spend::default()
+            },
+            outcome: outcome.to_string(),
+            tags: Tags {
+                unit: unit.to_string(),
+                profile: "mid".to_string(),
+                side: String::new(),
+            },
+            ..row()
+        }
+    }
+
+    #[test]
+    fn what_a_task_spent_counts_a_resumed_session_once_and_every_run() {
+        let dir = Dir::new("spent");
+        let ledger = dir.ledger();
+        ledger
+            .append(&tagged("61", "r1", "code", 1.0, "ok", "capability"))
+            .expect("a row");
+        ledger
+            .append(&tagged("61", "r1", "code", 2.5, "ok", "capability"))
+            .expect("a row");
+        ledger
+            .append(&tagged("61", "r2", "create-test", 0.5, "ok", "capability"))
+            .expect("a row");
+        ledger
+            .append(&tagged("62", "r3", "code", 9.0, "ok", "aggregate"))
+            .expect("a row");
+        let spent = ledger.spent_on("61").expect("read");
+        assert!((spent - 3.0).abs() < 1e-9, "{spent}");
+        assert!(ledger.spent_on("99").expect("read").abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn the_typical_cost_of_a_unit_is_read_from_its_tagged_tasks() {
+        let dir = Dir::new("typical");
+        let ledger = dir.ledger();
+        for (task, cost) in [("1", 2.0), ("2", 4.0), ("3", 6.0)] {
+            ledger
+                .append(&tagged(task, "r", "code", cost, "ok", "capability"))
+                .expect("a row");
+        }
+        ledger
+            .append(&tagged("4", "r", "code", 40.0, "ok", "aggregate"))
+            .expect("a row");
+        let found = ledger
+            .typical("capability", "mid")
+            .expect("read")
+            .expect("three tasks");
+        assert_eq!(found.count, 3);
+        assert!((found.median - 4.0).abs() < 1e-9);
+        assert!((found.p75 - 6.0).abs() < 1e-9);
+        let any = ledger.typical("", "").expect("read").expect("four tasks");
+        assert_eq!(any.count, 4);
+        assert!(ledger.typical("micro-ui", "").expect("read").is_none());
+    }
+
+    #[test]
+    fn an_interrupted_stage_names_its_session_until_a_later_row_finishes_it() {
+        let dir = Dir::new("interrupted");
+        let ledger = dir.ledger();
+        ledger
+            .append(&tagged(
+                "61",
+                "r1",
+                "code",
+                1.0,
+                breaker::QUOTA,
+                "capability",
+            ))
+            .expect("a row");
+        assert_eq!(
+            ledger.interrupted("61", "code").expect("read").as_deref(),
+            Some("sess-61-code")
+        );
+        assert_eq!(ledger.interrupted("61", "create-test").expect("read"), None);
+        ledger
+            .append(&tagged("61", "r2", "code", 3.0, "ok", "capability"))
+            .expect("a row");
+        assert_eq!(
+            ledger.interrupted("61", "code").expect("read"),
+            None,
+            "finished since"
+        );
+        let mut cut_without_id = tagged("61", "r3", "code", 1.0, breaker::QUOTA, "capability");
+        cut_without_id.spend.session = None;
+        ledger.append(&cut_without_id).expect("a row");
+        assert_eq!(
+            ledger.interrupted("61", "code").expect("read"),
+            None,
+            "nothing to resume"
+        );
     }
 
     #[test]

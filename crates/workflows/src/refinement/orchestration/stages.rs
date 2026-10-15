@@ -89,6 +89,7 @@ fn paid(
         pre: None,
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec,
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskRefine {

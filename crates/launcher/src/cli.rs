@@ -469,6 +469,16 @@ pub struct RunArgs {
     #[arg(long, env = "IGNORE_QUOTA", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub ignore_quota: bool,
 
+    /// Pay on past what tasks of the kind cost, and lift the turn caps.
+    ///
+    /// A task's budget is the third quartile of what tasks of its unit and
+    /// profile have cost, with half again on top — or a constant per unit
+    /// while fewer than three were measured. A task past it stops before
+    /// its next paid stage. Set this when the task is known to be larger
+    /// than its kind.
+    #[arg(long, env = "IGNORE_BUDGET", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub ignore_budget: bool,
+
     /// Resume the task that the checkpoint designates. Default: yes.
     #[arg(long)]
     pub no_resume: bool,
