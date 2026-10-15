@@ -22,14 +22,14 @@ use serde_json::Value;
 
 use crate::aggregate::Aggregate;
 use crate::api::{Submission, Submitted};
-use crate::command::{BasedOn, CommandResult, Effect, Entry, Mode, Projection, State};
+use crate::command::{BasedOn, CommandResult, Effect, Entry, Projection, State};
 use crate::guard::{self, Caller, Classification, Invariants, NoInvariants, Verdict};
 use crate::manifest::{DataCapability, Idempotency};
 use crate::messages::{Action, Kind, Message, Notifier};
 use crate::queue::{Hold, Queue, Step};
 use crate::reconcile::{Base, Candidate, NoProposer, Proposer, Review, Status};
 use crate::registry::Registry;
-use crate::resolver::{self, Decision, Situation};
+use crate::resolver::{self, Decision, ImpactPlan, Situation};
 use crate::store::{Clock, Store, Write};
 use crate::{Error, Result};
 
@@ -49,6 +49,7 @@ pub struct Engine {
     registry: Registry,
     queue: Mutex<Queue>,
     reviews: Mutex<BTreeMap<String, (Review, String)>>,
+    plans: Mutex<BTreeMap<String, ImpactPlan>>,
     ids: AtomicU64,
 }
 
@@ -75,6 +76,7 @@ impl Engine {
             registry: Registry::default(),
             queue: Mutex::new(Queue::default()),
             reviews: Mutex::new(BTreeMap::new()),
+            plans: Mutex::new(BTreeMap::new()),
             ids: AtomicU64::new(1),
         }
     }
@@ -433,6 +435,25 @@ impl Engine {
             .map(|(review, _)| review.clone())
     }
 
+    /// The last impact plan the Resolver built for `command` (contract J),
+    /// once its head was looked at.
+    #[must_use]
+    pub fn plan(&self, command: &str) -> Option<ImpactPlan> {
+        self.plans
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(command)
+            .cloned()
+    }
+
+    /// True when a human already approved a review of `command`: the
+    /// Resolver does not ask twice.
+    fn approved(&self, command: &str) -> bool {
+        self.lock_reviews()
+            .values()
+            .any(|(review, of)| of == command && review.decision.status == Status::Approved)
+    }
+
     /// The author accepts to overwrite what is declared ahead.
     ///
     /// # Errors
@@ -681,7 +702,16 @@ impl Engine {
                         ..Message::new(Kind::InvariantAtRisk, &[&entry.by], head)
                     });
                 }
-                self.planned(&entry, aggregate, &verdict, &incoming)
+                let plan = self.planned(&entry, aggregate, &verdict, &incoming);
+                let decision = plan.decision;
+                self.plans
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(head.to_string(), plan);
+                match decision {
+                    Decision::HumanReview if self.approved(head) => Decision::Auto,
+                    other => other,
+                }
             }
         };
         match decision {
@@ -702,15 +732,15 @@ impl Engine {
         }
     }
 
-    /// The Resolver's decision on a mutation, from the queue's holds and
-    /// what is behind the entry.
+    /// The Resolver's plan for a mutation, from the queue's holds and what
+    /// is behind the entry.
     fn planned(
         &self,
         entry: &Entry,
         aggregate: &Aggregate,
         verdict: &Verdict,
         incoming: &[(String, u64)],
-    ) -> Decision {
+    ) -> ImpactPlan {
         let queue = self.lock_queue();
         let holds: Vec<Hold> = queue
             .holds()
@@ -736,10 +766,11 @@ impl Engine {
                 pending_behind: &pending_behind,
                 incoming,
                 verdict,
-                confirmed: entry.state == State::Confirmed || entry.mode != Mode::ConfirmOnStale,
+                // A head the queue let through has nothing left to confirm:
+                // it was confirmed, or nothing was declared ahead of it.
+                confirmed: true,
             },
         )
-        .decision
     }
 
     /// Applies the head: the write, the version, the journal, the word.
@@ -831,6 +862,8 @@ mod tests {
     const LIMIT: &str = r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","version":2,"effect":"update","target":{"aggregate":"Account","id":"$accountId"},"touches":["Account.creditLimit"],"mode":"confirm_on_stale","permissions":["credit.limit.write"],"callableBy":["credit.*"],"idempotencyKey":"optional"}"#;
     const CLOSE: &str = r#"{"dataCapability":"credit.closeAccount","owner":"dataguard","version":1,"effect":"delete","target":{"aggregate":"Account","id":"$accountId"},"mode":"overwrite","callableBy":["*"]}"#;
     const ADD: &str = r#"{"dataCapability":"credit.addPayment","owner":"dataguard","version":1,"effect":"insert","target":{"aggregate":"Payment"},"callableBy":["*"],"idempotencyKey":"required"}"#;
+    const PAYMENT: &str = r#"{"aggregate":"Payment","fields":{"amount":{"kind":"authoritative","criticality":"normal"}},"invariants":[],"relations":[]}"#;
+    const REVIEWED: &str = r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative","criticality":"normal"}},"invariants":[],"relations":[{"from":"Invoice.accountId","onDelete":"review"}]}"#;
     const STATUS: &str = r#"{"dataCapability":"credit.setStatus","owner":"dataguard","version":1,"effect":"update","target":{"aggregate":"Account","id":"$accountId"},"touches":["Account.status"],"mode":"overwrite","callableBy":["*"]}"#;
 
     struct Ceiling;
@@ -1282,12 +1315,30 @@ mod tests {
         assert_eq!(submitted.result.status, State::AwaitingReview);
         let review_id = submitted.result.review_id.clone().expect("a review");
         assert!(
-            plant
-                .notifier
-                .to("role:credit-manager")
-                .iter()
-                .any(|m| m.message == Kind::ReviewRequired)
+            submitted
+                .warnings
+                .contains(&format!("review {review_id} required")),
+            "the warning names the review opened: {:?}",
+            submitted.warnings
         );
+        let asked = plant
+            .notifier
+            .to("role:credit-manager")
+            .into_iter()
+            .find(|m| m.message == Kind::ReviewRequired)
+            .expect("the approver is told");
+        assert_eq!(
+            asked.reason.as_deref(),
+            Some("critical: status (role:credit-manager)")
+        );
+        assert_eq!(asked.actions, [Action::Approve, Action::Reject]);
+        // Another author's plain command waits on no review of anyone's.
+        let alice = plant
+            .engine
+            .submit(limit("alice", 8000, 5000))
+            .await
+            .expect("queued");
+        assert_eq!(alice.result.review_id, None, "someone else's review");
         assert!(
             plant.engine.run_once().await.expect("ran").is_empty(),
             "waits"
@@ -1466,6 +1517,218 @@ mod tests {
         );
         let results = second.run_once().await.expect("ran");
         assert_eq!(results[0].status, State::Applied);
+    }
+
+    #[tokio::test]
+    async fn a_hold_elsewhere_blocks_nothing_and_the_plan_lists_what_is_behind() {
+        let plant = plant(account(5000));
+        plant
+            .engine
+            .hold("Account/999", "credit.other", Some(30))
+            .await
+            .expect("held elsewhere");
+        let first = plant
+            .engine
+            .submit(limit("alice", 8000, 5000))
+            .await
+            .expect("queued");
+        let second = plant
+            .engine
+            .submit(Submission {
+                data_capability: "credit.setStatus".to_string(),
+                payload: BTreeMap::from([
+                    ("accountId".to_string(), Value::from("881")),
+                    ("tags".to_string(), Value::from("vip")),
+                ]),
+                target_id: None,
+                based_on: None,
+                idempotency_key: None,
+                caller: Engine::caller("bob", "credit.Form", &[], &[]),
+            })
+            .await
+            .expect("queued behind");
+        let third = plant
+            .engine
+            .submit(limit("carol", 7000, 5000))
+            .await
+            .expect("queued, asked");
+        assert_eq!(third.result.status, State::AwaitingConfirmation);
+        let elsewhere = plant
+            .engine
+            .submit(Submission {
+                target_id: Some("882".to_string()),
+                ..limit("dave", 1, 1)
+            })
+            .await
+            .expect("queued on another partition");
+        assert_eq!(elsewhere.partition, "Account/882");
+        plant
+            .engine
+            .cancel(&second.command_id, "bob")
+            .await
+            .expect("withdrawn");
+        let results = plant.engine.run_once().await.expect("ran");
+        assert_eq!(
+            results[0].status,
+            State::Applied,
+            "a hold on another partition blocks nothing"
+        );
+        let plan = plant.engine.plan(&first.command_id).expect("planned");
+        assert_eq!(
+            plan.dependencies.pending_commands,
+            std::slice::from_ref(&third.command_id),
+            "still pending behind it on its own partition: not the one withdrawn, not another partition's, not itself"
+        );
+        assert!(plan.dependencies.holds.is_empty(), "expected nothing");
+        assert_eq!(
+            plan.decision,
+            Decision::Auto,
+            "nothing left to confirm at the head"
+        );
+        let other = plant
+            .engine
+            .plan(&elsewhere.command_id)
+            .expect("planned too");
+        assert!(
+            other.dependencies.pending_commands.is_empty(),
+            "expected nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_hold_leaves_the_store_and_a_live_one_stays() {
+        let plant = plant(account(5000));
+        let hold = plant
+            .engine
+            .hold("Account/881", "credit.limitReview", Some(30))
+            .await
+            .expect("held");
+        plant.engine.run_once().await.expect("ran");
+        let kept = plant.store.holds().await.expect("read");
+        assert_eq!(kept.len(), 1, "alive: the store keeps it");
+        assert_eq!(kept[0].id, hold.id);
+        plant.clock.set(1000 + 31);
+        plant.engine.run_once().await.expect("ran");
+        assert!(
+            plant.store.holds().await.expect("read").is_empty(),
+            "expired: gone from the store"
+        );
+        plant
+            .engine
+            .submit(limit("alice", 8000, 5000))
+            .await
+            .expect("queued");
+        let results = plant.engine.run_once().await.expect("ran");
+        assert_eq!(
+            results[0].status,
+            State::Applied,
+            "nothing freezes the partition any more"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_addition_that_collides_under_an_aggregate_is_routed_to_the_resolver_and_told() {
+        let store = MemoryStore::default().colliding(
+            "credit.addPayment",
+            Collision {
+                unique_key: Some("Payment.reference".to_string()),
+                ..Collision::default()
+            },
+        );
+        let plant = plant(store);
+        let engine = Engine::new(
+            plant.store.clone(),
+            plant.notifier.clone(),
+            plant.clock.clone(),
+        )
+        .with_aggregate(Aggregate::parse(PAYMENT).expect("I"))
+        .with_data_capability(DataCapability::parse(ADD).expect("F"));
+        engine
+            .submit(Submission {
+                data_capability: "credit.addPayment".to_string(),
+                payload: BTreeMap::from([("amount".to_string(), Value::from(12))]),
+                target_id: Some("p1".to_string()),
+                based_on: None,
+                idempotency_key: Some("k".to_string()),
+                caller: Engine::caller("alice", "credit.Form", &[], &[]),
+            })
+            .await
+            .expect("queued");
+        let results = engine.run_once().await.expect("ran");
+        assert_eq!(results[0].status, State::Applied, "planned, not failed");
+        let told = plant
+            .notifier
+            .to("alice")
+            .into_iter()
+            .find(|m| m.message == Kind::InvariantAtRisk)
+            .expect("the author hears the reclassification");
+        assert!(
+            told.reason
+                .as_deref()
+                .is_some_and(|r| r.contains("found not to be one")),
+            "{told:?}"
+        );
+        assert!(engine.plan("c_1").is_some(), "the Resolver planned it");
+    }
+
+    #[tokio::test]
+    async fn a_relation_under_review_opens_a_review_at_the_head_and_asks_once() {
+        let plant = plant(
+            account(5000).pointed_at("Account/881", vec![("Invoice.accountId".to_string(), 3)]),
+        );
+        let engine = Engine::new(
+            plant.store.clone(),
+            plant.notifier.clone(),
+            plant.clock.clone(),
+        )
+        .with_aggregate(Aggregate::parse(REVIEWED).expect("I"))
+        .with_data_capability(DataCapability::parse(CLOSE).expect("F"));
+        let close = Submission {
+            data_capability: "credit.closeAccount".to_string(),
+            payload: BTreeMap::from([("accountId".to_string(), Value::from("881"))]),
+            target_id: None,
+            based_on: None,
+            idempotency_key: None,
+            caller: Engine::caller("alice", "credit.Form", &[], &[]),
+        };
+        let submitted = engine
+            .submit(close)
+            .await
+            .expect("queued, nothing critical");
+        assert_eq!(submitted.result.status, State::Queued);
+        let results = engine.run_once().await.expect("ran");
+        assert_eq!(results[0].status, State::AwaitingReview);
+        let review_id = results[0]
+            .review_id
+            .clone()
+            .expect("the result names the review opened");
+        assert_eq!(
+            engine
+                .status(&submitted.command_id)
+                .await
+                .expect("waiting")
+                .review_id,
+            Some(review_id.clone())
+        );
+        let asked = plant
+            .notifier
+            .to("role:approver")
+            .into_iter()
+            .find(|m| m.message == Kind::ReviewRequired)
+            .expect("the default approver is told");
+        assert_eq!(asked.reason.as_deref(), Some("an invariant wants a review"));
+        assert!(engine.run_once().await.expect("ran").is_empty(), "waits");
+        engine
+            .decide(&review_id, "dana", &["role:approver".to_string()], true)
+            .await
+            .expect("approved");
+        let results = engine.run_once().await.expect("ran");
+        assert_eq!(
+            results[0].status,
+            State::Applied,
+            "approved once, not asked again"
+        );
+        assert!(plant.store.is_tombstoned("Account/881"));
     }
 
     #[tokio::test]
