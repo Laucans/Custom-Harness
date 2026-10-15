@@ -58,7 +58,8 @@ What you may do here: {actions}.
   which the next session reads under `## Decision`. For a session that
   stopped on an ambiguity, answer it the way the design already points to.
 - `merge`: the pull request is merged as it is — what its review asks is
-  not worth another repair.
+  not worth another repair. For the rules' task (`rules`), its tests stand
+  as they are written.
 - `repair`: the pull request is repaired once more; say in `answer` exactly
   what to change.
 - `cut`: the task is closed — it is out of scope, or the plan no longer

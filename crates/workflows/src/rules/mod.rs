@@ -17,7 +17,8 @@
 //! tests and opens the pull request; the second, fresh, reads each test
 //! against its criterion only and merges when every test is faithful — the
 //! human reviewed the rules in the view, so nobody merges by hand. What it
-//! finds unfaithful stays on the pull request, and the issue waits on a
+//! finds unfaithful goes back to the writer once (`harness:ready`), then to
+//! the `decide` workflow (`harness:needs-decision`): nothing waits on a
 //! human.
 //!
 //! Same skeleton as the other workflows (`ARCHITECTURE.md`): [`data`],

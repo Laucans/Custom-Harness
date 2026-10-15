@@ -105,9 +105,12 @@ pub fn parse(text: &str, has_pr: bool) -> Result<Decided, String> {
 /// task waiting on its PR asks about its review, a graph question the
 /// refinement's, anything else its spec.
 #[must_use]
-pub fn kind_of(question: Option<&Question>, review_pending: bool) -> String {
+pub fn kind_of(question: Option<&Question>, review_pending: bool, rules: bool) -> String {
     if let Some(kind) = question.and_then(|q| q.kind.clone()) {
         return kind;
+    }
+    if rules {
+        return "rules".to_string();
     }
     if review_pending {
         return "review".to_string();
@@ -180,14 +183,15 @@ mod tests {
             blocks: "b".to_string(),
             ..Question::default()
         };
-        assert_eq!(kind_of(Some(&stop), true), "stop");
-        assert_eq!(kind_of(None, true), "review");
+        assert_eq!(kind_of(Some(&stop), true, false), "stop");
+        assert_eq!(kind_of(None, true, false), "review");
+        assert_eq!(kind_of(None, false, true), "rules");
         let graph = Question {
             blocks: "b".to_string(),
             ..Question::default()
         };
-        assert_eq!(kind_of(Some(&graph), false), "graph");
-        assert_eq!(kind_of(None, false), "spec");
+        assert_eq!(kind_of(Some(&graph), false, false), "graph");
+        assert_eq!(kind_of(None, false, false), "spec");
     }
 
     #[test]

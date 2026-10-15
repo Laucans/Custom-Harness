@@ -10,7 +10,7 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
 use crate::common::decision::Question;
-use crate::common::sections;
+use crate::common::{labels, sections};
 use crate::decide::data::decision::{self, kind_of};
 use crate::decide::data::state::DecideState;
 use crate::dev_loop::data::tasks;
@@ -45,14 +45,23 @@ impl Action<DecideState> for ReadCase {
             .and_then(|text| Question::parse(text));
         ctx.state.owner_decided = question.as_ref().is_some_and(Question::decided_by_owner);
         let review_pending = tasks::review_pending(&issue);
-        ctx.state.kind = kind_of(question.as_ref(), review_pending);
+        let rules = issue.has(labels::RULES);
+        ctx.state.kind = kind_of(question.as_ref(), review_pending, rules);
         ctx.state.question = question;
         ctx.state.comments = latest(
             &self.gh.issue_comments(issue.number).await?.join("\n---\n"),
             THREAD_BUDGET,
         );
-        if review_pending
-            && let Some(branch) = tasks::declared_branch(&issue.body)
+        // The PR the decision may merge or repair: a task's on its declared
+        // branch, the rules' task's on `rules/<n>`.
+        let branch = if rules {
+            Some(format!("rules/{}", issue.number))
+        } else if review_pending {
+            tasks::declared_branch(&issue.body)
+        } else {
+            None
+        };
+        if let Some(branch) = branch
             && let Ok(pr) = self.gh.pr(&branch).await
         {
             ctx.state.pr_comments = latest(&self.gh.pr_comments(&pr.num).await?, THREAD_BUDGET);
@@ -156,7 +165,6 @@ impl SessionAction<DecideState> for AskDecider {
 mod tests {
     use super::*;
     use crate::common::fake_github::FakeGitHub;
-    use crate::common::labels;
     use harness_core::domain::{Issue, Pr};
     use harness_core::execution::Settings;
     use harness_core::traces::Logbook;
@@ -253,6 +261,38 @@ mod tests {
             get("decision")
                 .unwrap_or_default()
                 .contains("which provider")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rules_task_is_read_with_its_pull_request() {
+        let gh = Rc::new(FakeGitHub {
+            prs: vec![(
+                "rules/6".to_string(),
+                Pr {
+                    num: "50".to_string(),
+                    head: "rules/6".to_string(),
+                    base: "main_agent".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(Issue {
+            number: 6,
+            labels: vec![labels::RULES.to_string()],
+            ..Issue::default()
+        });
+        ReadCase {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+        }
+        .run(&mut context)
+        .await
+        .expect("read");
+        assert_eq!(context.state.kind, "rules");
+        assert_eq!(
+            context.state.pr.as_ref().map(|p| p.num.as_str()),
+            Some("50")
         );
     }
 

@@ -133,6 +133,11 @@ impl Apply {
                 self.gh.close_issue(issue.number).await?;
                 Ok(Act::Cut)
             }
+            (Act::Answer, _) if issue.has(labels::RULES) => {
+                // The rules' writer answers the decision: its tap opened again.
+                self.gh.add_label(issue.number, labels::READY).await?;
+                Ok(Act::Answer)
+            }
             (action, _) => Ok(action),
         }
     }
@@ -339,6 +344,25 @@ mod tests {
         assert!(
             gh.writes()
                 .contains(&Wrote::Label(15, labels::AI_DECIDED.to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_on_the_rules_task_opens_its_writer_again() {
+        let gh = Rc::new(FakeGitHub {
+            labels: vec![labels::AI_DECIDED.to_string()],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r#"{"action":"answer","summary":"R3's test asserts too much: drop the count"}"#,
+            None,
+            &[labels::RULES],
+        );
+        context.state.kind = "rules".to_string();
+        apply(&gh).run(&mut context).await.expect("applied");
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Label(15, labels::READY.to_string()))
         );
     }
 

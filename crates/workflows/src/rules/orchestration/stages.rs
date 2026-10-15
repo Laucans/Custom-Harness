@@ -162,9 +162,18 @@ Every test faithful: wait for its checks (`gh pr checks <n> --watch`), then
 `gh pr merge <n> --squash`, then `gh issue close {num}` if the merge did not
 close it. A rule marked `conform` may be red: its code comes after.
 Anything unfaithful: do not merge. Comment on the pull request each
-finding — the rule, the test, what is wrong, what would be faithful — then
-on the issue one line pointing to it, then
-`gh issue edit {num} --add-label harness:human`, and stop.
+finding — the rule, the test, what is wrong, what would be faithful — and
+end that comment with the line `<!-- rules-fidelity: unfaithful -->`. Then
+read the issue's comments (`gh issue view {num} --comments`):
+- if no earlier review of yours found it unfaithful (no such line on the
+  pull request before yours), comment on the issue one line pointing to
+  your findings and `gh issue edit {num} --add-label harness:ready`: the
+  writer answers them;
+- if one already did, the writer did not settle it: comment on the issue
+  one line pointing to both, then
+  `gh issue edit {num} --add-label harness:needs-decision` — the harness
+  decides between them.
+Then stop.
 
 No secret in your output. End your answer with each rule and your verdict
 on each of its tests.";
@@ -295,7 +304,12 @@ mod tests {
         }
         assert!(FIDELITY_PROMPT.contains("gh pr merge <n> --squash"));
         assert!(FIDELITY_PROMPT.contains("do not merge"));
-        assert!(FIDELITY_PROMPT.contains("--add-label harness:human"));
+        assert!(FIDELITY_PROMPT.contains("--add-label harness:ready"));
+        assert!(FIDELITY_PROMPT.contains("--add-label harness:needs-decision"));
+        assert!(
+            !FIDELITY_PROMPT.contains("harness:human"),
+            "never waits on a human"
+        );
         assert!(WRITE_PROMPT.contains("node scripts/rules-gate.mjs coverage"));
         assert!(CONTEST_PROMPT.contains("Never weaken a test"));
     }

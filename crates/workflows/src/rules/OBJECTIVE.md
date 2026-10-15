@@ -21,8 +21,9 @@ one that proves more blocks the work for nothing.
 
 **What it deliberately does not do.** It never writes product code. It
 never weakens a test to make a development pass. It never merges what its
-second reader found unfaithful: that waits for the human.
+second reader found unfaithful: the writer answers it once, then the
+harness decides between them, and the person is told.
 
 **What "done" looks like.** Every rule has its tests on the integration
 branch, the issue is closed, and development may start — or the issue
-says plainly what is unfaithful and waits on the human.
+says plainly what is unfaithful, and the writer or the harness settles it.

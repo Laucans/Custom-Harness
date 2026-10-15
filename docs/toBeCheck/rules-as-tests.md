@@ -122,3 +122,11 @@ exercised on a real product.
   - `pr_fix` never edits `tests/rules/`, and removes `CONTEST.md` once a
     contest is settled.
   - The review brief names a task PR touching the rules first.
+- [ ] Unfaithful rules' tests no longer wait on a human (M6 of the
+      autonomy plan).
+  - The first time, the fidelity session comments its findings
+    (`<!-- rules-fidelity: unfaithful -->`) and poses `harness:ready`; the
+    writer answers them on `rules/<n>`.
+  - The second time, it poses `harness:needs-decision`: `decide` reads the
+    rules' PR, merges it as written or answers. An answer re-poses
+    `harness:ready`.
