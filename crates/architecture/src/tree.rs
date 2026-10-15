@@ -90,6 +90,9 @@ pub struct Tree {
     /// The kit's generated components, by name with their title, as
     /// `mock/kit/kit.json` lists them (contract O).
     pub kit: Vec<(String, String)>,
+    /// The root `Cargo.toml`, when there is one: what names the workspace's
+    /// members, by glob or by name.
+    pub root_manifest: Option<String>,
 }
 
 /// A micro-frontend bundled from a Micro-UI's code.
@@ -187,6 +190,7 @@ impl Tree {
         let mut tree = Self {
             under_architecture: disk.exists(&root.join("contracts")),
             has_query_registry: disk.exists(&root.join("queries/registry.json")),
+            root_manifest: text("Cargo.toml"),
             ..Self::default()
         };
         for system in disk.dir_names(&root.join("crates")) {
@@ -456,6 +460,25 @@ fn manifest_side(json: &Value) -> Side {
 #[must_use]
 pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
     let mut found = Vec::new();
+    // Rule 2: a slice is a member by glob, never by name — a sparse checkout
+    // that leaves it out must still resolve (the gate `workspace-members-by-glob`).
+    for member in tree
+        .root_manifest
+        .as_deref()
+        .map(crate::closure::explicit_members)
+        .unwrap_or_default()
+    {
+        let parts: Vec<&str> = member.split('/').collect();
+        if parts.len() == 4
+            && parts[0] == "crates"
+            && matches!(parts[2], "capabilities" | "data-capabilities")
+        {
+            found.push(format!(
+                "Cargo.toml: {member} is a slice listed as a member by name — list slices by \
+                 glob, so a narrowed checkout resolves and adding one edits no shared file"
+            ));
+        }
+    }
     let capability_ids: Vec<&str> = tree
         .capabilities
         .iter()
@@ -935,6 +958,7 @@ mod tests {
             bundles: Vec::new(),
             design: None,
             kit: Vec::new(),
+            root_manifest: None,
         }
     }
 

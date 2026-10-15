@@ -353,6 +353,16 @@ impl Provisioner {
                  give it another name, or remove it"
             )));
         }
+        // A previous run may have narrowed the tree to its task's closure;
+        // everything below — the guard, the digest, the index, the gates —
+        // reads the whole checkout, so it is widened first.
+        let widened = git.sparse_checkout_off().await?;
+        if !widened.ok() {
+            return Err(Halt::Halted(format!(
+                "cannot widen the workspace {name:?} back to the whole tree: {}",
+                widened.why()
+            )));
+        }
         log.debug(&format!("workspace {name}: fetch + reset on origin"));
         let fetched = git.fetch().await?;
         if !fetched.ok() {

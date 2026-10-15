@@ -221,6 +221,33 @@ jobs:
           done
           exit $failed
 
+  # Rule 2 — the slices are workspace members by glob, never by name. A
+  # glob matches what is on the disk: a sparse checkout that leaves a slice
+  # out still resolves, and adding one edits no shared file. A slice named
+  # in `members` would break both; a member named by name must be plumbing
+  # (the server, the engine), which every checkout carries.
+  workspace-members-by-glob:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No Capability or DataCapability is a workspace member by name
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f Cargo.toml ] || exit 0
+          failed=0
+          members=$(awk '/^\s*members\s*=\s*\[/,/\]/' Cargo.toml | tr -d '[]"'"'"' ' | tr ',' '\n' | sed 's/members=//' | grep -v '^\s*$' || true)
+          while read -r member; do
+            [ -n "$member" ] || continue
+            case "$member" in
+              *\**) ;;
+              crates/*/capabilities/*|crates/*/data-capabilities/*)
+                echo "::error file=Cargo.toml::$member is a slice listed by name — list slices by glob (crates/*/capabilities/*), so a narrowed checkout resolves and adding one edits no shared file"
+                failed=1 ;;
+            esac
+          done <<< "$members"
+          exit $failed
+
   # Contract F, rule 2 — a DataCapability is a folder, never an edit of a
   # shared file: every crates/<system>/data-capabilities/<name>/ is a workspace
   # member, its library is named after its folder (what the server's build

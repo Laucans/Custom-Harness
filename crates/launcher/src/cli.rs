@@ -473,6 +473,17 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_resume: bool,
 
+    /// Keep the whole checkout on the disk for every stage.
+    ///
+    /// By default the stages that plan and build a unit run on a working
+    /// tree narrowed to that unit's closure — its folder, the plumbing it
+    /// reaches, the manifests it needs, its mock page — with
+    /// `git sparse-checkout`: the bound the architecture promises, made
+    /// physical. This turns it off, for a repository whose layout the
+    /// closure does not read yet.
+    #[arg(long, env = "NO_NARROW", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub no_narrow: bool,
+
     /// Run this task and no other, as a lane of a parallel `watch` does.
     ///
     /// The board must offer it as runnable — open, `harness:ready`, nothing

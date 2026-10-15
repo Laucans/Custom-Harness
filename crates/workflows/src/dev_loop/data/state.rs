@@ -44,6 +44,10 @@ pub struct Loop {
     pub tech_written: bool,
     /// The stages already done for this task, across all runs.
     pub stages_done: Vec<String>,
+    /// What the working tree is narrowed to, one folder per line, while a
+    /// stage runs on the task's closure; empty when the tree is whole. Set
+    /// by `Narrow`, read by `Ask` for the prompt, cleared by `Widen`.
+    pub tree_note: String,
 }
 
 impl Resumable for Loop {

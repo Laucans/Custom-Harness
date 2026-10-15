@@ -539,6 +539,8 @@ async fn turns(
         sessions,
         spending,
         disk: Rc::clone(&disk),
+        repo: Rc::new(GitCli::new(workspace.root())),
+        process: Rc::new(process::Processes),
     };
     let signatures = Rc::new(if args.no_signatures {
         // Said out loud, like every other gate that stops applying: a run whose
@@ -559,6 +561,7 @@ async fn turns(
         stack: configuration_digest(workspace, disk.as_ref(), log).await,
         signatures,
         root: workspace.root().to_path_buf(),
+        narrow: !args.no_narrow,
         prompts: crate::dispatch::shared::prompts(
             workspace,
             log,

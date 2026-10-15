@@ -331,6 +331,33 @@ mod tests {
     }
 
     #[test]
+    fn a_neighbour_s_ids_are_what_it_produces_and_needs() {
+        let task = Issue {
+            body:
+                "## Scope\n\nbranch: feat/x\n\n## Architecture\n\nunit: micro-ui\nsystem: credit\n\
+                   produces: RiskBadge\nneeds: credit.calculateRisk, credit.requestLimitReview\n"
+                    .to_string(),
+            ..issue(11, &[])
+        };
+        assert_eq!(
+            sibling(&task).ids,
+            [
+                "RiskBadge",
+                "credit.calculateRisk",
+                "credit.requestLimitReview"
+            ]
+        );
+        let undeclared = Issue {
+            body: "## Scope\n\nbranch: feat/x\n".to_string(),
+            ..issue(12, &[])
+        };
+        assert!(
+            sibling(&undeclared).ids.is_empty(),
+            "nothing declared, no id invented"
+        );
+    }
+
+    #[test]
     fn a_refined_neighbour_falls_back_to_its_business_goal() {
         // Tasks split before the Scope section existed have none, and their
         // shortest honest statement of purpose is the Business Goal.

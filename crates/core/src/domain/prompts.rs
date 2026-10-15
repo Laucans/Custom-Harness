@@ -130,6 +130,18 @@ open that document only where the card sends you there.
 {card}
 --- END ARCHITECTURE RULES ---";
 
+const TREE: &str = "--- WORKING TREE (injected by {injector}) ---
+This checkout is narrowed to what this task's unit builds on: the folders
+and files below are on the disk, nothing else of the repository is. That
+is the architecture's bound, not an accident — a unit knows only what it
+declares. A path the plan names and you cannot find is not yours to go
+looking for: stop with `AGENT_LOOP_STOP: missing <path>` and the harness
+widens the closure. The index and the history are whole: branch, commit
+and push work as usual.
+
+{folders}
+--- END WORKING TREE ---";
+
 const STACK: &str = "--- REPOSITORY CONFIGURATION (injected by {injector}) ---
 This checkout's own configuration, verbatim: how the project is built, tested
 and linted. Read the scripts and runner settings from here instead of opening
@@ -471,6 +483,16 @@ pub fn executing_block(scope: &Scope, injector: &str) -> String {
     )
 }
 
+/// The working tree's closure, as a block, or nothing at all when the tree
+/// is whole — the normal case for a stage that was not narrowed.
+#[must_use]
+pub fn tree_block(folders: &str, injector: &str) -> String {
+    if folders.trim().is_empty() {
+        return String::new();
+    }
+    splice(TREE, &[("injector", injector), ("folders", folders)])
+}
+
 /// The rule card of the unit the task builds, as a block, or nothing at all.
 ///
 /// Nothing when the task declares no unit: a session then reads the
@@ -576,6 +598,7 @@ pub fn extra_for(
     instructions: &str,
     brief: Brief<'_>,
     rules: &str,
+    tree: &str,
     stack: &str,
     signatures: &str,
     injector: &str,
@@ -597,6 +620,7 @@ pub fn extra_for(
     let parts = [
         filled,
         rules_block(rules, injector),
+        tree_block(tree, injector),
         stack_block(stack, injector),
         signatures_block(signatures, injector),
         block,
@@ -743,9 +767,9 @@ mod tests {
 
     #[test]
     fn an_executing_brief_sits_between_the_two_other_shapes() {
-        let executing = extra_for("", Brief::Executing(&scope()), "", "", "", INJECTOR);
-        let situated = extra_for("", Brief::Situated(&scope()), "", "", "", INJECTOR);
-        let alone = extra_for("", Brief::TaskOnly(&scope()), "", "", "", INJECTOR);
+        let executing = extra_for("", Brief::Executing(&scope()), "", "", "", "", INJECTOR);
+        let situated = extra_for("", Brief::Situated(&scope()), "", "", "", "", INJECTOR);
+        let alone = extra_for("", Brief::TaskOnly(&scope()), "", "", "", "", INJECTOR);
         assert!(executing.len() < situated.len());
         assert!(executing.len() > alone.len());
         assert!(executing.contains("CURRENT ISSUE #34"), "{executing}");
@@ -757,6 +781,7 @@ mod tests {
             "do this",
             Brief::Situated(&scope()),
             "A Capability reads, and only reads.",
+            "",
             "<file path=\"a\">x</file>",
             "",
             INJECTOR,
@@ -770,8 +795,53 @@ mod tests {
     }
 
     #[test]
+    fn a_narrowed_tree_is_said_between_the_card_and_the_configuration() {
+        let said = extra_for(
+            "do this",
+            Brief::Situated(&scope()),
+            "the card",
+            "- /crates/credit/\n- /mock/",
+            "<file path=\"a\">x</file>",
+            "",
+            INJECTOR,
+        );
+        let rules = said.find("--- ARCHITECTURE RULES").expect("the card");
+        let tree = said.find("--- WORKING TREE").expect("the tree");
+        let config = said.find("--- REPOSITORY CONFIGURATION").expect("config");
+        assert!(rules < tree && tree < config, "{said}");
+        assert!(said.contains("- /crates/credit/"));
+        assert!(
+            said.contains("AGENT_LOOP_STOP: missing <path>"),
+            "names the gesture"
+        );
+    }
+
+    #[test]
+    fn a_whole_tree_adds_no_block_at_all() {
+        let said = extra_for(
+            "do this",
+            Brief::Situated(&scope()),
+            "",
+            "  ",
+            "",
+            "",
+            INJECTOR,
+        );
+        assert!(!said.contains("WORKING TREE"), "{said}");
+        assert_eq!(tree_block("", INJECTOR), "");
+    }
+
+    #[test]
     fn a_task_declaring_no_unit_gets_no_rules_block() {
-        let said = extra_for("do this", Brief::Situated(&scope()), "  ", "", "", INJECTOR);
+        let said = extra_for(
+            "do this",
+            Brief::Situated(&scope()),
+            "  ",
+            "",
+            "",
+            "",
+            INJECTOR,
+        );
         assert!(!said.contains("ARCHITECTURE RULES"), "{said}");
         assert_eq!(rules_block("", INJECTOR), "");
     }
@@ -919,6 +989,7 @@ mod tests {
             "",
             "",
             "",
+            "",
             INJECTOR,
         );
         assert!(said.contains("work on #34 of milestone #12"), "{said}");
@@ -953,7 +1024,15 @@ mod tests {
 
     #[test]
     fn instructions_come_before_the_scope_because_scope_is_the_long_part() {
-        let said = extra_for("do this", Brief::Situated(&scope()), "", "", "", INJECTOR);
+        let said = extra_for(
+            "do this",
+            Brief::Situated(&scope()),
+            "",
+            "",
+            "",
+            "",
+            INJECTOR,
+        );
         let instructions = said.find("do this").expect("the instructions");
         let block = said.find("--- SCOPE").expect("the scope");
         assert!(instructions < block);
@@ -963,7 +1042,7 @@ mod tests {
     fn a_stage_without_instructions_still_gets_its_scope() {
         // /create-test has no instructions of its own, and would otherwise be the only
         // paid session of the round that ignores which task it is testing.
-        let said = extra_for("", Brief::Situated(&scope()), "", "", "", INJECTOR);
+        let said = extra_for("", Brief::Situated(&scope()), "", "", "", "", INJECTOR);
         assert!(said.contains("ISSUE #34"));
         assert!(!said.starts_with('\n'));
     }
@@ -975,6 +1054,7 @@ mod tests {
         let said = extra_for(
             "do this",
             Brief::Situated(&scope()),
+            "",
             "",
             "<file path=\"a\">x</file>",
             "",
@@ -994,6 +1074,7 @@ mod tests {
             "do this",
             Brief::Situated(&scope()),
             "",
+            "",
             "<file path=\"a\">x</file>",
             "<signatures path=\"src/a.rs\">pub fn alpha()</signatures>",
             INJECTOR,
@@ -1010,6 +1091,7 @@ mod tests {
         let said = extra_for(
             "do this",
             Brief::Situated(&scope()),
+            "",
             "",
             "",
             "   ",
@@ -1032,7 +1114,15 @@ mod tests {
         // Not a stated absence: it asks the session for no gesture and changes
         // nothing about its work, so a paragraph saying so would be paid for on
         // every turn to say "carry on as usual".
-        let said = extra_for("do this", Brief::Situated(&scope()), "", "", "", INJECTOR);
+        let said = extra_for(
+            "do this",
+            Brief::Situated(&scope()),
+            "",
+            "",
+            "",
+            "",
+            INJECTOR,
+        );
         assert!(!said.contains("REPOSITORY CONFIGURATION"), "{said}");
         assert_eq!(stack_block("   \n ", INJECTOR), "");
     }
@@ -1058,7 +1148,15 @@ mod tests {
     fn an_unscoped_stage_gets_no_issue_block_to_hunt_for() {
         // A stage that works on no task: giving it an empty ISSUE block
         // would give it something to hunt for.
-        let said = extra_for("open the next item", Brief::Unscoped, "", "", "", INJECTOR);
+        let said = extra_for(
+            "open the next item",
+            Brief::Unscoped,
+            "",
+            "",
+            "",
+            "",
+            INJECTOR,
+        );
         assert_eq!(said, "open the next item");
         assert!(!said.contains("ISSUE #"));
     }
@@ -1068,6 +1166,7 @@ mod tests {
         let said = extra_for(
             "work on #{num} ({title})",
             Brief::Situated(&scope()),
+            "",
             "",
             "",
             "",

@@ -183,6 +183,43 @@ pub trait Repo {
     /// tree — where a store that is not code (an archive) begins.
     ///
     /// Answers a refusal by default: only a real `git` and the fakes that
+    /// Keeps on the disk only what `patterns` name — `git sparse-checkout`
+    /// in its non-cone syntax, one pattern per line: `/dir/`, `/file`,
+    /// `!/dir/`. The index and `.git` stay whole; only the working tree
+    /// narrows, so a commit and a push are unchanged.
+    ///
+    /// **Refused by default**: a repository adapter that does not say how it
+    /// narrows must not pretend it did, because a session would then read a
+    /// tree the harness believes it cannot.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched, or this adapter cannot narrow.
+    async fn sparse_checkout(&self, patterns: &[String]) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: format!(
+                "this git cannot narrow the working tree to {} pattern(s)",
+                patterns.len()
+            ),
+        })
+    }
+
+    /// Puts the whole working tree back — the inverse of
+    /// [`Self::sparse_checkout`]. A no-op by default: a repository that was
+    /// never narrowed has nothing to widen, which is the honest answer for
+    /// an adapter that does not narrow.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn sparse_checkout_off(&self) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        })
+    }
+
     /// test an archive need it.
     ///
     /// # Errors

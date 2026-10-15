@@ -223,9 +223,33 @@ impl Repo for GitCli {
         self.git(&["push", "-u", "origin", branch]).await
     }
 
+    async fn sparse_checkout(&self, patterns: &[String]) -> Outcome<Ran> {
+        let args = sparse_set_args(patterns);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.git(&refs).await
+    }
+
+    async fn sparse_checkout_off(&self) -> Outcome<Ran> {
+        self.git(&["sparse-checkout", "disable"]).await
+    }
+
     async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
         self.git(&["switch", "--orphan", name]).await
     }
+}
+
+/// `sparse-checkout set --no-cone -- <patterns>`: the patterns are
+/// gitignore-style lines, which `--no-cone` takes as they are; `--` keeps a
+/// pattern that starts with `!` or `-` from reading as a flag.
+fn sparse_set_args(patterns: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "sparse-checkout".to_string(),
+        "set".to_string(),
+        "--no-cone".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(patterns.iter().cloned());
+    args
 }
 
 #[cfg(test)]
@@ -319,6 +343,33 @@ mod tests {
                 "main_agent".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn narrowing_sets_the_patterns_in_non_cone_mode_behind_a_double_dash() {
+        let args = sparse_set_args(&[
+            "/*".to_string(),
+            "!/*/".to_string(),
+            "/crates/s/".to_string(),
+        ]);
+        assert_eq!(
+            args,
+            [
+                "sparse-checkout",
+                "set",
+                "--no-cone",
+                "--",
+                "/*",
+                "!/*/",
+                "/crates/s/"
+            ]
+        );
+    }
+
+    #[test]
+    fn widening_disables_the_sparse_checkout() {
+        let args = git().argv(&["sparse-checkout", "disable"]);
+        assert_eq!(&args[2..], ["sparse-checkout", "disable"]);
     }
 
     #[test]

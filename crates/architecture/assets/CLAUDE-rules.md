@@ -64,7 +64,11 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
 1. **One unit per task.** A task builds exactly one unit of the architecture —
    the `## Architecture` section of its issue says which — and nothing beside
    it. Need a second unit? That is a second task.
-2. **A Capability reads, and only reads.** It uses read-only credentials, reads
+2. **A Capability reads, and only reads.** (And every slice is a workspace
+   member **by glob**, never by name — `crates/*/capabilities/*` — so a
+   checkout narrowed to one slice still resolves, and adding one edits no
+   shared file; the gate `workspace-members-by-glob` refuses a slice listed
+   by name.) It uses read-only credentials, reads
    through its persisted queries only, and never imports, invokes or
    references another Capability, a DataCapability, the DataQueue, the
    DataGuard or the Resolver. On the real dependency graph
@@ -165,6 +169,14 @@ contracts/*.schema.json            the fifteen contracts, JSON Schema 2020-12
   — where it lives, its manifest, what it may know, the gate that judges it.
   `docs/ARCHITECTURE.md` is the reference behind the card: open it only where
   the card sends you there, or when no card was injected.
+- The working tree a harness session runs in may be **narrowed** to the
+  unit's closure (`git sparse-checkout`): its folder, the plumbing it
+  reaches, the manifests it needs, its mock page — the prompt's
+  `--- WORKING TREE ---` block lists what is there. A file the plan names
+  and the tree does not hold is not yours to go looking for: stop with
+  `AGENT_LOOP_STOP: missing <path>`, and the harness widens the closure.
+  Nothing else changes: the index and the history are whole, branch, commit
+  and push work as usual.
 - Find the unit's place in the layout above; create its manifest from the
   matching `contracts/*.schema.json` first, the code second.
 - For a Micro-UI or a screen: open the mock-up page under `mock/pages/`

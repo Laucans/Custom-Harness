@@ -413,6 +413,7 @@ impl SessionAction<Loop> for Ask {
             instructions,
             brief,
             card,
+            &open.state.tree_note,
             &self.stack,
             &carried,
             self.injector,
@@ -1074,6 +1075,87 @@ mod tests {
             rows: spending.0.borrow().clone(),
             said: capture.0.borrow().join("\n"),
         }
+    }
+
+    const DECLARED: &str = "## Architecture\n\nunit: capability\nsystem: credit\n\
+                            produces: credit.calculateRisk\n\n## Technical Implementation Plan\n\n1. build it\n";
+
+    #[tokio::test]
+    async fn a_declared_task_gets_the_rule_card_of_its_unit() {
+        let mut state = scoped_state();
+        state.task.body = DECLARED.to_string();
+        let run = ask_about(
+            state,
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(prompt.contains("--- ARCHITECTURE RULES"), "{prompt}");
+        assert!(prompt.contains("UNIT: Capability"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_task_gets_no_rule_card() {
+        let run = ask_with(
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+        )
+        .await;
+        assert!(
+            !run.prompts[0].contains("ARCHITECTURE RULES"),
+            "{}",
+            run.prompts[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_executing_cut_drops_the_roadmap_and_keeps_the_task() {
+        let mut state = scoped_state();
+        state.task.body = DECLARED.to_string();
+        state.roadmap = Some(Named {
+            number: "5".to_string(),
+            title: "the plan".to_string(),
+            body: "a long story nobody executes".to_string(),
+        });
+        let run = ask_about(
+            state,
+            Cut::Executing(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(!prompt.contains("a long story nobody executes"), "{prompt}");
+        assert!(
+            prompt.contains("NEIGHBOURS THIS TASK BUILDS ON OR DELIVERS TO"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("1. build it"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn a_narrowed_tree_is_said_in_the_prompt() {
+        let mut state = scoped_state();
+        state.tree_note = "- /crates/credit/".to_string();
+        let run = ask_about(
+            state,
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        assert!(
+            run.prompts[0].contains("--- WORKING TREE"),
+            "{}",
+            run.prompts[0]
+        );
+        assert!(run.prompts[0].contains("- /crates/credit/"));
     }
 
     #[tokio::test]

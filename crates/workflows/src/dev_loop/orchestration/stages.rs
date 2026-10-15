@@ -45,6 +45,7 @@ use harness_core::execution::{
 
 use crate::common::labels;
 use crate::dev_loop::action::actions::{Ask, RecordTechWritten};
+use crate::dev_loop::action::narrow::{Narrow, Widen};
 use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
 use crate::dev_loop::checks::gates;
 use crate::dev_loop::config::Config;
@@ -246,12 +247,25 @@ struct Paid<'a> {
     cut: Cut,
     /// The prompt carries the rule card of the unit the task builds.
     rules: bool,
+    /// The working tree is narrowed to the unit's closure around the
+    /// session, when the run asks for it (`Config::narrow`).
+    narrow: bool,
     then: Vec<Box<dyn SessionAction<Loop>>>,
 }
 
 impl Paid<'_> {
     fn body(self, ports: &Ports, config: &Config, turn: u32) -> StageBody<Loop> {
-        let mut actions: Vec<Box<dyn SessionAction<Loop>>> = vec![Box::new(Ask {
+        let narrowed = self.narrow && config.narrow;
+        let mut actions: Vec<Box<dyn SessionAction<Loop>>> = Vec::new();
+        if narrowed {
+            actions.push(Box::new(Unpaid(Narrow {
+                repo: Rc::clone(&ports.repo),
+                process: Rc::clone(&ports.process),
+                disk: Rc::clone(&ports.disk),
+                root: config.root.clone(),
+            })));
+        }
+        actions.push(Box::new(Ask {
             stage: self.stage.to_string(),
             lead: self.lead.to_string(),
             instructions: with_labels(self.instructions),
@@ -264,7 +278,12 @@ impl Paid<'_> {
             injector: config.injector(),
             spending: Rc::clone(&ports.spending),
             rules: self.rules,
-        })];
+        }));
+        if narrowed {
+            actions.push(Box::new(Unpaid(Widen {
+                repo: Rc::clone(&ports.repo),
+            })));
+        }
         actions.extend(self.then);
         actions.push(Box::new(Unpaid(MarkDone {
             stage: self.stage.to_string(),
@@ -294,6 +313,7 @@ pub fn technical_refinement(ports: &Ports, config: &Config, turn: u32) -> Stage<
         write_side_instructions: None,
         cut: Cut::Situated(REFINEMENT_WRITES),
         rules: true,
+        narrow: true,
         // Recording is local work, and it goes *in* the stage — not in a
         // gate, which would have no right to write.
         then: vec![Box::new(Unpaid(RecordTechWritten {
@@ -377,6 +397,7 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             write_side_instructions: Some(&write_side),
             cut: Cut::Executing(CODE_SKIPS),
             rules: true,
+            narrow: true,
             then: Vec::new(),
         }
         .body(ports, config, turn),
@@ -406,6 +427,7 @@ pub fn create_test(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             write_side_instructions: None,
             cut: Cut::TaskOnly(TEST_SKIPS),
             rules: false,
+            narrow: false,
             then: Vec::new(),
         }
         .body(ports, config, turn),

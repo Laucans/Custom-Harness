@@ -44,6 +44,10 @@ pub struct Config {
     pub signatures: std::rc::Rc<crate::dev_loop::data::signatures::Index>,
     /// The checkout's root — what the architecture gates read after `code`.
     pub root: std::path::PathBuf,
+    /// Narrow the working tree to the task's closure around the stages that
+    /// plan and build it (`--no-narrow` turns it off): the bound the
+    /// architecture promises, made physical.
+    pub narrow: bool,
     /// The human's prompt edits, read once per run — a stage sends
     /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
     pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
@@ -106,6 +110,7 @@ pub(crate) mod fake {
             stack: String::new(),
             signatures: std::rc::Rc::default(),
             root: std::path::PathBuf::from("/ws"),
+            narrow: false,
         }
     }
 }

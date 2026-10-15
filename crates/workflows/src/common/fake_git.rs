@@ -136,6 +136,12 @@ impl Repo for FakeRepo {
     async fn reset_hard(&self, reference: &str) -> Outcome<Ran> {
         Ok(self.note(&format!("reset_hard {reference}")))
     }
+    async fn sparse_checkout(&self, patterns: &[String]) -> Outcome<Ran> {
+        Ok(self.note(&format!("sparse-checkout set {}", patterns.len())))
+    }
+    async fn sparse_checkout_off(&self) -> Outcome<Ran> {
+        Ok(self.note("sparse-checkout disable"))
+    }
     async fn clean(&self) -> Outcome<Ran> {
         Ok(self.note("clean"))
     }
