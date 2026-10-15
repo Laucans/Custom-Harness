@@ -135,12 +135,12 @@ impl Queue {
         found
     }
 
-    /// What is declared ahead of `position` in `partition` on `fields`:
-    /// the pending commands before it that write one of them.
-    fn ahead_of(&self, partition: &str, position: u64, fields: &[String]) -> Vec<PendingAhead> {
+    /// What is declared ahead in `partition` on `fields`: every pending
+    /// command of the partition that writes one of them — the entry asked
+    /// for is not among them yet, and takes the last position.
+    fn ahead_of(&self, partition: &str, fields: &[String]) -> Vec<PendingAhead> {
         self.pending_in(partition)
             .into_iter()
-            .filter(|e| e.position < position)
             .filter(|e| e.fields().iter().any(|f| fields.contains(f)))
             .map(|e| PendingAhead {
                 command: e.command.clone(),
@@ -181,7 +181,7 @@ impl Queue {
     ) -> (Entry, Vec<Message>) {
         let fields = entry.fields();
         entry.position = self.take_position(&entry.partition);
-        let pending_ahead = self.ahead_of(&entry.partition, entry.position, &fields);
+        let pending_ahead = self.ahead_of(&entry.partition, &fields);
         let stale_ahead = pending_ahead.first().cloned();
         let moved = Self::moved_since(&entry.based_on, &confirmed, &fields);
         let field = fields.first().cloned().unwrap_or_default();
@@ -346,10 +346,10 @@ impl Queue {
             )));
         }
         old.state = State::Cancelled;
+        // The state is the submission's to set; a parked command was never
+        // confirmed, so only its parking is left behind.
         let fresh = Entry {
             command: format!("{command}-r"),
-            state: State::Queued,
-            confirmation: None,
             parked: None,
             requeued_from: Some(command.to_string()),
             ..old.clone()
@@ -450,6 +450,7 @@ impl Queue {
                     entry.parked = Some(Parked {
                         ttl_seconds: PARKED_TTL_SECONDS,
                         since: now,
+                        warned: false,
                     });
                 }
                 let message = Message {
@@ -529,12 +530,8 @@ impl Queue {
                     reason: Some("parked past its ttl".to_string()),
                     ..Message::new(Kind::Expired, &[&entry.by], &entry.command)
                 });
-            } else if expires.saturating_sub(now) <= PARKED_WARNING_SECONDS
-                && parked.ttl_seconds > PARKED_WARNING_SECONDS
-                && now.saturating_sub(parked.since) >= parked.ttl_seconds - PARKED_WARNING_SECONDS
-                && now.saturating_sub(parked.since)
-                    < parked.ttl_seconds - PARKED_WARNING_SECONDS + 1
-            {
+            } else if !parked.warned && expires.saturating_sub(now) <= PARKED_WARNING_SECONDS {
+                parked.warned = true;
                 messages.push(Message {
                     actions: vec![Action::Requeue, Action::Cancel],
                     ..Message::new(Kind::ParkedExpiring, &[&entry.by], &entry.command)
@@ -637,6 +634,10 @@ mod tests {
         );
         let told = &said[1];
         assert_eq!(told.to, ["bob"]);
+        assert_eq!(
+            told.actions,
+            [Action::ConfirmOverwrite, Action::Cancel, Action::Edit]
+        );
         assert_eq!(told.field.as_deref(), Some("Account/881.creditLimit"));
         assert_eq!(told.your_value, Some(Value::from(3000)));
         let ahead = told.declared_ahead.as_ref().expect("what is ahead");
@@ -759,6 +760,11 @@ mod tests {
         let (step, said) = queue.advance("Account/881", 100);
         assert_eq!(step, Step::Parked("c_123".to_string()));
         assert_eq!(kinds(&said), [Kind::Parked]);
+        assert_eq!(
+            said[0].reason.as_deref(),
+            Some("reached the head unconfirmed")
+        );
+        assert_eq!(said[0].actions, [Action::Requeue, Action::Cancel]);
         assert_eq!(queue.entry("c_123").map(|e| e.state), Some(State::Parked));
         let (step, _) = queue.advance("Account/881", 100);
         assert_eq!(step, Step::Ready("c_130".to_string()));
@@ -788,6 +794,8 @@ mod tests {
             State::AwaitingConfirmation,
             "dave is ahead on the same field"
         );
+        assert!(fresh.parked.is_none(), "not parked any more");
+        assert!(fresh.confirmation.is_none(), "expected nothing");
         assert_eq!(
             kinds(&said),
             [Kind::CommandQueued, Kind::ValueDeclaredAhead]
@@ -808,10 +816,24 @@ mod tests {
             false,
         );
         other.advance("Account/881", 1000);
+        assert_eq!(PARKED_TTL_SECONDS, 86_400, "a day");
+        assert_eq!(PARKED_WARNING_SECONDS, 3_600, "an hour before");
+        assert!(
+            other
+                .tick(1000 + PARKED_TTL_SECONDS - PARKED_WARNING_SECONDS - 1)
+                .is_empty(),
+            "too early to warn"
+        );
         let warned = other.tick(1000 + PARKED_TTL_SECONDS - PARKED_WARNING_SECONDS);
         assert_eq!(kinds(&warned), [Kind::ParkedExpiring]);
+        assert_eq!(warned[0].actions, [Action::Requeue, Action::Cancel]);
+        assert!(
+            other.tick(1000 + PARKED_TTL_SECONDS - 10).is_empty(),
+            "warned once"
+        );
         let said = other.tick(1000 + PARKED_TTL_SECONDS);
         assert_eq!(kinds(&said), [Kind::Expired]);
+        assert_eq!(said[0].reason.as_deref(), Some("parked past its ttl"));
         assert_eq!(other.entry("c_1").map(|e| e.state), Some(State::Expired));
         assert!(
             other.tick(1000 + PARKED_TTL_SECONDS + 1).is_empty(),
@@ -835,6 +857,7 @@ mod tests {
         let said = queue.cancel("c_120").expect("cancelled");
         assert_eq!(kinds(&said), [Kind::AheadResolved]);
         assert_eq!(said[0].to, ["bob"]);
+        assert_eq!(said[0].reason.as_deref(), Some("c_120 was resolved"));
         assert!(matches!(queue.cancel("c_120"), Err(Error::NotNow(_))));
         let (step, _) = queue.advance("Account/881", 0);
         assert_eq!(
@@ -867,14 +890,27 @@ mod tests {
         assert_eq!(step, Step::Blocked("c_2".to_string()));
         assert_eq!(kinds(&said), [Kind::BlockedByHold]);
         assert_eq!(said[0].to, ["bob", "credit.limitReview"]);
+        assert_eq!(
+            said[0].hold.as_ref().map(|h| h.id.as_str()),
+            Some("w_77"),
+            "the message names the hold"
+        );
         // Renewed, it holds longer; expired, it lets go.
         queue.renew("w_77", 1050).expect("renewed");
         assert_eq!(queue.holds()[0].expires, 1110);
         let warned = queue.tick(1100);
         assert_eq!(kinds(&warned), [Kind::HoldExpiring]);
+        assert_eq!(warned[0].hold.as_ref().map(|h| h.id.as_str()), Some("w_77"));
+        assert_eq!(warned[0].actions, [Action::Renew]);
         assert!(queue.tick(1101).is_empty(), "warned once");
         let (step, _) = queue.advance("Account/881", 1100);
         assert_eq!(step, Step::Blocked("c_2".to_string()));
+        let (step, _) = queue.advance("Account/881", 1110);
+        assert_eq!(
+            step,
+            Step::Ready("c_2".to_string()),
+            "a hold expired this very second holds nothing"
+        );
         queue.tick(1110);
         assert!(queue.holds().is_empty(), "expected nothing");
         let (step, _) = queue.advance("Account/881", 1110);

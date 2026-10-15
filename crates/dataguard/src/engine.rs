@@ -742,12 +742,9 @@ impl Engine {
         incoming: &[(String, u64)],
     ) -> ImpactPlan {
         let queue = self.lock_queue();
-        let holds: Vec<Hold> = queue
-            .holds()
-            .iter()
-            .filter(|h| h.partition == entry.partition)
-            .cloned()
-            .collect();
+        // Every hold: the Resolver keeps the ones on the partition, at or
+        // before the entry.
+        let holds: Vec<Hold> = queue.holds().to_vec();
         let pending_behind: Vec<String> = queue
             .entries()
             .iter()
@@ -1086,7 +1083,7 @@ mod tests {
             Value::from(3000)
         );
         assert_eq!(
-            plant.store.data_version().await.expect("read"),
+            plant.engine.data_version().await.expect("read"),
             3,
             "one global sequence"
         );
@@ -1143,6 +1140,13 @@ mod tests {
             "{:?}",
             over.warnings
         );
+        let warned = plant
+            .notifier
+            .to("alice")
+            .into_iter()
+            .find(|m| m.message == Kind::InvariantAtRisk)
+            .expect("warned");
+        assert_eq!(warned.violations, ["limit-under-ceiling"]);
         assert!(
             plant
                 .notifier
@@ -1393,6 +1397,17 @@ mod tests {
             .await
             .expect("rejected");
         assert_eq!(result.status, State::Rejected);
+        assert_eq!(result.violations, [format!("review {review} rejected")]);
+        let told = plant
+            .notifier
+            .to("alice")
+            .into_iter()
+            .find(|m| m.message == Kind::CommandRejected)
+            .expect("the author hears it");
+        assert_eq!(
+            told.reason.as_deref(),
+            Some(format!("review {review} rejected by dana").as_str())
+        );
         assert_eq!(
             plant
                 .engine
@@ -1674,7 +1689,9 @@ mod tests {
     #[tokio::test]
     async fn a_relation_under_review_opens_a_review_at_the_head_and_asks_once() {
         let plant = plant(
-            account(5000).pointed_at("Account/881", vec![("Invoice.accountId".to_string(), 3)]),
+            account(5000)
+                .pointed_at("Account/881", vec![("Invoice.accountId".to_string(), 3)])
+                .pointed_at("Account/882", vec![("Invoice.accountId".to_string(), 1)]),
         );
         let engine = Engine::new(
             plant.store.clone(),
@@ -1729,6 +1746,26 @@ mod tests {
             "approved once, not asked again"
         );
         assert!(plant.store.is_tombstoned("Account/881"));
+        // Another account's closure is asked on its own: an approval is
+        // one command's, not everyone's.
+        let other = Submission {
+            payload: BTreeMap::from([("accountId".to_string(), Value::from("882"))]),
+            ..close_882()
+        };
+        engine.submit(other).await.expect("queued");
+        let results = engine.run_once().await.expect("ran");
+        assert_eq!(results[0].status, State::AwaitingReview, "asked on its own");
+    }
+
+    fn close_882() -> Submission {
+        Submission {
+            data_capability: "credit.closeAccount".to_string(),
+            payload: BTreeMap::new(),
+            target_id: None,
+            based_on: None,
+            idempotency_key: None,
+            caller: Engine::caller("alice", "credit.Form", &[], &[]),
+        }
     }
 
     #[tokio::test]

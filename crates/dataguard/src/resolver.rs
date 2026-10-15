@@ -413,6 +413,57 @@ mod tests {
     }
 
     #[test]
+    fn a_relation_asks_a_human_when_it_is_under_review_or_semantic_and_has_rows() {
+        let aggregate = Aggregate::parse(
+            r#"{"aggregate":"Account","fields":{},"invariants":[],
+                "relations":[{"from":"Note.accountId","onDelete":"cascade"},{"from":"Memo.subject","onDelete":"review"},{"from":"Tag.target","onDelete":"cascade","semantic":true}]}"#,
+        )
+        .expect("contract I");
+        let registry = Registry::default();
+        let verdict = Verdict::default();
+        let decide = |incoming: &[(String, u64)]| {
+            super::plan(
+                &entry(Effect::Delete),
+                &Situation {
+                    aggregate: &aggregate,
+                    registry: &registry,
+                    holds: &[],
+                    pending_behind: &[],
+                    incoming,
+                    verdict: &verdict,
+                    confirmed: true,
+                },
+            )
+            .decision
+        };
+        assert_eq!(
+            decide(&[("Note.accountId".to_string(), 5)]),
+            Decision::Auto,
+            "a cascade asks nobody"
+        );
+        assert_eq!(
+            decide(&[("Memo.subject".to_string(), 0)]),
+            Decision::Auto,
+            "a review of no row"
+        );
+        assert_eq!(
+            decide(&[("Tag.target".to_string(), 0)]),
+            Decision::Auto,
+            "a semantic link to no row"
+        );
+        assert_eq!(
+            decide(&[("Memo.subject".to_string(), 1)]),
+            Decision::HumanReview,
+            "under review, one row"
+        );
+        assert_eq!(
+            decide(&[("Tag.target".to_string(), 1)]),
+            Decision::HumanReview,
+            "semantic, one row"
+        );
+    }
+
+    #[test]
     fn a_hold_behind_the_command_does_not_block_it() {
         let aggregate = aggregate();
         let registry = registry();

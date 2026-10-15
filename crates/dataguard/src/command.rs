@@ -107,6 +107,9 @@ pub struct Parked {
     pub ttl_seconds: u64,
     /// The instant it was parked, seconds since the epoch.
     pub since: u64,
+    /// Whether the author was warned of the expiry.
+    #[serde(default)]
+    pub warned: bool,
 }
 
 /// One command of the queue (contract G).

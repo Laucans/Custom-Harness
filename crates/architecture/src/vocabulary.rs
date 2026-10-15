@@ -567,12 +567,12 @@ mod tests {
         );
         assert_eq!(Declaration::parse(&text), Some(written.clone()));
         assert!(written.is_hostless());
-        assert!(
-            !Declaration::parse("unit: capability\nsystem: credit\nhost: -")
-                .expect("parsed")
-                .is_hostless(),
-            "`-` is no host"
-        );
+        for none in ["host: -", "host:"] {
+            let parsed = Declaration::parse(&format!("unit: capability\nsystem: credit\n{none}"))
+                .expect("parsed");
+            assert_eq!(parsed.host, None, "{none}: no host");
+            assert!(!parsed.is_hostless());
+        }
         // Held while it runs: it changes the aggregate's data. A pure insert and a reader hold nothing.
         assert_eq!(written.held_aggregate(), Some("Account"));
         let pure = Declaration {
