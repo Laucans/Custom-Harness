@@ -666,7 +666,10 @@ through — a dependency no crate uses (`cargo machete`), a `pub` item no
 crate of the workspace calls (`scripts/dead-code.sh`); and the tests
 themselves, by mutation — every function the change touches is rewritten
 wrong by `cargo mutants`, and a rewrite no test catches fails the build
-(`.cargo/mutants.toml` says what is never mutated). The code no change
+(`.cargo/mutants.toml` says what is never mutated). A session runs the
+same checks through `scripts/quiet.sh`: one line when a check passes, every
+line of its errors when it fails, the full log kept — the CI keeps its whole
+logs. The code no change
 touches is judged in rotation: each run mutates one bucket of files, the
 bucket a hash of the path, so runs in parallel judge disjoint files
 (`scripts/mutants-rotation.sh`); what it misses never fails the build, it
