@@ -342,6 +342,56 @@ pub fn component_prompt(component: &Component, base: Option<&Base>, tokens_css: 
     text
 }
 
+/// The prompt that restyles one component: its fragment as it stands, the
+/// tokens, and only the rules of its `<style>` block back — the markup and
+/// the script are kept as they are (`kit::restyled`).
+#[must_use]
+pub fn restyle_prompt(component: &Component, fragment: &str, tokens_css: &str) -> String {
+    let lower = component.name.to_ascii_lowercase();
+    format!(
+        "You restyle one component of a product's kit of visual components, `{name}`: {title} — \
+         {what}. Its markup and its script below stay as they are; you write only the CSS of \
+         its `<style>` block, so it wears the design system: the shapes (radii, borders, \
+         shadows, spacing) and the type the tokens imply, not just the colours. Rules: every \
+         colour, font, spacing, radius and shadow through the variables below, \
+         `var(--color-primary, #2b6cb0)` with a fallback, never a bare literal colour; every \
+         selector scoped under `.kit-{lower}`, the classes the markup uses; no `@import`, no \
+         `url(` to another host.\n\n\
+         The design system's variables (mock/design/tokens.css):\n```css\n{css}\n```\n\n\
+         The fragment:\n```html\n{fragment}\n```\n\n\
+         Answer ONLY the CSS rules — no `<style>` tag, no prose, no code fence.",
+        name = component.name,
+        title = component.title,
+        what = component.what,
+        css = tokens_css.trim(),
+        fragment = fragment.trim(),
+    )
+}
+
+/// The CSS a restyle answers: a code fence or a `<style>` tag around it
+/// taken off.
+///
+/// # Errors
+///
+/// No rule in the answer, or markup in it.
+pub fn style_from_answer(answer: &str) -> Result<String, String> {
+    let mut text = answer.trim();
+    if let Some(rest) = text.strip_prefix("```") {
+        let rest = rest.split_once('\n').map_or("", |(_, body)| body);
+        text = rest.trim_end().strip_suffix("```").unwrap_or(rest).trim();
+    }
+    if let Some(rest) = text.strip_prefix("<style>") {
+        text = rest.strip_suffix("</style>").unwrap_or(rest).trim();
+    }
+    if !text.contains('{') {
+        return Err("the answer carries no CSS rule".to_string());
+    }
+    if text.contains('<') {
+        return Err("the answer carries markup, not only CSS".to_string());
+    }
+    Ok(text.to_string())
+}
+
 /// The prompt that applies requests to one component's fragment: the
 /// fragment as it is, the tokens, the requests, the same rules, and the
 /// whole fragment back.
@@ -561,15 +611,15 @@ pub fn fork_name(kit: &Kit, from: &str) -> String {
         .unwrap_or_else(|| format!("{from}Copy"))
 }
 
-/// The components still to generate among `names` (every pending or
-/// failed one when `names` is empty), in the catalogue's order.
+/// The components still to generate among `names` (every pending, failed
+/// or installed one when `names` is empty), in the catalogue's order.
 #[must_use]
 pub fn to_generate(kit: &Kit, names: &[String]) -> Vec<String> {
     kit.components
         .iter()
         .filter(|c| {
             if names.is_empty() {
-                matches!(c.state, ComponentState::Pending | ComponentState::Failed)
+                matches!(c.state, ComponentState::Pending | ComponentState::Failed) || c.installed()
             } else {
                 names.contains(&c.name)
             }
@@ -671,9 +721,40 @@ mod tests {
     }
 
     #[test]
+    fn a_restyle_asks_only_for_the_css_and_reads_it_back() {
+        let button = Component {
+            name: "Button".into(),
+            title: "Button".into(),
+            what: "a click".into(),
+            ..Component::default()
+        };
+        let text = restyle_prompt(&button, "<div class=\"kit-button\"></div>", ":root{--x:1}");
+        assert!(text.contains("`.kit-button`"));
+        assert!(text.contains(":root{--x:1}"));
+        assert!(text.contains("<div class=\"kit-button\"></div>"));
+        assert!(
+            text.contains("Button: Button — a click")
+                || text.contains("`Button`: Button — a click")
+        );
+        assert_eq!(
+            style_from_answer("```css\n.kit-button{color:var(--x)}\n```").expect("css"),
+            ".kit-button{color:var(--x)}"
+        );
+        assert_eq!(
+            style_from_answer("<style>.a { b: c }</style>").expect("css"),
+            ".a { b: c }"
+        );
+        assert!(style_from_answer("sorry").is_err());
+        assert!(style_from_answer(".a { b: c }<script>x</script>").is_err());
+    }
+
+    #[test]
     fn the_catalogue_merges_the_bases_and_the_kit_and_the_rest_composes() {
         let mut kit = Kit::default();
         kit.settle();
+        // The carousel unticked and taken off the kit.
+        kit.checked.retain(|c| c != "carousel");
+        kit.components.retain(|c| c.name != "Carousel");
         kit.components.push(Component {
             name: "Hero".into(),
             prompt: "a big banner".into(),
@@ -709,7 +790,9 @@ mod tests {
         assert!(summary.contains("- Hero (custom): a big banner"));
         assert!(!summary.contains("Carousel"));
         assert_eq!(fork_name(&kit, "Button"), "Button2");
-        assert_eq!(to_generate(&kit, &[]).len(), kit::DEFAULT_CHECKED.len() - 1);
+        kit.component_mut("Button").expect("button").generated_at = "now".into();
+        // Every base installed but the restyled Button; nothing of the Hero.
+        assert_eq!(to_generate(&kit, &[]).len(), kit::BASE.len() - 2);
         assert_eq!(to_generate(&kit, &["Button".into()]), ["Button"]);
         let (title, body) = install_issue(
             &Design {

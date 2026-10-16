@@ -25,6 +25,8 @@
   const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
   const call = (url, body) => post(url, body).then(said);
   const said = async (res) => { const text = await res.text(); if (!res.ok) throw new Error(text || res.statusText); try { return JSON.parse(text); } catch (e) { return text; } };
+  // A base as the harness ships it, not restyled with the tokens yet.
+  const installed = (e) => !!e.base && e.state === 'generated' && !e.generated_at;
   const stateName = { pending: 'to generate', running: 'generating…', generated: 'generated', failed: 'failed' };
 
   function mount(host, opts) {
@@ -366,7 +368,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       const jobOf = (name) => jobs.find((j) => j.name === name);
       const row = (e) => {
         const job = jobOf(e.name);
-        const state = job && (job.state === 'queued' || job.state === 'running') ? `<span class="tag acc"><span class="spin"></span> ${job.state}</span>` : e.state === 'generated' ? `<span class="tag ok">${e.checks.length ? 'generated · fails the check' : 'generated'}</span>` : e.state === 'failed' ? `<span class="tag bad" title="${esc(e.why)}">failed</span>` : e.checked ? '<span class="tag">to generate</span>' : '';
+        const state = job && (job.state === 'queued' || job.state === 'running') ? `<span class="tag acc"><span class="spin"></span> ${job.state}</span>` : installed(e) ? `<span class="tag" title="${esc(e.why || 'the neutral base, usable now; generating restyles it with the tokens')}">neutral</span>` : e.state === 'generated' ? `<span class="tag ok">${e.checks.length ? 'generated · fails the check' : 'generated'}</span>` : e.state === 'failed' ? `<span class="tag bad" title="${esc(e.why)}">failed</span>` : e.checked ? '<span class="tag">to generate</span>' : '';
         return `<li class="kt-item${e.checked ? '' : ' off'}" data-item="${esc(e.name)}">
           ${!e.base ? '<span class="kt-check kt-custom-mark" title="custom">✎</span>' : `<input type="checkbox" class="kt-check" data-base="${esc(e.base)}" ${e.checked ? 'checked' : ''} ${e.state === 'generated' ? 'disabled title="generated: remove it from the canvas"' : ''}>`}
           <b class="mono">${esc(e.name)}</b><span class="kt-title">${esc(e.title)}</span>
@@ -379,7 +381,7 @@ input{font:inherit;padding:var(--space-2,8px) var(--space-3,16px);border:var(--b
       };
       const bases = list.filter((e) => !!e.base);
       const customs = list.filter((e) => !e.base);
-      const pending = list.filter((e) => e.checked && (e.state === 'pending' || e.state === 'failed')).length;
+      const pending = list.filter((e) => e.checked && (e.state === 'pending' || e.state === 'failed' || installed(e))).length;
       const done = jobs.filter((j) => j.state === 'done').length;
       const failed = jobs.filter((j) => j.state === 'failed');
       pane.innerHTML = `${validated ? '' : '<div class="callout">The kit is styled from the design system: validate it first (the <b>design system</b> tab), then tick and generate.</div>'}

@@ -148,11 +148,12 @@ It has two sections:
      queues the ticked kit components' generation by itself, the first
      candidate included (`design_generate`, `design_tokens`,
      `design_validate` — the same routes whichever pane opens the easel
-     from, the standalone one too), and the step closes when none waits
-     (`Facts::kit_waiting`) — the mock-ups are drawn on the kit, not on
-     tokens alone. Five kit components are ticked by default
-     (`kit::DEFAULT_CHECKED`: button, input, card, table, menu); the others
-     wait to be ticked;
+     from, the standalone one too), and the step closes when no custom
+     component waits (`Facts::kit_waiting`) — the mock-ups are drawn on the
+     kit, not on tokens alone. The sixteen bases are **installed** when the
+     design system starts (`KitDesk::ensure`, `KitDesk::install`): neutral
+     fragments on the tokens' variables, usable at once; their restyle runs
+     in the background and never holds the step (`Component::installed`);
   7. **mock-ups** — one Opus session per screen of the settled scope,
      `--creation-sessions` (`CREATION_SESSIONS`, 4) at a time
      (`in_parallel`), each at work in the integration branch's mock-up
@@ -864,8 +865,9 @@ and the toast says why. Three tabs:
 - **catalogue** — the kit's components: the harness's sixteen **bases**
   (`crates/architecture/assets/kit/`, neutral fragments every application
   starts from: button, input, drop list, checkbox, radio, toggle, menu, tabs,
-  card, modal, table, carousel, badge, toast, pagination, breadcrumb — twelve
-  ticked by default) and the **custom** ones the human prompts (a name for
+  card, modal, table, carousel, badge, toast, pagination, breadcrumb — all
+  ticked and **installed** neutral when the design system starts, *neutral*
+  on the catalogue until restyled) and the **custom** ones the human prompts (a name for
   humans — the code name is made from it, `kit::name_for`, unless a page
   already injects one — a text, a reference image, a sketch drawn on the
   pad). A kit component is a **visual
@@ -874,9 +876,13 @@ and the toast says why. Three tabs:
   carousel turns, a menu opens) — with no data of its own and no network;
   what loads from a server is a micro-frontend. **Generate** runs up to
   `--kit-sessions` (3) one-shot sessions at once on `--kit-model`
-  (`claude-sonnet-5-5`), each one question: the base fragment and the tokens
-  in, the styled fragment out — applying the tokens to a base is what keeps
-  it cheap. Resumable: what is generated stays, a run stopped halfway
+  (`claude-sonnet-5-5`), each one question. A base the human asked nothing
+  of is **restyled**: its fragment and the tokens in, only the rules of its
+  `<style>` out (`restyle_prompt`, `style_from_answer`, `kit::restyled`) —
+  the markup, the classes and the script stay, so a page or a micro-frontend
+  drawn on the neutral base keeps fitting; a restyle that fails leaves the
+  neutral fragment in place. A custom component, or a base with a prompt or a
+  reference image, is drawn whole (`component_prompt`). Resumable: what is generated stays, a run stopped halfway
   (quota, a refusal) takes only what is missing or failed next time
   (`kit.json` carries each component's state).
 - **canvas** — two views. The **gallery** only scrolls down: a grid of

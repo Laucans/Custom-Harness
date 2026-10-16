@@ -243,9 +243,33 @@ impl KitDesk {
     }
 
     /// Makes the branch and its workspace exist.
+    /// The design system's workspace; the first time, its kit installed:
+    /// every base, neutral, usable before any generation.
     fn ensure(mockups: &dyn Mockups, from: &str) -> Result<PathBuf, String> {
         mockups.ensure_branch(BRANCH, from)?;
-        mockups.workspace(BRANCH)
+        let dir = mockups.workspace(BRANCH)?;
+        if mockups.file(BRANCH, design::KIT_JSON)?.is_none() {
+            let mut kit = Kit::default();
+            let added = kit.settle();
+            Self::install(mockups, &added)?;
+            Self::write_json(mockups, design::KIT_JSON, &kit)?;
+        }
+        Ok(dir)
+    }
+
+    /// Writes the neutral fragment of each base component named that has
+    /// none yet.
+    fn install(mockups: &dyn Mockups, names: &[String]) -> Result<(), String> {
+        for name in names {
+            let Some(base) = kit::BASE.iter().find(|b| b.name == name) else {
+                continue;
+            };
+            let path = Kit::fragment_path(name);
+            if mockups.file(BRANCH, &path)?.is_none() {
+                mockups.write(BRANCH, &path, base.fragment.as_bytes())?;
+            }
+        }
+        Ok(())
     }
 
     fn text_of(mockups: &dyn Mockups, path: &str) -> Result<Option<String>, String> {
@@ -660,7 +684,8 @@ impl KitDesk {
                 .into_iter()
                 .filter(|id| kit::base(id).is_some())
                 .collect();
-            kit.settle();
+            let added = kit.settle();
+            Self::install(mockups, &added)?;
             Self::write_json(mockups, design::KIT_JSON, &kit)?;
             Ok(Self::catalog_of(mockups, &kit))
         })
@@ -799,10 +824,13 @@ impl KitDesk {
                     );
                 }
                 let mut kit = Self::kit_of(mockups)?;
-                kit.settle();
+                let added = kit.settle();
+                Self::install(mockups, &added)?;
                 let names = design::to_generate(&kit, &names);
                 for name in &names {
-                    if let Some(c) = kit.component_mut(name) {
+                    // An installed base stays usable while it is restyled:
+                    // nothing waits on it.
+                    if let Some(c) = kit.component_mut(name).filter(|c| !c.installed()) {
                         c.state = ComponentState::Pending;
                         c.why.clear();
                     }
@@ -882,28 +910,47 @@ impl KitDesk {
         self.running.fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// Generates one component: the prompt from its base and the tokens,
-    /// one question, the fragment written, the kit told.
+    /// Generates one component, one question, the fragment written, the kit
+    /// told. A base the human asked nothing of is restyled: its fragment as
+    /// it stands, only its `<style>` asked again. Anything else is drawn
+    /// whole from its base or the human's words.
     fn generate_one(&self, oneshot: &dyn Oneshot, name: &str) -> Result<(), String> {
         let mockups = self.setup.mockups.as_ref();
-        let (component, css, folder) = {
+        let (component, css, folder, current) = {
             let _held = lock(&self.files);
             let mut kit = Self::kit_of(mockups)?;
             let entry = kit
                 .component_mut(name)
                 .ok_or_else(|| format!("no component {name}"))?;
-            entry.state = ComponentState::Running;
+            if !entry.installed() {
+                entry.state = ComponentState::Running;
+            }
             let component = entry.clone();
             Self::write_json(mockups, design::KIT_JSON, &kit)?;
             let css = Self::text_of(mockups, design::TOKENS_CSS)?.unwrap_or_default();
-            (component, css, mockups.workspace(BRANCH)?)
+            let current = Self::text_of(mockups, &Kit::fragment_path(name))?;
+            (component, css, mockups.workspace(BRANCH)?, current)
         };
         let base = kit::base(&component.base);
-        let prompt = design::component_prompt(&component, base, &css);
-        let answer = if component.reference.is_empty() {
-            oneshot.ask(&self.setup.model, &prompt)
+        let restyle =
+            base.is_some() && component.prompt.trim().is_empty() && component.reference.is_empty();
+        let answer = if restyle {
+            let fragment = current
+                .filter(|f| !f.trim().is_empty())
+                .or_else(|| base.map(|b| b.fragment.to_string()))
+                .unwrap_or_default();
+            let prompt = design::restyle_prompt(&component, &fragment, &css);
+            oneshot
+                .ask(&self.setup.model, &prompt)
+                .and_then(|a| design::style_from_answer(&a))
+                .map(|style| kit::restyled(&fragment, &style))
         } else {
-            oneshot.ask_in(&self.setup.model, &prompt, &folder.join(kit::KIT_DIR))
+            let prompt = design::component_prompt(&component, base, &css);
+            if component.reference.is_empty() {
+                oneshot.ask(&self.setup.model, &prompt)
+            } else {
+                oneshot.ask_in(&self.setup.model, &prompt, &folder.join(kit::KIT_DIR))
+            }
         };
         let written = answer
             .and_then(|a| design::fragment_from_answer(&a))
@@ -925,7 +972,10 @@ impl KitDesk {
                 Ok(())
             }
             Err(why) => {
-                entry.state = ComponentState::Failed;
+                // An installed base keeps its neutral fragment, still usable.
+                if !entry.installed() {
+                    entry.state = ComponentState::Failed;
+                }
                 entry.why = why.chars().take(500).collect();
                 Err(why)
             }
@@ -1419,6 +1469,12 @@ pub mod tests {
                 return Ok(kit::default_tokens_json());
             }
             let name = prompt.split('`').nth(1).unwrap_or("X").to_string();
+            if prompt.contains("Answer ONLY the CSS rules") {
+                return Ok(format!(
+                    "```css\n.kit-{} {{ color: var(--color-text, #111); }}\n```",
+                    name.to_ascii_lowercase()
+                ));
+            }
             Ok(format!(
                 "```html\n<div class=\"kit-{}\" style=\"color:var(--color-text, #111)\">{name}</div>\n```",
                 name.to_ascii_lowercase()
@@ -1465,6 +1521,15 @@ pub mod tests {
         let reply = desk.reply().await.expect("reply");
         assert_eq!(reply.design.design.state, DesignState::None);
         assert_eq!(reply.catalog.len(), kit::BASE.len());
+        // Every base installed, neutral, as soon as the design system starts.
+        assert!(
+            reply
+                .catalog
+                .iter()
+                .all(|e| e.state == ComponentState::Generated && e.fragment),
+            "{:?}",
+            reply.catalog
+        );
         assert!(
             desk.start_generation(vec![]).await.is_err(),
             "not validated"
@@ -1522,7 +1587,17 @@ pub mod tests {
             .await
             .expect("custom");
         let queued = desk.start_generation(vec![]).await.expect("started");
-        assert_eq!(queued, 5);
+        // Every installed base to restyle, and the three custom ones.
+        assert_eq!(queued, kit::BASE.len() + 3);
+        let waiting = desk
+            .reply()
+            .await
+            .expect("reply")
+            .catalog
+            .iter()
+            .filter(|e| !e.base.is_empty() && e.state != ComponentState::Generated)
+            .count();
+        assert_eq!(waiting, 0, "an installed base never waits on its restyle");
         // Wait for the workers.
         for _ in 0..200 {
             if desk
@@ -1542,6 +1617,21 @@ pub mod tests {
             .expect("hero");
         assert_eq!(hero.state, ComponentState::Generated);
         assert!(hero.fragment && hero.checks.is_empty(), "{:?}", hero.checks);
+        // A base restyled: its markup kept, its style the answer's.
+        let button = reply
+            .catalog
+            .iter()
+            .find(|e| e.name == "Button")
+            .expect("button");
+        assert!(!button.generated_at.is_empty(), "restyled");
+        let fragment = std::fs::read_to_string(dir.join("design-system/mock/kit/Button.html"))
+            .expect("fragment");
+        assert!(fragment.contains(".kit-button { color: var(--color-text, #111); }"));
+        assert!(fragment.contains("class=\"primary\""), "{fragment}");
+        assert!(
+            !fragment.contains("brightness"),
+            "the neutral style is gone"
+        );
         let failing = reply
             .catalog
             .iter()
@@ -1663,6 +1753,49 @@ pub mod tests {
                 .collect();
             Ok(format!("{}\n<i>{}</i>", fragment.trim(), ids.join(",")))
         }
+    }
+
+    /// Refuses every question.
+    struct Refusing;
+
+    impl Oneshot for Refusing {
+        fn ask(&self, _model: &str, _prompt: &str) -> Result<String, String> {
+            Err("no answer".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_restyle_that_fails_leaves_the_base_installed_and_usable() {
+        let (_, dir) = desk(false);
+        let desk = KitDesk::new(Setup {
+            mockups: Arc::new(DirMockups::new(&dir)),
+            oneshot: Some(Arc::new(Refusing)),
+            model: "m".into(),
+            sessions: 1,
+            pins: Arc::new(Shelf::default()),
+            integration_branch: "main".into(),
+        });
+        desk.inject(kit::default_tokens_json(), false)
+            .await
+            .expect("injected");
+        let mockups = DirMockups::new(&dir);
+        assert!(desk.generate_one(&Refusing, "Button").is_err());
+        let kit = KitDesk::kit_of(&mockups).expect("kit");
+        let button = kit.component("Button").expect("button");
+        assert!(button.installed(), "{button:?}");
+        assert_eq!(button.why, "no answer");
+        let fragment = std::fs::read_to_string(dir.join("design-system/mock/kit/Button.html"))
+            .expect("fragment");
+        assert_eq!(fragment, kit::base("button").expect("base").fragment);
+        // Installing again writes nothing over a fragment already there.
+        std::fs::write(dir.join("design-system/mock/kit/Card.html"), "<p>mine</p>").expect("mine");
+        KitDesk::install(&mockups, &["Card".to_string(), "Nope".to_string()]).expect("installed");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("design-system/mock/kit/Card.html")).expect("card"),
+            "<p>mine</p>"
+        );
+        assert!(!dir.join("design-system/mock/kit/Nope.html").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

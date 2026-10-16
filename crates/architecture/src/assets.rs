@@ -8,8 +8,9 @@
 //! its rotation with the script that files what it misses, the script that
 //! dumps its schema, an empty data model to grow, an empty list of mock pages
 //! and the mock-up's loader, screen host, mock server and build. The kit's base
-//! fragments are not installed: the harness keeps them and writes the styled
-//! ones (`kit`). What to write of them in a given
+//! fragments are not installed here: they belong to the `design-system`
+//! branch, where the view installs them neutral when the design system
+//! starts, then restyles them with the tokens (`kit`). What to write of them in a given
 //! checkout, and what to keep, is `init-repo`'s decision, not this module's.
 
 /// One file of the architecture: where it goes in the repository, what it says.

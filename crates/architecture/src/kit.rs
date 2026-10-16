@@ -581,7 +581,7 @@ impl Default for Kit {
     fn default() -> Self {
         Self {
             version: 1,
-            checked: DEFAULT_CHECKED.iter().map(|s| (*s).to_string()).collect(),
+            checked: BASE.iter().map(|b| b.id.to_string()).collect(),
             components: Vec::new(),
         }
     }
@@ -617,7 +617,8 @@ impl Kit {
         format!("kit/{name}.html")
     }
 
-    /// Lists every ticked base the kit does not list yet, pending, and
+    /// Lists every ticked base the kit does not list yet, installed — its
+    /// neutral fragment, written by whoever settles, usable at once — and
     /// drops the pending base components no longer ticked. Answers the
     /// names added.
     pub fn settle(&mut self) -> Vec<String> {
@@ -627,11 +628,13 @@ impl Kit {
             .filter(|b| self.checked.iter().any(|c| c == b.id))
         {
             if self.component(base.name).is_none() {
+                // Installed: its neutral fragment stands until it is restyled.
                 self.components.push(Component {
                     name: base.name.to_string(),
                     base: base.id.to_string(),
                     title: base.title.to_string(),
                     what: base.what.to_string(),
+                    state: ComponentState::Generated,
                     ..Component::default()
                 });
                 added.push(base.name.to_string());
@@ -643,6 +646,34 @@ impl Kit {
                 || self.checked.contains(&c.base)
         });
         added
+    }
+}
+
+impl Component {
+    /// A base installed as the harness ships it, never restyled with the
+    /// product's tokens yet.
+    #[must_use]
+    pub fn installed(&self) -> bool {
+        !self.base.is_empty()
+            && self.state == ComponentState::Generated
+            && self.generated_at.is_empty()
+    }
+}
+
+/// A fragment with its `<style>` block's rules replaced by `style`; one is
+/// added in front when it has none. The markup and the script stay.
+#[must_use]
+pub fn restyled(fragment: &str, style: &str) -> String {
+    let block = format!("<style>\n{}\n</style>", style.trim());
+    let lower = fragment.to_ascii_lowercase();
+    let found = lower.find("<style").and_then(|open| {
+        lower[open..]
+            .find("</style>")
+            .map(|close| (open, open + close + 8))
+    });
+    match found {
+        Some((open, close)) => format!("{}{block}{}", &fragment[..open], &fragment[close..]),
+        None => format!("{block}\n{fragment}"),
     }
 }
 
@@ -845,9 +876,6 @@ pub const BASE: [Base; 16] = [
         fragment: include_str!("../assets/kit/breadcrumb.html"),
     },
 ];
-
-/// The bases ticked by default: the ones every application starts with.
-pub const DEFAULT_CHECKED: [&str; 5] = ["button", "input", "card", "table", "menu"];
 
 /// The base with this id.
 #[must_use]
@@ -1446,9 +1474,25 @@ mod tests {
             assert!(is_name(base.name));
             assert!(base.fragment.contains("data-kit") || base.fragment.contains("kit-"));
         }
-        for id in DEFAULT_CHECKED {
-            assert!(base(id).is_some(), "{id} is not a base");
-        }
+    }
+
+    #[test]
+    fn a_restyle_replaces_the_style_and_keeps_the_markup() {
+        let fragment = "<!-- note -->\n<STYLE>.kit-x { color: red }</style>\n<div class=\"kit-x\">a</div><script>1</script>";
+        let out = restyled(fragment, " .kit-x{color:var(--color-text)} ");
+        assert_eq!(
+            out,
+            "<!-- note -->\n<style>\n.kit-x{color:var(--color-text)}\n</style>\n<div class=\"kit-x\">a</div><script>1</script>"
+        );
+        assert_eq!(
+            restyled("<p>a</p>", "p{}"),
+            "<style>\np{}\n</style>\n<p>a</p>"
+        );
+        assert_eq!(
+            restyled("<style>open", "p{}"),
+            "<style>\np{}\n</style>\n<style>open",
+            "an unclosed block is not one"
+        );
     }
 
     #[test]
@@ -1489,9 +1533,16 @@ mod tests {
     fn a_kit_settles_its_ticked_bases_and_finds_who_uses_a_component() {
         let mut kit = Kit::default();
         let added = kit.settle();
-        assert_eq!(added.len(), DEFAULT_CHECKED.len());
-        assert!(kit.component("Button").is_some());
+        assert_eq!(added.len(), BASE.len(), "every base is installed");
+        let button = kit.component("Button").expect("button");
+        assert!(button.installed());
+        let mut kit = Kit {
+            checked: vec!["button".into(), "card".into()],
+            ..Kit::default()
+        };
+        kit.settle();
         assert!(kit.component("Carousel").is_none());
+        kit.component_mut("Button").expect("button").state = ComponentState::Pending;
         kit.checked.retain(|c| c != "button");
         kit.settle();
         assert!(
@@ -1499,30 +1550,30 @@ mod tests {
             "a pending base unticked goes"
         );
         kit.checked.push("carousel".into());
-        kit.component_mut("Card").expect("card").state = ComponentState::Generated;
         kit.checked.retain(|c| c != "card");
         assert_eq!(kit.settle(), ["Carousel"]);
-        assert!(kit.component("Card").is_some(), "a generated one stays");
+        assert!(kit.component("Card").is_some(), "an installed one stays");
+        let card = kit.component_mut("Card").expect("card");
+        card.generated_at = "2026-01-01T00:00:00Z".into();
+        assert!(!card.installed(), "restyled");
+        card.generated_at.clear();
+        card.base.clear();
+        assert!(!card.installed(), "a custom one is never installed");
+        card.base = "card".into();
+        card.state = ComponentState::Failed;
+        assert!(!card.installed());
         assert!(Kit::parse(Some("nope")).is_err());
-        assert_eq!(
-            Kit::parse(None).expect("empty").checked.len(),
-            DEFAULT_CHECKED.len()
-        );
+        assert_eq!(Kit::parse(None).expect("empty").checked.len(), BASE.len());
         assert_eq!(Kit::fragment_path("Carousel"), "kit/Carousel.html");
         let page = "<main><div data-kit=\"Carousel\"></div><div data-kit='Menu' data-kit=\"Carousel\"></div></main>";
         assert!(uses(page, "Carousel") && uses(page, "Menu") && !uses(page, "Card"));
         assert_eq!(used_in(page), ["Carousel", "Menu"]);
         assert!(preview_page("Carousel").contains("data-kit=\"Carousel\""));
-        // The showcase is made of bases only, each a default the human
-        // starts with, and shows every one of them.
+        // The showcase is made of bases only, each installed by default.
         let uses = showcase_uses();
-        assert_eq!(uses.len(), DEFAULT_CHECKED.len(), "{uses:?}");
+        assert_ne!(uses.len(), 0);
         for name in &uses {
-            let base = BASE.iter().find(|b| b.name == name).expect("a base");
-            assert!(
-                DEFAULT_CHECKED.contains(&base.id),
-                "{name} ticked by default"
-            );
+            assert!(BASE.iter().any(|b| b.name == name), "{name} is a base");
         }
         assert!(SHOWCASE.contains("../mock.js") && SHOWCASE.contains("../design/tokens.css"));
         assert!(!preview_page("Carousel").contains("style.css"));
