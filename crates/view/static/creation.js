@@ -1021,13 +1021,10 @@
   const PARTS = [['given', 'Given'], ['when', 'When'], ['then', 'Then']];
   const critOf = (q) => Object.assign({ given: '', when: '', then: '' }, typeof q.criterion === 'object' && q.criterion ? q.criterion : {});
   const critMissing = (q) => { const c = critOf(q); return PARTS.filter(([k]) => !String(c[k] || '').trim()).map(([k]) => k); };
-  // The criterion: read in full on a folded card, three fields on the open one.
-  function criterionBox(q, open) {
+  // The criterion, three fields on the open card; a folded one shows its description only.
+  function criterionBox(q) {
     const c = critOf(q);
     const missing = critMissing(q);
-    if (!open) {
-      return `<div class="cr-crit${missing.length ? ' bad' : ''}">${PARTS.map(([k, label]) => `<div class="cr-crit-line"><b>${label}</b><span>${c[k] ? esc(c[k]) : '<i class="muted">to write</i>'}</span></div>`).join('')}</div>`;
-    }
     return `<div class="cr-crit open${missing.length ? ' bad' : ''}">${PARTS.map(([k, label]) => `<label class="cr-crit-line"><b>${label}</b><textarea rows="1" class="cr-fit${missing.includes(k) ? ' bad' : ''}" data-cr-rule-field="criterion.${k}" placeholder="${k === 'given' ? 'the situation before' : k === 'when' ? 'what happens' : 'what must then be true'}" aria-label="rule ${q.id}, ${k}">${esc(c[k])}</textarea></label>`).join('')}</div>`;
   }
   // The parts tied to a rule, and a + that lists the others to add.
@@ -1101,9 +1098,10 @@
       : '<span class="tag bad">carried by nothing</span>';
     const family = FAMILIES.map(([id, label]) => `<option value="${id}"${(q.family || 'journey') === id ? ' selected' : ''}>${label}</option>`).join('');
     const open = sel ? `<textarea rows="1" class="cr-req-body cr-fit" data-cr-rule-field="body" placeholder="what it asks for" aria-label="rule ${q.id}, what it asks for">${esc(q.body)}</textarea>
-        ${criterionBox(q, true)}
+        ${criterionBox(q)}
         ${ties(q, 'page', mock.pages, (p) => p.path, (p) => p.title || p.path)}
-        ${ties(q, 'component', mock.components, (c) => c.name, (c) => c.name, (name) => `<button type="button" class="mini" data-cr-mf-redo="${esc(name)}" title="Generate this micro-frontend again from its spec">↻</button>`)}` : `${criterionBox(q, false)}<div class="cr-rule-cover">${cover}</div>`;
+        ${ties(q, 'component', mock.components, (c) => c.name, (c) => c.name, (name) => `<button type="button" class="mini" data-cr-mf-redo="${esc(name)}" title="Generate this micro-frontend again from its spec">↻</button>`)}` : `<p class="cr-rule-desc">${q.body ? esc(q.body) : '<i class="muted">no description yet</i>'}</p>
+        <div class="cr-rule-cover">${cover}${critMissing(q).length ? '<span class="tag bad" title="Open the rule to write its Given, When, Then">criterion to write</span>' : ''}</div>`;
     return `<article class="cr-rule${sel ? ' sel' : ''}${q.human ? ' mine' : ''}${gaps.length ? ' gap' : ''}" data-rule="${q.id}">
         <header><span class="cr-qn">R${q.id}</span><input type="text" class="cr-req-title" data-cr-rule-field="title" value="${esc(q.title)}" placeholder="the rule, in a few words" aria-label="rule ${q.id}">
           <select data-cr-rule-field="family" aria-label="rule ${q.id}, family">${family}</select>

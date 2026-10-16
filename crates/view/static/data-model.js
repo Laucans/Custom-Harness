@@ -45,9 +45,10 @@
       + '<span class="dm-compare-wrap" hidden><button type="button" class="dm-compare" data-dm="compare" aria-haspopup="menu" title="Hold this version against another branch or version">compare ▾</button>'
       + '<div class="dm-compares" hidden role="menu" aria-label="compare with"></div></span></div>'
       + '<div class="dm-bar"><span class="dm-origin">reading the data model…</span><span class="spacer"></span>'
-      + '<input type="search" class="dm-search" placeholder="Find a table or a field" aria-label="find a table or a field">'
       + '<button type="button" class="mini" data-dm="all">unfold all</button></div>'
-      + '<div class="dm-main"><div class="dm-board"></div><aside class="dm-inspector" aria-live="polite"></aside></div>'
+      + '<div class="dm-main"><div class="dm-board"></div><aside class="dm-inspector" aria-live="polite"></aside>'
+      + '<aside class="dm-index" aria-label="tables"><input type="search" class="dm-search" placeholder="Find a table or a field" aria-label="find a table or a field">'
+      + '<ul class="dm-ilist"></ul></aside></div>'
       + '</div>';
     const q = (s) => host.querySelector(s);
     const inspector = q('.dm-inspector');
@@ -338,6 +339,34 @@
     }
     const heightOf = (t) => HEAD + (st.open.has(t.name) && t.fields.length ? t.fields.length * ROW + 2 * PAD : 0);
 
+    // ---- what the selection touches ---------------------------------------------
+    // A link the selection is on: its table, or its field when one is picked.
+    const touches = (l) => !!st.sel && ((l.from_table === st.sel.table && (!st.sel.field || l.from_field === st.sel.field))
+      || (l.to_table === st.sel.table && (!st.sel.field || l.to_field === st.sel.field)));
+    // The selection's neighbours: `up`, the tables it points at (it depends
+    // on them); `down`, the tables pointing at it (they depend on it).
+    function relatives(m) {
+      const up = new Set();
+      const down = new Set();
+      if (!st.sel) return { up, down };
+      for (const l of m.links) {
+        if (!touches(l) || l.from_table === l.to_table) continue;
+        if (l.from_table === st.sel.table) up.add(l.to_table);
+        else down.add(l.from_table);
+      }
+      return { up, down };
+    }
+    // A link's UML multiplicities, the pointing end first: many rows point at
+    // one (`*` → `1`), at most one when the pointing field is unique, and the
+    // pointed end is optional (`0..1`) when the pointing field may be empty.
+    function multiplicity(m, l) {
+      const t = m.tables.find((x) => x.name === l.from_table);
+      const fields = t ? t.fields : [];
+      const f = fields.find((x) => x.name === l.from_field);
+      const sole = f && (f.unique || (f.primary && fields.filter((x) => x.primary).length === 1));
+      return { from: sole ? '0..1' : '*', to: f && f.nullable === true ? '0..1' : '1' };
+    }
+
     // ---- drawing -----------------------------------------------------------------
     // What is drawn: the model shown — and, compared, what only the other
     // side has ghosted in, every part marked with what changed.
@@ -373,13 +402,17 @@
         board.content.innerHTML = '';
         board.edges.innerHTML = '';
         inspector.innerHTML = overview(m);
+        drawIndex();
         return;
       }
       const { boxes, w, h } = layout(m);
       st.boxes = boxes;
       st.bounds = { x: 0, y: 0, w, h };
       board.setSize(w, h);
-      board.content.innerHTML = [...boxes.values()].map(tableBox).join('');
+      const rel = relatives(m);
+      board.content.classList.toggle('focused', !!st.sel);
+      board.edges.classList.toggle('focused', !!st.sel);
+      board.content.innerHTML = [...boxes.values()].map((b) => tableBox(b, rel)).join('');
       drawEdges(m);
       markSearch();
       board.refresh();
@@ -429,10 +462,11 @@
       const [label, tip] = SEEN[seen] || SEEN.both;
       return label && st.model.compared ? `<span class="dm-seen ${seen}" title="${esc(tip)}">${label}</span>` : '';
     }
-    function tableBox(b) {
+    function tableBox(b, rel) {
       const t = b.t;
       const open = st.open.has(t.name) && t.fields.length;
       const sel = st.sel && st.sel.table === t.name;
+      const side = (rel.up.has(t.name) ? ' rel-up' : '') + (rel.down.has(t.name) ? ' rel-down' : '');
       const rows = open ? '<ul class="dm-fields">' + t.fields.map((f) => {
         const fsel = sel && st.sel.field === f.name;
         const warn = f.declared_type ? `<span class="dm-warn" title="the model says ${esc(f.declared_type)}">≠</span>` : '';
@@ -440,7 +474,7 @@
           + `${keyOf(f)}<span class="dm-name">${esc(f.name)}${f.nullable === true ? '<i>?</i>' : ''}</span><span class="dm-type">${esc(f.data_type)}</span>${warn}</li>`;
       }).join('') + '</ul>' : '';
       const mark = t.diff ? `<span class="dm-diff ${t.diff}" title="${esc(DIFF_WORDS[t.diff])}">${DIFF_MARKS[t.diff]}</span>` : '';
-      return `<div class="dm-table seen-${t.seen}${open ? ' open' : ''}${sel && !st.sel.field ? ' sel' : ''}${t.diff ? ' diff-' + t.diff : ''}" data-pin="table:${esc(t.name)}" data-table="${esc(t.name)}" style="left:${b.x}px;top:${b.y}px;width:${b.w}px">`
+      return `<div class="dm-table seen-${t.seen}${open ? ' open' : ''}${sel ? ' owner' : ''}${sel && !st.sel.field ? ' sel' : ''}${side}${t.diff ? ' diff-' + t.diff : ''}" data-pin="table:${esc(t.name)}" data-table="${esc(t.name)}" style="left:${b.x}px;top:${b.y}px;width:${b.w}px">`
         + `<div class="dm-head" title="${esc(t.gone ? 'only in the other version' : t.purpose || 'click to show its fields')}"><span class="dm-caret">${open ? '▾' : '▸'}</span><b>${esc(t.name)}</b>${seenTag(t.seen)}${mark}<span class="dm-count">${t.fields.length}</span></div>`
         + rows + '</div>';
     }
@@ -453,6 +487,17 @@
     }
     function drawEdges(m) {
       let paths = '';
+      let marks = '';
+      // Links meeting at one point: one label per multiplicity, stacked.
+      const placed = new Map();
+      const mark = (x, y, toward, text) => {
+        const after = toward >= x;
+        const at = `${x},${y},${after}`;
+        const there = placed.get(at) || [];
+        if (there.includes(text)) return;
+        placed.set(at, there.concat(text));
+        marks += `<text class="dm-mult" x="${after ? x + 14 : x - 14}" y="${y - 9 - there.length * 16}" text-anchor="${after ? 'start' : 'end'}">${esc(text)}</text>`;
+      };
       for (const l of m.links) {
         const a = st.boxes.get(l.from_table);
         const b = st.boxes.get(l.to_table);
@@ -460,9 +505,11 @@
         const y1 = anchorY(a, l.from_field);
         const y2 = anchorY(b, l.to_field);
         let d;
+        let ends;
         if (a === b) {
           const x = a.x + a.w;
           d = `M ${x} ${y1} C ${x + 60} ${y1}, ${x + 60} ${y2}, ${x} ${y2}`;
+          ends = [x, x + 60, x, x + 60];
         } else {
           const right = a.x + a.w / 2 <= b.x + b.w / 2;
           const sameColumn = a.x === b.x;
@@ -472,17 +519,22 @@
           const c1 = right || sameColumn ? x1 + pull : x1 - pull;
           const c2 = sameColumn ? x2 + pull : right ? x2 - pull : x2 + pull;
           d = `M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}`;
+          ends = [x1, c1, x2, c2];
         }
-        const hl = st.sel && ((l.from_table === st.sel.table && (!st.sel.field || l.from_field === st.sel.field))
-          || (l.to_table === st.sel.table && (!st.sel.field || l.to_field === st.sel.field)));
-        const cls = ['dm-link', l.kind, 'seen-' + l.seen, hl ? 'hl' : '', l.diff ? 'diff-' + l.diff : ''].join(' ');
-        const tip = `${l.from_table}.${l.from_field} → ${l.to_table}.${l.to_field}${l.on_delete ? ' · on delete ' + l.on_delete : ''}${l.purpose ? ' — ' + l.purpose : ''}`;
+        const hl = touches(l);
+        // Seen from the selection: a link it leaves goes up to what it
+        // depends on, a link it receives comes from what depends on it.
+        const side = !hl ? '' : l.from_table === st.sel.table ? 'up' : 'down';
+        const many = multiplicity(m, l);
+        if (hl) { mark(ends[0], y1, ends[1], many.from); mark(ends[2], y2, ends[3], many.to); }
+        const cls = ['dm-link', l.kind, 'seen-' + l.seen, hl ? 'hl ' + side : '', l.diff ? 'diff-' + l.diff : ''].join(' ');
+        const tip = `${l.from_table}.${l.from_field} (${many.from}) → (${many.to}) ${l.to_table}.${l.to_field}${l.on_delete ? ' · on delete ' + l.on_delete : ''}${l.purpose ? ' — ' + l.purpose : ''}`;
         paths += `<path class="${cls}" d="${d}" marker-end="url(#dm-one)" marker-start="url(#dm-many)"><title>${esc(tip)}</title></path>`;
       }
       board.edges.innerHTML = '<defs>'
         + '<marker id="dm-one" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9" fill="none" stroke="context-stroke" stroke-width="1.6"/></marker>'
         + '<marker id="dm-many" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto"><circle cx="5" cy="5" r="3" fill="context-stroke"/></marker>'
-        + '</defs>' + paths;
+        + '</defs>' + paths + marks;
     }
     function markSearch() {
       const needle = search.value.trim().toLowerCase();
@@ -492,6 +544,29 @@
         const hit = !!needle && (t.name.toLowerCase().includes(needle) || t.fields.some((f) => f.name.toLowerCase().includes(needle)));
         el.classList.toggle('match', hit);
       }
+      drawIndex();
+    }
+    // The entity index, on the right: every table by name, narrowed by the
+    // search, with the fields that match under their table. A click selects
+    // and centres it on the board.
+    function drawIndex() {
+      const m = st.drawn || st.model;
+      const list = q('.dm-ilist');
+      if (!m) { list.innerHTML = ''; return; }
+      const needle = search.value.trim().toLowerCase();
+      const rel = relatives(m);
+      const items = [];
+      for (const t of [...m.tables].sort((a, b) => a.name.localeCompare(b.name))) {
+        const own = !needle || t.name.toLowerCase().includes(needle);
+        const fields = needle ? t.fields.filter((f) => f.name.toLowerCase().includes(needle)) : [];
+        if (!own && !fields.length) continue;
+        const on = st.sel && st.sel.table === t.name;
+        const side = rel.up.has(t.name) ? ' rel-up' : rel.down.has(t.name) ? ' rel-down' : '';
+        items.push(`<li><button type="button" class="dm-ientry${on && !st.sel.field ? ' on' : ''}${side}" data-goto="${esc(t.name)}" title="${esc(t.purpose || t.name)}"><span class="dm-idot"></span><span class="dm-name">${esc(t.name)}</span><span class="dm-count">${t.fields.length}</span></button>`
+          + (fields.length ? `<ul>${fields.map((f) => `<li><button type="button" class="dm-ientry field${on && st.sel.field === f.name ? ' on' : ''}" data-goto="${esc(t.name)}" data-goto-field="${esc(f.name)}"><span class="dm-name">${esc(f.name)}</span><span class="dm-type">${esc(f.data_type)}</span></button></li>`).join('')}</ul>` : '')
+          + '</li>');
+      }
+      list.innerHTML = items.join('') || '<li class="muted dm-inone">No table or field matches.</li>';
     }
 
     // ---- who uses what --------------------------------------------------------------
@@ -591,6 +666,7 @@
       h += '<h4>How to read it</h4><ul class="dm-legend">'
         + '<li><span class="dm-key pk">PK</span> primary key · <span class="dm-key fk">FK</span> points at another field · <span class="dm-key uq">UQ</span> unique</li>'
         + '<li><i>?</i> after a name: it may be empty</li>'
+        + '<li>A click on a table: <span class="dm-lg up">it depends on</span> · <span class="dm-lg down">depends on it</span>, each link with its multiplicities (<code>*</code> many, <code>1</code> one, <code>0..1</code> at most one)</li>'
         + '<li>A plain line is a foreign key; a dashed one a link the model declares outside any key; an amber one a key only the model intends.</li>'
         + '<li>Click a table to unfold its fields, a field to read it in full. Drag the 📍 pin onto anything to write a note.</li></ul>';
       return h;
@@ -611,7 +687,8 @@
         + notesOn('table:' + t.name);
     }
     function linkWords(l) {
-      const bits = [l.kind === 'semantic' ? 'declared link' : 'foreign key'];
+      const many = multiplicity(st.drawn || st.model, l);
+      const bits = [`${many.from} → ${many.to}`, l.kind === 'semantic' ? 'declared link' : 'foreign key'];
       if (l.on_delete) bits.push('on delete ' + l.on_delete);
       if (l.on_update) bits.push('on update ' + l.on_update);
       if (l.seen === 'model' && l.kind === 'foreign_key') bits.push('not in the database yet');
@@ -716,8 +793,8 @@
       e.stopPropagation(); // the page's Escape would leave the pane
       if (e.key === 'Escape') { search.value = ''; markSearch(); }
       if (e.key === 'Enter' && st.model) {
-        const hit = board.content.querySelector('.dm-table.match');
-        if (hit) select(hit.dataset.table, null, true);
+        const hit = q('.dm-ilist [data-goto]');
+        if (hit) select(hit.dataset.goto, hit.dataset.gotoField || null, true);
       }
     });
 

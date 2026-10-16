@@ -608,13 +608,45 @@ svg.process .name { fill: var(--dim); pointer-events: none; }
 .dm-key.uq { background: #9085e9; color: #fff; }
 .dm-seen { font: 10px var(--mono); padding: 1px 6px; border-radius: 8px; border: 1px solid var(--warn); color: var(--warn); font-weight: 400; }
 .dm-seen.database { border-color: #6b8f99; color: #9dbcc4; }
-.searching .dm-table:not(.match) { opacity: 0.3; }
+.searching .dm-table:not(.match):not(.owner):not(.rel-up):not(.rel-down) { opacity: 0.3; }
 .dm-table.match { border-color: var(--accent); }
 .dm-link { fill: none; stroke: #7f9ca5; stroke-width: 1.6; }
 .dm-link.semantic { stroke-dasharray: 6 5; stroke: #9085e9; }
 .dm-link.foreign_key.seen-model { stroke: var(--warn); stroke-dasharray: 3 4; }
 .dm-link.hl { stroke: var(--accent); stroke-width: 2.6; }
-@media (max-width: 900px) { .dm-inspector { width: 240px; } }
+/* A table picked: what it depends on (up) and what depends on it (down), each in its colour; the rest steps back. */
+.dm-board, .dm-index { --dm-up: #4ea3f0; --dm-down: #e07ad8; }
+.dm-table.rel-up { border-color: var(--dm-up); box-shadow: 0 0 0 3px rgba(78, 163, 240, 0.25), 0 4px 14px rgba(0, 0, 0, 0.3); }
+.dm-table.rel-down { border-color: var(--dm-down); box-shadow: 0 0 0 3px rgba(224, 122, 216, 0.25), 0 4px 14px rgba(0, 0, 0, 0.3); }
+.dm-table.rel-up.rel-down { box-shadow: 0 0 0 3px var(--dm-down), 0 4px 14px rgba(0, 0, 0, 0.3); }
+.dm-table.rel-up .dm-head b { color: var(--dm-up); }
+.dm-table.rel-down .dm-head b { color: var(--dm-down); }
+.focused .dm-table:not(.owner):not(.rel-up):not(.rel-down) { opacity: 0.4; }
+.focused .dm-link:not(.hl) { opacity: 0.18; }
+.dm-link.hl.up { stroke: var(--dm-up); }
+.dm-link.hl.down { stroke: var(--dm-down); }
+.dm-mult { font: 700 15px var(--mono); fill: var(--text); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+.dm-lg { font-weight: 600; }
+.dm-lg.up { color: #4ea3f0; }
+.dm-lg.down { color: #e07ad8; }
+/* The entity index: every table, searched as it is typed. */
+.dm-index { width: 220px; flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--panel); }
+.dm-index .dm-search { width: auto; max-width: none; margin: 10px 10px 6px; }
+.dm-ilist { list-style: none; margin: 0; padding: 0 6px 20px; overflow: auto; flex: 1; min-height: 0; }
+.dm-ilist ul { list-style: none; margin: 0 0 4px; padding: 0 0 0 16px; }
+.dm-ientry { width: 100%; display: flex; align-items: center; gap: 7px; background: transparent; border: 0; border-radius: 6px; padding: 4px 8px; color: var(--text); font: 12.5px var(--sans); text-align: left; cursor: pointer; }
+.dm-ientry:hover { background: rgba(243, 231, 201, 0.06); }
+.dm-ientry.on { background: rgba(226, 178, 64, 0.18); color: var(--accent); }
+.dm-ientry.field { font-size: 12px; color: var(--dim); }
+.dm-ientry .dm-count, .dm-ientry .dm-type { margin-left: auto; }
+.dm-idot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--line); }
+.dm-ientry.rel-up .dm-idot { background: var(--dm-up); }
+.dm-ientry.rel-down .dm-idot { background: var(--dm-down); }
+.dm-ientry.rel-up .dm-name { color: var(--dm-up); }
+.dm-ientry.rel-down .dm-name { color: var(--dm-down); }
+.dm-inone { padding: 8px; font-size: 12px; }
+@media (max-width: 1200px) { .dm-inspector { width: 270px; } .dm-index { width: 180px; } }
+@media (max-width: 900px) { .dm-inspector { width: 240px; } .dm-index { width: 160px; } }
 /* The archive's versions: branch buttons, the features' menu, the version list. */
 .dm-switch { position: relative; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px 0; }
 .dm-switch[hidden] { display: none; }
@@ -1671,6 +1703,7 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-rule-criterion { font: 12px var(--sans); }
 .cr-rule-criterion.bad { border-color: var(--bad); }
 .cr-rule-cover { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.cr-rule-desc { margin: 0; font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .cr-rule-page { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--text); font: 11px var(--sans); cursor: pointer; }
 .cr-rule-page.on, .cr-rule-page:hover { border-color: #4ea3f0; }
 .cr-rule-mf { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 8px; border: 1px solid var(--line); border-radius: 999px; font: 11px var(--mono); }
