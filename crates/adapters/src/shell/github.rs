@@ -1316,6 +1316,13 @@ mod tests {
         };
         assert!(why.contains("65537 characters"), "{why}");
         assert!(why.contains("at most 65536"), "{why}");
+        // At the limit it goes on to GitHub (and fails there, no repository).
+        let body = "é".repeat(super::ISSUE_BODY_MAX);
+        let sent = gh.create_issue("Roadmap", &body, &[]).await;
+        assert!(
+            !matches!(&sent, Err(super::Halt::Halted(why)) if why.contains("was not sent")),
+            "{sent:?}"
+        );
     }
 
     #[test]

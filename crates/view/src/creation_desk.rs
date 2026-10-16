@@ -3887,6 +3887,10 @@ mod tests {
             Err("initialize the factory first".to_string())
         );
         // Taken up again from its failure: what the first attempt kept stays.
+        let mut earlier = after.clone();
+        earlier.mockup_at = "main_agent@0123456789".to_string();
+        desk.keep(&earlier).expect("kept");
+        let after = earlier;
         desk.accept().await.expect("accepted again");
         let again = settled(desk).await;
         assert_eq!((again.work, again.state), (Work::Initialize, State::Failed));

@@ -4242,6 +4242,11 @@ mod tests {
             fitted.contains(&"m".repeat(200)),
             "the next longest stays while it fits"
         );
+        // Exactly at the limit once the longest is folded: the next stays.
+        let once = fit_issue_body(&body, body.chars().count() - 1, "`x.md`");
+        assert_eq!(fit_issue_body(&body, once.chars().count(), "`x.md`"), once);
+        assert!(once.contains(&"m".repeat(200)));
+        assert_eq!(ISSUE_BUDGET, 58_977, "a tenth of GitHub's limit kept aside");
         // A preamble alone too long: the end is cut, the pointer kept.
         let cut = fit_issue_body(&"é".repeat(500), 100, "`x.md`");
         assert_eq!(cut.chars().count(), 100);
