@@ -1550,9 +1550,12 @@ pub mod tests {
         assert_eq!(view.design.brief, "warm");
         let view = desk.drop_candidate().await.expect("dropped");
         assert!(!view.design.candidate);
-        desk.set_checked(vec!["button".into(), "card".into()])
+        let catalog = desk
+            .set_checked(vec!["button".into(), "card".into()])
             .await
             .expect("checked");
+        let ticked = |name: &str| catalog.iter().any(|e| e.name == name && e.checked);
+        assert!(ticked("Button") && ticked("Card") && !ticked("Carousel"));
         let created = desk
             .custom("Hero".into(), "Hero".into(), "a banner".into())
             .await
@@ -1795,6 +1798,71 @@ pub mod tests {
             "<p>mine</p>"
         );
         assert!(!dir.join("design-system/mock/kit/Nope.html").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Answers a restyle with one rule and anything else with a whole
+    /// fragment; keeps the prompts.
+    #[derive(Default)]
+    struct Recording(Mutex<Vec<String>>);
+
+    impl Oneshot for Recording {
+        fn ask(&self, _model: &str, prompt: &str) -> Result<String, String> {
+            lock(&self.0).push(prompt.to_string());
+            if prompt.contains("Answer ONLY the CSS rules") {
+                Ok(".kit-button { color: var(--color-text, #111); }".to_string())
+            } else {
+                Ok(
+                    "<div class=\"kit-button\" style=\"color:var(--color-text, #111)\">whole</div>"
+                        .to_string(),
+                )
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_base_restyles_its_fragment_as_it_stands_unless_the_human_asked_more() {
+        let (_, dir) = desk(false);
+        let recording = Arc::new(Recording::default());
+        let desk = KitDesk::new(Setup {
+            mockups: Arc::new(DirMockups::new(&dir)),
+            oneshot: Some(Arc::clone(&recording) as Arc<dyn Oneshot>),
+            model: "m".into(),
+            sessions: 1,
+            pins: Arc::new(Shelf::default()),
+            integration_branch: "main".into(),
+        });
+        desk.inject(kit::default_tokens_json(), false)
+            .await
+            .expect("injected");
+        let path = dir.join("design-system/mock/kit/Button.html");
+        // The fragment as it stands is what is restyled, not the shipped base.
+        std::fs::write(
+            &path,
+            "<style>.kit-button{}</style><div class=\"kit-button\">mine</div>",
+        )
+        .expect("retouched");
+        desk.generate_one(recording.as_ref(), "Button")
+            .expect("restyled");
+        let fragment = std::fs::read_to_string(&path).expect("fragment");
+        assert!(fragment.contains(">mine</div>"), "{fragment}");
+        assert!(lock(&recording.0)[0].contains(">mine</div>"));
+        // A base the human prompted is drawn whole.
+        let mockups = DirMockups::new(&dir);
+        let mut kit = KitDesk::kit_of(&mockups).expect("kit");
+        kit.component_mut("Button").expect("button").prompt = "rounder".into();
+        KitDesk::write_json(&mockups, design::KIT_JSON, &kit).expect("kept");
+        desk.generate_one(recording.as_ref(), "Button")
+            .expect("drawn");
+        assert!(
+            !lock(&recording.0)[1].contains("Answer ONLY the CSS rules"),
+            "a prompted base is not only restyled"
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("fragment")
+                .contains(">whole</div>")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
