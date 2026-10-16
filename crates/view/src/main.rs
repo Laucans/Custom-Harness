@@ -495,6 +495,7 @@ fn creation_for(
         oneshot,
         model: cli.creation_model.clone(),
         draw_model: cli.creation_draw_model.clone(),
+        sessions: cli.creation_sessions,
         mockups: hold.mockups,
         kit: hold.kit,
         data: hold.data,

@@ -237,25 +237,31 @@ It has two sections:
      from, the standalone one too), and the step closes when none waits
      (`Facts::kit_waiting`) — the mock-ups are drawn on the kit, not on
      tokens alone;
-  7. **mock-ups** — one Claude Code session of the drawing's model
-     (`--creation-draw-model`, Opus by default; the cut into
-     micro-frontends uses it too) at work in the integration
+  7. **mock-ups** — one Claude Code session per screen of the scope
+     (`drawing::screens`: the bullets under `## Screens`), of the drawing's
+     model (`--creation-draw-model`, Opus by default; the cut into
+     micro-frontends uses it too), each at work in the integration
      branch's mock-up workspace (`Oneshot::work_in`: read and write, nothing
-     that runs) draws a page per screen of the scope, on the kit and the
-     tokens (`mockups_prompt`, the mock-up's own rules first) — fast, its
-     markup inline: the proposal loop is what is optimised here. The design
+     that runs) on its own page `pages/<slug>.html` and its fixtures, on the
+     kit and the tokens (`reference_prompt`, `screen_prompt`, the mock-up's
+     own rules first) — fast, its markup inline: the proposal loop is what
+     is optimised here. The first screen is drawn **alone**, the
+     **reference** whose look every other follows; the others are then drawn
+     `--creation-sessions` (`CREATION_SESSIONS`, 4) at a time
+     (`in_parallel`), each reading the reference page first. Only the desk
+     writes `mock/pages.json` and `mock/index.html` (`with_pages`,
+     `index_html`, `list_pages`), once the sessions returned — no concurrent
+     write — and a page no session wrote fails the step, named. A page of an
+     earlier drawing no screen asks for any more is removed. The design
      system's **interface examples** of the whole app and of its pages are
      lent beside the pages first (`examples_lent`: copied under
      `design/examples/`, taken back with the rest by `kept_on_design`, never
      reported), named in the prompt (`examples_part`), and each line the
      session ends on — `example <file>: <what it took>` — is a step of the
-     job; the cut into micro-frontends reads them the same way. While it
-     runs, a concurrent poller (`poll_mockup_pages`, every `DRAW_POLL`, 2s)
-     reads `Mockups::state` — safe alongside an active write, no locking
-     either side needs — and reports each page the manifest lists once it
-     actually has a fragment (`MockPage::hash` non-empty; a page merely
-     listed is still to do), naming it and the count read back from the
-     manifest itself, never predicted from the scope's prose. The page's
+     job; the cut into micro-frontends reads them the same way. While they
+     run, a concurrent poller (`poll_pages`, every `DRAW_POLL`, 2s) reports
+     each page once its file lands — the manifest being the desk's, written
+     last — naming it and the count out of the screens the scope lists. The page's
      left column is the growing checklist; the right shows the mock-up
      itself, navigable in its current state, through the same
      `/mock/{branch}/{*path}` route the review step's easel already reads

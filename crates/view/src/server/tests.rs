@@ -1874,6 +1874,7 @@ fn state_creating(roll: Arc<Roll>, forge: Arc<Forge>, says: &str) -> AppState {
         oneshot: Some(Arc::new(Says(says.to_string()))),
         model: "m".to_string(),
         draw_model: "d".to_string(),
+        sessions: 2,
         mockups: None,
         kit: None,
         data: None,

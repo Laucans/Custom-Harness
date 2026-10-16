@@ -43,3 +43,20 @@ file or a list (schema N and `MockComponent`).
       "… — a session repairs it", then the easel opens.
 - [ ] Products installed before: `init-repo` refreshes the schema
       (`contracts/n-mock-pages.schema.json`) — check the product gets it.
+
+
+## Reference page, then the other screens in parallel
+Shipped: `drawn` draws the scope's first `## Screens` bullet alone (the
+reference), then the others `--creation-sessions` (4) at a time on its look;
+the desk writes `mock/pages.json` and `mock/index.html` itself
+(`domain/drawing.rs`, `list_pages`).
+
+- [ ] A scope of 5+ screens: the reference page's step shows first, then the
+      others arrive 4 at a time; total time against a single session.
+- [ ] The other pages really share the reference's menu, header and spacing.
+- [ ] A scope edited with no `## Screens` section: the step fails with a
+      readable reason instead of drawing nothing.
+- [ ] A drawn-again mock-up: pages of screens dropped from the scope are gone
+      from `pages.json` and the workspace; the pins on them are put away.
+- [ ] `mock/index.html` opens and links every page; the unknown-variables
+      step does not flag it.

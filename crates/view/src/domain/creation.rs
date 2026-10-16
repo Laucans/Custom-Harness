@@ -1582,7 +1582,7 @@ pub fn parse_brief(answer: &str) -> Result<String, String> {
 }
 
 /// What the human wants built: the kind, the brief, the decisions taken.
-fn product(c: &Creation) -> String {
+pub fn product(c: &Creation) -> String {
     let mut text = format!(
         "The application is `{name}`, built by a {kind}.\n\nWhat the application does, in the human's words:\n\n{brief}\n",
         name = c.name,
@@ -1685,54 +1685,6 @@ pub fn scope_prompt(c: &Creation) -> String {
             c.scope.trim()
         );
     }
-    text
-}
-
-/// The session that draws the proof of concept as the product's mock-up:
-/// `rules` are the mock-up's own (`note_session::mockup_rules`), `kit` the
-/// design system's components, one line each.
-#[must_use]
-pub fn mockups_prompt(c: &Creation, rules: &str, kit: &str, tokens_css: &str) -> String {
-    let mut text = rules.to_string();
-    text.push_str(
-        "\nDraw the proof of concept below as the product's mock-up: one page per screen of its \
-         scope under `mock/pages/`, each registered in `mock/pages.json` with its title and its \
-         objective (what the user does there), a `mock/index.html` that lists them, the fixtures \
-         they read under `mock/fixtures/` with believable example data in the language of the \
-         brief — never a lorem ipsum — and the links between the pages that carry the journeys, \
-         so a human can click through them. A page is a kind of screen: title it by the kind of \
-         screen it is, never by the name or the number of one record of its example data, and \
-         give it the record it shows through its fixture. The menu every page shares lists \
-         the product's sections, the screens reachable from anywhere; a screen about one record \
-         is reached from the list that holds it, never named in that menu. Give every region of a page — its header, its \
-         navigation, its main area, each section, aside, list and form, its footer — an `id` in \
-         kebab-case, unique on the page: the human pins requests on them, and they are what an \
-         edit names. Build every page from the design system: \
-         `mock/design/tokens.css` holds its variables (`var(--…)`, never a colour or a size \
-         written by hand), and its kit components are dropped as \
-         `<div data-kit=\"<Name>\" data-props='{…}'></div>`, which `../mock.js` fills — use one \
-         wherever it fits rather than writing that markup again. When there is no page yet, \
-         start the mock-up. When pages already exist from an earlier draft, replace them: this \
-         proof of concept is the one to show. Say in a few lines which pages you made.\n\n",
-    );
-    if kit.trim().is_empty() {
-        text.push_str(
-            "The kit has no generated component yet: style the pages with the tokens alone.\n\n",
-        );
-    } else {
-        let _ = write!(
-            text,
-            "The kit's components, one line each:\n\n{}\n\n",
-            kit.trim()
-        );
-    }
-    text.push_str(&design_brief(tokens_css));
-    text.push_str(&product(c));
-    let _ = write!(
-        text,
-        "\nThe proof of concept's scope:\n\n{}\n",
-        c.scope.trim()
-    );
     text
 }
 
@@ -3494,7 +3446,6 @@ mod tests {
             ]
         );
         let c = ready();
-        assert!(mockups_prompt(&c, "R", "", css).contains("--space-1: 4px;"));
         assert!(
             componentize_prompt(&c, "R", "", css)
                 .contains("Never write anything under `mock/design/`")
@@ -3515,9 +3466,6 @@ mod tests {
     #[test]
     fn a_page_s_regions_carry_ids_the_cut_keeps() {
         let c = ready();
-        assert!(
-            mockups_prompt(&c, "R", "", "").contains("an `id` in kebab-case, unique on the page")
-        );
         assert!(
             componentize_prompt(&c, "R", "", "")
                 .contains("Keep every `id` a page carries on its region")
@@ -4001,21 +3949,6 @@ mod tests {
     }
 
     #[test]
-    fn the_mockups_prompt_carries_the_rules_the_kit_and_the_scope() {
-        let c = ready();
-        let with = mockups_prompt(
-            &c,
-            "RULES",
-            "Button: a button",
-            ":root { --color-text: #fff; }",
-        );
-        assert!(with.starts_with("RULES"));
-        assert!(with.contains("Button: a button"));
-        assert!(with.ends_with("## Goal\n"));
-        assert!(mockups_prompt(&c, "RULES", " ", "").contains("no generated component yet"));
-    }
-
-    #[test]
     fn the_roadmap_issue_carries_the_decisions_the_requirements_and_the_mock_up() {
         let mut c = ready();
         c.questions[0].body = "the client or the bank?".to_string();
@@ -4275,13 +4208,6 @@ mod tests {
             ["pages/old.html"],
             "only the human's are tied again"
         );
-    }
-
-    #[test]
-    fn a_page_is_titled_by_its_kind_and_the_menu_lists_sections() {
-        let prompt = mockups_prompt(&ready(), "R", "", "");
-        assert!(prompt.contains("never by the name or the number of one record"));
-        assert!(prompt.contains("never named in that menu"));
     }
 
     #[test]

@@ -22,13 +22,16 @@ use crate::domain::audit::{audit_of, audit_prompt, fix_prompt, unnamed_parts};
 use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, RuleChange,
     RulesSent, Step, componentize_prompt, cut_repair_prompt, decompose_prompt, examples_part,
-    examples_taken, grill_prompt, manifest_repair_prompt, mockups_prompt, not_componentized,
-    parse_brief, parse_proposals, parse_requirements, parse_round, parse_ties, requirements_prompt,
-    rule_prompt, rules_change_prompt, scope_prompt, unfenced,
+    examples_taken, grill_prompt, manifest_repair_prompt, not_componentized, parse_brief,
+    parse_proposals, parse_requirements, parse_round, parse_ties, requirements_prompt, rule_prompt,
+    rules_change_prompt, scope_prompt, unfenced,
 };
 use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
 use crate::domain::design::Entry;
 use crate::domain::divergence;
+use crate::domain::drawing::{
+    Planned, index_html, planned, reference_prompt, screen_prompt, screens, with_pages,
+};
 use crate::domain::note_session::{About, mockup_rules};
 use crate::domain::ports_draft::{PortsEdit, parse_ports, ports_print, ports_prompt};
 use crate::kit_desk::{JobState, KitDesk};
@@ -79,6 +82,8 @@ pub struct Setup {
     /// The pins left on the mock-up: those no backlog issue carries go in
     /// the roadmap task.
     pub pins: Option<Arc<dyn NoteStore>>,
+    /// How many sessions draw the proof of concept's pages at once.
+    pub sessions: usize,
 }
 
 /// The design system and its kit, counted.
@@ -1176,6 +1181,7 @@ impl CreationDesk {
         Ok(())
     }
 
+    // One job, read top to bottom: the reference page, the others, the manifest.
     async fn drawn(
         &self,
         record: Creation,
@@ -1183,6 +1189,12 @@ impl CreationDesk {
         mockups: Arc<dyn Mockups>,
     ) -> Result<(), String> {
         let branch = self.setup.integration_branch.clone();
+        let all = planned(&screens(&record.scope));
+        let Some(reference) = all.first().cloned() else {
+            return Err(
+                "the scope lists no screen under `## Screens`: nothing to draw".to_string(),
+            );
+        };
         let kit = match &self.setup.kit {
             Some(kit) => kit.index().await.map(|i| i.lines()).unwrap_or_default(),
             None => String::new(),
@@ -1192,13 +1204,7 @@ impl CreationDesk {
             ..About::default()
         });
         let tokens_css = Self::design_tokens(&mockups).await;
-        let mut prompt = mockups_prompt(&record, &rules, &kit, &tokens_css);
-        let model = self.setup.draw_model.clone();
-        let desk = self.clone();
         self.step("opening the integration branch's mock-up");
-        let poll_mockups = mockups.clone();
-        let poll_branch = branch.clone();
-        let (mockups_after, branch_after) = (mockups.clone(), branch.clone());
         let (opened, at) = (mockups.clone(), branch.clone());
         let dir = tokio::task::spawn_blocking(move || {
             // A drawing starts from the branch as committed: one sent back
@@ -1208,35 +1214,59 @@ impl CreationDesk {
         })
         .await
         .map_err(|e| format!("the step did not finish: {e}"))??;
-        prompt.push_str(&examples_part(&self.examples_lent(&mockups, &branch).await));
+        let examples = examples_part(&self.examples_lent(&mockups, &branch).await);
         let put_away = self.pins_put_away(&branch).await;
         if put_away > 0 {
             self.step(&format!(
                 "{put_away} pin(s) of the last mock-up put away: a board's deleted list brings them back"
             ));
         }
-        self.step("a Claude Code session draws the proof of concept's pages");
-        // The workspace was just discarded above: nothing of a page is
-        // there yet, so the poller starts from an empty `seen`.
-        let poll = tokio::spawn(poll_mockup_pages(self.clone(), poll_mockups, poll_branch));
-        let said = tokio::task::spawn_blocking(move || {
-            let said = oneshot.work_in(&model, &prompt, &dir)?;
-            let at = Session {
-                oneshot: oneshot.as_ref(),
-                model: &model,
-                rules: &rules,
-                dir: &dir,
-            };
-            read_back(&desk, &at, mockups.as_ref(), &branch)?;
-            Ok::<_, String>(said)
-        })
-        .await
-        .map_err(|e| format!("the session did not finish: {e}"));
-        poll.abort();
-        let said = said??;
+        let drawing = Drawing {
+            oneshot,
+            mockups: mockups.clone(),
+            dir,
+            total: all.len(),
+        };
+        self.step(&format!(
+            "a Claude Code session draws the reference page, \"{}\"",
+            reference.screen.name
+        ));
+        let mut prompt = reference_prompt(&record, &rules, &kit, &tokens_css, &reference, &all);
+        prompt.push_str(&examples);
+        let mut said = self
+            .draw_pages(&drawing, 0, vec![(reference.clone(), prompt)])
+            .await?;
+        let others: Vec<(Planned, String)> = all
+            .iter()
+            .skip(1)
+            .map(|page| {
+                let mut prompt = screen_prompt(
+                    &record,
+                    &rules,
+                    &kit,
+                    &tokens_css,
+                    page,
+                    &reference.path,
+                    &all,
+                );
+                prompt.push_str(&examples);
+                (page.clone(), prompt)
+            })
+            .collect();
+        if !others.is_empty() {
+            self.step(&format!(
+                "{} other page(s) drawn on its look, {} sessions at a time",
+                others.len(),
+                self.setup.sessions.max(1)
+            ));
+            let more = self.draw_pages(&drawing, 1, others).await?;
+            said.push('\n');
+            said.push_str(&more);
+        }
+        list_pages(mockups.clone(), &branch, &record.name, &all).await?;
+        self.read_back_drawn(&drawing, &rules).await?;
         self.said_of_examples(&said);
-        self.kept_on_design(&mockups_after, &branch_after, &tokens_css)
-            .await;
+        self.kept_on_design(&mockups, &branch, &tokens_css).await;
         self.step("the mock-up is drawn");
         let facts = self.facts().await;
         let _held = self.record.lock().await;
@@ -1247,6 +1277,93 @@ impl CreationDesk {
             record.go(Step::Rules, facts)?;
         }
         self.keep(&record)
+    }
+
+    /// The mock-up read back once the desk has listed its pages: a manifest
+    /// the view cannot read goes to a session to repair.
+    async fn read_back_drawn(&self, drawing: &Drawing, rules: &str) -> Result<(), String> {
+        let (read, at) = (
+            Arc::clone(&drawing.mockups),
+            self.setup.integration_branch.clone(),
+        );
+        let (desk, oneshot) = (self.clone(), Arc::clone(&drawing.oneshot));
+        let (model, dir, rules) = (
+            self.setup.draw_model.clone(),
+            drawing.dir.clone(),
+            rules.to_string(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let session = Session {
+                oneshot: oneshot.as_ref(),
+                model: &model,
+                rules: &rules,
+                dir: &dir,
+            };
+            read_back(&desk, &session, read.as_ref(), &at)
+        })
+        .await
+        .map_err(|e| format!("the session did not finish: {e}"))??;
+        Ok(())
+    }
+
+    /// Runs one drawing session per page, `sessions` at a time, reporting
+    /// each page as its file lands (`drawn` pages came before); answers what
+    /// the sessions said, one line a page.
+    async fn draw_pages(
+        &self,
+        drawing: &Drawing,
+        drawn: usize,
+        pages: Vec<(Planned, String)>,
+    ) -> Result<String, String> {
+        let branch = self.setup.integration_branch.clone();
+        let model = self.setup.draw_model.clone();
+        let watched: Vec<(String, String)> = pages
+            .iter()
+            .map(|(p, _)| (p.path.clone(), p.screen.name.clone()))
+            .collect();
+        let poll = tokio::spawn(poll_pages(
+            self.clone(),
+            drawing.mockups.clone(),
+            branch.clone(),
+            watched,
+            (drawn, drawing.total),
+        ));
+        let jobs: Vec<_> = pages
+            .into_iter()
+            .map(|(page, prompt)| {
+                let (oneshot, model) = (Arc::clone(&drawing.oneshot), model.clone());
+                let (mockups, branch) = (Arc::clone(&drawing.mockups), branch.clone());
+                let dir = drawing.dir.clone();
+                move || {
+                    let said = oneshot
+                        .work_in(&model, &prompt, &dir)
+                        .map_err(|why| format!("{}: {why}", page.screen.name))?;
+                    let drawn = mockups
+                        .file(&branch, &page.path)
+                        .map_err(|why| format!("{}: {why}", page.screen.name))?
+                        .is_some_and(|bytes| !bytes.is_empty());
+                    if !drawn {
+                        return Err(format!(
+                            "{}: the session wrote no `mock/{}`",
+                            page.screen.name, page.path
+                        ));
+                    }
+                    Ok(format!("{}: {}", page.screen.name, said.trim()))
+                }
+            })
+            .collect();
+        let outcomes = in_parallel(self.setup.sessions, jobs).await;
+        poll.abort();
+        let (said, failed): (Vec<_>, Vec<_>) = outcomes.into_iter().partition(Result::is_ok);
+        let failed: Vec<String> = failed.into_iter().filter_map(Result::err).collect();
+        if !failed.is_empty() {
+            return Err(format!("a page was not drawn — {}", failed.join("; ")));
+        }
+        Ok(said
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     /// The pins still on `branch`'s mock-up, put away (marked deleted, not
@@ -1981,6 +2098,15 @@ impl CreationDesk {
     }
 }
 
+/// The workspace a drawing's sessions share and what they draw.
+struct Drawing {
+    oneshot: Arc<dyn Oneshot>,
+    mockups: Arc<dyn Mockups>,
+    dir: std::path::PathBuf,
+    /// How many pages the scope lists.
+    total: usize,
+}
+
 /// How many times a session is asked to repair a `mock/pages.json` the
 /// view cannot read before the job stops on it.
 const MANIFEST_REPAIRS: u32 = 2;
@@ -2097,33 +2223,108 @@ fn cut_gaps(
 /// polled for a page or a component that just landed.
 const DRAW_POLL: Duration = Duration::from_secs(2);
 
-/// Reports each page of `branch`'s mock-up as it gets a real fragment,
-/// starting from nothing: `drawn()` always calls this on a freshly
-/// discarded workspace, so no page is there yet to seed `seen` with. Runs
-/// until aborted — `drawn()` stops it once `work_in` returns, success or
-/// not; a read that fails is skipped, never reported as a reason the job
-/// failed, since the real outcome is `work_in`'s alone.
-async fn poll_mockup_pages(desk: CreationDesk, mockups: Arc<dyn Mockups>, branch: String) {
+/// Reports each of `pages` (path, title) as its file lands in `branch`'s
+/// mock-up, `drawn` of `total` pages already there: the manifest is the
+/// desk's own and written last, so the files are what shows the progress.
+/// Runs until aborted by the job once its sessions return; a read that
+/// fails is skipped, the real outcome is the sessions' alone.
+async fn poll_pages(
+    desk: CreationDesk,
+    mockups: Arc<dyn Mockups>,
+    branch: String,
+    pages: Vec<(String, String)>,
+    (drawn, total): (usize, usize),
+) {
     let mut seen: HashSet<String> = HashSet::new();
     loop {
         tokio::time::sleep(DRAW_POLL).await;
-        let (mockups, at) = (mockups.clone(), branch.clone());
-        let Ok(Ok(state)) = tokio::task::spawn_blocking(move || mockups.state(&at)).await else {
-            continue;
-        };
-        let total = state.pages.len();
-        for page in &state.pages {
-            if page.hash.is_empty() || seen.contains(&page.path) {
+        for (path, title) in &pages {
+            if seen.contains(path) {
                 continue;
             }
-            seen.insert(page.path.clone());
+            let (m, at, p) = (mockups.clone(), branch.clone(), path.clone());
+            let Ok(Ok(Some(bytes))) = tokio::task::spawn_blocking(move || m.file(&at, &p)).await
+            else {
+                continue;
+            };
+            if bytes.is_empty() {
+                continue;
+            }
+            seen.insert(path.clone());
             desk.step(&format!(
-                "drew the mock-up's \"{}\" page ({} of {total})",
-                page.title,
-                seen.len()
+                "drew the mock-up's \"{title}\" page ({} of {total})",
+                drawn + seen.len()
             ));
         }
     }
+}
+
+/// Runs `jobs` on blocking threads, at most `limit` at a time, and answers
+/// their outcomes in the order given.
+async fn in_parallel<T, F>(limit: usize, jobs: Vec<F>) -> Vec<Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let gate = Arc::new(tokio::sync::Semaphore::new(limit.max(1)));
+    let mut set = tokio::task::JoinSet::new();
+    let count = jobs.len();
+    for (i, job) in jobs.into_iter().enumerate() {
+        let permit = Arc::clone(&gate).acquire_owned().await;
+        set.spawn_blocking(move || {
+            let outcome = job();
+            drop(permit);
+            (i, outcome)
+        });
+    }
+    let mut outcomes: Vec<Option<Result<T, String>>> = (0..count).map(|_| None).collect();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((i, outcome)) => {
+                if let Some(slot) = outcomes.get_mut(i) {
+                    *slot = Some(outcome);
+                }
+            }
+            Err(e) => {
+                if let Some(slot) = outcomes.iter_mut().find(|o| o.is_none()) {
+                    *slot = Some(Err(format!("a session did not finish: {e}")));
+                }
+            }
+        }
+    }
+    outcomes
+        .into_iter()
+        .map(|o| o.unwrap_or_else(|| Err("a session did not finish".to_string())))
+        .collect()
+}
+
+/// `branch`'s `mock/pages.json` listing exactly `pages` and its
+/// `mock/index.html` written, by the desk: the sessions drawing in parallel
+/// never write either. A page of an earlier drawing no screen asks for
+/// any more is removed.
+async fn list_pages(
+    mockups: Arc<dyn Mockups>,
+    branch: &str,
+    name: &str,
+    pages: &[Planned],
+) -> Result<(), String> {
+    let (branch, name, pages) = (branch.to_string(), name.to_string(), pages.to_vec());
+    tokio::task::spawn_blocking(move || {
+        let before = mockups.state(&branch).map(|s| s.pages).unwrap_or_default();
+        for old in before {
+            if !pages.iter().any(|p| p.path == old.path) {
+                mockups.remove(&branch, &old.path)?;
+            }
+        }
+        let current = mockups
+            .file(&branch, "pages.json")?
+            .map(|b| String::from_utf8_lossy(&b).into_owned());
+        let listed = with_pages(current.as_deref(), &pages)?;
+        mockups.write(&branch, "pages.json", listed.as_bytes())?;
+        mockups.write(&branch, "index.html", index_html(&name, &pages).as_bytes())
+    })
+    .await
+    .map_err(|e| format!("the step did not finish: {e}"))?
 }
 
 /// Reports each micro-frontend of `branch`'s mock-up as it gets a real
@@ -2178,6 +2379,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
     use std::time::Duration;
+
+    /// A scope listing one screen, as the scope prompt asks for.
+    const SCOPE: &str = "## Goal\nproof\n\n## Screens\n\n- **Home** — the ledger\n";
 
     /// A register that keeps creations only.
     #[derive(Default)]
@@ -2318,10 +2522,7 @@ mod tests {
                 )?;
                 return Ok("one micro-frontend: Home".to_string());
             }
-            assert!(
-                prompt.contains("## Goal\nproof"),
-                "the scope is in the prompt"
-            );
+            assert!(prompt.contains(SCOPE), "the scope is in the prompt");
             assert!(
                 prompt.contains("--color-primary:#2b6cb0"),
                 "the design system's variables are in the prompt"
@@ -2406,7 +2607,7 @@ mod tests {
         }
     }
 
-    /// A session that works slowly, then writes nothing.
+    /// A session that works slowly, then draws the one page.
     struct Slow;
 
     impl Oneshot for Slow {
@@ -2414,8 +2615,11 @@ mod tests {
             Ok(String::new())
         }
 
-        fn work_in(&self, _: &str, _: &str, _: &Path) -> Result<String, String> {
+        fn work_in(&self, _: &str, _: &str, dir: &Path) -> Result<String, String> {
             std::thread::sleep(Duration::from_millis(300));
+            std::fs::create_dir_all(dir.join("mock/pages")).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join("mock/pages/home.html"), "<main></main>")
+                .map_err(|e| e.to_string())?;
             Ok("late".to_string())
         }
     }
@@ -2479,6 +2683,7 @@ mod tests {
             oneshot: Some(Arc::new(Proposer)),
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: None,
             kit: None,
             data: None,
@@ -2550,6 +2755,7 @@ mod tests {
                 oneshot,
                 model: "m".to_string(),
                 draw_model: "d".to_string(),
+                sessions: 2,
                 mockups: None,
                 kit: None,
                 data: None,
@@ -2668,7 +2874,7 @@ mod tests {
                 answer: "the client".to_string(),
                 ..Question::default()
             }],
-            scope: "## Goal\nproof".to_string(),
+            scope: SCOPE.to_string(),
             step: Step::Mockups,
             ..Creation::new("alpha", "me/alpha")
         };
@@ -2683,6 +2889,7 @@ mod tests {
             oneshot: Some(Arc::new(Drawer { lazy: false })),
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
@@ -2705,7 +2912,7 @@ mod tests {
         assert!(dir.join("main_agent/mock/pages/home.html").is_file());
         kept_on_the_design_system(&job, &dir);
         let drawn = desk.record().expect("read").expect("a record");
-        assert_eq!(drawn.mocked.as_deref(), Some("one page: home"));
+        assert_eq!(drawn.mocked.as_deref(), Some("Home: one page: home"));
         assert_eq!(drawn.step, Step::Rules);
 
         // The micro-frontends before the review, so the requirements tie to them.
@@ -2791,7 +2998,7 @@ mod tests {
                 kind: Some(Kind::Vertical),
                 brief: "a ledger".to_string(),
                 grilled: true,
-                scope: "## Goal\nproof".to_string(),
+                scope: SCOPE.to_string(),
                 step: Step::Design,
                 ..Creation::new("alpha", "me/alpha")
             };
@@ -2806,6 +3013,7 @@ mod tests {
                 oneshot: Some(Arc::new(Sloppy { repairs })),
                 model: "m".to_string(),
                 draw_model: "d".to_string(),
+                sessions: 2,
                 mockups: Some(Arc::new(DirMockups::new(&dir))),
                 kit: None,
                 data: None,
@@ -2860,6 +3068,7 @@ mod tests {
             oneshot: Some(Arc::new(Drawer { lazy: false })),
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: Some(mockups),
             kit: None,
             data: None,
@@ -2875,7 +3084,7 @@ mod tests {
 
         desk.save(
             Edit {
-                scope: Some("## Goal\nproof".to_string()),
+                scope: Some(SCOPE.to_string()),
                 ..Edit::default()
             },
             None,
@@ -2896,8 +3105,8 @@ mod tests {
         );
         let ahead = desk.record().expect("read").expect("a record");
         assert_eq!(ahead.step, Step::Design, "the human's step is left");
-        assert_eq!(ahead.mocked.as_deref(), Some("one page: home"));
-        assert_eq!(ahead.mocked_scope, "## Goal\nproof");
+        assert_eq!(ahead.mocked.as_deref(), Some("Home: one page: home"));
+        assert_eq!(ahead.mocked_scope, SCOPE);
         assert_eq!(
             ahead.componentized.as_deref(),
             Some("one micro-frontend: Home")
@@ -3283,6 +3492,7 @@ mod tests {
             oneshot,
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: Some(mockups),
             kit: None,
             data: None,
@@ -3567,6 +3777,7 @@ mod tests {
             oneshot: None,
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: None,
             kit: None,
             data: None,
@@ -3682,6 +3893,7 @@ mod tests {
             oneshot: None,
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: None,
             kit: None,
             data: None,
@@ -3717,6 +3929,7 @@ mod tests {
             oneshot: None,
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: None,
             kit: None,
             data: None,
@@ -3778,6 +3991,7 @@ mod tests {
             oneshot: Some(Arc::new(Drawer { lazy: false })),
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
@@ -3868,6 +4082,7 @@ mod tests {
             oneshot: Some(Arc::clone(&oneshot)),
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: Some(Arc::clone(&mockups)),
             kit: Some(KitDesk::new(kit_desk::Setup {
                 mockups,
@@ -4033,7 +4248,7 @@ mod tests {
                 answer: "a".to_string(),
                 ..Question::default()
             }],
-            scope: "s".to_string(),
+            scope: SCOPE.to_string(),
             ..Creation::new("alpha", "me/alpha")
         };
         book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
@@ -4049,6 +4264,7 @@ mod tests {
                 oneshot: Some(Arc::new(Slow)),
                 model: "m".to_string(),
                 draw_model: "d".to_string(),
+                sessions: 2,
                 mockups: Some(Arc::clone(&mockups)),
                 kit: Some(KitDesk::new(kit_desk::Setup {
                     mockups: Arc::clone(&mockups),
@@ -4090,7 +4306,7 @@ mod tests {
         let record = Creation {
             kind: Some(Kind::Vertical),
             brief: "a ledger".to_string(),
-            scope: "## Goal\nproof".to_string(),
+            scope: SCOPE.to_string(),
             mocked: Some("drawn".to_string()),
             questions: vec![Question {
                 id: 1,
@@ -4111,6 +4327,7 @@ mod tests {
             oneshot: Some(Arc::new(Drawer { lazy: true })),
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: Some(Arc::clone(&mockups)),
             kit: Some(KitDesk::new(kit_desk::Setup {
                 mockups,
@@ -4150,44 +4367,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A session that draws two pages, several seconds apart — slow enough
-    /// that a poller's own 2s tick lands on each page in turn, not just the
-    /// end of a fast call.
-    struct StagedPages;
+    /// A session that draws the page it is asked for and stays a while
+    /// after — slow enough that a poller's own 2s tick lands on each page
+    /// in turn, not just the end of a fast call. `skip`: the page it never
+    /// writes.
+    struct StagedPages {
+        skip: Option<&'static str>,
+    }
 
     impl Oneshot for StagedPages {
         fn ask(&self, _: &str, _: &str) -> Result<String, String> {
             Ok(String::new())
         }
 
-        fn work_in(&self, _: &str, _: &str, dir: &Path) -> Result<String, String> {
-            let write = |name: &str, manifest: &str| -> Result<(), String> {
-                std::fs::create_dir_all(dir.join("mock/pages")).map_err(|e| e.to_string())?;
-                std::fs::write(dir.join(format!("mock/pages/{name}.html")), "<main></main>")
-                    .map_err(|e| e.to_string())?;
-                std::fs::write(dir.join("mock/pages.json"), manifest).map_err(|e| e.to_string())
-            };
-            // "C" is listed from the start but never gets a file: it must
-            // never be reported, whatever a mutated `||` would let through.
-            write(
-                "a",
-                r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A"},{"path":"pages/c.html","title":"C"}],"components":[]}"#,
-            )?;
-            std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
-            write(
-                "b",
-                r#"{"version":1,"pages":[{"path":"pages/a.html","title":"A"},{"path":"pages/b.html","title":"B"},{"path":"pages/c.html","title":"C"}],"components":[]}"#,
-            )?;
+        fn work_in(&self, _: &str, prompt: &str, dir: &Path) -> Result<String, String> {
+            let name = ["a", "b"]
+                .into_iter()
+                .find(|n| prompt.contains(&format!("Write `mock/pages/{n}.html`")))
+                .ok_or("no page asked for")?;
+            if self.skip == Some(name) {
+                return Ok("nothing".to_string());
+            }
+            if name == "b" {
+                assert!(prompt.contains("Read `mock/pages/a.html` first"));
+                assert!(
+                    dir.join("mock/pages/a.html").exists(),
+                    "the reference is drawn before the others start"
+                );
+            }
+            std::fs::create_dir_all(dir.join("mock/pages")).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(format!("mock/pages/{name}.html")), "<main></main>")
+                .map_err(|e| e.to_string())?;
             // Left on disk long enough for the poller's next tick to see it
             // before the call returns and the poller is aborted.
             std::thread::sleep(DRAW_POLL + Duration::from_secs(1));
-            Ok("two pages".to_string())
+            Ok(format!("page {name}"))
         }
     }
 
     #[tokio::test]
-    async fn drawing_the_mock_up_reports_each_page_live_as_it_is_written() {
-        let dir = product("staged-pages");
+    async fn sessions_run_at_most_the_limit_at_once_and_answer_in_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (now, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let jobs: Vec<_> = (0..6_usize)
+            .map(|i| {
+                let (now, peak) = (Arc::clone(&now), Arc::clone(&peak));
+                move || {
+                    let here = now.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(here, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(40));
+                    now.fetch_sub(1, Ordering::SeqCst);
+                    if i == 3 {
+                        Err(format!("job {i}"))
+                    } else {
+                        Ok(i)
+                    }
+                }
+            })
+            .collect();
+        let outcomes = in_parallel(2, jobs).await;
+        assert_eq!(peak.load(Ordering::SeqCst), 2, "two at a time, no more");
+        assert_eq!(outcomes[0], Ok(0));
+        assert_eq!(outcomes[3], Err("job 3".to_string()));
+        assert_eq!(outcomes[5], Ok(5));
+        // A limit of zero still lets the jobs through, one at a time.
+        let one = in_parallel(0, vec![|| Ok::<_, String>(1)]).await;
+        assert_eq!(one, vec![Ok(1)]);
+    }
+
+    const TWO_SCREENS: &str = "## Screens\n\n- **A** — the first\n- **B** — the second\n";
+
+    /// A desk with `oneshot` drawing `TWO_SCREENS` on a product at `name`.
+    fn drawing_desk(name: &str, oneshot: StagedPages) -> (CreationDesk, std::path::PathBuf) {
+        let dir = product(name);
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&dir));
         let kit = KitDesk::new(kit_desk::Setup {
             mockups: Arc::clone(&mockups),
@@ -4207,7 +4459,7 @@ mod tests {
                 answer: "the client".to_string(),
                 ..Question::default()
             }],
-            scope: "## Goal\nproof".to_string(),
+            scope: TWO_SCREENS.to_string(),
             step: Step::Mockups,
             ..Creation::new("alpha", "me/alpha")
         };
@@ -4219,18 +4471,25 @@ mod tests {
             foundry: Arc::new(Nothing),
             factories_dir: dir.join("factories"),
             integration_branch: "main_agent".to_string(),
-            oneshot: Some(Arc::new(StagedPages)),
+            oneshot: Some(Arc::new(oneshot)),
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
             plant: None,
             pins: None,
         });
+        (desk, dir)
+    }
+
+    #[tokio::test]
+    async fn drawing_the_mock_up_reports_each_page_live_as_it_is_written() {
+        let (desk, dir) = drawing_desk("staged-pages", StagedPages { skip: None });
         desk.draw_mockups().await.expect("started");
-        // The first page's own line shows up while the session is still
-        // mid-write, well before `work_in` itself returns.
+        // The reference page's own line shows up while its session is still
+        // at work, well before `work_in` itself returns.
         let mut seen_a = false;
         for _ in 0..80 {
             if desk
@@ -4242,24 +4501,59 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(seen_a, "the first page's step never showed up live");
+        assert!(seen_a, "the reference page's step never showed up live");
         assert_eq!(
             desk.job().map(|j| j.state),
             Some(State::Running),
             "the session itself had not returned yet"
         );
         let job = settled(&desk).await;
-        assert_eq!((job.work, job.state), (Work::Mockups, State::Done));
+        assert_eq!(
+            (job.work, job.state),
+            (Work::Mockups, State::Done),
+            "{}",
+            job.why
+        );
         assert!(
-            job.steps.iter().any(|s| s.contains("\"B\" page (2 of 3)")),
+            job.steps.iter().any(|s| s.contains("\"B\" page (2 of 2)")),
             "{:?}",
             job.steps
         );
+        // The desk lists the pages and writes the entrance itself, once the
+        // sessions have returned.
+        let mockups = desk.setup.mockups.clone().expect("mockups");
+        let read = |name: &str| {
+            let bytes = mockups
+                .file("main_agent", name)
+                .expect("read")
+                .expect("there");
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        let manifest = read("pages.json");
+        assert!(manifest.contains("pages/a.html") && manifest.contains("pages/b.html"));
+        assert!(read("index.html").contains("href=\"pages/b.html\">B</a>"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_page_no_session_wrote_fails_the_drawing_named_and_is_never_reported() {
+        let (desk, dir) = drawing_desk("skipped-page", StagedPages { skip: Some("b") });
+        desk.draw_mockups().await.expect("started");
+        let job = settled(&desk).await;
+        assert_eq!((job.work, job.state), (Work::Mockups, State::Failed));
         assert!(
-            !job.steps.iter().any(|s| s.contains("\"C\" page")),
-            "listed with no file ever written: never reported done — {:?}",
+            job.why
+                .contains("B: the session wrote no `mock/pages/b.html`"),
+            "{}",
+            job.why
+        );
+        assert!(
+            !job.steps.iter().any(|s| s.contains("\"B\" page")),
+            "never written: never reported done — {:?}",
             job.steps
         );
+        let kept = desk.record().expect("read").expect("a record");
+        assert_eq!(kept.mocked, None, "a drawing short of a page is not kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4340,7 +4634,7 @@ mod tests {
                 answer: "the client".to_string(),
                 ..Question::default()
             }],
-            scope: "## Goal\nproof".to_string(),
+            scope: SCOPE.to_string(),
             mocked: Some("drawn".to_string()),
             ..Creation::new("alpha", "me/alpha")
         };
@@ -4355,6 +4649,7 @@ mod tests {
             oneshot: Some(Arc::new(StagedComponentize)),
             model: "m".to_string(),
             draw_model: "d".to_string(),
+            sessions: 2,
             mockups: Some(mockups),
             kit: Some(kit),
             data: None,
@@ -4468,6 +4763,7 @@ mod tests {
                     oneshot: None,
                     model: "m".to_string(),
                     draw_model: "d".to_string(),
+                    sessions: 2,
                     mockups: None,
                     kit: None,
                     data: Some(data),

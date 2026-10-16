@@ -16,6 +16,7 @@ pub mod design;
 pub mod divergence;
 pub mod doctor;
 pub mod drafts;
+pub mod drawing;
 pub mod fusion;
 pub mod gates;
 pub mod history;
