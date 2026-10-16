@@ -123,6 +123,6 @@ mod tests {
         .run(&mut ctx(true, Some("x")))
         .await
         .expect("nothing");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 }

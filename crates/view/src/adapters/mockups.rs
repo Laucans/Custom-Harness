@@ -873,7 +873,10 @@ mod tests {
             }],
             "as committed: no time"
         );
-        assert!(mockups.files("nowhere").expect("listed").is_empty());
+        assert_eq!(
+            mockups.files("nowhere").expect("listed"),
+            [] as [crate::ports::MockFile; 0]
+        );
         mockups
             .write("main_agent", "pages/home.html", b"<main>home</main>")
             .expect("written");
@@ -1263,7 +1266,10 @@ mod tests {
             sample.file("main", "pages/none.html").expect("absent"),
             None
         );
-        assert!(sample.state("gone").expect("no folder").pages.is_empty());
+        assert_eq!(
+            sample.state("gone").expect("no folder").pages,
+            [] as [crate::ports::MockPage; 0]
+        );
         assert!(sample.save("main", "x").is_err());
         let _ = fs::remove_dir_all(&dir);
     }

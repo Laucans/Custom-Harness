@@ -426,7 +426,7 @@ mod tests {
             gate.verify(&ctx(state)).await.expect("handed over"),
             Verdict::Continue
         );
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
     #[tokio::test]

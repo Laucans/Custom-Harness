@@ -314,7 +314,7 @@ mod tests {
         let mut context = ctx();
         let verdict = harness_core::execution::Guarded::execute(&workflow, &mut context).await;
         assert!(verdict.is_ok(), "{verdict:?}");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
         assert!(
             context.state.outcome.is_some(),
             "the round ran through apply, which says what it would have written"

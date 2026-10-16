@@ -729,7 +729,10 @@ mod tests {
         let mut book = PromptBook::default();
         applied(&mut book, "k", Some("a"), false, 1);
         applied(&mut book, "k", Some("b"), false, 2);
-        assert!(book.entry("k").expect("kept").reverted.is_empty());
+        assert_eq!(
+            book.entry("k").expect("kept").reverted,
+            [] as [crate::domain::prompt_book::Version; 0]
+        );
     }
 
     #[test]
@@ -739,7 +742,7 @@ mod tests {
         drafts
             .propose(&book, "gone", DEFAULT, Some("x"), false, 1)
             .expect("proposed");
-        assert!(book.apply(&drafts, |_| None, 2).is_empty());
+        assert_eq!(book.apply(&drafts, |_| None, 2), [] as [String; 0]);
         assert_eq!(book, PromptBook::default());
     }
 

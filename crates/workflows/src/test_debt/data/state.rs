@@ -39,6 +39,6 @@ mod tests {
         let state = DebtState::default();
         assert!(state.issue.is_none());
         assert!(state.file.is_none());
-        assert!(state.findings.is_empty());
+        assert_eq!(state.findings, "");
     }
 }

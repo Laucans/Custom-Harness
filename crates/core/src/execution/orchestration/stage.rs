@@ -175,7 +175,7 @@ mod tests {
                     opening.resume.as_deref().unwrap_or("fresh"),
                     opening
                         .max_turns
-                        .map_or("never".to_string(), |c| c.to_string())
+                        .map_or_else(|| "never".to_string(), |c| c.to_string())
                 )
             });
             Ok(Box::new(FakeSession { from }))

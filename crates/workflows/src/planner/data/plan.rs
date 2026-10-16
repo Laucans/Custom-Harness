@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "A");
         assert_eq!(items[0].goal, "do A");
-        assert_eq!(items[0].systems, [] as [std::string::String; 0]);
+        assert_eq!(items[0].systems, [] as [String; 0]);
         assert!(!items[0].writes, "read-side unless said otherwise");
     }
 
@@ -152,7 +152,7 @@ mod tests {
         );
         assert_eq!(item.aggregate_keys(), ["account"]);
         assert_eq!(aggregates_of(&item.body()), ["account"]);
-        assert!(aggregates_of("no section").is_empty());
+        assert_eq!(aggregates_of("no section"), [] as [String; 0]);
         let bare = MilestoneItem {
             writes: false,
             aggregates: Vec::new(),

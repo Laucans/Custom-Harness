@@ -268,5 +268,5 @@ fn nothing_missed_files_nothing() {
     write(&dir.root, "out/caught.txt", "crates/a/src/lib.rs:3:5: x\n");
     let out = run(&dir, "scripts/test-debt.sh", &["out"], &[]);
     assert!(out.status.success(), "{out:?}");
-    assert!(calls(&dir).is_empty());
+    assert_eq!(calls(&dir), "");
 }

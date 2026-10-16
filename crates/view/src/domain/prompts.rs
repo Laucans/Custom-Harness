@@ -659,7 +659,7 @@ mod tests {
         );
         assert_eq!(pending(&drafts).len(), 1);
         let shown = discard(&book, &drafts, &mut shelf, &pick(0)).expect("deleted");
-        assert!(shown.shelved.is_empty());
+        assert_eq!(shown.shelved, [] as [crate::domain::prompts::Shelved; 0]);
         assert_eq!(
             discard(&book, &drafts, &mut shelf, &pick(0)),
             Err(Refused::NoSuchVersion(0))

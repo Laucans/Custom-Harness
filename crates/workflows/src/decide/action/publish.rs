@@ -392,6 +392,6 @@ mod tests {
         .await
         .expect("nothing");
         apply(&dry).run(&mut context).await.expect("nothing");
-        assert!(dry.writes().is_empty());
+        assert_eq!(dry.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 }

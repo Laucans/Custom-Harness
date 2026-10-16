@@ -455,7 +455,7 @@ printf '{"type":"result","is_error":false,"result":"%s","total_cost_usd":0.0}' "
             claude.ask("m", "q"),
             Err("claude answered nothing".to_string())
         );
-        assert!(kept.all().expect("read").is_empty());
+        assert_eq!(kept.all().expect("read"), [] as [crate::ports::Spend; 0]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

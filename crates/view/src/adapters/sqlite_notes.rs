@@ -551,7 +551,10 @@ mod tests {
         store.mark_deleted("data-model", "a", None).expect("back");
         NoteStore::destroy(&store, "data-model", "a").expect("gone");
         assert_eq!(store.conversation("data-model", "a").expect("read"), None);
-        assert!(store.notes("elsewhere").expect("read").is_empty());
+        assert_eq!(
+            store.notes("elsewhere").expect("read"),
+            [] as [crate::ports::KeptNote; 0]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

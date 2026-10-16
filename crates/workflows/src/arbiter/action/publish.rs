@@ -351,7 +351,7 @@ mod tests {
         let gh = Rc::new(FakeGitHub::default());
         let mut dry = ctx(true, &["PJ"], None);
         apply(&gh).run(&mut dry).await.expect("dry");
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
         assert!(
             dry.state.outcome.is_some(),
             "the summary still says what would be written"
@@ -363,6 +363,6 @@ mod tests {
         let gh = Rc::new(FakeGitHub::default());
         let mut context = ctx(false, &["Dice"], Some("no json"));
         assert!(apply(&gh).run(&mut context).await.is_err());
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 }

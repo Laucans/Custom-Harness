@@ -889,7 +889,7 @@ mod tests {
         desk.drop_draft("main", "Pjs".into())
             .await
             .expect("dropped");
-        assert!(read("components/Pjs.draft.html").is_empty());
+        assert_eq!(read("components/Pjs.draft.html"), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

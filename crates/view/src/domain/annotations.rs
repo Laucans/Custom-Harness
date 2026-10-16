@@ -562,7 +562,7 @@ mod tests {
             .map(|k| (format!("n{k:02}"), format!("2026-10-09T12:{k:02}:00Z")))
             .collect();
         assert_eq!(beyond_undo(&deleted), ["n02", "n01", "n00"]);
-        assert!(beyond_undo(&deleted[..10]).is_empty());
+        assert_eq!(beyond_undo(&deleted[..10]), [] as [String; 0]);
     }
 
     proptest! {

@@ -746,7 +746,7 @@ mod tests {
             &[],
         )
         .expect("nothing asked, nothing read");
-        assert!(none.fixtures.is_empty());
+        assert_eq!(none.fixtures, [] as [(String, String); 0]);
         assert!(generated_of("```json\n[]\n```", &missing).is_err());
         assert!(
             generated_of(

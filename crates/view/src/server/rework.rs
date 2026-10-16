@@ -192,6 +192,13 @@ mod tests {
                 ("d", None, Some(&b"4"[..])),
             ]
         );
-        assert!(changes(&before, &before).is_empty());
+        assert_eq!(
+            changes(&before, &before),
+            [] as [(
+                std::string::String,
+                std::option::Option<std::vec::Vec<u8>>,
+                std::option::Option<std::vec::Vec<u8>>
+            ); 0]
+        );
     }
 }

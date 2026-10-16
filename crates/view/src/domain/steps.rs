@@ -178,7 +178,7 @@ mod tests {
         );
         assert_eq!(pins("b"), ["b"], "a step b built on is never taken back");
         assert_eq!(pins("other"), ["other"]);
-        assert!(pins("gone").is_empty());
+        assert_eq!(pins("gone"), [] as [String; 0]);
 
         let files = restored(&undone_with(&steps, "d"));
         assert_eq!(

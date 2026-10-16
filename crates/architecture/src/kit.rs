@@ -1428,7 +1428,7 @@ mod tests {
     fn the_default_tokens_cover_every_spec_and_derive_into_variables() {
         let json = default_tokens_json();
         let tokens = tokens_of(&json).expect("the default is a tokens file");
-        assert!(missing(&tokens).is_empty());
+        assert_eq!(missing(&tokens), [] as [&str; 0]);
         let css = css_of(&tokens);
         assert!(css.contains("--color-primary: #2b6cb0;"));
         assert!(css.contains("--font-family: system-ui, sans-serif;"));
@@ -1465,7 +1465,7 @@ mod tests {
             completed(r##"{"color":{"primary":{"$value":"#123456"}}}"##).expect("ok");
         assert_eq!(added.len(), TOKENS.len() - 1);
         assert!(done.contains("#123456"));
-        assert!(missing(&tokens_of(&done).expect("ok")).is_empty());
+        assert_eq!(missing(&tokens_of(&done).expect("ok")), [] as [&str; 0]);
     }
 
     #[test]
@@ -1514,11 +1514,14 @@ mod tests {
         assert!(colours.contains("#fff") && colours.contains("rgb"));
         assert!(!colours.contains("#111"), "a fallback is allowed");
         assert!(check("<p>hi</p>").iter().any(|f| f.contains("no `var(--")));
-        assert!(check("<p style=\"color:var(--color-text, #123)\">hi</p>").is_empty());
+        assert_eq!(
+            check("<p style=\"color:var(--color-text, #123)\">hi</p>"),
+            [] as [String; 0]
+        );
         // A colour in markup text or an SVG fill is not a style.
-        assert!(
-            check("<svg fill=\"#abc\"><p style=\"color:var(--color-text)\">#fff</p></svg>")
-                .is_empty()
+        assert_eq!(
+            check("<svg fill=\"#abc\"><p style=\"color:var(--color-text)\">#fff</p></svg>"),
+            [] as [String; 0]
         );
         // A fragment naming itself is filled again by the loader, endlessly.
         assert!(

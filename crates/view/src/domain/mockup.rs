@@ -288,7 +288,7 @@ mod tests {
     fn a_page_s_micro_frontends_are_read_off_its_markup() {
         let html = r#"<div data-component="Rail"></div><p data-component='Sheet'></p><i data-component="Rail"></i><b data-component=></b>"#;
         assert_eq!(injected(html), ["Rail", "Sheet"]);
-        assert!(injected("<main></main>").is_empty());
+        assert_eq!(injected("<main></main>"), [] as [String; 0]);
     }
 
     #[test]
@@ -404,7 +404,10 @@ mod tests {
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].screen, "a");
         assert!(manifest_of("nope").is_err());
-        assert!(manifest_of("{}").expect("empty").pages.is_empty());
+        assert_eq!(
+            manifest_of("{}").expect("empty").pages,
+            [] as [crate::ports::MockPage; 0]
+        );
     }
 
     #[test]

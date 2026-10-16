@@ -970,7 +970,7 @@ mod tests {
         let found = violations(&tree, None);
         assert!(found[0].contains("is stale"), "{found:?}");
         tree.bundles[0].built_from = Some("c14e3564be9bd6b2".into());
-        assert!(violations(&tree, None).is_empty());
+        assert_eq!(violations(&tree, None), [] as [String; 0]);
     }
 
     #[test]
@@ -1046,7 +1046,7 @@ mod tests {
         // Nothing to mock yet — no screen, no Micro-UI: nothing to say.
         bare.screens.clear();
         bare.micro_uis.clear();
-        assert!(violations(&bare, None).is_empty());
+        assert_eq!(violations(&bare, None), [] as [String; 0]);
         // A Micro-UI or a composition task needs a mocked page.
         let mut unmocked = sound();
         unmocked.mocked.clear();
@@ -1167,10 +1167,7 @@ mod tests {
             needs: Vec::new(),
             profile: None,
         };
-        assert_eq!(
-            violations(&tree, Some(&capability)),
-            [] as [std::string::String; 0]
-        );
+        assert_eq!(violations(&tree, Some(&capability)), [] as [String; 0]);
         let other = Declaration {
             concept: Some("Churn@1".to_string()),
             ..capability.clone()
@@ -1200,10 +1197,7 @@ mod tests {
         assert!(found[0].contains("crates/bestiary/"), "{found:?}");
         let mut with_crate = sound();
         with_crate.systems.push("bestiary".to_string());
-        assert_eq!(
-            violations(&with_crate, Some(&plumbing)),
-            [] as [std::string::String; 0]
-        );
+        assert_eq!(violations(&with_crate, Some(&plumbing)), [] as [String; 0]);
     }
 
     #[test]

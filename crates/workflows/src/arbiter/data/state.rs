@@ -58,7 +58,7 @@ mod tests {
         let state = ArbiterState::default();
         assert!(state.issue.is_none());
         assert!(state.question.is_none());
-        assert!(state.siblings.is_empty());
-        assert!(state.resolution.unresolved.is_empty());
+        assert_eq!(state.siblings, [] as [harness_core::domain::Issue; 0]);
+        assert_eq!(state.resolution.unresolved, [] as [String; 0]);
     }
 }

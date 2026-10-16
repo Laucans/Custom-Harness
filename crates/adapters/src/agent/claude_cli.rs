@@ -730,7 +730,7 @@ mod tests {
             sent_prompts(&text),
             ["/code\nfirst", "second\n```rust\nfn f() {}\n```\nend"]
         );
-        assert!(sent_prompts("").is_empty());
+        assert_eq!(sent_prompts(""), [] as [String; 0]);
     }
 
     fn cli() -> ClaudeCli {

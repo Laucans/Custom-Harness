@@ -407,6 +407,6 @@ mod tests {
         let gate = Halt::Halted("issue #11 carries no SPEC".to_string());
         assert!(raise.on_halt(&mut ctx(false), gate).await.is_err());
         assert!(raise.on_halt(&mut ctx(true), stop()).await.is_err());
-        assert!(gh.writes().is_empty());
+        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 }

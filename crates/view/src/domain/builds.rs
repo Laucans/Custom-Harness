@@ -126,7 +126,7 @@ mod tests {
                 "/r/.llocal/logs/data-diagnosis/2"
             ]
         );
-        assert!(journals("nothing").is_empty());
+        assert_eq!(journals("nothing"), [] as [String; 0]);
     }
 
     #[test]

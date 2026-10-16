@@ -141,7 +141,7 @@ mod tests {
             .await
             .expect("not an error");
         assert!(context.state.file.is_none());
-        assert!(context.state.findings.is_empty());
+        assert_eq!(context.state.findings, "");
     }
 
     #[tokio::test]

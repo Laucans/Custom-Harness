@@ -2428,7 +2428,10 @@ mod tests {
         let key = proposed.proposals[0].key;
         let settled = desk.settle_proposal(key, true).await.expect("accepted");
         assert_eq!(settled.requirements[0].title, "Rewritten");
-        assert!(settled.proposals.is_empty());
+        assert_eq!(
+            settled.proposals,
+            [] as [crate::domain::creation::Proposal; 0]
+        );
         assert!(
             desk.settle_proposal(key, true).await.is_err(),
             "settled once"
@@ -2894,7 +2897,10 @@ mod tests {
             "no such finding"
         );
         let fixed = desk.resolve_finding(blocking, true).await.expect("applied");
-        assert!(fixed.audit.expect("kept").findings.is_empty());
+        assert_eq!(
+            fixed.audit.expect("kept").findings,
+            [] as [crate::domain::audit::Finding; 0]
+        );
     }
 
     /// The data step of the flow above: drafted, its structure changed by
@@ -3131,8 +3137,14 @@ mod tests {
         let bare = product("no-examples");
         let desk = desk_drawing_in(&bare);
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&bare));
-        assert!(desk.examples_lent(&mockups, "main_agent").await.is_empty());
-        assert!(desk.job().map(|j| j.steps).unwrap_or_default().is_empty());
+        assert_eq!(
+            desk.examples_lent(&mockups, "main_agent").await,
+            [] as [harness_architecture::kit::Example; 0]
+        );
+        assert_eq!(
+            desk.job().map(|j| j.steps).unwrap_or_default(),
+            [] as [String; 0]
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&bare);
     }

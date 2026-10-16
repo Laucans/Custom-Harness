@@ -612,7 +612,7 @@ mod tests {
                     .expect("opened");
                 assert_eq!(opened, "t [harness:roadmap]");
                 let shown = desk.model(Wanted::default()).await.expect("answered");
-                assert!(shown.dir.is_empty());
+                assert_eq!(shown.dir, "");
                 assert_eq!(shown.model.tables[0].name, "live");
                 task.abort();
             })

@@ -1764,7 +1764,7 @@ pub mod tests {
             )
             .await
             .expect("applied");
-        assert!(skipped.is_empty());
+        assert_eq!(skipped, [] as [(String, String); 0]);
         // A draft retouched on the easel: kept when it passes the check, refused otherwise.
         assert!(
             desk.write_draft(
@@ -1835,7 +1835,7 @@ pub mod tests {
             .remove_asset(Asset::Moodboard, "moodboard/mood-1.png")
             .await
             .expect("removed");
-        assert!(view.design.moodboard.is_empty());
+        assert_eq!(view.design.moodboard, [] as [String; 0]);
         // An interface example: kept as the whole product's, described, bounded, removed.
         let path = desk
             .keep_asset(Asset::Example, "Linear app.png", vec![1])
@@ -1979,13 +1979,13 @@ pub mod tests {
             .expect("injected");
         let view = desk.validate().await.expect("validated");
         assert_eq!(view.design.state, DesignState::Validated);
-        assert!(!view.design.validated_at.is_empty());
+        assert_ne!(view.design.validated_at, "");
         let view = desk
             .inject(kit::default_tokens_json(), true)
             .await
             .expect("edited");
         assert_eq!(view.design.state, DesignState::Candidate);
-        assert!(view.design.validated_at.is_empty());
+        assert_eq!(view.design.validated_at, "");
         let view = desk.validate().await.expect("validated again");
         assert_eq!(view.design.state, DesignState::Validated);
         let _ = std::fs::remove_dir_all(&dir);

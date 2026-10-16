@@ -679,7 +679,7 @@ mod tests {
         assert!(generate_prompt("", &[], "").contains("No image was given"));
         let answer = format!("Here:\n{}", kit::default_tokens_json());
         let (json, added) = tokens_from_answer(&answer).expect("read");
-        assert!(added.is_empty());
+        assert_eq!(added, [] as [&str; 0]);
         assert!(kit::tokens_of(&json).is_ok());
         assert!(tokens_from_answer("nothing").is_err());
         assert!(
