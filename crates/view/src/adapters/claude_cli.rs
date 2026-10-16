@@ -264,7 +264,6 @@ impl Transcripts for ClaudeTranscripts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
     use std::sync::Mutex;
 
     /// A `claude` that runs `body` (sh), in a folder of its own, with `kept`
@@ -283,8 +282,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("dir");
         let bin = dir.join("claude");
-        std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).expect("script");
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        // Written by a child shell: no writable handle on the script ever
+        // lives in this process, so a test forking meanwhile cannot hold one
+        // and make its exec fail with "Text file busy".
+        let written = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s\\n' \"$2\" > \"$1\" && chmod 755 \"$1\"",
+                "sh",
+            ])
+            .arg(&bin)
+            .arg(format!("#!/bin/sh\n{body}"))
+            .status()
+            .expect("script");
+        assert!(written.success(), "the script is written");
         (dir, ClaudeOneshot::new(bin, "test", usage))
     }
 
