@@ -392,6 +392,7 @@ mod tests {
         .await
         .expect("nothing");
         apply(&dry).run(&mut context).await.expect("nothing");
-        assert!(dry.writes().is_empty());
+        let writes = dry.writes();
+        assert!(writes.is_empty(), "{writes:?}");
     }
 }

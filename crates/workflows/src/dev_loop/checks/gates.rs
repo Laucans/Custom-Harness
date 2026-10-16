@@ -426,7 +426,8 @@ mod tests {
             gate.verify(&ctx(state)).await.expect("handed over"),
             Verdict::Continue
         );
-        assert!(gh.writes().is_empty());
+        let seen = &gh.writes();
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[tokio::test]

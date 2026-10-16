@@ -768,7 +768,8 @@ mod tests {
             &[],
         )
         .expect("nothing asked, nothing read");
-        assert!(none.fixtures.is_empty());
+        let seen = &none.fixtures;
+        assert!(seen.is_empty(), "{seen:?}");
         assert!(generated_of("```json\n[]\n```", &missing).is_err());
         assert!(
             generated_of(

@@ -873,7 +873,8 @@ mod tests {
             }],
             "as committed: no time"
         );
-        assert!(mockups.files("nowhere").expect("listed").is_empty());
+        let seen = &mockups.files("nowhere").expect("listed");
+        assert!(seen.is_empty(), "{seen:?}");
         mockups
             .write("main_agent", "pages/home.html", b"<main>home</main>")
             .expect("written");

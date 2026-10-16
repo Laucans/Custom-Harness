@@ -288,7 +288,8 @@ mod tests {
     fn a_page_s_micro_frontends_are_read_off_its_markup() {
         let html = r#"<div data-component="Rail"></div><p data-component='Sheet'></p><i data-component="Rail"></i><b data-component=></b>"#;
         assert_eq!(injected(html), ["Rail", "Sheet"]);
-        assert!(injected("<main></main>").is_empty());
+        let seen = &injected("<main></main>");
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]

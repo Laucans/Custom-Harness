@@ -192,6 +192,7 @@ mod tests {
                 ("d", None, Some(&b"4"[..])),
             ]
         );
-        assert!(changes(&before, &before).is_empty());
+        let seen = &changes(&before, &before);
+        assert!(seen.is_empty(), "{seen:?}");
     }
 }

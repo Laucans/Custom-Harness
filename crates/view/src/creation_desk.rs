@@ -2724,7 +2724,8 @@ mod tests {
         let key = proposed.proposals[0].key;
         let settled = desk.settle_proposal(key, true).await.expect("accepted");
         assert_eq!(settled.requirements[0].title, "Rewritten");
-        assert!(settled.proposals.is_empty());
+        let seen = &settled.proposals;
+        assert!(seen.is_empty(), "{seen:?}");
         assert!(
             desk.settle_proposal(key, true).await.is_err(),
             "settled once"
@@ -3194,7 +3195,8 @@ mod tests {
             "no such finding"
         );
         let fixed = desk.resolve_finding(blocking, true).await.expect("applied");
-        assert!(fixed.audit.expect("kept").findings.is_empty());
+        let seen = &fixed.audit.expect("kept").findings;
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     /// The data step of the flow above: drafted, its structure changed by
@@ -3431,8 +3433,10 @@ mod tests {
         let bare = product("no-examples");
         let desk = desk_drawing_in(&bare);
         let mockups: Arc<dyn Mockups> = Arc::new(DirMockups::new(&bare));
-        assert!(desk.examples_lent(&mockups, "main_agent").await.is_empty());
-        assert!(desk.job().map(|j| j.steps).unwrap_or_default().is_empty());
+        let seen = &desk.examples_lent(&mockups, "main_agent").await;
+        assert!(seen.is_empty(), "{seen:?}");
+        let seen = &desk.job().map(|j| j.steps).unwrap_or_default();
+        assert!(seen.is_empty(), "{seen:?}");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&bare);
     }
@@ -3575,11 +3579,8 @@ mod tests {
             rules: "R",
             dir: &workspace,
         };
-        assert!(
-            gated(&desk, &at, &mockups, "main_agent")
-                .expect("read")
-                .is_empty()
-        );
+        let seen = &gated(&desk, &at, &mockups, "main_agent").expect("read");
+        assert!(seen.is_empty(), "{seen:?}");
         assert_eq!(*tagger.repairs.lock().expect("a count"), 2);
         assert!(desk.job().is_some_and(|j| {
             j.steps
@@ -3657,7 +3658,8 @@ mod tests {
 
         let (dir, desk) = guarded("finding-passed", 1);
         let fixed = desk.resolve_finding(1, true).await.expect("applied");
-        assert!(fixed.audit.expect("an audit").findings.is_empty());
+        let seen = &fixed.audit.expect("an audit").findings;
+        assert!(seen.is_empty(), "{seen:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

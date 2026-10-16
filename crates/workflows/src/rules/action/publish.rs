@@ -123,6 +123,7 @@ mod tests {
         .run(&mut ctx(true, Some("x")))
         .await
         .expect("nothing");
-        assert!(gh.writes().is_empty());
+        let seen = &gh.writes();
+        assert!(seen.is_empty(), "{seen:?}");
     }
 }

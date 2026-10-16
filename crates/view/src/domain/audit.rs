@@ -545,7 +545,8 @@ mod tests {
         let exactly: Vec<ComponentRef> = (0..SYSTEM_MAX)
             .map(|i| mf(&format!("M{i}"), "big", &[], &[]))
             .collect();
-        assert!(of(&local_findings(&exactly), Check::SystemSize).is_empty());
+        let seen = &of(&local_findings(&exactly), Check::SystemSize);
+        assert!(seen.is_empty(), "{seen:?}");
         assert!(
             of(
                 &local_findings(&[mf("Only", "one", &[], &[])]),
@@ -629,7 +630,8 @@ mod tests {
             audit.findings.last().and_then(|f| f.check),
             Some(Check::Duplicate)
         );
-        assert!(audit.blocking().is_empty());
+        let seen = &audit.blocking();
+        assert!(seen.is_empty(), "{seen:?}");
         assert!(audit_of("no json", &lone, "").is_err());
         assert!(audit_of("{not json}", &lone, "").is_err());
     }
@@ -665,7 +667,8 @@ mod tests {
         assert!(audit.resolve(9, true).is_err());
         assert_eq!(audit.resolve(1, false).expect("dismissed").id, 1);
         assert_eq!(audit.resolve(2, true).expect("applied").id, 2);
-        assert!(audit.findings.is_empty());
+        let seen = &audit.findings;
+        assert!(seen.is_empty(), "{seen:?}");
         assert!(!Finding::default().blocks());
     }
 

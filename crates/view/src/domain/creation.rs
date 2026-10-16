@@ -3179,7 +3179,8 @@ mod tests {
             c.requirements.last().map(|r| (r.id, r.title.as_str())),
             Some((6, "Binary"))
         );
-        assert!(c.proposals.is_empty());
+        let seen = &c.proposals;
+        assert!(seen.is_empty(), "{seen:?}");
         assert!(c.settle_proposal(2, true).is_err(), "settled once");
 
         c.propose_rules("x", vec![read[0].clone()]);
@@ -3269,7 +3270,8 @@ mod tests {
             ["Ai"],
             "another pin's: untouched"
         );
-        assert!(c.accept_pins(&pins).is_empty());
+        let seen = &c.accept_pins(&pins);
+        assert!(seen.is_empty(), "{seen:?}");
         assert_eq!(c.proposals.len(), 1, "the other pin's still waits");
         assert_eq!(c.applied.len(), 2);
         let titles = |c: &Creation| {
@@ -3299,18 +3301,21 @@ mod tests {
                 (6, "Binary".to_string())
             ]
         );
-        assert!(c.applied.is_empty());
+        let seen = &c.applied;
+        assert!(seen.is_empty(), "{seen:?}");
         assert_eq!(c.proposals.len(), 1, "another pin's proposal stays");
 
         // A proposal of a new rule accepted then undone: the rule goes.
         c.propose_for(&drafted("r"), vec![proposal(0, "Fresh")]);
         c.accept_pins(&["r".to_string()]);
         assert!(c.requirements.iter().any(|r| r.title == "Fresh"));
-        assert!(c.undo_pins(&["r".to_string()]).is_empty());
+        let seen = &c.undo_pins(&["r".to_string()]);
+        assert!(seen.is_empty(), "{seen:?}");
         assert!(!c.requirements.iter().any(|r| r.title == "Fresh"));
         // Waiting proposals of a pin go with its undo.
         c.undo_pins(&["q".to_string()]);
-        assert!(c.proposals.is_empty());
+        let seen = &c.proposals;
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
@@ -3545,7 +3550,8 @@ mod tests {
         );
         c.requirements[0].pages.pop();
         c.requirements[0].components.pop();
-        assert!(c.dangling(&pages, &components).is_empty());
+        let seen = &c.dangling(&pages, &components);
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
@@ -3555,7 +3561,8 @@ mod tests {
         assert!(brief.contains("Never write anything under `mock/design/` or `mock/kit/`"));
         assert!(brief.contains("```css\n:root {\n  --color-text: #fff;"));
         assert!(design_brief(" ").contains("has no variable yet"));
-        assert!(examples_part(&[]).is_empty());
+        let seen = &examples_part(&[]);
+        assert!(seen.is_empty(), "{seen:?}");
         let lent = [harness_architecture::kit::Example {
             file: "examples/a.png".into(),
             note: "the side nav".into(),
@@ -3590,7 +3597,8 @@ mod tests {
             unknown_tokens(page, &tokens),
             vec!["--color-bg".to_string(), "--space-9".to_string()]
         );
-        assert!(unknown_tokens("a { color: var(--color-text) }", &tokens).is_empty());
+        let seen = &unknown_tokens("a { color: var(--color-text) }", &tokens);
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
@@ -4372,7 +4380,8 @@ mod tests {
         assert_eq!(ties[0].pages, pages);
         assert_eq!(ties[0].components, components);
         assert_eq!(ties[1].id, 3);
-        assert!(parse_ties("no object", &pages, &components).is_empty());
+        let seen = &parse_ties("no object", &pages, &components);
+        assert!(seen.is_empty(), "{seen:?}");
         let mut c = ready();
         let mut mine = rule(1, "given", &["pages/old.html"]);
         mine.human = true;
@@ -4620,7 +4629,8 @@ mod tests {
     fn a_question_kept_before_topics_reads_as_the_general_one() {
         let q: Question = serde_json::from_str("{\"id\": 4, \"title\": \"Who\"}").expect("read");
         assert_eq!(q.topic, "");
-        assert!(ready().topics().is_empty());
+        let seen = &ready().topics();
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]

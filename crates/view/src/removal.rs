@@ -553,9 +553,12 @@ mod tests {
                 assert_eq!(why, Refusal::Confirmation("me/made".to_string()), "{typed}");
             }
         }
-        assert!(sent(&rig.plant).is_empty());
-        assert!(said(&rig.wreck).is_empty());
-        assert!(forgotten(&rig.book).is_empty());
+        let seen = &sent(&rig.plant);
+        assert!(seen.is_empty(), "{seen:?}");
+        let seen = &said(&rig.wreck);
+        assert!(seen.is_empty(), "{seen:?}");
+        let seen = &forgotten(&rig.book);
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
@@ -640,7 +643,8 @@ mod tests {
         assert_eq!(report.next.map(|f| f.id), Some("other".to_string()));
         assert_eq!(report.folder, Folder::Removed);
         // Nothing of its folder is touched now; the next view is told.
-        assert!(said(&rig.wreck).is_empty());
+        let seen = &said(&rig.wreck);
+        assert!(seen.is_empty(), "{seen:?}");
         assert_eq!(
             rig.removal.leaving(),
             Some(format!("remove:{}", tmp.join("here").display()))
@@ -658,9 +662,12 @@ mod tests {
                 Err(Refusal::Alone)
             );
         }
-        assert!(sent(&rig.plant).is_empty());
-        assert!(said(&rig.wreck).is_empty());
-        assert!(forgotten(&rig.book).is_empty());
+        let seen = &sent(&rig.plant);
+        assert!(seen.is_empty(), "{seen:?}");
+        let seen = &said(&rig.wreck);
+        assert!(seen.is_empty(), "{seen:?}");
+        let seen = &forgotten(&rig.book);
+        assert!(seen.is_empty(), "{seen:?}");
         assert_eq!(rig.removal.leaving(), None);
     }
 
@@ -688,8 +695,10 @@ mod tests {
             "{said_so}"
         );
         assert_eq!(said(&rig.wreck), ["right"]);
-        assert!(sent(&rig.plant).is_empty());
-        assert!(forgotten(&rig.book).is_empty());
+        let seen = &sent(&rig.plant);
+        assert!(seen.is_empty(), "{seen:?}");
+        let seen = &forgotten(&rig.book);
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
@@ -816,7 +825,8 @@ mod tests {
             Refusal::Failed("gh repo delete failed: HTTP 403: admin rights".to_string())
         );
         assert_eq!(said(&rig.wreck), ["right", "repo me/made"]);
-        assert!(forgotten(&rig.book).is_empty());
+        let seen = &forgotten(&rig.book);
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
@@ -855,7 +865,8 @@ mod tests {
             .take_down("made", Degree::Delink, "me/made")
             .expect_err("busy");
         assert_eq!(why, Refusal::Failed("busy".to_string()));
-        assert!(forgotten(&rig.book).is_empty());
+        let seen = &forgotten(&rig.book);
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]
@@ -947,7 +958,8 @@ mod tests {
                 removal.take_down("made", degree, "me/made"),
                 Err(Refusal::Failed("no such process".to_string()))
             );
-            assert!(forgotten(&book).is_empty());
+            let seen = &forgotten(&book);
+            assert!(seen.is_empty(), "{seen:?}");
         }
     }
 
