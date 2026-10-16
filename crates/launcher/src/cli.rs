@@ -344,6 +344,13 @@ pub struct WatchArgs {
     /// session redoes it from the issue.
     #[arg(long)]
     pub force_reset: bool,
+
+    /// No human gate: the watch marks `harness:ready` itself on every open
+    /// roadmap item, milestone and rules' task waiting for it — twice per
+    /// issue at most, never on a `harness:human` issue, one a decision is
+    /// pending on, or a milestone already split.
+    #[arg(long, env = "NO_HUMAN_GATE", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub no_human_gate: bool,
 }
 
 /// `harness init-repo <url>`'s own arguments.
@@ -895,6 +902,7 @@ mod tests {
         ("TARGET_REPO_URL", ""),
         ("AGENTIC_WORKSPACES_DIR", ""),
         ("KEEP_WORKSPACE", ""),
+        ("NO_HUMAN_GATE", ""),
         // Read by `harness-view`, not by this binary: the template is shared
         // by the two outer rings, and a variable the launcher ignores must
         // still parse as part of a fresh `.env.local`.

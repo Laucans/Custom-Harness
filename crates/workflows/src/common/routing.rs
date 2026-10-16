@@ -39,8 +39,9 @@
 //! mutants rotation opens, `harness:needs-decision` on any issue a decision
 //! is asked on. The router never acts on something no tap is open on.
 
-use harness_core::domain::{Issue, Pr};
-use harness_core::ports::shell::github::Activity;
+use harness_core::domain::{Issue, Outcome, Pr};
+use harness_core::ports::shell::github::{Activity, GitHub};
+use harness_core::traces::{Event, Logbook};
 
 use crate::common::labels;
 
@@ -311,6 +312,9 @@ pub struct Pulse {
     pub quiet_ticks: u32,
     /// The rest after a `QUOTA` stop.
     pub rest: Rest,
+    /// How many times this watch marked each issue `harness:ready` itself
+    /// (`--no-human-gate`).
+    pub taps: std::collections::BTreeMap<u64, u32>,
 }
 
 /// The first rest after a `QUOTA` stop, in ticks.
@@ -379,6 +383,93 @@ impl Pulse {
     pub const fn stayed_quiet(&mut self) {
         self.quiet_ticks = self.quiet_ticks.saturating_add(1);
     }
+
+    /// Whether this watch may mark `issue` ready once more, counting it if
+    /// so: [`TAP_REOPENS`] times at most, so an issue whose attempt keeps
+    /// failing is not paid for again and again.
+    pub fn may_open(&mut self, issue: u64) -> bool {
+        let opened = self.taps.entry(issue).or_insert(0);
+        if *opened >= TAP_REOPENS {
+            return false;
+        }
+        *opened += 1;
+        true
+    }
+}
+
+/// How many times one watch marks an issue `harness:ready` itself, at most.
+pub const TAP_REOPENS: u32 = 2;
+
+/// What a watch with no human gate marks `harness:ready` itself.
+///
+/// Every open roadmap item, milestone and rules' task without the label,
+/// and what it is, for the journal. Never an issue a person must act on
+/// (`harness:human`), one a decision is pending on, nor a milestone already
+/// split (`harness:triggered`), which would be split again.
+#[must_use]
+pub fn taps_to_open(snapshot: &Snapshot) -> Vec<(u64, &'static str)> {
+    let closed_to_the_watch = |issue: &Issue| {
+        !issue.is_open()
+            || issue.has(labels::READY)
+            || issue.has(labels::HUMAN)
+            || issue.has(labels::NEEDS_DECISION)
+    };
+    let mut taps: Vec<(u64, &'static str)> = Vec::new();
+    for (issues, what) in [
+        (&snapshot.roadmap, "roadmap item"),
+        (&snapshot.milestones, "milestone"),
+        (&snapshot.rules, "rules' task"),
+    ] {
+        for issue in issues {
+            if closed_to_the_watch(issue) || (what == "milestone" && issue.has(labels::TRIGGERED)) {
+                continue;
+            }
+            if !taps.iter().any(|(n, _)| *n == issue.number) {
+                taps.push((issue.number, what));
+            }
+        }
+    }
+    taps.sort_unstable_by_key(|(n, _)| *n);
+    taps
+}
+
+/// No human gate: what waits for `harness:ready` is marked so on the board
+/// and in `found`, before the route is decided, so this very tick takes it.
+///
+/// # Errors
+///
+/// GitHub refused a label: what was marked before it stays marked.
+pub async fn open_taps(
+    gh: &dyn GitHub,
+    found: &mut Snapshot,
+    pulse: &mut Pulse,
+    log: &Logbook,
+) -> Outcome<()> {
+    for (issue, what) in taps_to_open(found) {
+        if !pulse.may_open(issue) {
+            continue;
+        }
+        gh.add_label(issue, labels::READY).await?;
+        mark_ready(found, issue);
+        log.event(&Event::TapOpened {
+            issue,
+            what: what.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// The snapshot as it reads once `number` is marked `harness:ready`.
+pub fn mark_ready(snapshot: &mut Snapshot, number: u64) {
+    for issue in snapshot
+        .roadmap
+        .iter_mut()
+        .chain(snapshot.milestones.iter_mut())
+        .chain(snapshot.rules.iter_mut())
+        .filter(|issue| issue.number == number && !issue.has(labels::READY))
+    {
+        issue.labels.push(labels::READY.to_string());
+    }
 }
 
 /// Whether this tick may skip the full read of the board.
@@ -446,6 +537,90 @@ fn lowest_open(issues: &[Issue]) -> Option<&Issue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn without_a_human_gate_every_waiting_tap_opens_but_what_a_person_or_a_decision_holds() {
+        let mut snapshot = empty();
+        snapshot.roadmap = vec![
+            issue(4, &[labels::ROADMAP]),
+            issue(1, &[labels::ROADMAP, labels::READY]),
+        ];
+        snapshot.milestones = vec![
+            issue(6, &[labels::MILESTONE, labels::SPEC_WRITTEN]),
+            issue(5, &[labels::MILESTONE]),
+            issue(7, &[labels::MILESTONE, labels::TRIGGERED]),
+            issue(8, &[labels::MILESTONE, labels::NEEDS_DECISION]),
+            Issue {
+                state: "closed".to_string(),
+                ..issue(9, &[labels::MILESTONE])
+            },
+        ];
+        snapshot.rules = vec![
+            issue(2, &[labels::RULES]),
+            issue(3, &[labels::RULES, labels::HUMAN]),
+        ];
+        assert_eq!(
+            taps_to_open(&snapshot),
+            vec![
+                (2, "rules' task"),
+                (4, "roadmap item"),
+                (5, "milestone"),
+                (6, "milestone")
+            ]
+        );
+        mark_ready(&mut snapshot, 5);
+        mark_ready(&mut snapshot, 5);
+        assert_eq!(
+            snapshot.milestones[1].labels,
+            vec![labels::MILESTONE.to_string(), labels::READY.to_string()],
+            "marked once"
+        );
+        assert_eq!(taps_to_open(&snapshot).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_taps_are_opened_on_the_board_and_in_the_snapshot_twice_at_most() {
+        use crate::common::fake_github::{FakeGitHub, Wrote};
+        let gh = FakeGitHub::default();
+        let mut found = empty();
+        found.milestones = vec![issue(5, &[labels::MILESTONE])];
+        let mut pulse = Pulse::default();
+        open_taps(&gh, &mut found, &mut pulse, &Logbook::null())
+            .await
+            .expect("opened");
+        assert_eq!(
+            gh.writes(),
+            vec![Wrote::Label(5, labels::READY.to_string())]
+        );
+        assert!(found.milestones[0].has(labels::READY), "this tick takes it");
+        for _ in 0..3 {
+            found.milestones = vec![issue(5, &[labels::MILESTONE])];
+            open_taps(&gh, &mut found, &mut pulse, &Logbook::null())
+                .await
+                .expect("opened");
+        }
+        assert_eq!(gh.writes().len(), 2, "twice at most: {:?}", gh.writes());
+        gh.refuse_label(labels::READY);
+        found.milestones = vec![issue(6, &[labels::MILESTONE])];
+        assert!(
+            open_taps(&gh, &mut found, &mut pulse, &Logbook::null())
+                .await
+                .is_err()
+        );
+        assert!(
+            !found.milestones[0].has(labels::READY),
+            "not marked when refused"
+        );
+    }
+
+    #[test]
+    fn a_watch_opens_one_issue_s_tap_twice_at_most() {
+        let mut pulse = Pulse::default();
+        assert!(pulse.may_open(2));
+        assert!(pulse.may_open(2));
+        assert!(!pulse.may_open(2), "a third attempt waits on a person");
+        assert!(pulse.may_open(5), "each issue its own count");
+    }
 
     fn issue(number: u64, labels: &[&str]) -> Issue {
         Issue {
@@ -841,6 +1016,7 @@ mod tests {
             watching_ci: false,
             quiet_ticks: 0,
             rest: Rest::default(),
+            taps: std::collections::BTreeMap::new(),
         }
     }
 

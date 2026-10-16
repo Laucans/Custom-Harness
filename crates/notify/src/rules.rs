@@ -309,6 +309,7 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         Event::SessionEnded { .. }
         | Event::PreparationTaken { .. }
         | Event::LaneTaken { .. }
+        | Event::TapOpened { .. }
         | Event::GateChecked { .. }
         | Event::ChecksFailed { .. } => {}
     }

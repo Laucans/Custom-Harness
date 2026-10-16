@@ -196,8 +196,11 @@ async fn tick(
         }
         Activity::Unchanged => pulse.etag.clone(),
     };
-    let (found, idle, watching_ci) = snapshot(gh.as_ref(), log).await?;
+    let (mut found, idle, watching_ci) = snapshot(gh.as_ref(), log).await?;
     pulse.read_in_full(etag, watching_ci);
+    if args.no_human_gate {
+        routing::open_taps(gh.as_ref(), &mut found, pulse, log).await?;
+    }
     // The board moved: a merge may have moved a branch, whose data model is
     // archived before anything else is dispatched.
     snapshot_data(args, here, &gh, &found.milestones, log).await;

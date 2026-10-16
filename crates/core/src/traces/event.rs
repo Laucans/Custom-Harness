@@ -66,6 +66,13 @@ pub enum Event {
         /// `QUOTA` stops in a row.
         strikes: u32,
     },
+    /// A watch with no human gate marked an issue `harness:ready` itself.
+    TapOpened {
+        /// The issue.
+        issue: u64,
+        /// `roadmap item`, `milestone` or `rules' task`.
+        what: String,
+    },
     /// A lane took a task of the dev loop.
     LaneTaken {
         /// The lane.
@@ -347,6 +354,9 @@ impl Event {
             Self::QuotaRest { ticks, strikes } => format!(
                 "watch: quota -> exhausted, resting {ticks} tick(s) ({strikes} stop(s) in a row)"
             ),
+            Self::TapOpened { issue, what } => {
+                format!("watch: no human gate -> {what} #{issue} marked harness:ready")
+            }
             Self::LaneTaken {
                 lane,
                 task,
@@ -564,6 +574,21 @@ mod tests {
         assert_eq!(checked.level(), Level::Info);
         let json = serde_json::to_string(&checked).expect("json");
         assert!(json.contains("\"event\":\"gate_checked\""), "{json}");
+    }
+
+    #[test]
+    fn an_opened_tap_says_what_it_marked() {
+        let opened = Event::TapOpened {
+            issue: 5,
+            what: "milestone".to_string(),
+        };
+        assert_eq!(
+            opened.line().as_deref(),
+            Some("watch: no human gate -> milestone #5 marked harness:ready")
+        );
+        assert_eq!(opened.level(), Level::Info);
+        let json = serde_json::to_string(&opened).expect("json");
+        assert!(json.contains("\"event\":\"tap_opened\""), "{json}");
     }
 
     #[test]
