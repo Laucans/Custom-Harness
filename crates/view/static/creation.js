@@ -736,7 +736,6 @@
   const strayHeading = (line) => (/^##\s+\S/.test(line) ? `### ${line.replace(/^##\s+/, '').trim()}` : null);
   const composeScope = (answer) => composeParts(scopeSections(), scopeHeading, answer);
   const splitScope = (text) => splitParts(scopeSections(), scopeHeading, text, SCOPE_FREE, strayHeading);
-  const ROWS = { screens: 8, notes: 6 };
   // The required sections still empty, as the fields hold them.
   const scopeMissing = () => scopeSections().filter((s) => s.required).filter((s) => {
     const field = page.querySelector(`[data-cr="scope-${s.id}"]`);
@@ -752,7 +751,7 @@
         <div class="cr-scope-head"><b>${esc(s.title)}</b>${s.required ? '<span class="tag">required</span>' : ''}<button type="button" class="help-btn${open ? ' on' : ''}" data-cr-help="scope-${s.id}" title="What is this section for?" aria-expanded="${open}">?</button></div>
         ${open ? `<div class="callout purpose">${esc(s.help)}</div>` : ''}
         <span class="muted">${esc(s.hint)}</span>
-        <textarea data-cr="scope-${s.id}" rows="${ROWS[s.id] || 3}" aria-label="${esc(s.title)}">${esc(answers[s.id] || '')}</textarea></div>`;
+        <textarea class="cr-fit" data-cr="scope-${s.id}" rows="2" aria-label="${esc(s.title)}">${esc(answers[s.id] || '')}</textarea></div>`;
     };
     return `<p class="muted">The smallest proof of concept that shows the application's value, as the AI reads the brief and the decisions. Edit it freely, section by section — <b>?</b> says what each one is for.</p>
       ${C.busy === PROPOSING && !r.scope.trim() ? '<div class="callout"><span class="cr-spin" aria-hidden="true"></span> The scope is being proposed from the brief and the grilling\'s decisions.</div>' : ''}
@@ -1345,10 +1344,11 @@
     sizeEmbed();
     syncFocus();
     followFiles();
-    page.querySelectorAll('.cr-rule.sel textarea.cr-fit').forEach(fit);
     syncPreview();
     showDrawn();
     restore();
+    // After the drafts are put back: each box as tall as what it holds.
+    page.querySelectorAll('.cr-rule.sel textarea.cr-fit, [data-cr^="scope-"].cr-fit').forEach(fit);
   }
   // A drawing that is over (just ended, or the step revisited): its first page shows at once.
   function showDrawn() {
@@ -1500,6 +1500,7 @@
     if (named) C.dirty[named.dataset.cr] = named.value;
     // A required section emptied or filled opens or closes the way on at once.
     if (named && named.dataset.cr.startsWith('scope-')) {
+      fit(named);
       const on = page.querySelector('[data-cr-next="design"]');
       const missing = scopeMissing();
       if (on) { on.disabled = missing.length > 0; on.title = missing.length ? `Fill ${missing.map((s) => s.title).join(', ')} first` : ''; }

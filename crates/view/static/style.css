@@ -1713,6 +1713,7 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-crit-line { display: grid; grid-template-columns: 44px 1fr; gap: 6px; align-items: start; }
 .cr-crit-line b { font: 600 11px var(--sans); color: var(--dim); text-transform: uppercase; letter-spacing: .03em; padding-top: 3px; }
 .cr-crit-line span { white-space: pre-wrap; overflow-wrap: anywhere; }
+textarea.cr-fit[data-cr^="scope-"] { resize: none; overflow: hidden; min-height: 0; }
 .cr-crit textarea, .cr-rule textarea.cr-fit { width: 100%; resize: none; overflow: hidden; font: 12px/1.45 var(--sans); min-height: 0; }
 .cr-crit textarea.bad { border-color: var(--bad); }
 .cr-tie { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 2px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); }
