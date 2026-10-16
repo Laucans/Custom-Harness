@@ -38,6 +38,17 @@ set -euo pipefail
 command -v jq >/dev/null || { echo "::error::isolation.sh needs jq"; exit 1; }
 command -v cargo >/dev/null || { echo "::error::isolation.sh needs cargo"; exit 1; }
 
+# No Rust workspace yet: no slice to isolate — unless one is already there.
+if [ ! -f Cargo.toml ]; then
+  shopt -s nullglob
+  slices=(crates/*/capabilities/*/Cargo.toml crates/*/data-capabilities/*/Cargo.toml)
+  for toml in "${slices[@]}"; do
+    echo "::error file=$toml::there is no root Cargo.toml — the slices are members of a workspace"
+  done
+  [ ${#slices[@]} -eq 0 ] || exit 1
+  exit 0
+fi
+
 metadata=$(cargo metadata --format-version 1 --no-deps 2>/dev/null) || {
   echo "::error file=Cargo.toml::cargo metadata failed — the workspace does not resolve"
   exit 1

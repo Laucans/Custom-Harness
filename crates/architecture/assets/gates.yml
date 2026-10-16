@@ -375,9 +375,18 @@ jobs:
           set -euo pipefail
           shopt -s nullglob globstar
           failed=0
+          slices=(crates/*/data-capabilities/*/Cargo.toml)
+          # No Rust workspace yet: nothing to register, unless a slice waits on one.
+          if [ ! -f Cargo.toml ]; then
+            for toml in "${slices[@]}"; do
+              echo "::error file=$toml::there is no root Cargo.toml — list crates/*/data-capabilities/* by glob in one"
+              failed=1
+            done
+            exit $failed
+          fi
           metadata=$(cargo metadata --format-version 1 --no-deps)
           root=$(jq -r '.workspace_root' <<< "$metadata")
-          for toml in crates/*/data-capabilities/*/Cargo.toml; do
+          for toml in "${slices[@]}"; do
             dir=$(dirname "$toml")
             folder=$(basename "$dir")
             expected=${folder//-/_}
