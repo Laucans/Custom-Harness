@@ -561,11 +561,15 @@ fn needs(c: &Creation, step: Step, facts: Facts) -> Option<&'static str> {
                 None
             }
         }
-        Step::Design => c
-            .scope
-            .trim()
-            .is_empty()
-            .then_some("settle the proof of concept's scope"),
+        Step::Design => {
+            if c.scope.trim().is_empty() {
+                Some("settle the proof of concept's scope")
+            } else if crate::domain::drawing::screens(&c.scope).is_empty() {
+                Some("list at least one screen under Screens")
+            } else {
+                None
+            }
+        }
         Step::Mockups => {
             if !facts.design_validated {
                 Some("validate the design system")
@@ -1486,18 +1490,6 @@ pub fn parse_round(answer: &str) -> Result<Round, String> {
     Ok(round)
 }
 
-/// The text of an answer, its Markdown fence taken off when it is wrapped
-/// in one.
-#[must_use]
-pub fn unfenced(answer: &str) -> String {
-    let text = answer.trim();
-    let Some(rest) = text.strip_prefix("```") else {
-        return text.to_string();
-    };
-    let body = rest.split_once('\n').map_or("", |(_, body)| body);
-    body.strip_suffix("```").unwrap_or(body).trim().to_string()
-}
-
 /// One part of the brief: the question it answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BriefPart {
@@ -1581,6 +1573,131 @@ pub fn parse_brief(answer: &str) -> Result<String, String> {
     Ok(brief)
 }
 
+/// One section of the proof of concept's scope: its own field on the page,
+/// its own key in the AI's answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ScopeSection {
+    /// Its key, in the AI's answer and the page's fields.
+    pub id: &'static str,
+    /// Its heading in the scope, `## <title>`: fixed, the text is split on it.
+    pub title: &'static str,
+    /// What it holds, in one line.
+    pub hint: &'static str,
+    /// What it is for and who reads it: the page's `?`.
+    pub help: &'static str,
+    /// A scope without it cannot be drawn.
+    pub required: bool,
+}
+
+/// The id of the section the drawing reads its screens from.
+pub const SCREENS: &str = "screens";
+
+/// The id of the free section, where any other heading goes.
+pub const NOTES: &str = "notes";
+
+/// The scope's sections, in order: the AI answers them, the page shows
+/// them, the scope keeps them under their headings.
+pub const SCOPE_SECTIONS: [ScopeSection; 9] = [
+    ScopeSection {
+        id: "goal",
+        title: "Goal",
+        hint: "One paragraph: what the proof of concept proves.",
+        help: "The one thing the proof of concept must show works. Every later step reads it: the mock-up, the rules, the data and the ports.",
+        required: false,
+    },
+    ScopeSection {
+        id: "users",
+        title: "Users & roles",
+        hint: "Who uses it, and what each kind of user may see or do.",
+        help: "The kinds of users and their rights. The rules step reads it for who may do what, the ports step for the sign-in it needs.",
+        required: false,
+    },
+    ScopeSection {
+        id: SCREENS,
+        title: "Screens",
+        hint: "One bullet per screen: its name in bold, then what the user sees and does there.",
+        help: "Read by the factory itself: one page of the mock-up per bullet, named after the bold name. The first screen is drawn first, alone — the reference whose look every other page follows. At least one is needed to draw.",
+        required: true,
+    },
+    ScopeSection {
+        id: "journeys",
+        title: "Journeys",
+        hint: "The user journeys it carries, step by step.",
+        help: "What a user comes to do, start to finish, across the screens. The rules step turns each step into a journey rule with its test.",
+        required: false,
+    },
+    ScopeSection {
+        id: "data",
+        title: "Data",
+        hint: "The things it keeps, with their main fields.",
+        help: "The information the proof of concept stores. The data step drafts the data model from it.",
+        required: false,
+    },
+    ScopeSection {
+        id: "integrations",
+        title: "Integrations",
+        hint: "The services outside it talks to: payment, mail, an API, a sign-in.",
+        help: "Every dependency outside the product. The ports step lists them, a provider picked for each.",
+        required: false,
+    },
+    ScopeSection {
+        id: "left_out",
+        title: "Left out",
+        hint: "What waits for later, and why.",
+        help: "What the proof of concept does not do. It keeps the drawing and the rules from growing past the scope.",
+        required: false,
+    },
+    ScopeSection {
+        id: "proof",
+        title: "Proof",
+        hint: "How the human will know it works.",
+        help: "What you will check to call the proof of concept a success. The rules read it for their criteria.",
+        required: false,
+    },
+    ScopeSection {
+        id: NOTES,
+        title: "Notes",
+        hint: "Anything else, in sub-sections: `### Constraints`, `### Languages`…",
+        help: "Free: whatever the other sections do not hold — constraints, devices, languages, tone. Start each sub-section with `### Title`. Every later step reads it.",
+        required: false,
+    },
+];
+
+/// The scope out of the AI's answer: each section under its heading, in
+/// order, the empty ones left out — the text the page splits back into its
+/// fields.
+///
+/// # Errors
+///
+/// The answer carries no object, or no screen.
+pub fn parse_scope(answer: &str) -> Result<String, String> {
+    let object = object_in(answer).ok_or("the AI answered no scope")?;
+    let sections: HashMap<String, serde_json::Value> =
+        serde_json::from_str(object).map_err(|e| format!("the AI's scope is not readable: {e}"))?;
+    let mut said = Vec::new();
+    for s in &SCOPE_SECTIONS {
+        // A key the scope does not know is left; one it knows is text.
+        let text = match sections.get(s.id) {
+            None | Some(serde_json::Value::Null) => "",
+            Some(serde_json::Value::String(text)) => text.trim(),
+            Some(_) => {
+                return Err(format!(
+                    "the AI's scope is not readable: `{}` is not text",
+                    s.id
+                ));
+            }
+        };
+        if !text.is_empty() {
+            said.push(format!("## {}\n\n{text}", s.title));
+        }
+    }
+    let scope = said.join("\n\n");
+    if crate::domain::drawing::screens(&scope).is_empty() {
+        return Err("the AI's scope lists no screen".to_string());
+    }
+    Ok(scope)
+}
+
 /// What the human wants built: the kind, the brief, the decisions taken.
 pub fn product(c: &Creation) -> String {
     let mut text = format!(
@@ -1662,20 +1779,30 @@ pub fn grill_prompt(c: &Creation) -> String {
     text
 }
 
-/// The question that proposes the proof of concept's scope.
+/// The question that proposes the proof of concept's scope, one key per
+/// section of [`SCOPE_SECTIONS`].
 #[must_use]
 pub fn scope_prompt(c: &Creation) -> String {
     let mut text = String::from(
         "You scope the proof of concept of an application a development factory will build. \
          The proof of concept is the smallest thing that proves the application's value to the \
          human: a few screens, one or two user journeys end to end, the data they need — nothing \
-         that can wait. Answer in Markdown and nothing else, with these sections: `## Goal` (one \
-         paragraph: what the proof of concept proves), `## Screens` (one bullet per screen: its \
-         name in bold, then what the user sees and does there), `## Journeys` (the user journeys \
-         it carries, step by step), `## Data` (the things it keeps, with their main fields), \
-         `## Left out` (what waits for later, and why), `## Proof` (how the human will know it \
-         works). Write in the language of the human's brief.\n\n",
+         that can wait. Answer with one JSON object and nothing else, one key per section below, \
+         each value Markdown text without its heading: {",
     );
+    let keys: Vec<String> = SCOPE_SECTIONS
+        .iter()
+        .map(|s| format!("\"{}\": \"…\"", s.id))
+        .collect();
+    text.push_str(&keys.join(", "));
+    text.push_str(
+        "}. A section the proof of concept has nothing for is an empty string, but `screens` \
+         never is. Write in the language of the human's brief.\n\nThe sections:\n\n",
+    );
+    for s in &SCOPE_SECTIONS {
+        let _ = writeln!(text, "- `{}` — {}: {}", s.id, s.title, s.hint);
+    }
+    text.push('\n');
     text.push_str(&product(c));
     if !c.scope.trim().is_empty() {
         let _ = write!(
@@ -2759,12 +2886,15 @@ mod tests {
         }
     }
 
+    /// A scope with the one section a drawing needs.
+    const SCOPE: &str = "## Goal\n\n## Screens\n\n- **Home** — the ledger";
+
     fn ready() -> Creation {
         Creation {
             kind: Some(Kind::Vertical),
             brief: "a ledger".to_string(),
             questions: vec![question(1, "yes")],
-            scope: "## Goal".to_string(),
+            scope: SCOPE.to_string(),
             mocked: Some("two pages".to_string()),
             rules_validated: true,
             accepted: true,
@@ -3663,7 +3793,7 @@ mod tests {
     fn each_gate_names_what_is_missing_first() {
         let full = ready();
         assert_eq!(full.reachable(DESIGNED), Step::Initialize);
-        let cases: [(Spoil, Step, &str); 8] = [
+        let cases: [(Spoil, Step, &str); 9] = [
             (|c| c.kind = None, Step::Brief, "choose the kind of factory"),
             (
                 |c| c.brief = "  ".to_string(),
@@ -3684,6 +3814,11 @@ mod tests {
                 |c| c.scope = String::new(),
                 Step::Design,
                 "settle the proof of concept's scope",
+            ),
+            (
+                |c| c.scope = "## Goal\n\nprove it".to_string(),
+                Step::Design,
+                "list at least one screen under Screens",
             ),
             (|c| c.mocked = None, Step::Rules, "draw the mock-ups"),
             (
@@ -3860,7 +3995,7 @@ mod tests {
         assert_eq!(c.regenerations, 1);
         assert_eq!(
             (c.brief.as_str(), c.scope.as_str(), c.questions.len()),
-            ("a ledger", "## Goal", 1)
+            ("a ledger", SCOPE, 1)
         );
     }
 
@@ -3926,10 +4061,54 @@ mod tests {
     }
 
     #[test]
-    fn a_fence_is_taken_off_an_answer_and_a_bare_one_kept() {
-        assert_eq!(unfenced("```markdown\n## Goal\nx\n```"), "## Goal\nx");
-        assert_eq!(unfenced("  ## Goal  "), "## Goal");
-        assert_eq!(unfenced("```"), "");
+    fn the_scope_prompt_asks_each_section_by_its_key() {
+        let prompt = scope_prompt(&ready());
+        for s in &SCOPE_SECTIONS {
+            assert!(prompt.contains(&format!("\"{}\": \"…\"", s.id)), "{}", s.id);
+            assert!(prompt.contains(&format!("- `{}` — {}: {}", s.id, s.title, s.hint)));
+        }
+        assert!(prompt.contains("`screens` never is"));
+        assert_eq!(
+            SCOPE_SECTIONS
+                .iter()
+                .filter(|s| s.required)
+                .map(|s| s.id)
+                .collect::<Vec<_>>(),
+            [SCREENS]
+        );
+        assert_eq!(SCOPE_SECTIONS.last().map(|s| s.id), Some(NOTES));
+    }
+
+    #[test]
+    fn a_scope_is_read_off_the_ai_s_sections_in_order() {
+        let answer = r#"Here: {"proof": "it pays", "goal": "Pay", "screens": "- **Home** — the ledger\n- **Pay** — the form", "data": "  ", "notes": "plain\n### Tone\nshort", "ghost": "x"}"#;
+        let scope = parse_scope(answer).expect("read");
+        assert_eq!(
+            scope,
+            "## Goal\n\nPay\n\n## Screens\n\n- **Home** — the ledger\n- **Pay** — the form\n\n## Proof\n\nit pays\n\n## Notes\n\nplain\n### Tone\nshort"
+        );
+        let names: Vec<String> = crate::domain::drawing::screens(&scope)
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["Home", "Pay"], "the drawing reads the screens back");
+        assert_eq!(
+            parse_scope(r#"{"goal": "Pay", "screens": " "}"#),
+            Err("the AI's scope lists no screen".to_string())
+        );
+        assert_eq!(
+            parse_scope("no json"),
+            Err("the AI answered no scope".to_string())
+        );
+        assert_eq!(
+            parse_scope(r#"{"goal": 1, "screens": "- **A**"}"#),
+            Err("the AI's scope is not readable: `goal` is not text".to_string())
+        );
+        assert!(
+            parse_scope("{oops}")
+                .is_err_and(|why| why.starts_with("the AI's scope is not readable"))
+        );
+        assert!(parse_scope(r#"{"goal": null, "extra": [1], "screens": "- **A**"}"#).is_ok());
     }
 
     #[test]
@@ -4491,6 +4670,22 @@ mod tests {
         #[test]
         fn proposals_read_off_any_answer_never_panic(answer in ".{0,200}") {
             let _ = parse_proposals(&answer, &[], &[]);
+        }
+
+        #[test]
+        fn a_scope_keeps_every_section_said_in_order(texts in proptest::collection::vec("[a-z ]{0,20}", 9)) {
+            let mut object: HashMap<&str, String> =
+                SCOPE_SECTIONS.iter().map(|s| s.id).zip(texts.iter().cloned()).collect();
+            object.insert(SCREENS, "- **Home** — the ledger".to_string());
+            let scope = parse_scope(&serde_json::to_string(&object).expect("json")).expect("read");
+            let said: Vec<String> = SCOPE_SECTIONS
+                .iter()
+                .filter_map(|s| {
+                    let text = object.get(s.id).map_or("", |t| t.trim());
+                    (!text.is_empty()).then(|| format!("## {}\n\n{text}", s.title))
+                })
+                .collect();
+            prop_assert_eq!(scope, said.join("\n\n"));
         }
 
         #[test]

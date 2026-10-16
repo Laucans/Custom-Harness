@@ -209,8 +209,19 @@ It has two sections:
      ones; *Continue* with open ones offers the same. The first round asks
      itself; the scope opens once every question is answered, or when the
      AI had nothing to ask or every question was deleted (`grilled`);
-  5. **scope** — the proof of concept as the AI proposes it (Markdown),
-     first proposed on entering the step, once the grilling is over
+  5. **scope** — the proof of concept as the AI proposes it, in fixed
+     sections (`SCOPE_SECTIONS`: Goal, Users & roles, Screens, Journeys,
+     Data, Integrations, Left out, Proof, and Notes, the free one, whose
+     sub-sections are `### ` headings): the AI answers one JSON key per
+     section (`scope_prompt`), the record keeps one Markdown text, each
+     section under its `## ` heading, the empty ones left out
+     (`parse_scope`). The page shows a field per section with its `?` (what
+     it is for and which step reads it) and splits the text back
+     (`splitScope`: text before any heading and a heading no section knows
+     go to Notes). **Screens** is required — the drawing reads it
+     (`drawing::screens`): the AI's scope refuses none, and the design
+     step's gate stays shut without one. First proposed on entering the
+     step, once the grilling is over
      (`propose_scope`), edited freely, proposed again on demand. The record keeps what it was
      proposed from (`scope_from`, `Creation::fingerprint`: the kind, the
      brief, the decisions): decisions moved since make it **stale** (*to

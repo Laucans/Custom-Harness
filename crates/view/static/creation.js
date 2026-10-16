@@ -59,7 +59,7 @@
 
   // The busy label while the AI proposes the scope.
   const PROPOSING = 'the AI proposes the scope';
-  const C = { dirty: {}, loaded: false, data: null, route: 'landing', auto: false, busy: '', error: '', owners: null, ownersWhy: '', timer: null, embed: null, view: { width: null, height: null }, trackHidden: false, auto_started: {}, confirm: '', parts: false, opening: '', pages: null, mock: null, reqTimer: null, pulsed: false, reading: false, again: false };
+  const C = { helps: [], dirty: {}, loaded: false, data: null, route: 'landing', auto: false, busy: '', error: '', owners: null, ownersWhy: '', timer: null, embed: null, view: { width: null, height: null }, trackHidden: false, auto_started: {}, confirm: '', parts: false, opening: '', pages: null, mock: null, reqTimer: null, pulsed: false, reading: false, again: false };
   const page = $('factory-page');
 
   async function call(method, url, body) {
@@ -197,7 +197,7 @@
   const save = async (body) => { C.data = await call('PUT', '/api/creation', body); C.dirty = {}; };
   const post = async (what) => {
     C.data = await call('POST', `/api/creation/${what}`);
-    if (what === 'scope') delete C.dirty.scope;
+    if (what === 'scope') for (const key of Object.keys(C.dirty)) if (key.startsWith('scope-')) delete C.dirty[key];
     if (what === 'regenerate') C.dirty = {};
   };
   const start = async (what, body) => { await call('POST', `/api/creation/${what}`, body); await read(); };
@@ -208,8 +208,7 @@
     const description = page.querySelector('[data-cr="description"]');
     if (description) body.description = description.value;
     if (page.querySelector('[data-cr^="brief-"]')) body.brief = composeBrief((id) => page.querySelector(`[data-cr="brief-${id}"]`).value);
-    const scope = page.querySelector('[data-cr="scope"]');
-    if (scope) body.scope = scope.value;
+    if (page.querySelector('[data-cr^="scope-"]')) body.scope = composeScope((id) => (page.querySelector(`[data-cr="scope-${id}"]`) || { value: '' }).value);
     const qs = page.querySelectorAll('[data-q]');
     if (qs.length || (C.route === 'grilling' && record())) {
       body.questions = [...qs].map((q) => ({ id: Number(q.dataset.q), answer: q.querySelector('textarea').value }));
@@ -596,29 +595,36 @@
   // The brief: a description told at large, which the AI sorts into a few
   // parts the human then rereads (`briefParts`, as the server names them).
   // The record keeps one text: the parts answered, each under its heading.
-  const briefParts = () => (C.data && C.data.briefParts) || [];
-  const briefHeading = (q) => `### ${q.title}`;
-  function composeBrief(answer) {
-    return briefParts()
+  // A text kept as parts under fixed headings: written from one field per
+  // part, the empty ones left out, and split back into them.
+  function composeParts(parts, heading, answer) {
+    return parts
       .map((q) => [q, answer(q.id).trim()])
       .filter(([, text]) => text)
-      .map(([q, text]) => `${briefHeading(q)}\n\n${text}`)
+      .map(([q, text]) => `${heading(q)}\n\n${text}`)
       .join('\n\n');
   }
-  // Back from the record's text to one answer per question; a brief written
-  // before the questions, without their headings, goes whole to the first.
-  function splitBrief(text) {
-    const parts = briefParts();
+  // Text before any known heading goes to `home`; `stray`, given, turns a
+  // heading no part knows into a line of `home`.
+  function splitParts(parts, heading, text, home, stray) {
     const answers = Object.fromEntries(parts.map((q) => [q.id, []]));
     if (!parts.length) return answers;
-    let current = parts[0].id;
+    let current = home;
     for (const line of (text || '').split('\n')) {
-      const q = parts.find((b) => line.trim() === briefHeading(b));
+      const q = parts.find((b) => line.trim() === heading(b));
+      const moved = q ? null : stray && stray(line);
       if (q) current = q.id;
+      else if (moved) { current = home; answers[home].push(moved); }
       else answers[current].push(line);
     }
     return Object.fromEntries(Object.entries(answers).map(([id, lines]) => [id, lines.join('\n').trim()]));
   }
+  const briefParts = () => (C.data && C.data.briefParts) || [];
+  const briefHeading = (q) => `### ${q.title}`;
+  const composeBrief = (answer) => composeParts(briefParts(), briefHeading, answer);
+  // A brief written before the questions, without their headings, goes
+  // whole to the first.
+  const splitBrief = (text) => splitParts(briefParts(), briefHeading, text, (briefParts()[0] || {}).id);
 
   // The parts show once the description was split, or the human chose to
   // fill them alone.
@@ -720,16 +726,42 @@
         <button type="button" class="cr-btn on" data-cr-next="scope"${!qs.length && !r.grilled ? ' disabled' : ''}>Continue →</button></div>`;
   }
 
+  // The scope: one field per section the server names (`scopeSections`),
+  // each with its `?`. The record keeps one text, each section under its
+  // `## ` heading; a heading no section knows goes to the free one, as a
+  // sub-section.
+  const scopeSections = () => (C.data && C.data.scopeSections) || [];
+  const scopeHeading = (s) => `## ${s.title}`;
+  const SCOPE_FREE = 'notes';
+  const strayHeading = (line) => (/^##\s+\S/.test(line) ? `### ${line.replace(/^##\s+/, '').trim()}` : null);
+  const composeScope = (answer) => composeParts(scopeSections(), scopeHeading, answer);
+  const splitScope = (text) => splitParts(scopeSections(), scopeHeading, text, SCOPE_FREE, strayHeading);
+  const ROWS = { screens: 8, notes: 6 };
+  // The required sections still empty, as the fields hold them.
+  const scopeMissing = () => scopeSections().filter((s) => s.required).filter((s) => {
+    const field = page.querySelector(`[data-cr="scope-${s.id}"]`);
+    return !(field ? field.value : splitScope(record().scope)[s.id]).trim();
+  });
   function stepScope(r) {
     const stale = C.data.scopeStale && !C.busy;
-    return `<p class="muted">The smallest proof of concept that shows the application's value, as the AI reads the brief and the decisions. Edit it freely.</p>
+    const answers = splitScope(r.scope);
+    const missing = scopeSections().filter((s) => s.required && !(C.dirty[`scope-${s.id}`] ?? answers[s.id]).trim());
+    const section = (s) => {
+      const open = C.helps.includes(`scope-${s.id}`);
+      return `<div class="cr-field cr-brief-q">
+        <div class="cr-scope-head"><b>${esc(s.title)}</b>${s.required ? '<span class="tag">required</span>' : ''}<button type="button" class="help-btn${open ? ' on' : ''}" data-cr-help="scope-${s.id}" title="What is this section for?" aria-expanded="${open}">?</button></div>
+        ${open ? `<div class="callout purpose">${esc(s.help)}</div>` : ''}
+        <span class="muted">${esc(s.hint)}</span>
+        <textarea data-cr="scope-${s.id}" rows="${ROWS[s.id] || 3}" aria-label="${esc(s.title)}">${esc(answers[s.id] || '')}</textarea></div>`;
+    };
+    return `<p class="muted">The smallest proof of concept that shows the application's value, as the AI reads the brief and the decisions. Edit it freely, section by section — <b>?</b> says what each one is for.</p>
       ${C.busy === PROPOSING && !r.scope.trim() ? '<div class="callout"><span class="cr-spin" aria-hidden="true"></span> The scope is being proposed from the brief and the grilling\'s decisions.</div>' : ''}
       ${stale ? `<div class="callout">The decisions moved since this scope was proposed${r.scope_edited ? ' — and you retouched it: <b>Propose again</b> replaces your edits with a scope read from the decisions as they are now' : ': it is proposed again from them'}.</div>` : ''}
-      <label class="cr-field">Scope of the proof of concept<textarea data-cr="scope" class="mono" rows="22">${esc(r.scope)}</textarea></label>
+      ${scopeSections().map(section).join('')}
       <div class="cr-actions"><button type="button" class="cr-btn" data-cr-go="grilling">← Back</button>
         <span class="cr-gap"></span>
         <button type="button" class="cr-btn" data-cr-rescope>${C.confirm === 'scope' ? 'Replace my edits? Click again' : 'Propose again'}</button>
-        <button type="button" class="cr-btn on" data-cr-next="design"${r.scope.trim() ? '' : ' disabled'}>Continue →</button></div>`;
+        <button type="button" class="cr-btn on" data-cr-next="design"${missing.length ? ` disabled title="Fill ${esc(missing.map((s) => s.title).join(', '))} first"` : ''}>Continue →</button></div>`;
   }
 
   // The step's head: the design system's state and the kit's. The easel
@@ -1468,6 +1500,12 @@
   page.addEventListener('input', (e) => {
     const named = e.target.closest('[data-cr]');
     if (named) C.dirty[named.dataset.cr] = named.value;
+    // A required section emptied or filled opens or closes the way on at once.
+    if (named && named.dataset.cr.startsWith('scope-')) {
+      const on = page.querySelector('[data-cr-next="design"]');
+      const missing = scopeMissing();
+      if (on) { on.disabled = missing.length > 0; on.title = missing.length ? `Fill ${missing.map((s) => s.title).join(', ')} first` : ''; }
+    }
     const q = e.target.closest('[data-q]');
     if (q && e.target.tagName === 'TEXTAREA') { C.dirty[`q${q.dataset.q}`] = e.target.value; markAnswered(); }
   });
@@ -1564,6 +1602,12 @@
     const t = e.target.closest('button');
     if (!t || t.disabled) return;
     if (t.matches('[data-cr-leave]')) { window.HarnessFactories.leave(); return; }
+    if (t.dataset.crHelp) {
+      const key = t.dataset.crHelp;
+      C.helps = C.helps.includes(key) ? C.helps.filter((k) => k !== key) : [...C.helps, key];
+      draw();
+      return;
+    }
     if (t.dataset.crGo) {
       if (t.dataset.crGo !== 'landing' && t.dataset.crGo !== FOUND && t.dataset.crGo !== C.route && record()) {
         // Moving keeps what the fields hold.
@@ -1726,7 +1770,7 @@
       return;
     }
     if (t.matches('[data-cr-rescope]')) {
-      const edited = page.querySelector('[data-cr="scope"]').value !== record().scope;
+      const edited = fields().scope !== record().scope;
       if (edited && C.confirm !== 'scope') { C.confirm = 'scope'; draw(); return; }
       C.confirm = '';
       act(PROPOSING, () => post('scope'));

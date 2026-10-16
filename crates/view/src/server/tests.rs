@@ -2092,8 +2092,7 @@ async fn a_grilling_round_and_a_scope_are_asked_of_the_ai_and_kept() {
     record.kind = Some(crate::domain::creation::Kind::Vertical);
     record.brief = "a ledger".to_string();
     being_created(&roll, &record);
-    let round =
-        r#"{"questions":[{"title":"Who pays?","recommended":"the client","topic":"Billing"}]}"#;
+    let round = r#"{"questions":[{"title":"Who pays?","recommended":"the client","topic":"Billing"}],"screens":"- **Home** — the ledger"}"#;
     let state = state_creating(Arc::clone(&roll), Arc::default(), round);
     let (status, body) = post(state.clone(), "/api/creation/grill", "").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -2117,7 +2116,16 @@ async fn a_grilling_round_and_a_scope_are_asked_of_the_ai_and_kept() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let kept: crate::domain::creation::Creation =
         serde_json::from_str(&roll.creation("alpha").expect("read").expect("kept")).expect("json");
-    assert_eq!(kept.scope, round, "the AI's answer is the scope");
+    assert_eq!(
+        kept.scope, "## Screens\n\n- **Home** — the ledger",
+        "the AI's sections are the scope"
+    );
+    // The page reads the sections it splits the scope into.
+    let (_, body) = get(state_creating(roll, Arc::default(), ""), "/api/creation").await;
+    let view: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(view["scopeSections"][2]["id"], "screens");
+    assert_eq!(view["scopeSections"][2]["required"], true);
+    assert_eq!(view["scopeSections"][8]["id"], "notes");
 }
 
 #[tokio::test]
@@ -2255,7 +2263,7 @@ async fn the_mockups_and_the_acceptance_wait_for_their_gates() {
     let mut record = crate::domain::creation::Creation::new("alpha", "me/alpha");
     record.kind = Some(crate::domain::creation::Kind::Vertical);
     record.brief = "b".to_string();
-    record.scope = "s".to_string();
+    record.scope = "## Screens\n\n- **Home**".to_string();
     record.questions = vec![crate::domain::creation::Question {
         id: 1,
         title: "t".to_string(),

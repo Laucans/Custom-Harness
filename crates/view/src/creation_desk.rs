@@ -23,8 +23,8 @@ use crate::domain::creation::{
     self, ComponentRef, Context, Creation, DesignRef, Edit, Facts, PageRef, PinRef, RuleChange,
     RulesSent, Step, componentize_prompt, cut_repair_prompt, decompose_prompt, examples_part,
     examples_taken, grill_prompt, manifest_repair_prompt, not_componentized, parse_brief,
-    parse_proposals, parse_requirements, parse_round, parse_ties, requirements_prompt, rule_prompt,
-    rules_change_prompt, scope_prompt, unfenced,
+    parse_proposals, parse_requirements, parse_round, parse_scope, parse_ties, requirements_prompt,
+    rule_prompt, rules_change_prompt, scope_prompt,
 };
 use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
 use crate::domain::design::Entry;
@@ -384,7 +384,7 @@ impl CreationDesk {
     pub async fn propose_scope(&self) -> Result<Creation, String> {
         let asked = self.existing()?;
         asked.may_enter(Step::Scope, self.facts().await)?;
-        let scope = unfenced(&self.ask(scope_prompt(&asked)).await?);
+        let scope = parse_scope(&self.ask(scope_prompt(&asked)).await?)?;
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
         record.propose(scope);

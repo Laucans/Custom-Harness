@@ -1548,6 +1548,9 @@ body.cr-fullscreen { overflow: hidden; }
 .cr-form label, .cr-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--dim); }
 .cr-brief-q { margin-bottom: 14px; }
 .cr-brief-q b { font-size: 13px; color: var(--text); }
+.cr-scope-head { display: flex; align-items: center; gap: 8px; }
+.cr-scope-head .tag { margin: 0; }
+.cr-brief-q .callout.purpose { margin: 2px 0; }
 .cr-radios { border: 0; padding: 0; margin: 0; display: flex; gap: 16px; font-size: 13px; }
 .cr-radios legend { font-size: 12px; color: var(--dim); padding: 0; margin-bottom: 4px; }
 .cr-radios label { flex-direction: row; align-items: center; gap: 6px; color: var(--text); }

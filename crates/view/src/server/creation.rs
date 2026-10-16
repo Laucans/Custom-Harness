@@ -10,7 +10,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::creation_desk::{CreationDesk, Founding};
-use crate::domain::creation::{BRIEF_PARTS, Creation, Edit, RuleChange, RulesState, Step};
+use crate::domain::creation::{
+    BRIEF_PARTS, Creation, Edit, RuleChange, RulesState, SCOPE_SECTIONS, Step,
+};
 use crate::domain::data_draft::DataEdit;
 use crate::domain::mock_history::Facet;
 
@@ -65,6 +67,7 @@ async fn view(desk: &CreationDesk, record: Option<Creation>) -> Response {
         "branch": desk.integration_branch(),
         "steps": Step::ALL,
         "briefParts": BRIEF_PARTS,
+        "scopeSections": SCOPE_SECTIONS,
     }))
 }
 
