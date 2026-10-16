@@ -107,6 +107,22 @@ mod tests {
         })
     }
 
+    #[test]
+    fn the_draft_prepares_drafts_then_publishes() {
+        use crate::data_model_draft::orchestration::stages::{self, DRAFT, PREPARE, PUBLISH};
+        let ports = wired(
+            github(),
+            FakeRepos::default(),
+            Rc::new(FakeDisk::default()),
+            Rc::new(FakeProcess::answering(Vec::new())),
+        );
+        let names: Vec<String> = stages::table(&ports, &config())
+            .into_iter()
+            .map(|stage| stage.name)
+            .collect();
+        assert_eq!(names, [PREPARE, DRAFT, PUBLISH]);
+    }
+
     #[tokio::test]
     async fn the_head_is_dumped_and_a_draft_branch_made_from_it() {
         let mut disk = FakeDisk::default();
