@@ -262,6 +262,16 @@ impl ClaudeCli {
         append(self.rendered_log().as_deref(), lines);
     }
 
+    /// Keeps the conversation's identifier a turn's output names, whatever
+    /// the turn's result; an output naming none leaves the one known.
+    fn learn_session(&mut self, stdout: &str) {
+        if let Some(id) = result_line(stdout).map(|r| r.session_id)
+            && !id.is_empty()
+        {
+            self.session_id = Some(id);
+        }
+    }
+
     /// The arguments for this turn.
     ///
     /// Pure, and separated from the call: this is the part that tests without
@@ -605,11 +615,7 @@ impl ClaudeCli {
         // The identifier is learnt before the result is judged: a turn cut by
         // a quota still names its conversation, and that is what the next run
         // resumes instead of paying the turns again.
-        if let Some(id) = result_line(&out.stdout).map(|r| r.session_id)
-            && !id.is_empty()
-        {
-            self.session_id = Some(id);
-        }
+        self.learn_session(&out.stdout);
 
         if !out.ok() {
             return Err(failed_process(&out));
@@ -781,11 +787,13 @@ mod tests {
 
     #[test]
     fn a_quota_cut_turn_still_names_its_session() {
-        let stdout = r#"{"type":"result","subtype":"error","is_error":true,"result":"Claude usage limit reached","session_id":"sess-cut"}"#;
-        assert_eq!(
-            result_line(stdout).map(|r| r.session_id).as_deref(),
-            Some("sess-cut")
-        );
+        let mut c = cli();
+        c.learn_session(r#"{"type":"result","subtype":"error","is_error":true,"result":"Claude usage limit reached","session_id":"sess-cut"}"#);
+        assert_eq!(c.session_id.as_deref(), Some("sess-cut"));
+        // An output naming none, or nothing readable, keeps what is known.
+        c.learn_session(r#"{"type":"result","is_error":true,"result":"x","session_id":""}"#);
+        c.learn_session("not json");
+        assert_eq!(c.session_id.as_deref(), Some("sess-cut"));
     }
 
     // --- what names a turn in the log ---------------------------------------

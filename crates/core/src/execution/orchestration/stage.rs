@@ -276,6 +276,12 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_carrier_that_keeps_no_conversation_has_no_id_to_resume() {
+        use crate::ports::agent::Session as _;
+        assert_eq!(FakeSession { from: None }.id(), None);
+    }
+
     #[tokio::test]
     async fn a_session_stage_resumes_its_interrupted_session_under_its_cap() {
         let mut context = ctx();
