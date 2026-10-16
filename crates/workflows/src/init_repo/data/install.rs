@@ -21,7 +21,7 @@
 //!   one without `--force`, and never added twice.
 
 use harness_architecture::assets::{
-    CLAUDE_RULES, FILES, MARKER_CLOSE, MARKER_PREFIX, VERSION, installed_version,
+    CLAUDE_RULES, CLAUDE_VERSION, FILES, MARKER_CLOSE, MARKER_PREFIX, VERSION, installed_version,
 };
 
 /// The path of the file the rules are appended to.
@@ -47,7 +47,7 @@ impl InstallPlan {
         let mut plan = Self::default();
         for asset in &FILES {
             match existing(asset.path) {
-                Some(text) if !force && !outdated(&text) => {
+                Some(text) if !force && !outdated(&text, VERSION) => {
                     plan.kept.push(asset.path.to_string());
                 }
                 _ => plan
@@ -69,10 +69,11 @@ impl InstallPlan {
     }
 }
 
-/// True when a text carries a marked block of an older version than the one
-/// these assets install: a reinstall replaces it.
-fn outdated(text: &str) -> bool {
-    installed_version(text).is_some_and(|v| v < VERSION)
+/// True when a text carries a marked block of an older version than
+/// `current`, the one these assets install for it: a reinstall replaces it.
+/// The documents and the rules block of `CLAUDE.md` count apart.
+fn outdated(text: &str, current: u32) -> bool {
+    installed_version(text).is_some_and(|v| v < current)
 }
 
 /// The `CLAUDE.md` a run must write, or `None` when it is to be left alone.
@@ -90,7 +91,7 @@ pub fn merge_claude_md(existing: Option<&str>, force: bool) -> Option<String> {
     let Some(open) = text.find(MARKER_PREFIX) else {
         return Some(format!("{}\n\n{block}\n", text.trim_end()));
     };
-    if !force && !outdated(text) {
+    if !force && !outdated(text, CLAUDE_VERSION) {
         return None;
     }
     let close = text[open..]
@@ -106,7 +107,7 @@ pub fn merge_claude_md(existing: Option<&str>, force: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use harness_architecture::assets::MARKER_OPEN;
+    use harness_architecture::assets::{CLAUDE_MARKER_OPEN, MARKER_OPEN};
 
     #[test]
     fn the_installed_ci_runs_on_the_integration_and_milestone_branches() {
@@ -129,7 +130,7 @@ mod tests {
             .iter()
             .find(|(path, _)| path == CLAUDE_MD)
             .expect("CLAUDE.md");
-        assert!(claude.starts_with(MARKER_OPEN));
+        assert!(claude.starts_with(CLAUDE_MARKER_OPEN));
     }
 
     #[test]
@@ -149,17 +150,20 @@ mod tests {
     fn the_rules_are_appended_after_the_project_s_own_claude_md() {
         let merged =
             merge_claude_md(Some("# my project\n\nwhat it is.\n"), false).expect("appended");
-        assert!(merged.starts_with(&format!("# my project\n\nwhat it is.\n\n{MARKER_OPEN}")));
+        assert!(merged.starts_with(&format!(
+            "# my project\n\nwhat it is.\n\n{CLAUDE_MARKER_OPEN}"
+        )));
         assert!(merged.trim_end().ends_with(MARKER_CLOSE));
     }
 
     #[test]
     fn a_claude_md_that_carries_the_block_is_left_alone_and_rewritten_only_under_force() {
-        let text =
-            format!("# mine\n\n{MARKER_OPEN}\nold rules\n{MARKER_CLOSE}\n\n## after\n\nkept too\n");
+        let text = format!(
+            "# mine\n\n{CLAUDE_MARKER_OPEN}\nold rules\n{MARKER_CLOSE}\n\n## after\n\nkept too\n"
+        );
         assert_eq!(merge_claude_md(Some(&text), false), None);
         let forced = merge_claude_md(Some(&text), true).expect("rewritten");
-        assert!(forced.starts_with(&format!("# mine\n\n{MARKER_OPEN}")));
+        assert!(forced.starts_with(&format!("# mine\n\n{CLAUDE_MARKER_OPEN}")));
         assert!(!forced.contains("old rules"));
         assert!(forced.ends_with("\n\n## after\n\nkept too\n"), "{forced}");
         let plan = InstallPlan::new(&|path| (path == CLAUDE_MD).then(|| text.clone()), false);
@@ -172,7 +176,7 @@ mod tests {
             "# mine\n\n<!-- harness:architecture v1 -->\nold rules\n{MARKER_CLOSE}\n\n## after\n"
         );
         let merged = merge_claude_md(Some(&old), false).expect("replaced");
-        assert!(merged.starts_with(&format!("# mine\n\n{MARKER_OPEN}")));
+        assert!(merged.starts_with(&format!("# mine\n\n{CLAUDE_MARKER_OPEN}")));
         assert!(!merged.contains("old rules"));
         assert_eq!(merged.matches(MARKER_PREFIX).count(), 1, "one block");
         assert!(merged.ends_with("\n\n## after\n"), "{merged}");
@@ -198,6 +202,31 @@ mod tests {
             kept.kept.contains(&"docs/ARCHITECTURE.md".to_string()),
             "the current version stays"
         );
+    }
+
+    #[test]
+    fn a_shorter_rules_block_rewrites_claude_md_and_leaves_the_documents_alone() {
+        let v2 = "<!-- harness:architecture v2 -->";
+        let claude = format!("# mine\n\n{v2}\nlong rules\n{MARKER_CLOSE}\n");
+        let document = format!("{v2}\na human's edit\n{MARKER_CLOSE}\n");
+        let plan = InstallPlan::new(
+            &|path| match path {
+                CLAUDE_MD => Some(claude.clone()),
+                "docs/ARCHITECTURE.md" | "docs/DATA-INTEGRITY.md" => Some(document.clone()),
+                _ => None,
+            },
+            false,
+        );
+        let (_, written) = plan
+            .writes
+            .iter()
+            .find(|(path, _)| path == CLAUDE_MD)
+            .expect("CLAUDE.md rewritten");
+        assert!(written.starts_with(&format!("# mine\n\n{CLAUDE_MARKER_OPEN}")));
+        assert!(!written.contains("long rules"));
+        for doc in ["docs/ARCHITECTURE.md", "docs/DATA-INTEGRITY.md"] {
+            assert!(plan.kept.contains(&doc.to_string()), "{doc} kept");
+        }
     }
 
     #[test]

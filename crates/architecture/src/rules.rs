@@ -47,7 +47,8 @@ DATABASE_URL. No `#[path]`, `include!` or symlink that leaves its folder.
 
 Its reads are registered: after adding or changing a query file, run
 `bash scripts/queries.sh` and commit queries/registry.json (contract C);
-each query file opens with a `# fields: <entity>.<field>, …` line.
+each query file opens with a `# fields: <entity>.<field>, …` line. Teach
+the mock server its answer: a read in mock/src/reads.js.
 
 A Concept it implements must be documented and proved: concepts/<Concept>/
 v<n>/concept.json naming it (contract A), fixtures.json beside it, and a
@@ -108,7 +109,7 @@ pages-mocked (listed, fragment present, parts named, listing in sync,
 bundle rebuilt), design-system-single-writer.
 No network call from a Micro-UI: externals-behind-ports. The rules
 (contract P): rule-tests-untouched (rules.json and tests/rules/ are the
-rules' task's) and rules-hold (a journey rule's test passes once every unit
+rules' task's, a development conforms or writes CONTEST.md) and rules-hold (a journey rule's test passes once every unit
 it needs is built).";
 
 const CONCEPT: &str = "\
@@ -166,7 +167,9 @@ Fast path or not: an `insert` touching nothing is a pure addition — read
 side, proposed by a read agent, merged on green gates — and its code
 contains no UPDATE, ON CONFLICT, UPSERT, DELETE or CREATE TRIGGER. Anything
 else is the write side: its PR is reviewed by an agent, and milestone_merge
-merges it once the review is clean and every check green.
+merges it once the review is clean and every check green. Teach the mock
+server its judgement: an entry in mock/src/commands.js. A port that keeps
+state (a customer, a file, a user) is written through a DataCapability only.
 
 What it may know: its target aggregate (aggregate.json: fields, invariants,
 relations) and the DataGuard's plumbing. What it must not know: any
@@ -229,7 +232,9 @@ HTML plus the micro-frontends it injects
 (`<div data-component=\"<MicroUi>\" data-props='{…}'></div>`), listed in
 mock/pages.json with `screen: <screen>` (contract N). Open the page first:
 it is the screen as the human wants it, and a `mockup/*` branch may carry a
-newer one with mock/drafts/<page>.json saying what they changed.
+newer one with mock/drafts/<page>.json saying what they changed. Build the
+layout the page shows with clean code, not the draft's operations one by
+one; a forked micro-frontend (`variantOf`) stays a variant of its origin.
 
 What it may know: the Micro-UIs it lays out, by id, in the version it
 names. What it must not do: reach a Capability or a DataCapability itself —
@@ -306,7 +311,8 @@ A port is infrastructure: ports-declared (every port has its fake and its
 contract tests, and lists the units that use it), externals-behind-ports
 (a provider is reached from its adapter under crates/ports/<port>/<provider>/
 only) and secrets-encrypted (its secrets committed encrypted with sops, or
-not at all).";
+not at all). Switching provider is a new adapter behind the same port, its
+contract tests and the rules' tests green.";
 
 const TOOLING: &str = "\
 UNIT: Tooling — Rust that touches no store: contract types, shared helpers,

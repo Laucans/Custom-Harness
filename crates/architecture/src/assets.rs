@@ -22,12 +22,18 @@ pub struct Asset {
     pub content: &'static str,
 }
 
-/// The version of the architecture these assets install: what the markers
-/// carry, and what a later `init-repo` compares to replace an older block.
+/// The version of the two documents these assets install: what their
+/// markers carry, and what a later `init-repo` compares to replace an older
+/// block.
 pub const VERSION: u32 = 2;
-/// The opening marker of the rules block in `CLAUDE.md` and of the two
-/// documents, with the version.
+/// The opening marker of the two documents, with their version.
 pub const MARKER_OPEN: &str = "<!-- harness:architecture v2 -->";
+/// The version of the rules block in `CLAUDE.md`, counted apart from the
+/// documents: shortening the rules every session pays for must not rewrite
+/// a product's documents.
+pub const CLAUDE_VERSION: u32 = 3;
+/// The opening marker of the rules block in `CLAUDE.md`, with its version.
+pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v3 -->";
 /// What every version of the opening marker starts with.
 pub const MARKER_PREFIX: &str = "<!-- harness:architecture v";
 /// The closing marker.
@@ -410,8 +416,9 @@ mod tests {
             assert!(!asset.content.trim().is_empty(), "{} is empty", asset.path);
             assert!(!asset.path.starts_with('/'));
         }
-        assert!(CLAUDE_RULES.starts_with(MARKER_OPEN));
+        assert!(CLAUDE_RULES.starts_with(CLAUDE_MARKER_OPEN));
         assert!(CLAUDE_RULES.trim_end().ends_with(MARKER_CLOSE));
+        assert_eq!(installed_version(CLAUDE_RULES), Some(CLAUDE_VERSION));
         for document in [FILES[0].content, FILES[1].content] {
             assert!(document.contains(MARKER_OPEN) && document.contains(MARKER_CLOSE));
             assert_eq!(installed_version(document), Some(VERSION));
