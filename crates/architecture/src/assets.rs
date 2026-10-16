@@ -37,12 +37,13 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 
 /// The files installed as they are.
 ///
-/// The document, the gates, the CI, the test scope, the isolation check, the
+/// The document, the gates, the CI, the test scope, the quiet wrapper a
+/// session runs its checks through, the isolation check, the
 /// dead-code script, the mutants configuration, rotation and test-debt
 /// filing, the schema dump, the data model, the mock-up's files, the
 /// contracts A–Q, the ports and the secrets' scaffolding, the rules' gate,
 /// runtime and suites.
-pub const FILES: [Asset; 51] = [
+pub const FILES: [Asset; 52] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -58,6 +59,10 @@ pub const FILES: [Asset; 51] = [
     Asset {
         path: "scripts/test-scope.sh",
         content: include_str!("../assets/test-scope.sh"),
+    },
+    Asset {
+        path: "scripts/quiet.sh",
+        content: include_str!("../assets/quiet.sh"),
     },
     Asset {
         path: "scripts/dead-code.sh",
@@ -439,5 +444,10 @@ mod tests {
         assert!(ci.contains("bash scripts/test-scope.sh \"$BASE\""), "{ci}");
         assert!(ci.contains("fetch-depth: 0"), "the scope needs the history");
         assert!(text("scripts/test-scope.sh").starts_with("#!/usr/bin/env bash"));
+        assert!(text("scripts/quiet.sh").starts_with("#!/usr/bin/env bash"));
+        assert!(
+            !ci.contains("quiet.sh"),
+            "the CI keeps its whole logs: the wrapper is a session's"
+        );
     }
 }

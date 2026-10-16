@@ -68,7 +68,12 @@ PR targets>` whenever the repository has that script, never a bare
 `cargo test --workspace`: a change that stays inside Capability crates
 (`crates/<system>/capabilities/<name>/`) then runs their tests alone, and
 anything else the whole workspace — the CI runs the same script on the PR.
-Arguments after `--` go to `cargo test`, to run one test while you work.";
+Arguments after `--` go to `cargo test`, to run one test while you work.
+Run every check — the tests, clippy, fmt, machete, the dead-code script, the
+gates — through `bash scripts/quiet.sh <the command>` whenever the repository
+has that script, e.g. `bash scripts/quiet.sh bash scripts/test-scope.sh
+origin/<branch>`: a pass is one line, a failure prints every line of its
+errors and the path of its full log.";
 
 pub(crate) const CODE: &str =
     "The task is issue #{num} (\"{title}\"); its body, below under SCOPE, is the
@@ -520,6 +525,13 @@ mod tests {
             .iter()
             .any(|asset| asset.path.starts_with("scripts/") && TEST_SCOPE.contains(asset.path));
         assert!(installed, "TEST_SCOPE names a script init-repo installs");
+        assert!(
+            harness_architecture::assets::FILES
+                .iter()
+                .any(|asset| asset.path == "scripts/quiet.sh"),
+            "the wrapper TEST_SCOPE names is installed"
+        );
+        assert!(TEST_SCOPE.contains("bash scripts/quiet.sh"));
         assert_eq!(with_labels(TEST_SCOPE), TEST_SCOPE, "nothing to splice");
     }
 
