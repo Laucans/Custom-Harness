@@ -546,8 +546,8 @@
       }
       drawIndex();
     }
-    // The entity index, on the right: every table by name, narrowed by the
-    // search, with the fields that match under their table. A click selects
+    // The entity index, on the right: every table, the selection's
+    // relatives on top, narrowed by the search, with the fields that match under their table. A click selects
     // and centres it on the board.
     function drawIndex() {
       const m = st.drawn || st.model;
@@ -555,8 +555,10 @@
       if (!m) { list.innerHTML = ''; return; }
       const needle = search.value.trim().toLowerCase();
       const rel = relatives(m);
+      // The selection first, then what it depends on, what depends on it, the rest.
+      const rank = (t) => (st.sel && st.sel.table === t.name ? 0 : rel.up.has(t.name) ? 1 : rel.down.has(t.name) ? 2 : 3);
       const items = [];
-      for (const t of [...m.tables].sort((a, b) => a.name.localeCompare(b.name))) {
+      for (const t of [...m.tables].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))) {
         const own = !needle || t.name.toLowerCase().includes(needle);
         const fields = needle ? t.fields.filter((f) => f.name.toLowerCase().includes(needle)) : [];
         if (!own && !fields.length) continue;
