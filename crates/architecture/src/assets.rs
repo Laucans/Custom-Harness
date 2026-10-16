@@ -37,13 +37,14 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 
 /// The files installed as they are.
 ///
-/// The document, the gates, the CI, the test scope, the quiet wrapper a
+/// The `DataGuard` server's skeleton, the document, the gates, the CI, the
+/// test scope, the quiet wrapper a
 /// session runs its checks through, the isolation check, the
 /// dead-code script, the mutants configuration, rotation and test-debt
 /// filing, the schema dump, the data model, the mock-up's files, the
 /// contracts A–Q, the ports and the secrets' scaffolding, the rules' gate,
 /// runtime and suites.
-pub const FILES: [Asset; 52] = [
+pub const FILES: [Asset; 55] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -63,6 +64,18 @@ pub const FILES: [Asset; 52] = [
     Asset {
         path: "scripts/quiet.sh",
         content: include_str!("../assets/quiet.sh"),
+    },
+    Asset {
+        path: "crates/dataguard/server/Cargo.toml",
+        content: include_str!("../assets/dataguard-server/Cargo.toml"),
+    },
+    Asset {
+        path: "crates/dataguard/server/build.rs",
+        content: include_str!("../assets/dataguard-server/build.rs"),
+    },
+    Asset {
+        path: "crates/dataguard/server/src/main.rs",
+        content: include_str!("../assets/dataguard-server/src/main.rs"),
     },
     Asset {
         path: "scripts/dead-code.sh",
@@ -285,12 +298,17 @@ mod tests {
     }
 
     #[test]
-    fn only_the_three_gates_that_need_the_engine_stay_off() {
+    fn only_semantic_conformance_stays_off_now_that_the_engine_exists() {
         let gates = include_str!("../assets/gates.yml");
         assert_eq!(
             gates.lines().filter(|l| l.trim() == "if: false").count(),
-            3,
-            "semantic-conformance, queries-valid and schema-impact wait for the DataGuard engine"
+            1,
+            "queries-valid and schema-impact run with the DataGuard engine"
+        );
+        assert!(gates.contains("PREPARE gate_q_"), "queries prepare");
+        assert!(
+            gates.contains("drop[[:space:]]+column"),
+            "a dropped column names its readers"
         );
     }
 

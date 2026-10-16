@@ -218,7 +218,7 @@ mod tests {
         assert!(written.iter().any(
             |(path, text)| path.ends_with("docs/ARCHITECTURE.md") && text.contains(MARKER_OPEN)
         ));
-        assert!(lines[0].starts_with("installed 53 file(s) on main_agent"));
+        assert!(lines[0].starts_with("installed 56 file(s) on main_agent"));
         assert!(lines[0].contains("contracts/ (18 files)"));
     }
 
@@ -305,7 +305,7 @@ mod tests {
         assert!(disk.written.borrow().is_empty());
         assert_eq!(
             lines,
-            ["would install 53 file(s) on main_agent (read against an empty tree)"]
+            ["would install 56 file(s) on main_agent (read against an empty tree)"]
         );
     }
 
