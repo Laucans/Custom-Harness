@@ -217,21 +217,33 @@ fn refresh(run: &mut Run) {
 mod tests {
     use super::*;
 
+    /// Writes an executable script through a child shell: no writable handle
+    /// on it ever lives in this process, so a test forking meanwhile cannot
+    /// hold one and make its exec fail with "Text file busy".
+    fn executable(path: &std::path::Path, text: &str) {
+        let written = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"",
+                "sh",
+            ])
+            .arg(path)
+            .arg(text)
+            .status()
+            .expect("script");
+        assert!(written.success(), "the script is written");
+    }
+
     #[test]
     fn a_build_runs_reports_its_tail_and_refuses_a_twin() {
         let root = std::env::temp_dir().join(format!("harness-builds-{}", std::process::id()));
         fs::create_dir_all(&root).expect("root");
         // A stand-in for the harness: prints its arguments, then fails.
         let program = root.join("fake-harness.sh");
-        fs::write(
+        executable(
             &program,
             "#!/bin/sh\ncase \"$2\" in --help) exit 0 ;; esac\necho \"ran $*\"\nsleep 0.3\nexit 3\n",
-        )
-        .expect("script");
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("chmod");
-        }
+        );
         // The first candidate is missing: the second is started.
         let builds = HarnessBuilds::new(vec![root.join("absent"), program], root.clone());
         let id = builds.start(What::Schema, "main").expect("started");
@@ -260,15 +272,10 @@ mod tests {
 
         // A binary built before the command: refused up front, with the fix.
         let old = root.join("old-harness.sh");
-        fs::write(
+        executable(
             &old,
             "#!/bin/sh\necho \"error: unrecognized subcommand '$1'\" >&2\nexit 2\n",
-        )
-        .expect("script");
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&old, fs::Permissions::from_mode(0o755)).expect("chmod");
-        }
+        );
         let stale = HarnessBuilds::new(vec![old], root.clone());
         let refused = stale.start(What::Schema, "main").expect_err("refused");
         assert!(
@@ -295,19 +302,14 @@ mod tests {
         fs::create_dir_all(&outside).expect("outside");
         fs::write(outside.join("session.log"), "secret").expect("outside");
         let program = root.join("fake-harness.sh");
-        fs::write(
+        executable(
             &program,
-            format!(
+            &format!(
                 "#!/bin/sh\ncase \"$2\" in --help) exit 0 ;; esac\necho \"journal: {}\"\necho \"journal: {}\"\n",
                 journal.display(),
                 outside.display()
             ),
-        )
-        .expect("script");
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("chmod");
-        }
+        );
         let builds = HarnessBuilds::new(vec![program], root.clone());
         let id = builds.start(What::Model, "main_agent").expect("started");
         for _ in 0..50 {

@@ -286,11 +286,23 @@ mod tests {
         dir
     }
 
-    /// An executable `name` in `dir` that runs `body` (sh).
+    /// An executable `name` in `dir` that runs `body` (sh). Written by a
+    /// child shell: no writable handle on it ever lives in this process, so
+    /// a test forking meanwhile cannot make its exec fail with "Text file
+    /// busy".
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let bin = dir.join(name);
-        std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).expect("script");
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        let written = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s\\n' \"$2\" > \"$1\" && chmod 755 \"$1\"",
+                "sh",
+            ])
+            .arg(&bin)
+            .arg(format!("#!/bin/sh\n{body}"))
+            .status()
+            .expect("script");
+        assert!(written.success(), "the script is written");
         bin
     }
 
