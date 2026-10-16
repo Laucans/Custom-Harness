@@ -22,6 +22,11 @@ use async_trait::async_trait;
 
 use crate::domain::{Issue, Outcome, Pr};
 
+/// The longest issue body GitHub takes, in characters: a longer one is
+/// refused whole (`422 Validation Failed`), so a body that may grow is fit
+/// under it before it is sent.
+pub const ISSUE_BODY_MAX: usize = 65_536;
+
 /// A file a CI run kept in one of its artifacts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Kept {
@@ -285,8 +290,9 @@ pub trait GitHub {
     /// Create an issue, returning its number.
     ///
     /// # Errors
-    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses, or if it accepts the write but the
-    /// response names no number to read back.
+    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses — a
+    /// body over [`ISSUE_BODY_MAX`] is refused before it is sent — or if it
+    /// accepts the write but the response names no number to read back.
     async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<u64>;
 
     /// Link `child` as a sub-issue of `parent`.

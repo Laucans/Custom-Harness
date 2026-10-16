@@ -511,11 +511,39 @@ impl Mockups for GitMockups {
         };
         Self::at(&folder, &["commit", "--quiet", "-m", &message])?;
         let spec = format!("HEAD:refs/heads/{branch}");
-        Self::at(&folder, &["push", "--quiet", "origin", &spec])?;
-        // The mirror learns the new head on its next fetch; the worktree
-        // already sits on it, detached.
-        let out = Self::at(&folder, &["rev-parse", "HEAD"])?;
-        Ok(String::from_utf8_lossy(&out).trim().to_string())
+        let fetch = format!("+refs/heads/{branch}:refs/heads/{branch}");
+        let mut last = String::new();
+        for _ in 0..CARRY_ATTEMPTS {
+            match Self::at(&folder, &["push", "--quiet", "origin", &spec]) {
+                Ok(_) => {
+                    // The mirror learns the new head on its next fetch; the
+                    // worktree already sits on it, detached.
+                    let out = Self::at(&folder, &["rev-parse", "HEAD"])?;
+                    return Ok(String::from_utf8_lossy(&out).trim().to_string());
+                }
+                // The branch moved since the workspace was made (a carry, an
+                // earlier attempt): the commit goes on top of it, and again.
+                Err(why) => {
+                    last = why;
+                    if self
+                        .mirror
+                        .git(&["fetch", "--quiet", "origin", &fetch], None)
+                        .is_err()
+                        || Self::at(
+                            &folder,
+                            &["rebase", "--quiet", &format!("refs/heads/{branch}")],
+                        )
+                        .is_err()
+                    {
+                        let _ = Self::at(&folder, &["rebase", "--abort"]);
+                        break;
+                    }
+                }
+            }
+        }
+        // Not pushed: the change uncommitted again, for a save aside.
+        Self::at(&folder, &["reset", "--quiet", "--soft", "HEAD~1"])?;
+        Err(last)
     }
 
     fn carry(
@@ -1184,6 +1212,95 @@ mod tests {
         let written = fs::read_to_string(dir.join(mockup::slug("main_agent")).join("ports.json"));
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(written.expect("there"), "{}");
+    }
+
+    #[test]
+    fn a_publish_onto_a_branch_that_moved_goes_on_top_and_a_conflict_stays_to_save() {
+        let dir = std::env::temp_dir().join(format!("harness-view-moved-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let origin = dir.join("origin.git");
+        let work = dir.join("work");
+        let other = dir.join("other");
+        fs::create_dir_all(work.join("mock")).expect("dir");
+        let git = |at: &Path, args: &[&str]| -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(at)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let who = |at: &Path| {
+            for (key, value) in [
+                ("user.name", "t"),
+                ("user.email", "t@t"),
+                ("commit.gpgsign", "false"),
+            ] {
+                git(at, &["config", key, value]);
+            }
+        };
+        git(
+            &dir,
+            &["init", "-q", "--bare", "-b", "main_agent", "origin.git"],
+        );
+        git(&work, &["init", "-q", "-b", "main_agent"]);
+        who(&work);
+        git(
+            &work,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        fs::write(work.join("mock/pages.json"), "{}").expect("write");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-q", "-m", "base"]);
+        git(&work, &["push", "-q", "origin", "main_agent"]);
+        git(&work, &["checkout", "-q", "--detach"]);
+        git(&dir, &["clone", "-q", &origin.to_string_lossy(), "other"]);
+        who(&other);
+        let mockups = GitMockups::new(Arc::new(Mirror::local(&work)), &dir.join("ws"));
+        mockups.workspace("main_agent").expect("a workspace");
+        // Someone else moves the branch: a carry, an earlier attempt.
+        fs::write(other.join("design.txt"), "carried").expect("write");
+        git(&other, &["add", "."]);
+        git(&other, &["commit", "-q", "-m", "carried"]);
+        git(&other, &["push", "-q", "origin", "main_agent"]);
+        mockups
+            .write("main_agent", "proof-of-concept.md", b"record")
+            .expect("written");
+        let published = mockups
+            .publish("main_agent", "mock: record")
+            .expect("on top");
+        assert_eq!(git(&origin, &["rev-parse", "main_agent"]), published);
+        assert_eq!(
+            git(&origin, &["show", "main_agent:design.txt"]),
+            "carried",
+            "what moved the branch is kept"
+        );
+        assert_eq!(
+            git(&origin, &["show", "main_agent:mock/proof-of-concept.md"]),
+            "record"
+        );
+        // The same file changed both sides: nothing pushed, the change
+        // uncommitted again, so it can be saved aside.
+        git(&other, &["pull", "-q", "origin", "main_agent"]);
+        fs::write(other.join("mock/proof-of-concept.md"), "theirs").expect("write");
+        git(&other, &["commit", "-q", "-am", "theirs"]);
+        git(&other, &["push", "-q", "origin", "main_agent"]);
+        let theirs = git(&origin, &["rev-parse", "main_agent"]);
+        mockups
+            .write("main_agent", "proof-of-concept.md", b"ours")
+            .expect("written");
+        let refused = mockups.publish("main_agent", "mock: ours");
+        let edited = mockups.state("main_agent").map(|s| s.edited);
+        let _ = fs::remove_dir_all(&dir);
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(edited, Ok(true), "left to save aside");
+        assert!(!theirs.is_empty());
     }
 
     #[test]

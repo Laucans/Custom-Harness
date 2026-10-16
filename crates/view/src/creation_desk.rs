@@ -1772,17 +1772,16 @@ impl CreationDesk {
     /// in development waits on them — the tests run on the fakes — but the
     /// product reaches no provider without them.
     async fn open_secret_tasks(&self, record: &Creation) -> Result<(), String> {
-        if !record.secrets_issues.is_empty() {
-            return Ok(());
-        }
         let (Some(data), Some(ports)) = (self.setup.data.clone(), record.ports.as_ref()) else {
             return Ok(());
         };
-        let mut opened = Vec::new();
+        // Each kept as soon as it is opened: an attempt that stops halfway
+        // is taken up where it stopped, nothing opened twice.
         for port in ports
             .ports
             .iter()
             .filter(|p| !p.secrets.is_empty() && p.id != "database")
+            .skip(record.secrets_issues.len())
         {
             self.step(&format!("asking for the secrets of the {} port", port.id));
             let url = data
@@ -1795,12 +1794,12 @@ impl CreationDesk {
                     labels: vec![labels::HUMAN.to_string()],
                 })
                 .await?;
-            opened.push(url);
+            let _held = self.record.lock().await;
+            let mut kept = self.existing()?;
+            kept.secrets_issues.push(url);
+            self.keep(&kept)?;
         }
-        let _held = self.record.lock().await;
-        let mut kept = self.existing()?;
-        kept.secrets_issues = opened;
-        self.keep(&kept)
+        Ok(())
     }
 
     /// The rules' task, opened once, first of the roadmap: the rules and
@@ -1911,7 +1910,7 @@ impl CreationDesk {
             creation::RECORD_JSON
         ));
         let json = creation::record_json(record, ctx)?;
-        let (_, md) = creation::roadmap_issue(record, ctx);
+        let md = creation::roadmap_record(record, ctx);
         let data = match &record.data {
             Some(d) => Some((
                 d.model_json()?,
@@ -1980,6 +1979,10 @@ impl CreationDesk {
         self.step(&format!("the mock-up: {said}"));
         let _held = self.record.lock().await;
         let mut kept = self.existing()?;
+        // Published by an earlier attempt, nothing new since: its commit stays.
+        if place == self.setup.integration_branch && !kept.mockup_at.is_empty() {
+            return Ok(());
+        }
         kept.mockup_at = place;
         self.keep(&kept)
     }
@@ -2000,9 +2003,10 @@ impl CreationDesk {
                 let short = published.commit.get(..10).unwrap_or(&published.commit);
                 (short.to_string(), published.refused)
             }
+            // Published by an earlier attempt, nothing new: what it kept stays.
             Err(why) => {
                 self.step(&format!("the design system stays as it is: {why}"));
-                (String::new(), String::new())
+                return Ok(());
             }
         };
         let _held = self.record.lock().await;
@@ -3882,6 +3886,13 @@ mod tests {
             desk.finish().await,
             Err("initialize the factory first".to_string())
         );
+        // Taken up again from its failure: what the first attempt kept stays.
+        desk.accept().await.expect("accepted again");
+        let again = settled(desk).await;
+        assert_eq!((again.work, again.state), (Work::Initialize, State::Failed));
+        let kept = desk.record().expect("read").expect("a record");
+        assert_eq!(kept.mockup_at, after.mockup_at, "{:?}", again.steps);
+        assert_eq!(kept.design_at, after.design_at, "{:?}", again.steps);
     }
 
     #[tokio::test]
@@ -4693,9 +4704,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A board that keeps the issues opened on it.
+    /// A board that keeps the issues opened on it — and refuses, once, the
+    /// one whose number is set.
     #[derive(Default)]
-    struct Board(Mutex<Vec<(String, String, Vec<String>)>>);
+    struct Board(
+        Mutex<Vec<(String, String, Vec<String>)>>,
+        std::cell::Cell<Option<usize>>,
+    );
 
     #[async_trait::async_trait(?Send)]
     impl crate::ports::Product for Board {
@@ -4721,6 +4736,11 @@ mod tests {
                 ));
                 opened.len()
             };
+            if self.1.get() == Some(count) {
+                self.1.set(None);
+                self.0.lock().expect("a board").pop();
+                return Err(Halt::Halted("GitHub refused".to_string()));
+            }
             Ok(format!("https://github.com/me/alpha/issues/{count}"))
         }
     }
@@ -4793,5 +4813,83 @@ mod tests {
         assert_eq!(title, "Provide the secrets of the mail port (Postmark)");
         assert!(body.contains("POSTMARK_TOKEN"), "{body}");
         assert_eq!(labels, &vec![labels::HUMAN.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn the_secrets_tasks_stopped_halfway_are_taken_up_where_they_stopped() {
+        use crate::domain::ports_draft::{PortDraft, PortsDraft};
+        let board = std::rc::Rc::new(Board::default());
+        board.1.set(Some(2));
+        let shared = std::rc::Rc::clone(&board);
+        tokio::task::LocalSet::new()
+            .run_until(async move {
+                let (data, task) = crate::data_desk::open(
+                    shared as std::rc::Rc<dyn crate::ports::Product>,
+                    Duration::from_secs(60),
+                    jiff::tz::TimeZone::UTC,
+                );
+                let task = tokio::task::spawn_local(task);
+                let port = |id: &str, secret: &str| PortDraft {
+                    id: id.to_string(),
+                    provider: "P".to_string(),
+                    secrets: vec![secret.to_string()],
+                    ..PortDraft::default()
+                };
+                let mut record = Creation::new("alpha", "me/alpha");
+                record.ports = Some(PortsDraft {
+                    ports: vec![port("mail", "MAIL_TOKEN"), port("sms", "SMS_TOKEN")],
+                    ..PortsDraft::default()
+                });
+                let book = Arc::new(Book::default());
+                book.keep_creation("alpha", &serde_json::to_string(&record).expect("json"))
+                    .expect("kept");
+                let desk = CreationDesk::new(Setup {
+                    register: book,
+                    factory: "alpha".to_string(),
+                    foundry: Arc::new(Nothing),
+                    factories_dir: std::env::temp_dir(),
+                    integration_branch: "main_agent".to_string(),
+                    oneshot: None,
+                    model: "m".to_string(),
+                    draw_model: "d".to_string(),
+                    sessions: 2,
+                    mockups: None,
+                    kit: None,
+                    data: Some(data),
+                    plant: None,
+                    pins: None,
+                });
+                let record = desk.existing().expect("a creation");
+                assert!(
+                    desk.open_secret_tasks(&record).await.is_err(),
+                    "the second refused"
+                );
+                let halfway = desk.existing().expect("a creation");
+                assert_eq!(
+                    halfway.secrets_issues,
+                    vec!["https://github.com/me/alpha/issues/1".to_string()],
+                    "the first is kept"
+                );
+                desk.open_secret_tasks(&halfway).await.expect("taken up");
+                let done = desk.existing().expect("a creation");
+                assert_eq!(done.secrets_issues.len(), 2);
+                task.abort();
+            })
+            .await;
+        let titles: Vec<String> = board
+            .0
+            .lock()
+            .expect("a board")
+            .iter()
+            .map(|(t, _, _)| t.clone())
+            .collect();
+        assert_eq!(
+            titles,
+            vec![
+                "Provide the secrets of the mail port (P)".to_string(),
+                "Provide the secrets of the sms port (P)".to_string()
+            ],
+            "nothing opened twice"
+        );
     }
 }

@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::shell::process;
 use harness_core::domain::{Halt, Issue, Outcome, Pr};
-use harness_core::ports::shell::github::{Activity, GitHub, Kept};
+use harness_core::ports::shell::github::{Activity, GitHub, ISSUE_BODY_MAX, Kept};
 use harness_core::ports::shell::process::Ran;
 
 /// The called binary.
@@ -40,6 +40,38 @@ const PER_PAGE: u32 = 100;
 /// Beyond that, the read fails rather than return a truncated list: truncated,
 /// it reads as a complete list.
 const MAX_PAGES: u32 = 10;
+
+/// Why GitHub refused a write: `gh`'s last line (`Validation Failed (HTTP
+/// 422)`) and, when the response body says more, GitHub's own reasons
+/// (`body is too long (maximum is 65536 characters)`).
+fn refusal(why: &str, response: &str) -> String {
+    let Ok(payload) = serde_json::from_str::<Value>(response) else {
+        return why.to_string();
+    };
+    let reasons: Vec<String> = payload
+        .get("errors")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| match e {
+            Value::String(text) => Some(text.clone()),
+            _ => e
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    let field = e.get("field").and_then(Value::as_str)?;
+                    let code = e.get("code").and_then(Value::as_str).unwrap_or("invalid");
+                    Some(format!("{field}: {code}"))
+                }),
+        })
+        .collect();
+    if reasons.is_empty() {
+        why.to_string()
+    } else {
+        format!("{why} — {}", reasons.join("; "))
+    }
+}
 
 /// A failed read, stated rather than returned empty.
 fn unreadable(what: &str, detail: &str) -> Halt {
@@ -357,7 +389,7 @@ impl GhCli {
             "GitHub refused to {what} ({method} {url}): {}. Nothing is retried \
              and nothing is undone here — a partially applied change is easier \
              to finish by hand than to guess.",
-            ran.why()
+            refusal(&ran.why(), ran.out())
         )))
     }
 
@@ -419,7 +451,7 @@ impl GhCli {
                 "GitHub refused to {what} (POST {url}): {}. Nothing is retried \
                  and nothing is undone here — a partially applied change is \
                  easier to finish by hand than to guess.",
-                ran.why()
+                refusal(&ran.why(), ran.out())
             )));
         }
         serde_json::from_str(ran.out())
@@ -450,7 +482,7 @@ impl GhCli {
             "GitHub refused to {what} (POST {url}): {}. Nothing is retried \
              and nothing is undone here — a partially applied change is \
              easier to finish by hand than to guess.",
-            ran.why()
+            refusal(&ran.why(), ran.out())
         )))
     }
 
@@ -941,6 +973,13 @@ impl GitHub for GhCli {
     }
 
     async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<u64> {
+        let length = body.chars().count();
+        if length > ISSUE_BODY_MAX {
+            return Err(Halt::Halted(format!(
+                "the issue `{title}` was not sent: its body is {length} characters, GitHub \
+                 takes at most {ISSUE_BODY_MAX}"
+            )));
+        }
         let mut fields = vec![("title", title.to_string()), ("body", body.to_string())];
         for label in labels {
             fields.push(("labels[]", (*label).to_string()));
@@ -1249,6 +1288,36 @@ fn activity_from(ran: &Ran) -> Outcome<Activity> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_refusal_says_github_s_own_reasons_when_the_response_has_them() {
+        let why = "gh: Validation Failed (HTTP 422)";
+        let long = r#"{"message": "Validation Failed", "errors": [{"resource": "Issue", "code": "custom", "field": "body", "message": "body is too long (maximum is 65536 characters)"}]}"#;
+        assert_eq!(
+            super::refusal(why, long),
+            "gh: Validation Failed (HTTP 422) — body is too long (maximum is 65536 characters)"
+        );
+        let coded = r#"{"errors": [{"field": "title", "code": "missing_field"}, "a plain one"]}"#;
+        assert_eq!(
+            super::refusal(why, coded),
+            "gh: Validation Failed (HTTP 422) — title: missing_field; a plain one"
+        );
+        assert_eq!(super::refusal(why, ""), why, "no body, gh's line");
+        assert_eq!(super::refusal(why, r#"{"message": "x"}"#), why);
+    }
+
+    #[tokio::test]
+    async fn an_issue_body_over_github_s_limit_is_refused_before_it_is_sent() {
+        use harness_core::ports::shell::github::GitHub as _;
+        // No repository there: anything sent would fail otherwise.
+        let gh = super::GhCli::new(std::path::Path::new("/nonexistent"));
+        let body = "é".repeat(super::ISSUE_BODY_MAX + 1);
+        let Err(super::Halt::Halted(why)) = gh.create_issue("Roadmap", &body, &[]).await else {
+            panic!("refused as halted");
+        };
+        assert!(why.contains("65537 characters"), "{why}");
+        assert!(why.contains("at most 65536"), "{why}");
+    }
+
     #[test]
     fn the_latest_run_is_read_from_the_list_and_none_when_it_is_empty() {
         let listed = r#"[{"databaseId": 42, "url": "https://github.com/o/r/actions/runs/42", "updatedAt": "2026-10-14T10:00:00Z"}]"#;

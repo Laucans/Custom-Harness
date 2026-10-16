@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
+use harness_core::ports::shell::github::ISSUE_BODY_MAX;
 use serde::{Deserialize, Serialize};
 
 use super::audit::Audit;
@@ -2278,13 +2279,79 @@ fn design_section(c: &Creation, design: &DesignRef) -> String {
     body
 }
 
-/// The roadmap task the factory starts on: the proof of concept as decided
-/// — the brief, the decisions, the scope, the requirements — with the pages
-/// that mock it, the micro-frontends and the Capabilities they name, the
-/// design system, and the pins left on the mock-up.
+/// The proof of concept as decided, whole — the brief, the decisions, the
+/// scope, every rule — with the pages that mock it, the micro-frontends and
+/// the Capabilities they name, the design system, and the pins left on the
+/// mock-up: what `mock/proof-of-concept.md` keeps in the repository.
+#[must_use]
+pub fn roadmap_record(c: &Creation, ctx: &Context) -> String {
+    roadmap_body(c, ctx, &rules_section(c))
+}
+
+/// The roadmap task the factory starts on: the record, lighter — the rules
+/// only counted, since the rules' task carries them and each milestone
+/// names the ones it turns green — and fit under what GitHub takes, the
+/// longest sections pointing at the record when it is still too long.
 #[must_use]
 pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
     let title = format!("Proof of concept — {}", c.name);
+    let whole = format!("`mock/{RECORD_MD}` {}", mockup_place(c));
+    let body = roadmap_body(c, ctx, &rules_pointer(c));
+    (title, fit_issue_body(&body, ISSUE_BUDGET, &whole))
+}
+
+/// What a body is fit under: GitHub's limit, less a margin for the
+/// characters it counts twice.
+const ISSUE_BUDGET: usize = ISSUE_BODY_MAX / 10 * 9;
+
+/// `body` as it is when it fits in `max` characters; otherwise its longest
+/// `## ` sections, one after the other, folded to their heading and a line
+/// saying where they lie whole (`whole`), and as a last resort the end cut.
+#[must_use]
+pub fn fit_issue_body(body: &str, max: usize, whole: &str) -> String {
+    let count = |text: &str| text.chars().count();
+    if count(body) <= max {
+        return body.to_string();
+    }
+    // The preamble, then one part per `## ` section.
+    let mut parts = vec![String::new()];
+    for line in body.split_inclusive('\n') {
+        if line.starts_with("## ") {
+            parts.push(String::new());
+        }
+        if let Some(last) = parts.last_mut() {
+            last.push_str(line);
+        }
+    }
+    let mut folded = vec![false; parts.len()];
+    while parts.iter().map(|p| count(p)).sum::<usize>() > max {
+        let Some(i) = (1..parts.len())
+            .filter(|&i| !folded[i])
+            .max_by_key(|&i| count(&parts[i]))
+        else {
+            break;
+        };
+        let heading = parts[i].lines().next().unwrap_or_default().to_string();
+        parts[i] = format!(
+            "{heading}\n\nToo long to stand in this issue ({} characters): read it whole in {whole}.\n\n",
+            count(&parts[i])
+        );
+        folded[i] = true;
+    }
+    let fitted = parts.concat();
+    if count(&fitted) <= max {
+        return fitted;
+    }
+    let tail = format!("\n\n… cut here: read it whole in {whole}.\n");
+    let kept: String = fitted
+        .chars()
+        .take(max.saturating_sub(count(&tail)))
+        .collect();
+    kept + &tail
+}
+
+/// The record's body, its rules section as given.
+fn roadmap_body(c: &Creation, ctx: &Context, rules: &str) -> String {
     let mut body = format!(
         "The proof of concept of `{name}`, as decided when the factory was created. \
          The whole record is `mock/{record}` {place}.\n\n\
@@ -2318,7 +2385,7 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
             }
         }
     }
-    body.push_str(&rules_section(c));
+    body.push_str(rules);
     body.push_str(&data_section(c));
     body.push_str(&ports_section(c));
     if !ctx.pages.is_empty() {
@@ -2373,7 +2440,7 @@ pub fn roadmap_issue(c: &Creation, ctx: &Context) -> (String, String) {
             let _ = writeln!(body, ": {}", p.text.trim().replace('\n', " "));
         }
     }
-    (title, body)
+    body
 }
 
 /// The ports, as the roadmap task names them: each dependency outside the
@@ -2642,6 +2709,31 @@ pub fn rules_issue(c: &Creation) -> Result<(String, String), String> {
 
 /// The rules, as the roadmap task lists them: each with its family, what it
 /// asks for, its criterion and what carries it. Empty when there is none.
+/// The rules, as the roadmap task names them: counted, where they are.
+fn rules_pointer(c: &Creation) -> String {
+    if c.requirements.is_empty() {
+        return String::new();
+    }
+    let journeys = c
+        .requirements
+        .iter()
+        .filter(|r| r.family == Family::Journey)
+        .count();
+    let tasked = if c.rules_issue.is_empty() {
+        "the rules' task".to_string()
+    } else {
+        format!("the rules' task ({})", c.rules_issue)
+    };
+    format!(
+        "\n## Rules\n\n{} rule{} ({journeys} journey, {} business), carried by {tasked}, which \
+         writes them in `rules.json` with their tests: each milestone names the ones it turns \
+         green. Every rule in full: `mock/{RECORD_MD}`.\n",
+        c.requirements.len(),
+        if c.requirements.len() == 1 { "" } else { "s" },
+        c.requirements.len() - journeys,
+    )
+}
+
 fn rules_section(c: &Creation) -> String {
     let mut body = String::new();
     if c.requirements.is_empty() {
@@ -4136,6 +4228,45 @@ mod tests {
     }
 
     #[test]
+    fn a_body_that_fits_is_kept_and_a_long_one_folds_its_longest_sections_first() {
+        let body = format!(
+            "intro\n\n## Short\n\nshort\n\n## Long\n\n{}\n\n## Middle\n\n{}\n",
+            "l".repeat(400),
+            "m".repeat(200)
+        );
+        assert_eq!(fit_issue_body(&body, 10_000, "`x.md`"), body);
+        let fitted = fit_issue_body(&body, 400, "`x.md`");
+        assert!(fitted.chars().count() <= 400, "{fitted}");
+        assert!(fitted.starts_with("intro\n\n## Short\n\nshort\n\n## Long\n\nToo long to stand in this issue (411 characters): read it whole in `x.md`."), "{fitted}");
+        assert!(
+            fitted.contains(&"m".repeat(200)),
+            "the next longest stays while it fits"
+        );
+        // A preamble alone too long: the end is cut, the pointer kept.
+        let cut = fit_issue_body(&"é".repeat(500), 100, "`x.md`");
+        assert_eq!(cut.chars().count(), 100);
+        assert!(cut.ends_with("read it whole in `x.md`.\n"), "{cut}");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_fitted_body_never_passes_the_limit(
+            sections in proptest::collection::vec(("[a-z]{1,8}", "[a-zé \n]{0,300}"), 0..12),
+            max in 120usize..2_000,
+        ) {
+            let body = sections.iter().fold(String::new(), |mut body, (h, t)| {
+                let _ = write!(body, "## {h}\n\n{t}\n");
+                body
+            });
+            let fitted = fit_issue_body(&body, max, "`mock/proof-of-concept.md`");
+            proptest::prop_assert!(fitted.chars().count() <= max);
+            if body.chars().count() <= max {
+                proptest::prop_assert_eq!(fitted, body);
+            }
+        }
+    }
+
+    #[test]
     fn the_roadmap_issue_carries_the_decisions_the_requirements_and_the_mock_up() {
         let mut c = ready();
         c.questions[0].body = "the client or the bank?".to_string();
@@ -4182,7 +4313,12 @@ mod tests {
         let (title, body) = roadmap_issue(&c, &ctx);
         assert_eq!(title, "Proof of concept — app");
         assert!(body.contains("- **q1** — yes\n  (asked: the client or the bank?)"));
-        assert!(body.contains("- **R3 Pay an invoice** (business) — The client pays from its list — criterion: given an invoice due; when the client pays; then it is settled — on `mock/pages/home.html`, `InvoiceList`"));
+        let rule = "- **R3 Pay an invoice** (business) — The client pays from its list — criterion: given an invoice due; when the client pays; then it is settled — on `mock/pages/home.html`, `InvoiceList`";
+        assert!(
+            roadmap_record(&c, &ctx).contains(rule) && !body.contains(rule),
+            "the record keeps every rule, the issue counts them"
+        );
+        assert!(body.contains("\n## Rules\n\n1 rule (0 journey, 1 business), carried by the rules' task, which writes them in `rules.json`"), "{body}");
         assert!(body.contains("- Home — `mock/pages/home.html` — see the invoices"));
         assert!(body.contains("- **InvoiceList** (billing) — the invoices — needs billing.listInvoices — actions billing.payInvoice"));
         assert!(body.contains("(`main_agent@abcdef0123`)"));
