@@ -66,6 +66,7 @@ pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<DraftState>> {
             pre: None,
             post: None,
             body: StageBody::Session {
+                turn_cap: None,
                 spec: config.spec.clone(),
                 sessions: Rc::clone(&ports.sessions),
                 actions: vec![Box::new(AskDraft {

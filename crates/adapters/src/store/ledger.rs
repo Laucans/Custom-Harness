@@ -216,6 +216,33 @@ impl Ledger {
         Ok(breaker::trailing_failures(&outcomes))
     }
 
+    /// The session a previous run left interrupted on this stage of this
+    /// task: the last row of the pair, when its outcome is a quota and it
+    /// names a session.
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Unreadable`] if the ledger exists and cannot be read.
+    pub fn interrupted(&self, task: &str, stage: &str) -> Outcome<Option<String>> {
+        let columns = columns();
+        let at = |name: &str| columns.iter().position(|column| *column == name);
+        let (Some(task_at), Some(stage_at), Some(outcome_at), Some(session_at)) =
+            (at("task"), at("stage"), at("outcome"), at("session"))
+        else {
+            return Ok(None);
+        };
+        let rows = self.rows()?;
+        let last = rows.iter().rfind(|row| {
+            let cell = |at: usize| row.get(at).map_or("", String::as_str);
+            cell(task_at) == task && cell(stage_at) == stage
+        });
+        Ok(last.and_then(|row| {
+            let cell = |at: usize| row.get(at).map_or("", String::as_str);
+            (cell(outcome_at) == breaker::QUOTA && !cell(session_at).is_empty())
+                .then(|| cell(session_at).to_string())
+        }))
+    }
+
     fn wrote_nothing(&self, err: &std::io::Error) -> Halt {
         Halt::Failed(format!(
             "cannot write ledger {} ({err}) — this stage's spending is not \
@@ -385,6 +412,56 @@ mod tests {
             fingerprint: fingerprint.to_string(),
             ..row()
         }
+    }
+
+    /// A row of task 42's `code` with this outcome, naming this session.
+    fn ended(outcome: &str, session: &str) -> Row {
+        let mut row = attempt(outcome, "deadbeefdeadbeef");
+        row.spend.session = (!session.is_empty()).then(|| session.to_string());
+        row
+    }
+
+    #[test]
+    fn the_last_quota_cut_on_a_stage_names_the_session_to_resume() {
+        let dir = Dir::new("interrupted");
+        let ledger = dir.ledger();
+        assert_eq!(
+            ledger.interrupted("42", "code").expect("read"),
+            None,
+            "no ledger"
+        );
+        ledger.append(&ended("ok", "sess-1")).expect("a row");
+        ledger
+            .append(&ended(breaker::QUOTA, "sess-cut"))
+            .expect("a row");
+        assert_eq!(
+            ledger.interrupted("42", "code").expect("read").as_deref(),
+            Some("sess-cut")
+        );
+        assert_eq!(
+            ledger.interrupted("43", "code").expect("read"),
+            None,
+            "another task"
+        );
+        assert_eq!(
+            ledger.interrupted("42", "create-test").expect("read"),
+            None,
+            "another stage"
+        );
+        // A row of another stage after the cut does not hide it.
+        let mut other = ended("ok", "sess-2");
+        other.stage = "create-test".to_string();
+        ledger.append(&other).expect("a row");
+        assert_eq!(
+            ledger.interrupted("42", "code").expect("read").as_deref(),
+            Some("sess-cut")
+        );
+        // Run again and finished: nothing left to resume.
+        ledger.append(&ended("ok", "sess-cut")).expect("a row");
+        assert_eq!(ledger.interrupted("42", "code").expect("read"), None);
+        // A cut that named no session has nothing to resume.
+        ledger.append(&ended(breaker::QUOTA, "")).expect("a row");
+        assert_eq!(ledger.interrupted("42", "code").expect("read"), None);
     }
 
     #[test]

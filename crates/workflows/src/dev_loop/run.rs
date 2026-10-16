@@ -221,6 +221,7 @@ fn rounds(
                 resuming: if turn == 1 { resuming.clone() } else { None },
                 wanted,
                 data_layer: config.data_layer_spec(),
+                spending: Rc::clone(&ports.spending),
             },
             stages: stages::table(&ports, &config, turn),
             delivered: MarkWaitingMerge {

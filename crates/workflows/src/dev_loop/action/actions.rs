@@ -67,11 +67,20 @@ pub struct PickTask {
     /// What every stage of the round opens with when the task carries
     /// `harness:data-layer` — the strongest model, for the data design.
     pub data_layer: harness_core::ports::agent::SessionSpec,
+    /// What remembers a stage a previous run left interrupted on the task,
+    /// so this run resumes its session rather than paying the turns again.
+    pub spending: Rc<dyn Spending>,
 }
+
+/// The stages whose interrupted session is worth resuming: the paid ones.
+const RESUMABLE: &[&str] = &["code"];
 
 #[async_trait(?Send)]
 impl Action<Loop> for PickTask {
     async fn run(&self, ctx: &mut Context<Loop>) -> Outcome<Verdict> {
+        // Set on every pick, cleared otherwise: what this round resumes is
+        // the picked task's alone.
+        ctx.resume.clear();
         // One board read per round. The launcher read the resume pointer, not
         // the board: so there aren't two reads that could give different answers.
         let here = board::read(self.gh.as_ref()).await?;
@@ -151,6 +160,17 @@ impl Action<Loop> for PickTask {
                 "data layer — every session of this round opens on {}/{}",
                 spec.model, spec.effort
             ));
+        }
+        // The sessions a quota cut on this task: one per stage, resumed by
+        // the stage runner when it opens that stage.
+        for stage in RESUMABLE {
+            if let Some(id) = self.spending.interrupted(&ctx.state.task_key, stage)? {
+                ctx.traces.say(&format!(
+                    "task {}: stage {stage} was cut short last time — its session {id} will be resumed",
+                    task.reference()
+                ));
+                ctx.resume.insert((*stage).to_string(), id);
+            }
         }
         Ok(Verdict::Continue)
     }
@@ -445,6 +465,8 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+
+            spending: Rc::new(Recorded::default()),
         }
         .run(&mut context)
         .await
@@ -466,11 +488,65 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+
+            spending: Rc::new(Recorded::default()),
         }
         .run(&mut context)
         .await
         .expect("picked");
         assert_eq!(context.session_spec, None, "cleared on every pick");
+    }
+
+    /// A ledger that remembers one session a quota cut, on task 11's `code`.
+    struct CutOn11;
+
+    impl Spending for CutOn11 {
+        fn record(&self, _entry: &Entry<'_>) -> Outcome<()> {
+            Ok(())
+        }
+
+        fn interrupted(&self, task: &str, stage: &str) -> Outcome<Option<String>> {
+            Ok((task == "11" && stage == "code").then(|| "sess-cut".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn picking_a_task_a_quota_cut_resumes_its_session_and_only_its_own() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![milestone(4)],
+            subs: vec![(4, vec![task(11)])],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(Loop::default());
+        context.resume.insert("code".into(), "stale".into());
+        PickTask {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            resuming: None,
+            wanted: None,
+            data_layer: opus_high(),
+            spending: Rc::new(CutOn11),
+        }
+        .run(&mut context)
+        .await
+        .expect("picked");
+        assert_eq!(
+            context.resume.get("code").map(String::as_str),
+            Some("sess-cut"),
+            "{}",
+            context.state.task_key
+        );
+        assert_eq!(context.resume.len(), 1);
+        PickTask {
+            gh,
+            resuming: None,
+            wanted: None,
+            data_layer: opus_high(),
+            spending: Rc::new(Recorded::default()),
+        }
+        .run(&mut context)
+        .await
+        .expect("picked");
+        assert!(context.resume.is_empty(), "cleared on every pick");
     }
 
     #[tokio::test]
@@ -486,6 +562,8 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+
+            spending: Rc::new(Recorded::default()),
         }
         .run(&mut context)
         .await
@@ -514,6 +592,8 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+
+            spending: Rc::new(Recorded::default()),
         }
         .run(&mut context)
         .await
@@ -549,6 +629,8 @@ mod tests {
             resuming: Some("11".to_string()),
             wanted: None,
             data_layer: opus_high(),
+
+            spending: Rc::new(Recorded::default()),
         }
         .run(&mut context)
         .await
@@ -572,6 +654,8 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+
+            spending: Rc::new(Recorded::default()),
         }
         .run(&mut context)
         .await
@@ -594,6 +678,8 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+
+            spending: Rc::new(Recorded::default()),
         }
         .run(&mut context)
         .await
@@ -615,6 +701,8 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+
+            spending: Rc::new(Recorded::default()),
         }
         .run(&mut context)
         .await

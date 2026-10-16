@@ -82,6 +82,10 @@ impl Spending for LedgerSpending {
     fn failures(&self, task: &str, stage: &str, fingerprint: &str) -> Outcome<u32> {
         self.ledger.failures(task, stage, fingerprint)
     }
+
+    fn interrupted(&self, task: &str, stage: &str) -> Outcome<Option<String>> {
+        self.ledger.interrupted(task, stage)
+    }
 }
 
 /// The timestamp, in ISO-8601 UTC to the second.

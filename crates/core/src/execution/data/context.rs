@@ -35,6 +35,11 @@ pub struct Context<S> {
     /// workflow has built one (refinement, after its map). `None`: each
     /// stage opens a fresh session.
     pub base: Option<Base>,
+    /// The conversations to resume, by stage name: a stage whose previous
+    /// run on this task was interrupted (a quota) reopens the same session
+    /// instead of paying its turns again. A workflow fills it when it picks
+    /// a task; the stage runner reads it when it opens the session.
+    pub resume: HashMap<String, String>,
 }
 
 impl<S> Context<S> {
@@ -48,6 +53,7 @@ impl<S> Context<S> {
             results: HashMap::new(),
             session_spec: None,
             base: None,
+            resume: HashMap::new(),
         }
     }
 }

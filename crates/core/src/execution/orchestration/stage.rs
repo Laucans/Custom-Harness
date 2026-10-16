@@ -31,6 +31,10 @@ pub enum StageBody<S> {
         /// In order. Multiple actions in the same session, where Python burned
         /// `/tech-analyst` and `/code` in a single prompt via `StageSpec.lead`.
         actions: Vec<Box<dyn SessionAction<S>>>,
+        /// How many model turns the session may take, at most. `None`: the
+        /// carrier's own limit. The safety net against a stage that loops —
+        /// generous, because a cap hit mid-task wastes every turn before it.
+        turn_cap: Option<u32>,
     },
     /// One or more local calls — nothing is paid.
     Local {
@@ -73,12 +77,24 @@ impl<S> Executable<S> for Stage<S> {
                 spec,
                 sessions,
                 actions,
+                turn_cap,
             } => {
                 ctx.traces.say(&crate::traces::session_opens(&self.name));
                 let spec = ctx.session_spec.as_ref().unwrap_or(spec);
-                let mut backend = match &ctx.base {
-                    Some(base) => sessions.fork(spec, base).await?,
-                    None => sessions.open(spec).await?,
+                let mut backend = if let Some(base) = &ctx.base {
+                    sessions.fork(spec, base).await?
+                } else {
+                    let opening = crate::ports::agent::Opening {
+                        resume: ctx.resume.get(&self.name).cloned(),
+                        max_turns: *turn_cap,
+                    };
+                    if let Some(id) = &opening.resume {
+                        ctx.traces.say(&format!(
+                            "{}: resuming the session {id} a previous run left interrupted",
+                            self.name
+                        ));
+                    }
+                    sessions.open_with(spec, &opening).await?
                 };
                 let mut open = Open {
                     ctx,
@@ -146,6 +162,24 @@ mod tests {
                 from: Some(base.session.clone()),
             }))
         }
+
+        /// Says what it was opened with, when it was told anything.
+        async fn open_with(
+            &self,
+            _spec: &SessionSpec,
+            opening: &crate::ports::agent::Opening,
+        ) -> Outcome<Box<dyn crate::ports::agent::Session>> {
+            let from = (opening.resume.is_some() || opening.max_turns.is_some()).then(|| {
+                format!(
+                    "{} capped {}",
+                    opening.resume.as_deref().unwrap_or("fresh"),
+                    opening
+                        .max_turns
+                        .map_or("never".to_string(), |c| c.to_string())
+                )
+            });
+            Ok(Box::new(FakeSession { from }))
+        }
     }
 
     struct Ask {
@@ -198,6 +232,7 @@ mod tests {
             pre: None,
             post: None,
             body: StageBody::Session {
+                turn_cap: None,
                 spec: SessionSpec {
                     model: "opus".into(),
                     effort: "high".into(),
@@ -224,6 +259,45 @@ mod tests {
         );
     }
 
+    fn capped(name: &str, cap: Option<u32>) -> Stage<Vec<String>> {
+        Stage {
+            name: name.into(),
+            pre: None,
+            post: None,
+            body: StageBody::Session {
+                turn_cap: cap,
+                spec: SessionSpec {
+                    model: "opus".into(),
+                    effort: "high".into(),
+                },
+                sessions: Rc::new(FakeFactory),
+                actions: vec![Box::new(Ask { prompt: "/code" })],
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_stage_resumes_its_interrupted_session_under_its_cap() {
+        let mut context = ctx();
+        context.resume.insert("code".into(), "s-7".into());
+        context.resume.insert("create-test".into(), "s-8".into());
+        capped("code", Some(9)).execute(&mut context).await.unwrap();
+        capped("review", Some(3))
+            .execute(&mut context)
+            .await
+            .unwrap();
+        capped("plain", None).execute(&mut context).await.unwrap();
+        assert_eq!(
+            context.state,
+            vec![
+                "s-7 capped 9 answered /code".to_string(),
+                "fresh capped 3 answered /code".to_string(),
+                "answered /code".to_string(),
+            ],
+            "its own stage's session only, and its own cap"
+        );
+    }
+
     #[tokio::test]
     async fn a_session_stage_branches_from_the_base_the_round_holds() {
         let stage = Stage {
@@ -231,6 +305,7 @@ mod tests {
             pre: None,
             post: None,
             body: StageBody::Session {
+                turn_cap: None,
                 spec: SessionSpec {
                     model: "sonnet".into(),
                     effort: "high".into(),
@@ -273,6 +348,7 @@ mod tests {
             }),
             post: None,
             body: StageBody::Session {
+                turn_cap: None,
                 spec: SessionSpec {
                     model: "opus".into(),
                     effort: "high".into(),

@@ -122,6 +122,7 @@ pub fn fix(ports: &Ports, config: &Config) -> Stage<FixState> {
         }),
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.fix.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskForFix {

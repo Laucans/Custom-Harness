@@ -58,6 +58,22 @@ use crate::prompts;
 /// tests against, the technical sketch where it starts.
 const CODE_SKIPS: &[&str] = &[];
 
+/// How many model turns each paid stage may take, at most.
+///
+/// The safety net against a stage that loops, not a budget: generous,
+/// because a cap hit mid-task wastes every turn before it. Measured: `code`
+/// on #64, the largest task of its series, took 60 turns before its quota
+/// cut.
+const TURN_CAPS: [(&str, u32); 1] = [("code", 250)];
+
+/// The cap of this stage, if it has one.
+fn turn_cap(stage: &str) -> Option<u32> {
+    TURN_CAPS
+        .iter()
+        .find(|(name, _)| *name == stage)
+        .map(|(_, cap)| *cap)
+}
+
 /// How `code` runs the Rust tests of a repository under the
 /// architecture: through the script `init-repo` installs, which the CI runs
 /// too. A task that stays inside Capability crates then waits for their
@@ -310,6 +326,7 @@ impl Paid<'_> {
             stage: self.stage.to_string(),
         })));
         StageBody::Session {
+            turn_cap: turn_cap(self.stage),
             spec: config.spec(self.model, "high"),
             sessions: Rc::clone(&ports.sessions),
             actions,
@@ -515,6 +532,12 @@ mod tests {
             read.contains("gh pr merge --squash"),
             "the read side still merges"
         );
+    }
+
+    #[test]
+    fn the_code_stage_is_capped_and_an_unknown_one_is_not() {
+        assert_eq!(turn_cap("code"), Some(250));
+        assert_eq!(turn_cap("explore"), None);
     }
 
     #[test]

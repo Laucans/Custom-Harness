@@ -201,6 +201,7 @@ pub fn slice(ports: &Ports, config: &Config) -> Stage<SplitState> {
             ],
         }),
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.slice.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskForSlice {

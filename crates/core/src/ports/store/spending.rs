@@ -63,6 +63,21 @@ pub trait Spending {
         Ok(0)
     }
 
+    /// The session a previous run left interrupted on this stage of this
+    /// task — the last row whose outcome is a quota and that names a
+    /// session — so the next run resumes it instead of paying again.
+    ///
+    /// `None` by default: a ledger that keeps nothing remembers no
+    /// interruption, and the stage starts afresh, as it always did.
+    ///
+    /// # Errors
+    ///
+    /// A read failure: an unreadable history is not an empty one.
+    fn interrupted(&self, task: &str, stage: &str) -> Outcome<Option<String>> {
+        let _ = (task, stage);
+        Ok(None)
+    }
+
     /// Keeps the carrier's last view of its rate-limit windows, for the *next*
     /// run's preflight to read.
     ///

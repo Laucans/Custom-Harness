@@ -212,6 +212,7 @@ pub fn write(ports: &Ports, config: &Config) -> Stage<RulesState> {
         }),
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.write.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskToWrite {
@@ -236,6 +237,7 @@ pub fn fidelity(ports: &Ports, config: &Config) -> Stage<RulesState> {
         }),
         post: None,
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.fidelity.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskToJudge {

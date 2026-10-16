@@ -68,7 +68,12 @@ pub async fn ask_and_record<S>(
         .ok()
         .and_then(|reply| markers::stop_line(&reply.text));
     if !dry_run {
-        let blind = Spend::default();
+        // Blind to the cost, not to the conversation: a session cut by a
+        // quota keeps its id, and the next run on this stage resumes it.
+        let blind = Spend {
+            session: open.session.id(),
+            ..Spend::default()
+        };
         let (spend, outcome) = match (&asked, &stopped) {
             (Ok(reply), None) => (&reply.spend, "ok"),
             (Ok(reply), Some(_)) => (&reply.spend, breaker::STOP),
@@ -163,6 +168,7 @@ mod tests {
 
     /// One row, as the in-memory ledger keeps it.
     struct Kept {
+        session: Option<String>,
         outcome: String,
         cost_usd: Option<f64>,
         fingerprint: String,
@@ -179,6 +185,7 @@ mod tests {
     impl Spending for Recorded {
         fn record(&self, entry: &SpendingEntry<'_>) -> Outcome<()> {
             self.rows.borrow_mut().push(Kept {
+                session: entry.spend.session.clone(),
                 outcome: entry.outcome.to_string(),
                 cost_usd: entry.spend.cost_usd,
                 fingerprint: entry.fingerprint.to_string(),
@@ -275,6 +282,46 @@ mod tests {
     async fn a_dead_stage_still_gets_its_line_with_nothing_observed() {
         let (result, _, _) = run(Err(Halt::Quota("exhausted".into())), false).await;
         assert!(matches!(result, Err(Halt::Quota(_))));
+    }
+
+    /// A session a quota cut, which still knows its conversation.
+    struct CutShort;
+
+    #[async_trait(?Send)]
+    impl crate::ports::agent::Session for CutShort {
+        async fn ask(&mut self, _prompt: &str) -> Outcome<Reply> {
+            Err(Halt::Quota("exhausted".into()))
+        }
+
+        fn id(&self) -> Option<String> {
+            Some("sess-cut".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_cut_by_a_quota_is_recorded_with_its_id_to_resume() {
+        let spending = Recorded::default();
+        let mut ctx = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            (),
+            Logbook::null(),
+        );
+        let mut session = CutShort;
+        let result = {
+            let mut open = Open {
+                ctx: &mut ctx,
+                session: &mut session,
+            };
+            ask_and_record(&mut open, "le prompt", "code", 2, "32", &spending).await
+        };
+        assert!(matches!(result, Err(Halt::Quota(_))));
+        let rows = spending.rows.borrow();
+        assert_eq!(rows[0].outcome, breaker::QUOTA);
+        assert_eq!(rows[0].session.as_deref(), Some("sess-cut"));
+        assert_eq!(rows[0].cost_usd, None, "blind to the cost");
     }
 
     #[tokio::test]

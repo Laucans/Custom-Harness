@@ -567,6 +567,7 @@ pub fn entries<S: Explored + 'static>(ports: &Ports, config: &Config) -> [Stage<
             })],
         }),
         body: StageBody::Session {
+            turn_cap: None,
             spec: config.spec.clone(),
             sessions: Rc::clone(&ports.sessions),
             actions: vec![Box::new(AskExplore {
