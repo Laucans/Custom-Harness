@@ -239,6 +239,15 @@ pub enum Event {
         /// The branch it was merged into.
         branch: String,
     },
+    /// A repair found checks failing on a pull request. Kept by check, so
+    /// the rules whose gates fail most can be told apart from the rest.
+    ChecksFailed {
+        /// The pull request (`31`, as the repair names it).
+        pr: String,
+        /// Each failing check as GitHub reports it: its name first, then
+        /// ` — ` and its state, then its link when there is one.
+        checks: Vec<String>,
+    },
     /// A task's pull request still does not merge after every repair it was
     /// given: the decision is the harness's now.
     RepairsExhausted {
@@ -436,6 +445,11 @@ impl Event {
             Self::TaskDelivered { task, pr, branch } => {
                 format!("#{task} delivered by PR {pr}, merged on {branch} — closed")
             }
+            Self::ChecksFailed { pr, checks } => format!(
+                "#{pr}: {} failing check(s) — {}",
+                checks.len(),
+                checks.join("; ")
+            ),
             Self::RepairsExhausted { task, pr, fixes } => format!(
                 "watch: PR {pr} of #{task} -> still blocked after {fixes} repair(s): the harness decides"
             ),
@@ -511,6 +525,27 @@ mod tests {
             Some("split: #3 -> 2 task(s) opened, 1 for a human (#6)")
         );
         assert_eq!(split.level(), Level::Info);
+    }
+
+    #[test]
+    fn failing_checks_keep_the_journal_s_line_and_their_names() {
+        let failed = Event::ChecksFailed {
+            pr: "31".to_string(),
+            checks: vec![
+                "capability-isolation — FAILURE — https://ci/1".to_string(),
+                "pages-mocked — FAILURE".to_string(),
+            ],
+        };
+        assert_eq!(
+            failed.line().as_deref(),
+            Some(
+                "#31: 2 failing check(s) — capability-isolation — FAILURE — https://ci/1; \
+                 pages-mocked — FAILURE"
+            )
+        );
+        assert_eq!(failed.level(), Level::Info);
+        let json = serde_json::to_string(&failed).expect("json");
+        assert!(json.contains("\"event\":\"checks_failed\""), "{json}");
     }
 
     #[test]

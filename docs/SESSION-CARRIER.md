@@ -244,6 +244,30 @@ base, and the steps carry the context themselves, as before.
 Measure it with `scripts/cache-report.sh`: per stage, the share of cache
 writes and the write per session.
 
+Measured on Claude Code 2.1.292, haiku, 2026-10-15, a base primed in one
+directory and forked from it:
+
+- From the same directory, a fork writes 306 tokens: −94% against the base.
+- From another directory (another lane's clone), `--resume` still finds the
+  base — no transcript to copy — but re-sends **that** directory's
+  CLAUDE.md (7.9k tokens written for a 30k-character file): −73%. A base
+  shared by every lane pays CLAUDE.md once per fork, so the product's
+  CLAUDE.md is kept short.
+
+## Which checks fail
+
+A repair keeps every failing check of the pull request it repairs as a
+`checks_failed` event in `.llocal/harness.db`: what tells a rule whose gate
+fails often (worth more detail in CLAUDE.md or its unit's card) from one
+that never does. Grouped by the check's name:
+
+```sh
+sqlite3 -readonly .llocal/harness.db "
+  SELECT substr(c.value, 1, instr(c.value || ' — ', ' — ') - 1) AS name, count(*)
+  FROM events, json_each(events.body, '$.checks') AS c
+  WHERE kind = 'checks_failed' GROUP BY name ORDER BY 2 DESC;"
+```
+
 ## Sources
 
 - [Monitoring — Claude Code Docs](https://code.claude.com/docs/en/monitoring-usage) — `claude_code.cost.usage` (USD), `claude_code.token.usage`, exporteurs locaux

@@ -304,11 +304,13 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::DataModelDiverged { .. }
         | Event::DataModelAgreed { .. } => data(board, event, at),
         // A gate's verdict is the line's business, not a sign: a halt that matters
-        // arrives as the `Halted` event that follows it.
+        // arrives as the `Halted` event that follows it. Failing checks are
+        // being repaired; the repair that gives up says so (`RepairsExhausted`).
         Event::SessionEnded { .. }
         | Event::PreparationTaken { .. }
         | Event::LaneTaken { .. }
-        | Event::GateChecked { .. } => {}
+        | Event::GateChecked { .. }
+        | Event::ChecksFailed { .. } => {}
     }
 }
 

@@ -12,6 +12,7 @@ use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
+use harness_core::traces::Event;
 
 use crate::common::review;
 use crate::pr_fix::data::state::FixState;
@@ -47,11 +48,10 @@ impl Action<FixState> for ReadBreakage {
                 .say(&format!("#{num}: its branch conflicts with its base"));
         }
         if !failing.is_empty() {
-            ctx.traces.say(&format!(
-                "#{num}: {} failing check(s) — {}",
-                failing.len(),
-                failing.join("; ")
-            ));
+            ctx.traces.event(&Event::ChecksFailed {
+                pr: num.clone(),
+                checks: failing.clone(),
+            });
         }
         if blocking {
             ctx.traces
@@ -229,6 +229,59 @@ mod tests {
         ReadBreakage { gh }.run(&mut context).await.expect("read");
         assert_eq!(context.state.failing.len(), 1);
         assert!(context.state.comments.contains("flaky"));
+    }
+
+    /// Keeps the events told, nothing else.
+    #[derive(Default)]
+    struct Kept(std::cell::RefCell<Vec<Event>>);
+
+    impl harness_core::traces::Sink for Kept {
+        fn emit(&self, _line: &str) {}
+        fn record(&self, event: &Event) {
+            self.0.borrow_mut().push(event.clone());
+        }
+    }
+
+    #[tokio::test]
+    async fn failing_checks_are_kept_as_an_event_by_check() {
+        let failing = vec![
+            "capability-isolation — FAILURE — https://x/1".to_string(),
+            "pages-mocked — FAILURE".to_string(),
+        ];
+        let gh = Rc::new(FakeGitHub {
+            failing_checks: HashMap::from([("32".to_string(), failing.clone())]),
+            ..FakeGitHub::default()
+        });
+        let kept = Rc::new(Kept::default());
+        let mut context = ctx();
+        context.traces = Logbook::new(
+            Rc::clone(&kept) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Quiet,
+        );
+        ReadBreakage { gh }.run(&mut context).await.expect("read");
+        assert_eq!(
+            *kept.0.borrow(),
+            vec![Event::ChecksFailed {
+                pr: "32".to_string(),
+                checks: failing,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn green_checks_tell_no_failure() {
+        let gh = Rc::new(FakeGitHub {
+            failing_checks: HashMap::from([("32".to_string(), Vec::new())]),
+            ..FakeGitHub::default()
+        });
+        let kept = Rc::new(Kept::default());
+        let mut context = ctx();
+        context.traces = Logbook::new(
+            Rc::clone(&kept) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Quiet,
+        );
+        ReadBreakage { gh }.run(&mut context).await.expect("read");
+        assert!(kept.0.borrow().is_empty());
     }
 
     #[tokio::test]
