@@ -166,6 +166,20 @@ pub fn sibling(task: &Issue) -> Sibling {
     }
 }
 
+/// The ids a delivered task `produces` — closed, or waiting for merge with
+/// its code on the milestone branch; none for a task still open.
+#[must_use]
+pub fn delivered_ids(task: &Issue) -> Vec<String> {
+    if !task.is_closed() && !task.has(labels::WAITING_MERGE) {
+        return Vec::new();
+    }
+    sections::parse(&task.body)
+        .get(sections::ARCHITECTURE)
+        .and_then(|text| Declaration::parse(text))
+        .map(|declaration| declaration.produces)
+        .unwrap_or_default()
+}
+
 /// The ids a task `produces` and `needs`, as its `## Architecture` names
 /// them; none for a task that declares nothing.
 fn ids_of(body: &str) -> Vec<String> {
@@ -275,6 +289,22 @@ mod tests {
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
             ..Issue::default()
         }
+    }
+
+    #[test]
+    fn only_a_delivered_task_s_produces_count_as_held() {
+        let body = "## Architecture\n\nunit: infrastructure\nsystem: platform\nproduces: database\nneeds: toolchain\n";
+        let with = |state: &str, labels: &[&str]| Issue {
+            state: state.to_string(),
+            body: body.to_string(),
+            ..issue(31, labels)
+        };
+        assert_eq!(delivered_ids(&with("closed", &[])), vec!["database"]);
+        assert_eq!(
+            delivered_ids(&with("open", &[labels::WAITING_MERGE])),
+            vec!["database"]
+        );
+        assert!(delivered_ids(&with("open", &[labels::READY])).is_empty());
     }
 
     #[tokio::test]

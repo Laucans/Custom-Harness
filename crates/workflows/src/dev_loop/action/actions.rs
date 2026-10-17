@@ -93,6 +93,11 @@ impl Action<Loop> for PickTask {
             body: here.milestone.body.clone(),
         };
         ctx.state.siblings = here.tasks.iter().map(hierarchy::sibling).collect();
+        ctx.state.delivered = here
+            .tasks
+            .iter()
+            .flat_map(hierarchy::delivered_ids)
+            .collect();
         ctx.state.roadmap = hierarchy::roadmap_of(self.gh.as_ref(), here.milestone.number).await?;
         ctx.traces.say(&format!(
             "milestone {}: {}",

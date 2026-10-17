@@ -121,14 +121,30 @@ impl Action<Loop> for Narrow {
             graph.as_ref(),
             tree.root_manifest.as_deref(),
         );
-        if !found.missing.is_empty() {
+        // An id a delivered sibling produces is held, whether or not the
+        // tree has a place to index it.
+        let missing: Vec<&String> = found
+            .missing
+            .iter()
+            .filter(|id| {
+                !ctx.state
+                    .delivered
+                    .iter()
+                    .any(|held| held.eq_ignore_ascii_case(id))
+            })
+            .collect();
+        if !missing.is_empty() {
             // Before paying: a session sent to build on an id the checkout
             // does not hold would look for it, then guess.
             return Err(Halt::Halted(format!(
                 "task {} needs {}, which this checkout does not hold — the task that \
                  produces it has not merged, or the id is misspelled in `needs`",
                 ctx.state.task.number,
-                found.missing.join(", ")
+                missing
+                    .iter()
+                    .map(|id| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
         if !found.narrowed {
@@ -396,6 +412,35 @@ mod tests {
         assert!(matches!(err, Halt::Halted(_)));
         assert!(err.reason().contains("orders.list"), "{}", err.reason());
         assert!(!repos.asked("sparse-checkout"));
+    }
+
+    #[tokio::test]
+    async fn a_need_a_delivered_sibling_produces_is_held_though_the_tree_cannot_index_it() {
+        // ForgeDesMondes #32: `needs: database`, produced by #31's
+        // infrastructure, merged into the milestone — no folder says so.
+        let repos = Rc::new(FakeRepos::default());
+        let mut ctx = context(
+            "## Architecture\n\nunit: infrastructure\nsystem: platform\nneeds: database, orders.list\n",
+        );
+        ctx.state.delivered = vec!["Database".to_string()];
+        let err = narrow(&repos, FakeProcess::default())
+            .run(&mut ctx)
+            .await
+            .expect_err("orders.list is still missing");
+        assert!(err.reason().contains("orders.list"), "{}", err.reason());
+        assert!(!err.reason().contains("database"), "{}", err.reason());
+
+        let mut ctx =
+            context("## Architecture\n\nunit: infrastructure\nsystem: platform\nneeds: database\n");
+        ctx.state.delivered = vec!["database".to_string()];
+        let verdict = narrow(
+            &repos,
+            FakeProcess::answering(vec![FakeProcess::ran("", "", 1)]),
+        )
+        .run(&mut ctx)
+        .await
+        .expect("held");
+        assert!(matches!(verdict, Verdict::Continue));
     }
 
     #[tokio::test]

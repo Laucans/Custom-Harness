@@ -23,3 +23,13 @@ carried no `target/` file.
       after several rounds.
 - [ ] A fresh `init-repo` on an empty product writes `.gitignore`; on a
       product with its own, keeps it.
+
+## Also: a need a delivered sibling produces
+
+ForgeDesMondes #32 (`needs: database`) halted before paying: `database` is
+#31's infrastructure, merged into the milestone, but the tree index only
+places vocabulary ids (Capability, aggregate, Micro-UI, Concept, screen).
+Now an id a closed or `waiting-merge` sibling `produces` is held.
+
+- [ ] #32 narrows and runs its `code` stage with no `needs database` halt.
+- [ ] A `needs` on an id no sibling delivered still halts before paying.

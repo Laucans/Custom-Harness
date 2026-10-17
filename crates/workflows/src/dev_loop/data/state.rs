@@ -23,6 +23,11 @@ pub struct Loop {
     pub milestone: Named,
     /// The milestone's tasks, titles and status only.
     pub siblings: Vec<Sibling>,
+    /// The ids the milestone's delivered tasks — closed, or waiting for
+    /// merge — `produce`: their code is on the milestone branch this
+    /// checkout holds, even where the tree has no place to index it (an
+    /// infrastructure's `database`).
+    pub delivered: Vec<String>,
     /// The chosen task. Empty until `pick-task` runs.
     pub task: Named,
     /// The task resume key — its number.
