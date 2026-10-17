@@ -79,7 +79,7 @@ pub(super) async fn run_router_lanes(
     let running = lanes.running();
     let mut splits: Vec<u64> = milestones
         .iter()
-        .filter(|issue| routing::splittable(issue))
+        .filter(|issue| routing::splittable(issue, &milestones))
         .map(|issue| issue.number)
         .filter(|number| !running.contains(number))
         .collect();

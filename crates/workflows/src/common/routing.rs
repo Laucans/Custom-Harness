@@ -209,7 +209,7 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     if let Some(ready) = snapshot
         .milestones
         .iter()
-        .filter(|issue| splittable(issue))
+        .filter(|issue| splittable(issue, &snapshot.milestones))
         .min_by_key(|issue| issue.number)
     {
         return Route::Split {
@@ -291,7 +291,10 @@ pub fn lane_work(snapshot: &Snapshot) -> LaneWork {
             .dev_loop_milestone
             .filter(|_| rules_first(snapshot).is_none()),
         preparation: snapshot.refining.iter().any(Issue::is_open)
-            || snapshot.milestones.iter().any(splittable),
+            || snapshot
+                .milestones
+                .iter()
+                .any(|issue| splittable(issue, &snapshot.milestones)),
     }
 }
 
@@ -496,23 +499,28 @@ pub fn split_candidate(milestone: &Issue) -> bool {
     milestone.is_open() && milestone.has(labels::READY) && !milestone.has(labels::REFINEMENT)
 }
 
-/// Whether this milestone is ready to be split now: a candidate, and every
+/// Whether this milestone is ready to be split now: a candidate, every
 /// milestone it is `blocked_by` delivered — closed, or `waiting-merge` with
-/// its code on the integration branch.
+/// its code on the integration branch — and every milestone before it in
+/// `milestones` (a lower number) delivered too.
 ///
 /// Its tasks are cut against the code the previous milestone leaves: split
-/// before that code exists, they plan for a guess. `milestone.blocked_by`
-/// must have been read ([`GitHub::with_blockers`]); empty reads as nothing
-/// blocking.
+/// before that code exists, they plan for a guess. The planner only chains
+/// milestones that share an aggregate, so a skeleton every later milestone
+/// stands on blocks none of them: the order of the plan is the dependency
+/// it does not write. `milestone.blocked_by` must have been read
+/// ([`GitHub::with_blockers`]); empty reads as nothing blocking.
 ///
 /// [`GitHub::with_blockers`]: harness_core::ports::shell::github::GitHub::with_blockers
 #[must_use]
-pub fn splittable(milestone: &Issue) -> bool {
+pub fn splittable(milestone: &Issue, milestones: &[Issue]) -> bool {
+    let delivered = |other: &Issue| other.is_closed() || other.has(labels::WAITING_MERGE);
     split_candidate(milestone)
-        && milestone
-            .blocked_by
+        && milestone.blocked_by.iter().all(delivered)
+        && milestones
             .iter()
-            .all(|blocker| blocker.is_closed() || blocker.has(labels::WAITING_MERGE))
+            .filter(|other| other.number < milestone.number)
+            .all(delivered)
 }
 
 /// The roadmap item the planner works on: the lowest open one not already
@@ -610,6 +618,34 @@ mod tests {
         assert!(
             !found.milestones[0].has(labels::READY),
             "not marked when refused"
+        );
+    }
+
+    #[test]
+    fn a_milestone_waits_for_the_ones_before_it_to_land_before_its_split() {
+        // ForgeDesMondes: the skeleton (#16) blocked nobody, and #17, #18 were
+        // cut against a repository it had not built yet.
+        let skeleton = issue(16, &[labels::MILESTONE, labels::TRIGGERED]);
+        let next = issue(17, &[labels::MILESTONE, labels::READY]);
+        let mut snapshot = empty();
+        snapshot.milestones = vec![skeleton.clone(), next.clone()];
+        assert!(!splittable(&next, &snapshot.milestones), "#16 still open");
+        assert_ne!(decide(&snapshot), Route::Split { milestone: 17 });
+        let landed = |labels: &[&str], state: &str| Issue {
+            state: state.to_string(),
+            ..issue(16, labels)
+        };
+        for done in [
+            landed(&[labels::MILESTONE, labels::WAITING_MERGE], "open"),
+            landed(&[labels::MILESTONE], "closed"),
+        ] {
+            snapshot.milestones = vec![done, next.clone()];
+            assert!(splittable(&next, &snapshot.milestones), "#16 delivered");
+            assert_eq!(decide(&snapshot), Route::Split { milestone: 17 });
+        }
+        assert!(
+            splittable(&issue(16, &[labels::MILESTONE, labels::READY]), &[next]),
+            "a later one holds nobody"
         );
     }
 
