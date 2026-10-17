@@ -152,10 +152,31 @@ const ENGINE_MANUAL: &str = "/docs/DATA-INTEGRITY.md";
 /// name must be there, so every closure carries it.
 #[must_use]
 pub fn explicit_members(root_manifest: &str) -> Vec<String> {
-    let Some(start) = root_manifest.find("members") else {
+    // Comments dropped first, and the key read where a line starts with it:
+    // a comment naming `workspace-members-by-glob` once made `[workspace]`
+    // read as the array.
+    let code: String = root_manifest
+        .lines()
+        .map(|line| line.split_once('#').map_or(line, |(before, _)| before))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut offset = 0;
+    let mut start = None;
+    for line in code.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed
+            .strip_prefix("members")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+        {
+            start = Some(offset);
+            break;
+        }
+        offset += line.len();
+    }
+    let Some(start) = start else {
         return Vec::new();
     };
-    let after = &root_manifest[start..];
+    let after = &code[start..];
     let Some(open) = after.find('[') else {
         return Vec::new();
     };
@@ -909,6 +930,21 @@ mod tests {
         assert!(
             explicit_members("members = [").is_empty(),
             "unclosed, nothing"
+        );
+    }
+
+    #[test]
+    fn a_comment_naming_members_is_not_read_as_the_key() {
+        // ForgeDesMondes' root manifest, verbatim head: its comment quotes
+        // the gate `workspace-members-by-glob` above `[workspace]`.
+        let toml = "# the two globs: adding one edits no shared file (rule 2, gate\n# `workspace-members-by-glob`). Only the plumbing is named.\n[workspace]\nresolver = \"3\"\nmembers = [\n    \"crates/*/capabilities/*\",\n    \"crates/data\", # the Data layer [plumbing]\n    \"crates/dataguard/server\",\n]\n";
+        assert_eq!(
+            explicit_members(toml),
+            ["crates/data", "crates/dataguard/server"]
+        );
+        assert!(
+            explicit_members("[workspace]\nmembersx = [\"a\"]\n").is_empty(),
+            "another key, nothing"
         );
     }
 

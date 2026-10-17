@@ -33,3 +33,13 @@ Now an id a closed or `waiting-merge` sibling `produces` is held.
 
 - [ ] #32 narrows and runs its `code` stage with no `needs database` halt.
 - [ ] A `needs` on an id no sibling delivered still halts before paying.
+
+## Also: explicit members behind a comment that names them
+
+ForgeDesMondes' root `Cargo.toml` quotes the gate `workspace-members-by-glob`
+in a comment above `[workspace]`; `explicit_members` took the first
+`members` in the text and read `[workspace]` as the array, so no named
+member joined the closure (#32 stopped on `crates/data`, `crates/dataguard/server`).
+
+- [ ] The next infrastructure/Rust task of milestone #16 narrows with
+      `crates/data/` and `crates/dataguard/server/` in its tree note, no stop.
