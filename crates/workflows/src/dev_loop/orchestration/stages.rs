@@ -360,6 +360,7 @@ impl Paid<'_> {
         if narrowed {
             actions.push(Box::new(Unpaid(Widen {
                 repo: Rc::clone(&ports.repo),
+                integration_branch: config.integration_branch.clone(),
             })));
         }
         actions.extend(self.then);

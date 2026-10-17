@@ -206,10 +206,56 @@ impl Action<Loop> for Narrow {
     }
 }
 
-/// Widens the checkout back to the whole tree.
+/// Widens the checkout back to the whole tree, and brings the integration
+/// branch up to its remote when the session left the checkout on it.
+///
+/// A session that merged its pull request on GitHub, then checked out the
+/// integration branch, leaves it where it was before the merge: the
+/// post-gates read that tree, and judged #34's Concept undocumented while
+/// its merged PR documented it.
 pub struct Widen {
     /// The lane's checkout.
     pub repo: Rc<dyn Repo>,
+    /// The branch the task's pull request merges into.
+    pub integration_branch: String,
+}
+
+impl Widen {
+    /// Resets the integration branch to its remote, when the checkout is on
+    /// it and holds no local work; says why not otherwise.
+    async fn follow(&self, ctx: &Context<Loop>) -> Outcome<()> {
+        if self.integration_branch.is_empty()
+            || self.repo.current_branch().await? != self.integration_branch
+        {
+            return Ok(());
+        }
+        if !self.repo.dirty_files().await?.is_empty() {
+            ctx.traces.say(&format!(
+                "tree: {} carries local changes — left as it is",
+                self.integration_branch
+            ));
+            return Ok(());
+        }
+        let fetched = self.repo.fetch().await?;
+        if !fetched.ok() {
+            ctx.traces.say(&format!(
+                "tree: fetch failed, {} not followed",
+                self.integration_branch
+            ));
+            return Ok(());
+        }
+        let reset = self
+            .repo
+            .reset_hard(&format!("origin/{}", self.integration_branch))
+            .await?;
+        if reset.ok() {
+            ctx.traces.say(&format!(
+                "tree: {} follows its remote",
+                self.integration_branch
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
@@ -227,6 +273,7 @@ impl Action<Loop> for Widen {
         }
         ctx.state.tree_note = String::new();
         ctx.traces.say("tree: whole again");
+        self.follow(ctx).await?;
         Ok(Verdict::Continue)
     }
 }
@@ -530,6 +577,7 @@ mod tests {
         ctx.state.tree_note = "- /apps/".to_string();
         Widen {
             repo: repos.at(Path::new("/ws")),
+            integration_branch: String::new(),
         }
         .run(&mut ctx)
         .await
@@ -543,11 +591,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn widening_on_the_integration_branch_brings_it_to_its_remote() {
+        // ForgeDesMondes #34: merged on GitHub, the lane's milestone branch
+        // stayed before the merge and the post-gate read a stale tree.
+        let repos = Rc::new(FakeRepos::default());
+        let mut ctx = context(MICRO_UI);
+        ctx.state.tree_note = "- /concepts/".to_string();
+        Widen {
+            repo: repos.at(Path::new("/ws")),
+            integration_branch: "main_agent".to_string(),
+        }
+        .run(&mut ctx)
+        .await
+        .expect("widened");
+        assert!(repos.asked("fetch"), "{:?}", repos.calls());
+        assert!(
+            repos.asked("reset_hard origin/main_agent"),
+            "{:?}",
+            repos.calls()
+        );
+
+        let repos = Rc::new(FakeRepos::default());
+        ctx.state.tree_note = "- /concepts/".to_string();
+        Widen {
+            repo: repos.at(Path::new("/ws")),
+            integration_branch: "milestone/17".to_string(),
+        }
+        .run(&mut ctx)
+        .await
+        .expect("widened");
+        assert!(
+            !repos.asked("reset_hard"),
+            "another branch: {:?}",
+            repos.calls()
+        );
+    }
+
+    #[tokio::test]
     async fn a_tree_that_was_never_narrowed_is_not_widened() {
         let repos = Rc::new(FakeRepos::default());
         let mut ctx = context(MICRO_UI);
         Widen {
             repo: repos.at(Path::new("/ws")),
+            integration_branch: String::new(),
         }
         .run(&mut ctx)
         .await
