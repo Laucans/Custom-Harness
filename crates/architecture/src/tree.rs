@@ -641,9 +641,12 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
                         crate_.system
                     ));
                 }
-                if strings_of(json, "reads").is_empty() {
+                // A Capability reads the Data through persisted queries, or
+                // the outside through a port (contract Q): one of the two.
+                if strings_of(json, "reads").is_empty() && strings_of(json, "ports").is_empty() {
                     found.push(format!(
-                        "{path} declares no persisted query under `reads` — every read is declared"
+                        "{path} declares no persisted query under `reads` and no port under \
+                         `ports` — every read is declared"
                     ));
                 }
             }
@@ -1607,6 +1610,17 @@ mod tests {
         );
         assert!(found.iter().any(|f| f.contains("`system` is not `credit`")));
         assert!(found.iter().any(|f| f.contains("no persisted query")));
+
+        // ForgeDesMondes #42: what the llm port received, read through it.
+        tree.capabilities[0].manifest = Some(manifest(
+            "crates/credit/capabilities/calculate-risk/capability.json",
+            r#"{"capability":"credit.calculateRisk","system":"credit","reads":[],"ports":["llm"]}"#,
+        ));
+        let found = violations(&tree, None);
+        assert!(
+            !found.iter().any(|f| f.contains("no persisted query")),
+            "{found:?}"
+        );
     }
 
     #[test]
