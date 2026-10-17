@@ -307,6 +307,33 @@ async fn snapshot_data(
     data_snapshot::snapshot_and_check(&pass, Rc::clone(gh), branches, log).await;
 }
 
+/// One of the router's paid routes on a lane (`harness route`): the same
+/// arm the tick runs in its own process, so the review's repair request and
+/// every other effect stay where they are. Exit 0 when it went through, 1
+/// when it halted (recorded as the tick records it).
+pub async fn run_route(args: &crate::cli::RouteArgs, here: &Path) -> std::process::ExitCode {
+    let journal = Workspace::new(here).loop_dir().join("watch.log");
+    let Ok(sink) = Both::new(&journal) else {
+        return std::process::ExitCode::from(2);
+    };
+    let log = Logbook::new(Rc::new(sink) as Rc<dyn Sink>, Verbosity::Normal);
+    let gh = match resolve_gh(&args.watch, here) {
+        Ok(gh) => gh,
+        Err(halt) => {
+            log.error(&format!("route: {}", halt.reason()));
+            return std::process::ExitCode::from(2);
+        }
+    };
+    let route = routes::lane_route(args.kind, args.number, &args.base);
+    match routes::run_on_lane(&args.watch, here, gh.as_ref(), route, &log).await {
+        None => std::process::ExitCode::SUCCESS,
+        Some((workflow, halt)) => {
+            crate::dispatch::doctor::record(here, &spending::run_id(), workflow, &halt);
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+
 /// The `GitHub` used for the routing decision alone — no checkout: a named
 /// target resolves through `gh api` by slug; an unnamed one falls back to
 /// this launch directory's own `origin`, like `dev_loop`'s `--no-workspace`.

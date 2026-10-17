@@ -6,6 +6,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use clap::Parser as _;
+use clap::ValueEnum as _;
 use harness_core::domain::doctor::Repair;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Issue, Outcome, Pr, Verdict};
@@ -18,7 +19,7 @@ use harness_workflows::refinement::data::phase::Phase;
 
 use crate::adapters::sink::Both;
 use crate::adapters::spending;
-use crate::cli::WatchArgs;
+use crate::cli::{RouteKind, WatchArgs};
 use crate::dispatch::lanes::Lanes;
 
 use super::Dispatched;
@@ -44,7 +45,14 @@ pub(super) async fn dispatch(
     } else {
         None
     };
-    let failed = filled.or(dispatched(args, here, gh, route, log).await);
+    // A paid route goes to a free lane under `--parallel`: the tick goes on
+    // filling the others while it runs. With no lane free, it runs here.
+    let on_a_lane = args.parallel > 1 && offload(args, here, &route, lanes, log);
+    let failed = if on_a_lane {
+        filled
+    } else {
+        filled.or(dispatched(args, here, gh, route, log).await)
+    };
     // Recorded before anything is repaired: the record is what the repair
     // reads, and what says — next tick — that it has already been treated.
     let Some((workflow, halt)) = failed else {
@@ -118,24 +126,7 @@ async fn dispatched(
             .await,
             log,
         ),
-        Route::PrFix { pr } => {
-            if let Err(halt) = ask_for_the_repair(gh, &pr, args.dry_run).await {
-                log.error(&format!("watch: pr_fix -> {}", halt.reason()));
-                return Some(("pr_fix", halt));
-            }
-            report_failure(
-                "pr_fix",
-                crate::dispatch::pr_fix::run(
-                    &pr,
-                    here,
-                    &args.target_repo_url,
-                    &args.permission_mode,
-                    args.dry_run,
-                )
-                .await,
-                log,
-            )
-        }
+        Route::PrFix { pr } => fix_here(args, here, gh, &pr, log).await,
         Route::PrReview { pr, base } => report_failure(
             "pr_review",
             crate::dispatch::pr_review::run(
@@ -204,6 +195,33 @@ async fn decide_here(
     )
 }
 
+/// One repair, its request posed first: the label `pr_fix` consumes.
+async fn fix_here(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    pr: &str,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    if let Err(halt) = ask_for_the_repair(gh, pr, args.dry_run).await {
+        log.error(&format!("watch: pr_fix -> {}", halt.reason()));
+        return Some(("pr_fix", halt));
+    }
+    report_failure(
+        "pr_fix",
+        crate::dispatch::pr_fix::run(
+            pr,
+            here,
+            &args.target_repo_url,
+            &args.permission_mode,
+            route_workspace(args),
+            args.dry_run,
+        )
+        .await,
+        log,
+    )
+}
+
 /// One rules' task in this process, in a writable checkout of its own.
 async fn rules_here(
     args: &WatchArgs,
@@ -219,6 +237,7 @@ async fn rules_here(
             &args.target_repo_url,
             &args.branch,
             &args.permission_mode,
+            route_workspace(args),
             args.dry_run,
         )
         .await,
@@ -308,12 +327,142 @@ pub(super) async fn refinement_branch(gh: &dyn GitHub, fallback: &str, task: &Is
     }
 }
 
+/// The route `harness route <kind> <number>` names.
+pub(super) fn lane_route(kind: RouteKind, number: u64, base: &str) -> Route {
+    match kind {
+        RouteKind::Decide => Route::Decide { issue: number },
+        RouteKind::Rules => Route::Rules { issue: number },
+        RouteKind::PrFix => Route::PrFix {
+            pr: number.to_string(),
+        },
+        RouteKind::PrReview => Route::PrReview {
+            pr: number.to_string(),
+            base: base.to_string(),
+        },
+    }
+}
+
+/// What `harness route` runs on its lane: the tick's own arm.
+pub(super) async fn run_on_lane(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    route: Route,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    dispatched(args, here, gh, route, log).await
+}
+
+/// The paid route a lane can take, with what names it there: its kind, the
+/// issue or PR number, and a PR's base. `None` for the routes that stay in
+/// the tick — the merges, the planner, the dev loop.
+fn lane_work(route: &Route) -> Option<(RouteKind, u64, String)> {
+    match route {
+        Route::Decide { issue } => Some((RouteKind::Decide, *issue, String::new())),
+        Route::Rules { issue } => Some((RouteKind::Rules, *issue, String::new())),
+        Route::PrFix { pr } => pr
+            .parse()
+            .ok()
+            .map(|n| (RouteKind::PrFix, n, String::new())),
+        Route::PrReview { pr, base } => pr
+            .parse()
+            .ok()
+            .map(|n| (RouteKind::PrReview, n, base.clone())),
+        _ => None,
+    }
+}
+
+/// `harness route <what> <number>` on lane `slot`, with the watch's own
+/// settings and a checkout of its own.
+fn lane_command(
+    args: &WatchArgs,
+    here: &Path,
+    exe: &Path,
+    what: &str,
+    number: u64,
+    base: &str,
+    slot: usize,
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(exe);
+    command
+        .current_dir(here)
+        .arg("route")
+        .arg(what)
+        .arg(number.to_string())
+        .arg("--route-workspace")
+        .arg(format!("router-lane-{slot}"))
+        .arg("--target-repo-url")
+        .arg(&args.target_repo_url)
+        .arg("--branch")
+        .arg(&args.branch)
+        .arg("--permission-mode")
+        .arg(&args.permission_mode);
+    if !base.is_empty() {
+        command.arg("--base").arg(base);
+    }
+    for (on, flag) in [
+        (args.dry_run, "--dry-run"),
+        (args.no_human_gate, "--no-human-gate"),
+        (args.force_reset, "--force-reset"),
+    ] {
+        if on {
+            command.arg(flag);
+        }
+    }
+    command
+}
+
+/// Starts `route` on a free lane: `true` when it is on one — started now,
+/// or already running from an earlier tick — `false` when it is to run in
+/// the tick (not a lane's, or no lane free).
+fn offload(args: &WatchArgs, here: &Path, route: &Route, lanes: &mut Lanes, log: &Logbook) -> bool {
+    let Some((kind, number, base)) = lane_work(route) else {
+        return false;
+    };
+    let what = kind
+        .to_possible_value()
+        .map_or_else(|| "route".to_string(), |v| v.get_name().to_string());
+    if lanes.running().contains(&number) {
+        log.say(&format!("watch: {what} #{number} is already on a lane"));
+        return true;
+    }
+    let Some(slot) = lanes.free_slot() else {
+        return false;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let command = lane_command(args, here, &exe, &what, number, &base, slot);
+    match lanes.spawn(slot, number, command, here) {
+        Ok(pid) => {
+            log.event(&Event::PreparationTaken {
+                lane: u32::try_from(slot).unwrap_or(u32::MAX),
+                what,
+                issue: number,
+                pid,
+            });
+            true
+        }
+        Err(e) => {
+            log.warn(&format!(
+                "watch: {what} #{number} could not start on a lane: {e}"
+            ));
+            false
+        }
+    }
+}
+
+/// The checkout a route run on a lane was given, if any.
+fn route_workspace(args: &WatchArgs) -> Option<&str> {
+    (!args.route_workspace.is_empty()).then_some(args.route_workspace.as_str())
+}
+
 /// The shared read-only checkout a refinement run in this process reads.
 pub(super) fn shared_checkout(args: &WatchArgs) -> crate::dispatch::shared::Checkout<'_> {
     crate::dispatch::shared::Checkout {
         target_repo_url: &args.target_repo_url,
         branch: &args.branch,
-        workspace: None,
+        workspace: (!args.route_workspace.is_empty()).then_some(args.route_workspace.as_str()),
     }
 }
 
@@ -523,5 +672,137 @@ mod explicit_profile_tests {
         assert!(explicit_profile("small"));
         assert!(!explicit_profile(""));
         assert!(!explicit_profile("   "));
+    }
+}
+
+#[cfg(test)]
+mod lane_route_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    fn watch() -> WatchArgs {
+        match crate::cli::Cli::try_parse_from(["harness", "watch", "--parallel", "3"]) {
+            Ok(crate::cli::Cli {
+                command: Some(crate::cli::Command::Watch(args)),
+                ..
+            }) => args,
+            other => panic!("a watch command line: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_paid_routes_go_to_a_lane_and_come_back_as_they_were() {
+        for route in [
+            Route::Decide { issue: 41 },
+            Route::Rules { issue: 86 },
+            Route::PrFix {
+                pr: "85".to_string(),
+            },
+            Route::PrReview {
+                pr: "77".to_string(),
+                base: "milestone/17-x".to_string(),
+            },
+        ] {
+            let (kind, number, base) = lane_work(&route).expect("a lane's");
+            assert_eq!(lane_route(kind, number, &base), route);
+        }
+        assert_eq!(lane_work(&Route::MergeMainAgent { milestone: 17 }), None);
+        assert_eq!(
+            lane_work(&Route::PrFix {
+                pr: "x".to_string()
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn a_lane_s_command_carries_the_watch_s_settings_and_its_own_checkout() {
+        let mut args = watch();
+        args.no_human_gate = true;
+        let command = lane_command(
+            &args,
+            Path::new("/f"),
+            Path::new("/bin/harness"),
+            "pr-review",
+            77,
+            "milestone/17-x",
+            2,
+        );
+        let said: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = said.join(" ");
+        assert!(
+            joined.starts_with("route pr-review 77 --route-workspace router-lane-2"),
+            "{joined}"
+        );
+        assert!(joined.contains("--base milestone/17-x"), "{joined}");
+        assert!(joined.contains("--no-human-gate"), "{joined}");
+        assert!(!joined.contains("--dry-run"), "{joined}");
+        let bare = lane_command(
+            &watch(),
+            Path::new("/f"),
+            Path::new("/bin/harness"),
+            "decide",
+            41,
+            "",
+            0,
+        );
+        assert!(
+            !bare.as_std().get_args().any(|a| a == "--base"),
+            "no base for a decision"
+        );
+    }
+
+    #[test]
+    fn a_lane_s_checkout_is_its_own_and_the_router_s_otherwise() {
+        let mut args = watch();
+        assert_eq!(route_workspace(&args), None);
+        assert_eq!(shared_checkout(&args).workspace, None);
+        args.route_workspace = "router-lane-1".to_string();
+        assert_eq!(route_workspace(&args), Some("router-lane-1"));
+        assert_eq!(shared_checkout(&args).workspace, Some("router-lane-1"));
+    }
+
+    #[tokio::test]
+    async fn a_route_already_on_a_lane_is_not_started_twice() {
+        let here = std::env::temp_dir().join(format!("route-lanes-{}", std::process::id()));
+        let mut lanes = Lanes::new(2);
+        lanes
+            .spawn(0, 41, tokio::process::Command::new("true"), &here)
+            .expect("a lane");
+        assert!(offload(
+            &watch(),
+            &here,
+            &Route::Decide { issue: 41 },
+            &mut lanes,
+            &Logbook::null(),
+        ));
+        assert_eq!(lanes.running(), vec![41], "not started a second time");
+        let _ = std::fs::remove_dir_all(&here);
+    }
+
+    #[test]
+    fn no_free_lane_keeps_the_route_in_the_tick() {
+        let closed = Arc::new(AtomicBool::new(true));
+        let mut lanes = Lanes::new(3).closed_by(closed);
+        let taken = offload(
+            &watch(),
+            Path::new("/nowhere"),
+            &Route::Decide { issue: 41 },
+            &mut lanes,
+            &Logbook::null(),
+        );
+        assert!(!taken, "runs in the tick when no lane is free");
+        assert!(!offload(
+            &watch(),
+            Path::new("/nowhere"),
+            &Route::MergeMainAgent { milestone: 17 },
+            &mut lanes,
+            &Logbook::null(),
+        ));
     }
 }

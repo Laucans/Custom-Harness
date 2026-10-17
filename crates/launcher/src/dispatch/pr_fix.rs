@@ -46,6 +46,7 @@ pub async fn run(
     here: &Path,
     target_repo_url: &str,
     permission_mode: &str,
+    workspace: Option<&str>,
     dry_run: bool,
 ) -> Outcome<Verdict> {
     let run_id = spending::run_id();
@@ -71,7 +72,7 @@ pub async fn run(
         here,
         target_repo_url,
         &head,
-        FIX_WORKSPACE_ID,
+        workspace.unwrap_or(FIX_WORKSPACE_ID),
         true,
         &run_id,
         dry_run,

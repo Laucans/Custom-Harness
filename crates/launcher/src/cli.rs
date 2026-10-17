@@ -76,6 +76,9 @@ pub enum Command {
     /// What the harness spent, grouped by unit of the architecture, profile,
     /// side, stage or task — read from the cost ledger, nothing is run.
     Costs(CostsArgs),
+    /// Run one of the router's paid routes — a decision, a review, a
+    /// repair, the rules' task — as a parallel `watch` does on a lane.
+    Route(RouteArgs),
 }
 
 /// What `harness costs` groups the ledger's rows by.
@@ -351,6 +354,42 @@ pub struct WatchArgs {
     /// pending on, or a milestone already split.
     #[arg(long, env = "NO_HUMAN_GATE", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub no_human_gate: bool,
+
+    /// The checkout a route run on a lane works in (`router-lane-<k>`),
+    /// instead of the router's own: two lanes never share one. Empty: the
+    /// router's.
+    #[arg(long, default_value = "", hide = true)]
+    pub route_workspace: String,
+}
+
+/// What `harness route` runs: the router's paid routes, one per lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RouteKind {
+    /// `decide` on an issue that needs a decision.
+    Decide,
+    /// `pr_review` on a pull request.
+    PrReview,
+    /// `pr_fix` on a pull request.
+    PrFix,
+    /// The rules' task on an issue.
+    Rules,
+}
+
+/// `harness route <kind> <number>`: one of the router's paid routes, as a
+/// parallel watch runs it on a lane — the watch's tick goes on meanwhile.
+#[derive(Debug, Args)]
+pub struct RouteArgs {
+    /// Which route.
+    #[arg(value_enum)]
+    pub kind: RouteKind,
+    /// The issue or pull request it acts on.
+    pub number: u64,
+    /// The base branch of the pull request (`pr-review`).
+    #[arg(long, default_value = "")]
+    pub base: String,
+    /// The watch's own settings, as the lane's parent passes them.
+    #[command(flatten)]
+    pub watch: WatchArgs,
 }
 
 /// `harness init-repo <url>`'s own arguments.

@@ -109,6 +109,7 @@ async fn main() -> ExitCode {
             lane_exit(&here, "arbitrate", sub.issue, ran)
         }
         Some(cli::Command::Costs(sub)) => costs_by_hand(sub, &here),
+        Some(cli::Command::Route(sub)) => router::run_route(sub, &here).await,
         Some(cli::Command::Trial(sub)) => match dispatch::trial::run(sub, &here).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(halt) => halt_to_code(&halt),

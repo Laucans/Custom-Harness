@@ -36,6 +36,11 @@ exclude_re = [
   "router/mod\\.rs:.*delete ! in run",
   "router/lanes\\.rs:.*(replace run_lanes|delete ! in run_lanes)",
   "router/routes\\.rs:.*replace run_dev_loop ",
+  # The arms that run a paid workflow, here or on a lane: the workflow is
+  # tested in `workflows`, the arm only wires the real adapters to it.
+  "router/routes\\.rs:.*replace (fix_here|rules_here|run_on_lane) ",
+  "router/routes\\.rs:.* in dispatch$",
+  "router/mod\\.rs:.*replace run_route ",
   "router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) ",
   "dataguard/src/guard\\.rs:.*NoInvariants",
   "dataguard/src/reconcile\\.rs:.*NoProposer",
