@@ -125,8 +125,9 @@ pub struct Closure {
 
 /// What every closure carries: the root's files, the CI, the scripts, the
 /// contracts, the data model, the documents but the architecture's (the
-/// rule card stands for it), the query registry.
-const ALWAYS: [&str; 11] = [
+/// rule card stands for it), the query registry, and the rules' tests a
+/// task makes pass (two tasks stopped without them).
+const ALWAYS: [&str; 12] = [
     "/*",
     "!/*/",
     "/.github/",
@@ -138,6 +139,7 @@ const ALWAYS: [&str; 11] = [
     "!/docs/ARCHITECTURE.md",
     "!/docs/DATA-INTEGRITY.md",
     "/queries/",
+    "/tests/rules/",
 ];
 
 /// The folder of the product's `DataGuard` server, installed by the
@@ -189,6 +191,15 @@ pub fn explicit_members(root_manifest: &str) -> Vec<String> {
         .filter(|entry| !entry.is_empty() && !entry.contains('*'))
         .map(|entry| entry.trim_matches('/').to_string())
         .collect()
+}
+
+/// A port's name: lowercase letters, digits and dashes — never a dotted
+/// Capability id nor a versioned Concept.
+fn port_like(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// A folder pattern: anchored, trailing slash.
@@ -341,6 +352,15 @@ pub fn closure(
     let mut patterns: Vec<String> = ALWAYS.iter().map(ToString::to_string).collect();
     for member in root_manifest.map(explicit_members).unwrap_or_default() {
         add(&mut patterns, folder(&member));
+    }
+    // A need the tree cannot place, named like a port, is its crate
+    // (`crates/ports/<port>/`, contract Q): #42 needed `llm`.
+    for id in task
+        .needs
+        .iter()
+        .filter(|id| !index.knows(id) && port_like(id))
+    {
+        add(&mut patterns, folder(&format!("crates/ports/{id}")));
     }
     let own = task.produces.first().map(String::as_str);
 
@@ -704,6 +724,30 @@ mod tests {
         );
         assert_eq!(found.patterns[0], "/*");
         assert_eq!(found.patterns[1], "!/*/");
+    }
+
+    #[test]
+    fn a_needed_port_and_the_rules_tests_are_in_the_closure() {
+        // ForgeDesMondes #42: `needs: llm` stopped on crates/ports/llm/ and
+        // tests/rules/business/ missing from the tree.
+        let task = declared(
+            Unit::Capability,
+            "credit",
+            &["credit.revenue"],
+            &["llm", "credit.calculateRisk", "Risk@3"],
+        );
+        let found = closure(&tree(), &task, Some(&graph()), None);
+        assert!(found.patterns.contains(&"/crates/ports/llm/".to_string()));
+        assert!(found.patterns.contains(&"/tests/rules/".to_string()));
+        assert!(
+            !found
+                .patterns
+                .iter()
+                .any(|p| p.contains("ports/credit") || p.contains("ports/Risk")),
+            "{:?}",
+            found.patterns
+        );
+        assert!(port_like("ports-2") && !port_like("") && !port_like("Llm"));
     }
 
     #[test]
