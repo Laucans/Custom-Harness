@@ -154,6 +154,14 @@ const ENGINE_MANUAL: &str = "/docs/DATA-INTEGRITY.md";
 /// name must be there, so every closure carries it.
 #[must_use]
 pub fn explicit_members(root_manifest: &str) -> Vec<String> {
+    members_of(root_manifest)
+        .into_iter()
+        .filter(|entry| !entry.contains('*'))
+        .collect()
+}
+
+/// Every entry of the root `Cargo.toml`'s `members`, trimmed, globs kept.
+fn members_of(root_manifest: &str) -> Vec<String> {
     // Comments dropped first, and the key read where a line starts with it:
     // a comment naming `workspace-members-by-glob` once made `[workspace]`
     // read as the array.
@@ -188,7 +196,7 @@ pub fn explicit_members(root_manifest: &str) -> Vec<String> {
     after[open + 1..open + close]
         .split(',')
         .map(|entry| entry.trim().trim_matches(['"', '\'']).trim())
-        .filter(|entry| !entry.is_empty() && !entry.contains('*'))
+        .filter(|entry| !entry.is_empty())
         .map(|entry| entry.trim_matches('/').to_string())
         .collect()
 }
@@ -200,6 +208,14 @@ fn port_like(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// The members the root `Cargo.toml` lists by glob, as written.
+fn glob_members(root_manifest: &str) -> Vec<String> {
+    members_of(root_manifest)
+        .into_iter()
+        .filter(|entry| entry.contains('*'))
+        .collect()
 }
 
 /// A folder pattern: anchored, trailing slash.
@@ -353,6 +369,13 @@ pub fn closure(
     for member in root_manifest.map(explicit_members).unwrap_or_default() {
         add(&mut patterns, folder(&member));
     }
+    // A member glob that matches nothing fails the whole workspace: the
+    // product keeps a README under each glob's parent so one always matches.
+    for glob in root_manifest.map(glob_members).unwrap_or_default() {
+        if let Some((parent, _)) = glob.rsplit_once('/') {
+            add(&mut patterns, file(&format!("{parent}/README.md")));
+        }
+    }
     // A need the tree cannot place, named like a port, is its crate
     // (`crates/ports/<port>/`, contract Q): #42 needed `llm`.
     for id in task
@@ -404,6 +427,15 @@ pub fn closure(
                 // edits — unless no server runs it.
                 if !task.is_hostless() {
                     add(&mut patterns, folder(SERVER));
+                    // The server names every DataCapability by path: cargo
+                    // loads none of the workspace unless they are all there
+                    // (#40 stopped on `save-settings`, a neighbour).
+                    let reached = graph
+                        .and_then(|g| g.owning(SERVER).map(|server| g.reached(&server.name)))
+                        .unwrap_or_default();
+                    for dir in reached {
+                        add(&mut patterns, folder(&dir));
+                    }
                 }
                 if let Some(dir) = task
                     .aggregate
@@ -724,6 +756,29 @@ mod tests {
         );
         assert_eq!(found.patterns[0], "/*");
         assert_eq!(found.patterns[1], "!/*/");
+    }
+
+    #[test]
+    fn a_new_data_capability_gets_what_the_server_names_and_the_glob_placeholders() {
+        // #40: the server names every DataCapability by path, and an empty
+        // member glob fails the workspace — cargo loaded nothing.
+        let task = declared(Unit::DataCapability, "dataguard", &["dataguard.other"], &[]);
+        let manifest = "[workspace]\nmembers = [\"crates/*/capabilities/*\", \"crates/data\"]\n";
+        let found = closure(&tree(), &task, Some(&graph()), Some(manifest));
+        assert!(
+            found
+                .patterns
+                .contains(&"/crates/dataguard/data-capabilities/request-limit/".to_string()),
+            "{:?}",
+            found.patterns
+        );
+        assert!(
+            found
+                .patterns
+                .contains(&"/crates/*/capabilities/README.md".to_string())
+        );
+        assert!(found.patterns.contains(&"/crates/data/".to_string()));
+        assert_eq!(glob_members(manifest), ["crates/*/capabilities/*"]);
     }
 
     #[test]
