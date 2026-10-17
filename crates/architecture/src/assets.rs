@@ -64,7 +64,7 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// schema dump, the data model, the mock-up's files, the conformance
 /// runner, the `DataGuard` server's skeleton, the contracts A–Q, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites.
-pub const FILES: [Asset; 59] = [
+pub const FILES: [Asset; 60] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -256,6 +256,10 @@ pub const FILES: [Asset; 59] = [
     Asset {
         path: "scripts/ports-gate.mjs",
         content: include_str!("../assets/ports-gate.mjs"),
+    },
+    Asset {
+        path: "scripts/design-system-gate.mjs",
+        content: include_str!("../assets/design-system-gate.mjs"),
     },
     Asset {
         path: ".sops.yaml",
@@ -484,6 +488,28 @@ mod tests {
             assert!(gates.contains(step), "the gates run {step}");
         }
         assert!(content_of("scripts/ports-gate.mjs").is_some());
+    }
+
+    #[test]
+    fn the_design_system_gate_is_installed_and_the_gates_run_it() {
+        let gate = content_of("scripts/design-system-gate.mjs").unwrap_or_default();
+        assert!(
+            gate.contains("design-system-gate: computed placement"),
+            "placement is the product's to mark"
+        );
+        assert!(
+            !gate.contains("PLACEMENT_FILES"),
+            "no product's file names in the template"
+        );
+        let gates = content_of(".github/workflows/gates.yml").unwrap_or_default();
+        for step in [
+            "node scripts/design-system-gate.mjs",
+            "design-system-single-writer:",
+            "fetch-depth: 0",
+            "mock/design/ and mock/kit/ are read-only outside the design-system branch",
+        ] {
+            assert!(gates.contains(step), "the gates run {step}");
+        }
     }
 
     #[test]

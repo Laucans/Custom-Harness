@@ -499,59 +499,6 @@ pub fn skipped_in(fragment: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The roadmap task a validated design system opens: install the tokens in
-/// the product's real frontend, so the first screen built does not reinvent
-/// them. `(title, body)`.
-#[must_use]
-pub fn install_issue(design: &Design, tokens: &[Token]) -> (String, String) {
-    let title = "Install the design system in the product's frontend".to_string();
-    let mut body = String::from(
-        "The design system was validated on the factory view's easel. It is written on the \
-         `design-system` branch and carried onto the integration branch on every publish: \
-         `mock/design/tokens.json` (W3C design tokens) derived into `mock/design/tokens.css` — \
-         one CSS variable per token — and the kit, `mock/kit/<Name>.html`, its look gathered \
-         in `mock/kit/kit.css`. Install it in the product's real frontend: the shell (or the \
-         screen host) loads `tokens.css` and `kit.css` once, from where they sit, never a \
-         copy; every screen and Micro-UI is styled through the variables, never a literal \
-         colour, font, spacing, radius or shadow, and writes the kit's markup and classes \
-         with its own data; the kit's small behaviours (a drop list opens, a switch turns) \
-         are written once in the shell. The mock-up too: `mock/style.css` and every page \
-         and micro-frontend under `mock/` read the same variables, never a literal, so the \
-         easel shows the design system the moment it is published. `mock/design/` and \
-         `mock/kit/` stay read-only outside `design-system`: a gate refuses a pull request \
-         that changes them.\n\n",
-    );
-    let _ = writeln!(
-        body,
-        "Source: {}{}",
-        match design.source {
-            kit::Source::Generated => "generated from the moodboard and the logo",
-            kit::Source::Injected => "a tokens file the human handed over",
-            kit::Source::None => "none",
-        },
-        if design.brief.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" — brief: {}", design.brief.trim())
-        }
-    );
-    let _ = writeln!(body, "\nThe tokens ({}):\n", tokens.len());
-    for token in tokens.iter().take(80) {
-        let _ = writeln!(
-            body,
-            "- `{}`: `{}`",
-            kit::variable_of(&token.path),
-            token.value
-        );
-    }
-    body.push_str(
-        "\nAcceptance: every screen of the product reads its colours, fonts, spacings, radii \
-         and shadows from these variables and wears the kit's classes; a design system \
-         published again restyles the product with no change to any screen or Micro-UI.\n",
-    );
-    (title, body)
-}
-
 /// The kit as the request AI reads it: one line per component with a
 /// fragment, name and what it is.
 #[must_use]
@@ -846,16 +793,6 @@ mod tests {
         assert_eq!(fork_name(&kit, "Button"), "Button2");
         assert_eq!(to_generate(&kit, &[]).len(), kit::DEFAULT_CHECKED.len() - 1);
         assert_eq!(to_generate(&kit, &["Button".into()]), ["Button"]);
-        let (title, body) = install_issue(
-            &Design {
-                source: kit::Source::Generated,
-                brief: "warm".into(),
-                ..Design::default()
-            },
-            &kit::tokens_of(&kit::default_tokens_json()).expect("tokens"),
-        );
-        assert!(title.contains("design system"));
-        assert!(body.contains("brief: warm") && body.contains("`--color-primary`"));
         assert!(is_active_branch("main") && is_active_branch("milestone/3-x"));
         assert!(!is_active_branch("mockup/pages") && !is_active_branch("design-system"));
         let pin = recoded_pin(

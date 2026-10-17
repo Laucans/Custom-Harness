@@ -7,9 +7,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::data_desk::Issue;
-use crate::domain::design;
-use crate::domain::divergence;
 use crate::domain::drafts::{self};
 use crate::domain::mockup;
 use crate::kit_desk::{Asset, KitDesk, Save};
@@ -146,8 +143,9 @@ pub(super) async fn design_generate(State(state): State<AppState>, body: Bytes) 
     json(&view)
 }
 
-/// Validates the design system, and opens the roadmap task that installs it
-/// in the product — once, when a board is there to open it on.
+/// Validates the design system. Installing it in the product is no roadmap
+/// item of its own: the proof of concept's roadmap says it, and the gates
+/// `init-repo` installs hold it.
 pub(super) async fn design_validate(State(state): State<AppState>) -> Response {
     let desk = match kit_of(&state) {
         Ok(desk) => desk,
@@ -158,22 +156,6 @@ pub(super) async fn design_validate(State(state): State<AppState>) -> Response {
         Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
     queue_kit(&desk).await;
-    if view.design.issue.is_empty()
-        && let Some(data) = state.data.clone()
-    {
-        let (title, body) = design::install_issue(&view.design, &view.tokens);
-        let issue = Issue {
-            title,
-            body,
-            labels: divergence::ISSUE_LABELS
-                .iter()
-                .map(|l| (*l).to_string())
-                .collect(),
-        };
-        if let Ok(url) = data.open_issue(issue).await {
-            return outcome(desk.set_issue(url).await);
-        }
-    }
     json(&view)
 }
 

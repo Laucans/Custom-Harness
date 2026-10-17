@@ -2276,6 +2276,16 @@ fn design_section(c: &Creation, design: &DesignRef) -> String {
         let _ = write!(body, "; the kit: {}", design.components.join(", "));
     }
     body.push_str(".\n");
+    // What a separate roadmap item used to ask: the first milestone that
+    // builds the shell installs it, the gates installed by init-repo hold it.
+    body.push_str(
+        "\nThe product's frontend wears it from its first screen: the shell loads \
+         `mock/design/tokens.css` and `mock/kit/kit.css` once, from where they sit, never a \
+         copy; every screen and Micro-UI styles through the variables — never a literal colour, \
+         font, spacing, radius or shadow — and writes the kit's markup and classes with its own \
+         data; the kit's small behaviours are written once, in the shell. The `design-system` \
+         and `design-system-single-writer` gates hold it.\n",
+    );
     body
 }
 
@@ -4225,6 +4235,19 @@ mod tests {
         assert!(!scope.contains("q2"));
         c.scope = String::new();
         assert!(!scope_prompt(&c).contains("start from it"));
+    }
+
+    #[test]
+    fn the_roadmap_says_how_the_frontend_wears_the_design_system() {
+        let (_, body) = roadmap_issue(&ready(), &Context::default());
+        assert!(
+            body.contains("the shell loads `mock/design/tokens.css` and `mock/kit/kit.css` once"),
+            "{body}"
+        );
+        assert!(
+            body.contains("The `design-system` and `design-system-single-writer` gates hold it."),
+            "{body}"
+        );
     }
 
     #[test]

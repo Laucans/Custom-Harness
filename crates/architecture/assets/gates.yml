@@ -695,13 +695,18 @@ jobs:
           fi
 
   # Contract O — the design system has one writer. `mock/design/` and
-  # `mock/kit/` are written on the `design-system` branch and carried onto
-  # `main_agent` by the harness when the human publishes; every branch in
-  # progress finds them on its next sync, and a branch that never changes
-  # them never meets them in a merge. A pull request that changes them
-  # would make two writers: a kit component is recoded on `design-system`.
+  # `mock/kit/` are read-only outside the `design-system` branch of this
+  # repository: it writes them, the harness carries them onto `main_agent`
+  # when the human publishes, and every branch in progress finds them on its
+  # next sync. A pull request from any other branch that adds, changes,
+  # deletes or renames anything under them fails here, one annotation per
+  # protected path (both sides of a rename), measured from the merge base.
+  # Pull requests only: a push — the publish being carried — is not gated.
+  # The exemption is judged in the script, so a fork's `design-system`
+  # branch still runs and fails; every value reaches the script through
+  # `env:`, never through `${{ }}` in its body.
   design-system-single-writer:
-    if: github.event_name == 'pull_request' && github.head_ref != 'design-system'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -710,15 +715,76 @@ jobs:
       - name: A pull request leaves mock/design/ and mock/kit/ to the design-system branch
         shell: bash
         env:
-          BASE: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          changed=$(git diff --name-only "origin/$BASE...HEAD" -- mock/design mock/kit)
-          [ -z "$changed" ] && exit 0
-          while read -r file; do
-            echo "::error file=$file::$file belongs to the design-system branch — the harness carries it here on publish; recode a kit component on design-system, never on this branch"
-          done <<< "$changed"
-          exit 1
+          if [ "$HEAD_REF" = "design-system" ] && [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" = "$BASE_REPO" ]; then
+            echo "design-system branch of $BASE_REPO: the design system's one writer"
+            exit 0
+          fi
+          # Fail closed: a diff that cannot be computed is never an empty one.
+          fail() { echo "::error::$1"; exit 1; }
+          # A path is a property of the annotation: escape what would end it.
+          escape() {
+            local s=$1
+            s=${s//'%'/'%25'}
+            s=${s//$'\r'/'%0D'}
+            s=${s//$'\n'/'%0A'}
+            s=${s//':'/'%3A'}
+            s=${s//','/'%2C'}
+            printf '%s' "$s"
+          }
+          [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ] \
+            || fail "the pull request's base or head commit is unknown: the diff cannot be computed"
+          [ "$(git rev-parse --is-shallow-repository)" = false ] \
+            || fail "the history is shallow: the merge base cannot be trusted, the diff cannot be computed"
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA") \
+            || fail "no merge base between $BASE_SHA and $HEAD_SHA: the diff cannot be computed"
+          [ -n "$merge_base" ] || fail "empty merge base: the diff cannot be computed"
+          changed=$(mktemp)
+          trap 'rm -f "$changed"' EXIT
+          # --no-renames lists both sides of a rename; -z keeps odd names whole;
+          # the folders without their slash also catch a file put in their place.
+          git diff --no-renames --name-only -z "$merge_base" "$HEAD_SHA" -- mock/design mock/kit > "$changed" \
+            || fail "git diff failed: the diff cannot be computed"
+          offenders=0
+          while IFS= read -r -d '' file; do
+            case "$file" in mock/design|mock/design/*|mock/kit|mock/kit/*) ;; *) continue ;; esac
+            echo "::error file=$(escape "$file")::mock/design/ and mock/kit/ are read-only outside the design-system branch"
+            offenders=$((offenders + 1))
+          done < "$changed"
+          if [ "$offenders" -gt 0 ]; then
+            echo "$offenders protected path(s) changed by a pull request into $BASE_REF"
+            exit 1
+          fi
+
+  # Contract O — the mock-up styles itself only through the design system:
+  # no colour literal in a page, a micro-frontend, `style.css` or `mock.js`
+  # (a hex, a colour function, a named colour; a fallback in `var()` too), no
+  # `var(--color-*|--font-*|--space-*|--radius-*|--shadow-*|--border-width)`
+  # that mock/design/tokens.css does not define, every page loading
+  # `tokens.css`, `kit.css` and `style.css` in that order from the design
+  # system's own files and never from a copy, and no `<link`, `@import` or
+  # external `url(` anywhere else. Files are found by glob under `mock/`
+  # (mock/design/ and mock/kit/ excluded, being the design system's own); the
+  # gate fails on an empty scan, reports every violation and gives its verdict
+  # last (scripts/design-system-gate.mjs, proved in the harness by
+  # crates/architecture/tests/design_system_gate.rs). Every push and pull request,
+  # no `paths:` filter: a rule of the mock-up is never skipped.
+  design-system:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The mock-up styles only through the design system's tokens and loads its files once
+        run: node scripts/design-system-gate.mjs
 
   # Contract P — every rule of rules.json has its test, of its family, its
   # criterion copied as it is (scripts/rules-gate.mjs coverage).

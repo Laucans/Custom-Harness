@@ -703,22 +703,6 @@ impl KitDesk {
         .await
     }
 
-    /// Remembers the roadmap issue that installs the design system.
-    ///
-    /// # Errors
-    ///
-    /// The workspace could not be written.
-    pub async fn set_issue(&self, url: String) -> Result<DesignView, String> {
-        self.blocking(move |mockups, files| {
-            let _held = lock(files);
-            let mut design = Self::design_of(mockups)?;
-            design.issue = url;
-            Self::write_json(mockups, design::DESIGN_JSON, &design)?;
-            Self::view_of(mockups)
-        })
-        .await
-    }
-
     /// Ticks the bases: the kit lists every ticked base, pending, and
     /// drops the pending ones unticked.
     ///
