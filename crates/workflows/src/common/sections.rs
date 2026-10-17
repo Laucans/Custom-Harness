@@ -404,16 +404,49 @@ pub fn replace(body: &str, changes: &[(&str, &str)]) -> String {
     }
     let rendered = render(&found);
     let extras = unknown(body);
-    if extras.is_empty() {
-        rendered
-    } else {
-        format!("{rendered}\n{extras}\n")
+    // What stands before the first `##` is the issue's own text — a task's
+    // brief, the rules' task's whole contract: it stays first, as it was.
+    let preamble = heading_marks(body)
+        .first()
+        .map_or(body, |first| &body[..first.line_start])
+        .trim();
+    let mut out = String::new();
+    if !preamble.is_empty() {
+        out.push_str(preamble);
+        out.push_str("\n\n");
     }
+    out.push_str(&rendered);
+    if !extras.is_empty() {
+        out.push('\n');
+        out.push_str(&extras);
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replacement_keeps_the_text_before_the_first_heading() {
+        // Issue #2 of a product lost its whole contract this way: an intro and
+        // a JSON block, no heading, and a `## Decision` written over them.
+        let body = "The rules, as `rules.json` holds them:\n\n```json\n{\"rules\": []}\n```\n";
+        let decided = replace(body, &[(DECISION, "verdict: repair")]);
+        assert!(decided.starts_with("The rules, as `rules.json` holds them:\n\n```json\n{\"rules\": []}\n```\n\n## Decision"), "{decided}");
+        assert!(decided.contains("verdict: repair"), "{decided}");
+        let again = replace(&decided, &[(DECISION, "verdict: merge")]);
+        assert_eq!(again.matches("```json").count(), 1, "kept once: {again}");
+        assert!(
+            again.contains("verdict: merge") && !again.contains("verdict: repair"),
+            "{again}"
+        );
+        assert_eq!(
+            replace("", &[(DECISION, "x")]),
+            render(&parse("## Decision\n\nx\n"))
+        );
+    }
 
     #[test]
     fn a_body_with_two_known_sections_parses_both() {
