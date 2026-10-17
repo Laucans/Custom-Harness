@@ -486,6 +486,15 @@ pub struct RunArgs {
     #[arg(long, env = "IGNORE_BUDGET", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub ignore_budget: bool,
 
+    /// The least a task's budget is, in dollars.
+    ///
+    /// What a task's kind has cost sets its budget; a kind measured on small
+    /// tasks sets one a larger task of it hits mid-work (a frontend host:
+    /// 3.06 $ computed, 3.18 $ spent). The computed budget is
+    /// raised to this, never lowered.
+    #[arg(long, env = "BUDGET_FLOOR", default_value_t = 6.0)]
+    pub budget_floor: f64,
+
     /// Resume the task that the checkpoint designates. Default: yes.
     #[arg(long)]
     pub no_resume: bool,

@@ -188,9 +188,10 @@ impl Verification<Loop> for DependenciesAreInstalled {
 /// Read before every paid stage of a task: what the task has cost so far,
 /// every run counted, against the budget of its unit — the third quartile
 /// of its kind's totals with half again on top, or a constant per unit
-/// while fewer than three were measured ([`budget::budget_for`]). A task
-/// past its budget stops before paying more, and the message says the two
-/// ways on: `--ignore-budget`, or cutting the task.
+/// while fewer than three were measured ([`budget::budget_for`]), raised
+/// to the floor (`--budget-floor`) when it computes less. A task past its
+/// budget stops before paying more, and the message says the two ways on:
+/// `--ignore-budget`, or cutting the task.
 ///
 /// Fails open on an unknown unit: a task that declares nothing is judged
 /// against the default constant, never refused for lack of a tag.
@@ -201,6 +202,8 @@ pub struct BudgetHasRoom {
     pub history: Rc<dyn CostHistory>,
     /// `--ignore-budget`: the human has decided the ceiling does not apply.
     pub ignored: bool,
+    /// `--budget-floor`: the least a budget is, in dollars.
+    pub floor: f64,
 }
 
 #[async_trait(?Send)]
@@ -221,13 +224,17 @@ impl Verification<Loop> for BudgetHasRoom {
         }
         let unit = ctx.tags.unit.as_str();
         let typical = self.history.typical(unit, &ctx.tags.profile)?;
-        let ceiling = budget::budget_for(unit, typical.as_ref());
+        let computed = budget::budget_for(unit, typical.as_ref());
+        let ceiling = computed.max(self.floor);
         let spent = self.spending.spent_on(task)?;
         if spent >= ceiling {
             return Err(Halt::Halted(format!(
                 "task #{task} has spent {spent:.2} $ of its {ceiling:.2} $ budget ({}) — \
                  run with --ignore-budget to pay on, or cut the task",
                 match typical {
+                    _ if computed < self.floor => format!(
+                        "the floor, --budget-floor, above the {computed:.2} $ its kind computes"
+                    ),
                     Some(found) if found.count >= budget::ENOUGH => format!(
                         "the third quartile of {} {} tasks, {:.2} $, with headroom",
                         found.count,
@@ -305,6 +312,7 @@ mod budget_tests {
             spending: Rc::new(Spent(spent)),
             history: Rc::new(Costs(typical)),
             ignored,
+            floor: 0.0,
         }
     }
 
@@ -314,6 +322,34 @@ mod budget_tests {
             median: p75 * 0.8,
             p75,
         }
+    }
+
+    #[tokio::test]
+    async fn the_floor_raises_a_budget_its_kind_computes_lower_and_says_so() {
+        // ForgeDesMondes #33: 3.18 $ spent, 3.06 $ computed from four tooling
+        // tasks — the floor keeps a task that size going.
+        let mut gate = check(3.18, Some(measured(4, 2.04)), false);
+        gate.floor = 6.0;
+        let verdict = gate.verify(&ctx("tooling")).await.expect("continues");
+        assert!(matches!(verdict, Verdict::Continue));
+
+        let mut gate = check(6.5, Some(measured(4, 2.04)), false);
+        gate.floor = 6.0;
+        let err = gate
+            .verify(&ctx("tooling"))
+            .await
+            .expect_err("past the floor");
+        assert!(err.reason().contains("6.00 $ budget"), "{}", err.reason());
+        assert!(err.reason().contains("--budget-floor"), "{}", err.reason());
+
+        let mut gate = check(13.0, Some(measured(4, 8.0)), false);
+        gate.floor = 6.0;
+        let err = gate
+            .verify(&ctx("tooling"))
+            .await
+            .expect_err("past its kind");
+        assert!(err.reason().contains("12.00 $ budget"), "{}", err.reason());
+        assert!(err.reason().contains("third quartile"), "{}", err.reason());
     }
 
     #[tokio::test]

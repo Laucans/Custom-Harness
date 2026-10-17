@@ -305,6 +305,7 @@ fn paid(stage: &str, ports: &Ports, config: &Config) -> Vec<Box<dyn Verification
         spending: Rc::clone(&ports.spending),
         history: Rc::clone(&ports.history),
         ignored: config.ignore_budget,
+        floor: config.budget_floor,
     }));
     checks
 }

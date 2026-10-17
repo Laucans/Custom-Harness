@@ -199,6 +199,7 @@ fn rounds(
     let root = config.root.clone();
     let narrow = config.narrow;
     let ignore_budget = config.ignore_budget;
+    let budget_floor = config.budget_floor;
     let prompts = Rc::clone(&config.prompts);
     Box::new(move |turn| {
         let ports = Ports {
@@ -222,6 +223,7 @@ fn rounds(
             root: root.clone(),
             narrow,
             ignore_budget,
+            budget_floor,
             prompts: Rc::clone(&prompts),
         };
         TaskRound {

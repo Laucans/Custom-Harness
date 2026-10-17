@@ -51,6 +51,9 @@ pub struct Config {
     /// `--ignore-budget`: pay on past what tasks of the kind cost, and lift
     /// the turn caps with it.
     pub ignore_budget: bool,
+    /// `--budget-floor`: the least a task's budget is, in dollars — what its
+    /// kind's history computes is raised to it, never lowered.
+    pub budget_floor: f64,
     /// The human's prompt edits, read once per run — a stage sends
     /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
     pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
@@ -115,6 +118,7 @@ pub(crate) mod fake {
             root: std::path::PathBuf::from("/ws"),
             narrow: false,
             ignore_budget: false,
+            budget_floor: 0.0,
         }
     }
 }

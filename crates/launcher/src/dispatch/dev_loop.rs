@@ -571,6 +571,7 @@ async fn turns(
         root: workspace.root().to_path_buf(),
         narrow: narrowing(args),
         ignore_budget: args.ignore_budget,
+        budget_floor: args.budget_floor,
         prompts: crate::dispatch::shared::prompts(
             workspace,
             log,
