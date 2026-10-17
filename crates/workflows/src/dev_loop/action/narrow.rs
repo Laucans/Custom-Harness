@@ -12,6 +12,7 @@
 //! two leaves a narrowed clone, which the next mount widens before it reads
 //! anything (`provisioning::reuse`).
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -66,6 +67,36 @@ impl Narrow {
     }
 }
 
+/// The paths a session of this task stopped on as missing —
+/// `AGENT_LOOP_STOP: missing <path>`, kept in the body by the decision that
+/// answered it. The prompt promises the harness widens the closure to them;
+/// the declaration alone never would, and the task would stop again.
+fn asked_for(body: &str) -> Vec<String> {
+    let mut paths: Vec<String> = body
+        .lines()
+        .filter_map(|line| {
+            line.split_once("AGENT_LOOP_STOP: missing ")
+                .map(|(_, after)| after)
+        })
+        .flat_map(|after| after.split(|c: char| c.is_whitespace() || c == ','))
+        .map(|word| {
+            word.trim_matches(|c: char| matches!(c, '`' | '(' | ')' | ':' | ';' | '.' | '\'' | '"'))
+        })
+        .filter(|word| {
+            word.contains('/')
+                && !word.starts_with('/')
+                && !word.contains("..")
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+        })
+        .map(|word| word.trim_end_matches('/').to_string())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 /// The task's declaration, as its body carries it.
 fn declaration_of(body: &str) -> Option<Declaration> {
     sections::parse(body)
@@ -107,14 +138,43 @@ impl Action<Loop> for Narrow {
             ));
             return Ok(Verdict::Continue);
         }
-        let ran = self.repo.sparse_checkout(&found.patterns).await?;
+        // What an earlier session found missing, that the repository holds.
+        let mut patterns = found.patterns.clone();
+        let mut widened = Vec::new();
+        for path in asked_for(&ctx.state.task.body) {
+            let full = self.root.join(&path);
+            if !self.disk.exists(&full) {
+                continue;
+            }
+            let folder =
+                !self.disk.dir_names(&full).is_empty() || !self.disk.file_names(&full).is_empty();
+            patterns.push(if folder {
+                format!("/{path}/")
+            } else {
+                format!("/{path}")
+            });
+            widened.push(path);
+        }
+        if !widened.is_empty() {
+            ctx.traces.say(&format!(
+                "tree: widened to what a session of this task found missing: {}",
+                widened.join(", ")
+            ));
+        }
+        let ran = self.repo.sparse_checkout(&patterns).await?;
         if !ran.ok() {
             return Err(Halt::Failed(format!(
                 "cannot narrow the checkout to the task's closure: {}",
                 ran.why()
             )));
         }
-        let folders = closure::describe(&found);
+        let mut folders = closure::describe(&found);
+        for path in &widened {
+            let _ = write!(
+                folders,
+                "\n- /{path}/ (found missing by an earlier session)"
+            );
+        }
         ctx.traces.say(&format!(
             "tree: narrowed to the {} unit's closure ({} pattern(s), {} without a graph)",
             declaration.unit.key(),
@@ -239,6 +299,65 @@ mod tests {
         );
         assert!(ctx.state.tree_note.contains("- /mock/"));
         assert!(!ctx.state.tree_note.contains("late-list"));
+    }
+
+    #[tokio::test]
+    async fn what_an_earlier_session_found_missing_widens_the_closure() {
+        // ForgeDesMondes #31: the root workspace names crates/dataguard/server
+        // and excludes tests/rules/business, which its closure left out.
+        let repos = Rc::new(FakeRepos::default());
+        let body = format!(
+            "{MICRO_UI}\n## Decision\n\nblocks: AGENT_LOOP_STOP: missing apps/credit/late-list (named member) \
+             and `contracts/README.md`, and nowhere/else: widen the closure (/code)\n"
+        );
+        let mut ctx = context(&body);
+        narrow(
+            &repos,
+            FakeProcess::answering(vec![FakeProcess::ran("", "", 1)]),
+        )
+        .run(&mut ctx)
+        .await
+        .expect("narrowed");
+        let mut plain = context(MICRO_UI);
+        let other = Rc::new(FakeRepos::default());
+        narrow(
+            &other,
+            FakeProcess::answering(vec![FakeProcess::ran("", "", 1)]),
+        )
+        .run(&mut plain)
+        .await
+        .expect("narrowed");
+        let count = |calls: Vec<String>| {
+            calls
+                .iter()
+                .find_map(|c| {
+                    c.split_once("sparse-checkout set ")
+                        .and_then(|(_, n)| n.parse::<usize>().ok())
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            count(repos.calls()),
+            count(other.calls()) + 2,
+            "two held paths added, the absent one not"
+        );
+        assert!(
+            ctx.state
+                .tree_note
+                .contains("- /apps/credit/late-list/ (found missing"),
+            "{}",
+            ctx.state.tree_note
+        );
+        assert!(!ctx.state.tree_note.contains("nowhere/else"));
+        assert_eq!(
+            asked_for(
+                "AGENT_LOOP_STOP: missing crates/dataguard/server (named workspace member; `cargo metadata` and gate data-capability-registered need it on disk) and tests/rules/business (acceptance criterion 5): widen the closure"
+            ),
+            vec![
+                "crates/dataguard/server".to_string(),
+                "tests/rules/business".to_string()
+            ]
+        );
     }
 
     #[tokio::test]
