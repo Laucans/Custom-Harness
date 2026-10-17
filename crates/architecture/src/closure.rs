@@ -490,6 +490,14 @@ pub fn closure(
         }
     }
 
+    // The aggregate the task targets or needs, whichever the unit: a
+    // Capability reading AiSettings stopped without its aggregate.json (#41).
+    for id in task.aggregate.iter().chain(task.needs.iter()) {
+        if let Some(dir) = index.aggregate_dir(id) {
+            add(&mut patterns, folder(&dir));
+        }
+    }
+
     // The Concepts the task implements or names, whichever the unit.
     let named = task.concept.iter().chain(task.needs.iter());
     for id in named {
@@ -786,6 +794,30 @@ mod tests {
         );
         assert!(found.patterns.contains(&"/crates/data/".to_string()));
         assert_eq!(glob_members(manifest), ["crates/*/capabilities/*"]);
+    }
+
+    #[test]
+    fn a_capability_gets_the_aggregate_it_declares_or_needs() {
+        let declaring = Declaration {
+            aggregate: Some("Account".to_string()),
+            ..declared(Unit::Capability, "credit", &["credit.revenue"], &[])
+        };
+        let needing = declared(
+            Unit::Capability,
+            "credit",
+            &["credit.revenue"],
+            &["Account"],
+        );
+        for task in [declaring, needing] {
+            let found = closure(&tree(), &task, Some(&graph()), None);
+            assert!(
+                found
+                    .patterns
+                    .contains(&"/crates/dataguard/aggregates/Account/".to_string()),
+                "{:?}",
+                found.patterns
+            );
+        }
     }
 
     #[test]
