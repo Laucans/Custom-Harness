@@ -499,10 +499,11 @@ pub fn split_candidate(milestone: &Issue) -> bool {
     milestone.is_open() && milestone.has(labels::READY) && !milestone.has(labels::REFINEMENT)
 }
 
-/// Whether this milestone is ready to be split now: a candidate, every
-/// milestone it is `blocked_by` delivered — closed, or `waiting-merge` with
-/// its code on the integration branch — and every milestone before it in
-/// `milestones` (a lower number) delivered too.
+/// Whether this milestone is ready to be split now.
+///
+/// A candidate, every milestone it is `blocked_by` delivered — closed, or
+/// `waiting-merge` with its code on the integration branch — and every
+/// milestone before it in `milestones` (a lower number) delivered too.
 ///
 /// Its tasks are cut against the code the previous milestone leaves: split
 /// before that code exists, they plan for a guess. The planner only chains
@@ -628,7 +629,7 @@ mod tests {
         let skeleton = issue(16, &[labels::MILESTONE, labels::TRIGGERED]);
         let next = issue(17, &[labels::MILESTONE, labels::READY]);
         let mut snapshot = empty();
-        snapshot.milestones = vec![skeleton.clone(), next.clone()];
+        snapshot.milestones = vec![skeleton, next.clone()];
         assert!(!splittable(&next, &snapshot.milestones), "#16 still open");
         assert_ne!(decide(&snapshot), Route::Split { milestone: 17 });
         let landed = |labels: &[&str], state: &str| Issue {
