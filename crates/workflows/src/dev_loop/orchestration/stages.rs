@@ -109,7 +109,11 @@ checks the same rules after you), then branch -> PR ->
 gh pr merge --squash. A Micro-UI or a screen composition ships with its
 mock-up: open the page under mock/pages/ and the micro-frontend under
 mock/components/ first (they are the screen as the human wants it; a
-`mockup/*` branch may carry a newer one), keep them true to what you build,
+`mockup/*` branch may carry a newer one). Build FROM their code, never
+beside it: carry the micro-frontend's markup, classes and structure into
+apps/, wire it to the real Capabilities and DataCapabilities, and change
+only what the real data demands — never rewrite a screen the mock-up
+already draws. Keep them true to what you build,
 list them in mock/pages.json (contract N), name the parts of what a Micro-UI
 renders (contract D: data-writes=\"<DataCapability>\" on every actuator,
 data-reads=\"<Capability>\" on every part that shows a read, one at least per
@@ -593,6 +597,14 @@ mod tests {
             read.contains("gh pr merge --squash"),
             "the read side still merges"
         );
+    }
+
+    #[test]
+    fn a_screen_is_built_from_its_mock_up_s_code_not_beside_it() {
+        // The mock-up is the screen as the human wants it: the session carries
+        // its code into apps/ rather than drawing the screen again.
+        assert!(CODE.contains("Build FROM their code, never"));
+        assert!(CODE.contains("never rewrite a screen the mock-up"));
     }
 
     #[test]
