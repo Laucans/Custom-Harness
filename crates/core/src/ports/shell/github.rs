@@ -233,6 +233,14 @@ pub trait GitHub {
     /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses.
     async fn create_branch(&self, branch: &str, sha: &str) -> Outcome<()>;
 
+    /// Merges `head` into `base` on GitHub (`POST merges`): nothing when
+    /// `base` already holds every commit of `head`.
+    ///
+    /// # Errors
+    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses — a
+    /// conflict among the reasons.
+    async fn merge_branch(&self, base: &str, head: &str) -> Outcome<()>;
+
     /// The repo's default branch.
     ///
     /// # Errors

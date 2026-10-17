@@ -235,6 +235,9 @@ pub(super) async fn run_lanes(
         ));
         return None;
     }
+    if !args.dry_run {
+        branching::catch_up(gh, &branch, &args.branch, log).await;
+    }
     for (number, version) in candidates {
         let Some(slot) = lanes.free_slot() else {
             log.say("watch: lanes -> every lane is busy");

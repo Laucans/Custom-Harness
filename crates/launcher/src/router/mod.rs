@@ -106,6 +106,11 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
             reason: format!("changes left waiting: {}", halt.reason()),
         }),
     }
+    // What the harness installed in the target follows the harness: a fix
+    // to an installed script or contract reaches a product made before.
+    if !args.dry_run {
+        crate::dispatch::init_repo::upgrade(&args.target_repo_url, &args.branch, here, &log).await;
+    }
     let draining = Arc::new(AtomicBool::new(false));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| Halt::Failed(format!("SIGTERM cannot be listened to: {e}")))?;

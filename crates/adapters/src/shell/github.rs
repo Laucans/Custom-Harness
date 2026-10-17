@@ -862,6 +862,20 @@ impl GitHub for GhCli {
         .await
     }
 
+    async fn merge_branch(&self, base: &str, head: &str) -> Outcome<()> {
+        self.write(
+            &format!("merge {head} into {base}"),
+            "POST",
+            "merges",
+            &[
+                ("base", base.to_string()),
+                ("head", head.to_string()),
+                ("commit_message", format!("Merge {head} into {base}")),
+            ],
+        )
+        .await
+    }
+
     async fn default_branch(&self) -> Outcome<String> {
         let what = "the default branch";
         let value = self.repo_json(what).await?;
@@ -1303,6 +1317,17 @@ mod tests {
         );
         assert_eq!(super::refusal(why, ""), why, "no body, gh's line");
         assert_eq!(super::refusal(why, r#"{"message": "x"}"#), why);
+    }
+
+    #[tokio::test]
+    async fn a_branch_merge_github_cannot_make_is_an_error_not_a_success() {
+        use harness_core::ports::shell::github::GitHub as _;
+        let gh = super::GhCli::new(std::path::Path::new("/nonexistent"));
+        assert!(
+            gh.merge_branch("milestone/1-x", "main_agent")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -88,7 +88,7 @@ async fn dispatched(
         {
             None
         }
-        Route::DevLoop { milestone } => run_dev_loop(here, gh, milestone, args.force_reset, log)
+        Route::DevLoop { milestone } => run_dev_loop(here, gh, milestone, args, log)
             .await
             .map(|halt| ("dev_loop", halt)),
         Route::Planner { roadmap } => report_failure(
@@ -448,7 +448,7 @@ pub(super) async fn run_dev_loop(
     here: &Path,
     gh: &dyn GitHub,
     milestone: u64,
-    force_reset: bool,
+    args: &WatchArgs,
     log: &Logbook,
 ) -> Option<Halt> {
     let title = match gh.issue(milestone).await {
@@ -462,6 +462,7 @@ pub(super) async fn run_dev_loop(
         }
     };
     let branch = branching::milestone_branch(milestone, &title);
+    branching::catch_up(gh, &branch, &args.branch, log).await;
     let mut cli = match crate::cli::Cli::try_parse_from(["harness"]) {
         Ok(cli) => cli,
         Err(e) => {
@@ -472,7 +473,7 @@ pub(super) async fn run_dev_loop(
         }
     };
     cli.run.branch = branch;
-    cli.run.force_reset = force_reset;
+    cli.run.force_reset = args.force_reset;
     match crate::dispatch::dev_loop::run(&cli.run, here).await {
         Ok(ran) => {
             log.say(&format!("watch: dev_loop -> {:?}", ran.verdict));

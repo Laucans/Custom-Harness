@@ -19,10 +19,22 @@
 //!   of the architecture that wrote it. An older block — in `CLAUDE.md` or in
 //!   a document the harness installs — is replaced in place by the current
 //!   one without `--force`, and never added twice.
+//! - **A file the product never touched follows the harness**: the
+//!   manifest ([`MANIFEST`]) keeps the fingerprint of what the harness last
+//!   wrote of each file. A file that still matches it is the harness's own,
+//!   and a newer harness rewrites it; a file that differs was adapted by the
+//!   product and is kept, reported as diverged. Without it, a fix to an
+//!   installed script or contract never reached a product made before
+//!   (a product kept a broken `rules-runtime.sh`, contracts B and F).
+
+use std::collections::BTreeMap;
 
 use harness_architecture::assets::{
     CLAUDE_RULES, CLAUDE_VERSION, FILES, MARKER_CLOSE, MARKER_PREFIX, VERSION, installed_version,
 };
+
+/// Where the product keeps the fingerprints of what the harness wrote.
+pub const MANIFEST: &str = ".harness/installed.json";
 
 /// The path of the file the rules are appended to.
 pub const CLAUDE_MD: &str = "CLAUDE.md";
@@ -34,10 +46,17 @@ pub const COMMIT_MESSAGE: &str = "chore(harness): install the agent-native archi
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct InstallPlan {
     /// Files to write, with their full new content — `CLAUDE.md` included
-    /// when its block is to be added or rewritten.
+    /// when its block is to be added or rewritten, the manifest when it
+    /// changes.
     pub writes: Vec<(String, String)>,
     /// Files already there and left as they are.
     pub kept: Vec<String>,
+    /// Files the product never touched, rewritten to the harness's newer
+    /// version.
+    pub upgraded: Vec<String>,
+    /// Files that differ from both the harness's version and what it last
+    /// wrote: the product's own now, kept.
+    pub diverged: Vec<String>,
 }
 
 impl InstallPlan {
@@ -45,21 +64,61 @@ impl InstallPlan {
     /// the content of a path, or `None` when the file is absent.
     pub fn new(existing: &dyn Fn(&str) -> Option<String>, force: bool) -> Self {
         let mut plan = Self::default();
+        let before = existing(MANIFEST);
+        let recorded = before.as_deref().map(parse_manifest).unwrap_or_default();
+        let mut manifest: BTreeMap<String, String> = BTreeMap::new();
         for asset in &FILES {
-            match existing(asset.path) {
-                Some(text) if !force && !outdated(&text, VERSION) => {
-                    plan.kept.push(asset.path.to_string());
+            let current = fingerprint(asset.content);
+            let write = match existing(asset.path) {
+                None => true,
+                Some(_) if force => true,
+                Some(text) if text == asset.content => false,
+                Some(text) if outdated(&text, VERSION) => true,
+                Some(text) if recorded.get(asset.path) == Some(&fingerprint(&text)) => {
+                    plan.upgraded.push(asset.path.to_string());
+                    true
                 }
-                _ => plan
-                    .writes
-                    .push((asset.path.to_string(), asset.content.to_string())),
+                Some(_) => {
+                    plan.diverged.push(asset.path.to_string());
+                    if let Some(last) = recorded.get(asset.path) {
+                        manifest.insert(asset.path.to_string(), last.clone());
+                    }
+                    plan.kept.push(asset.path.to_string());
+                    continue;
+                }
+            };
+            manifest.insert(asset.path.to_string(), current);
+            if write {
+                plan.writes
+                    .push((asset.path.to_string(), asset.content.to_string()));
+            } else {
+                plan.kept.push(asset.path.to_string());
             }
         }
         match merge_claude_md(existing(CLAUDE_MD).as_deref(), force) {
             Some(text) => plan.writes.push((CLAUDE_MD.to_string(), text)),
             None => plan.kept.push(CLAUDE_MD.to_string()),
         }
+        let after = render_manifest(&manifest);
+        if before.as_deref() != Some(after.as_str()) {
+            plan.writes.push((MANIFEST.to_string(), after));
+        }
         plan
+    }
+
+    /// The commit message: an upgrade says so, an install says what it is.
+    #[must_use]
+    pub fn commit_message(&self) -> String {
+        if self.writes.iter().all(|(path, _)| path == MANIFEST) {
+            "chore(harness): record what the harness installed".to_string()
+        } else if self.upgraded.is_empty() {
+            COMMIT_MESSAGE.to_string()
+        } else {
+            format!(
+                "chore(harness): upgrade what the harness installed\n\n{}\n",
+                self.upgraded.join("\n")
+            )
+        }
     }
 
     /// Nothing to write: the repository already carries everything.
@@ -67,6 +126,34 @@ impl InstallPlan {
     pub const fn is_empty(&self) -> bool {
         self.writes.is_empty()
     }
+}
+
+/// A text's fingerprint: FNV-1a over its bytes, in hex. Not a defence
+/// against anyone — only a way to tell "unchanged since the harness wrote
+/// it" without keeping every version.
+#[must_use]
+pub fn fingerprint(text: &str) -> String {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{hash:016x}")
+}
+
+/// The manifest's fingerprints by path; empty when it does not parse.
+fn parse_manifest(text: &str) -> BTreeMap<String, String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| value.get("files").cloned())
+        .and_then(|files| serde_json::from_value(files).ok())
+        .unwrap_or_default()
+}
+
+/// The manifest's text: stable, one path per line, sorted.
+fn render_manifest(files: &BTreeMap<String, String>) -> String {
+    let value = serde_json::json!({ "files": files });
+    let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
+    text.push('\n');
+    text
 }
 
 /// True when a text carries a marked block of an older version than
@@ -123,7 +210,7 @@ mod tests {
     #[test]
     fn an_empty_repository_gets_every_file_and_a_claude_md_made_of_the_rules() {
         let plan = InstallPlan::new(&|_| None, false);
-        assert_eq!(plan.writes.len(), FILES.len() + 1);
+        assert_eq!(plan.writes.len(), FILES.len() + 2, "and the manifest");
         assert_eq!(plan.kept, [] as [std::string::String; 0]);
         let (_, claude) = plan
             .writes
@@ -140,10 +227,11 @@ mod tests {
         };
         let plan = InstallPlan::new(&existing, false);
         assert_eq!(plan.kept, ["contracts/a-concept.schema.json"]);
-        assert_eq!(plan.writes.len(), FILES.len());
+        assert_eq!(plan.diverged, ["contracts/a-concept.schema.json"]);
+        assert_eq!(plan.writes.len(), FILES.len() + 1);
         let forced = InstallPlan::new(&existing, true);
         assert_eq!(forced.kept, [] as [std::string::String; 0]);
-        assert_eq!(forced.writes.len(), FILES.len() + 1);
+        assert_eq!(forced.writes.len(), FILES.len() + 2);
     }
 
     #[test]
@@ -241,8 +329,93 @@ mod tests {
                     .map(|a| a.content.to_string())
             }
         };
-        let plan = InstallPlan::new(&full, false);
+        let first = InstallPlan::new(&full, false);
+        assert_eq!(
+            first.writes.len(),
+            1,
+            "a repository without one records the manifest"
+        );
+        assert_eq!(
+            first.commit_message(),
+            "chore(harness): record what the harness installed"
+        );
+        let manifest = first.writes[0].1.clone();
+        let plan = InstallPlan::new(
+            &|path| {
+                if path == MANIFEST {
+                    Some(manifest.clone())
+                } else {
+                    full(path)
+                }
+            },
+            false,
+        );
         assert!(plan.is_empty(), "expected nothing");
         assert_eq!(plan.kept.len(), FILES.len() + 1);
+    }
+
+    /// A manifest that records `text` as what the harness wrote at `path`.
+    fn manifest_of(path: &str, text: &str) -> String {
+        format!("{{\"files\": {{\"{path}\": \"{}\"}}}}", fingerprint(text))
+    }
+
+    #[test]
+    fn a_file_the_product_never_touched_follows_the_harness() {
+        // ForgeDesMondes: the installed contract B predated `ports`.
+        let path = "contracts/b-capability-manifest.schema.json";
+        let old = "{\"old\": true}";
+        let manifest = manifest_of(path, old);
+        let plan = InstallPlan::new(
+            &|p| match p {
+                MANIFEST => Some(manifest.clone()),
+                p if p == path => Some(old.to_string()),
+                _ => None,
+            },
+            false,
+        );
+        assert_eq!(plan.upgraded, [path]);
+        let (_, written) = plan
+            .writes
+            .iter()
+            .find(|(p, _)| p == path)
+            .expect("rewritten");
+        assert_eq!(
+            Some(written.as_str()),
+            harness_architecture::assets::content_of(path)
+        );
+        let (_, recorded) = plan
+            .writes
+            .iter()
+            .find(|(p, _)| p == MANIFEST)
+            .expect("the manifest follows");
+        assert!(recorded.contains(&fingerprint(written)));
+        assert!(plan.commit_message().contains(path));
+    }
+
+    #[test]
+    fn a_file_the_product_changed_is_kept_and_its_record_with_it() {
+        let path = "contracts/b-capability-manifest.schema.json";
+        let manifest = manifest_of(path, "{\"old\": true}");
+        let plan = InstallPlan::new(
+            &|p| match p {
+                MANIFEST => Some(manifest.clone()),
+                p if p == path => Some("{\"theirs\": true}".to_string()),
+                _ => None,
+            },
+            false,
+        );
+        assert_eq!(plan.diverged, [path]);
+        assert!(plan.upgraded.is_empty());
+        assert!(!plan.writes.iter().any(|(p, _)| p == path));
+        let (_, recorded) = plan
+            .writes
+            .iter()
+            .find(|(p, _)| p == MANIFEST)
+            .expect("manifest");
+        assert!(recorded.contains(&fingerprint("{\"old\": true}")));
+        assert_eq!(plan.commit_message(), COMMIT_MESSAGE);
+        assert_eq!(fingerprint(""), "cbf29ce484222325");
+        assert_eq!(fingerprint("a"), "af63dc4c8601ec8c", "FNV-1a's own vector");
+        assert_ne!(fingerprint("a"), fingerprint("b"));
     }
 }

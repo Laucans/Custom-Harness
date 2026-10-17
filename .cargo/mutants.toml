@@ -30,6 +30,12 @@ exclude_globs = [
 # nothing, `NoProposer` proposes nothing): their body is what a mutant
 # writes, so no test can tell them apart.
 exclude_re = [
+  # Composition-root wiring with the real adapters (gh, git, the disk): the
+  # logic they call is tested in `workflows`, the wiring itself has no fake.
+  "dispatch/init_repo\\.rs:.*replace upgrade with \\(\\)",
+  "router/mod\\.rs:.*delete ! in run",
+  "router/lanes\\.rs:.*(replace run_lanes|delete ! in run_lanes)",
+  "router/routes\\.rs:.*replace run_dev_loop ",
   "router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) ",
   "dataguard/src/guard\\.rs:.*NoInvariants",
   "dataguard/src/reconcile\\.rs:.*NoProposer",

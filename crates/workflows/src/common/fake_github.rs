@@ -32,6 +32,8 @@ pub enum Wrote {
     CreatedLabel(String, String, String),
     /// A branch created: name, sha.
     CreatedBranch(String, String),
+    /// A branch merged into another: `(base, head)`.
+    MergedBranch(String, String),
     /// A branch made the default.
     DefaultBranch(String),
     /// A branch protected.
@@ -321,6 +323,13 @@ impl GitHub for FakeGitHub {
         self.wrote
             .borrow_mut()
             .push(Wrote::CreatedBranch(branch.to_string(), sha.to_string()));
+        Ok(())
+    }
+
+    async fn merge_branch(&self, base: &str, head: &str) -> Outcome<()> {
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::MergedBranch(base.to_string(), head.to_string()));
         Ok(())
     }
 

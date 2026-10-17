@@ -13,7 +13,7 @@ use harness_core::domain::{Halt, Outcome};
 use harness_core::ports::shell::process::Ran;
 
 use crate::init_repo::config::Config;
-use crate::init_repo::data::install::{COMMIT_MESSAGE, InstallPlan};
+use crate::init_repo::data::install::InstallPlan;
 use crate::init_repo::ports::Ports;
 
 /// Installs the rules, and says what it did — one line per fact, as the
@@ -67,7 +67,7 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<Vec<String>> {
     }
     let repo = ports.repos.at(&clone);
     said("stage", &repo.stage_all().await?)?;
-    said("commit", &repo.commit(COMMIT_MESSAGE).await?)?;
+    said("commit", &repo.commit(&plan.commit_message()).await?)?;
     said("push", &repo.push(&config.branch).await?)?;
     lines.push(format!(
         "installed {} file(s) on {}: {}",
@@ -75,6 +75,18 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<Vec<String>> {
         config.branch,
         summary(&plan.writes)
     ));
+    if !plan.upgraded.is_empty() {
+        lines.push(format!(
+            "upgraded, untouched since the harness wrote them: {}",
+            plan.upgraded.join(", ")
+        ));
+    }
+    if !plan.diverged.is_empty() {
+        lines.push(format!(
+            "diverged, the product's own now — kept: {}",
+            plan.diverged.join(", ")
+        ));
+    }
     if !plan.kept.is_empty() {
         lines.push(format!(
             "kept as they were: {}{}",
@@ -209,19 +221,26 @@ mod tests {
                 "/tmp/init: clone https://github.com/o/r.git o-r".to_string(),
                 "/tmp/init/o-r: checkout main_agent --force".to_string(),
                 "/tmp/init/o-r: stage_all".to_string(),
-                format!("/tmp/init/o-r: commit {COMMIT_MESSAGE}"),
+                format!(
+                    "/tmp/init/o-r: commit {}",
+                    crate::init_repo::data::install::COMMIT_MESSAGE
+                ),
                 "/tmp/init/o-r: push main_agent".to_string(),
             ]
         );
         let written = disk.written.borrow();
-        assert_eq!(written.len(), FILES.len() + 1, "every asset and CLAUDE.md");
+        assert_eq!(
+            written.len(),
+            FILES.len() + 2,
+            "every asset, CLAUDE.md and the manifest"
+        );
         assert!(written.iter().any(
             |(path, text)| path.ends_with("docs/ARCHITECTURE.md") && text.contains(MARKER_OPEN)
         ));
         assert!(
             lines[0].starts_with(&format!(
                 "installed {} file(s) on main_agent",
-                harness_architecture::assets::FILES.len() + 1
+                harness_architecture::assets::FILES.len() + 2
             )),
             "{}",
             lines[0]
@@ -268,7 +287,58 @@ mod tests {
                 .1
                 .starts_with("# r\n\nmine.\n\n<!-- harness:architecture v3 -->")
         );
-        assert!(lines[1].contains("kept as they were: contracts/a-concept.schema.json"));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("kept as they were: contracts/a-concept.schema.json")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("diverged, the product's own now — kept: contracts/a-concept")),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_the_product_never_touched_is_upgraded_and_said_so() {
+        let clone = PathBuf::from("/tmp/init/o-r");
+        let path = "contracts/b-capability-manifest.schema.json";
+        let old = "{\"old\": true}";
+        let mut existing = std::collections::HashMap::new();
+        existing.insert(clone.clone(), String::new());
+        existing.insert(clone.join(path), old.to_string());
+        existing.insert(
+            clone.join(crate::init_repo::data::install::MANIFEST),
+            format!(
+                "{{\"files\": {{\"{path}\": \"{}\"}}}}",
+                crate::init_repo::data::install::fingerprint(old)
+            ),
+        );
+        let disk = Rc::new(FakeDisk {
+            existing,
+            ..FakeDisk::default()
+        });
+        let repos = FakeRepos::default();
+        let lines = run(
+            &ports(Rc::clone(&disk), repos.clone()),
+            &config_fake::config(),
+        )
+        .await
+        .expect("upgraded");
+        assert!(
+            lines.iter().any(
+                |l| l.contains("upgraded, untouched since the harness wrote them")
+                    && l.contains(path)
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            repos.asked("commit chore(harness): upgrade"),
+            "{:?}",
+            repos.calls()
+        );
     }
 
     #[tokio::test]
@@ -282,6 +352,20 @@ mod tests {
         existing.insert(
             clone.join(CLAUDE_MD),
             harness_architecture::assets::CLAUDE_RULES.to_string(),
+        );
+        let recorded = crate::init_repo::data::install::InstallPlan::new(
+            &|path| existing.get(&clone.join(path)).cloned(),
+            false,
+        );
+        let manifest = recorded
+            .writes
+            .iter()
+            .find(|(path, _)| path == crate::init_repo::data::install::MANIFEST)
+            .map(|(_, text)| text.clone())
+            .expect("a manifest");
+        existing.insert(
+            clone.join(crate::init_repo::data::install::MANIFEST),
+            manifest,
         );
         let disk = Rc::new(FakeDisk {
             existing,
@@ -314,7 +398,7 @@ mod tests {
             lines,
             [format!(
                 "would install {} file(s) on main_agent (read against an empty tree)",
-                harness_architecture::assets::FILES.len() + 1
+                harness_architecture::assets::FILES.len() + 2
             )]
         );
     }

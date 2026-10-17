@@ -4,7 +4,30 @@
 //! line naming the *task's own* branch, computed by the session, not this
 //! module) while `init-repo`'s audit and `main_agent_merge` both need the
 //! *milestone's own* branch name — derived, never asked of a session, so
-//! the two sides can never disagree on what it is.
+//! the two sides can never disagree on what it is. And what keeps that
+//! branch up to the integration branch ([`catch_up`]).
+
+use harness_core::ports::shell::github::GitHub;
+use harness_core::traces::Logbook;
+
+/// Brings a milestone's branch up to the integration branch before its
+/// tasks are handed out.
+///
+/// A fix pushed on the integration branch — a file the harness upgraded,
+/// a milestone that landed after this one was cut — reaches the tasks of a
+/// milestone already open: a milestone cut before the one before it landed
+/// had tasks that found no Data layer. A refusal (a conflict) is said and
+/// never forced: the milestone's own merge to the integration branch meets
+/// it there.
+pub async fn catch_up(gh: &dyn GitHub, milestone_branch: &str, integration: &str, log: &Logbook) {
+    match gh.merge_branch(milestone_branch, integration).await {
+        Ok(()) => log.debug(&format!("{milestone_branch} holds {integration}")),
+        Err(halt) => log.warn(&format!(
+            "{milestone_branch} cannot take {integration}: {}",
+            halt.reason()
+        )),
+    }
+}
 
 /// The branch a milestone's tasks merge into: `milestone/<number>-<slug>`.
 #[must_use]
@@ -32,6 +55,21 @@ fn slugify(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::fake_github::{FakeGitHub, Wrote};
+
+    #[tokio::test]
+    async fn a_milestone_branch_takes_the_integration_branch_in() {
+        let gh = FakeGitHub::default();
+        catch_up(&gh, "milestone/17-ai", "main_agent", &Logbook::null()).await;
+        assert!(
+            gh.wrote.borrow().iter().any(|w| matches!(
+                w,
+                Wrote::MergedBranch(base, head) if base == "milestone/17-ai" && head == "main_agent"
+            )),
+            "{:?}",
+            gh.wrote.borrow()
+        );
+    }
 
     #[test]
     fn a_plain_title_becomes_a_lowercase_slug() {

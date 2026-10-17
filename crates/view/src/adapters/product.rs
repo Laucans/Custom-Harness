@@ -323,6 +323,9 @@ mod tests {
         async fn create_branch(&self, _branch: &str, _sha: &str) -> Outcome<()> {
             Err(refused())
         }
+        async fn merge_branch(&self, _base: &str, _head: &str) -> Outcome<()> {
+            Err(refused())
+        }
         async fn default_branch(&self) -> Outcome<String> {
             Err(refused())
         }

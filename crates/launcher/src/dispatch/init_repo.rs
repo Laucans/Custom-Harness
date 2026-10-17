@@ -14,7 +14,44 @@ use harness_workflows::init_repo::data::report::Verdict;
 use harness_workflows::init_repo::ports::Ports;
 use harness_workflows::init_repo::run;
 
+use harness_core::traces::Logbook;
+
 use crate::cli::InitRepoArgs;
+
+/// Brings what the harness installed in the target up to this harness, at
+/// a watch's start: a file the product never touched is rewritten, one
+/// commit on the integration branch; one it changed is kept and named.
+///
+/// Never fails the watch: a target it cannot read is said and skipped.
+pub async fn upgrade(target_url: &str, branch: &str, here: &Path, log: &Logbook) {
+    let Some(slug) = Slug::parse(target_url) else {
+        log.say("upgrade: no target repository named — skipped");
+        return;
+    };
+    let ports = Ports {
+        gh: Rc::new(GhCli::for_slug(&slug)),
+        disk: Rc::new(RealDisk),
+        repos: Rc::new(GitRepos),
+    };
+    let config = Config {
+        slug,
+        branch: branch.to_string(),
+        env_file: here.join(".env.local"),
+        write_env: false,
+        force: false,
+        dry_run: false,
+        workdir: here.join(".llocal").join("init"),
+        install: true,
+    };
+    match harness_workflows::init_repo::action::install::run(&ports, &config).await {
+        Ok(lines) => {
+            for line in lines {
+                log.say(&format!("upgrade: {line}"));
+            }
+        }
+        Err(halt) => log.warn(&format!("upgrade: {}", halt.reason())),
+    }
+}
 
 /// Runs one `init-repo` invocation and returns the exit code the scheduler
 /// reads.
