@@ -50,6 +50,12 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
                 roadmap,
             })
         } else {
+            // Checks that ran on an older base do not run again by
+            // themselves: a fix landed on the integration branch meanwhile
+            // (#17 waited on a rules contest settled there) reaches the
+            // milestone, and its push runs them anew. Nothing to take is a
+            // no-op; a conflict is left to the PR, where it shows.
+            let _ = ports.gh.merge_branch(&branch, &config.base_branch).await;
             Ok(MergeOutcome::WaitingOnChecks)
         }
     } else {
@@ -263,7 +269,14 @@ mod tests {
             .await
             .expect("a verdict");
         assert_eq!(outcome, MergeOutcome::WaitingOnChecks);
-        assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
+        assert_eq!(
+            gh.writes(),
+            [crate::common::fake_github::Wrote::MergedBranch(
+                "milestone/4-territory-tooling".to_string(),
+                "main_agent".to_string()
+            )],
+            "the milestone takes what landed on its base, nothing else"
+        );
     }
 
     #[tokio::test]
