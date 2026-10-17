@@ -56,6 +56,20 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             // milestone, and its push runs them anew. Nothing to take is a
             // no-op; a conflict is left to the PR, where it shows.
             let _ = ports.gh.merge_branch(&branch, &config.base_branch).await;
+            // A check that failed, not one still running, is the repair
+            // route's: no session owns a milestone's branch, and #17's PR
+            // stayed red on a settled contest's CONTEST.md that `pr_fix`
+            // knows to remove.
+            let failing = ports
+                .gh
+                .pr_failing_checks(&pr.num)
+                .await
+                .unwrap_or_default();
+            if !failing.is_empty()
+                && let Ok(number) = pr.num.parse::<u64>()
+            {
+                ports.gh.add_label(number, labels::PR_FIX).await?;
+            }
             Ok(MergeOutcome::WaitingOnChecks)
         }
     } else {
@@ -276,6 +290,43 @@ mod tests {
                 "main_agent".to_string()
             )],
             "the milestone takes what landed on its base, nothing else"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_existing_pr_with_failed_checks_goes_to_repair() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(4, "open", "Territory tooling", &[labels::MILESTONE])],
+            subs: vec![(4, vec![task(11, "closed")])],
+            merged: merged_closing(&[11]),
+            prs: vec![(
+                "milestone/4-territory-tooling".to_string(),
+                Pr {
+                    num: "99".to_string(),
+                    base: "main_agent".to_string(),
+                    head: "milestone/4-territory-tooling".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            pr_checks: HashMap::from([("99".to_string(), false)]),
+            failing_checks: HashMap::from([(
+                "99".to_string(),
+                vec!["rule-tests-untouched".to_string()],
+            )]),
+            ..FakeGitHub::default()
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(outcome, MergeOutcome::WaitingOnChecks);
+        assert!(
+            gh.writes()
+                .contains(&crate::common::fake_github::Wrote::Label(
+                    99,
+                    labels::PR_FIX.to_string()
+                )),
+            "{:?}",
+            gh.writes()
         );
     }
 
