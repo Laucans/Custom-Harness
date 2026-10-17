@@ -13,6 +13,7 @@ pub mod checkpoint;
 pub mod costs;
 pub mod events;
 pub mod factories;
+pub mod handoffs;
 pub mod lock;
 pub mod prompts;
 pub mod review;

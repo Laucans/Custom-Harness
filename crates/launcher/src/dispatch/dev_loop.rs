@@ -28,6 +28,7 @@ use harness_adapters::shell::git::{GitCli, GitRepos};
 use harness_adapters::shell::github::GhCli;
 use harness_adapters::shell::process;
 use harness_adapters::store::checkpoint::Checkpoint;
+use harness_adapters::store::handoffs::FsHandoffs;
 use harness_core::domain::Verdict;
 use harness_core::domain::workspace::{Wanted, Workspace};
 use harness_core::execution::provisioning::{Mount, Provisioner, Run};
@@ -549,6 +550,7 @@ async fn turns(
         repo: Rc::new(GitCli::new(workspace.root())),
         process: Rc::new(process::Processes),
         history: Rc::new(LedgerSpending::new(&workspace.ledger(), run_id, "")),
+        handoffs: Rc::new(FsHandoffs::new(&workspace.loop_dir().join("handoffs"))),
     };
     let signatures = Rc::new(if args.no_signatures {
         // Said out loud, like every other gate that stops applying: a run whose

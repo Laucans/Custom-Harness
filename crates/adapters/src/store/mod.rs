@@ -9,6 +9,7 @@ pub mod checkpoint;
 pub mod error_ledger;
 pub mod events;
 pub mod factories;
+pub mod handoffs;
 pub mod ledger;
 pub mod lock;
 pub mod prompt_book;

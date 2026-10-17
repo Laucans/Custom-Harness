@@ -445,7 +445,11 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             cut: Cut::Executing(CODE_SKIPS),
             rules: true,
             narrow: true,
-            then: Vec::new(),
+            then: vec![Box::new(Unpaid(
+                crate::dev_loop::action::chain::LeaveRelay {
+                    handoffs: Rc::clone(&ports.handoffs),
+                },
+            ))],
         }
         .body(ports, config, turn),
     }

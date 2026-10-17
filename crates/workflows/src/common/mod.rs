@@ -33,6 +33,8 @@ pub(crate) mod fake_git;
 #[cfg(test)]
 pub(crate) mod fake_github;
 #[cfg(test)]
+pub(crate) mod fake_handoffs;
+#[cfg(test)]
 pub(crate) mod fake_locks;
 #[cfg(test)]
 pub(crate) mod fake_process;

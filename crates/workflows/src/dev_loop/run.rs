@@ -188,6 +188,7 @@ fn rounds(
     let repo = Rc::clone(&ports.repo);
     let process = Rc::clone(&ports.process);
     let history = Rc::clone(&ports.history);
+    let handoffs = Rc::clone(&ports.handoffs);
     let branch = config.integration_branch.clone();
     let model = config.model.clone();
     let effort = config.effort.clone();
@@ -211,6 +212,7 @@ fn rounds(
             repo: Rc::clone(&repo),
             process: Rc::clone(&process),
             history: Rc::clone(&history),
+            handoffs: Rc::clone(&handoffs),
         };
         let config = Config {
             integration_branch: branch.clone(),
@@ -237,6 +239,9 @@ fn rounds(
                 resuming: if turn == 1 { resuming.clone() } else { None },
                 wanted,
                 data_layer: config.data_layer_spec(),
+                chain: Some(crate::dev_loop::action::chain::TakeRelay {
+                    handoffs: Rc::clone(&handoffs),
+                }),
             },
             stages: stages::table(&ports, &config, turn),
             delivered: MarkWaitingMerge {

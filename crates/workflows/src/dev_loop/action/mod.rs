@@ -4,5 +4,6 @@
 //! doesn't write, so everything that writes lives here rather than there.
 
 pub mod actions;
+pub mod chain;
 pub mod narrow;
 pub mod stop;

@@ -17,6 +17,7 @@ use harness_core::ports::shell::git::Repo;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::shell::process::Process;
 use harness_core::ports::store::costs::CostHistory;
+use harness_core::ports::store::handoffs::Handoffs;
 use harness_core::ports::store::spending::Spending;
 
 /// The ports that a loop round needs.
@@ -37,6 +38,9 @@ pub struct Ports {
     pub process: Rc<dyn Process>,
     /// What tasks of a kind have cost — the budget gate reads it.
     pub history: Rc<dyn CostHistory>,
+    /// The relays a light `code` session leaves for the next task of its
+    /// system (`action::chain`).
+    pub handoffs: Rc<dyn Handoffs>,
 }
 
 #[cfg(test)]
@@ -140,6 +144,7 @@ pub(crate) mod fake {
             repo: crate::common::fake_git::FakeRepos::default().at(Path::new("/ws")),
             process: Rc::new(crate::common::fake_process::FakeProcess::default()),
             history: Rc::new(NoHistory),
+            handoffs: Rc::new(crate::common::fake_handoffs::FakeHandoffs::default()),
         }
     }
 }

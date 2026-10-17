@@ -73,6 +73,9 @@ pub struct PickTask {
     /// watch. Picked if runnable, refused by name otherwise — never traded
     /// for the board's own choice, which another lane may be running.
     pub wanted: Option<u64>,
+    /// The relay a light session of the task's system left, taken once the
+    /// task is known (`chain`); `None` where no register is wired.
+    pub chain: Option<crate::dev_loop::action::chain::TakeRelay>,
     /// What every stage of the round opens with when the task carries
     /// `harness:data-layer` — the strongest model, for the data design.
     pub data_layer: harness_core::ports::agent::SessionSpec,
@@ -182,6 +185,9 @@ impl Action<Loop> for PickTask {
                 "data layer — every session of this round opens on {}/{}",
                 spec.model, spec.effort
             ));
+        }
+        if let Some(chain) = &self.chain {
+            chain.run(ctx).await?;
         }
         Ok(Verdict::Continue)
     }
@@ -505,6 +511,7 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+            chain: None,
         }
         .run(&mut context)
         .await
@@ -528,6 +535,7 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+            chain: None,
         }
         .run(&mut context)
         .await
@@ -550,6 +558,7 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+            chain: None,
         }
         .run(&mut context)
         .await
@@ -580,6 +589,7 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+            chain: None,
         }
         .run(&mut context)
         .await
@@ -617,6 +627,7 @@ mod tests {
             resuming: Some("11".to_string()),
             wanted: None,
             data_layer: opus_high(),
+            chain: None,
         }
         .run(&mut context)
         .await
@@ -642,6 +653,7 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+            chain: None,
         }
         .run(&mut context)
         .await
@@ -666,6 +678,7 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+            chain: None,
         }
         .run(&mut context)
         .await
@@ -689,6 +702,7 @@ mod tests {
             resuming: None,
             wanted: None,
             data_layer: opus_high(),
+            chain: None,
         }
         .run(&mut context)
         .await
