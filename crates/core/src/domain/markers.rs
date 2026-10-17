@@ -29,15 +29,41 @@ pub fn ok_line(text: &str) -> Option<String> {
     marked(text, OK)
 }
 
+/// A line says the marker when it starts with it, past its indentation and
+/// any Markdown around it (`**`, `>`, a backtick): a session quoting a rule
+/// that names the marker mid-sentence has not said it.
 fn marked(text: &str, marker: &str) -> Option<String> {
     text.lines()
-        .find(|line| line.contains(marker))
+        .find(|line| {
+            line.trim_start_matches(|c: char| {
+                c.is_whitespace() || matches!(c, '*' | '_' | '>' | '`' | '#')
+            })
+            .starts_with(marker)
+        })
         .map(|line| line.trim().to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marker_quoted_mid_sentence_is_not_said() {
+        // A planner's report quoted the product's CLAUDE.md, and the harness
+        // read the rule as the session stopping.
+        let quoted = "- A port you need that `ports.json` lacks is not yours to add. Stop with \
+                      `AGENT_LOOP_STOP: port <id> — <provider>, <cost>, <why>`.";
+        assert_eq!(stop_line(quoted), None);
+        assert_eq!(stop_line("it said AGENT_LOOP_OK: done"), None);
+        assert_eq!(
+            stop_line("report\n**AGENT_LOOP_STOP: no SPEC**\n").as_deref(),
+            Some("**AGENT_LOOP_STOP: no SPEC**")
+        );
+        assert_eq!(
+            stop_line("> `AGENT_LOOP_STOP: port llm — x`").as_deref(),
+            Some("> `AGENT_LOOP_STOP: port llm — x`")
+        );
+    }
 
     #[test]
     fn a_text_without_the_marker_has_no_stop_line() {
