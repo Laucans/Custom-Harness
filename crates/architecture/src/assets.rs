@@ -63,8 +63,9 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// script, the mutants configuration, rotation and test-debt filing, the
 /// schema dump, the data model, the mock-up's files, the conformance
 /// runner, the `DataGuard` server's skeleton, the contracts A–Q, the ports
-/// and the secrets' scaffolding, the rules' gate, runtime and suites.
-pub const FILES: [Asset; 60] = [
+/// and the secrets' scaffolding, the rules' gate, runtime and suites, and
+/// the root `.gitignore` that keeps build outputs out of a round's changes.
+pub const FILES: [Asset; 61] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -305,6 +306,10 @@ pub const FILES: [Asset; 60] = [
         path: "tests/rules/journey/.gitignore",
         content: include_str!("../assets/rules/journey/gitignore"),
     },
+    Asset {
+        path: ".gitignore",
+        content: include_str!("../assets/gitignore"),
+    },
 ];
 
 /// The content of the asset installed at `path`, if there is one.
@@ -334,6 +339,16 @@ mod tests {
                     n + 1
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_root_gitignore_keeps_build_outputs_out_of_a_round_s_changes() {
+        // The architecture gate judges the dirty paths too: an unignored
+        // `target/` reads as the round touching outside its closure.
+        let ignore = content_of(".gitignore").expect("installed");
+        for line in ["target/", "node_modules/", ".env.local"] {
+            assert!(ignore.lines().any(|l| l == line), "{line} is ignored");
         }
     }
 

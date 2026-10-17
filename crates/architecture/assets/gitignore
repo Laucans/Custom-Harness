@@ -1,0 +1,5 @@
+# Build outputs: a round's own `cargo build` or `npm install` is never part of its diff.
+target/
+node_modules/
+# Per-clone secrets and settings.
+.env.local

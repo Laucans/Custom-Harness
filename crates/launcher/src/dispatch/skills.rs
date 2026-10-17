@@ -33,12 +33,15 @@ use harness_core::traces::Logbook;
 /// Where skills live, under a repository root.
 const SKILLS: &str = ".claude/skills";
 
-/// What goes in the clone's local exclude file, so `git status` stays clean.
+/// What goes in the clone's local exclude file, so `git status` stays clean:
+/// the borrowed skills, and the build outputs a session's own `cargo build`
+/// or `npm install` leaves — a product without a `.gitignore` for them
+/// would show them as the round's changes, outside its closure.
 ///
 /// `.git/info/exclude` and not `.gitignore`: the first is per-clone and
 /// never committed, which is exactly what a borrowed file wants. A
 /// `.gitignore` entry would be a change to the target repository.
-const EXCLUDE_LINE: &str = "/.claude/";
+const EXCLUDE_LINES: [&str; 3] = ["/.claude/", "target/", "node_modules/"];
 
 /// Copies the harness's skills into this checkout, and hides them from git.
 ///
@@ -83,7 +86,7 @@ pub fn lend(here: &Path, root: &Path, disk: &dyn Disk, log: &Logbook) -> Outcome
     Ok(())
 }
 
-/// Adds the exclude line to the clone's `.git/info/exclude`, once.
+/// Adds the exclude lines the clone's `.git/info/exclude` lacks, once.
 ///
 /// Read-modify-write rather than append: the `Disk` port writes whole
 /// files, and this one is a handful of lines.
@@ -91,17 +94,22 @@ fn hide_from_git(root: &Path, disk: &dyn Disk) -> Outcome<()> {
     let info = root.join(".git/info");
     let exclude = info.join("exclude");
     let current = disk.read_to_string(&exclude).unwrap_or_default();
-    if current.lines().any(|line| line.trim() == EXCLUDE_LINE) {
+    let missing: Vec<&str> = EXCLUDE_LINES
+        .into_iter()
+        .filter(|wanted| !current.lines().any(|line| line.trim() == *wanted))
+        .collect();
+    if missing.is_empty() {
         return Ok(());
     }
     disk.create_dir_all(&info)?;
-    let next = if current.is_empty() {
-        format!("{EXCLUDE_LINE}\n")
-    } else if current.ends_with('\n') {
-        format!("{current}{EXCLUDE_LINE}\n")
-    } else {
-        format!("{current}\n{EXCLUDE_LINE}\n")
-    };
+    let mut next = current;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    for line in missing {
+        next.push_str(line);
+        next.push('\n');
+    }
     disk.write_to_string(&exclude, &next)
 }
 
@@ -201,7 +209,7 @@ mod tests {
             .iter()
             .find(|(path, _)| path == Path::new("/clone/.git/info/exclude"))
             .expect("the exclude file");
-        assert_eq!(text, "/.claude/\n");
+        assert_eq!(text, "/.claude/\ntarget/\nnode_modules/\n");
     }
 
     #[test]
@@ -209,7 +217,7 @@ mod tests {
         let mut disk = harness_with(&["code"]);
         disk.files.insert(
             PathBuf::from("/clone/.git/info/exclude"),
-            "# stuff\n/.claude/\n".to_string(),
+            "# stuff\n/.claude/\ntarget/\nnode_modules/\n".to_string(),
         );
         lend(
             Path::new("/harness"),
@@ -247,7 +255,30 @@ mod tests {
             .iter()
             .find(|(path, _)| path == Path::new("/clone/.git/info/exclude"))
             .expect("the exclude file");
-        assert_eq!(text, "build/\n/.claude/\n");
+        assert_eq!(text, "build/\n/.claude/\ntarget/\nnode_modules/\n");
+    }
+
+    #[test]
+    fn an_exclude_file_without_a_final_newline_gets_only_the_lines_it_lacks() {
+        // A clone excluded before the build outputs were: only those land.
+        let mut disk = harness_with(&["code"]);
+        disk.files.insert(
+            PathBuf::from("/clone/.git/info/exclude"),
+            "/.claude/".to_string(),
+        );
+        lend(
+            Path::new("/harness"),
+            Path::new("/clone"),
+            &disk,
+            &Logbook::null(),
+        )
+        .expect("lent");
+        let wrote = disk.wrote.borrow();
+        let (_, text) = wrote
+            .iter()
+            .find(|(path, _)| path == Path::new("/clone/.git/info/exclude"))
+            .expect("the exclude file");
+        assert_eq!(text, "/.claude/\ntarget/\nnode_modules/\n");
     }
 
     #[test]
