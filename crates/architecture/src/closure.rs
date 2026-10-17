@@ -427,15 +427,6 @@ pub fn closure(
                 // edits — unless no server runs it.
                 if !task.is_hostless() {
                     add(&mut patterns, folder(SERVER));
-                    // The server names every DataCapability by path: cargo
-                    // loads none of the workspace unless they are all there
-                    // (#40 stopped on `save-settings`, a neighbour).
-                    let reached = graph
-                        .and_then(|g| g.owning(SERVER).map(|server| g.reached(&server.name)))
-                        .unwrap_or_default();
-                    for dir in reached {
-                        add(&mut patterns, folder(&dir));
-                    }
                 }
                 if let Some(dir) = task
                     .aggregate
@@ -481,6 +472,22 @@ pub fn closure(
             add(&mut patterns, folder("concepts"));
         }
         Unit::Tooling => unreachable!("returned above"),
+    }
+
+    // Every crate the tree carries brings what it depends on by path: cargo
+    // loads none of the workspace otherwise. The server names every
+    // DataCapability, an adapter its port (#40, #41 stopped on them).
+    if let Some(g) = graph {
+        let carried: Vec<String> = patterns
+            .iter()
+            .filter_map(|p| p.strip_prefix('/')?.strip_suffix('/'))
+            .filter_map(|dir| g.owning(dir).map(|found| found.name.clone()))
+            .collect();
+        for name in carried {
+            for dir in g.reached(&name) {
+                add(&mut patterns, folder(&dir));
+            }
+        }
     }
 
     // The Concepts the task implements or names, whichever the unit.
@@ -779,6 +786,32 @@ mod tests {
         );
         assert!(found.patterns.contains(&"/crates/data/".to_string()));
         assert_eq!(glob_members(manifest), ["crates/*/capabilities/*"]);
+    }
+
+    #[test]
+    fn a_named_member_brings_what_it_depends_on_by_path() {
+        // #41, a Capability: the root names the server, which names every
+        // DataCapability by path — cargo loads nothing without them.
+        let task = declared(Unit::Capability, "credit", &["credit.revenue"], &[]);
+        let manifest = "[workspace]\nmembers = [\"crates/dataguard/server\"]\n";
+        let found = closure(&tree(), &task, Some(&graph()), Some(manifest));
+        for dir in [
+            "/crates/dataguard/server/",
+            "/crates/dataguard/data-capabilities/request-limit/",
+            "/crates/dataguard/engine/",
+        ] {
+            assert!(
+                found.patterns.contains(&dir.to_string()),
+                "{dir}: {:?}",
+                found.patterns
+            );
+        }
+        let alone = closure(&tree(), &task, Some(&graph()), None);
+        assert!(
+            !alone.patterns.iter().any(|p| p.contains("request-limit")),
+            "nothing names it: {:?}",
+            alone.patterns
+        );
     }
 
     #[test]
