@@ -69,6 +69,18 @@ id (`monde`) and the aggregates `need` it — or it is not a slice, and its
 work goes into the first aggregate's. `depends_on` (0-based indexes in
 this array) is only for a wait `needs` cannot express, and should be rare.
 
+**A new system starts with its wiring.** When this milestone is the first
+to build Capabilities or DataCapabilities of a system the repository does
+not serve yet, cut first one `tooling` slice, branch `chore/wiring-<system>`:
+the system's read crate (a read-only connection, no write API), the
+server's routes that serve its Capabilities and submit its
+DataCapabilities, its `queries/` and fixtures folders — the plumbing every
+unit of the system needs and no unit owns, with no Capability,
+DataCapability or rule of its own. It `produces` the system's id
+(`<system>`) and every other slice of that system `needs` it. Left to the
+first unit, this work stopped it mid-task. A wiring that changes the
+DataGuard engine or its invariants is `infrastructure` instead.
+
 **The rules' tests are already written.** The milestone's `## Rules`
 section names the rules (`R<id>`, their criteria in `rules.json`) whose
 tests under `tests/rules/` turn green once it lands. Name in each slice's
@@ -248,6 +260,14 @@ mod tests {
     use super::*;
     use crate::split::config::fake as config_fake;
     use crate::split::ports::fake as ports_fake;
+
+    #[test]
+    fn a_new_system_is_cut_with_its_wiring_first() {
+        // ForgeDesMondes #39, #41: the first DataCapability and Capability of
+        // `ai` had to build the read crate and the server's routes mid-task.
+        assert!(SLICE_PROMPT.contains("**A new system starts with its wiring.**"));
+        assert!(SLICE_PROMPT.contains("`tooling` slice, branch `chore/wiring-<system>`"));
+    }
 
     #[test]
     fn the_order_of_the_table_is_context_then_slice_then_publish() {
