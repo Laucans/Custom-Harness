@@ -230,11 +230,17 @@ impl Tree {
                 }
             }
         }
-        for name in disk.dir_names(&root.join("crates/dataguard/data-capabilities")) {
-            if let Some(found) = manifest(&format!(
-                "crates/dataguard/data-capabilities/{name}/data-capability.json"
-            )) {
-                tree.data_capabilities.push(found);
+        // Under every system, as the rules lay it out
+        // (`crates/<system>/data-capabilities/<name>/`): reading only the
+        // DataGuard's folder judged ai.saveSettings undeclared (#43).
+        for system in disk.dir_names(&root.join("crates")) {
+            let folder = root.join("crates").join(&system).join("data-capabilities");
+            for name in disk.dir_names(&folder) {
+                if let Some(found) = manifest(&format!(
+                    "crates/{system}/data-capabilities/{name}/data-capability.json"
+                )) {
+                    tree.data_capabilities.push(found);
+                }
             }
         }
         for name in disk.dir_names(&root.join("crates/dataguard/aggregates")) {
@@ -1384,6 +1390,39 @@ mod tests {
         assert_eq!(
             sha256("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn a_data_capability_is_read_under_any_system() {
+        // #43: ai.saveSettings sits under crates/ai/, as the rules lay it out.
+        let mut disk = crate::fake_disk::FakeDisk::default();
+        for (path, text) in [
+            (
+                "/r/crates/ai/data-capabilities/save-settings/data-capability.json",
+                r#"{"dataCapability":"ai.saveSettings"}"#,
+            ),
+            (
+                "/r/crates/dataguard/data-capabilities/limit/data-capability.json",
+                r#"{"dataCapability":"dataguard.limit"}"#,
+            ),
+        ] {
+            disk.existing
+                .insert(std::path::PathBuf::from(path), text.to_string());
+        }
+        let tree = Tree::read(&disk, std::path::Path::new("/r"));
+        let paths: Vec<&str> = tree
+            .data_capabilities
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        assert!(
+            paths.contains(&"crates/ai/data-capabilities/save-settings/data-capability.json"),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&"crates/dataguard/data-capabilities/limit/data-capability.json"),
+            "{paths:?}"
         );
     }
 
