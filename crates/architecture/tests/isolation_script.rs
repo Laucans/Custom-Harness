@@ -53,7 +53,7 @@ fn rel(dir: &str, name: &str) -> String {
 }
 
 /// Every crate a case may name: its name and its folder.
-const DIRS: [(&str, &str); 7] = [
+const DIRS: [(&str, &str); 8] = [
     ("risk", "crates/credit/capabilities/risk"),
     ("score", "crates/credit/capabilities/score"),
     ("credit-query", "crates/credit/query"),
@@ -61,6 +61,7 @@ const DIRS: [(&str, &str); 7] = [
     ("dataguard", "crates/dataguard"),
     ("limit", "crates/dataguard/data-capabilities/limit"),
     ("orders-query", "crates/orders/query"),
+    ("llm", "crates/ports/llm"),
 ];
 
 /// The healthy shape: two Capabilities on their system's plumbing, one
@@ -107,6 +108,7 @@ fn repo(case: &str) -> Repo {
         &["dataguard"],
     );
     krate(&root, "crates/orders/query", "orders-query", &[]);
+    krate(&root, "crates/ports/llm", "llm", &[]);
     write(&root, "scripts/isolation.sh", SCRIPT);
     Repo { root }
 }
@@ -170,6 +172,32 @@ fn a_plumbing_crate_that_reaches_a_slice_is_a_bridge_and_fails() {
         said.contains("credit-utils reaches the slice risk"),
         "{said}"
     );
+}
+
+#[test]
+fn a_capability_reaching_a_port_passes_and_a_port_reaching_a_slice_fails() {
+    // ForgeDesMondes #42: ai.listProviderRequests depends on crates/ports/llm.
+    let repo = repo("port");
+    krate(
+        &repo.root,
+        "crates/credit/capabilities/score",
+        "score",
+        &["credit-query", "llm"],
+    );
+    krate(&repo.root, "crates/credit/utils", "credit-utils", &["llm"]);
+    krate(
+        &repo.root,
+        "crates/credit/capabilities/risk",
+        "risk",
+        &["credit-query", "credit-utils"],
+    );
+    let (ok, said) = check(&repo);
+    assert!(ok, "{said}");
+
+    krate(&repo.root, "crates/ports/llm", "llm", &["risk"]);
+    let (ok, said) = check(&repo);
+    assert!(!ok, "a port is plumbing too: {said}");
+    assert!(said.contains("score reaches risk"), "{said}");
 }
 
 #[test]

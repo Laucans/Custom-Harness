@@ -14,6 +14,8 @@
 #    Capability or DataCapability, directly or transitively.
 # 2. It depends only on crates of its own system (crates/<system>/…),
 #    never on another system's. A DataCapability's system is the DataGuard's.
+#    A port (crates/ports/<port>/, contract Q) belongs to no system: every
+#    system reaches the outside through it.
 # 3. A crate shared inside a system — one that a Capability or a
 #    DataCapability depends on — depends on no Capability, no DataCapability
 #    and no crate of another system: plumbing, never a bridge.
@@ -113,7 +115,7 @@ for name in "${!kind[@]}"; do
       capability|data-capability)
         fail "${manifest[$name]}" "$what depends on no other slice: $name reaches $dep (${manifest[$dep]})" ;;
     esac
-    if [ -n "${system[$dep]:-}" ] && [ "${system[$dep]}" != "$own" ]; then
+    if [ -n "${system[$dep]:-}" ] && [ "${system[$dep]}" != "$own" ] && [ "${system[$dep]}" != "ports" ]; then
       fail "${manifest[$name]}" "$what depends only on its own system's crates: $name ($own) reaches $dep (${system[$dep]})"
     fi
     if [ -z "${system[$dep]:-}" ]; then
@@ -125,7 +127,7 @@ for name in "${!kind[@]}"; do
         capability|data-capability)
           fail "${manifest[$dep]}" "a crate a slice depends on is plumbing, never a bridge: $dep reaches the slice $far" ;;
       esac
-      if [ -n "${system[$far]:-}" ] && [ "${system[$far]}" != "${system[$dep]:-}" ]; then
+      if [ -n "${system[$far]:-}" ] && [ "${system[$far]}" != "${system[$dep]:-}" ] && [ "${system[$far]}" != "ports" ]; then
         fail "${manifest[$dep]}" "a crate a slice depends on stays in its system: $dep (${system[$dep]:-}) reaches $far (${system[$far]})"
       fi
     done
