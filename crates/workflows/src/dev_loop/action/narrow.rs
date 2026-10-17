@@ -244,6 +244,31 @@ impl Widen {
             ));
             return Ok(());
         }
+        // The write side leaves its PR open: what the post-gates judge is on
+        // the task's own branch, not yet on the integration branch (#40's
+        // DataCapability, in PR #78, read as absent).
+        if ctx.state.write_side
+            && let Some(branch) =
+                crate::dev_loop::data::tasks::declared_branch(&ctx.state.task.body)
+            && self.repo.origin_has_branch(&branch).await?
+        {
+            if !self.repo.checkout(&branch, true).await?.ok() {
+                ctx.traces.say(&format!(
+                    "tree: {branch} cannot be checked out — left as it is"
+                ));
+                return Ok(());
+            }
+            if self
+                .repo
+                .reset_hard(&format!("origin/{branch}"))
+                .await?
+                .ok()
+            {
+                ctx.traces
+                    .say(&format!("tree: on {branch}, the write side's open PR"));
+            }
+            return Ok(());
+        }
         let reset = self
             .repo
             .reset_hard(&format!("origin/{}", self.integration_branch))
@@ -625,6 +650,47 @@ mod tests {
             "another branch: {:?}",
             repos.calls()
         );
+    }
+
+    #[tokio::test]
+    async fn the_write_side_is_judged_on_its_own_branch() {
+        let repos = Rc::new(FakeRepos::default());
+        let mut ctx = context("## Scope\n\nbranch: feat/ai-test-connection\n");
+        ctx.state.write_side = true;
+        ctx.state.tree_note = "- /crates/ai/".to_string();
+        Widen {
+            repo: repos.at(Path::new("/ws")),
+            integration_branch: "main_agent".to_string(),
+        }
+        .run(&mut ctx)
+        .await
+        .expect("widened");
+        assert!(
+            repos.asked("checkout feat/ai-test-connection"),
+            "{:?}",
+            repos.calls()
+        );
+        assert!(
+            repos.asked("reset_hard origin/feat/ai-test-connection"),
+            "{:?}",
+            repos.calls()
+        );
+        assert!(
+            !repos.asked("reset_hard origin/main_agent"),
+            "{:?}",
+            repos.calls()
+        );
+
+        let refusing = Rc::new(FakeRepos::failing(&["checkout"]));
+        ctx.state.tree_note = "- /crates/ai/".to_string();
+        Widen {
+            repo: refusing.at(Path::new("/ws")),
+            integration_branch: "main_agent".to_string(),
+        }
+        .run(&mut ctx)
+        .await
+        .expect("widened");
+        assert!(!refusing.asked("reset_hard"), "{:?}", refusing.calls());
     }
 
     #[tokio::test]
