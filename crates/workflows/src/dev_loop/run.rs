@@ -200,6 +200,7 @@ fn rounds(
     let narrow = config.narrow;
     let ignore_budget = config.ignore_budget;
     let budget_floor = config.budget_floor;
+    let autonomous = config.autonomous;
     let prompts = Rc::clone(&config.prompts);
     Box::new(move |turn| {
         let ports = Ports {
@@ -224,6 +225,7 @@ fn rounds(
             narrow,
             ignore_budget,
             budget_floor,
+            autonomous,
             prompts: Rc::clone(&prompts),
         };
         TaskRound {
@@ -241,7 +243,10 @@ fn rounds(
                 gh: Rc::clone(&gh),
                 integration_branch: branch.clone(),
             },
-            raise: RaiseDecision { gh: Rc::clone(&gh) },
+            raise: RaiseDecision {
+                gh: Rc::clone(&gh),
+                autonomous,
+            },
             post: Gate {
                 name: "round must have delivered",
                 checks: vec![Box::new(gates::AMergedPrClosesTheTask {

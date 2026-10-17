@@ -572,6 +572,7 @@ async fn turns(
         narrow: narrowing(args),
         ignore_budget: args.ignore_budget,
         budget_floor: args.budget_floor,
+        autonomous: args.no_human_gate,
         prompts: crate::dispatch::shared::prompts(
             workspace,
             log,

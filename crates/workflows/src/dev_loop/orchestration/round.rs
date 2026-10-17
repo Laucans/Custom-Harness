@@ -129,6 +129,7 @@ mod tests {
             },
             raise: RaiseDecision {
                 gh: Rc::clone(&port),
+                autonomous: false,
             },
             post: Gate {
                 name: "the round must deliver",

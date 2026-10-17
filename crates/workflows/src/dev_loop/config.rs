@@ -17,6 +17,9 @@
 pub const INJECTOR: &str = "harness-launcher (dev_loop)";
 
 /// The settings for a loop run.
+// Command-line switches, each true or false on its own (restart, narrow,
+// ignore the budget, no human gate): an enum would multiply their product.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Config {
     /// The branch on which the loop works and merges.
     pub integration_branch: String,
@@ -54,6 +57,10 @@ pub struct Config {
     /// `--budget-floor`: the least a task's budget is, in dollars — what its
     /// kind's history computes is raised to it, never lowered.
     pub budget_floor: f64,
+    /// `--no-human-gate`: a stop is decided by the harness however many
+    /// times it comes back, and a port asked is a decision — no task is
+    /// opened for a person.
+    pub autonomous: bool,
     /// The human's prompt edits, read once per run — a stage sends
     /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
     pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
@@ -119,6 +126,7 @@ pub(crate) mod fake {
             narrow: false,
             ignore_budget: false,
             budget_floor: 0.0,
+            autonomous: false,
         }
     }
 }

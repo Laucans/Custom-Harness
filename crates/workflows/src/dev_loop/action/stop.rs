@@ -15,6 +15,11 @@
 //! task asks it, blocking the stopped one, whose `## Decision` keeps the
 //! request (`kind: port`) for its next session.
 //!
+//! **Without a human gate** (`--no-human-gate`) no person is waited on: a
+//! third stop asks for a decision once more, and a port asked is a decision
+//! too — `decide` approves or refuses it. Every one is written under the
+//! task's `## Decision` and commented by `decide`, which is what documents it.
+//!
 //! A halt of any other kind — a gate that refused, an unreadable input — is
 //! not a decision to take, and goes on as it was.
 
@@ -75,6 +80,9 @@ fn one_line(reason: &str) -> String {
 pub struct RaiseDecision {
     /// What reads the task and writes its decision.
     pub gh: Rc<dyn GitHub>,
+    /// `--no-human-gate`: no task is ever opened for a person; the harness
+    /// decides, and documents it.
+    pub autonomous: bool,
 }
 
 impl RaiseDecision {
@@ -101,10 +109,11 @@ impl RaiseDecision {
         let round = asked
             .filter(|q| matches!(q.kind.as_deref(), Some("stop" | "breaker")))
             .map_or(1, |q| q.round.saturating_add(1));
-        if let Some(port) = port_asked(&reason) {
+        let port = port_asked(&reason).filter(|_| !self.autonomous);
+        if let Some(port) = port {
             self.port_to_approve(ctx, number, &issue.title, &issue.body, port)
                 .await?;
-        } else if round >= HUMAN_AT_ROUND {
+        } else if round >= HUMAN_AT_ROUND && !self.autonomous {
             self.to_a_human(ctx, number, &issue.title, &reason).await?;
         } else {
             let question = Question {
@@ -278,6 +287,7 @@ mod tests {
         let mut context = ctx(false);
         let verdict = RaiseDecision {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: false,
         }
         .on_halt(&mut context, stop())
         .await
@@ -312,6 +322,7 @@ mod tests {
         let mut context = ctx(false);
         RaiseDecision {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: false,
         }
         .on_halt(&mut context, stop())
         .await
@@ -338,6 +349,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn without_a_human_gate_a_third_stop_and_a_port_are_decisions() {
+        // The owner, on ForgeDesMondes: "I cannot take the decisions — you
+        // do it." #41's third stop opened #79 for a person who never comes.
+        let third = gh(
+            "## Decision\n\nkind: stop\nblocks: which provider\nround: 2\ndecided-by: ai\nverdict: answer — Stripe (3/5)",
+        );
+        let mut context = ctx(false);
+        RaiseDecision {
+            gh: Rc::clone(&third) as Rc<dyn GitHub>,
+            autonomous: true,
+        }
+        .on_halt(&mut context, stop())
+        .await
+        .expect("handed over");
+        let writes = third.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+        let Wrote::Body(11, body) = &writes[0] else {
+            panic!("{writes:?}");
+        };
+        assert!(body.contains("round: 3"), "{body}");
+
+        let asked = Halt::Halted(
+            "AGENT_LOOP_STOP: port payments — Stripe, 2.9% a charge, to bill (/code)".to_string(),
+        );
+        let port = gh("## Scope\n\nbranch: feat/pay\n\npay");
+        RaiseDecision {
+            gh: Rc::clone(&port) as Rc<dyn GitHub>,
+            autonomous: true,
+        }
+        .on_halt(&mut ctx(false), asked)
+        .await
+        .expect("handed over");
+        let writes = port.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+        let Wrote::Body(11, body) = &writes[0] else {
+            panic!("{writes:?}");
+        };
+        assert!(body.contains("kind: port"), "{body}");
+    }
+
+    #[tokio::test]
     async fn a_port_asked_is_a_person_s_to_approve_at_once() {
         let asked = Halt::Halted(
             "AGENT_LOOP_STOP: port payments — Stripe, 2.9% a charge, to bill (/code)".to_string(),
@@ -352,6 +412,7 @@ mod tests {
         let mut context = ctx(false);
         RaiseDecision {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: false,
         }
         .on_halt(&mut context, asked)
         .await
@@ -403,6 +464,7 @@ mod tests {
         let gh = gh("");
         let raise = RaiseDecision {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: false,
         };
         let gate = Halt::Halted("issue #11 carries no SPEC".to_string());
         assert!(raise.on_halt(&mut ctx(false), gate).await.is_err());

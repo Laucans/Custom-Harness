@@ -266,6 +266,9 @@ pub(super) async fn run_lanes(
         if args.dry_run {
             command.arg("--dry-run");
         }
+        if args.no_human_gate {
+            command.arg("--no-human-gate");
+        }
         lanes.taken(number, version);
         match lanes.spawn(slot, number, command, here) {
             Ok(pid) => log.event(&Event::LaneTaken {

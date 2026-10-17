@@ -474,6 +474,7 @@ pub(super) async fn run_dev_loop(
     };
     cli.run.branch = branch;
     cli.run.force_reset = args.force_reset;
+    cli.run.no_human_gate = args.no_human_gate;
     match crate::dispatch::dev_loop::run(&cli.run, here).await {
         Ok(ran) => {
             log.say(&format!("watch: dev_loop -> {:?}", ran.verdict));

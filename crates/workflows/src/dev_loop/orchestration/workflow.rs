@@ -171,7 +171,10 @@ mod tests {
                         gh: Rc::clone(&gh),
                         integration_branch: config.integration_branch.clone(),
                     },
-                    raise: RaiseDecision { gh },
+                    raise: RaiseDecision {
+                        gh,
+                        autonomous: false,
+                    },
                     post: Gate::empty("delivered"),
                 }
             }),

@@ -67,6 +67,11 @@ What you may do here: {actions}.
 For a port a person refused (`port`, the refusal in the comments): `answer`
 how the task does without it — inside the product, or through a port
 ports.json already has — or `cut` it when nothing of it stands without.
+For a port a session asked for (`port`, no refusal): approve it when the
+design needs it — `answer` that the next session adds it to ports.json
+(contract Q) and builds its crate, its fake and contract tests first — or
+`answer` how the task does without it. Your answer is the decision's record:
+say what was chosen and why, so the human reads it after the fact.
 Never decide what only a person can do — spending money, creating an
 account, a credential: `answer` that it waits on a `harness:human` task, and
 name it.

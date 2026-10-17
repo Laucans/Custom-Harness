@@ -495,6 +495,12 @@ pub struct RunArgs {
     #[arg(long, env = "BUDGET_FLOOR", default_value_t = 6.0)]
     pub budget_floor: f64,
 
+    /// No human gate: a stop is decided by the harness however many times
+    /// it comes back, and a port a session asks for is a decision — no
+    /// `harness:human` task is opened. The watch passes it to its lanes.
+    #[arg(long, env = "NO_HUMAN_GATE", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub no_human_gate: bool,
+
     /// Resume the task that the checkpoint designates. Default: yes.
     #[arg(long)]
     pub no_resume: bool,
