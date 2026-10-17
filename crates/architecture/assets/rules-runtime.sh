@@ -119,7 +119,10 @@ serve() {
 
   if [ -f "$root/apps/shell/package.json" ]; then
     (cd "$root/apps/shell" && npm install --no-audit --no-fund >"$state/shell-install.log" 2>&1 && npm run build >"$state/shell-build.log" 2>&1)
-    (cd "$root/apps/shell" && PORT="$APP_PORT" SERVER_URL="$server_url" nohup npm run serve >"$state/shell.log" 2>&1 & echo $! > "$state/shell.pid")
+    # The list gets its own redirections: a backgrounded `( … )` keeps the
+    # script's stdout open, and `serve | tee` would never see end-of-file.
+    (cd "$root/apps/shell" && PORT="$APP_PORT" SERVER_URL="$server_url" exec nohup npm run serve >"$state/shell.log" 2>&1) </dev/null >/dev/null 2>&1 &
+    echo $! > "$state/shell.pid"
     local app_url="http://127.0.0.1:$APP_PORT"
     wait_for "$app_url/" "the shell"
     echo "RULES_APP_URL=$app_url"

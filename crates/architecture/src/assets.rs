@@ -343,6 +343,25 @@ mod tests {
     }
 
     #[test]
+    fn the_rules_runtime_s_background_jobs_hold_no_descriptor_of_its_stdout() {
+        // ForgeDesMondes #67: `serve | tee rules-env` never returned once
+        // the shell existed — its backgrounded subshell kept the pipe open.
+        let script = content_of("scripts/rules-runtime.sh").expect("installed");
+        for line in script.lines().filter(|l| l.trim_end().ends_with('&')) {
+            assert!(
+                line.contains(">/dev/null 2>&1 &") || !line.trim_start().starts_with('('),
+                "a backgrounded subshell without its own redirections: {line}"
+            );
+            assert!(!line.contains("& echo"), "{line}");
+        }
+        let serve = script
+            .lines()
+            .find(|l| l.contains("npm run serve"))
+            .expect("the shell is served");
+        assert!(serve.contains("</dev/null >/dev/null 2>&1 &"), "{serve}");
+    }
+
+    #[test]
     fn the_root_gitignore_keeps_build_outputs_out_of_a_round_s_changes() {
         // The architecture gate judges the dirty paths too: an unignored
         // `target/` reads as the round touching outside its closure.
