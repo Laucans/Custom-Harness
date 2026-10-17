@@ -94,7 +94,11 @@ function declared() {
     const users = units.filter((u) => u.ports.includes(port.id)).map((u) => u.id).sort();
     const listed = [...(port.usedBy || [])].sort();
     const missing = users.filter((u) => !listed.includes(u));
-    const stale = listed.filter((u) => !users.includes(u));
+    // A unit not built yet is planned, not stale: usedBy is written at
+    // creation, before any unit exists. Stale is a unit there that no longer
+    // names the port.
+    const built = new Set(units.map((u) => u.id));
+    const stale = listed.filter((u) => built.has(u) && !users.includes(u));
     if (missing.length) { fail(`ports.json: ${port.id} is used by ${missing.join(', ')}, which its usedBy does not list`); failed += 1; }
     if (stale.length) { fail(`ports.json: ${port.id} lists ${stale.join(', ')} in usedBy, which name it nowhere`); failed += 1; }
     say(`${port.id} (${port.provider}): ${users.length ? users.join(', ') : 'used by no unit yet'}`);
@@ -106,8 +110,11 @@ function contracts() {
   const all = ports();
   if (all === null) { say('no ports.json yet: no port to test'); return 0; }
   let failed = 0;
+  const units = manifests();
   for (const port of all.filter((p) => p.id !== 'database')) {
     const dir = join(root, 'crates/ports', port.id);
+    // A port no built unit uses yet is planned: its crate comes with its first user.
+    if (!existsSync(dir) && !units.some((u) => u.ports.includes(port.id))) { say(`${port.id}: no unit uses it yet — its crate comes with the first`); continue; }
     if (!existsSync(join(dir, 'Cargo.toml'))) { fail(`ports.json: ${port.id} has no crate at crates/ports/${port.id}/`); failed += 1; continue; }
     const sources = walk(join(dir, 'src'), (n) => n.endsWith('.rs')).map((p) => readFileSync(p, 'utf8')).join('\n');
     if (!/\bmod\s+fake\b/.test(sources) && !existsSync(join(dir, 'src/fake.rs'))) { fail(`crates/ports/${port.id}: no fake — the tests and the mock-up run on it`); failed += 1; }
