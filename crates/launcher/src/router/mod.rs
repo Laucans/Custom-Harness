@@ -499,12 +499,6 @@ async fn green_task_pr(
     to_review: &[Pr],
     log: &Logbook,
 ) -> Outcome<Option<(u64, Pr)>> {
-    if !tasks
-        .iter()
-        .any(harness_workflows::dev_loop::data::tasks::review_pending)
-    {
-        return Ok(None);
-    }
     let Some((task, pr)) = harness_workflows::milestone_merge::candidate(tasks, to_review) else {
         return Ok(None);
     };

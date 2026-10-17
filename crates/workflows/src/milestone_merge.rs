@@ -17,13 +17,20 @@ use crate::common::{delivery, labels};
 use crate::dev_loop::data::tasks;
 
 /// The first task waiting on its PR, with that PR: the task is open and
-/// `review-pending`, and the PR is open on the branch its body declares.
-/// Lowest task number first.
+/// `review-pending` or on the write side, and the PR is open on the branch
+/// its body declares. Lowest task number first.
+///
+/// The write side counts without the label: the label is placed after the
+/// round's `code` stage, and a round that halted past its PR (a post-gate,
+/// then the budget) never placed it, and a reviewed, green
+/// PR waited for a merge nothing would make.
 #[must_use]
 pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &'a Pr)> {
     let mut waiting: Vec<&Issue> = board
         .iter()
-        .filter(|task| task.is_open() && tasks::review_pending(task))
+        .filter(|task| {
+            task.is_open() && (tasks::review_pending(task) || tasks::is_write_side(task))
+        })
         .collect();
     waiting.sort_by_key(|task| task.number);
     waiting.into_iter().find_map(|task| {
@@ -43,7 +50,9 @@ pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &
 /// GitHub refusing the merge is not retried.
 pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
     gh.merge_pr(&pr.num).await?;
-    gh.remove_label(task.number, labels::REVIEW_PENDING).await?;
+    if tasks::review_pending(task) {
+        gh.remove_label(task.number, labels::REVIEW_PENDING).await?;
+    }
     if task.has(labels::NEEDS_DECISION) {
         gh.remove_label(task.number, labels::NEEDS_DECISION).await?;
     }
@@ -123,6 +132,27 @@ mod tests {
         assert_eq!(found.number, 64);
         assert_eq!(its_pr.num, "68");
         assert!(candidate(&board, &[pr("70", "chore/ts")]).is_none());
+
+        // A write-side task whose round never placed the label still merges.
+        let unlabelled = vec![task(39, &[labels::AGENT, labels::WRITE_SIDE], "feat/save")];
+        let prs = [pr("77", "feat/save")];
+        let (found, _) = candidate(&unlabelled, &prs).expect("write side");
+        assert_eq!(found.number, 39);
+    }
+
+    #[tokio::test]
+    async fn a_merge_removes_only_the_labels_the_task_carries() {
+        let gh = FakeGitHub::default();
+        let bare = task(39, &[labels::AGENT, labels::WRITE_SIDE], "feat/save");
+        run(&gh, &bare, &pr("77", "feat/save"))
+            .await
+            .expect("merged");
+        let writes = gh.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::Unlabelled(..))),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Closed(39)));
     }
 
     #[tokio::test]
