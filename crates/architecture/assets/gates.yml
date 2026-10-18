@@ -282,6 +282,11 @@ jobs:
             for m in crates/**/capability.json; do
               if [ "$(jq -r '.capability' "$m")" = "$1" ]; then jq -r '.system' "$m"; return; fi
             done
+            # A Capability a milestone of the plan will produce (contract R) is
+            # declared by the graph; its system is its namespace.
+            if [ -e plan/graph.json ] && jq -e --arg id "$1" '.ids[$id] | select(.kind == "capability" and .producer != null)' plan/graph.json >/dev/null; then
+              echo "${1%%.*}"
+            fi
           }
           for ui in apps/**/micro-ui.json; do
             system=$(jq -r '.system' "$ui")
@@ -316,10 +321,16 @@ jobs:
               if [ "$(jq -r '.dataCapability' "$m")" = "$1" ]; then echo "$m"; return; fi
             done
           }
+          planned() {
+            [ -e plan/graph.json ] && jq -e --arg id "$1" '.ids[$id] | select(.kind == "data-capability" and .producer != null)' plan/graph.json >/dev/null
+          }
           for ui in apps/**/micro-ui.json; do
             me=$(jq -r '.microUi' "$ui"); system=$(jq -r '.system' "$ui")
             for action in $(jq -r '.actions[]? | if type=="string" then . else (.dataCapability // .id // empty) end' "$ui"); do
               manifest=$(manifest_of "$action")
+              # A DataCapability a milestone of the plan will produce (contract R)
+              # is declared by the graph; who may call it is the producer's to say.
+              if [ -z "$manifest" ] && planned "$action"; then continue; fi
               if [ -z "$manifest" ]; then
                 echo "::error file=$ui::action $action names no DataCapability"
                 failed=1
@@ -332,6 +343,29 @@ jobs:
             done
           done
           exit $failed
+
+  # Contract R — a milestone changes the interfaces it produces, and no
+  # other's: a `capability.json` or `data-capability.json` whose id the
+  # plan's graph gives another milestone is not this change's to touch. A
+  # consumer that needs a contract to change stops with
+  # `AGENT_LOOP_STOP: contract <id> — <what it needs>`; the contract manager
+  # evolves it for every consumer at once (scripts/contracts-gate.mjs).
+  contracts-untouched:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Every contract changed is this milestone's own
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
+          node scripts/contracts-gate.mjs untouched "origin/${GITHUB_BASE_REF}"
 
   # Rule 2 — the slices are workspace members by glob, never by name. A
   # glob matches what is on the disk: a sparse checkout that leaves a slice

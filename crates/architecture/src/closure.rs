@@ -321,6 +321,11 @@ impl Index<'_> {
             || self.concept_dir(id).is_some()
             || self.tree.screens.iter().any(|s| same(s, id))
             || self.tree.mocked_components.iter().any(|c| same(c, id))
+            || self
+                .tree
+                .graph
+                .as_ref()
+                .is_some_and(|g| g.ids.get(id).is_some_and(|i| i.producer.is_some()))
     }
 }
 
@@ -843,6 +848,31 @@ mod tests {
             !alone.patterns.iter().any(|p| p.contains("request-limit")),
             "nothing names it: {:?}",
             alone.patterns
+        );
+    }
+
+    #[test]
+    fn a_need_the_plan_s_graph_produces_is_not_missing() {
+        let mut planned = tree();
+        planned.graph = crate::graph::Graph::parse(
+            r#"{"version":1,"milestones":[],"ids":{"orders.list":{"kind":"capability","producer":7}}}"#,
+        )
+        .ok();
+        let task = declared(
+            Unit::Capability,
+            "credit",
+            &["credit.revenue"],
+            &["orders.list"],
+        );
+        assert!(
+            closure(&planned, &task, Some(&graph()), None)
+                .missing
+                .is_empty()
+        );
+        assert_eq!(
+            closure(&tree(), &task, Some(&graph()), None).missing,
+            vec!["orders.list".to_string()],
+            "without the graph, missing"
         );
     }
 

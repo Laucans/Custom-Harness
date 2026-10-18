@@ -1,4 +1,4 @@
-<!-- harness:architecture v3 -->
+<!-- harness:architecture v4 -->
 ## Agent-native architecture — the rules every change is checked against
 
 This repository follows the agent-native architecture of
@@ -102,6 +102,12 @@ scripts/                                queries.sh, isolation.sh, dump-schema.sh
     lacks is not yours to add: stop with
     `AGENT_LOOP_STOP: port <id> — <provider>, <cost>, <why>`. Gates:
     `ports-declared`, `externals-behind-ports`, `secrets-encrypted`.
+17. **A milestone changes only the contracts it produces** (`plan/graph.json`,
+    contract R): a `capability.json` or `data-capability.json` another
+    milestone produces is read, mocked by its fixture, never edited. Need it
+    changed: stop with `AGENT_LOOP_STOP: contract <id> — <what you need>`;
+    the contract manager evolves it for every consumer. Gate:
+    `contracts-untouched`.
 
 ### What a session does before writing code
 

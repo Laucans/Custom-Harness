@@ -98,6 +98,9 @@ pub struct Tree {
     pub registered_queries: Vec<(String, String, String)>,
     /// The query files the Capabilities' `reads` name, resolved.
     pub reads: Vec<Read>,
+    /// The plan's graph (`plan/graph.json`, contract R), when the product
+    /// has one: the ids a milestone will produce count as declared.
+    pub graph: Option<crate::graph::Graph>,
 }
 
 /// One `reads` entry of a Capability, resolved as `scripts/queries.sh`
@@ -194,6 +197,19 @@ pub fn digest(files: &[(String, String)]) -> String {
 }
 
 impl Tree {
+    /// Whether the plan's graph knows `id` as a `kind` some milestone
+    /// produces: a contract the consumer builds against before it is built,
+    /// its fixture under `mock/fixtures/` standing for it.
+    #[must_use]
+    pub fn plans(&self, kind: crate::graph::Kind, id: &str) -> bool {
+        self.graph.as_ref().is_some_and(|graph| {
+            graph
+                .ids
+                .get(id)
+                .is_some_and(|i| i.kind == kind && i.producer.is_some())
+        })
+    }
+
     /// Reads the checkout at `root`. Nothing here fails: an unreadable or
     /// absent file is a manifest that is not there, which the rules report.
     #[must_use]
@@ -209,6 +225,7 @@ impl Tree {
             under_architecture: disk.exists(&root.join("contracts")),
             has_query_registry: disk.exists(&root.join("queries/registry.json")),
             root_manifest: text("Cargo.toml"),
+            graph: text(crate::graph::PATH).and_then(|t| crate::graph::Graph::parse(&t).ok()),
             ..Self::default()
         };
         for system in disk.dir_names(&root.join("crates")) {
@@ -665,7 +682,9 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
             continue;
         };
         for need in strings_of(json, "needs") {
-            if !capability_ids.contains(&need.as_str()) {
+            if !capability_ids.contains(&need.as_str())
+                && !tree.plans(crate::graph::Kind::Capability, &need)
+            {
                 found.push(format!(
                     "{}: needs `{need}`, a Capability no manifest declares",
                     manifest.path
@@ -678,7 +697,9 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
             }
         }
         for action in strings_of(json, "actions") {
-            if !data_capability_ids.contains(&action.as_str()) {
+            if !data_capability_ids.contains(&action.as_str())
+                && !tree.plans(crate::graph::Kind::DataCapability, &action)
+            {
                 found.push(format!(
                     "{}: triggers `{action}`, a DataCapability no manifest declares",
                     manifest.path
@@ -1150,6 +1171,7 @@ mod tests {
 
     fn sound() -> Tree {
         Tree {
+            graph: None,
             under_architecture: true,
             systems: vec!["credit".to_string(), "dataguard".to_string()],
             capabilities: vec![capability("credit", "calculate-risk", RISK, CLEAN_TOML)],
@@ -1390,6 +1412,40 @@ mod tests {
         assert_eq!(
             sha256("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn what_the_plan_s_graph_produces_counts_as_declared() {
+        let mut tree = sound();
+        tree.micro_uis[0].1 = manifest(
+            "apps/credit/risk-badge/micro-ui.json",
+            r#"{"microUi":"RiskBadge","system":"credit","needs":["credit.calculateRisk","credit.listAccounts"],"actions":["credit.closeAccount"]}"#,
+        );
+        let undeclared = |tree: &Tree| {
+            violations(tree, None)
+                .into_iter()
+                .filter(|v| v.contains("no manifest declares"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(undeclared(&tree).len(), 2, "{:?}", undeclared(&tree));
+        tree.graph = crate::graph::Graph::parse(
+            r#"{"version":1,"milestones":[],"ids":{"credit.listAccounts":{"kind":"capability","producer":7},"credit.closeAccount":{"kind":"data-capability","producer":7}}}"#,
+        )
+        .ok();
+        assert!(undeclared(&tree).is_empty(), "{:?}", undeclared(&tree));
+        assert!(tree.plans(crate::graph::Kind::Capability, "credit.listAccounts"));
+        assert!(
+            !tree.plans(crate::graph::Kind::DataCapability, "credit.listAccounts"),
+            "the kind counts"
+        );
+        tree.graph = crate::graph::Graph::parse(
+            r#"{"version":1,"milestones":[],"ids":{"credit.listAccounts":{"kind":"capability","producer":null}}}"#,
+        )
+        .ok();
+        assert!(
+            !tree.plans(crate::graph::Kind::Capability, "credit.listAccounts"),
+            "nobody's"
         );
     }
 

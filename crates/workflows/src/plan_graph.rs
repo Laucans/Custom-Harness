@@ -10,6 +10,7 @@
 //! nobody produces.
 
 use harness_architecture::graph::{Graph, Milestone, ReadAhead};
+use harness_architecture::tree::Tree;
 use harness_core::domain::Outcome;
 use harness_core::ports::shell::github::GitHub;
 
@@ -69,8 +70,72 @@ pub async fn milestones_of(gh: &dyn GitHub, roadmap: u64) -> Outcome<Vec<Milesto
         .collect())
 }
 
-/// Derives the graph of `roadmap`'s milestones against `dossier`, writes it
-/// to `plan/graph.json` on `branch`, and says what it found.
+/// Where every id stands, read off a checkout: built when a manifest
+/// declares it, mocked when `mock/fixtures/<id>.json` stands for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Standing {
+    /// The ids the checkout's manifests declare.
+    pub built: Vec<String>,
+    /// The ids a fixture stands for.
+    pub mocked: Vec<String>,
+}
+
+impl Standing {
+    /// Read off the checkout at `root`: its tree, and the fixtures under
+    /// `mock/fixtures/`.
+    #[must_use]
+    pub fn read(disk: &dyn harness_core::ports::shell::disk::Disk, root: &std::path::Path) -> Self {
+        let tree = Tree::read(disk, root);
+        let fixtures: Vec<String> = disk
+            .file_names(&root.join("mock/fixtures"))
+            .into_iter()
+            .filter_map(|name| name.strip_suffix(".json").map(ToString::to_string))
+            .collect();
+        Self::of(&tree, &fixtures)
+    }
+
+    /// What `tree` declares, and the fixtures named `fixtures` (file names
+    /// without `.json`).
+    #[must_use]
+    pub fn of(tree: &Tree, fixtures: &[String]) -> Self {
+        let text = |json: Option<&serde_json::Value>, key: &str| {
+            json.and_then(|j| j.get(key))
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string)
+        };
+        let mut built: Vec<String> = Vec::new();
+        built.extend(tree.capabilities.iter().filter_map(|c| {
+            text(
+                c.manifest.as_ref().and_then(|m| m.json.as_ref()),
+                "capability",
+            )
+        }));
+        built.extend(
+            tree.data_capabilities
+                .iter()
+                .filter_map(|m| text(m.json.as_ref(), "dataCapability")),
+        );
+        built.extend(
+            tree.aggregates
+                .iter()
+                .filter_map(|m| text(m.json.as_ref(), "aggregate")),
+        );
+        built.extend(
+            tree.micro_uis
+                .iter()
+                .filter_map(|(_, m)| text(m.json.as_ref(), "microUi")),
+        );
+        built.extend(tree.concepts.iter().map(|(name, v)| format!("{name}@{v}")));
+        Self {
+            built,
+            mocked: fixtures.to_vec(),
+        }
+    }
+}
+
+/// Derives the graph of `roadmap`'s milestones against `dossier`, marks
+/// where every id stands, writes it to `plan/graph.json` on `branch`, and
+/// says what it found.
 ///
 /// # Errors
 /// The board cannot be read, or GitHub refuses the write.
@@ -79,6 +144,7 @@ pub async fn write(
     dossier: &Dossier,
     roadmap: u64,
     branch: &str,
+    standing: &Standing,
 ) -> Outcome<Written> {
     let components = dossier.components();
     let writes = dossier.write_ids();
@@ -97,7 +163,10 @@ pub async fn write(
             )
         })
         .collect();
-    let graph = Graph::derive(&milestones, &components);
+    let mut graph = Graph::derive(&milestones, &components);
+    graph.mark_states(&|id| standing.built.iter().any(|b| b == id), &|id| {
+        standing.mocked.iter().any(|m| m == id)
+    });
     let text = graph.to_json().map_err(|e| {
         harness_core::domain::Halt::Failed(format!("the graph does not render: {e}"))
     })?;
@@ -202,7 +271,11 @@ mod tests {
             )],
             ..FakeGitHub::default()
         };
-        let written = write(&gh, &dossier(), 4, "main_agent")
+        let standing = Standing {
+            built: vec!["Campaign".to_string()],
+            mocked: vec!["session.listScenes".to_string(), "Campaign".to_string()],
+        };
+        let written = write(&gh, &dossier(), 4, "main_agent", &standing)
             .await
             .expect("written");
         assert_eq!(
@@ -216,6 +289,18 @@ mod tests {
             "milestones only, in number order"
         );
         assert_eq!(written.graph.ids["session.listScenes"].producer, Some(20));
+        assert_eq!(
+            written.graph.ids["session.listScenes"].state,
+            harness_architecture::graph::State::Mocked
+        );
+        assert_eq!(
+            written.graph.ids["Campaign"].state,
+            harness_architecture::graph::State::Built
+        );
+        assert_eq!(
+            written.graph.ids["session.addScene"].state,
+            harness_architecture::graph::State::Planned
+        );
         assert_eq!(
             written.reads_ahead,
             vec![ReadAhead {
@@ -241,6 +326,40 @@ mod tests {
         assert_eq!(writes.len(), 1, "the graph, and nothing else");
     }
 
+    #[test]
+    fn the_standing_reads_every_declared_id_off_the_tree() {
+        use harness_architecture::tree::{CapabilityCrate, Manifest};
+        let json = |text: &str| Manifest {
+            path: "p".to_string(),
+            json: serde_json::from_str(text).ok(),
+        };
+        let tree = Tree {
+            capabilities: vec![CapabilityCrate {
+                manifest: Some(json(r#"{"capability":"session.listScenes"}"#)),
+                cargo_toml: None,
+                system: "session".to_string(),
+                dir: "d".to_string(),
+            }],
+            data_capabilities: vec![json(r#"{"dataCapability":"session.addScene"}"#)],
+            aggregates: vec![json(r#"{"aggregate":"Session"}"#)],
+            micro_uis: vec![("session".to_string(), json(r#"{"microUi":"SceneBoard"}"#))],
+            concepts: vec![("Lifecycle".to_string(), 1)],
+            ..Tree::default()
+        };
+        let standing = Standing::of(&tree, &["session.getSession".to_string()]);
+        assert_eq!(
+            standing.built,
+            vec![
+                "session.listScenes".to_string(),
+                "session.addScene".to_string(),
+                "Session".to_string(),
+                "SceneBoard".to_string(),
+                "Lifecycle@1".to_string(),
+            ]
+        );
+        assert_eq!(standing.mocked, vec!["session.getSession".to_string()]);
+    }
+
     #[tokio::test]
     async fn a_plan_without_warnings_says_only_its_size() {
         let gh = FakeGitHub {
@@ -254,9 +373,15 @@ mod tests {
             )],
             ..FakeGitHub::default()
         };
-        let written = write(&gh, &Dossier::default(), 4, "main_agent")
-            .await
-            .expect("written");
+        let written = write(
+            &gh,
+            &Dossier::default(),
+            4,
+            "main_agent",
+            &Standing::default(),
+        )
+        .await
+        .expect("written");
         assert_eq!(
             written.lines(),
             vec!["plan graph: 1 milestone(s), 1 id(s)".to_string()]

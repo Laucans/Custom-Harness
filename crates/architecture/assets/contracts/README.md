@@ -24,7 +24,7 @@ to one of them is its own task, and lists the units it touches.
 | `o-design-kit.schema.json` | O. Design system and kit | `mock/design/design.json` and `mock/kit/kit.json` on the `design-system` branch: the tokens' record, the kit's components |
 | `p-rules.schema.json` | P. Rules | `rules.json`: the rules the product keeps, each with the criterion its tests prove |
 | `q-ports.schema.json` | Q. Ports | `ports.json`: every dependency outside the product, behind a port, with its provider, adapter, fake, secrets, cost and users |
-| `r-plan-graph.schema.json` | R. Plan graph | `plan/graph.json`: what every milestone produces and consumes, and the dependencies that follow — the critical path, and what may run side by side |
+| `r-plan-graph.schema.json` | R. Plan graph | `plan/graph.json`: what every milestone produces and consumes, and the dependencies that follow — the critical path, what may run side by side, and the register of contracts a consumer builds against before they are built |
 
 Validate a manifest by hand the way the `gates` workflow does:
 

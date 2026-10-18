@@ -315,6 +315,24 @@ impl Graph {
         }
     }
 
+    /// Marks where every id stands: `built` when the checkout declares it,
+    /// `mocked` when a fixture stands for it, `planned` otherwise. An id
+    /// already `evolving` keeps that.
+    pub fn mark_states(&mut self, built: &dyn Fn(&str) -> bool, mocked: &dyn Fn(&str) -> bool) {
+        for (id, interface) in &mut self.ids {
+            if interface.state == State::Evolving {
+                continue;
+            }
+            interface.state = if built(id) {
+                State::Built
+            } else if mocked(id) {
+                State::Mocked
+            } else {
+                State::Planned
+            };
+        }
+    }
+
     /// The position of `number` in plan order.
     fn position(&self, number: u64) -> Option<usize> {
         self.milestones.iter().position(|n| n.number == number)
@@ -582,6 +600,24 @@ mod tests {
         assert_eq!(graph.ids["campaign.listPlayers"].kind, Kind::Capability);
         assert_eq!(graph.ids["media.uploadMedia"].kind, Kind::DataCapability);
         assert_eq!(graph.milestones[1].depends_on, vec![1]);
+    }
+
+    #[test]
+    fn states_follow_the_checkout_and_the_fixtures_but_an_evolution_stays() {
+        let (milestones, components) = plan();
+        let mut graph = Graph::derive(&milestones, &components);
+        graph.ids.get_mut("media.listMedia").expect("an id").state = State::Evolving;
+        graph.mark_states(&|id| id == "campaign.getCampaign", &|id| {
+            id == "session.listScenes" || id == "campaign.getCampaign"
+        });
+        assert_eq!(
+            graph.ids["campaign.getCampaign"].state,
+            State::Built,
+            "built before mocked"
+        );
+        assert_eq!(graph.ids["session.listScenes"].state, State::Mocked);
+        assert_eq!(graph.ids["session.addScene"].state, State::Planned);
+        assert_eq!(graph.ids["media.listMedia"].state, State::Evolving);
     }
 
     #[test]

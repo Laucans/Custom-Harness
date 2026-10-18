@@ -642,6 +642,16 @@ later milestone produces is a plan error the planner reports. The critical
 path — the heaviest chain of remaining work — is read from it, and a free
 lane serves it before anything else.
 
+The graph is the **register of contracts**: an id a milestone of the plan
+produces counts as declared for every gate — a Micro-UI needs it, triggers
+it, a task's closure holds it — before its crate exists, and the fixture
+`mock/fixtures/<id>.json` stands for it (the mock server answers a read from
+it, applies a planned write with no effect). Two milestones thus build side
+by side against the same interface. A milestone changes the contracts it
+produces and no other's (gate `contracts-untouched`): a consumer that needs
+a contract to change stops with `AGENT_LOOP_STOP: contract <id> — <what it
+needs>`, and the contract manager evolves it for every consumer at once.
+
 ```json
 {"version": 1,
  "milestones": [{"number": 20, "title": "Sessions and scenes", "systems": ["session"],
@@ -660,6 +670,7 @@ cannot keep yet is a task like any other, never a gate turned off.
 | Gate | Checks | Contracts |
 |---|---|---|
 | Semantic conformance | `implements: Risk@3` ⇒ the Concept's fixtures pass | A, B |
+| Contracts untouched | A pull request changes the manifests of the ids its milestone produces, and no other's | B, F, R |
 | Read-only | No Capability has write access: lint and read-only credentials | B |
 | Capability isolation | No Capability imports, invokes or references another Capability or any mutation infrastructure | B |
 | Queries | Every persisted query is valid against the current schema and the next | C |

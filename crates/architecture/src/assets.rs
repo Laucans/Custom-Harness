@@ -31,9 +31,9 @@ pub const MARKER_OPEN: &str = "<!-- harness:architecture v2 -->";
 /// The version of the rules block in `CLAUDE.md`, counted apart from the
 /// documents: shortening the rules every session pays for must not rewrite
 /// a product's documents.
-pub const CLAUDE_VERSION: u32 = 3;
+pub const CLAUDE_VERSION: u32 = 4;
 /// The opening marker of the rules block in `CLAUDE.md`, with its version.
-pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v3 -->";
+pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v4 -->";
 /// What every version of the opening marker starts with.
 pub const MARKER_PREFIX: &str = "<!-- harness:architecture v";
 /// The closing marker.
@@ -65,7 +65,7 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// runner, the `DataGuard` server's skeleton, the contracts A–R, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites, and
 /// the root `.gitignore` that keeps build outputs out of a round's changes.
-pub const FILES: [Asset; 62] = [
+pub const FILES: [Asset; 63] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -253,6 +253,10 @@ pub const FILES: [Asset; 62] = [
     Asset {
         path: "contracts/r-plan-graph.schema.json",
         content: include_str!("../assets/contracts/r-plan-graph.schema.json"),
+    },
+    Asset {
+        path: "scripts/contracts-gate.mjs",
+        content: include_str!("../assets/contracts-gate.mjs"),
     },
     Asset {
         path: "ports.json",

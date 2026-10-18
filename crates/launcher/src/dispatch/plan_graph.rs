@@ -50,12 +50,13 @@ pub async fn by_hand(args: &PlanGraphArgs, here: &Path) -> Outcome<()> {
         &log,
     )
     .await?;
-    let dossier = Dossier::read(
-        &harness_adapters::shell::disk::RealDisk,
-        mount.workspace.root(),
-    );
+    let disk = harness_adapters::shell::disk::RealDisk;
+    let root = mount.workspace.root();
+    let dossier = Dossier::read(&disk, root);
+    let standing = plan_graph::Standing::read(&disk, root);
     let gh: Rc<dyn GitHub> = Rc::new(GhCli::for_slug(&slug));
-    let written = plan_graph::write(gh.as_ref(), &dossier, args.roadmap, &args.branch).await?;
+    let written =
+        plan_graph::write(gh.as_ref(), &dossier, args.roadmap, &args.branch, &standing).await?;
     for line in written.lines() {
         log.say(&line);
         println!("{line}");

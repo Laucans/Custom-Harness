@@ -87,6 +87,13 @@ export function mockServer() {
   };
   s.uuid = uuid;
   s.next = () => s.tick++;
+  /** Whether the plan's graph (`plan/graph.json`, contract R) names `id` as a write a milestone produces: mocked until built. */
+  s.planned = async (id) => {
+    if (!s.graph) s.graph = fetch(new URL('../../plan/graph.json', location.href)).then((r) => (r.ok ? r.json() : undefined)).catch(() => undefined);
+    const graph = await s.graph;
+    const entry = graph && graph.ids && graph.ids[id];
+    return Boolean(entry && entry.kind === 'data-capability' && entry.producer != null);
+  };
   /** A message of contract L, kept for the page and the tests. */
   s.tell = (message, to, commandId, extra = {}) => {
     const m = { message, to: Array.isArray(to) ? to : [to], commandId, at: new Date().toISOString(), ...extra };
@@ -196,6 +203,14 @@ export function mockServer() {
     const entry = { commandId, dataCapability, version: Number(version) || 1, aggregate, partition, targetId, by, payload, basedOn: body.basedOn, idempotencyKey: body.idempotencyKey, handler, position: s.next(), state: 'queued', warnings: [] };
     s.queue.set(commandId, entry);
     s.commands.set(commandId, entry);
+    if (!handler && (await s.planned(dataCapability))) {
+      // Mocked until its milestone builds it: accepted, applied, no effect.
+      entry.state = 'applied';
+      entry.warnings.push(`mocked-data-capability: ${dataCapability} is planned, not built`);
+      s.tell('CommandApplied', by, commandId, { mocked: true });
+      s.bump();
+      return answer(entry);
+    }
     if (!handler) {
       entry.state = 'rejected';
       entry.violations = ['unhandled-data-capability'];

@@ -224,6 +224,54 @@ fn mirrored() -> HashMap<&'static str, &'static str> {
 }
 
 #[test]
+fn a_need_and_an_action_the_plan_s_graph_produces_pass_both_readings() {
+    // The Capability and the DataCapability are not built: a milestone of the
+    // plan produces them (contract R), and the Micro-UI builds against them.
+    let repo = repo("planned");
+    write(
+        &repo.root,
+        "apps/credit/risk-badge/micro-ui.json",
+        r#"{"microUi":"RiskBadge","system":"credit","needs":["credit.calculateRisk","credit.listAccounts"],"actions":["credit.requestLimitChange","credit.closeAccount"]}"#,
+    );
+    write(
+        &repo.root,
+        "mock/pages.json",
+        r#"{"version":1,"pages":[],"components":[{"name":"RiskBadge","system":"credit","description":"d","fragment":"components/RiskBadge.html","needs":["credit.calculateRisk","credit.listAccounts"],"actions":["credit.requestLimitChange","credit.closeAccount"]}]}"#,
+    );
+    write(
+        &repo.root,
+        "plan/graph.json",
+        r#"{"version":1,"milestones":[],"ids":{"credit.listAccounts":{"kind":"capability","producer":7},"credit.closeAccount":{"kind":"data-capability","producer":7}}}"#,
+    );
+    for name in ["system-frontier", "write-actions"] {
+        let (ok, said) = gate(&repo, name);
+        assert!(ok, "{name}: {said}");
+    }
+    assert!(
+        loop_violations(&repo).is_empty(),
+        "{:?}",
+        loop_violations(&repo)
+    );
+    // An id the graph knows but nobody produces is still undeclared.
+    write(
+        &repo.root,
+        "plan/graph.json",
+        r#"{"version":1,"milestones":[],"ids":{"credit.listAccounts":{"kind":"capability","producer":null},"credit.closeAccount":{"kind":"data-capability","producer":null}}}"#,
+    );
+    for (name, word) in [("system-frontier", "needs"), ("write-actions", "action")] {
+        let (ok, said) = gate(&repo, name);
+        assert!(!ok, "{name}: {said}");
+        assert!(said.contains(word), "{name}: {said}");
+    }
+    assert_eq!(
+        loop_violations(&repo).len(),
+        2,
+        "{:?}",
+        loop_violations(&repo)
+    );
+}
+
+#[test]
 fn the_healthy_shape_passes_both_readings() {
     let repo = repo("healthy");
     for job in mirrored().keys() {

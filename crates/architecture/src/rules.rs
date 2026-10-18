@@ -57,7 +57,10 @@ test of this crate calling `platform_conformance::check(\"<Concept>@<n>\",
 
 Gates that judge it: manifests-conform-to-contracts (B), capability-isolation
 (scripts/isolation.sh on the cargo metadata graph, and no `invokes`),
-concepts-documented, semantic-conformance, queries-registered, read-only.
+concepts-documented, semantic-conformance, queries-registered, read-only,
+contracts-untouched (its manifest is its milestone's to change: a consumer
+that needs it changed stops with `AGENT_LOOP_STOP: contract <id> — <what it
+needs>`, the contract manager evolves it).
 The loop checks the same after the round, and that the round touched
 nothing outside the unit's closure.
 Run them before the PR: `npx --yes ajv-cli@5 validate --spec=draft2020 -s
@@ -181,7 +184,9 @@ capability-isolation (scripts/isolation.sh), data-capability-registered
 effect-classification (a pure insert stays one), ownership (its target
 aggregate declares every field it touches), invariants-tested (every
 invariant it lists exists on the aggregate), write-actions (the Micro-UIs
-that cite it are admitted by callableBy).
+that cite it are admitted by callableBy), contracts-untouched (its manifest
+is its milestone's to change: a consumer that needs it changed stops with
+`AGENT_LOOP_STOP: contract <id> — <what it needs>`).
 Outside the product, through a port only: ports-declared (it names the
 ports it uses, and they list it back) and externals-behind-ports (no HTTP
 client, provider SDK or database client but in a port's adapter). The

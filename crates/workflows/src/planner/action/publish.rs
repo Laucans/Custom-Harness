@@ -69,7 +69,11 @@ impl Write {
                 &ctx.state.writes,
             ));
         }
-        let found = graph::Graph::derive(&milestones, &ctx.state.components);
+        let mut found = graph::Graph::derive(&milestones, &ctx.state.components);
+        found.mark_states(
+            &|id| ctx.state.standing.built.iter().any(|b| b == id),
+            &|id| ctx.state.standing.mocked.iter().any(|m| m == id),
+        );
         for ahead in found.reads_ahead() {
             ctx.traces.warn(&format!(
                 "plan graph: #{} reads `{}`, which #{} produces later — built in this order, its tasks find it missing",

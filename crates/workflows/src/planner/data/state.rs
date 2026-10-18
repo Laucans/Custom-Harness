@@ -20,6 +20,8 @@ pub struct PlannerState {
     pub components: Vec<harness_architecture::graph::Component>,
     /// The dossier's writes, by id.
     pub writes: Vec<String>,
+    /// Where every id stands in the checkout — built, or a fixture for it.
+    pub standing: crate::plan_graph::Standing,
     /// What the free `explore` entry read from the repo. Only the explorer
     /// reads it.
     pub brief: String,
