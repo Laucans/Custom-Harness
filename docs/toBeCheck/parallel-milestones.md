@@ -50,6 +50,14 @@ their tests and gates only: no live watch has run them yet.
       `crates/session/` (12:40Z) before the rule: held at the next tick,
       taken once the producers are `waiting-merge`. The in-process dev loop
       (`--parallel` ≤ 1) does not hold them yet.
+- [ ] **A Micro-UI does not wait on its own milestone's crates**
+      (`tasks::blockers_pending`): every Micro-UI of #19–#28 was
+      `blocked_by` its capabilities, so ahead work was empty (13:10Z, 2 of 5
+      lanes busy). After the fix (13:13Z) the lanes took #62, #63, #138,
+      #166 at once — then halted on the quota (6%). To verify: those
+      Micro-UIs deliver green against the fixtures alone, their PRs pass
+      `pages-mocked`, and no freeze/screen task starts before its
+      capabilities.
 - [ ] A consumer's tasks build against a producer's mocked contract; the
       mock server answers `mocked-data-capability` for a planned write.
 - [ ] A consumer ready to land while its producer still builds logs
