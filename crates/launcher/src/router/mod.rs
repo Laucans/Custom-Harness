@@ -182,23 +182,20 @@ async fn tick(
         // A session went through on a lane: the quota is back.
         pulse.rest.cleared();
     }
-    let resting = !pulse.rest.passes();
-    let parallel = args.parallel > 1;
-    if resting {
+    let pace = pace(args.parallel, !pulse.rest.passes());
+    if pace == Pace::Paused || pace == Pace::FreeOnly {
         log.debug(&format!(
             "resting: quota exhausted — {} tick(s) left{}",
             pulse.rest.ticks_left,
-            if parallel {
+            if pace == Pace::FreeOnly {
                 ", the free work goes on"
             } else {
                 ""
             }
         ));
-        // One route at a time and that route paid: nothing to read either,
-        // and the lanes already running keep running.
-        if !parallel {
-            return Ok(());
-        }
+    }
+    if pace == Pace::Paused {
+        return Ok(());
     }
     let activity = gh.activity(pulse.etag.as_deref()).await?;
     if routing::may_skip(pulse, &activity, freed) {
@@ -231,7 +228,7 @@ async fn tick(
     // archived before anything else is dispatched.
     snapshot_data(args, here, &gh, &found.milestones, log).await;
     say_saw(&found, log);
-    if parallel {
+    if pace != Pace::OneRoute {
         if lanes.is_closed() {
             // A soft stop arrived during the read: nothing new is dispatched.
             return Ok(());
@@ -241,11 +238,19 @@ async fn tick(
         {
             log.say(&format!("idle: {reason}"));
         }
-        let came_to =
-            lanes::run_schedule(args, here, gh.as_ref(), &found, pulse, !resting, lanes, log).await;
-        if came_to == Dispatched::Quota {
-            rest(pulse, log);
-        }
+        // A free job never meets the quota, and a lane's is told by its
+        // exit: what the schedule came to is the doctor's, already recorded.
+        let _ = lanes::run_schedule(
+            args,
+            here,
+            gh.as_ref(),
+            &found,
+            pulse,
+            pace == Pace::Lanes,
+            lanes,
+            log,
+        )
+        .await;
         return Ok(());
     }
     let route = routing::decide(&found);
@@ -300,6 +305,29 @@ fn say_saw(found: &Snapshot, log: &Logbook) {
         found.ready_to_merge,
         found.dev_loop_milestones,
     ));
+}
+
+/// What a tick may start, given the lanes and the quota.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pace {
+    /// One route at a time, resting: nothing to read, nothing to start.
+    Paused,
+    /// One route at a time, run in the tick.
+    OneRoute,
+    /// Lanes, resting: the free work only — the merges.
+    FreeOnly,
+    /// Lanes: every job, the paid ones on free lanes.
+    Lanes,
+}
+
+/// The tick's [`Pace`]: `parallel` lanes, and whether a quota rest holds.
+const fn pace(parallel: usize, resting: bool) -> Pace {
+    match (parallel > 1, resting) {
+        (false, true) => Pace::Paused,
+        (false, false) => Pace::OneRoute,
+        (true, true) => Pace::FreeOnly,
+        (true, false) => Pace::Lanes,
+    }
 }
 
 /// A `QUOTA` stop: the watch rests, longer with every stop in a row, and
@@ -527,9 +555,6 @@ async fn red_prs(gh: &dyn GitHub, to_fix: &[Pr], to_review: &[Pr]) -> Outcome<Ve
     // it at dispatch, the same request a human makes. Bounded like the
     // rest: past `MAX_FIXES` repairs, the PR is a human's.
     for candidate in to_review {
-        if found.iter().any(|pr| pr.num == candidate.num) {
-            continue;
-        }
         let comments = gh.pr_comments(&candidate.num).await?;
         let blocked = review::status(&comments).wants_a_fix();
         let conflicting = review::repairs(&comments) < review::MAX_FIXES
@@ -687,5 +712,14 @@ mod tests {
         assert_eq!(pulse.rest.ticks_left, routing::FIRST_REST);
         assert_eq!(pulse.rest.strikes, 1);
         assert!(pulse.may_open(2), "the refused attempt did not count");
+    }
+
+    #[test]
+    fn a_quota_rest_pauses_one_route_and_keeps_the_free_work_of_the_lanes() {
+        assert_eq!(pace(1, true), Pace::Paused);
+        assert_eq!(pace(0, false), Pace::OneRoute);
+        assert_eq!(pace(1, false), Pace::OneRoute);
+        assert_eq!(pace(2, true), Pace::FreeOnly);
+        assert_eq!(pace(5, false), Pace::Lanes);
     }
 }

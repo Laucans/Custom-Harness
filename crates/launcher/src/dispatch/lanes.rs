@@ -320,6 +320,7 @@ mod tests {
         assert!(lanes.is_parked(15, "v1"), "exit 1 is a stop: parked");
         assert!(!lanes.is_parked(16, "v1"), "exit 2 is a failure: retried");
         assert!(!lanes.struck_by_quota(), "neither was a quota stop");
+        assert!(!lanes.went_through(), "neither went through");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -2146,4 +2146,128 @@ mod tests {
         );
         assert!(twice.left.is_empty());
     }
+
+    /// A task of a board, with its unit and what it needs.
+    fn task_needing(number: u64, unit: &str, needs: &str) -> Issue {
+        Issue {
+            body: format!(
+                "## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: media\nneeds: {needs}"
+            ),
+            ..issue(number, &[labels::AGENT, labels::READY])
+        }
+    }
+
+    fn board(milestone: u64, tasks: Vec<Issue>) -> crate::dev_loop::data::board::Board {
+        crate::dev_loop::data::board::Board {
+            milestone: issue(milestone, &[labels::MILESTONE, labels::TRIGGERED]),
+            tasks,
+            resuming: None,
+        }
+    }
+
+    #[test]
+    fn a_board_s_tasks_are_jobs_and_ahead_of_its_producers_only_what_runs_on_the_mocks() {
+        // #19 reads #20: its Micro-UI runs on #20's mocked contract, its
+        // Capability on #20's table waits until #20 lands.
+        let graph = parse_graph(Some(
+            r#"{"version":1,"milestones":[
+              {"number":20,"title":"sessions","systems":["session"],"produces":["session.listScenes","Session"],"consumes":[],"depends_on":[]},
+              {"number":19,"title":"media","systems":["media"],"produces":["media.listMedia"],"consumes":["session.listScenes","Session"],"depends_on":[20]}
+            ],"ids":{
+              "media.listMedia":{"kind":"capability","producer":19,"state":"planned","version":1},
+              "session.listScenes":{"kind":"capability","producer":20,"state":"planned","version":1},
+              "Session":{"kind":"aggregate","producer":20,"state":"planned","version":1}
+            }}"#,
+        ));
+        let tasks = vec![
+            task_needing(60, "micro-ui", "session.listScenes"),
+            task_needing(62, "capability", "Session"),
+        ];
+        let building = |state: &str| Snapshot {
+            milestones: vec![
+                issue(19, &[labels::MILESTONE, labels::TRIGGERED]),
+                Issue {
+                    state: state.to_string(),
+                    ..issue(20, &[labels::MILESTONE, labels::TRIGGERED])
+                },
+            ],
+            graph: graph.clone(),
+            dev_loop_milestones: vec![19],
+            boards: vec![board(19, tasks.clone())],
+            ..empty()
+        };
+        let tasks_of = |snapshot: &Snapshot, running: &[u64]| {
+            schedule(snapshot, running, &|_| 0)
+                .into_iter()
+                .filter_map(|job| match job.route {
+                    Route::DevTask {
+                        milestone: 19,
+                        task,
+                    } => Some(task),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            tasks_of(&building("open"), &[]),
+            [60],
+            "#20 builds: the mocks only"
+        );
+        assert_eq!(
+            tasks_of(&building("closed"), &[]),
+            [60, 62],
+            "#20 landed: everything"
+        );
+        assert_eq!(
+            tasks_of(&building("closed"), &[60]),
+            [62],
+            "one on a lane is not offered"
+        );
+        let other = Snapshot {
+            boards: vec![board(21, tasks.clone())],
+            ..building("closed")
+        };
+        assert_eq!(
+            routes(&other),
+            [Route::DevLoop { milestone: 19 }],
+            "no board read for #19: its loop picks its task"
+        );
+    }
+
+    #[test]
+    fn a_decision_on_a_task_of_the_critical_path_passes_one_off_it_and_the_plan_is_alone() {
+        let graph = graph();
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        let snapshot = Snapshot {
+            milestones: vec![ready(18), ready(19), ready(20), ready(21)],
+            graph: Some(graph),
+            boards: vec![
+                board(18, vec![issue(51, &[labels::AGENT])]),
+                board(21, vec![issue(70, &[labels::AGENT])]),
+            ],
+            deciding: vec![
+                issue(70, &[labels::NEEDS_DECISION]),
+                issue(51, &[labels::NEEDS_DECISION]),
+            ],
+            roadmap: vec![issue(4, &[labels::ROADMAP, labels::READY])],
+            ..empty()
+        };
+        let jobs = schedule(&snapshot, &[], &|_| 0);
+        let decisions: Vec<(u64, u32)> = jobs
+            .iter()
+            .filter(|j| matches!(j.route, Route::Decide { .. }))
+            .map(|j| (j.key, j.weight))
+            .collect();
+        assert_eq!(
+            decisions,
+            [(51, 960), (70, 860)],
+            "#51 is #18's: the path's first"
+        );
+        let planner = jobs
+            .iter()
+            .find(|j| matches!(j.route, Route::Planner { .. }))
+            .expect("the plan");
+        assert_eq!(planner.exclusive, Some("planner"));
+        assert_eq!(planner.key, 4);
+    }
 }

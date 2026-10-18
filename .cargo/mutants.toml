@@ -46,6 +46,8 @@ exclude_re = [
   "router/routes\\.rs:.*replace (fix_here|rules_here|contract_here|run_on_lane|run_main_agent_merge) ",
   "router/routes\\.rs:.* in dispatch$",
   "router/mod\\.rs:.*replace run_route ",
+  # The snapshot's debug line, read by a human looking at a tick.
+  "router/mod\\.rs:.*replace say_saw with \\(\\)",
   # Equivalent mutants: base64's bit groups never overlap, so `|` and `^`
   # agree; a milestone never consumes what it produces, so its own position
   # is never its producer's (`>` and `>=` agree), nor its own dependent
