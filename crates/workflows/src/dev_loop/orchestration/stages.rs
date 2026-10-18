@@ -421,6 +421,7 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
                 Box::new(ArchitectureHolds {
                     disk: Rc::clone(&ports.disk),
                     root: config.root.clone(),
+                    gh: Rc::clone(&ports.gh),
                     repo: Rc::clone(&ports.repo),
                     integration_branch: config.integration_branch.clone(),
                 }),

@@ -181,6 +181,12 @@ pub trait GitHub {
     /// [`Halt::Failed`](crate::domain::Halt::Failed) if `gh` cannot read it.
     async fn pr(&self, pr_ref: &str) -> Outcome<Pr>;
 
+    /// The paths a PR changes, by its number, URL or head branch.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`](crate::domain::Halt::Failed) if `gh` cannot read it.
+    async fn pr_files(&self, pr_ref: &str) -> Outcome<Vec<String>>;
+
     /// The body of all comments on a PR, **concatenated as-is**.
     ///
     /// A string, not a list, by design: the only thing done with it is a

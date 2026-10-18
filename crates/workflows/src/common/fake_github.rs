@@ -67,6 +67,8 @@ pub struct FakeGitHub {
     pub issue_comments: Vec<String>,
     /// PRs that `pr()` can read, by number or URL requested.
     pub prs: Vec<(String, Pr)>,
+    /// What `pr_files` returns, by PR ref.
+    pub pr_files: HashMap<String, Vec<String>>,
     /// What `pr_comments` returns, by PR number.
     pub pr_comment_bodies: Vec<(String, String)>,
     /// What it wrote.
@@ -269,6 +271,14 @@ impl GitHub for FakeGitHub {
             .find(|(asked, _)| asked == pr_ref)
             .map(|(_, pr)| pr.clone())
             .ok_or_else(|| Halt::Failed(format!("no PR {pr_ref}")))
+    }
+
+    async fn pr_files(&self, pr_ref: &str) -> Outcome<Vec<String>> {
+        self.ok()?;
+        self.pr_files
+            .get(pr_ref)
+            .cloned()
+            .ok_or_else(|| Halt::Failed(format!("no files for PR {pr_ref}")))
     }
 
     async fn pr_comments(&self, num: &str) -> Outcome<String> {

@@ -752,6 +752,27 @@ impl GitHub for GhCli {
             .map(|value| pr_from(&value))
     }
 
+    async fn pr_files(&self, pr_ref: &str) -> Outcome<Vec<String>> {
+        let ran = self
+            .gh(&[
+                "pr".to_string(),
+                "view".to_string(),
+                pr_ref.to_string(),
+                "--json".to_string(),
+                "files".to_string(),
+                "--jq".to_string(),
+                ".files[].path".to_string(),
+            ])
+            .await?;
+        if !ran.ok() {
+            return Err(Halt::Failed(format!(
+                "cannot read the files of PR {pr_ref} — {}",
+                ran.why()
+            )));
+        }
+        Ok(ran.lines())
+    }
+
     async fn pr_comments(&self, num: &str) -> Outcome<String> {
         let ran = self
             .gh(&[

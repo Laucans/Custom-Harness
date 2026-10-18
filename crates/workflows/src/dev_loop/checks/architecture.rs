@@ -27,6 +27,7 @@ use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Context, Verification};
 use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::git::Repo;
+use harness_core::ports::shell::github::GitHub;
 
 use crate::common::sections;
 use crate::dev_loop::data::state::Loop;
@@ -103,11 +104,30 @@ pub struct ArchitectureHolds {
     pub disk: Rc<dyn Disk>,
     /// The checkout's root.
     pub root: PathBuf,
-    /// The lane's checkout, for what the round changed.
+    /// What reads the task's pull request — the round's own changes, apart
+    /// from what other lanes merged on the same branch meanwhile.
+    pub gh: Rc<dyn GitHub>,
+    /// The lane's checkout, for what the round changed when no PR says it.
     pub repo: Rc<dyn Repo>,
     /// The branch the round's pull request merged into — where its changes
     /// are, once `code` has merged them.
     pub integration_branch: String,
+}
+
+impl ArchitectureHolds {
+    /// The files the task's pull request changes, when the task declares a
+    /// branch and GitHub knows a PR on it — merged or open.
+    async fn pr_changes(&self, ctx: &Context<Loop>) -> Option<Vec<String>> {
+        let branch = crate::dev_loop::data::tasks::declared_branch(&ctx.state.task.body)?;
+        let pr = self.gh.pr(&branch).await.ok()?;
+        let files = self.gh.pr_files(&pr.num).await.ok()?;
+        ctx.traces.debug(&format!(
+            "architecture: the round's changes are PR {}'s {} file(s)",
+            pr.reference(),
+            files.len()
+        ));
+        Some(files)
+    }
 }
 
 #[async_trait(?Send)]
@@ -129,15 +149,23 @@ impl Verification<Loop> for ArchitectureHolds {
         let declaration = declaration_of(ctx);
         let mut found = violations(&tree, declaration.as_ref());
         // The round's own changes, against the task's closure: what the
-        // session touched that its unit does not hold.
-        if !ctx.state.round_base.is_empty() {
-            let mut changed = self
-                .repo
-                .changed_between(
-                    &ctx.state.round_base,
-                    &format!("origin/{}", self.integration_branch),
-                )
-                .await?;
+        // session touched that its unit does not hold. Read off the task's
+        // pull request: a diff of the branch would carry what the other
+        // lanes merged on it meanwhile (#58 was refused on a neighbour's
+        // Cargo.toml another task had changed).
+        let own = self.pr_changes(ctx).await;
+        if own.is_some() || !ctx.state.round_base.is_empty() {
+            let mut changed = match own {
+                Some(files) => files,
+                None => {
+                    self.repo
+                        .changed_between(
+                            &ctx.state.round_base,
+                            &format!("origin/{}", self.integration_branch),
+                        )
+                        .await?
+                }
+            };
             changed.extend(dirty_paths(&self.repo.dirty_files().await?));
             for path in outside_closure(&tree, declaration.as_ref(), &changed) {
                 found.push(format!(
@@ -351,12 +379,53 @@ mod tests {
     }
 
     fn holds(repos: &FakeRepos) -> ArchitectureHolds {
+        with_github(repos, crate::common::fake_github::FakeGitHub::default())
+    }
+
+    fn with_github(
+        repos: &FakeRepos,
+        gh: crate::common::fake_github::FakeGitHub,
+    ) -> ArchitectureHolds {
         ArchitectureHolds {
             disk: Rc::new(disk()),
             root: PathBuf::from("/ws"),
+            gh: Rc::new(gh),
             repo: repos.at(std::path::Path::new("/ws")),
             integration_branch: "milestone/3-risk".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn the_round_s_changes_are_its_pull_request_s_not_the_branch_s() {
+        // Another lane merged a neighbour's Cargo.toml on the milestone
+        // branch meanwhile: the branch's diff carries it, the PR does not.
+        let repos = FakeRepos::changing(&["crates/credit/capabilities/calculate-risk/Cargo.toml"]);
+        let gh = crate::common::fake_github::FakeGitHub {
+            prs: vec![(
+                "feat/risk-badge".to_string(),
+                harness_core::domain::Pr {
+                    num: "101".to_string(),
+                    ..harness_core::domain::Pr::default()
+                },
+            )],
+            pr_files: std::collections::HashMap::from([(
+                "101".to_string(),
+                vec!["apps/credit/risk-badge/index.ts".to_string()],
+            )]),
+            ..crate::common::fake_github::FakeGitHub::default()
+        };
+        let mut context = ctx("abc123");
+        context
+            .state
+            .task
+            .body
+            .push_str("\n\n## Scope\n\nbranch: feat/risk-badge\n");
+        let verdict = with_github(&repos, gh)
+            .verify(&context)
+            .await
+            .expect("its own changes hold");
+        assert!(matches!(verdict, Verdict::Continue));
+        assert!(!repos.asked("diff"), "the PR says it: {:?}", repos.calls());
     }
 
     #[tokio::test]

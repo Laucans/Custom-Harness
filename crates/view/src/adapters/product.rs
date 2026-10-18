@@ -305,6 +305,9 @@ mod tests {
         async fn pr(&self, _pr_ref: &str) -> Outcome<harness_core::domain::Pr> {
             Err(refused())
         }
+        async fn pr_files(&self, _pr_ref: &str) -> Outcome<Vec<String>> {
+            Err(refused())
+        }
         async fn pr_comments(&self, _num: &str) -> Outcome<String> {
             Err(refused())
         }
