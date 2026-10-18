@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use harness_architecture::closure;
 use harness_architecture::tree::{Tree, undocumented_concepts, violations};
 use harness_architecture::vocabulary::Declaration;
-use harness_core::domain::{Halt, Outcome, Verdict};
+use harness_core::domain::{Halt, Outcome, Pr, Verdict};
 use harness_core::execution::{Context, Verification};
 use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::git::Repo;
@@ -165,6 +165,18 @@ impl ArchitectureHolds {
         ));
         Some(files)
     }
+
+    /// The task's pull request, when it is still open on a branch this
+    /// checkout is not on: its changes are not here to be read.
+    async fn open_elsewhere(&self, ctx: &Context<Loop>) -> Option<Pr> {
+        let branch = crate::dev_loop::data::tasks::declared_branch(&ctx.state.task.body)?;
+        let pr = self.gh.pr(&branch).await.ok()?;
+        if !pr.state.eq_ignore_ascii_case("open") {
+            return None;
+        }
+        let here = self.repo.current_branch().await.ok()?;
+        (here != pr.head).then_some(pr)
+    }
 }
 
 #[async_trait(?Send)]
@@ -175,6 +187,18 @@ impl Verification<Loop> for ArchitectureHolds {
 
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         if ctx.settings.dry_run {
+            return Ok(Verdict::Continue);
+        }
+        // A round that found its PR already open and changed nothing leaves
+        // the checkout on the integration branch, where the PR's unit is not:
+        // judged here, #51's own DataCapability was "missing" and its folder
+        // a neighbour's. The PR's CI runs the same gates on its head.
+        if let Some(pr) = self.open_elsewhere(ctx).await {
+            ctx.traces.say(&format!(
+                "architecture: {} is open on `{}` and this checkout is not on it — its CI runs the same gates there; nothing to judge here",
+                pr.reference(),
+                pr.head
+            ));
             return Ok(Verdict::Continue);
         }
         let tree = Tree::read(self.disk.as_ref(), &self.root);
@@ -474,6 +498,47 @@ mod tests {
             .expect("its own changes hold");
         assert!(matches!(verdict, Verdict::Continue));
         assert!(!repos.asked("diff"), "the PR says it: {:?}", repos.calls());
+    }
+
+    #[tokio::test]
+    async fn an_open_pr_on_another_branch_is_not_judged_from_this_checkout() {
+        let repos = FakeRepos::default();
+        let open_on = |head: &str| crate::common::fake_github::FakeGitHub {
+            prs: vec![(
+                "feat/risk-badge".to_string(),
+                harness_core::domain::Pr {
+                    num: "105".to_string(),
+                    head: head.to_string(),
+                    state: "OPEN".to_string(),
+                    ..harness_core::domain::Pr::default()
+                },
+            )],
+            pr_files: std::collections::HashMap::from([(
+                "105".to_string(),
+                vec!["crates/credit/capabilities/calculate-risk/src/lib.rs".to_string()],
+            )]),
+            ..crate::common::fake_github::FakeGitHub::default()
+        };
+        let mut context = ctx("abc123");
+        context
+            .state
+            .task
+            .body
+            .push_str("\n\n## Scope\n\nbranch: feat/risk-badge\n");
+        let verdict = with_github(&repos, open_on("feat/risk-badge"))
+            .verify(&context)
+            .await
+            .expect("the checkout is on main_agent: the PR's CI judges it");
+        assert!(matches!(verdict, Verdict::Continue));
+        let err = with_github(&repos, open_on("main_agent"))
+            .verify(&context)
+            .await
+            .expect_err("the checkout holds the PR: judged");
+        assert!(
+            err.reason().contains("calculate-risk/src/lib.rs"),
+            "{}",
+            err.reason()
+        );
     }
 
     #[tokio::test]
