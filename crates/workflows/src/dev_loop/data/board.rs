@@ -221,10 +221,10 @@ pub async fn building(
         if let Some(milestone) = milestones.iter().find(|m| m.number == number)
             && let Ok(board) = read_of_those(gh, milestone.clone(), &may_run).await
         {
-            let could_start = tasks::runnable_tasks(&board.tasks)
-                .into_iter()
-                .filter(|task| may_run(task))
-                .count();
+            // Counted as the lanes take them: startable among what may run,
+            // one per aggregate — six "offered" that could not start stopped
+            // the reads at two boards and left the lanes empty.
+            let could_start = tasks::startable_tasks(&board.tasks, &[], &may_run).len();
             offered = offered.saturating_add(could_start);
             boards.push(board);
         }

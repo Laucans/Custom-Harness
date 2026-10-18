@@ -123,9 +123,20 @@ fn rules_section(rules: &[String]) -> Option<String> {
 /// compare case-insensitively: a manifest's `campagne.ajouterPj` and a
 /// slice's `campagne.ajouterpj` are one.
 fn graph_blockers(needs: &[String], producers: &BTreeMap<String, u64>) -> Vec<u64> {
+    // The id as written first — `Media` the aggregate is not `media` the
+    // system's wiring, and the one written last would have hidden the other
+    // (ForgeDesMondes' #125 waited on the wiring, not on its aggregate) —
+    // then any spelling, as the milestones' chaining reads an aggregate.
     let mut blockers: Vec<u64> = needs
         .iter()
-        .filter_map(|id| producers.get(&id.to_lowercase()).copied())
+        .filter_map(|id| {
+            producers.get(id).copied().or_else(|| {
+                producers
+                    .iter()
+                    .find(|(known, _)| known.eq_ignore_ascii_case(id))
+                    .map(|(_, number)| *number)
+            })
+        })
         .collect();
     blockers.sort_unstable();
     blockers.dedup();
@@ -210,7 +221,7 @@ impl Action<SplitState> for Write {
                 self.gh.add_blocked_by(number, *blocker).await?;
             }
             for id in &declaration.produces {
-                producers.entry(id.to_lowercase()).or_insert(number);
+                producers.entry(id.clone()).or_insert(number);
             }
             ctx.traces.say(&format!(
                 "opened task #{number}: {} ({kind}, {}, {}, {})",
@@ -400,6 +411,25 @@ mod tests {
             ]),
             ..FakeGitHub::default()
         }
+    }
+
+    #[test]
+    fn a_need_is_chained_on_its_exact_producer_before_any_spelling() {
+        let mut producers = BTreeMap::new();
+        producers.insert("media".to_string(), 114);
+        producers.insert("Media".to_string(), 117);
+        producers.insert("PJ".to_string(), 3);
+        assert_eq!(graph_blockers(&["Media".to_string()], &producers), [117]);
+        assert_eq!(graph_blockers(&["media".to_string()], &producers), [114]);
+        assert_eq!(
+            graph_blockers(
+                &["pj".to_string(), "Media".to_string(), "media".to_string()],
+                &producers
+            ),
+            [3, 114, 117],
+            "any spelling when no exact id; sorted, deduplicated"
+        );
+        assert!(graph_blockers(&["Nothing".to_string()], &producers).is_empty());
     }
 
     #[tokio::test]

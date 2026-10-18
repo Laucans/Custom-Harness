@@ -172,36 +172,61 @@ fn issue_version(issue: &Issue) -> String {
     harness_core::domain::breaker::fingerprint(&format!("{}\n{}", issue.body, labels.join(",")))
 }
 
-/// What a milestone may start of `startable` while the producers of what it
-/// reads still build: what the mock-up stands in for ([`tasks::mocked_only`]),
-/// the rest said once per tick.
-fn ahead_startable<'a>(
-    startable: Vec<&'a Issue>,
+/// What may start of the milestone's tasks: runnable, not on a lane, and —
+/// while the producers of what the milestone reads still build — nothing it
+/// needs is a table, a Concept or a Micro-UI one of them owns. The aggregate
+/// hold is taken among those only: a task held by its producers holds no
+/// aggregate. What is held is said once per tick.
+fn startable_now<'a>(
+    issues: &'a [Issue],
+    running: &[u64],
     milestone: u64,
-    graph: Option<&routing::Graph>,
-    milestones: &[Issue],
+    found: &Snapshot,
     log: &Logbook,
 ) -> Vec<&'a Issue> {
-    let waiting_on = merge_train::producers_landed(graph, milestone, milestones);
+    let waiting_on =
+        merge_train::producers_landed(found.graph.as_ref(), milestone, &found.milestones);
+    let ahead = |task: &Issue| {
+        waiting_on.is_empty()
+            || tasks::runs_ahead(task, milestone, found.graph.as_ref(), &waiting_on)
+    };
+    say_held(issues, running, milestone, &waiting_on, &ahead, log);
+    tasks::startable_tasks(issues, running, &ahead)
+}
+
+/// Says once per tick which runnable tasks of the milestone wait on its
+/// producers: those `ahead` refuses among the runnable not on a lane.
+fn say_held(
+    issues: &[Issue],
+    running: &[u64],
+    milestone: u64,
+    waiting_on: &[u64],
+    ahead: &dyn Fn(&Issue) -> bool,
+    log: &Logbook,
+) {
     if waiting_on.is_empty() {
-        return startable;
+        return;
     }
-    let (taken, held) = tasks::mocked_only(&startable, milestone, graph, &waiting_on);
-    if !held.is_empty() {
-        let list = |numbers: &[u64]| {
-            numbers
-                .iter()
-                .map(|n| format!("#{n}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        log.say(&format!(
-            "watch: lanes -> #{milestone}'s tasks reading tables, Concepts or Micro-UIs still building ({}) wait on {} to land — ahead work is what the mock-up stands in for",
-            list(&held),
-            list(&waiting_on)
-        ));
+    let held: Vec<u64> = tasks::runnable_tasks(issues)
+        .into_iter()
+        .filter(|task| !running.contains(&task.number) && !ahead(task))
+        .map(|task| task.number)
+        .collect();
+    if held.is_empty() {
+        return;
     }
-    taken
+    let list = |numbers: &[u64]| {
+        numbers
+            .iter()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    log.say(&format!(
+        "watch: lanes -> #{milestone}'s tasks reading tables, Concepts or Micro-UIs still building ({}) wait on {} to land — ahead work is what the mock-up stands in for",
+        list(&held),
+        list(waiting_on)
+    ));
 }
 
 /// Runs the dev loop pointed at this milestone's own branch, derived from
@@ -237,13 +262,7 @@ pub(super) async fn run_lanes(
     // holds left for a later tick — and, while the producers of what this
     // milestone reads still build, the read side only: a contract is mocked
     // until built, a table is not.
-    let startable = ahead_startable(
-        tasks::startable_tasks(&board.tasks, &running),
-        milestone,
-        found.graph.as_ref(),
-        &found.milestones,
-        log,
-    );
+    let startable = startable_now(&board.tasks, &running, milestone, found, log);
     for task in startable {
         let version = issue_version(task);
         if lanes.is_parked(task.number, &version) {
@@ -326,6 +345,7 @@ pub(super) async fn run_lanes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::rc::Rc;
 
     fn issue(number: u64, labels: &[&str], unit: &str) -> Issue {
         needing(number, labels, unit, "")
@@ -359,6 +379,91 @@ mod tests {
         .expect("a graph")
     }
 
+    /// A sink that keeps what the log said, for the lines a tick says once.
+    #[derive(Default)]
+    struct Capture(std::cell::RefCell<Vec<String>>);
+
+    impl harness_core::traces::Sink for Capture {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+        fn keep(&self, _line: &str) {}
+    }
+
+    fn snapshot(milestones: Vec<Issue>, graph: Option<routing::Graph>) -> Snapshot {
+        Snapshot {
+            roadmap: Vec::new(),
+            lowest_roadmap_has_milestone: false,
+            milestones,
+            pr_to_fix: None,
+            pr_to_review: None,
+            task_to_merge: None,
+            ready_to_merge: None,
+            refining: Vec::new(),
+            tech_refining: Vec::new(),
+            arbitrating: Vec::new(),
+            dev_loop_milestones: Vec::new(),
+            boards: Vec::new(),
+            graph,
+            contract_changes: Vec::new(),
+            test_debt: Vec::new(),
+            rules: Vec::new(),
+            deciding: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn what_starts_now_is_said_once_with_what_waits_on_the_producers() {
+        // #60 reads a contract of #20 (mocked); #62 reads #20's table and
+        // waits; #63 is already on a lane and is neither started nor said.
+        let ui = needing(
+            60,
+            &[labels::AGENT, labels::READY],
+            "micro-ui",
+            "session.listScenes",
+        );
+        let table = needing(62, &[labels::AGENT, labels::READY], "capability", "Session");
+        let on_lane = needing(63, &[labels::AGENT, labels::READY], "capability", "Session");
+        let milestones = vec![
+            issue(19, &[labels::MILESTONE], "-"),
+            issue(20, &[labels::MILESTONE], "-"),
+        ];
+        let issues = [ui, table, on_lane];
+        let capture = Rc::new(Capture::default());
+        let log = Logbook::new(
+            Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        let found = snapshot(milestones.clone(), Some(graph()));
+        let started: Vec<u64> = startable_now(&issues, &[63], 19, &found, &log)
+            .iter()
+            .map(|t| t.number)
+            .collect();
+        assert_eq!(started, [60]);
+        let said = capture.0.borrow().join("\n");
+        assert!(
+            said.contains("#19's tasks reading tables, Concepts or Micro-UIs still building (#62) wait on #20 to land"),
+            "{said}"
+        );
+        assert!(
+            !said.contains("#63"),
+            "a task on a lane is not said to wait: {said}"
+        );
+        // No producer building: everything not on a lane starts, nothing is said.
+        let capture = Rc::new(Capture::default());
+        let log = Logbook::new(
+            Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        let landed = snapshot(milestones, None);
+        let started: Vec<u64> = startable_now(&issues, &[], 19, &landed, &log)
+            .iter()
+            .map(|t| t.number)
+            .collect();
+        assert_eq!(started, [60, 62, 63]);
+        assert!(capture.0.borrow().is_empty(), "{:?}", capture.0.borrow());
+    }
+
     #[test]
     fn ahead_of_its_producers_a_milestone_starts_what_reads_contracts_only() {
         // #60 reads a contract of #20 (mocked); #61 composes a Micro-UI #20
@@ -381,32 +486,23 @@ mod tests {
             issue(20, &[labels::MILESTONE], "-"),
         ];
         let graph = graph();
-        let startable = vec![&ui, &screen, &crate_task];
-        let taken = ahead_startable(
-            startable.clone(),
-            19,
-            Some(&graph),
-            &milestones,
-            &Logbook::null(),
-        );
-        assert_eq!(taken.iter().map(|t| t.number).collect::<Vec<_>>(), [60]);
-        let all = |graph: Option<&routing::Graph>, milestone: u64| {
-            ahead_startable(
-                startable.clone(),
-                milestone,
-                graph,
-                &milestones,
-                &Logbook::null(),
-            )
-            .iter()
-            .map(|t| t.number)
-            .collect::<Vec<_>>()
+        let issues = [ui, screen, crate_task];
+        let taken = |graph: Option<&routing::Graph>, milestone: u64| {
+            let waiting_on = merge_train::producers_landed(graph, milestone, &milestones);
+            let ahead = |task: &Issue| {
+                waiting_on.is_empty() || tasks::runs_ahead(task, milestone, graph, &waiting_on)
+            };
+            tasks::startable_tasks(&issues, &[], &ahead)
+                .iter()
+                .map(|t| t.number)
+                .collect::<Vec<_>>()
         };
+        assert_eq!(taken(Some(&graph), 19), [60]);
         assert_eq!(
-            all(Some(&graph), 20),
+            taken(Some(&graph), 20),
             [60, 61, 62],
             "no producer: everything"
         );
-        assert_eq!(all(None, 19), [60, 61, 62], "no graph: everything");
+        assert_eq!(taken(None, 19), [60, 61, 62], "no graph: everything");
     }
 }

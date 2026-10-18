@@ -347,11 +347,24 @@ pub fn runs_ahead(task: &Issue, milestone: u64, graph: Option<&Graph>, building:
     let Some(graph) = graph else {
         return true;
     };
-    let needs = sections::parse(&task.body)
+    let sections = sections::parse(&task.body);
+    let declaration = sections
         .get(sections::ARCHITECTURE)
-        .and_then(|text| Declaration::parse(text))
-        .map(|declaration| declaration.needs)
-        .unwrap_or_default();
+        .and_then(|text| Declaration::parse(text));
+    // A screen that proves rules end to end runs them against real units:
+    // `ForgeDesMondes`' #143 froze the soundbox page and R111's test wrote
+    // through `campaign.createCampaign`, #18's — no fixture stands in for a
+    // rule's run. Such a screen waits for its producers like a table read.
+    let proves_rules = declaration
+        .as_ref()
+        .is_some_and(|d| d.unit == Unit::Composition)
+        && sections
+            .get(sections::RULES)
+            .is_some_and(|text| !crate::common::dossier::rule_ids(text).is_empty());
+    if proves_rules && !building.is_empty() {
+        return false;
+    }
+    let needs = declaration.map(|d| d.needs).unwrap_or_default();
     !needs.iter().any(|id| {
         graph.ids.get(id).is_some_and(|interface| {
             !matches!(interface.kind, Kind::Capability | Kind::DataCapability)
@@ -371,16 +384,24 @@ pub fn mock_up_stands_in(task: &Issue) -> bool {
         && matches!(unit_of(task), Some(Unit::MicroUi | Unit::Composition))
 }
 
-/// The runnable tasks a parallel watch may start now, given those on a lane.
+/// The runnable tasks a parallel watch may start now, given those on a lane
+/// and what `may_start` admits of them.
 ///
 /// Two tasks that change the structure of the same aggregate run one after
 /// the other — the data layer is shared by construction, and two changes of
 /// one aggregate in parallel meet there. A task is held back while a running
-/// task holds its aggregate, or while a runnable task of a smaller number
+/// task holds its aggregate, or while a startable task of a smaller number
 /// does — so two free lanes do not take the same aggregate on one tick.
-/// Different aggregates, and tasks holding none, run together.
+/// Different aggregates, and tasks holding none, run together. A task
+/// `may_start` refuses holds nothing: `ForgeDesMondes`' #117 (the `Media`
+/// aggregate, waiting on #18) held `Media` over #125, #128 and #130, which
+/// could have run — and nothing ran.
 #[must_use]
-pub fn startable_tasks<'a>(issues: &'a [Issue], running: &[u64]) -> Vec<&'a Issue> {
+pub fn startable_tasks<'a>(
+    issues: &'a [Issue],
+    running: &[u64],
+    may_start: &dyn Fn(&Issue) -> bool,
+) -> Vec<&'a Issue> {
     let runnable = runnable_tasks(issues);
     let mut held: Vec<String> = issues
         .iter()
@@ -389,7 +410,7 @@ pub fn startable_tasks<'a>(issues: &'a [Issue], running: &[u64]) -> Vec<&'a Issu
         .collect();
     let mut startable = Vec::new();
     for task in runnable {
-        if running.contains(&task.number) {
+        if running.contains(&task.number) || !may_start(task) {
             continue;
         }
         match held_aggregate(task) {
@@ -814,7 +835,7 @@ mod tests {
             task(10),
         ];
         let numbers = |running: &[u64]| -> Vec<u64> {
-            startable_tasks(&issues, running)
+            startable_tasks(&issues, running, &|_| true)
                 .iter()
                 .map(|t| t.number)
                 .collect()
@@ -837,6 +858,38 @@ mod tests {
     }
 
     #[test]
+    fn a_task_may_start_refuses_holds_no_aggregate_over_the_next() {
+        let on = |number: u64, unit: &str| Issue {
+            body: format!(
+                "## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: media\naggregate: Media\neffect: update\ntouches: media.name"
+            ),
+            ..task(number)
+        };
+        let aggregate = on(117, "aggregate");
+        let write = on(125, "data-capability");
+        let other = on(128, "data-capability");
+        let issues = [aggregate, write, other];
+        let all: Vec<u64> = startable_tasks(&issues, &[], &|_| true)
+            .iter()
+            .map(|t| t.number)
+            .collect();
+        assert_eq!(
+            all,
+            [117],
+            "#117 holds Media first; the writes wait their turn"
+        );
+        let without_117: Vec<u64> = startable_tasks(&issues, &[], &|t| t.number != 117)
+            .iter()
+            .map(|t| t.number)
+            .collect();
+        assert_eq!(
+            without_117,
+            [125],
+            "#117 cannot start: it holds nothing, the first write takes Media"
+        );
+    }
+
+    #[test]
     fn a_pure_insert_and_a_reader_hold_no_aggregate() {
         let mut insert = holding(7, "PJ", "data-capability");
         insert.body = "## Architecture\n\nunit: data-capability\nsystem: campagne\neffect: insert\ntouches: -\naggregate: PJ\n".to_string();
@@ -845,7 +898,7 @@ mod tests {
             "## Architecture\n\nunit: capability\nsystem: campagne\naggregate: PJ\n".to_string();
         let changer = holding(9, "PJ", "migration");
         let issues = [insert, reader, changer];
-        let numbers: Vec<u64> = startable_tasks(&issues, &[])
+        let numbers: Vec<u64> = startable_tasks(&issues, &[], &|_| true)
             .iter()
             .map(|t| t.number)
             .collect();
@@ -906,6 +959,18 @@ mod tests {
         let reads_concept = with(140, "capability", "Campaign");
         // Composes a Micro-UI #24 builds: held until #24 lands.
         let screen = with(219, "composition", "OralBrief, ai.listNotes");
+        // A screen that proves rules runs them for real: held while any
+        // producer builds, whatever it composes.
+        let mut proving = with(143, "composition", "SoundLibrary");
+        proving
+            .body
+            .push_str("\n\n## Rules\n\n- R111 — business — sounds overlap");
+        // A unit that is not a screen proves nothing by itself: its rules
+        // line holds it no more than its needs do.
+        let mut ruled = with(9, "capability", "NoteImport");
+        ruled
+            .body
+            .push_str("\n\n## Rules\n\n- R5 — business — notes are listed");
         // An id nobody produces, or one the graph does not know, holds nothing.
         let free = with(7, "capability", "Orphan, wiring");
         let undeclared = issue(8, &[labels::AGENT, labels::READY]);
@@ -915,19 +980,25 @@ mod tests {
             &reads_table,
             &reads_concept,
             &screen,
+            &proving,
+            &ruled,
             &free,
             &undeclared,
         ];
         let (taken, held) = mocked_only(&all, 23, Some(&graph), &[18, 24]);
         assert_eq!(
             taken.iter().map(|t| t.number).collect::<Vec<_>>(),
-            [136, 131, 7, 8],
+            [136, 131, 9, 7, 8],
             "a contract is mocked; a table, a Concept or a Micro-UI of a building producer is not"
         );
-        assert_eq!(held, [118, 140, 219]);
-        // Once #18 has landed, only the screen waits on #24.
+        assert_eq!(held, [118, 140, 219, 143]);
+        // Once #18 has landed, the composing screen waits on #24 and the
+        // proving screen on any producer left.
         let (_, held) = mocked_only(&all, 23, Some(&graph), &[24]);
-        assert_eq!(held, [219]);
+        assert_eq!(held, [219, 143]);
+        // Every producer landed: the proving screen runs too.
+        let (_, held) = mocked_only(&all, 23, Some(&graph), &[]);
+        assert!(held.is_empty(), "{held:?}");
         // No graph: no producer to wait for.
         let (taken, held) = mocked_only(&all, 23, None, &[18, 24]);
         assert_eq!(taken.len(), all.len());

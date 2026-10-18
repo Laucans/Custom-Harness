@@ -150,7 +150,21 @@ impl Action<DecideState> for Apply {
             return Ok(Verdict::Continue);
         }
         let decided = self.decided(ctx)?;
-        let issue = ctx.state.issue().clone();
+        // The issue as it is now, not as the precheck read it: an owner who
+        // answered while the session thought is never decided over
+        // (`ForgeDesMondes`' #143, answered at 17:45 and overwritten at 17:46).
+        let issue = self.gh.issue(ctx.state.issue().number).await?;
+        let owner_meanwhile = sections::parse(&issue.body)
+            .get(sections::DECISION)
+            .and_then(|text| crate::common::decision::Question::parse(text))
+            .is_some_and(|q| q.decided_by_owner());
+        if owner_meanwhile {
+            ctx.traces.say(&format!(
+                "{}: the owner answered under ## Decision meanwhile — the harness's answer is dropped",
+                issue.reference()
+            ));
+            return Ok(Verdict::Continue);
+        }
         let section = decision::section(ctx.state.question.as_ref(), &ctx.state.kind, &decided);
         let body = sections::replace(&issue.body, &[(sections::DECISION, &section)]);
         self.gh.set_body(issue.number, &body).await?;
@@ -233,6 +247,16 @@ mod tests {
         }
     }
 
+    /// The issue the precheck read, as the fake answers `issue(15)`.
+    fn fifteen() -> Issue {
+        Issue {
+            number: 15,
+            body: "## Scope\n\nbranch: feat/pjs\n\nthe list".to_string(),
+            state: "open".to_string(),
+            ..Issue::default()
+        }
+    }
+
     fn apply(gh: &Rc<FakeGitHub>) -> Apply {
         Apply {
             gh: Rc::clone(gh) as Rc<dyn GitHub>,
@@ -242,7 +266,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_repair_once_more_is_marked_on_the_pr_and_the_decision_written() {
-        let gh = Rc::new(FakeGitHub::default());
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            ..FakeGitHub::default()
+        });
         let mut context = ctx(
             r#"{"action":"repair","summary":"fix the null check","answer":"- keep the API","confidence":4}"#,
             Some(pr()),
@@ -290,6 +317,7 @@ mod tests {
     #[tokio::test]
     async fn a_merge_as_it_is_merges_unless_the_pr_conflicts() {
         let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
             labels: vec![labels::AI_DECIDED.to_string()],
             ..FakeGitHub::default()
         });
@@ -308,6 +336,7 @@ mod tests {
             "the label exists"
         );
         let conflicting = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
             pr_mergeable: std::collections::HashMap::from([("40".to_string(), Some(false))]),
             labels: vec![labels::AI_DECIDED.to_string()],
             ..FakeGitHub::default()
@@ -328,6 +357,7 @@ mod tests {
     #[tokio::test]
     async fn a_cut_closes_the_task_and_an_answer_only_writes() {
         let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
             labels: vec![labels::AI_DECIDED.to_string()],
             ..FakeGitHub::default()
         });
@@ -335,6 +365,7 @@ mod tests {
         apply(&gh).run(&mut context).await.expect("applied");
         assert!(gh.writes().contains(&Wrote::Closed(15)));
         let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
             labels: vec![labels::AI_DECIDED.to_string()],
             ..FakeGitHub::default()
         });
@@ -350,6 +381,7 @@ mod tests {
     #[tokio::test]
     async fn an_answer_on_the_rules_task_opens_its_writer_again() {
         let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
             labels: vec![labels::AI_DECIDED.to_string()],
             ..FakeGitHub::default()
         });
@@ -367,8 +399,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_owner_who_answered_while_the_session_thought_is_not_decided_over() {
+        // The precheck read #15 with no owner answer; by the time the
+        // harness writes, the owner has decided under ## Decision.
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![Issue {
+                number: 15,
+                body: "## Scope\n\nbranch: feat/pjs\n\n## Decision\n\nkind: stop\nblocks: x\nround: 1\ndecided-by: owner\nverdict: wait".to_string(),
+                state: "open".to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r#"{"action":"answer","answer":"go on","summary":"go","confidence":4}"#,
+            None,
+            &[labels::NEEDS_DECISION],
+        );
+        apply(&gh).run(&mut context).await.expect("dropped");
+        let writes = gh.writes();
+        assert!(
+            !writes
+                .iter()
+                .any(|w| matches!(w, Wrote::Body(..) | Wrote::Comment(..) | Wrote::Label(..))),
+            "the owner's answer stands: {writes:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn an_owner_s_answer_or_a_dry_run_writes_no_decision() {
-        let gh = Rc::new(FakeGitHub::default());
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            ..FakeGitHub::default()
+        });
         let mut context = ctx(r#"{"action":"answer","summary":"x"}"#, None, &[]);
         context.state.owner_decided = true;
         apply(&gh).run(&mut context).await.expect("nothing");
