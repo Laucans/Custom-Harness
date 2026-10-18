@@ -301,14 +301,20 @@ pub fn tags(issue: &Issue) -> Tags {
 /// `crates/` waits for the producers to land.
 #[must_use]
 pub fn mocked_only<'a>(tasks: &[&'a Issue]) -> (Vec<&'a Issue>, Vec<u64>) {
-    let (taken, held): (Vec<&Issue>, Vec<&Issue>) = tasks.iter().partition(|task| {
-        !task.has(labels::DATA_LAYER)
-            && sections::parse(&task.body)
-                .get(sections::ARCHITECTURE)
-                .and_then(|text| Declaration::parse(text))
-                .is_some_and(|d| matches!(d.unit, Unit::MicroUi | Unit::Composition))
-    });
+    let (taken, held): (Vec<&Issue>, Vec<&Issue>) =
+        tasks.iter().partition(|task| mock_up_stands_in(task));
     (taken, held.into_iter().map(|task| task.number).collect())
+}
+
+/// Whether the mock-up stands in for what this task builds — a Micro-UI or
+/// a screen, never the data layer — so it may run ahead of its producers.
+#[must_use]
+pub fn mock_up_stands_in(task: &Issue) -> bool {
+    !task.has(labels::DATA_LAYER)
+        && sections::parse(&task.body)
+            .get(sections::ARCHITECTURE)
+            .and_then(|text| Declaration::parse(text))
+            .is_some_and(|d| matches!(d.unit, Unit::MicroUi | Unit::Composition))
 }
 
 /// The runnable tasks a parallel watch may start now, given those on a lane.

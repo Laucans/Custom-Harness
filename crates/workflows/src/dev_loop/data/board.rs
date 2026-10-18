@@ -147,8 +147,28 @@ pub async fn read_on(gh: &dyn GitHub, branch: &str) -> Outcome<Board> {
 /// # Errors
 /// Adapter failure, propagated as-is.
 pub async fn read_of(gh: &dyn GitHub, milestone: Issue) -> Outcome<Board> {
+    read_of_those(gh, milestone, &|_| true).await
+}
+
+/// This milestone's board, the blockers read for the open tasks `may_run`
+/// admits only.
+///
+/// A task held anyway — a crate waiting on its producers — is not worth one
+/// GitHub call per tick, and eight boards of them spent the rate limit.
+///
+/// # Errors
+/// Adapter failure, propagated as-is.
+pub async fn read_of_those(
+    gh: &dyn GitHub,
+    milestone: Issue,
+    may_run: &dyn Fn(&Issue) -> bool,
+) -> Outcome<Board> {
     let subs = gh.sub_issues(milestone.number).await?;
-    let open: Vec<Issue> = subs.iter().filter(|t| t.is_open()).cloned().collect();
+    let open: Vec<Issue> = subs
+        .iter()
+        .filter(|t| t.is_open() && may_run(t))
+        .cloned()
+        .collect();
     let held = gh.with_blockers(open).await?;
     let tasks = subs
         .into_iter()
@@ -301,6 +321,20 @@ mod tests {
             board.tasks.iter().map(|t| t.number).collect::<Vec<_>>(),
             [11, 12, 13]
         );
+        assert_eq!(*gh.blockers_asked.borrow(), vec![11, 13]);
+    }
+
+    #[tokio::test]
+    async fn the_blockers_are_read_for_the_tasks_that_may_run_only() {
+        let gh = FakeGitHub {
+            issues: vec![issue(4, &[labels::MILESTONE])],
+            subs: vec![(4, vec![task(11), task(12), task(13)])],
+            ..FakeGitHub::default()
+        };
+        let board = read_of_those(&gh, issue(4, &[labels::MILESTONE]), &|t| t.number != 12)
+            .await
+            .expect("a board");
+        assert_eq!(board.tasks.len(), 3, "every task is on the board");
         assert_eq!(*gh.blockers_asked.borrow(), vec![11, 13]);
     }
 }
