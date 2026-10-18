@@ -31,7 +31,7 @@
 use harness_core::domain::{Issue, Tags};
 
 use crate::common::{labels, sections};
-use harness_architecture::vocabulary::{Declaration, Side};
+use harness_architecture::vocabulary::{Declaration, Side, Unit};
 
 /// True if the issue is a task the agent can run.
 #[must_use]
@@ -292,14 +292,22 @@ pub fn tags(issue: &Issue) -> Tags {
 }
 
 /// The tasks a milestone may run while the producers of what it reads have
-/// not landed: the read side only. A contract is mocked until built; a table
-/// is not — `ForgeDesMondes`' #118 (the `NoteImport` aggregate of #23) needed
-/// #18's migrations, still on #18's branch. The data layer waits for the
-/// producers to land; the Capabilities and Micro-UIs build against the mocks.
+/// not landed: what the mock-up stands in for.
+///
+/// The Micro-UIs and the screens, built against the mocked contracts — and
+/// nothing else. A contract is mocked until built; a table is not (`ForgeDesMondes`' #118,
+/// the `NoteImport` aggregate of #23, needed #18's migrations), nor is a
+/// crate (#216 of #28 needed `crates/session/`, #20's). Everything under
+/// `crates/` waits for the producers to land.
 #[must_use]
-pub fn read_side_only<'a>(tasks: &[&'a Issue]) -> (Vec<&'a Issue>, Vec<u64>) {
-    let (held, taken): (Vec<&Issue>, Vec<&Issue>) =
-        tasks.iter().partition(|task| task.has(labels::DATA_LAYER));
+pub fn mocked_only<'a>(tasks: &[&'a Issue]) -> (Vec<&'a Issue>, Vec<u64>) {
+    let (taken, held): (Vec<&Issue>, Vec<&Issue>) = tasks.iter().partition(|task| {
+        !task.has(labels::DATA_LAYER)
+            && sections::parse(&task.body)
+                .get(sections::ARCHITECTURE)
+                .and_then(|text| Declaration::parse(text))
+                .is_some_and(|d| matches!(d.unit, Unit::MicroUi | Unit::Composition))
+    });
     (taken, held.into_iter().map(|task| task.number).collect())
 }
 
@@ -800,9 +808,27 @@ mod tests {
     }
 
     #[test]
-    fn ahead_work_is_read_side_the_data_layer_waits() {
-        let read = issue(60, &[labels::AGENT, labels::READY, labels::READ_SIDE]);
-        let data = issue(
+    fn ahead_work_is_what_the_mock_up_stands_in_for() {
+        let with = |number: u64, labels: &[&str], unit: &str| Issue {
+            body: format!("## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: session"),
+            ..issue(number, labels)
+        };
+        let ui = with(
+            60,
+            &[labels::AGENT, labels::READY, labels::READ_SIDE],
+            "micro-ui",
+        );
+        let screen = with(
+            61,
+            &[labels::AGENT, labels::READY, labels::READ_SIDE],
+            "composition",
+        );
+        let capability = with(
+            216,
+            &[labels::AGENT, labels::READY, labels::READ_SIDE],
+            "capability",
+        );
+        let data = with(
             118,
             &[
                 labels::AGENT,
@@ -810,16 +836,22 @@ mod tests {
                 labels::WRITE_SIDE,
                 labels::DATA_LAYER,
             ],
+            "aggregate",
         );
-        let write = issue(119, &[labels::AGENT, labels::READY, labels::WRITE_SIDE]);
-        let (taken, held) = read_side_only(&[&read, &data, &write]);
+        let write = with(
+            119,
+            &[labels::AGENT, labels::READY, labels::WRITE_SIDE],
+            "data-capability",
+        );
+        let undeclared = issue(7, &[labels::AGENT, labels::READY]);
+        let (taken, held) = mocked_only(&[&ui, &screen, &capability, &data, &write, &undeclared]);
         assert_eq!(
             taken.iter().map(|t| t.number).collect::<Vec<_>>(),
-            [60, 119],
-            "a write through the DataGuard is mocked; a table is not"
+            [60, 61],
+            "the mock server stands in for a Micro-UI's reads and writes; a crate needs its producers' code"
         );
-        assert_eq!(held, [118]);
-        let (none, nothing) = read_side_only(&[]);
+        assert_eq!(held, [216, 118, 119, 7]);
+        let (none, nothing) = mocked_only(&[]);
         assert!(none.is_empty() && nothing.is_empty());
     }
 }

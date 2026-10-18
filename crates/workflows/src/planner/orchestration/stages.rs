@@ -89,9 +89,16 @@ milestone lays it**: `crates/server`, the one binary serving the shell's
 wire protocol and `GET /health`, loading the mock-up's fixtures from
 `FIXTURES_DIR` as it starts, and `apps/shell`, the frontend's host
 (`npm run build`, `npm run serve`). `scripts/rules-runtime.sh` starts them
-from there; until they exist every rule's test stays pending. Name in each
-milestone's `rules` the rules whose tests turn green once it lands: every
-rule in exactly one milestone, the earliest that builds all it needs.
+from there; until they exist every rule's test stays pending. **The Data
+layer comes next, whole**: right after the skeleton, one milestone lays
+every aggregate of the dossier (`mock/data/aggregates/`, contract I) as a
+working base — its table, its migration, its `aggregate.json` — before any
+unit reads or writes it; the later milestones change a table by a new
+migration, documented in `data/model.json` in the same pull request, never
+by rewriting it. Milestones that build side by side then wait on no one's
+tables. Name in each milestone's `rules` the rules whose tests turn green
+once it lands: every rule in exactly one milestone, the earliest that
+builds all it needs.
 
 {existing}
 
@@ -210,6 +217,18 @@ mod tests {
                 PLAN_PROMPT.contains(placeholder),
                 "{placeholder} missing from PLAN_PROMPT"
             );
+        }
+    }
+
+    #[test]
+    fn the_plan_lays_the_data_layer_whole_right_after_the_skeleton() {
+        for said in [
+            "The Data\nlayer comes next, whole",
+            "every aggregate of the dossier",
+            "working base",
+            "documented in `data/model.json`",
+        ] {
+            assert!(PLAN_PROMPT.contains(said), "{said}");
         }
     }
 }

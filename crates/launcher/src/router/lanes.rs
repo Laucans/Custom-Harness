@@ -172,6 +172,38 @@ fn issue_version(issue: &Issue) -> String {
     harness_core::domain::breaker::fingerprint(&format!("{}\n{}", issue.body, labels.join(",")))
 }
 
+/// What a milestone may start of `startable` while the producers of what it
+/// reads still build: what the mock-up stands in for ([`tasks::mocked_only`]),
+/// the rest said once per tick.
+fn ahead_startable<'a>(
+    startable: Vec<&'a Issue>,
+    milestone: u64,
+    found: &Snapshot,
+    log: &Logbook,
+) -> Vec<&'a Issue> {
+    let waiting_on =
+        merge_train::producers_landed(found.graph.as_ref(), milestone, &found.milestones);
+    if waiting_on.is_empty() {
+        return startable;
+    }
+    let (taken, held) = tasks::mocked_only(&startable);
+    if !held.is_empty() {
+        let list = |numbers: &[u64]| {
+            numbers
+                .iter()
+                .map(|n| format!("#{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        log.say(&format!(
+            "watch: lanes -> #{milestone}'s crates ({}) wait on {} to land — ahead work is what the mock-up stands in for",
+            list(&held),
+            list(&waiting_on)
+        ));
+    }
+    taken
+}
+
 /// Runs the dev loop pointed at this milestone's own branch, derived from
 /// its number and title (`common::branching`) — never the fixed
 /// `--branch`/`INTEGRATION_BRANCH` a direct `harness` invocation would use.
@@ -205,26 +237,12 @@ pub(super) async fn run_lanes(
     // holds left for a later tick — and, while the producers of what this
     // milestone reads still build, the read side only: a contract is mocked
     // until built, a table is not.
-    let startable = tasks::startable_tasks(&board.tasks, &running);
-    let waiting_on =
-        merge_train::producers_landed(found.graph.as_ref(), milestone, &found.milestones);
-    let startable = if waiting_on.is_empty() {
-        startable
-    } else {
-        let (read_side, held) = tasks::read_side_only(&startable);
-        if !held.is_empty() {
-            log.say(&format!(
-                "watch: lanes -> #{milestone}'s data layer ({}) waits on {} to land — ahead work is read-side",
-                held.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", "),
-                waiting_on
-                    .iter()
-                    .map(|n| format!("#{n}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        read_side
-    };
+    let startable = ahead_startable(
+        tasks::startable_tasks(&board.tasks, &running),
+        milestone,
+        found,
+        log,
+    );
     for task in startable {
         let version = issue_version(task);
         if lanes.is_parked(task.number, &version) {

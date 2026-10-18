@@ -586,7 +586,7 @@ pub const MAX_CURRENT: usize = 3;
 /// on the ahead work — then the rest by number, those only while fewer than
 /// [`MAX_CURRENT`] milestones build (`harness:triggered`, not delivered).
 /// Every path member passing the cap at once put eight milestones in
-/// construction on ForgeDesMondes.
+/// construction on `ForgeDesMondes`.
 #[must_use]
 pub fn splits(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
     let building = milestones

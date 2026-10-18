@@ -553,7 +553,17 @@ async fn building_boards(
         if let Some(milestone) = milestones.iter().find(|m| m.number == number)
             && let Ok(board) = board::read_of(gh, milestone.clone()).await
         {
-            offered = offered.saturating_add(tasks::runnable_tasks(&board.tasks).len());
+            // What could start: while the producers still build, only what
+            // the mock-up stands in for — counting the held crates stopped
+            // the reads at two boards and left the lanes empty.
+            let runnable = tasks::runnable_tasks(&board.tasks);
+            let could_start = if merge_train::producers_landed(graph, number, milestones).is_empty()
+            {
+                runnable.len()
+            } else {
+                tasks::mocked_only(&runnable).0.len()
+            };
+            offered = offered.saturating_add(could_start);
             boards.push(board);
         }
     }

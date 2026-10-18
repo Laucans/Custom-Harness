@@ -42,13 +42,14 @@ their tests and gates only: no live watch has run them yet.
 - [x] A lane on another milestone's branch picks that milestone's task
       (`board::read_on`): lane 4 took #118 on `milestone/23-…`, its log names
       milestone #23 (06:03Z).
-- [ ] **Ahead work is read-side**: a consumer's `harness:data-layer` tasks
-      wait until its producers land (`tasks::read_side_only`, the lanes log
-      `#23's data layer (#118) waits on #18 to land`); its read-side tasks
-      run against the mocks. #118 stopped on #18's missing migrations before
-      the rule (06:04Z, $0.47): the next tick must hold it, and take it once
-      #18 is `waiting-merge`. The in-process dev loop (`--parallel` ≤ 1) does
-      not hold it yet.
+- [ ] **Ahead work is what the mock-up stands in for**: while a consumer's
+      producers build, only its Micro-UIs and screens run
+      (`tasks::mocked_only`, the lanes log `#23's crates (#118) wait on #18
+      to land`); everything under `crates/` waits. #118 stopped on #18's
+      missing migrations (06:04Z, $0.47), #216 on #20's missing
+      `crates/session/` (12:40Z) before the rule: held at the next tick,
+      taken once the producers are `waiting-merge`. The in-process dev loop
+      (`--parallel` ≤ 1) does not hold them yet.
 - [ ] A consumer's tasks build against a producer's mocked contract; the
       mock server answers `mocked-data-capability` for a planned write.
 - [ ] A consumer ready to land while its producer still builds logs
@@ -72,6 +73,10 @@ their tests and gates only: no live watch has run them yet.
 - [ ] At most `MAX_CURRENT` (3) milestones build beside the critical path's
       next step: the `saw:` line's `dev_loop=[…]` has ≤ 4 entries once the
       current 8 have landed.
+- [ ] The next plan (a new roadmap item) lays the Data layer whole right
+      after the skeleton: one milestone, one `data-layer` task per aggregate
+      of the dossier, before any consumer; the graph names it the producer
+      of every aggregate, so no milestone waits on another's tables.
 - [ ] A contract the graph does not produce is handed back without a
       session (comment on the task, request closed).
 - [ ] The view shows the `Contract manager` line and the

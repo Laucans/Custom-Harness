@@ -123,6 +123,18 @@ fn blamed(violation: &str, changed: &[String], declaration: Option<&Declaration>
     names_a_change || names_the_unit
 }
 
+/// What the journal says of the violations older than the round, if any.
+fn said_before(before: &[String]) -> Option<String> {
+    (!before.is_empty()).then(|| {
+        format!(
+            "architecture: {} violation(s) were there before this round, no task's to fix here \
+             — left as they were:\n  - {}",
+            before.len(),
+            before.join("\n  - ")
+        )
+    })
+}
+
 /// The round kept the architecture: see the module.
 pub struct ArchitectureHolds {
     /// What reads the checkout.
@@ -200,13 +212,8 @@ impl Verification<Loop> for ArchitectureHolds {
                 .into_iter()
                 .partition(|violation| blamed(violation, &changed, declaration.as_ref()));
             found = own;
-            if !before.is_empty() {
-                ctx.traces.warn(&format!(
-                    "architecture: {} violation(s) were there before this round, no task's to \
-                     fix here — left as they were:\n  - {}",
-                    before.len(),
-                    before.join("\n  - ")
-                ));
+            if let Some(said) = said_before(&before) {
+                ctx.traces.warn(&said);
             }
             for path in outside_closure(&tree, declaration.as_ref(), &changed) {
                 found.push(format!(
@@ -553,5 +560,13 @@ mod tests {
             "the unit's system is named"
         );
         assert!(!blamed(stale, &[], Some(&unit)));
+    }
+
+    #[test]
+    fn what_was_there_before_is_said_once_and_nothing_when_nothing_was() {
+        assert_eq!(said_before(&[]), None);
+        let said = said_before(&["a".to_string(), "b".to_string()]).expect("said");
+        assert!(said.starts_with("architecture: 2 violation(s) were there before"));
+        assert!(said.ends_with("- a\n  - b"));
     }
 }
