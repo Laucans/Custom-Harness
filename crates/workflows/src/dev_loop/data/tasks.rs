@@ -127,7 +127,8 @@ pub fn kind(issue: &Issue) -> &'static str {
 /// built against the mocked contracts and their fixtures, so the mock stands
 /// in for its capabilities (`ForgeDesMondes`' #141 waited on four of them,
 /// and no Micro-UI of the seven milestones ahead could start). It still
-/// waits on another Micro-UI, a screen, or a human.
+/// waits on another Micro-UI, a screen, and on anything not an agent task:
+/// a human, or the contract request its own stop opened (#167 on #220).
 #[must_use]
 pub fn blockers_pending(issue: &Issue) -> Vec<&Issue> {
     let on_mocks = unit_of(issue) == Some(Unit::MicroUi);
@@ -135,7 +136,7 @@ pub fn blockers_pending(issue: &Issue) -> Vec<&Issue> {
         .blocked_by
         .iter()
         .filter(|blocker| blocker.is_open() && !waiting_merge(blocker))
-        .filter(|blocker| !on_mocks || is_human(blocker) || mock_up_stands_in(blocker))
+        .filter(|blocker| !on_mocks || !is_agent(blocker) || mock_up_stands_in(blocker))
         .collect()
 }
 
@@ -889,16 +890,17 @@ mod tests {
         let other_ui = with(138, &[labels::AGENT, labels::READY], "micro-ui");
         let screen = with(143, &[labels::AGENT, labels::READY], "composition");
         let human = issue(99, &[labels::HUMAN]);
+        let contract = issue(220, &[labels::CONTRACT_CHANGE]);
         let mut ui = with(141, &[labels::AGENT, labels::READY], "micro-ui");
         ui.blocked_by = vec![capability.clone(), data];
         assert!(runnable(&ui), "the mock stands in for #140 and #116");
-        ui.blocked_by = vec![capability.clone(), other_ui, screen, human];
+        ui.blocked_by = vec![capability.clone(), other_ui, screen, human, contract];
         assert_eq!(
             blockers_pending(&ui)
                 .iter()
                 .map(|b| b.number)
                 .collect::<Vec<_>>(),
-            [138, 143, 99]
+            [138, 143, 99, 220]
         );
         let mut freeze = with(143, &[labels::AGENT, labels::READY], "composition");
         freeze.blocked_by = vec![capability];
