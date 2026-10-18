@@ -88,6 +88,17 @@ const LEAN: [&str; 4] = [
     "--exclude-dynamic-system-prompt-sections",
 ];
 
+/// The tools a robot's session never gets: the ones that schedule a wait.
+///
+/// A `code` session ended its work, then called `ScheduleWakeup` to check a
+/// local run 25 minutes later — and sat idle until killed, the lane with it
+/// (a product task). A session is one turn, now; what waits is the
+/// harness's.
+const NO_SCHEDULING: [&str; 2] = [
+    "--disallowedTools",
+    "ScheduleWakeup,CronCreate,CronDelete,CronList,RemoteTrigger",
+];
+
 /// How long one turn may run, and how long it may stay silent.
 ///
 /// The silence is what says a turn hung: a working session reports every
@@ -290,6 +301,7 @@ impl ClaudeCli {
             self.permission_mode.clone(),
         ];
         args.extend(LEAN.iter().map(ToString::to_string));
+        args.extend(NO_SCHEDULING.iter().map(ToString::to_string));
         match (&self.session_id, &self.base) {
             (Some(id), _) => {
                 args.push("--resume".to_string());
@@ -903,6 +915,10 @@ mod tests {
         let at = args.iter().position(|a| a == "--").expect("--");
         let options = args[..at].join(" ");
         assert!(options.contains("--strict-mcp-config"));
+        assert!(
+            options.contains("--disallowedTools") && options.contains("ScheduleWakeup,"),
+            "a robot's session schedules no wait: {options}"
+        );
         assert!(options.contains("--setting-sources project,local"));
         assert!(options.contains("--exclude-dynamic-system-prompt-sections"));
     }
