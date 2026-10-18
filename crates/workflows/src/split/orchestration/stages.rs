@@ -39,7 +39,9 @@ The repository follows the agent-native architecture (`docs/ARCHITECTURE.md`
 in the repository map): every slice is exactly one unit of it. Name the
 `unit` — `concept`, `aggregate`, `data-capability`, `infrastructure`,
 `capability`, `persisted-query`, `micro-ui`, `composition` or `tooling` —
-the `system` it belongs to (the bounded context, e.g. `credit`), the
+the `system` it belongs to (the bounded context, e.g. `credit` — for a
+Capability or a DataCapability, its id's namespace: `campaign.saveEntity` is
+`campaign`; a DataCapability's `owner` is `dataguard`, never its system), the
 `concept` it implements when there is one (`Risk@3`), and for the data
 layer the `aggregate` it writes or shapes (as its manifest's
 `target.aggregate` names it) — a `data-capability` also its `effect`
@@ -62,7 +64,13 @@ that produces each id it needs, and on nothing else: an id no slice
 produces is already in the repository. So cut for the graph, not for
 layers — one slice per aggregate, one per DataCapability, one per
 Capability action, one per Micro-UI, the screen last — and two slices that
-share no id run in parallel. Never bundle "the data layer" into one slice:
+share no id run in parallel. **One Micro-UI is one slice**, whatever
+components it realises — never two slices on the same Micro-UI, and every
+Micro-UI or screen slice names in `produces` the Micro-UI (or screen) it
+builds, as the mock-up names it. The mock-up already built it
+(`mock/components/<MicroUi>.html`, `mock/src/`): its slice mostly takes it
+into `apps/<system>/<name>/` and connects it to the Capabilities and
+DataCapabilities it names. Never bundle "the data layer" into one slice:
 two aggregates are two slices. A slice that produces nothing orders
 nothing: a `tooling` scaffold a system needs first `produces` the system's
 id (`monde`) and the aggregates `need` it — or it is not a slice, and its

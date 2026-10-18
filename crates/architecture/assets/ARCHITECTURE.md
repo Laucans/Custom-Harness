@@ -260,7 +260,10 @@ DataCapability.
 
 A DataCapability is a **typed command** that declares its effect — `insert`,
 `update`, `delete` or `upsert` — and the existing fields it touches
-(`touches`). It belongs to the DataGuard, not to the Micro-UI that triggers it.
+(`touches`). It belongs to the DataGuard (`owner: dataguard`), not to the
+Micro-UI that triggers it — but its **system** is its id's namespace:
+`campaign.saveEntity` is of system `campaign`, under
+`crates/campaign/data-capabilities/save-entity/`.
 
 | DataCapability | Who may create it | Review |
 |---|---|---|

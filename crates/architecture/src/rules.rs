@@ -151,7 +151,10 @@ behind the DataGuard and through the DataQueue.
 Where it lives: crates/<system>/data-capabilities/<name>/ — a folder, one
 Cargo crate named after its folder, with data-capability.json beside
 Cargo.toml (contract F, contracts/f-data-capability.schema.json). Its
-system is the DataGuard's. Adding one edits no shared file but the server's
+system is its id's namespace (campaign.saveEntity is `campaign`, in
+crates/campaign/data-capabilities/save-entity/); its `owner` is always
+`dataguard` — it runs behind the DataGuard, it does not belong to a system
+called dataguard. Adding one edits no shared file but the server's
 `[dependencies]` line (crates/dataguard/server/Cargo.toml, installed by
 the harness: its build script registers every manifest, and the engine it
 binds — harness-dataguard, taken by git — is never yours to read or edit).

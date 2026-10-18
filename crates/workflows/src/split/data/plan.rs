@@ -135,8 +135,13 @@ pub fn parse(text: &str) -> Result<Vec<TaskItem>, ParseError> {
 /// What keeps a plan's agent slices from being whole SPECs, in words.
 ///
 /// A slice with no goal, one with no acceptance criterion, a rule it claims
-/// that no criterion of it cites. Empty when every slice is whole; a slice
-/// for a human is not judged — a human reads it.
+/// that no criterion of it cites; and what would misplace it in the
+/// architecture: a Capability or `DataCapability` whose `system` is not its
+/// id's namespace (`ForgeDesMondes`' #51 declared `dataguard`, the owner, for
+/// `campaign.saveEntity`), a Micro-UI or screen that names nothing it
+/// `produces`, two slices producing the same id (#208 and #209 both built
+/// `Battlemap`: one task is one Micro-UI). Empty when every slice is whole; a
+/// slice for a human is not judged — a human reads it.
 #[must_use]
 pub fn spec_gaps(items: &[TaskItem]) -> Vec<String> {
     let mut gaps = Vec::new();
@@ -170,6 +175,51 @@ pub fn spec_gaps(items: &[TaskItem]) -> Vec<String> {
                 ));
             }
         }
+        gaps.extend(placement_gaps(&named, item));
+    }
+    let mut producers: Vec<(String, usize)> = Vec::new();
+    for (index, item) in items.iter().enumerate().filter(|(_, i)| !i.needs_human) {
+        for id in ids(&item.produces) {
+            if let Some((_, first)) = producers.iter().find(|(seen, _)| *seen == id) {
+                gaps.push(format!(
+                    "slice {index} ({:?}) produces `{id}`, as slice {first} does — one slice per unit: \
+                     a Micro-UI is one task, whatever components it realises",
+                    item.title
+                ));
+            } else {
+                producers.push((id, index));
+            }
+        }
+    }
+    gaps
+}
+
+/// Where one slice would land wrong in the architecture.
+fn placement_gaps(named: &str, item: &TaskItem) -> Vec<String> {
+    let declaration = item.declaration();
+    let mut gaps = Vec::new();
+    if matches!(declaration.unit, Unit::Capability | Unit::DataCapability) {
+        for id in &declaration.produces {
+            if let Some((namespace, _)) = id.split_once('.')
+                && namespace != declaration.system
+            {
+                gaps.push(format!(
+                    "{named} declares `system: {}` for `{id}`: the system of a {} is its id's \
+                     namespace, `{namespace}` (a DataCapability's `owner` is `dataguard`, not its system)",
+                    declaration.system,
+                    declaration.unit.key()
+                ));
+            }
+        }
+    }
+    if matches!(declaration.unit, Unit::MicroUi | Unit::Composition)
+        && declaration.produces.is_empty()
+    {
+        gaps.push(format!(
+            "{named} is a {} that names nothing it `produces`: the Micro-UI (or screen) it builds, \
+             as the mock-up names it",
+            declaration.unit.key()
+        ));
     }
     gaps
 }
@@ -253,5 +303,59 @@ mod tests {
         .expect("parse");
         assert_eq!(items[0].title, "A");
         assert_eq!(items[1].title, "B");
+    }
+
+    fn slice(json: &str) -> TaskItem {
+        parse(&format!("[{json}]")).expect("parse").remove(0)
+    }
+
+    const WHOLE: &str = r#""goal":"g","acceptance":["given a, when b, then c"]"#;
+
+    #[test]
+    fn a_data_capability_s_system_is_its_id_s_namespace() {
+        let wrong = slice(&format!(
+            r#"{{"title":"Save","brief":"b","branch":"feat/save","unit":"data-capability","system":"dataguard","produces":["campaign.saveEntity"],{WHOLE}}}"#
+        ));
+        let gaps = spec_gaps(&[wrong]);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(gaps[0].contains("`campaign`"), "{}", gaps[0]);
+        let right = slice(&format!(
+            r#"{{"title":"Save","brief":"b","branch":"feat/save","unit":"data-capability","system":"campaign","produces":["campaign.saveEntity"],{WHOLE}}}"#
+        ));
+        assert!(spec_gaps(&[right]).is_empty());
+        let capability = slice(&format!(
+            r#"{{"title":"List","brief":"b","branch":"feat/list","unit":"capability","system":"media","produces":["session.listScenes"],{WHOLE}}}"#
+        ));
+        assert_eq!(spec_gaps(&[capability]).len(), 1);
+    }
+
+    #[test]
+    fn a_micro_ui_names_what_it_produces_and_only_one_slice_does() {
+        let bare = slice(&format!(
+            r#"{{"title":"UI","brief":"b","branch":"feat/ui","unit":"micro-ui","system":"table",{WHOLE}}}"#
+        ));
+        let gaps = spec_gaps(&[bare]);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(
+            gaps[0].contains("names nothing it `produces`"),
+            "{}",
+            gaps[0]
+        );
+        let first = slice(&format!(
+            r#"{{"title":"Map","brief":"b","branch":"feat/map","unit":"micro-ui","system":"table","produces":["Battlemap"],{WHOLE}}}"#
+        ));
+        let second = slice(&format!(
+            r#"{{"title":"Sheet","brief":"b","branch":"feat/sheet","unit":"micro-ui","system":"table","produces":[" Battlemap "],{WHOLE}}}"#
+        ));
+        let other = slice(&format!(
+            r#"{{"title":"Grid","brief":"b","branch":"feat/grid","unit":"micro-ui","system":"media","produces":["GridSettings"],{WHOLE}}}"#
+        ));
+        let gaps = spec_gaps(&[first, second, other]);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(
+            gaps[0].starts_with("slice 1 (\"Sheet\") produces `Battlemap`, as slice 0 does"),
+            "{}",
+            gaps[0]
+        );
     }
 }
