@@ -43,6 +43,7 @@ pub mod doctor;
 pub mod init_repo;
 pub mod lanes;
 pub mod main_agent_merge;
+pub mod plan_graph;
 pub mod planner;
 pub mod pr_fix;
 pub mod pr_review;

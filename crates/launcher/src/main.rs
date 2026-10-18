@@ -46,15 +46,9 @@ async fn main() -> ExitCode {
             }
         }
         Some(cli::Command::DataSnapshot(sub)) => {
-            match dispatch::data_snapshot::by_hand(sub, &here).await {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(halt) => halt_to_code(&halt),
-            }
+            exit_of(dispatch::data_snapshot::by_hand(sub, &here).await)
         }
-        Some(cli::Command::Watch(sub)) => match router::run(sub, &here).await {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(halt) => halt_to_code(&halt),
-        },
+        Some(cli::Command::Watch(sub)) => exit_of(router::run(sub, &here).await),
         Some(cli::Command::Doctor(sub)) => {
             let log = harness_core::traces::Logbook::new(
                 std::rc::Rc::new(adapters::sink::Console)
@@ -110,6 +104,9 @@ async fn main() -> ExitCode {
         }
         Some(cli::Command::Costs(sub)) => costs_by_hand(sub, &here),
         Some(cli::Command::Route(sub)) => router::run_route(sub, &here).await,
+        Some(cli::Command::PlanGraph(sub)) => {
+            exit_of(dispatch::plan_graph::by_hand(sub, &here).await)
+        }
         Some(cli::Command::Trial(sub)) => match dispatch::trial::run(sub, &here).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(halt) => halt_to_code(&halt),
@@ -140,6 +137,14 @@ fn costs_by_hand(sub: &cli::CostsArgs, here: &Path) -> ExitCode {
 }
 
 /// The prefix and level are those that the scheduler already reads.
+/// A command's exit code: success, or the halt's.
+fn exit_of(ran: harness_core::domain::Outcome<()>) -> ExitCode {
+    match ran {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(halt) => halt_to_code(&halt),
+    }
+}
+
 fn halt_to_code(halt: &harness_core::domain::Halt) -> ExitCode {
     let line = format!("{}: {}", halt.prefix(), halt.reason());
     match halt.severity() {

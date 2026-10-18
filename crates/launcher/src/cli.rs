@@ -79,6 +79,25 @@ pub enum Command {
     /// Run one of the router's paid routes — a decision, a review, a
     /// repair, the rules' task — as a parallel `watch` does on a lane.
     Route(RouteArgs),
+    /// Write the plan's graph (`plan/graph.json`, contract R) for one
+    /// roadmap item's milestones, as they stand on the board — what the
+    /// planner writes as it opens them, for a plan made before it did.
+    PlanGraph(PlanGraphArgs),
+}
+
+/// `harness plan-graph <roadmap>`'s own arguments.
+#[derive(Debug, Args)]
+pub struct PlanGraphArgs {
+    /// The roadmap item whose milestones make the graph.
+    pub roadmap: u64,
+
+    /// The target repository.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
+
+    /// The integration branch the graph is written on, and the dossier read from.
+    #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
+    pub branch: String,
 }
 
 /// What `harness costs` groups the ledger's rows by.

@@ -1,7 +1,7 @@
 # `harness-workflows` — architecture
 
 The instances: what `harness-core` cannot name. Eight workflows declared
-against the framework, five deterministic commands beside them (§13), plus
+against the framework, six deterministic commands beside them (§13), plus
 `common/` for what at least two of them actually read.
 
 Read this before adding a workflow or moving a file inside one. The crate graph
@@ -387,9 +387,9 @@ raised a second time — goes to a human under `harness:needs-decision` with
 the reasoning, the mechanical chains kept. `common::decision` is the
 question's shape, shared with the refinement that raises it.
 
-Five more modules sit beside these, not in the tables above: `init_repo`,
-`milestone_merge`, `main_agent_merge`, `data_snapshot` and `data_model_draft`,
-all the deterministic-command departure described in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
+Six more modules sit beside these, not in the tables above: `init_repo`,
+`milestone_merge`, `main_agent_merge`, `data_snapshot`, `data_model_draft`
+and `plan_graph`, all the deterministic-command departure described in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
 router route, no `state`, no `remaining`, no round, no lock, no resume, no
 tolerance — every column above would read "n/a". `init_repo` creates the
 `harness:*` labels and the integration branch, installs the architecture's
@@ -409,7 +409,11 @@ integration branch once every task is merged into it and its CI is green.
 `data_snapshot` dumps the data model of every branch whose head moved and
 archives it on the target's `harness/data-model` branch; `data_model_draft`
 asks one session for the first `model.json` of a branch that has none, from
-its dump and its code, and proposes it as a pull request a human merges. Every one of them is reached by its own subcommand or by the
+its dump and its code, and proposes it as a pull request a human merges;
+`plan_graph` writes the plan's graph (`plan/graph.json`, contract R) from a
+roadmap item's milestones as the board holds them, against the design
+dossier — what the planner writes as it opens milestones, for a plan made
+before the graph existed. Every one of them is reached by its own subcommand or by the
 router (`crates/launcher/ARCHITECTURE.md`).
 
 ## 14. Adding a workflow
