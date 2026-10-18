@@ -750,4 +750,32 @@ mod tests {
             prop_assert_eq!(Graph::parse(&text).expect("parses"), graph);
         }
     }
+
+    #[test]
+    fn a_milestone_waits_on_the_producers_before_it_and_never_on_a_read_ahead() {
+        let graph = Graph::parse(
+            r#"{"version":1,"milestones":[
+              {"number":18,"title":"a","systems":[],"produces":[],"consumes":[],"depends_on":[]},
+              {"number":19,"title":"b","systems":[],"produces":[],"consumes":[],"depends_on":[18,20,19]},
+              {"number":20,"title":"c","systems":[],"produces":[],"consumes":[],"depends_on":[18,19]}
+            ],"ids":{}}"#,
+        )
+        .expect("a graph");
+        assert_eq!(graph.waits_on(19), [18], "#20 comes later, #19 is itself");
+        assert_eq!(graph.waits_on(20), [18, 19]);
+        assert!(graph.waits_on(18).is_empty());
+        assert!(graph.waits_on(7).is_empty(), "unknown to the plan");
+        assert_eq!(graph.node(20).map(|n| n.title.as_str()), Some("c"));
+        assert_eq!(graph.node(19).map(|n| n.number), Some(19));
+        assert!(graph.node(7).is_none());
+    }
+
+    #[test]
+    fn every_kind_is_named_as_the_architecture_names_it() {
+        assert_eq!(Kind::Capability.name(), "Capability");
+        assert_eq!(Kind::DataCapability.name(), "DataCapability");
+        assert_eq!(Kind::Aggregate.name(), "Aggregate");
+        assert_eq!(Kind::MicroUi.name(), "Micro-UI");
+        assert_eq!(Kind::Concept.name(), "Concept");
+    }
 }

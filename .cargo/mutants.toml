@@ -34,11 +34,16 @@ exclude_re = [
   # logic they call is tested in `workflows`, the wiring itself has no fake.
   "dispatch/init_repo\\.rs:.*replace upgrade with \\(\\)",
   "router/mod\\.rs:.*delete ! in run",
-  "router/lanes\\.rs:.*(replace run_lanes|delete ! in run_lanes)",
+  # The lanes spawn `harness` children: what they hand them is
+  # `routing::lane_work`, `routing::splits` and `routing::building`, tested;
+  # the spawning itself has no fake. `building_boards` reads one board per
+  # milestone `routing::building` names.
+  "router/lanes\\.rs:.*(replace (run_lanes|fill_lanes|run_router_lanes)|delete ! in (run_lanes|run_router_lanes)|replace == with != in run_lanes)",
+  "router/mod\\.rs:.*replace building_boards ",
   "router/routes\\.rs:.*replace run_dev_loop ",
   # The arms that run a paid workflow, here or on a lane: the workflow is
   # tested in `workflows`, the arm only wires the real adapters to it.
-  "router/routes\\.rs:.*replace (fix_here|rules_here|run_on_lane) ",
+  "router/routes\\.rs:.*replace (fix_here|rules_here|contract_here|run_on_lane|run_main_agent_merge) ",
   "router/routes\\.rs:.* in dispatch$",
   "router/mod\\.rs:.*replace run_route ",
   # Equivalent mutants: base64's bit groups never overlap, so `|` and `^`

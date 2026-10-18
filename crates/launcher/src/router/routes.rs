@@ -743,6 +743,7 @@ mod lane_route_tests {
         for route in [
             Route::Decide { issue: 41 },
             Route::Rules { issue: 86 },
+            Route::ContractChange { issue: 70 },
             Route::PrFix {
                 pr: "85".to_string(),
             },

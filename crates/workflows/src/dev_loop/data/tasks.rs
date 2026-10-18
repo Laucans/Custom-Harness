@@ -291,6 +291,18 @@ pub fn tags(issue: &Issue) -> Tags {
         })
 }
 
+/// The tasks a milestone may run while the producers of what it reads have
+/// not landed: the read side only. A contract is mocked until built; a table
+/// is not — `ForgeDesMondes`' #118 (the `NoteImport` aggregate of #23) needed
+/// #18's migrations, still on #18's branch. The data layer waits for the
+/// producers to land; the Capabilities and Micro-UIs build against the mocks.
+#[must_use]
+pub fn read_side_only<'a>(tasks: &[&'a Issue]) -> (Vec<&'a Issue>, Vec<u64>) {
+    let (held, taken): (Vec<&Issue>, Vec<&Issue>) =
+        tasks.iter().partition(|task| task.has(labels::DATA_LAYER));
+    (taken, held.into_iter().map(|task| task.number).collect())
+}
+
 /// The runnable tasks a parallel watch may start now, given those on a lane.
 ///
 /// Two tasks that change the structure of the same aggregate run one after
@@ -785,5 +797,29 @@ mod tests {
         let issues = [task(8), blocked, task(7), issue(6, &[labels::AGENT])];
         let numbers: Vec<u64> = runnable_tasks(&issues).iter().map(|t| t.number).collect();
         assert_eq!(numbers, [7, 8]);
+    }
+
+    #[test]
+    fn ahead_work_is_read_side_the_data_layer_waits() {
+        let read = issue(60, &[labels::AGENT, labels::READY, labels::READ_SIDE]);
+        let data = issue(
+            118,
+            &[
+                labels::AGENT,
+                labels::READY,
+                labels::WRITE_SIDE,
+                labels::DATA_LAYER,
+            ],
+        );
+        let write = issue(119, &[labels::AGENT, labels::READY, labels::WRITE_SIDE]);
+        let (taken, held) = read_side_only(&[&read, &data, &write]);
+        assert_eq!(
+            taken.iter().map(|t| t.number).collect::<Vec<_>>(),
+            [60, 119],
+            "a write through the DataGuard is mocked; a table is not"
+        );
+        assert_eq!(held, [118]);
+        let (none, nothing) = read_side_only(&[]);
+        assert!(none.is_empty() && nothing.is_empty());
     }
 }

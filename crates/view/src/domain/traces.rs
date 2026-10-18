@@ -1157,6 +1157,10 @@ mod tests {
             workflow_of_route("PrReview { pr: \"71\", base: \"x\" }"),
             Some("pr-review")
         );
+        assert_eq!(
+            workflow_of_route("ContractChange { issue: 70 }"),
+            Some("contract-manager")
+        );
         assert_eq!(workflow_of_route("Nothing"), None);
         assert_eq!(
             route_subject("PrReview { pr: \"71\", base: \"x\" }").as_deref(),

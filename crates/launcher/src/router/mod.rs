@@ -528,25 +528,15 @@ async fn lowest_ready_to_merge(
     Ok(None)
 }
 
-/// The boards of the milestones building now — `harness:triggered`, not
-/// delivered — the critical path's first; the lowest open milestone's when
-/// none is split yet. A board that cannot be read is left out.
+/// The boards of the milestones building now ([`routing::building`]): the
+/// critical path's first, the lowest open milestone's when none is split
+/// yet. A board that cannot be read is left out.
 async fn building_boards(
     gh: &dyn GitHub,
     milestones: &[Issue],
     graph: Option<&harness_workflows::common::routing::Graph>,
 ) -> Vec<board::Board> {
-    let mut building: Vec<u64> = milestones
-        .iter()
-        .filter(|m| m.is_open() && m.has(labels::TRIGGERED) && !m.has(labels::WAITING_MERGE))
-        .map(|m| m.number)
-        .collect();
-    routing::by_critical_path(&mut building, &routing::critical_path(milestones, graph));
-    if building.is_empty()
-        && let Some(lowest) = tasks::current_milestone(milestones)
-    {
-        building.push(lowest.number);
-    }
+    let building = routing::building(milestones, graph);
     let mut boards = Vec::with_capacity(building.len());
     for number in building {
         if let Some(milestone) = milestones.iter().find(|m| m.number == number)
@@ -617,4 +607,19 @@ async fn with_split_blockers(gh: &dyn GitHub, milestones: Vec<Issue>) -> Outcome
     let mut all = gh.with_blockers(candidates).await?;
     all.extend(others);
     Ok(all)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quota_strike_rests_the_watch_and_forgets_its_taps() {
+        let mut pulse = Pulse::default();
+        assert!(pulse.may_open(2) && pulse.may_open(2) && !pulse.may_open(2));
+        rest(&mut pulse, &Logbook::null());
+        assert_eq!(pulse.rest.ticks_left, routing::FIRST_REST);
+        assert_eq!(pulse.rest.strikes, 1);
+        assert!(pulse.may_open(2), "the refused attempt did not count");
+    }
 }

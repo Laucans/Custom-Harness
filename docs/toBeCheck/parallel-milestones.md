@@ -39,8 +39,16 @@ their tests and gates only: no live watch has run them yet.
       at once: lanes 1–3 split #19 (the path), #21 and #23 in one tick, #20
       waits on #19's split. Needed `2dde2cb` first: the planner's GitHub
       `blocked_by` chaining had held every milestone.
-- [ ] A lane on `milestone/20-…` picks a task of #20, never of #18
-      (`board::read_on`): the `--task` run's log names milestone #20.
+- [x] A lane on another milestone's branch picks that milestone's task
+      (`board::read_on`): lane 4 took #118 on `milestone/23-…`, its log names
+      milestone #23 (06:03Z).
+- [ ] **Ahead work is read-side**: a consumer's `harness:data-layer` tasks
+      wait until its producers land (`tasks::read_side_only`, the lanes log
+      `#23's data layer (#118) waits on #18 to land`); its read-side tasks
+      run against the mocks. #118 stopped on #18's missing migrations before
+      the rule (06:04Z, $0.47): the next tick must hold it, and take it once
+      #18 is `waiting-merge`. The in-process dev loop (`--parallel` ≤ 1) does
+      not hold it yet.
 - [ ] A consumer's tasks build against a producer's mocked contract; the
       mock server answers `mocked-data-capability` for a planned write.
 - [ ] A consumer ready to land while its producer still builds logs

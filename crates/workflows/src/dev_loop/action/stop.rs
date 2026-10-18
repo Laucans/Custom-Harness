@@ -565,8 +565,14 @@ mod tests {
             };
             assert!(body.contains("kind: contract"), "{body}");
             assert!(
-                writes.iter().any(|w| matches!(w, Wrote::CreatedLabel(name, ..) if name == labels::CONTRACT_CHANGE)),
-                "the label is created on a board that lacks it"
+                body.contains(
+                    "blocks: contract session.listScenes — the scenes' media ids (/code)"
+                ),
+                "{body}"
+            );
+            assert!(
+                writes.iter().any(|w| matches!(w, Wrote::CreatedLabel(name, colour, said) if name == labels::CONTRACT_CHANGE && colour == "bfdadc" && said.contains("contract manager"))),
+                "the label is created on a board that lacks it, as the table describes it: {writes:?}"
             );
             let created = writes
                 .iter()
@@ -592,5 +598,32 @@ mod tests {
             );
             assert!(context.state.handed_over);
         }
+        // A board that has the label gets no second one.
+        let labelled = Rc::new(FakeGitHub {
+            labels: vec![labels::CONTRACT_CHANGE.to_string()],
+            issues: vec![Issue {
+                number: 11,
+                title: "Pay".to_string(),
+                state: "open".to_string(),
+                body: "## Scope\n\nbranch: feat/media".to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        });
+        RaiseDecision {
+            gh: Rc::clone(&labelled) as Rc<dyn GitHub>,
+            autonomous: true,
+        }
+        .on_halt(&mut ctx(false), asked())
+        .await
+        .expect("handed over");
+        assert!(
+            !labelled
+                .writes()
+                .iter()
+                .any(|w| matches!(w, Wrote::CreatedLabel(..))),
+            "{:?}",
+            labelled.writes()
+        );
     }
 }

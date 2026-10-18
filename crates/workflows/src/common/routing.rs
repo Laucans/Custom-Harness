@@ -634,6 +634,31 @@ pub fn critical_path(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
     })
 }
 
+/// The milestones whose boards a tick reads, in the order their tasks are
+/// served.
+///
+/// Every one building (`harness:triggered`, open, not delivered), the
+/// critical path's first; the lowest open milestone when none is split yet,
+/// as the single-milestone watch read it.
+#[must_use]
+pub fn building(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
+    let mut found: Vec<u64> = milestones
+        .iter()
+        .filter(|m| m.is_open() && m.has(labels::TRIGGERED) && !m.has(labels::WAITING_MERGE))
+        .map(|m| m.number)
+        .collect();
+    by_critical_path(&mut found, &critical_path(milestones, graph));
+    if found.is_empty()
+        && let Some(lowest) = milestones
+            .iter()
+            .filter(|m| m.is_open() && m.has(labels::MILESTONE))
+            .min_by_key(|m| m.number)
+    {
+        found.push(lowest.number);
+    }
+    found
+}
+
 /// Sorts milestone numbers: the critical path's first, in the path's order,
 /// then the rest by number.
 pub fn by_critical_path(numbers: &mut [u64], path: &[u64]) {
@@ -1487,5 +1512,73 @@ mod tests {
             ..closed
         };
         assert_eq!(decide(&building), Route::DevLoop { milestone: 20 });
+    }
+
+    #[test]
+    fn a_closed_producer_weighs_nothing_and_the_other_chain_becomes_the_path() {
+        let graph = parse_graph(Some(
+            r#"{"version":1,"milestones":[
+              {"number":30,"title":"a","systems":[],"produces":["a.1","a.2","a.3"],"consumes":[],"depends_on":[]},
+              {"number":31,"title":"b","systems":[],"produces":["b.1"],"consumes":["a.1"],"depends_on":[30]},
+              {"number":40,"title":"c","systems":[],"produces":["c.1"],"consumes":[],"depends_on":[]},
+              {"number":41,"title":"d","systems":[],"produces":["d.1"],"consumes":["c.1"],"depends_on":[40]}
+            ],"ids":{}}"#,
+        ))
+        .expect("a graph");
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        let open = vec![ready(30), ready(31), ready(40), ready(41)];
+        assert_eq!(
+            critical_path(&open, Some(&graph)),
+            [30, 31],
+            "4 + 2 beats 2 + 2"
+        );
+        let closed = vec![
+            Issue {
+                state: "closed".to_string(),
+                ..ready(30)
+            },
+            ready(31),
+            ready(40),
+            ready(41),
+        ];
+        assert_eq!(
+            critical_path(&closed, Some(&graph)),
+            [40, 41],
+            "a closed producer weighs nothing: 0 + 2 loses to 2 + 2"
+        );
+    }
+
+    #[test]
+    fn the_boards_read_are_the_building_milestones_path_first_or_the_lowest_open_one() {
+        let graph = graph();
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        let building_one = |n: u64| issue(n, &[labels::MILESTONE, labels::TRIGGERED]);
+        let milestones = vec![
+            building_one(21),
+            building_one(20),
+            building_one(18),
+            ready(19),
+            issue(
+                17,
+                &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+            ),
+            Issue {
+                state: "closed".to_string(),
+                ..building_one(16)
+            },
+        ];
+        assert_eq!(building(&milestones, Some(&graph)), [18, 20, 21]);
+        assert_eq!(
+            building(&milestones, None),
+            [18, 20, 21],
+            "by number without a path"
+        );
+        let none_split = vec![ready(22), ready(19), issue(3, &[labels::HUMAN])];
+        assert_eq!(
+            building(&none_split, Some(&graph)),
+            [19],
+            "the lowest open milestone"
+        );
+        assert!(building(&[], Some(&graph)).is_empty());
     }
 }

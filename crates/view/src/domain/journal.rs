@@ -420,6 +420,7 @@ mod tests {
             ("PrFix { pr: \"71\" }", "pr_fix"),
             ("TestDebt { issue: 80 }", "test_debt"),
             ("Arbiter { issue: 81 }", "arbiter"),
+            ("ContractChange { issue: 70 }", "contract_manager"),
             ("Nothing", ""),
         ] {
             assert_eq!(tag(route), said, "{route}");

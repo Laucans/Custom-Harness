@@ -10,7 +10,8 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Event, Logbook};
 use harness_workflows::common::routing::{self, Snapshot};
 use harness_workflows::common::{branching, labels};
-use harness_workflows::dev_loop::data::board;
+use harness_workflows::dev_loop::data::{board, tasks};
+use harness_workflows::main_agent_merge::data::merge_train;
 
 use crate::cli::WatchArgs;
 use crate::dispatch::lanes::Lanes;
@@ -207,8 +208,30 @@ pub(super) async fn run_lanes(
     let mut parked = Vec::new();
     let mut candidates: Vec<(u64, String)> = Vec::new();
     // The runnable tasks not on a lane, those changing an aggregate another
-    // holds left for a later tick.
-    for task in harness_workflows::dev_loop::data::tasks::startable_tasks(&board.tasks, &running) {
+    // holds left for a later tick — and, while the producers of what this
+    // milestone reads still build, the read side only: a contract is mocked
+    // until built, a table is not.
+    let startable = tasks::startable_tasks(&board.tasks, &running);
+    let waiting_on =
+        merge_train::producers_landed(found.graph.as_ref(), milestone, &found.milestones);
+    let startable = if waiting_on.is_empty() {
+        startable
+    } else {
+        let (read_side, held) = tasks::read_side_only(&startable);
+        if !held.is_empty() {
+            log.say(&format!(
+                "watch: lanes -> #{milestone}'s data layer ({}) waits on {} to land — ahead work is read-side",
+                held.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", "),
+                waiting_on
+                    .iter()
+                    .map(|n| format!("#{n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        read_side
+    };
+    for task in startable {
         let version = issue_version(task);
         if lanes.is_parked(task.number, &version) {
             parked.push(task.number);
