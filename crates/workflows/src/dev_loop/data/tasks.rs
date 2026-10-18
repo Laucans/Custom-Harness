@@ -122,13 +122,36 @@ pub fn kind(issue: &Issue) -> &'static str {
 ///
 /// A human action has no such state — it doesn't deliver on a branch,
 /// it closes.
+///
+/// A Micro-UI does not wait on the crates it reads or writes through: it is
+/// built against the mocked contracts and their fixtures, so the mock stands
+/// in for its capabilities (`ForgeDesMondes`' #141 waited on four of them,
+/// and no Micro-UI of the seven milestones ahead could start). It still
+/// waits on another Micro-UI, a screen, or a human.
 #[must_use]
 pub fn blockers_pending(issue: &Issue) -> Vec<&Issue> {
+    let on_mocks = unit_of(issue) == Some(Unit::MicroUi);
     issue
         .blocked_by
         .iter()
         .filter(|blocker| blocker.is_open() && !waiting_merge(blocker))
+        .filter(|blocker| !on_mocks || is_human(blocker) || built_on_mocks(blocker))
         .collect()
+}
+
+/// The unit the task's `## Architecture` declares, if any.
+fn unit_of(issue: &Issue) -> Option<Unit> {
+    sections::parse(&issue.body)
+        .get(sections::ARCHITECTURE)
+        .and_then(|text| Declaration::parse(text))
+        .map(|declaration| declaration.unit)
+}
+
+/// A Micro-UI or a screen, outside the data layer: built against the mocked
+/// contracts, not on a crate.
+fn built_on_mocks(issue: &Issue) -> bool {
+    !issue.has(labels::DATA_LAYER)
+        && matches!(unit_of(issue), Some(Unit::MicroUi | Unit::Composition))
 }
 
 /// Open, ready, not already delivered, and nothing blocking it.
@@ -301,13 +324,8 @@ pub fn tags(issue: &Issue) -> Tags {
 /// `crates/` waits for the producers to land.
 #[must_use]
 pub fn mocked_only<'a>(tasks: &[&'a Issue]) -> (Vec<&'a Issue>, Vec<u64>) {
-    let (taken, held): (Vec<&Issue>, Vec<&Issue>) = tasks.iter().partition(|task| {
-        !task.has(labels::DATA_LAYER)
-            && sections::parse(&task.body)
-                .get(sections::ARCHITECTURE)
-                .and_then(|text| Declaration::parse(text))
-                .is_some_and(|d| matches!(d.unit, Unit::MicroUi | Unit::Composition))
-    });
+    let (taken, held): (Vec<&Issue>, Vec<&Issue>) =
+        tasks.iter().partition(|task| built_on_mocks(task));
     (taken, held.into_iter().map(|task| task.number).collect())
 }
 
@@ -853,5 +871,36 @@ mod tests {
         assert_eq!(held, [216, 118, 119, 7]);
         let (none, nothing) = mocked_only(&[]);
         assert!(none.is_empty() && nothing.is_empty());
+    }
+
+    #[test]
+    fn a_micro_ui_does_not_wait_on_the_crates_the_mock_stands_in_for() {
+        let with = |number: u64, labels: &[&str], unit: &str| Issue {
+            body: format!("## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: soundbox"),
+            ..issue(number, labels)
+        };
+        let capability = with(140, &[labels::AGENT, labels::READY], "capability");
+        let data = with(
+            116,
+            &[labels::AGENT, labels::READY, labels::DATA_LAYER],
+            "micro-ui",
+        );
+        let other_ui = with(138, &[labels::AGENT, labels::READY], "micro-ui");
+        let screen = with(143, &[labels::AGENT, labels::READY], "composition");
+        let human = issue(99, &[labels::HUMAN]);
+        let mut ui = with(141, &[labels::AGENT, labels::READY], "micro-ui");
+        ui.blocked_by = vec![capability.clone(), data];
+        assert!(runnable(&ui), "the mock stands in for #140 and #116");
+        ui.blocked_by = vec![capability.clone(), other_ui, screen, human];
+        assert_eq!(
+            blockers_pending(&ui)
+                .iter()
+                .map(|b| b.number)
+                .collect::<Vec<_>>(),
+            [138, 143, 99]
+        );
+        let mut freeze = with(143, &[labels::AGENT, labels::READY], "composition");
+        freeze.blocked_by = vec![capability];
+        assert!(!runnable(&freeze), "a screen proves end to end: it waits");
     }
 }
