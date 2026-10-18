@@ -66,7 +66,9 @@ Four findings, reported not fixed. Nothing is edited here or anywhere.
 
 - **Blocking human actions.** List the issue's `blocked_by` issues with
   their state. If one is still open, the build is blocked — say so at the
-  top of your reply and quote it. The SPEC's `Human actions` lines for
+  top of your reply and quote it. A Micro-UI is the exception, as `/code`
+  says: an open blocker that builds a Capability or DataCapability under
+  `crates/` is stood in for by the mock-up, not a block. The SPEC's `Human actions` lines for
   *while Claude works* and *before merging* are **not** blockers for
   starting; name them so the human knows what's coming.
 - **Working tree.** Run `git status --short` and name every dirty file that
