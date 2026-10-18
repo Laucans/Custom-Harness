@@ -500,6 +500,17 @@ mod tests {
         assert!(!repos.asked("diff"), "the PR says it: {:?}", repos.calls());
     }
 
+    #[test]
+    fn the_gate_says_what_it_reads_and_that_reading_is_free() {
+        let repos = FakeRepos::default();
+        let purpose = holds(&repos).purpose();
+        assert!(purpose.contains("static read of the checkout"), "{purpose}");
+        assert!(
+            purpose.contains("every Micro-UI needs Capabilities that exist"),
+            "{purpose}"
+        );
+    }
+
     #[tokio::test]
     async fn an_open_pr_on_another_branch_is_not_judged_from_this_checkout() {
         let repos = FakeRepos::default();
