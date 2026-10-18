@@ -1,33 +1,32 @@
-//! Which workflow runs next, decided from a snapshot already read.
+//! Which work runs next, decided from a snapshot already read.
 //!
 //! Pure: no `gh` call lives here. The router (the launcher's polling loop)
 //! does the reads this needs — including the facts that require more than
-//! a flat issue list (`lowest_roadmap_has_milestone`, `ready_to_merge`,
-//! `dev_loop_milestone`) — and hands this function the result. That is
+//! a flat issue list (`lowest_roadmap_has_milestone`, `ready_to_merge`, the
+//! building milestones' boards) — and hands this module the result. That is
 //! what makes the decision testable without a fake adapter.
 //!
-//! Priority, top to bottom: a roadmap item that's `harness:ready` and has no
-//! milestone yet outranks everything, because nothing else can be planned
-//! against it; then a `harness:ready` rules' task, then a decision asked
-//! (`harness:needs-decision`, the `decide` workflow), since its tests are what
-//! every development conforms to — and **while a rules' task is open, ready
-//! or not, no development task starts** ([`rules_first`]); a milestone ready
-//! to split comes next, once no refinement is
-//! pending on it; then the two things
-//! that can be wrong with a pull request already in flight — a red one to
-//! repair before a green one to review, since reviewing a change whose CI
-//! is broken reviews something about to change; then merging a reviewed,
-//! green task PR into its milestone; then finishing a milestone that's
-//! done; then a task whose graph is in question, for the arbiter; then a
-//! runnable task; then a pending refinement (business, then technical);
-//! and last a file's test debt. Structural decomposition before
-//! unblocking what's in flight before closing out before delivering before
-//! preparing the next delivery — and paying back the tests only when nothing
-//! else waits, since the debt is real but never blocks anyone.
+//! **One scheduler for every route** ([`schedule`]): every piece of work the
+//! snapshot shows becomes a [`Job`], weighted, and the watch starts them in
+//! weight order — the free ones (the two merges) in the tick, each paid one
+//! on a free lane, as many as there are lanes. Nothing paid runs in the
+//! tick under `--parallel`, so a long session never keeps the lanes from
+//! being refilled; nothing waits a tick because another job of its kind
+//! was picked first.
 //!
-//! A parallel watch does not stop at the route: it first fills every free
-//! lane, the runnable tasks before splits and refinements ([`lane_work`]),
-//! so a pending refinement never keeps a task off a lane that sits free.
+//! The weight is the route's base ([`base_weight`]) — free merges first,
+//! a task's into its milestone before the milestone's into the integration
+//! branch, since they unblock work at no cost; then planning, the rules' tests and
+//! the decisions, which unblock others; then repairing before reviewing a
+//! PR in flight; then cutting and arbitrating; then building; then
+//! preparing (business, then technical refinement); and last a file's test
+//! debt — plus a bonus for a milestone on the critical path
+//! ([`critical_path`]), so its PRs, decisions and tasks pass before the
+//! ahead work, and a bonus for every tick a job has waited
+//! ([`Pulse::waited`]), capped, so the low ones are never starved. **While a
+//! rules' task is open, ready or not, no development task starts**
+//! ([`rules_first`]). [`decide`] is the schedule's first job, for a watch
+//! that runs one route at a time.
 //!
 //! `harness:ready` is the same tap at every issue level: it means "plan
 //! this" on a roadmap item, "split this" on a milestone, and "build this" on
@@ -133,6 +132,15 @@ pub enum Route {
         /// The test-debt issue's number.
         issue: u64,
     },
+    /// Build this task of this milestone on a lane — the dev loop's
+    /// `--task` child. What a parallel watch starts; a sequential one runs
+    /// [`Route::DevLoop`], which picks its task itself.
+    DevTask {
+        /// The milestone issue's number.
+        milestone: u64,
+        /// The task's number.
+        task: u64,
+    },
     /// Nothing is ready to run.
     Nothing,
 }
@@ -147,23 +155,24 @@ pub struct Snapshot {
     pub lowest_roadmap_has_milestone: bool,
     /// Open `harness:milestone` issues, any order.
     pub milestones: Vec<Issue>,
-    /// The open PR carrying `harness:pr-fix` whose CI has actually broken,
-    /// if any — the router pairs the label with a failing-check read, which
-    /// a label list cannot answer alone.
-    pub pr_to_fix: Option<Pr>,
-    /// The open PR carrying `harness:to-review` that the review would not
-    /// skip, if any — the router applies the review's own skip rules
-    /// (`pr_review::data::skip_rules`) so a PR that would skip never costs a
-    /// mounted checkout per poll.
-    pub pr_to_review: Option<Pr>,
-    /// The task whose PR is open on its milestone, reviewed and green, with
-    /// that PR — what `milestone_merge` merges.
-    pub task_to_merge: Option<(u64, Pr)>,
-    /// The lowest-numbered open milestone whose tasks are all closed and
-    /// that isn't `harness:waiting-merge` yet, if any — computed by the
-    /// router against each milestone's own sub-issues, which a flat list
+    /// The open PRs to repair, in number order: `harness:pr-fix` with a
+    /// check that actually broke, or a blocking review or a conflict — the
+    /// router pairs the label with a failing-check read, which a label list
     /// cannot answer alone.
-    pub ready_to_merge: Option<u64>,
+    pub prs_to_fix: Vec<Pr>,
+    /// The open PRs carrying `harness:to-review` that the review would not
+    /// skip, in number order — the router applies the review's own skip
+    /// rules (`pr_review::data::skip_rules`) so a PR that would skip never
+    /// costs a mounted checkout per poll.
+    pub prs_to_review: Vec<Pr>,
+    /// The tasks whose PR is open on their milestone, reviewed and green,
+    /// with that PR — what `milestone_merge` merges, one per board.
+    pub tasks_to_merge: Vec<(u64, Pr)>,
+    /// The open milestones whose tasks are all delivered, not
+    /// `harness:waiting-merge` yet, whose producers have landed — computed
+    /// by the router against each milestone's own sub-issues, which a flat
+    /// list cannot answer alone.
+    pub ready_to_merge: Vec<u64>,
     /// Open `harness:refinement` issues, any order.
     pub refining: Vec<Issue>,
     /// Open `harness:tech-refinement` issues, any order.
@@ -199,127 +208,373 @@ pub fn rules_first(snapshot: &Snapshot) -> Option<u64> {
     lowest_open(&snapshot.rules).map(|issue| issue.number)
 }
 
-/// Decides the next route from a snapshot.
+/// The first job of the [`schedule`], for a watch that runs one route at a
+/// time: a task to build is its milestone's dev loop, which picks it.
 #[must_use]
 pub fn decide(snapshot: &Snapshot) -> Route {
+    schedule(snapshot, &[], &|_| 0)
+        .into_iter()
+        .next()
+        .map_or(Route::Nothing, |job| match job.route {
+            Route::DevTask { milestone, .. } => Route::DevLoop { milestone },
+            route => route,
+        })
+}
+
+/// What a job costs: a paid one opens a session and waits out a quota
+/// rest; a free one is a few GitHub calls, run in the tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cost {
+    /// No session: the two merges.
+    Free,
+    /// One session or more.
+    Paid,
+}
+
+/// One piece of work the snapshot shows, weighted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Job {
+    /// What to run.
+    pub route: Route,
+    /// Its weight: the higher starts first ([`base_weight`], the critical
+    /// path's bonus, the ticks it waited).
+    pub weight: u32,
+    /// Free or paid.
+    pub cost: Cost,
+    /// The issue or PR it works on: one job per key at a time.
+    pub key: u64,
+    /// The jobs that may never run side by side share a group: the
+    /// technical refinement reads code a task may be changing, the test
+    /// debt has one writable checkout.
+    pub exclusive: Option<&'static str>,
+}
+
+/// A route's own weight, before the critical path's and the waiting's.
+#[must_use]
+pub const fn base_weight(route: &Route) -> u32 {
+    match route {
+        Route::MergeIntoMilestone { .. } => 1000,
+        Route::MergeMainAgent { .. } => 990,
+        Route::Planner { .. } => 900,
+        Route::Rules { .. } => 880,
+        Route::Decide { .. } => 860,
+        Route::ContractChange { .. } => 850,
+        Route::PrFix { .. } => 800,
+        Route::PrReview { .. } => 780,
+        Route::Split { .. } => 700,
+        Route::Arbiter { .. } => 680,
+        Route::DevLoop { .. } | Route::DevTask { .. } => 600,
+        Route::Refinement { .. } => 500,
+        Route::TechRefinement { .. } => 450,
+        Route::TestDebt { .. } => 200,
+        Route::Nothing => 0,
+    }
+}
+
+/// The bonus of the critical path's first milestone; each next one gets ten
+/// less, and a milestone off the path none.
+pub const CRITICAL_BONUS: u32 = 100;
+
+/// The most a job's waiting adds to its weight: one a tick, up to here —
+/// a refinement waited long enough passes the tasks, a test debt never
+/// passes a decision.
+pub const AGE_CAP: u32 = 150;
+
+/// Every job the snapshot shows, heaviest first, given the issues lanes
+/// are on (`running`) and how many ticks each route has waited.
+///
+/// Ties go to the heavier base, then to the order listed. The launcher
+/// keeps one job per key and per exclusive group, and skips a paid one
+/// during a quota rest ([`plan`]).
+#[must_use]
+pub fn schedule(snapshot: &Snapshot, running: &[u64], waited: &dyn Fn(&Route) -> u32) -> Vec<Job> {
+    let path = critical_path(&snapshot.milestones, snapshot.graph.as_ref());
+    let bonus = |milestone: Option<u64>| {
+        milestone
+            .and_then(|m| path.iter().position(|on| *on == m))
+            .map_or(0, |at| {
+                CRITICAL_BONUS
+                    .saturating_sub(u32::try_from(at).unwrap_or(u32::MAX).saturating_mul(10))
+            })
+    };
+    let mut found = in_flight(snapshot);
+    found.extend(to_build(snapshot, running));
+    let mut jobs: Vec<Job> = found
+        .into_iter()
+        .map(|(route, key, milestone)| Job {
+            cost: if matches!(
+                route,
+                Route::MergeMainAgent { .. } | Route::MergeIntoMilestone { .. }
+            ) {
+                Cost::Free
+            } else {
+                Cost::Paid
+            },
+            exclusive: match route {
+                Route::TechRefinement { .. } => Some("tech-refinement"),
+                Route::TestDebt { .. } => Some("test-debt"),
+                Route::Planner { .. } => Some("planner"),
+                _ => None,
+            },
+            weight: base_weight(&route)
+                .saturating_add(bonus(milestone))
+                .saturating_add(waited(&route).min(AGE_CAP)),
+            route,
+            key,
+        })
+        .collect();
+    // Stable: within a weight, the order the jobs were listed in — number
+    // order within a kind, the building order (critical path first) among
+    // the boards.
+    jobs.sort_by(|a, b| {
+        b.weight
+            .cmp(&a.weight)
+            .then(base_weight(&b.route).cmp(&base_weight(&a.route)))
+    });
+    jobs
+}
+
+/// A route found, the issue or PR it works on, and its milestone if known.
+type Found = (Route, u64, Option<u64>);
+
+/// The milestone an issue belongs to, when a board read this tick holds it.
+fn milestone_of_issue(snapshot: &Snapshot, number: u64) -> Option<u64> {
+    snapshot
+        .boards
+        .iter()
+        .find(|b| b.tasks.iter().any(|t| t.number == number))
+        .map(|b| b.milestone.number)
+}
+
+/// The routes of an issue list, in number order, each with its milestone.
+fn of_issues(snapshot: &Snapshot, issues: &[Issue], route: fn(u64) -> Route) -> Vec<Found> {
+    open(issues)
+        .map(|issue| {
+            (
+                route(issue.number),
+                issue.number,
+                milestone_of_issue(snapshot, issue.number),
+            )
+        })
+        .collect()
+}
+
+/// What is in flight: the merges, the plan, the rules' tests, the
+/// decisions and contracts asked, the PRs to repair or review.
+fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
+    let mut found: Vec<Found> = snapshot
+        .ready_to_merge
+        .iter()
+        .map(|m| (Route::MergeMainAgent { milestone: *m }, *m, Some(*m)))
+        .collect();
+    found.extend(snapshot.tasks_to_merge.iter().map(|(task, pr)| {
+        (
+            Route::MergeIntoMilestone {
+                task: *task,
+                pr: pr.num.clone(),
+                base: pr.base.clone(),
+            },
+            *task,
+            crate::common::branching::milestone_number(&pr.base),
+        )
+    }));
     if let Some(lowest) = plannable_roadmap(&snapshot.roadmap)
         && lowest.has(labels::READY)
         && !snapshot.lowest_roadmap_has_milestone
     {
-        return Route::Planner {
-            roadmap: lowest.number,
-        };
+        found.push((
+            Route::Planner {
+                roadmap: lowest.number,
+            },
+            lowest.number,
+            None,
+        ));
     }
-    if let Some(issue) = lowest_open(&snapshot.rules).filter(|issue| issue.has(labels::READY)) {
-        return Route::Rules {
-            issue: issue.number,
-        };
-    }
-    // A decision is cheap, and it unblocks a task, a PR or a split: before
-    // any of them.
-    if let Some(issue) = lowest_open(&snapshot.deciding) {
-        return Route::Decide {
-            issue: issue.number,
-        };
-    }
-    // A contract a consumer waits on blocks a task already cut: evolved
-    // before anything new is cut against the old version.
-    if let Some(issue) = lowest_open(&snapshot.contract_changes) {
-        return Route::ContractChange {
-            issue: issue.number,
-        };
-    }
-    if let Some(milestone) = splits(&snapshot.milestones, snapshot.graph.as_ref()).first() {
-        return Route::Split {
-            milestone: *milestone,
-        };
-    }
-    // A reviewed, green PR merges before anything is paid for: one call,
-    // run in the tick, and the tasks waiting on it start. Behind the
-    // reviews, `ForgeDesMondes`' #251 (clean at 19:50Z) waited on four
-    // reviews taken one tick at a time while #255 waited on it.
-    if let Some((task, pr)) = &snapshot.task_to_merge {
-        return Route::MergeIntoMilestone {
-            task: *task,
-            pr: pr.num.clone(),
-            base: pr.base.clone(),
-        };
-    }
-    if let Some(pr) = &snapshot.pr_to_fix {
-        return Route::PrFix { pr: pr.num.clone() };
-    }
-    if let Some(pr) = &snapshot.pr_to_review {
-        return Route::PrReview {
-            pr: pr.num.clone(),
-            base: pr.base.clone(),
-        };
-    }
-    if let Some(milestone) = snapshot.ready_to_merge {
-        return Route::MergeMainAgent { milestone };
-    }
-    // A graph in question before a task is picked: the arbitration is
-    // cheap, and the task it settles — or the one that waits on it — may
-    // be the next one the loop would otherwise start on incomplete blockers.
-    if let Some(issue) = lowest_open(&snapshot.arbitrating) {
-        return Route::Arbiter {
-            issue: issue.number,
-        };
-    }
-    // Delivering before preparing: a runnable task is work already decided,
-    // and a pending refinement only ever prepares the next one.
-    if let Some(milestone) = snapshot.dev_loop_milestones.first()
-        && rules_first(snapshot).is_none()
-    {
-        return Route::DevLoop {
-            milestone: *milestone,
-        };
-    }
-    if let Some(issue) = lowest_open(&snapshot.refining) {
-        return Route::Refinement {
-            issue: issue.number,
-        };
-    }
-    if let Some(issue) = lowest_open(&snapshot.tech_refining) {
-        return Route::TechRefinement {
-            issue: issue.number,
-        };
-    }
-    if let Some(issue) = lowest_open(&snapshot.test_debt) {
-        return Route::TestDebt {
-            issue: issue.number,
-        };
-    }
-    Route::Nothing
+    let ready_rules: Vec<Issue> = snapshot
+        .rules
+        .iter()
+        .filter(|issue| issue.has(labels::READY))
+        .cloned()
+        .collect();
+    found.extend(of_issues(snapshot, &ready_rules, |issue| Route::Rules {
+        issue,
+    }));
+    found.extend(of_issues(snapshot, &snapshot.deciding, |issue| {
+        Route::Decide { issue }
+    }));
+    found.extend(of_issues(snapshot, &snapshot.contract_changes, |issue| {
+        Route::ContractChange { issue }
+    }));
+    let of_pr = |pr: &Pr, route: Route| {
+        pr.num.parse::<u64>().ok().map(|number| {
+            (
+                route,
+                number,
+                crate::common::branching::milestone_number(&pr.base),
+            )
+        })
+    };
+    found.extend(
+        snapshot
+            .prs_to_fix
+            .iter()
+            .filter_map(|pr| of_pr(pr, Route::PrFix { pr: pr.num.clone() })),
+    );
+    found.extend(snapshot.prs_to_review.iter().filter_map(|pr| {
+        of_pr(
+            pr,
+            Route::PrReview {
+                pr: pr.num.clone(),
+                base: pr.base.clone(),
+            },
+        )
+    }));
+    found
 }
 
-/// What a parallel watch hands its free lanes, in the order it hands it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaneWork {
-    /// The milestones whose runnable tasks take the free lanes first, in
-    /// the order they are served: the critical path's, then the rest.
-    pub tasks_of: Vec<u64>,
-    /// Whether a milestone waits on its split or an issue on its business
-    /// refinement — what takes the lanes the tasks left.
-    pub preparation: bool,
+/// What builds and prepares: the splits, the graph questions, the tasks of
+/// the building milestones — none while a rules' task is open — the
+/// refinements and the test debt.
+fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
+    let mut found: Vec<Found> = splits(&snapshot.milestones, snapshot.graph.as_ref())
+        .into_iter()
+        .map(|milestone| (Route::Split { milestone }, milestone, Some(milestone)))
+        .collect();
+    found.extend(of_issues(snapshot, &snapshot.arbitrating, |issue| {
+        Route::Arbiter { issue }
+    }));
+    if rules_first(snapshot).is_none() {
+        for milestone in &snapshot.dev_loop_milestones {
+            let Some(board) = snapshot
+                .boards
+                .iter()
+                .find(|b| b.milestone.number == *milestone)
+            else {
+                // No board read for it: its dev loop picks its own task.
+                found.push((
+                    Route::DevLoop {
+                        milestone: *milestone,
+                    },
+                    *milestone,
+                    Some(*milestone),
+                ));
+                continue;
+            };
+            found.extend(startable(snapshot, board, running).into_iter().map(|task| {
+                (
+                    Route::DevTask {
+                        milestone: *milestone,
+                        task: task.number,
+                    },
+                    task.number,
+                    Some(*milestone),
+                )
+            }));
+        }
+    }
+    found.extend(of_issues(snapshot, &snapshot.refining, |issue| {
+        Route::Refinement { issue }
+    }));
+    found.extend(of_issues(snapshot, &snapshot.tech_refining, |issue| {
+        Route::TechRefinement { issue }
+    }));
+    found.extend(open(&snapshot.test_debt).map(|issue| {
+        (
+            Route::TestDebt {
+                issue: issue.number,
+            },
+            issue.number,
+            None,
+        )
+    }));
+    found
 }
 
-/// What a parallel watch fills its free lanes with, whatever [`decide`]
-/// chose: the runnable tasks first, then splits and refinements.
+/// What a tick starts of a [`schedule`], and what it leaves to wait.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// The free jobs, run in the tick in this order.
+    pub free: Vec<Job>,
+    /// The paid jobs, one per free lane, heaviest first.
+    pub paid: Vec<Job>,
+    /// What waits a tick more ([`Pulse::age`]).
+    pub left: Vec<Route>,
+}
+
+/// Picks from `jobs` (heaviest first) what this tick starts.
 ///
-/// [`decide`] is one route per tick, and a lane route used to fill the lanes
-/// with its own kind only: while one refinement was pending, no task reached
-/// a lane, however many lanes sat free.
+/// Every free job, and paid ones for the `slots` free lanes — none when
+/// `paid` is false, a quota rest. One job per issue or PR (`running` and
+/// those taken now), one per exclusive group (`held` and those taken now);
+/// a job on a lane already is not waiting, one held back by a group or a
+/// slot is.
 #[must_use]
-pub fn lane_work(snapshot: &Snapshot) -> LaneWork {
-    LaneWork {
-        tasks_of: if rules_first(snapshot).is_none() {
-            snapshot.dev_loop_milestones.clone()
-        } else {
-            Vec::new()
-        },
-        preparation: snapshot.refining.iter().any(Issue::is_open)
-            || !splits(&snapshot.milestones, snapshot.graph.as_ref()).is_empty(),
+pub fn plan(
+    jobs: Vec<Job>,
+    running: &[u64],
+    held: &[&'static str],
+    slots: usize,
+    paid: bool,
+) -> Plan {
+    let mut taken: Vec<u64> = running.to_vec();
+    let mut groups: Vec<&'static str> = held.to_vec();
+    let mut picked = Plan::default();
+    for job in jobs {
+        if taken.contains(&job.key) {
+            continue;
+        }
+        if job.exclusive.is_some_and(|group| groups.contains(&group)) {
+            picked.left.push(job.route);
+            continue;
+        }
+        if job.cost == Cost::Paid && (!paid || picked.paid.len() >= slots) {
+            picked.left.push(job.route);
+            continue;
+        }
+        taken.push(job.key);
+        groups.extend(job.exclusive);
+        match job.cost {
+            Cost::Free => picked.free.push(job),
+            Cost::Paid => picked.paid.push(job),
+        }
     }
+    picked
+}
+
+/// What may start of a building milestone's tasks.
+///
+/// Runnable, not on a lane, no aggregate another holds — and, while the
+/// producers of what the milestone reads still build, only what runs ahead
+/// of them ([`crate::dev_loop::data::tasks::runs_ahead`]).
+#[must_use]
+pub fn startable<'a>(
+    snapshot: &Snapshot,
+    board: &'a crate::dev_loop::data::board::Board,
+    running: &[u64],
+) -> Vec<&'a Issue> {
+    let milestone = board.milestone.number;
+    let waiting_on = crate::main_agent_merge::data::merge_train::producers_landed(
+        snapshot.graph.as_ref(),
+        milestone,
+        &snapshot.milestones,
+    );
+    let ahead = |task: &Issue| {
+        waiting_on.is_empty()
+            || crate::dev_loop::data::tasks::runs_ahead(
+                task,
+                milestone,
+                snapshot.graph.as_ref(),
+                &waiting_on,
+            )
+    };
+    crate::dev_loop::data::tasks::startable_tasks(&board.tasks, running, &ahead)
+}
+
+/// The open issues of a list, in number order.
+fn open(issues: &[Issue]) -> impl Iterator<Item = &Issue> {
+    let mut found: Vec<&Issue> = issues.iter().filter(|issue| issue.is_open()).collect();
+    found.sort_by_key(|issue| issue.number);
+    found.into_iter()
 }
 
 /// How many quiet ticks a poll lets pass before it reads the board in full
@@ -342,6 +597,9 @@ pub struct Pulse {
     /// How many times this watch marked each issue `harness:ready` itself
     /// (`--no-human-gate`).
     pub taps: std::collections::BTreeMap<u64, u32>,
+    /// How many ticks each route has waited, the job a tick left behind —
+    /// what keeps a low one from being starved ([`schedule`]).
+    pub waiting: std::collections::BTreeMap<String, u32>,
 }
 
 /// The first rest after a `QUOTA` stop, in ticks.
@@ -399,6 +657,27 @@ impl Rest {
 }
 
 impl Pulse {
+    /// How many ticks `route` has waited to start.
+    #[must_use]
+    pub fn waited(&self, route: &Route) -> u32 {
+        self.waiting
+            .get(&format!("{route:?}"))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// A tick passed: every route of `left` waited one tick more, and a
+    /// route the tick started, or no longer shows, waits no more.
+    pub fn age(&mut self, left: &[Route]) {
+        let mut next = std::collections::BTreeMap::new();
+        for route in left {
+            let key = format!("{route:?}");
+            let waited = self.waiting.get(&key).copied().unwrap_or(0);
+            next.insert(key, waited.saturating_add(1));
+        }
+        self.waiting = next;
+    }
+
     /// What the pulse remembers after a full read.
     pub fn read_in_full(&mut self, etag: Option<String>, watching_ci: bool) {
         self.etag = etag;
@@ -861,10 +1140,10 @@ mod tests {
             roadmap: Vec::new(),
             lowest_roadmap_has_milestone: false,
             milestones: Vec::new(),
-            pr_to_fix: None,
-            pr_to_review: None,
-            task_to_merge: None,
-            ready_to_merge: None,
+            prs_to_fix: Vec::new(),
+            prs_to_review: Vec::new(),
+            tasks_to_merge: Vec::new(),
+            ready_to_merge: Vec::new(),
             refining: Vec::new(),
             tech_refining: Vec::new(),
             arbitrating: Vec::new(),
@@ -889,8 +1168,8 @@ mod tests {
     #[test]
     fn a_green_task_pr_is_merged_into_its_milestone_before_the_milestone_moves_up() {
         let snapshot = Snapshot {
-            task_to_merge: Some((64, pr("68", "milestone/52-socle"))),
-            ready_to_merge: Some(52),
+            tasks_to_merge: vec![(64, pr("68", "milestone/52-socle"))],
+            ready_to_merge: vec![52],
             refining: vec![issue(70, &[labels::REFINEMENT])],
             ..empty()
         };
@@ -905,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_roadmap_item_with_no_milestone_outranks_everything() {
+    fn a_ready_roadmap_item_with_no_milestone_outranks_every_paid_route() {
         let snapshot = Snapshot {
             roadmap: vec![
                 issue(9, &[labels::ROADMAP, labels::READY]),
@@ -916,10 +1195,10 @@ mod tests {
             boards: Vec::new(),
             contract_changes: Vec::new(),
             milestones: vec![issue(5, &[labels::MILESTONE, labels::READY])],
-            pr_to_fix: Some(pr("32", "main_agent")),
-            pr_to_review: Some(pr("33", "main_agent")),
-            task_to_merge: Some((40, pr("41", "milestone/3-x"))),
-            ready_to_merge: Some(7),
+            prs_to_fix: vec![pr("32", "main_agent")],
+            prs_to_review: vec![pr("33", "main_agent")],
+            tasks_to_merge: vec![(40, pr("41", "milestone/3-x"))],
+            ready_to_merge: vec![7],
             refining: vec![issue(6, &[labels::REFINEMENT])],
             tech_refining: vec![],
             arbitrating: Vec::new(),
@@ -928,7 +1207,19 @@ mod tests {
             rules: vec![issue(2, &[labels::RULES, labels::READY])],
             deciding: vec![issue(3, &[labels::NEEDS_DECISION])],
         };
-        assert_eq!(decide(&snapshot), Route::Planner { roadmap: 4 });
+        // The free merges go first, in the tick; then the plan.
+        assert_eq!(
+            routes(&snapshot)[..3],
+            [
+                Route::MergeIntoMilestone {
+                    task: 40,
+                    pr: "41".to_string(),
+                    base: "milestone/3-x".to_string(),
+                },
+                Route::MergeMainAgent { milestone: 7 },
+                Route::Planner { roadmap: 4 },
+            ]
+        );
     }
 
     #[test]
@@ -951,7 +1242,11 @@ mod tests {
         };
         assert_eq!(rules_first(&waiting), Some(5));
         assert_eq!(decide(&waiting), Route::Refinement { issue: 6 });
-        assert!(lane_work(&waiting).tasks_of.is_empty());
+        assert!(
+            !routes(&waiting)
+                .iter()
+                .any(|r| matches!(r, Route::DevLoop { .. }))
+        );
         // Settled: the development goes on.
         let settled = Snapshot {
             rules: vec![settled],
@@ -960,7 +1255,7 @@ mod tests {
         };
         assert_eq!(rules_first(&settled), None);
         assert_eq!(decide(&settled), Route::DevLoop { milestone: 3 });
-        assert_eq!(lane_work(&settled).tasks_of, [3]);
+        assert!(routes(&settled).contains(&Route::DevLoop { milestone: 3 }));
     }
 
     #[test]
@@ -1004,7 +1299,7 @@ mod tests {
         let snapshot = Snapshot {
             deciding: vec![decided, issue(8, &[labels::NEEDS_DECISION, labels::AGENT])],
             milestones: vec![issue(9, &[labels::MILESTONE, labels::READY])],
-            pr_to_fix: Some(pr("32", "milestone/3-x")),
+            prs_to_fix: vec![pr("32", "milestone/3-x")],
             dev_loop_milestones: vec![3],
             ..empty()
         };
@@ -1040,15 +1335,23 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_milestone_outranks_merging_refinement_and_the_dev_loop() {
+    fn a_ready_milestone_outranks_refinement_and_the_dev_loop_after_the_merge() {
         let snapshot = Snapshot {
             milestones: vec![issue(9, &[labels::MILESTONE, labels::READY])],
-            ready_to_merge: Some(7),
+            ready_to_merge: vec![7],
             refining: vec![issue(6, &[labels::REFINEMENT])],
             dev_loop_milestones: vec![3],
             ..empty()
         };
-        assert_eq!(decide(&snapshot), Route::Split { milestone: 9 });
+        assert_eq!(
+            routes(&snapshot),
+            [
+                Route::MergeMainAgent { milestone: 7 },
+                Route::Split { milestone: 9 },
+                Route::DevLoop { milestone: 3 },
+                Route::Refinement { issue: 6 },
+            ]
+        );
     }
 
     #[test]
@@ -1083,7 +1386,7 @@ mod tests {
     #[test]
     fn a_milestone_ready_to_merge_outranks_refinement_and_the_dev_loop() {
         let snapshot = Snapshot {
-            ready_to_merge: Some(7),
+            ready_to_merge: vec![7],
             refining: vec![issue(6, &[labels::REFINEMENT])],
             dev_loop_milestones: vec![3],
             ..empty()
@@ -1094,10 +1397,10 @@ mod tests {
     #[test]
     fn a_green_task_pr_merges_before_a_repair_or_a_review_is_paid() {
         let snapshot = Snapshot {
-            task_to_merge: Some((31, pr("34", "milestone/4-territory"))),
-            pr_to_fix: Some(pr("32", "milestone/4-territory")),
-            pr_to_review: Some(pr("33", "milestone/4-territory")),
-            ready_to_merge: Some(7),
+            tasks_to_merge: vec![(31, pr("34", "milestone/4-territory"))],
+            prs_to_fix: vec![pr("32", "milestone/4-territory")],
+            prs_to_review: vec![pr("33", "milestone/4-territory")],
+            ready_to_merge: vec![7],
             dev_loop_milestones: vec![3],
             ..empty()
         };
@@ -1112,40 +1415,54 @@ mod tests {
     }
 
     #[test]
-    fn a_red_pr_outranks_reviewing_merging_refinement_and_the_dev_loop() {
+    fn a_red_pr_outranks_reviewing_refinement_and_the_dev_loop_after_the_merge() {
         // What is already in flight and broken comes before anything new:
         // the milestone it belongs to cannot close over a red PR anyway.
         let snapshot = Snapshot {
-            pr_to_fix: Some(pr("32", "milestone/4-territory")),
-            pr_to_review: Some(pr("33", "milestone/4-territory")),
-            ready_to_merge: Some(7),
+            prs_to_fix: vec![pr("32", "milestone/4-territory")],
+            prs_to_review: vec![pr("33", "milestone/4-territory")],
+            ready_to_merge: vec![7],
             refining: vec![issue(6, &[labels::REFINEMENT])],
             dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(
-            decide(&snapshot),
-            Route::PrFix {
-                pr: "32".to_string()
-            }
+            routes(&snapshot),
+            [
+                Route::MergeMainAgent { milestone: 7 },
+                Route::PrFix {
+                    pr: "32".to_string()
+                },
+                Route::PrReview {
+                    pr: "33".to_string(),
+                    base: "milestone/4-territory".to_string(),
+                },
+                Route::DevLoop { milestone: 3 },
+                Route::Refinement { issue: 6 },
+            ]
         );
     }
 
     #[test]
-    fn a_pr_to_review_outranks_merging_refinement_and_the_dev_loop() {
+    fn a_pr_to_review_outranks_refinement_and_the_dev_loop_after_the_merge() {
         let snapshot = Snapshot {
-            pr_to_review: Some(pr("33", "milestone/4-territory")),
-            ready_to_merge: Some(7),
+            prs_to_review: vec![pr("33", "milestone/4-territory")],
+            ready_to_merge: vec![7],
             refining: vec![issue(6, &[labels::REFINEMENT])],
             dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(
-            decide(&snapshot),
-            Route::PrReview {
-                pr: "33".to_string(),
-                base: "milestone/4-territory".to_string(),
-            }
+            routes(&snapshot),
+            [
+                Route::MergeMainAgent { milestone: 7 },
+                Route::PrReview {
+                    pr: "33".to_string(),
+                    base: "milestone/4-territory".to_string(),
+                },
+                Route::DevLoop { milestone: 3 },
+                Route::Refinement { issue: 6 },
+            ]
         );
     }
 
@@ -1155,7 +1472,7 @@ mod tests {
         // branch — a review judging against a fixed base would skip it as
         // "targets the wrong branch".
         let snapshot = Snapshot {
-            pr_to_review: Some(pr("33", "milestone/9-cities")),
+            prs_to_review: vec![pr("33", "milestone/9-cities")],
             ..empty()
         };
         let Route::PrReview { base, .. } = decide(&snapshot) else {
@@ -1170,7 +1487,7 @@ mod tests {
         // whose PR could be broken in the first place.
         let snapshot = Snapshot {
             roadmap: vec![issue(4, &[labels::ROADMAP, labels::READY])],
-            pr_to_fix: Some(pr("32", "main_agent")),
+            prs_to_fix: vec![pr("32", "main_agent")],
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::Planner { roadmap: 4 });
@@ -1203,7 +1520,7 @@ mod tests {
         snapshot.dev_loop_milestones = vec![3];
         snapshot.refining = vec![issue(6, &[labels::REFINEMENT])];
         assert_eq!(decide(&snapshot), Route::Arbiter { issue: 9 });
-        snapshot.ready_to_merge = Some(7);
+        snapshot.ready_to_merge = vec![7];
         assert_eq!(decide(&snapshot), Route::MergeMainAgent { milestone: 7 });
     }
 
@@ -1268,6 +1585,7 @@ mod tests {
             quiet_ticks: 0,
             rest: Rest::default(),
             taps: std::collections::BTreeMap::new(),
+            waiting: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1342,49 +1660,128 @@ mod tests {
         assert!(may_skip(&pulse, &Activity::Unchanged, 0));
     }
 
+    /// The routes of a snapshot's schedule, heaviest first.
+    fn routes(snapshot: &Snapshot) -> Vec<Route> {
+        schedule(snapshot, &[], &|_| 0)
+            .into_iter()
+            .map(|job| job.route)
+            .collect()
+    }
+
     #[test]
-    fn lanes_take_the_tasks_and_the_preparation_together() {
+    fn every_kind_of_work_is_one_job_and_all_of_a_kind_are_offered_at_once() {
+        // ForgeDesMondes: four reviews ran one at a time on five lanes, and
+        // one PR to merge waited behind the tick's single route.
         let snapshot = Snapshot {
+            tasks_to_merge: vec![
+                (31, pr("34", "milestone/4-x")),
+                (32, pr("35", "milestone/4-x")),
+            ],
+            prs_to_review: vec![pr("40", "milestone/4-x"), pr("41", "milestone/4-x")],
+            prs_to_fix: vec![pr("42", "milestone/4-x")],
+            deciding: vec![
+                issue(50, &[labels::NEEDS_DECISION]),
+                issue(51, &[labels::NEEDS_DECISION]),
+            ],
+            refining: vec![issue(6, &[labels::REFINEMENT])],
+            tech_refining: vec![issue(7, &[labels::TECH_REFINEMENT])],
+            test_debt: vec![issue(8, &[labels::TEST_DEBT])],
+            arbitrating: vec![issue(9, &[labels::NEEDS_AI_DECISION])],
+            milestones: vec![issue(4, &[labels::MILESTONE, labels::READY])],
+            dev_loop_milestones: vec![3],
+            ready_to_merge: vec![2],
+            ..empty()
+        };
+        let jobs = schedule(&snapshot, &[], &|_| 0);
+        let keys: Vec<(u64, Cost)> = jobs.iter().map(|j| (j.key, j.cost)).collect();
+        assert_eq!(
+            keys,
+            [
+                (31, Cost::Free),
+                (32, Cost::Free),
+                (2, Cost::Free),
+                (50, Cost::Paid),
+                (51, Cost::Paid),
+                (42, Cost::Paid),
+                (40, Cost::Paid),
+                (41, Cost::Paid),
+                (4, Cost::Paid),
+                (9, Cost::Paid),
+                (3, Cost::Paid),
+                (6, Cost::Paid),
+                (7, Cost::Paid),
+                (8, Cost::Paid),
+            ],
+            "merges, decisions, repairs, reviews, splits, arbitration, building, preparing, debt"
+        );
+        assert_eq!(
+            jobs.iter().filter_map(|j| j.exclusive).collect::<Vec<_>>(),
+            ["tech-refinement", "test-debt"]
+        );
+        assert!(schedule(&empty(), &[], &|_| 0).is_empty());
+        assert_eq!(decide(&empty()), Route::Nothing);
+    }
+
+    #[test]
+    fn the_critical_path_s_work_passes_the_ahead_work_of_its_kind() {
+        let graph = graph();
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        // The path is 18 -> 20 -> 19: a review of #19's passes #21's, #18's
+        // passes both, each ten less down the path.
+        let snapshot = Snapshot {
+            milestones: vec![ready(18), ready(19), ready(20), ready(21), ready(22)],
+            graph: Some(graph),
+            prs_to_review: vec![
+                pr("60", "milestone/21-sound"),
+                pr("61", "milestone/19-media"),
+                pr("62", "milestone/18-campaigns"),
+            ],
+            ..empty()
+        };
+        let jobs: Vec<(u64, u32)> = schedule(&snapshot, &[], &|_| 0)
+            .into_iter()
+            .filter(|j| matches!(j.route, Route::PrReview { .. }))
+            .map(|j| (j.key, j.weight))
+            .collect();
+        assert_eq!(jobs, [(62, 880), (61, 860), (60, 780)]);
+    }
+
+    #[test]
+    fn a_job_that_waits_gains_a_point_a_tick_up_to_the_cap() {
+        let snapshot = Snapshot {
+            test_debt: vec![issue(8, &[labels::TEST_DEBT])],
             refining: vec![issue(6, &[labels::REFINEMENT])],
             dev_loop_milestones: vec![3],
             ..empty()
         };
+        let mut pulse = Pulse::default();
+        assert_eq!(routes(&snapshot)[0], Route::DevLoop { milestone: 3 });
+        for _ in 0..120 {
+            pulse.age(&[Route::Refinement { issue: 6 }, Route::TestDebt { issue: 8 }]);
+        }
+        assert_eq!(pulse.waited(&Route::Refinement { issue: 6 }), 120);
+        let aged = schedule(&snapshot, &[], &|route| pulse.waited(route));
         assert_eq!(
-            lane_work(&snapshot),
-            LaneWork {
-                tasks_of: vec![3],
-                preparation: true,
-            }
+            aged.iter().map(|j| j.route.clone()).collect::<Vec<_>>(),
+            [
+                Route::Refinement { issue: 6 },
+                Route::DevLoop { milestone: 3 },
+                Route::TestDebt { issue: 8 },
+            ],
+            "a refinement waited long enough passes the build; a debt never passes it"
         );
-    }
-
-    #[test]
-    fn a_ready_milestone_is_lane_preparation_but_a_closed_refinement_is_not() {
-        let closed = Issue {
-            state: "closed".to_string(),
-            ..issue(6, &[labels::REFINEMENT])
-        };
-        let snapshot = Snapshot {
-            refining: vec![closed],
-            ..empty()
-        };
-        assert!(!lane_work(&snapshot).preparation);
-        let snapshot = Snapshot {
-            milestones: vec![issue(4, &[labels::MILESTONE, labels::READY])],
-            ..empty()
-        };
-        assert!(lane_work(&snapshot).preparation);
-    }
-
-    #[test]
-    fn a_quiet_board_gives_the_lanes_nothing() {
+        assert_eq!(aged[0].weight, 500 + 120);
+        assert_eq!(aged[2].weight, 200 + 120);
+        for _ in 0..100 {
+            pulse.age(&[Route::TestDebt { issue: 8 }]);
+        }
         assert_eq!(
-            lane_work(&empty()),
-            LaneWork {
-                tasks_of: Vec::new(),
-                preparation: false,
-            }
+            pulse.waited(&Route::Refinement { issue: 6 }),
+            0,
+            "it no longer waits"
         );
+        let capped = schedule(&snapshot, &[], &|route| pulse.waited(route));
+        assert_eq!(capped.last().map(|j| j.weight), Some(200 + AGE_CAP));
     }
 
     const GRAPH: &str = r#"{"version":1,"milestones":[
@@ -1563,7 +1960,16 @@ mod tests {
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::ContractChange { issue: 70 });
-        assert_eq!(lane_work(&snapshot).tasks_of, [20, 18]);
+        assert_eq!(
+            routes(&snapshot)
+                .into_iter()
+                .filter(|r| matches!(r, Route::DevLoop { .. }))
+                .collect::<Vec<_>>(),
+            [
+                Route::DevLoop { milestone: 20 },
+                Route::DevLoop { milestone: 18 }
+            ]
+        );
         let closed = Snapshot {
             contract_changes: vec![Issue {
                 state: "closed".to_string(),
@@ -1646,5 +2052,98 @@ mod tests {
             "the lowest open milestone"
         );
         assert!(building(&[], Some(&graph)).is_empty());
+    }
+
+    fn job(route: Route, key: u64, cost: Cost, exclusive: Option<&'static str>) -> Job {
+        Job {
+            weight: base_weight(&route),
+            route,
+            cost,
+            key,
+            exclusive,
+        }
+    }
+
+    #[test]
+    fn a_tick_starts_every_free_job_and_one_paid_job_per_free_lane() {
+        let jobs = vec![
+            job(Route::MergeMainAgent { milestone: 2 }, 2, Cost::Free, None),
+            job(Route::Decide { issue: 50 }, 50, Cost::Paid, None),
+            job(Route::Decide { issue: 51 }, 51, Cost::Paid, None),
+            job(
+                Route::PrReview {
+                    pr: "40".to_string(),
+                    base: String::new(),
+                },
+                40,
+                Cost::Paid,
+                None,
+            ),
+            job(
+                Route::TechRefinement { issue: 7 },
+                7,
+                Cost::Paid,
+                Some("tech-refinement"),
+            ),
+            job(
+                Route::TechRefinement { issue: 8 },
+                8,
+                Cost::Paid,
+                Some("tech-refinement"),
+            ),
+        ];
+        let picked = plan(jobs.clone(), &[51], &[], 3, true);
+        let keys = |jobs: &[Job]| jobs.iter().map(|j| j.key).collect::<Vec<_>>();
+        assert_eq!(keys(&picked.free), [2]);
+        assert_eq!(
+            keys(&picked.paid),
+            [50, 40, 7],
+            "#51 is on a lane: not waiting"
+        );
+        assert_eq!(
+            picked.left,
+            [Route::TechRefinement { issue: 8 }],
+            "one technical refinement at a time"
+        );
+        let resting = plan(jobs.clone(), &[], &[], 3, false);
+        assert_eq!(keys(&resting.free), [2], "a quota rest keeps the free work");
+        assert!(resting.paid.is_empty());
+        assert_eq!(resting.left.len(), 5);
+        let held = plan(jobs.clone(), &[], &["tech-refinement"], 9, true);
+        assert_eq!(keys(&held.paid), [50, 51, 40], "a lane holds the group");
+        let one_lane = plan(jobs, &[], &[], 1, true);
+        assert_eq!(keys(&one_lane.paid), [50]);
+        assert_eq!(one_lane.left.len(), 4);
+        let twice = plan(
+            vec![
+                job(
+                    Route::PrFix {
+                        pr: "42".to_string(),
+                    },
+                    42,
+                    Cost::Paid,
+                    None,
+                ),
+                job(
+                    Route::PrReview {
+                        pr: "42".to_string(),
+                        base: String::new(),
+                    },
+                    42,
+                    Cost::Paid,
+                    None,
+                ),
+            ],
+            &[],
+            &[],
+            5,
+            true,
+        );
+        assert_eq!(
+            keys(&twice.paid),
+            [42],
+            "one job per PR: the repair, not also the review"
+        );
+        assert!(twice.left.is_empty());
     }
 }

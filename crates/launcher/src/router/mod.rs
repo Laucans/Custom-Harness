@@ -178,14 +178,27 @@ async fn tick(
     if lanes.struck_by_quota() {
         rest(pulse, log);
     }
-    if !pulse.rest.passes() {
-        // Nothing is read either: a resting watch costs neither quota nor a
-        // board read, and the lanes already running keep running.
+    if lanes.went_through() {
+        // A session went through on a lane: the quota is back.
+        pulse.rest.cleared();
+    }
+    let resting = !pulse.rest.passes();
+    let parallel = args.parallel > 1;
+    if resting {
         log.debug(&format!(
-            "resting: quota exhausted — {} tick(s) left",
-            pulse.rest.ticks_left
+            "resting: quota exhausted — {} tick(s) left{}",
+            pulse.rest.ticks_left,
+            if parallel {
+                ", the free work goes on"
+            } else {
+                ""
+            }
         ));
-        return Ok(());
+        // One route at a time and that route paid: nothing to read either,
+        // and the lanes already running keep running.
+        if !parallel {
+            return Ok(());
+        }
     }
     let activity = gh.activity(pulse.etag.as_deref()).await?;
     if routing::may_skip(pulse, &activity, freed) {
@@ -217,23 +230,24 @@ async fn tick(
     // The board moved: a merge may have moved a branch, whose data model is
     // archived before anything else is dispatched.
     snapshot_data(args, here, &gh, &found.milestones, log).await;
-    // What the decision was made from, for a tick whose choice later looks
-    // wrong: the counts are the whole input to `routing::decide`.
-    log.debug(&format!(
-        "saw: {} roadmap, {} milestone(s), {} refining, {} tech-refining, {} arbitrating, \
-         {} test-debt, {} rules, pr_fix={:?}, pr_review={:?}, ready_to_merge={:?}, dev_loop={:?}",
-        found.roadmap.len(),
-        found.milestones.len(),
-        found.refining.len(),
-        found.tech_refining.len(),
-        found.arbitrating.len(),
-        found.test_debt.len(),
-        found.rules.len(),
-        found.pr_to_fix.as_ref().map(|pr| pr.num.clone()),
-        found.pr_to_review.as_ref().map(|pr| pr.num.clone()),
-        found.ready_to_merge,
-        found.dev_loop_milestones,
-    ));
+    say_saw(&found, log);
+    if parallel {
+        if lanes.is_closed() {
+            // A soft stop arrived during the read: nothing new is dispatched.
+            return Ok(());
+        }
+        if routing::schedule(&found, &lanes.running(), &|_| 0).is_empty()
+            && let Some(reason) = &idle
+        {
+            log.say(&format!("idle: {reason}"));
+        }
+        let came_to =
+            lanes::run_schedule(args, here, gh.as_ref(), &found, pulse, !resting, lanes, log).await;
+        if came_to == Dispatched::Quota {
+            rest(pulse, log);
+        }
+        return Ok(());
+    }
     let route = routing::decide(&found);
     if matches!(route, Route::Nothing)
         && let Some(reason) = idle
@@ -246,12 +260,46 @@ async fn tick(
         // A soft stop arrived during the read: nothing new is dispatched.
         return Ok(());
     }
-    match dispatch(args, here, gh.as_ref(), &found, route, log, lanes).await {
+    match dispatch(args, here, gh.as_ref(), route, log).await {
         Dispatched::Quota => rest(pulse, log),
         Dispatched::Went => pulse.rest.cleared(),
         Dispatched::Nothing | Dispatched::Failed => {}
     }
     Ok(())
+}
+
+/// What the decision was made from, for a tick whose choice later looks
+/// wrong: the counts are the whole input to `routing::schedule`.
+fn say_saw(found: &Snapshot, log: &Logbook) {
+    log.debug(&format!(
+        "saw: {} roadmap, {} milestone(s), {} refining, {} tech-refining, {} arbitrating, \
+         {} test-debt, {} rules, pr_fix={:?}, pr_review={:?}, to_merge={:?}, ready_to_merge={:?}, \
+         dev_loop={:?}",
+        found.roadmap.len(),
+        found.milestones.len(),
+        found.refining.len(),
+        found.tech_refining.len(),
+        found.arbitrating.len(),
+        found.test_debt.len(),
+        found.rules.len(),
+        found
+            .prs_to_fix
+            .iter()
+            .map(|pr| pr.num.clone())
+            .collect::<Vec<_>>(),
+        found
+            .prs_to_review
+            .iter()
+            .map(|pr| pr.num.clone())
+            .collect::<Vec<_>>(),
+        found
+            .tasks_to_merge
+            .iter()
+            .map(|(task, _)| *task)
+            .collect::<Vec<_>>(),
+        found.ready_to_merge,
+        found.dev_loop_milestones,
+    ));
 }
 
 /// A `QUOTA` stop: the watch rests, longer with every stop in a row, and
@@ -385,12 +433,17 @@ async fn snapshot(
     // pick again: picked, it ended the tick on "already on a lane" while
     // the other PRs waited (`ForgeDesMondes`' four reviews ran one at a
     // time on five lanes, 19:44Z–20:10Z).
-    let pr_to_fix = lowest_red_pr(gh, &not_running(&to_fix, running), &to_review).await?;
-    let pr_to_review = lowest_pr_worth_reviewing(gh, &not_running(&to_review, running)).await?;
+    let prs_to_fix = red_prs(
+        gh,
+        &not_running(&to_fix, running),
+        &not_running(&to_review, running),
+    )
+    .await?;
+    let prs_to_review = prs_worth_reviewing(gh, &not_running(&to_review, running)).await?;
     // The plan's graph, when the plan wrote one: what orders the milestones
     // and says which may build side by side.
     let graph = routing::parse_graph(gh.file_text(routing::GRAPH_PATH, branch).await?.as_deref());
-    let ready_to_merge = lowest_ready_to_merge(gh, &milestones, graph.as_ref()).await?;
+    let ready_to_merge = milestones_ready_to_merge(gh, &milestones, graph.as_ref()).await?;
     let refining = gh.issues_labelled(labels::REFINEMENT, "open").await?;
     let tech_refining = gh.issues_labelled(labels::TECH_REFINEMENT, "open").await?;
     let arbitrating = gh
@@ -418,21 +471,20 @@ async fn snapshot(
     } else {
         None
     };
-    let mut task_to_merge = None;
+    // One green PR per board: a milestone's branch takes one merge a tick,
+    // the next one is read against it.
+    let mut tasks_to_merge = Vec::new();
     for board in &boards {
-        task_to_merge = green_task_pr(gh, &board.tasks, &to_review, log).await?;
-        if task_to_merge.is_some() {
-            break;
-        }
+        tasks_to_merge.extend(green_task_pr(gh, &board.tasks, &to_review, log).await?);
     }
     let boards_read = boards;
     let snapshot = Snapshot {
-        task_to_merge,
+        tasks_to_merge,
         roadmap,
         lowest_roadmap_has_milestone,
         milestones,
-        pr_to_fix,
-        pr_to_review,
+        prs_to_fix,
+        prs_to_review,
         ready_to_merge,
         refining,
         tech_refining,
@@ -457,18 +509,17 @@ async fn snapshot(
     Ok((snapshot, idle, watching_ci))
 }
 
-/// The lowest-numbered open PR that carries `harness:pr-fix` **and** has a
-/// check that concluded in failure — one CI read per candidate, in number
-/// order, stopping at the first match.
+/// The open PRs to repair, in number order: those that carry
+/// `harness:pr-fix` **and** have a check that concluded in failure — one CI
+/// read each — and those whose review blocks or whose branch conflicts.
 ///
 /// The pairing is the point: the label alone would send a paid session at a
 /// PR that is merely still building.
-async fn lowest_red_pr(gh: &dyn GitHub, to_fix: &[Pr], to_review: &[Pr]) -> Outcome<Option<Pr>> {
+async fn red_prs(gh: &dyn GitHub, to_fix: &[Pr], to_review: &[Pr]) -> Outcome<Vec<Pr>> {
     let mut found: Vec<Pr> = Vec::new();
     for candidate in to_fix {
         if !gh.pr_failing_checks(&candidate.num).await?.is_empty() {
             found.push(candidate.clone());
-            break;
         }
     }
     // A blocking agent review, or a branch that no longer merges into its
@@ -476,38 +527,40 @@ async fn lowest_red_pr(gh: &dyn GitHub, to_fix: &[Pr], to_review: &[Pr]) -> Outc
     // it at dispatch, the same request a human makes. Bounded like the
     // rest: past `MAX_FIXES` repairs, the PR is a human's.
     for candidate in to_review {
+        if found.iter().any(|pr| pr.num == candidate.num) {
+            continue;
+        }
         let comments = gh.pr_comments(&candidate.num).await?;
         let blocked = review::status(&comments).wants_a_fix();
         let conflicting = review::repairs(&comments) < review::MAX_FIXES
             && gh.pr_mergeable(&candidate.num).await? == Some(false);
         if blocked || conflicting {
             found.push(candidate.clone());
-            break;
         }
     }
-    Ok(by_number(found).into_iter().next())
+    Ok(by_number(found))
 }
 
-/// The lowest-numbered open PR that carries `harness:to-review` and that the
-/// review itself would not skip — one comments read per candidate, in number
-/// order, stopping at the first match.
+/// The open PRs carrying `harness:to-review` that the review itself would
+/// not skip, in number order — one comments read each.
 ///
 /// The decision reuses `pr_review`'s own rules rather than restating them:
 /// policy in two places is policy that drifts. Applying them here is only
 /// an optimization — a PR that would skip (a draft, a test PR, one already
 /// carrying a review) must not cost a mounted checkout on every poll, and
 /// its label can be left in place harmlessly because of this filter.
-async fn lowest_pr_worth_reviewing(gh: &dyn GitHub, to_review: &[Pr]) -> Outcome<Option<Pr>> {
+async fn prs_worth_reviewing(gh: &dyn GitHub, to_review: &[Pr]) -> Outcome<Vec<Pr>> {
+    let mut found = Vec::new();
     for candidate in to_review {
         let comments = gh.pr_comments(&candidate.num).await?;
         // `candidate.base` as the expected base: the label is the
         // authorization, and a task PR legitimately targets its milestone's
         // branch. What stays live are the other three rules.
         if skip_rules::skip_reason(false, &candidate.base, candidate, &comments).is_none() {
-            return Ok(Some(candidate.clone()));
+            found.push(candidate.clone());
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 /// Whether a PR of the harness's is under CI at all: the pulse then reads
@@ -537,29 +590,29 @@ fn by_number(mut prs: Vec<Pr>) -> Vec<Pr> {
     prs
 }
 
-/// The lowest-numbered open milestone, not yet `harness:waiting-merge`,
-/// whose own tasks are all closed and whose producers (the plan's graph)
-/// have landed — one extra read per candidate, in number order, stopping at
-/// the first match. The train's order: a consumer never lands before what
-/// it reads.
-async fn lowest_ready_to_merge(
+/// The open milestones, not yet `harness:waiting-merge`, whose own tasks
+/// are all delivered and whose producers (the plan's graph) have landed —
+/// one extra read per candidate, in number order. The train's order: a
+/// consumer never lands before what it reads.
+async fn milestones_ready_to_merge(
     gh: &dyn harness_core::ports::shell::github::GitHub,
     milestones: &[harness_core::domain::Issue],
     graph: Option<&harness_workflows::common::routing::Graph>,
-) -> Outcome<Option<u64>> {
+) -> Outcome<Vec<u64>> {
     let mut candidates: Vec<&harness_core::domain::Issue> = milestones
         .iter()
         .filter(|issue| issue.is_open() && !issue.has(labels::WAITING_MERGE))
         .filter(|issue| merge_train::producers_landed(graph, issue.number, milestones).is_empty())
         .collect();
     candidates.sort_by_key(|issue| issue.number);
+    let mut found = Vec::new();
     for candidate in candidates {
         let tasks = gh.sub_issues(candidate.number).await?;
         if audit::all_tasks_delivered(&tasks) {
-            return Ok(Some(candidate.number));
+            found.push(candidate.number);
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 /// The task whose PR is open on its milestone, reviewed and green, with that

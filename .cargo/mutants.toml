@@ -38,7 +38,7 @@ exclude_re = [
   # `routing::lane_work`, `routing::splits` and `routing::building`, tested;
   # the spawning itself has no fake. `building_boards` reads one board per
   # milestone `routing::building` names.
-  "router/lanes\\.rs:.*(replace (run_lanes|fill_lanes|run_router_lanes)|delete ! in (run_lanes|run_router_lanes)|replace == with != in run_lanes)",
+  "router/lanes\\.rs:.*(replace (run_schedule|start_task|start_route)| in (run_schedule|start_task|start_route)$)",
   "router/mod\\.rs:.* in building_boards$",
   "router/routes\\.rs:.*replace run_dev_loop ",
   # The arms that run a paid workflow, here or on a lane: the workflow is

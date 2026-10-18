@@ -92,7 +92,7 @@ pub fn workflow_of_route(route: &str) -> Option<&'static str> {
         .next()
         .unwrap_or_default();
     match name {
-        "DevLoop" => Some("agent-loop"),
+        "DevLoop" | "DevTask" => Some("agent-loop"),
         "Refinement" | "TechRefinement" => Some("refinement"),
         "Split" => Some("split"),
         "Planner" => Some("planner"),

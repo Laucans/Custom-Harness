@@ -394,6 +394,18 @@ pub enum RouteKind {
     Rules,
     /// `contract_manager` on a `harness:contract-change` issue.
     Contract,
+    /// `split` on a milestone.
+    Split,
+    /// The business `refinement` of an issue.
+    Refine,
+    /// The technical `refinement` of an issue.
+    TechRefine,
+    /// The `planner` on a roadmap item.
+    Planner,
+    /// The `arbiter` on an issue whose graph is in question.
+    Arbiter,
+    /// `test_debt` on a test-debt issue.
+    TestDebt,
 }
 
 /// `harness route <kind> <number>`: one of the router's paid routes, as a

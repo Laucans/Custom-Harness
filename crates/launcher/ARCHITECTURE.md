@@ -105,9 +105,26 @@ human tunes instead.
 
 ## `router/` — the trigger nobody types
 
-`harness watch`: read a snapshot, call `harness_workflows::common::routing::
-decide` (pure, tested without a fake adapter), dispatch, sleep `--interval`
+`harness watch`: read a snapshot, schedule it, dispatch, sleep `--interval`
 seconds, repeat. `--once` does a single pass.
+
+**One scheduler for every route** (`routing::schedule`, then
+`routing::plan`, both pure and tested without a fake adapter). Every piece of
+work the snapshot shows — every PR to repair or review, every decision,
+split, task, refinement, merge — is a weighted job: its route's base
+(`routing::base_weight`: the two merges first, then plan, rules, decisions,
+contracts, repairs, reviews, splits, arbitration, tasks, business then
+technical refinement, test debt), a bonus for a milestone on the critical
+path, a point per tick it waited, capped. Under `--parallel` the tick
+(`router/lanes.rs::run_schedule`) runs every free job in the tick — the
+merges, a few GitHub calls — and starts the paid ones heaviest first, one
+per free lane: a task as the dev loop's `--task` child, anything else as
+`harness route <kind> <n>` in its own `router-lane-<k>` checkout. **Nothing
+paid runs in the watch's process**, so a long session never keeps the
+lanes from being refilled. One job per issue or PR at a time; the technical
+refinement, the test debt and the planner one at a time each (an exclusive
+group a lane holds). With one lane, `routing::decide` — the schedule's
+first job — runs in the tick, as before.
 
 **Every line of the watch and its lanes is an event first**
 (`Logbook::event`): the sink of a `run.log` or of `watch.log`
@@ -128,9 +145,7 @@ tree and process group, sent from outside (the view's switch).
 is free, and when nothing moved — no PR waiting on its checks, no lane just
 freed — the tick ends there (`routing::may_skip`, `routing::Pulse`). The
 forty-odd reads of a snapshot are paid when something changed, or every
-`routing::FULL_READ_EVERY` ticks as a valve. Under `--parallel` the tick
-then fills every free lane before dispatching its route — the runnable tasks
-first, then splits and refinements (`routing::lane_work`).
+`routing::FULL_READ_EVERY` ticks as a valve.
 
 Three rules, and they are not symmetric:
 
@@ -139,10 +154,12 @@ Three rules, and they are not symmetric:
 - **A failed dispatch does not.** One workflow's session hiccup is that
   workflow's business; it is logged and likely to succeed on a later tick.
 - **A `QUOTA` stop makes the watch rest** (`routing::Rest`, kept in the
-  `Pulse`): nothing is read or dispatched for `FIRST_REST` ticks, twice as
-  many after each stop in a row up to `LONGEST_REST`, and the count starts
-  again once a dispatch went through. A lane that exits 3 counts as a stop
-  too (`Lanes::struck_by_quota`). The rest is one `QuotaRest` event, a
+  `Pulse`): nothing paid is started for `FIRST_REST` ticks, twice as many
+  after each stop in a row up to `LONGEST_REST`, and the count starts again
+  once a lane's session went through (`Lanes::went_through`). Under
+  `--parallel` the free work — the merges — goes on meanwhile; with one lane
+  nothing is read. A lane that exits 3 counts as a stop too
+  (`Lanes::struck_by_quota`). The rest is one `QuotaRest` event, a
   warning in the view. Before it, an exhausted window bought one `QUOTA` row
   and one doctor's visit per tick, four a minute at the default interval.
 
@@ -150,7 +167,7 @@ It builds one `GitHub` of its own for the decision alone — no checkout, since
 a route is a decision and not a payload. The reads that a flat issue list
 cannot answer happen here too (does the lowest roadmap item have a milestone,
 are a milestone's tasks all closed, has a labelled PR actually broken), one
-extra call per candidate, stopping at the first match. That cost is paid here
+extra call per candidate — every candidate, since every one is a job. That cost is paid here
 rather than inside a workflow so that a candidate which would skip never
 costs a mounted checkout every thirty seconds.
 

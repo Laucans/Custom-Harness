@@ -100,7 +100,7 @@ impl Tick {
 /// The tag an inline workflow reports back under: `watch: pr_review -> …`.
 fn tag(route: &str) -> &'static str {
     match route_name(route) {
-        "DevLoop" => "dev_loop",
+        "DevLoop" | "DevTask" => "dev_loop",
         "Refinement" | "TechRefinement" => "refinement",
         "Split" => "split",
         "Planner" => "planner",

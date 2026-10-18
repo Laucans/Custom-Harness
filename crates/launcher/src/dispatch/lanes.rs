@@ -48,6 +48,9 @@ fn ended(slot: usize, task: u64, status: std::process::ExitStatus) -> Event {
 /// One running lane.
 struct Lane {
     task: u64,
+    /// The jobs that may never run side by side share a group
+    /// (`routing::Job::exclusive`).
+    group: Option<&'static str>,
     child: Child,
 }
 
@@ -62,6 +65,9 @@ pub struct Lanes {
     closed: Arc<AtomicBool>,
     /// Lanes that ended on exit 3 (`QUOTA`) since the watch last asked.
     quota_hits: usize,
+    /// Lanes that ended on exit 0 since the watch last asked: a session went
+    /// through, so the quota is back.
+    went: usize,
 }
 
 impl Lanes {
@@ -74,6 +80,7 @@ impl Lanes {
             parked: HashMap::new(),
             closed: Arc::new(AtomicBool::new(false)),
             quota_hits: 0,
+            went: 0,
         }
     }
 
@@ -111,6 +118,9 @@ impl Lanes {
                         if status.code() == Some(3) {
                             self.quota_hits = self.quota_hits.saturating_add(1);
                         }
+                        if status.code() == Some(0) {
+                            self.went = self.went.saturating_add(1);
+                        }
                         true
                     }
                     Ok(None) => false,
@@ -138,6 +148,24 @@ impl Lanes {
         let struck = self.quota_hits > 0;
         self.quota_hits = 0;
         struck
+    }
+
+    /// Whether a lane ended on exit 0 since this was last asked — what clears
+    /// a quota rest, the paid work running on lanes only. Asking takes the
+    /// answer.
+    pub const fn went_through(&mut self) -> bool {
+        let went = self.went > 0;
+        self.went = 0;
+        went
+    }
+
+    /// The exclusive groups the lanes hold right now.
+    #[must_use]
+    pub fn groups(&self) -> Vec<&'static str> {
+        self.slots
+            .iter()
+            .filter_map(|lane| lane.as_ref().and_then(|running| running.group))
+            .collect()
     }
 
     /// Notes the issue version `task` is taken at, so a stop can park it on
@@ -168,6 +196,15 @@ impl Lanes {
             .collect()
     }
 
+    /// How many slots are free — none once the lanes are closed.
+    #[must_use]
+    pub fn free_slots(&self) -> usize {
+        if self.is_closed() {
+            return 0;
+        }
+        self.slots.iter().filter(|lane| lane.is_none()).count()
+    }
+
     /// A free slot, if any — never once the lanes are closed.
     #[must_use]
     pub fn free_slot(&self) -> Option<usize> {
@@ -186,6 +223,21 @@ impl Lanes {
         &mut self,
         slot: usize,
         task: u64,
+        command: Command,
+        here: &Path,
+    ) -> std::io::Result<u32> {
+        self.spawn_in(slot, task, None, command, here)
+    }
+
+    /// [`Self::spawn`], the lane holding `group` while it runs.
+    ///
+    /// # Errors
+    /// If the log file cannot be opened or the process cannot start.
+    pub fn spawn_in(
+        &mut self,
+        slot: usize,
+        task: u64,
+        group: Option<&'static str>,
         mut command: Command,
         here: &Path,
     ) -> std::io::Result<u32> {
@@ -200,7 +252,7 @@ impl Lanes {
         let child = command.spawn()?;
         let pid = child.id().unwrap_or(0);
         if let Some(lane) = self.slots.get_mut(slot) {
-            *lane = Some(Lane { task, child });
+            *lane = Some(Lane { task, group, child });
         }
         Ok(pid)
     }
@@ -302,9 +354,45 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let lanes = Lanes::new(2).closed_by(Arc::clone(&flag));
         assert_eq!(lanes.free_slot(), Some(0));
+        assert_eq!(lanes.free_slots(), 2);
         flag.store(true, Ordering::SeqCst);
         assert!(lanes.is_closed());
         assert_eq!(lanes.free_slot(), None);
+        assert_eq!(lanes.free_slots(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_lane_holds_its_group_while_it_runs_and_a_success_is_told_once() {
+        let dir = std::env::temp_dir().join(format!("lanes-group-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let log = Logbook::null();
+        let mut lanes = Lanes::new(3);
+        let mut ok = Command::new("sh");
+        ok.arg("-c").arg("sleep 0.2; exit 0");
+        lanes
+            .spawn_in(0, 7, Some("tech-refinement"), ok, &dir)
+            .expect("spawned");
+        let mut plain = Command::new("sh");
+        plain.arg("-c").arg("sleep 0.2; exit 2");
+        lanes.spawn(1, 8, plain, &dir).expect("spawned");
+        assert_eq!(lanes.groups(), ["tech-refinement"]);
+        assert_eq!(lanes.free_slots(), 1);
+        assert!(!lanes.went_through(), "nothing ended yet");
+        for _ in 0..100 {
+            lanes.reap(&log);
+            if lanes.running().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            lanes.groups().is_empty(),
+            "the group is freed with its lane"
+        );
+        assert_eq!(lanes.free_slots(), 3);
+        assert!(lanes.went_through(), "exit 0 went through");
+        assert!(!lanes.went_through(), "asking takes the answer");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
