@@ -102,12 +102,16 @@ their tests and gates only: no live watch has run them yet.
       model …` before the reference page, the drawing and componentize
       prompts carry `The data model the proof of concept is built on`, the
       fixtures use uuid ids, and the Data step refines (not redrafts) it.
-- [ ] **The lanes fill while #18 builds** (ahead work on `needs`, the
-      boards read until the lanes are offered what they will take, an
-      aggregate held only by a task that starts): after the 17:5xZ deploy
-      the tick logs `takes #143` (soundbox screen), `takes #199` (live
-      wiring) and `takes #211`; #125 waits on #117 (`blocked_by` posted),
-      not on #18; `dev_loop=[…]` lists more than two milestones.
+- [x] **The boards are read until the lanes are offered what they take**
+      — seen 18:02Z on `b220548`: `dev_loop=[19, 20, 25, 26, 28, 21, 23]`
+      (two before), each board saying what it holds; #199 and #211 had
+      been taken and delivered at 17:43Z as soon as #26 got read; #125
+      waits on #117 (`blocked_by` posted), not on #18. The lanes are empty
+      now because every ahead-able task is delivered: what is held reads a
+      table, a Concept or proves a rule — the only goulot left is #18.
+- [ ] **Ahead work resumes as producers land**: when #18 lands, the tick
+      takes #117/#119/#123 (#19's data layer) and #112/#116 (#21's) on the
+      next read, with no restart.
 - [ ] A consumer's tasks build against a producer's mocked contract; the
       mock server answers `mocked-data-capability` for a planned write.
 - [ ] A consumer ready to land while its producer still builds logs
