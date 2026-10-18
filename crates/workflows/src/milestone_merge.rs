@@ -24,8 +24,14 @@ use crate::dev_loop::data::tasks;
 /// round's `code` stage, and a round that halted past its PR (a post-gate,
 /// then the budget) never placed it, and a reviewed, green
 /// PR waited for a merge nothing would make.
+/// The tasks of the board whose PR is open on its declared branch — the
+/// write side's, or any task `review-pending` — with that PR, by number.
+///
+/// Every one, not the first: `ForgeDesMondes`' #51 (PR #105, red on a rule
+/// its sibling #225 makes green) stood first and hid #225 (PR #233, clean
+/// and green) for three hours — the train took neither.
 #[must_use]
-pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &'a Pr)> {
+pub fn candidates<'a>(board: &'a [Issue], open: &'a [Pr]) -> Vec<(&'a Issue, &'a Pr)> {
     let mut waiting: Vec<&Issue> = board
         .iter()
         .filter(|task| {
@@ -33,12 +39,67 @@ pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &
         })
         .collect();
     waiting.sort_by_key(|task| task.number);
-    waiting.into_iter().find_map(|task| {
-        let branch = tasks::declared_branch(&task.body)?;
-        open.iter()
-            .find(|pr| pr.head == branch)
-            .map(|pr| (task, pr))
-    })
+    waiting
+        .into_iter()
+        .filter_map(|task| {
+            let branch = tasks::declared_branch(&task.body)?;
+            open.iter()
+                .find(|pr| pr.head == branch)
+                .map(|pr| (task, pr))
+        })
+        .collect()
+}
+
+/// What the train merges now, and the tasks it escalated on the way, each
+/// with its PR's reference.
+///
+/// The first of [`candidates`] whose last review is clean, whose PR merges
+/// and whose checks are green; a task met before it whose repairs are used
+/// up is escalated to a decision ([`escalate`]) and passed over. One that is
+/// not green does not hide the next: `ForgeDesMondes`' #51
+/// (PR #105, red on R4) stood first for three hours over #225 (PR #233,
+/// clean and green, the very change that makes R4 pass).
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from any read of a PR's comments, checks
+/// or mergeability, or from the escalation's writes.
+pub async fn ready_to_merge<'a>(
+    gh: &dyn GitHub,
+    board: &'a [Issue],
+    open: &'a [Pr],
+) -> Outcome<(Option<(&'a Issue, &'a Pr)>, Vec<(u64, String)>)> {
+    use crate::common::review;
+    let mut escalated = Vec::new();
+    for (task, pr) in candidates(board, open) {
+        let comments = gh.pr_comments(&pr.num).await?;
+        match review::status(&comments) {
+            review::Status::Clean => {}
+            status if status.exhausted() => {
+                if escalate(gh, task, pr).await? {
+                    escalated.push((task.number, pr.reference()));
+                }
+                continue;
+            }
+            _ => continue,
+        }
+        if gh.pr_mergeable(&pr.num).await? == Some(false) {
+            if review::repairs(&comments) >= review::MAX_FIXES && escalate(gh, task, pr).await? {
+                escalated.push((task.number, pr.reference()));
+            }
+            continue;
+        }
+        if !gh.pr_checks_green(&pr.num).await? {
+            continue;
+        }
+        return Ok((Some((task, pr)), escalated));
+    }
+    Ok((None, escalated))
+}
+
+/// The first of [`candidates`], when there is one.
+#[must_use]
+pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &'a Pr)> {
+    candidates(board, open).into_iter().next()
 }
 
 /// Merges `pr` into its milestone branch and closes `task`:
@@ -100,6 +161,7 @@ pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<bool> {
 mod tests {
     use super::*;
     use crate::common::fake_github::{FakeGitHub, Wrote};
+    use std::collections::HashMap;
 
     fn task(number: u64, labels: &[&str], branch: &str) -> Issue {
         Issue {
@@ -138,6 +200,103 @@ mod tests {
         let prs = [pr("77", "feat/save")];
         let (found, _) = candidate(&unlabelled, &prs).expect("write side");
         assert_eq!(found.number, 39);
+
+        // Every waiting task with its PR, by number — the first may be red
+        // while the second merges.
+        let two = vec![
+            task(
+                225,
+                &[labels::AGENT, labels::REVIEW_PENDING],
+                "chore/wiring",
+            ),
+            task(51, &[labels::AGENT, labels::REVIEW_PENDING], "feat/save"),
+            task(52, &[labels::AGENT, labels::WRITE_SIDE], "feat/restore"),
+        ];
+        let open = [pr("233", "chore/wiring"), pr("105", "feat/save")];
+        let all: Vec<(u64, &str)> = candidates(&two, &open)
+            .into_iter()
+            .map(|(t, p)| (t.number, p.num.as_str()))
+            .collect();
+        assert_eq!(all, [(51, "105"), (225, "233")], "#52 has no PR open");
+        assert_eq!(candidate(&two, &open).map(|(t, _)| t.number), Some(51));
+    }
+
+    #[tokio::test]
+    async fn the_first_clean_mergeable_green_pr_merges_and_a_red_one_hides_nothing() {
+        use crate::common::review;
+        let board = vec![
+            task(51, &[labels::AGENT, labels::REVIEW_PENDING], "feat/save"),
+            task(
+                225,
+                &[labels::AGENT, labels::REVIEW_PENDING],
+                "chore/wiring",
+            ),
+            task(60, &[labels::AGENT, labels::REVIEW_PENDING], "feat/stuck"),
+        ];
+        let open = [
+            pr("105", "feat/save"),
+            pr("233", "chore/wiring"),
+            pr("90", "feat/stuck"),
+        ];
+        let clean = format!("{}\n{}", review::MARKER, review::CLEAN);
+        let blocking = format!("{}\n{}", review::MARKER, review::BLOCKING);
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![
+                ("105".to_string(), clean.clone()),
+                ("233".to_string(), clean.clone()),
+                ("90".to_string(), blocking),
+            ],
+            pr_checks: HashMap::from([("105".to_string(), false), ("233".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
+        let (found, escalated) = ready_to_merge(&gh, &board, &open).await.expect("read");
+        let (task, its_pr) = found.expect("one merges");
+        assert_eq!(
+            (task.number, its_pr.num.as_str()),
+            (225, "233"),
+            "#51 is red: #225 is next"
+        );
+        assert!(
+            escalated.is_empty(),
+            "a blocking review with repairs left is the repair route's"
+        );
+        // Repairs used up on the first: escalated once, then the next merges.
+        let exhausted = format!(
+            "{}{}\n{}",
+            review::FIX_MARKER.repeat(review::MAX_FIXES),
+            review::MARKER,
+            review::BLOCKING
+        );
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![
+                ("105".to_string(), exhausted),
+                ("233".to_string(), clean.clone()),
+                ("90".to_string(), clean),
+            ],
+            pr_checks: HashMap::from([("233".to_string(), true)]),
+            pr_mergeable: HashMap::from([("90".to_string(), Some(false))]),
+            ..FakeGitHub::default()
+        };
+        let (found, escalated) = ready_to_merge(&gh, &board, &open).await.expect("read");
+        assert_eq!(found.map(|(t, _)| t.number), Some(225));
+        assert_eq!(escalated, [(51, "#105".to_string())]);
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Label(51, labels::NEEDS_DECISION.to_string()))
+        );
+        // Nothing green: none, and nothing escalated for a mere red check.
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![(
+                "105".to_string(),
+                format!("{}\n{}", review::MARKER, review::CLEAN),
+            )],
+            pr_checks: HashMap::from([("105".to_string(), false)]),
+            ..FakeGitHub::default()
+        };
+        let (found, escalated) = ready_to_merge(&gh, &board[..1], &open[..1])
+            .await
+            .expect("read");
+        assert!(found.is_none() && escalated.is_empty());
     }
 
     #[tokio::test]

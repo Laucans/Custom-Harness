@@ -109,6 +109,12 @@ their tests and gates only: no live watch has run them yet.
       waits on #117 (`blocked_by` posted), not on #18. The lanes are empty
       now because every ahead-able task is delivered: what is held reads a
       table, a Concept or proves a rule — the only goulot left is #18.
+- [ ] **The train merges the first green PR, not the first PR**
+      (`milestone_merge::ready_to_merge`): on the tick after the deploy,
+      `task_to_merge` names #225/PR #233 (green since 15:07Z) although #51/PR
+      #105 (red on R4) comes first by number; #225 closes, `milestone/18` is
+      pushed into #105's branch and `rules-hold` goes green there; then #51
+      merges, #52 and #53 run, #18 lands.
 - [ ] **Ahead work resumes as producers land**: when #18 lands, the tick
       takes #117/#119/#123 (#19's data layer) and #112/#116 (#21's) on the
       next read, with no restart.

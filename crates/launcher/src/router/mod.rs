@@ -532,54 +532,26 @@ async fn lowest_ready_to_merge(
     Ok(None)
 }
 
-/// A task's PR its repairs did not clear: a decision asked of the harness,
-/// once, and told.
-async fn exhausted(gh: &dyn GitHub, task: &Issue, pr: &Pr, log: &Logbook) -> Outcome<()> {
-    if harness_workflows::milestone_merge::escalate(gh, task, pr).await? {
-        log.event(&Event::RepairsExhausted {
-            task: task.number,
-            pr: pr.reference(),
-            fixes: u64::try_from(harness_workflows::common::review::MAX_FIXES).unwrap_or(u64::MAX),
-        });
-    }
-    Ok(())
-}
-
 /// The task whose PR is open on its milestone, reviewed and green, with that
-/// PR — what `milestone_merge` merges. A PR still owed its review is left to
-/// the review route, which outranks this one.
+/// PR — what `milestone_merge` merges ([`milestone_merge::ready_to_merge`]).
+/// A task met on the way whose repairs are used up is escalated there; the
+/// event is recorded here, where the journal is.
 async fn green_task_pr(
     gh: &dyn GitHub,
     tasks: &[Issue],
     to_review: &[Pr],
     log: &Logbook,
 ) -> Outcome<Option<(u64, Pr)>> {
-    let Some((task, pr)) = harness_workflows::milestone_merge::candidate(tasks, to_review) else {
-        return Ok(None);
-    };
-    // Its last review must let it through: a blocking one is the repair
-    // route's, and one its repairs did not clear is the harness's to decide.
-    let comments = gh.pr_comments(&pr.num).await?;
-    match review::status(&comments) {
-        review::Status::Clean => {}
-        status if status.exhausted() => {
-            exhausted(gh, task, pr, log).await?;
-            return Ok(None);
-        }
-        _ => return Ok(None),
+    let (found, escalated) =
+        harness_workflows::milestone_merge::ready_to_merge(gh, tasks, to_review).await?;
+    for (task, pr) in escalated {
+        log.event(&Event::RepairsExhausted {
+            task,
+            pr,
+            fixes: u64::try_from(harness_workflows::common::review::MAX_FIXES).unwrap_or(u64::MAX),
+        });
     }
-    // And it must merge: a conflict with the base is the repair route's too,
-    // until the repairs are used up.
-    if gh.pr_mergeable(&pr.num).await? == Some(false) {
-        if review::repairs(&comments) >= review::MAX_FIXES {
-            exhausted(gh, task, pr, log).await?;
-        }
-        return Ok(None);
-    }
-    if !gh.pr_checks_green(&pr.num).await? {
-        return Ok(None);
-    }
-    Ok(Some((task.number, pr.clone())))
+    Ok(found.map(|(task, pr)| (task.number, pr.clone())))
 }
 
 /// The milestones, with the blockers of every split candidate read — what
