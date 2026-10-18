@@ -787,6 +787,15 @@ mod tests {
         async fn file_text(&self, _path: &str, _git_ref: &str) -> Outcome<Option<String>> {
             Err(refused())
         }
+        async fn put_file(
+            &self,
+            _path: &str,
+            _branch: &str,
+            _content: &str,
+            _message: &str,
+        ) -> Outcome<()> {
+            Err(refused())
+        }
         async fn create_issue(&self, _title: &str, _body: &str, _labels: &[&str]) -> Outcome<u64> {
             Err(refused())
         }

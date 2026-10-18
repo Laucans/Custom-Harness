@@ -50,6 +50,8 @@ pub enum Wrote {
     CreatedPr(String, String, String),
     /// A pull request merged, by ref.
     MergedPr(String),
+    /// A file written on a branch: path, branch, content.
+    PutFile(String, String, String),
 }
 
 /// An in-memory GitHub.
@@ -387,6 +389,23 @@ impl GitHub for FakeGitHub {
             .files
             .get(&(path.to_string(), git_ref.to_string()))
             .cloned())
+    }
+
+    async fn put_file(
+        &self,
+        path: &str,
+        branch: &str,
+        content: &str,
+        message: &str,
+    ) -> Outcome<()> {
+        self.ok()?;
+        let _ = message;
+        self.wrote.borrow_mut().push(Wrote::PutFile(
+            path.to_string(),
+            branch.to_string(),
+            content.to_string(),
+        ));
+        Ok(())
     }
 
     async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<u64> {

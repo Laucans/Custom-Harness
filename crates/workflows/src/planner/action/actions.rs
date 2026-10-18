@@ -65,6 +65,8 @@ impl Action<PlannerState> for ReadContext {
                 dossier.rules.len()
             ));
         }
+        ctx.state.components = dossier.components();
+        ctx.state.writes = dossier.write_ids();
         ctx.state.dossier = dossier.block(&Filter::default());
         Ok(Verdict::Continue)
     }

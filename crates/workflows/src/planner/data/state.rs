@@ -16,6 +16,10 @@ pub struct PlannerState {
     pub grounding: String,
     /// What the factory's creation decided, as the prompt reads it.
     pub dossier: String,
+    /// The dossier's micro-frontends, as the plan's graph reads them.
+    pub components: Vec<harness_architecture::graph::Component>,
+    /// The dossier's writes, by id.
+    pub writes: Vec<String>,
     /// What the free `explore` entry read from the repo. Only the explorer
     /// reads it.
     pub brief: String,

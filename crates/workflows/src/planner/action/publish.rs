@@ -20,6 +20,8 @@ use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
+use harness_architecture::graph;
+
 use crate::common::labels;
 use crate::planner::data::plan;
 use crate::planner::data::state::PlannerState;
@@ -30,6 +32,84 @@ pub struct Write {
     pub gh: Rc<dyn GitHub>,
     /// The stage whose reply carries the plan.
     pub plan_stage: String,
+    /// The integration branch the plan's graph is written on.
+    pub branch: String,
+}
+
+impl Write {
+    /// Writes the plan's graph (contract R) from every milestone of the
+    /// roadmap item — open before, opened here — and says what it found: a
+    /// read of a later milestone, an id nobody produces. Never fails the
+    /// publish: the milestones are the deliverable, the graph their trace.
+    async fn write_graph(
+        &self,
+        ctx: &Context<PlannerState>,
+        opened: &[(u64, &plan::MilestoneItem)],
+    ) {
+        let mut milestones: Vec<graph::Milestone> = ctx
+            .state
+            .existing
+            .iter()
+            .map(|issue| {
+                plan::graph_input(
+                    issue.number,
+                    &issue.title,
+                    &issue.body,
+                    &ctx.state.components,
+                    &ctx.state.writes,
+                )
+            })
+            .collect();
+        for (number, item) in opened {
+            milestones.push(plan::graph_input(
+                *number,
+                &item.title,
+                &item.body(),
+                &ctx.state.components,
+                &ctx.state.writes,
+            ));
+        }
+        let found = graph::Graph::derive(&milestones, &ctx.state.components);
+        for ahead in found.reads_ahead() {
+            ctx.traces.warn(&format!(
+                "plan graph: #{} reads `{}`, which #{} produces later — built in this order, its tasks find it missing",
+                ahead.consumer, ahead.id, ahead.producer
+            ));
+        }
+        let unproduced = found.unproduced();
+        if !unproduced.is_empty() {
+            ctx.traces.say(&format!(
+                "plan graph: no milestone produces {} — already in the repository, or left out of the plan",
+                unproduced.join(", ")
+            ));
+        }
+        let Ok(text) = found.to_json() else {
+            return;
+        };
+        match self
+            .gh
+            .put_file(
+                graph::PATH,
+                &self.branch,
+                &text,
+                "chore(plan): the graph of the milestones (contract R)",
+            )
+            .await
+        {
+            Ok(()) => ctx.traces.say(&format!(
+                "plan graph: {} milestone(s), {} id(s) — written to {} on {}",
+                found.milestones.len(),
+                found.ids.len(),
+                graph::PATH,
+                self.branch
+            )),
+            Err(halt) => ctx.traces.warn(&format!(
+                "plan graph: not written to {} — {}",
+                graph::PATH,
+                halt.reason()
+            )),
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -69,6 +149,7 @@ impl Action<PlannerState> for Write {
             .map(|issue| (issue.number, plan::aggregates_of(&issue.body)))
             .collect();
         let mut opened: Vec<u64> = Vec::new();
+        let mut placed: Vec<(u64, &plan::MilestoneItem)> = Vec::new();
         for item in &items {
             let number = self
                 .gh
@@ -108,7 +189,9 @@ impl Action<PlannerState> for Write {
             ));
             touched.push((number, mine));
             opened.push(number);
+            placed.push((number, item));
         }
+        self.write_graph(ctx, &placed).await;
         ctx.traces.event(&Event::MilestonesPlanned {
             roadmap: roadmap_number,
             milestones: opened,
@@ -159,11 +242,32 @@ mod tests {
         Write {
             gh: gh.clone(),
             plan_stage: "plan".to_string(),
+            branch: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
         .expect("published");
-        let writes = gh.writes();
+        let mut writes = gh.writes();
+        // Last, the plan's graph, on the integration branch: A produces PJ,
+        // C consumes it and depends on A and B.
+        let Some(Wrote::PutFile(path, branch, text)) = writes.pop() else {
+            panic!("the graph is written last: {writes:?}");
+        };
+        assert_eq!(
+            (path.as_str(), branch.as_str()),
+            (graph::PATH, "main_agent")
+        );
+        let written = graph::Graph::parse(&text).expect("a graph");
+        assert_eq!(
+            written
+                .milestones
+                .iter()
+                .map(|m| m.number)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(written.ids["PJ"].producer, Some(1));
+        assert_eq!(written.milestones[2].depends_on, vec![1, 2]);
         // A (PJ) and B (Campagne) share nothing: both wait on nothing. C
         // touches both, whatever the case: it waits on A and B. D names no
         // aggregate: it waits on nothing.
@@ -172,7 +276,7 @@ mod tests {
             vec![
                 Wrote::CreatedIssue(
                     "A".to_string(),
-                    "do A\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: PJ\nside: harness:read-side"
+                    "do A\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: PJ\nmicro-uis: -\ncommands: -\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -180,7 +284,7 @@ mod tests {
                 Wrote::Label(1, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "B".to_string(),
-                    "do B\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: Campagne\nside: harness:read-side"
+                    "do B\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: Campagne\nmicro-uis: -\ncommands: -\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -188,7 +292,7 @@ mod tests {
                 Wrote::Label(2, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "C".to_string(),
-                    "do C\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: pj, Campagne\nside: harness:read-side"
+                    "do C\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: pj, Campagne\nmicro-uis: -\ncommands: -\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -198,7 +302,7 @@ mod tests {
                 Wrote::Label(3, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "D".to_string(),
-                    "do D\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: -\nside: harness:read-side"
+                    "do D\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: -\nmicro-uis: -\ncommands: -\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -209,12 +313,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_milestone_reading_a_later_one_is_in_the_graph_and_an_older_body_is_read_from_its_text()
+     {
+        let gh = Rc::new(FakeGitHub::default());
+        let mut context = ctx(false);
+        context.state.components = vec![
+            graph::Component {
+                name: "MediaLibrary".to_string(),
+                system: "media".to_string(),
+                needs: vec![
+                    "media.listMedia".to_string(),
+                    "session.listScenes".to_string(),
+                ],
+                actions: vec![],
+            },
+            graph::Component {
+                name: "SceneBoard".to_string(),
+                system: "session".to_string(),
+                needs: vec!["session.listScenes".to_string()],
+                actions: vec!["session.addScene".to_string()],
+            },
+        ];
+        context.state.writes = vec!["session.addScene".to_string()];
+        // Open before the plan, written by an older planner: no `micro-uis:`
+        // line, its text names the component and quotes the write.
+        context.state.existing = vec![Issue {
+            number: 9,
+            title: "Sessions".to_string(),
+            body: "Add `session.addScene` and the SceneBoard.\n\n## Architecture\n\nsystems: session\naggregates: Session\nside: harness:write-side".to_string(),
+            ..Issue::default()
+        }];
+        context.results.insert(
+            "plan".to_string(),
+            Reply {
+                text: r#"[{"title":"Media","goal":"the library","systems":["media"],"micro_uis":["MediaLibrary"]}]"#.to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        Write {
+            gh: gh.clone(),
+            plan_stage: "plan".to_string(),
+            branch: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("published");
+        let Some(Wrote::PutFile(_, _, text)) = gh.writes().pop() else {
+            panic!("a graph");
+        };
+        let written = graph::Graph::parse(&text).expect("a graph");
+        assert_eq!(
+            written.ids["session.addScene"].producer,
+            Some(9),
+            "read from the text"
+        );
+        assert_eq!(written.ids["SceneBoard"].producer, Some(9));
+        assert_eq!(written.ids["session.listScenes"].producer, Some(9));
+        assert_eq!(
+            written.milestones[1].consumes,
+            vec!["session.listScenes".to_string()]
+        );
+        assert!(
+            written.reads_ahead().is_empty(),
+            "#9 comes first: no read ahead"
+        );
+        assert!(
+            plan::graph_input(
+                1,
+                "t",
+                "the SceneBoardWrapper only",
+                &context.state.components,
+                &[]
+            )
+            .micro_uis
+            .is_empty(),
+            "a longer word is not the component"
+        );
+    }
+
+    #[tokio::test]
     async fn a_dry_run_writes_nothing() {
         let gh = Rc::new(FakeGitHub::default());
         let mut context = ctx(true);
         Write {
             gh: gh.clone(),
             plan_stage: "plan".to_string(),
+            branch: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
@@ -241,6 +426,7 @@ mod tests {
         Write {
             gh: gh.clone(),
             plan_stage: "plan".to_string(),
+            branch: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
@@ -272,6 +458,7 @@ mod tests {
         Write {
             gh: gh.clone(),
             plan_stage: "plan".to_string(),
+            branch: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
@@ -294,6 +481,7 @@ mod tests {
         let err = Write {
             gh,
             plan_stage: "plan".to_string(),
+            branch: "main_agent".to_string(),
         }
         .run(&mut context)
         .await

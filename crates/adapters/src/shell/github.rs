@@ -503,6 +503,28 @@ impl GhCli {
     }
 }
 
+/// Standard base64 with padding, as the contents API wants a file: a few
+/// lines rather than a dependency for one call.
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let word = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                let index = usize::try_from((word >> (18 - 6 * i)) & 0x3f).unwrap_or(0);
+                out.push(char::from(TABLE[index]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 /// Whether `gh`'s own diagnostic names a 404 — confirmed against a real
 /// `gh api` call on an absent resource: `gh` prints `gh: Not Found (HTTP
 /// 404)` on its last stderr line and exits 1, with and without a custom
@@ -1007,6 +1029,52 @@ impl GitHub for GhCli {
         Ok(Some(ran.stdout))
     }
 
+    async fn put_file(
+        &self,
+        path: &str,
+        branch: &str,
+        content: &str,
+        message: &str,
+    ) -> Outcome<()> {
+        // The contents API replaces a file only against its current blob:
+        // read the sha first, absent when the file is new.
+        let what = format!("{path}@{branch}");
+        let repo = self.repo().await?;
+        let read = vec![
+            "api".to_string(),
+            format!("repos/{repo}/contents/{path}"),
+            "-X".to_string(),
+            "GET".to_string(),
+            "-f".to_string(),
+            format!("ref={branch}"),
+        ];
+        let sha = match self.read_optional(&what, &read).await? {
+            Some(ran) => serde_json::from_str::<Value>(&ran.stdout)
+                .ok()
+                .and_then(|v| {
+                    v.get("sha")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                }),
+            None => None,
+        };
+        let mut fields = vec![
+            ("message", message.to_string()),
+            ("content", base64(content.as_bytes())),
+            ("branch", branch.to_string()),
+        ];
+        if let Some(sha) = sha {
+            fields.push(("sha", sha));
+        }
+        self.write(
+            &format!("write {path} on {branch}"),
+            "PUT",
+            &format!("contents/{path}"),
+            &fields,
+        )
+        .await
+    }
+
     async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<u64> {
         let length = body.chars().count();
         if length > ISSUE_BODY_MAX {
@@ -1338,6 +1406,16 @@ mod tests {
         );
         assert_eq!(super::refusal(why, ""), why, "no body, gh's line");
         assert_eq!(super::refusal(why, r#"{"message": "x"}"#), why);
+    }
+
+    #[test]
+    fn the_contents_api_s_base64_is_the_standard_one() {
+        assert_eq!(super::base64(b""), "");
+        assert_eq!(super::base64(b"f"), "Zg==");
+        assert_eq!(super::base64(b"fo"), "Zm8=");
+        assert_eq!(super::base64(b"foo"), "Zm9v");
+        assert_eq!(super::base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(super::base64(b"{\"a\": 1}\n"), "eyJhIjogMX0K");
     }
 
     #[tokio::test]

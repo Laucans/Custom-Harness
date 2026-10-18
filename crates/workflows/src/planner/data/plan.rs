@@ -38,6 +38,13 @@ pub struct MilestoneItem {
     /// `rules.json` names them: what `split` hands its tasks.
     #[serde(default)]
     pub rules: Vec<String>,
+    /// The micro-frontends it builds, as the dossier names them
+    /// (`SceneBoard`): what the plan's graph reads its consumption from.
+    #[serde(default)]
+    pub micro_uis: Vec<String>,
+    /// The writes it adds, by id (`session.addScene`): what it produces.
+    #[serde(default)]
+    pub commands: Vec<String>,
 }
 
 impl MilestoneItem {
@@ -63,12 +70,14 @@ impl MilestoneItem {
             }
         };
         let body = format!(
-            "{}\n\n## {}\n\nsystems: {}\nconcepts: {}\naggregates: {}\nside: {}",
+            "{}\n\n## {}\n\nsystems: {}\nconcepts: {}\naggregates: {}\nmicro-uis: {}\ncommands: {}\nside: {}",
             self.goal.trim(),
             sections::heading_of(sections::ARCHITECTURE),
             list(&self.systems),
             list(&self.concepts),
             list(&self.aggregates),
+            list(&self.micro_uis),
+            list(&self.commands),
             self.side().label()
         );
         let rules = list(&self.rules);
@@ -93,22 +102,82 @@ impl MilestoneItem {
     }
 }
 
+/// The values of one `key:` line of a milestone's `## Architecture`
+/// (`aggregates: PJ, Campagne`), trimmed, as written.
+#[must_use]
+pub fn list_of(body: &str, key: &str) -> Vec<String> {
+    sections::parse(body)
+        .get(sections::ARCHITECTURE)
+        .map(|text| {
+            text.lines()
+                .filter_map(|line| line.trim().strip_prefix(key))
+                .flat_map(|value| value.split(','))
+                .map(|a| a.trim().trim_matches('`').to_string())
+                .filter(|a| !a.is_empty() && a != "-")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The aggregates a milestone's body names (`aggregates: PJ, Campagne`
 /// under `## Architecture`), lower-cased — what an already open milestone
 /// is compared on.
 #[must_use]
 pub fn aggregates_of(body: &str) -> Vec<String> {
-    sections::parse(body)
-        .get(sections::ARCHITECTURE)
-        .map(|text| {
-            text.lines()
-                .filter_map(|line| line.trim().strip_prefix("aggregates:"))
-                .flat_map(|value| value.split(','))
-                .map(|a| a.trim().trim_matches('`').to_lowercase())
-                .filter(|a| !a.is_empty() && a != "-")
-                .collect()
-        })
-        .unwrap_or_default()
+    list_of(body, "aggregates:")
+        .into_iter()
+        .map(|a| a.to_lowercase())
+        .collect()
+}
+
+/// Whether `text` names `word` whole — not as part of a longer word.
+fn mentions(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + word.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
+/// A milestone as the plan's graph reads it, from its issue body.
+///
+/// A body the plan wrote names its `micro-uis:` and `commands:`; one
+/// written before the plan did is read from its text — the dossier's
+/// components it names whole, the writes it quotes.
+#[must_use]
+pub fn graph_input(
+    number: u64,
+    title: &str,
+    body: &str,
+    components: &[harness_architecture::graph::Component],
+    writes: &[String],
+) -> harness_architecture::graph::Milestone {
+    let text = body.split("\n## ").next().unwrap_or(body);
+    let mut micro_uis = list_of(body, "micro-uis:");
+    if micro_uis.is_empty() {
+        micro_uis = components
+            .iter()
+            .filter(|c| mentions(text, &c.name))
+            .map(|c| c.name.clone())
+            .collect();
+    }
+    let mut commands = list_of(body, "commands:");
+    if commands.is_empty() {
+        commands = writes
+            .iter()
+            .filter(|id| text.contains(&format!("`{id}`")))
+            .cloned()
+            .collect();
+    }
+    harness_architecture::graph::Milestone {
+        number,
+        title: title.to_string(),
+        systems: list_of(body, "systems:"),
+        aggregates: list_of(body, "aggregates:"),
+        concepts: list_of(body, "concepts:"),
+        micro_uis,
+        commands,
+    }
 }
 
 /// Extracts the JSON array of milestones from a reply's text.
@@ -144,14 +213,21 @@ mod tests {
             writes: true,
             aggregates: vec!["Account".to_string(), " ".to_string()],
             rules: Vec::new(),
+            micro_uis: vec!["RiskBadge".to_string()],
+            commands: Vec::new(),
         };
         assert_eq!(
             item.body(),
             "Score every customer.\n\n## Architecture\n\nsystems: credit\nconcepts: Risk@3\n\
-             aggregates: Account\nside: harness:write-side"
+             aggregates: Account\nmicro-uis: RiskBadge\ncommands: -\nside: harness:write-side"
         );
         assert_eq!(item.aggregate_keys(), ["account"]);
         assert_eq!(aggregates_of(&item.body()), ["account"]);
+        assert_eq!(list_of(&item.body(), "micro-uis:"), ["RiskBadge"]);
+        assert!(
+            list_of(&item.body(), "commands:").is_empty(),
+            "a dash is nothing"
+        );
         assert!(aggregates_of("no section").is_empty(), "expected nothing");
         let bare = MilestoneItem {
             writes: false,
@@ -160,10 +236,9 @@ mod tests {
             concepts: Vec::new(),
             ..item
         };
-        assert!(
-            bare.body()
-                .ends_with("systems: -\nconcepts: -\naggregates: -\nside: harness:read-side")
-        );
+        assert!(bare.body().ends_with(
+            "systems: -\nconcepts: -\naggregates: -\nmicro-uis: RiskBadge\ncommands: -\nside: harness:read-side"
+        ));
         assert_eq!(bare.side(), Side::Read);
     }
 

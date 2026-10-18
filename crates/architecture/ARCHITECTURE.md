@@ -34,9 +34,10 @@ src/vocabulary.rs   Unit, Effect, Side, Layer, Declaration: the `## Architecture
 src/tree.rs         Tree::read (the checkout's manifests, through Disk), violations, undocumented_concepts
 src/model.rs        the agents' data/model.json merged with the DDL, field by field, with every divergence
 src/compare.rs      two data models side by side: tables, fields, links and views added, removed or changed
+src/graph.rs        the plan's graph (contract R): what every milestone produces and consumes, derived from the dossier; the read-ahead errors; the critical path
 src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
 src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the showcase page (assets/showcase.html), the static check a fragment is reused on
-src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–Q, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit
+src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit
 assets/             those files, compiled in with include_str! — the harness's own scripts/{dead-code,mutants-rotation,test-debt}.sh are links to them, one script for both
 tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_script.rs: the installed scripts, run on a real folder
                     isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, and each way a slice could reach another

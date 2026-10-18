@@ -49,6 +49,7 @@ jobs:
           validate m-data-model.schema.json data/model.json
           validate n-mock-pages.schema.json mock/pages.json
           validate q-ports.schema.json ports.json
+          validate r-plan-graph.schema.json plan/graph.json
 
   # Contract B, principle 5 — a slice knows no other slice. Checked on the
   # graph `cargo metadata` answers, not on a Cargo.toml's text: a Capability

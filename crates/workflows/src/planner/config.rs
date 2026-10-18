@@ -27,6 +27,8 @@ pub struct Config {
     pub explore: bool,
     /// Model and effort for the plan step.
     pub plan: SessionSpec,
+    /// The integration branch the plan's graph is written on (contract R).
+    pub branch: String,
     /// The human's prompt edits, read once per run — a stage sends
     /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
     pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
@@ -51,6 +53,7 @@ pub(crate) mod fake {
             root: planner_dir.join("repo"),
             planner_dir,
             explore: false,
+            branch: "main_agent".to_string(),
             plan: SessionSpec {
                 model: "sonnet".to_string(),
                 effort: "high".to_string(),

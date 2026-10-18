@@ -348,6 +348,28 @@ impl Dossier {
         lines
     }
 
+    /// The micro-frontends as the plan's graph reads them: what each reads
+    /// and triggers.
+    #[must_use]
+    pub fn components(&self) -> Vec<harness_architecture::graph::Component> {
+        self.micro_uis
+            .iter()
+            .map(|ui| harness_architecture::graph::Component {
+                name: ui.name.clone(),
+                system: ui.system.clone(),
+                needs: ui.needs.clone(),
+                actions: ui.actions.clone(),
+            })
+            .collect()
+    }
+
+    /// The ids of every write, as the graph's fallback reads a milestone
+    /// written before the plan named its commands.
+    #[must_use]
+    pub fn write_ids(&self) -> Vec<String> {
+        self.writes.iter().map(|w| w.id.clone()).collect()
+    }
+
     /// The dossier as a prompt reads it — one line per micro-frontend, write,
     /// aggregate and rule — kept to what `filter` names, cut at [`BUDGET`].
     #[must_use]

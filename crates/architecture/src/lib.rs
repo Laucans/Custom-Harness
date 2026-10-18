@@ -16,6 +16,8 @@
 //! - [`model`] and [`schema_sql`] — the product's data model, the agents' side
 //!   and the database's, merged with their divergences; [`compare`] — two of
 //!   them side by side, what one changes relative to the other;
+//! - [`graph`] — the plan's graph: what every milestone produces and
+//!   consumes, the read-ahead errors and the critical path;
 //! - [`kit`] — the product's design system (its tokens) and its kit of visual
 //!   components, the harness's base fragments the kit is styled from, and the
 //!   static check a fragment is reused on;
@@ -31,6 +33,7 @@
 pub mod assets;
 pub mod closure;
 pub mod compare;
+pub mod graph;
 pub mod kit;
 pub mod model;
 pub mod rules;

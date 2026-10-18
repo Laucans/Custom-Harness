@@ -245,7 +245,7 @@ mod tests {
             "{}",
             lines[0]
         );
-        assert!(lines[0].contains("contracts/ (18 files)"));
+        assert!(lines[0].contains("contracts/ (19 files)"));
     }
 
     #[tokio::test]

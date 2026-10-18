@@ -60,6 +60,15 @@ aggregates open together, and so do their tasks: cut the roadmap so that
 what can be built apart touches different aggregates. A milestone that
 only reads names no aggregate and waits on nothing.
 
+**Name the `micro_uis` and `commands` each milestone builds**, as the
+dossier names them (`SceneBoard`, `session.addScene`): every micro-frontend
+and every write of the dossier in exactly one milestone. From them the
+harness writes the plan's graph (`plan/graph.json`, contract R): what each
+milestone produces — its aggregates, writes, Capabilities, Micro-UIs — and
+what it consumes of the others. **Order the plan so that a milestone comes
+after every milestone it reads from**: a Micro-UI that lists scenes comes
+after the milestone that adds `session.listScenes`, or in it.
+
 **The design dossier** — what the factory's creation decided: every
 micro-frontend with what it reads and triggers, every write with its effect
 and the fields it touches, every aggregate drafted, every rule:
@@ -91,7 +100,7 @@ rule in exactly one milestone, the earliest that builds all it needs.
 Answer with a JSON array and nothing else, one object per milestone, in
 delivery order:
 ```json
-[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "aggregates": ["Account"], "writes": false, "rules": ["R3"]}]
+[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "aggregates": ["Account"], "writes": false, "rules": ["R3"], "micro_uis": ["RiskBadge"], "commands": ["credit.approve"]}]
 ```
 An empty array `[]` means this roadmap item needs no further milestone right
 now."#;
@@ -146,7 +155,7 @@ pub fn plan(ports: &Ports, config: &Config) -> Stage<PlannerState> {
 
 /// Publishing: a local stage, which costs nothing.
 #[must_use]
-pub fn publish(ports: &Ports) -> Stage<PlannerState> {
+pub fn publish(ports: &Ports, config: &Config) -> Stage<PlannerState> {
     Stage {
         name: PUBLISH.to_string(),
         pre: None,
@@ -155,6 +164,7 @@ pub fn publish(ports: &Ports) -> Stage<PlannerState> {
             actions: vec![Box::new(Write {
                 gh: Rc::clone(&ports.gh),
                 plan_stage: PLAN.to_string(),
+                branch: config.branch.clone(),
             })],
         },
     }
@@ -164,7 +174,11 @@ pub fn publish(ports: &Ports) -> Stage<PlannerState> {
 /// here: see the module.
 #[must_use]
 pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<PlannerState>> {
-    vec![context(ports, config), plan(ports, config), publish(ports)]
+    vec![
+        context(ports, config),
+        plan(ports, config),
+        publish(ports, config),
+    ]
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //!
 //! Compiled in, so every repository the plant works on carries the same
 //! architecture from the same source: the architecture document, the rules
-//! section of `CLAUDE.md`, the seventeen contracts, the CI gates, the project's
+//! section of `CLAUDE.md`, the eighteen contracts, the CI gates, the project's
 //! CI for its stack, the script that scopes its tests, the one that finds the
 //! dead code the compiler cannot see, the mutation gate's configuration and
 //! its rotation with the script that files what it misses, the script that
@@ -62,10 +62,10 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// session runs its checks through, the isolation check, the dead-code
 /// script, the mutants configuration, rotation and test-debt filing, the
 /// schema dump, the data model, the mock-up's files, the conformance
-/// runner, the `DataGuard` server's skeleton, the contracts A–Q, the ports
+/// runner, the `DataGuard` server's skeleton, the contracts A–R, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites, and
 /// the root `.gitignore` that keeps build outputs out of a round's changes.
-pub const FILES: [Asset; 61] = [
+pub const FILES: [Asset; 62] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -249,6 +249,10 @@ pub const FILES: [Asset; 61] = [
     Asset {
         path: "contracts/q-ports.schema.json",
         content: include_str!("../assets/contracts/q-ports.schema.json"),
+    },
+    Asset {
+        path: "contracts/r-plan-graph.schema.json",
+        content: include_str!("../assets/contracts/r-plan-graph.schema.json"),
     },
     Asset {
         path: "ports.json",

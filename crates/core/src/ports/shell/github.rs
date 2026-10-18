@@ -294,6 +294,14 @@ pub trait GitHub {
     /// "absent".
     async fn file_text(&self, path: &str, git_ref: &str) -> Outcome<Option<String>>;
 
+    /// Writes `content` at `path` on `branch` as one commit saying
+    /// `message` — created, or replaced when the file is there.
+    ///
+    /// # Errors
+    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses.
+    async fn put_file(&self, path: &str, branch: &str, content: &str, message: &str)
+    -> Outcome<()>;
+
     // --- what the three-tier issue model demands, and nothing else ---------
     //
     // These are writes, so they share `issue`'s writes' failure shape

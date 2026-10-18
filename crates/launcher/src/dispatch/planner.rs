@@ -83,6 +83,7 @@ pub async fn run(
         root: workspace.root().to_path_buf(),
         artifacts_dir: artifacts_dir.clone(),
         explore: false,
+        branch: branch.to_string(),
         plan: SessionSpec {
             model: "opus".to_string(),
             effort: "high".to_string(),

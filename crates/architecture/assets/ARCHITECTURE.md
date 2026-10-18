@@ -365,6 +365,7 @@ writing: they are the first to stabilise.
 | O. Design system and kit | Tokens and visual components ↔ every screen | Human, UI agents |
 | P. Rules | What the product keeps ↔ the tests that prove it | Human (in the factory's design), rules' agent |
 | Q. Ports | The product ↔ everything outside it | Human (in the factory's design, and every new port), the agents that build adapters |
+| R. Plan graph | The milestones ↔ what each produces and consumes | The planner (writes it), the watch (the critical path, what runs side by side), the merge train |
 
 ### A. Concept
 
@@ -628,6 +629,25 @@ them; every development after conforms to them:
   "secrets": ["STRIPE_SECRET_KEY"], "cost": "1.5% + 0.25€ per charge",
   "usedBy": ["billing.chargeSubscription"]
 }]}
+```
+
+### R. Plan graph
+
+`plan/graph.json`, written by the planner from the design dossier and
+updated as the plan moves: every milestone with the ids it produces and
+consumes, every id with its kind, its producer and the state of its
+contract — `planned`, `mocked` (its manifest and fixture exist, consumers
+build against them), `built`, `evolving`. A milestone that consumes what a
+later milestone produces is a plan error the planner reports. The critical
+path — the heaviest chain of remaining work — is read from it, and a free
+lane serves it before anything else.
+
+```json
+{"version": 1,
+ "milestones": [{"number": 20, "title": "Sessions and scenes", "systems": ["session"],
+   "produces": ["Session", "session.addScene", "session.listScenes", "SceneBoard"],
+   "consumes": ["campaign.listCharacters", "media.listMedia"], "depends_on": [18, 19]}],
+ "ids": {"session.listScenes": {"kind": "capability", "producer": 20, "state": "mocked", "version": 1}}}
 ```
 
 ## CI gates
