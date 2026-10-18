@@ -66,6 +66,10 @@ their tests and gates only: no live watch has run them yet.
       `mock/pages.json`. The watch's start now says `upgrade: diverged …
       kept: .github/workflows/gates.yml, …` — the product's copy gets no
       template fix by itself.
+- [ ] **A Micro-UI reads any system's Capabilities** (`55fb573`, product
+      gate `6dc5e62`, 15:56Z): the resumed #136, #166, #167, #193, #210,
+      #218 pass `system-frontier` with their cross-system needs; PR #226
+      (#166) goes green on it once it takes `main_agent`.
 - [ ] A consumer's tasks build against a producer's mocked contract; the
       mock server answers `mocked-data-capability` for a planned write.
 - [ ] A consumer ready to land while its producer still builds logs
