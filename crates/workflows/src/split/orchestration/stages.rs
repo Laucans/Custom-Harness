@@ -116,9 +116,10 @@ Ids in `produces` and `needs`, a write's `effect` and `touches`, are copied
 from it, never invented. A micro-frontend slice names its fragment and its
 fixtures (`mock/fixtures/<Capability>.json`, one per Capability it needs).
 An aggregate slice installs its draft `mock/data/aggregates/<Aggregate>.aggregate.json`
-as `crates/dataguard/aggregates/<Aggregate>/aggregate.json` and moves its
+as `crates/dataguard/aggregates/<Aggregate>/aggregate.json` and copies its
 tables from `mock/data/model.json` into `data/model.json` with its
-migration. **Number every aggregate slice's migration in the plan itself**,
+migration — `mock/data/model.json` is the design and stays as it is; the
+architecture gate refuses a build that touches it. **Number every aggregate slice's migration in the plan itself**,
 in its `technical`: `crates/data/migrations/NNNN_<aggregate_snake>.sql`,
 NNNN counting on from the migrations the inventory shows, one number per
 slice, in foreign-key order — a table comes after every table it

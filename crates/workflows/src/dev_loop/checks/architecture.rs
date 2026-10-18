@@ -29,7 +29,7 @@ use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::git::Repo;
 use harness_core::ports::shell::github::GitHub;
 
-use crate::common::sections;
+use crate::common::{labels, review, sections};
 use crate::dev_loop::data::state::Loop;
 
 /// The task's own declaration, read from its body.
@@ -154,7 +154,7 @@ pub struct ArchitectureHolds {
 impl ArchitectureHolds {
     /// The files the task's pull request changes, when the task declares a
     /// branch and GitHub knows a PR on it — merged or open.
-    async fn pr_changes(&self, ctx: &Context<Loop>) -> Option<Vec<String>> {
+    async fn pr_changes(&self, ctx: &Context<Loop>) -> Option<(Pr, Vec<String>)> {
         let branch = crate::dev_loop::data::tasks::declared_branch(&ctx.state.task.body)?;
         let pr = self.gh.pr(&branch).await.ok()?;
         let files = self.gh.pr_files(&pr.num).await.ok()?;
@@ -163,7 +163,52 @@ impl ArchitectureHolds {
             pr.reference(),
             files.len()
         ));
-        Some(files)
+        Some((pr, files))
+    }
+
+    /// The findings become the PR's review, blocking, and its repair is
+    /// asked: the round's session is gone, the PR is open with the drift on
+    /// it, and nothing else would stop the train or pay for the fix. The
+    /// task is marked `review-pending` like any delivered write side, so a
+    /// retake does not pay `/code` again (#136 was, at 16:25Z and 16:51Z,
+    /// and #244's PR #252 stood `to-review` with the mock-up's model eaten).
+    async fn ask_repair(&self, ctx: &Context<Loop>, pr: &Pr, found: &[String]) -> Outcome<()> {
+        let number: u64 = pr
+            .num
+            .parse()
+            .map_err(|_| Halt::Failed(format!("PR {} has no number to label", pr.reference())))?;
+        let task: u64 = ctx.state.task.number.parse().map_err(|_| {
+            Halt::Failed(format!(
+                "unreadable task number: {:?}",
+                ctx.state.task.number
+            ))
+        })?;
+        self.gh
+            .post_issue_comment(
+                number,
+                &format!(
+                    "{}\n## 🤖 Review notes — the architecture gate\n\nThe architecture no \
+                     longer holds with this change (the repository's gates check the same \
+                     rules):\n- {}\n\n{} blocking — the architecture gate refuses the change \
+                     as it stands\n{}",
+                    review::MARKER,
+                    found.join("\n- "),
+                    review::VERDICT_LINE,
+                    review::BLOCKING
+                ),
+            )
+            .await?;
+        if !pr.labels.iter().any(|label| label == labels::PR_FIX) {
+            self.gh.add_label(number, labels::PR_FIX).await?;
+        }
+        self.gh.add_label(task, labels::REVIEW_PENDING).await?;
+        ctx.traces.say(&format!(
+            "architecture: PR {} reviewed as blocking and {} asked; #{task} marked {}",
+            pr.reference(),
+            labels::PR_FIX,
+            labels::REVIEW_PENDING
+        ));
+        Ok(())
     }
 
     /// The task's pull request, when it is still open on a branch this
@@ -259,9 +304,10 @@ impl Verification<Loop> for ArchitectureHolds {
         // lanes merged on it meanwhile (#58 was refused on a neighbour's
         // Cargo.toml another task had changed).
         let own = self.pr_changes(ctx).await;
+        let pr = own.as_ref().map(|(pr, _)| pr.clone());
         if own.is_some() || !ctx.state.round_base.is_empty() {
             let mut changed = match own {
-                Some(files) => files,
+                Some((_, files)) => files,
                 None => {
                     self.repo
                         .changed_between(
@@ -300,6 +346,9 @@ impl Verification<Loop> for ArchitectureHolds {
                 tree.data_capabilities.len()
             ));
             return Ok(Verdict::Continue);
+        }
+        if let Some(pr) = &pr {
+            self.ask_repair(ctx, pr, &found).await?;
         }
         Err(Halt::Halted(format!(
             "the architecture no longer holds after #{} — fix these before anything else builds \
@@ -671,6 +720,112 @@ mod tests {
             "{:?}",
             repos.calls()
         );
+    }
+
+    fn open_pr(labels: &[&str]) -> crate::common::fake_github::FakeGitHub {
+        crate::common::fake_github::FakeGitHub {
+            prs: vec![(
+                "feat/risk-badge".to_string(),
+                Pr {
+                    num: "101".to_string(),
+                    head: "main_agent".to_string(),
+                    state: "OPEN".to_string(),
+                    labels: labels.iter().map(ToString::to_string).collect(),
+                    ..Pr::default()
+                },
+            )],
+            pr_files: std::collections::HashMap::from([(
+                "101".to_string(),
+                vec!["crates/credit/capabilities/calculate-risk/src/lib.rs".to_string()],
+            )]),
+            ..crate::common::fake_github::FakeGitHub::default()
+        }
+    }
+
+    fn on_branch() -> Context<Loop> {
+        let mut context = ctx("abc123");
+        context
+            .state
+            .task
+            .body
+            .push_str("\n\n## Scope\n\nbranch: feat/risk-badge\n");
+        context
+    }
+
+    #[tokio::test]
+    async fn a_drift_on_an_open_pr_is_its_blocking_review_and_its_repair_is_asked() {
+        use crate::common::fake_github::Wrote;
+        let repos = FakeRepos::changing(&[]);
+        let gh = Rc::new(open_pr(&["harness:to-review"]));
+        let gate = ArchitectureHolds {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            ..with_github(&repos, crate::common::fake_github::FakeGitHub::default())
+        };
+        let err = gate.verify(&on_branch()).await.expect_err("drifted");
+        assert!(matches!(err, Halt::Halted(_)));
+        let writes = gh.writes();
+        let review = writes
+            .iter()
+            .find_map(|write| match write {
+                Wrote::Comment(101, body) => Some(body.clone()),
+                _ => None,
+            })
+            .expect("a review on the PR");
+        for mark in [
+            review::MARKER,
+            review::BLOCKING,
+            "VERDICT: blocking",
+            "calculate-risk/src/lib.rs",
+        ] {
+            assert!(review.contains(mark), "{mark} in {review}");
+        }
+        assert_eq!(
+            review::status(&review),
+            review::Status::Blocking { fixes: 0 }
+        );
+        assert!(
+            writes.contains(&Wrote::Label(101, labels::PR_FIX.to_string())),
+            "{writes:?}"
+        );
+        assert!(
+            writes.contains(&Wrote::Label(34, labels::REVIEW_PENDING.to_string())),
+            "{writes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pr_already_under_repair_gets_the_review_but_not_a_second_request() {
+        use crate::common::fake_github::Wrote;
+        let repos = FakeRepos::changing(&[]);
+        let gh = Rc::new(open_pr(&[labels::PR_FIX]));
+        let gate = ArchitectureHolds {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            ..with_github(&repos, crate::common::fake_github::FakeGitHub::default())
+        };
+        gate.verify(&on_branch()).await.expect_err("drifted");
+        let writes = gh.writes();
+        assert!(
+            !writes.contains(&Wrote::Label(101, labels::PR_FIX.to_string())),
+            "{writes:?}"
+        );
+        assert!(
+            writes
+                .iter()
+                .any(|write| matches!(write, Wrote::Comment(101, _))),
+            "{writes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_drift_with_no_pr_yet_only_halts() {
+        let repos = FakeRepos::changing(&["crates/credit/capabilities/calculate-risk/src/lib.rs"]);
+        let gh = Rc::new(crate::common::fake_github::FakeGitHub::default());
+        let gate = ArchitectureHolds {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            ..with_github(&repos, crate::common::fake_github::FakeGitHub::default())
+        };
+        gate.verify(&ctx("abc123")).await.expect_err("drifted");
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
     }
 
     #[tokio::test]

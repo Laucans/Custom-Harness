@@ -127,6 +127,15 @@ their tests and gates only: no live watch has run them yet.
       next Data layer split writes `crates/data/migrations/NNNN_<agg>.sql`
       in each aggregate slice's `technical`, one number per slice, a table
       after every table it references — no two slices with the same NNNN.
+- [ ] **An architecture drift on an open PR is its blocking review and its repair**: the next
+      `ArchitectureHolds` halt on a task whose PR is open posts a `🤖 Review notes — the
+      architecture gate` comment on the PR (`VERDICT: blocking`), poses `harness:pr-fix` on it
+      (once — not again while it carries it) and marks the task `harness:review-pending`; the
+      train waits, `pr_fix` restores the file, the review then clears it. Expected on #244 /
+      PR #252 (applied by hand at 19:3xZ, same format); no `/code` paid twice on a halted task.
+- [ ] **The split says copy, never move, for an aggregate's tables**: the next Data layer split's
+      slices read "copies its tables from mock/data/model.json into data/model.json"; no PR of
+      the layer touches `mock/data/model.json` (#243–#250 reworded by hand at 19:25Z).
 - [ ] **The planner refuses a plan whose Data layer is not first**
       (`data_layer_not_first`): the next roadmap item's plan, if it lays an
       aggregate in a feature milestone, halts with `the Data layer is split

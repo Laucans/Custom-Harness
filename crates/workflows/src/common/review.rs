@@ -26,7 +26,7 @@ pub const DECIDED_MARKER: &str = "<!-- harness-decided: repair -->";
 pub const MAX_FIXES: usize = 2;
 
 /// The line the review's summary ends on, as the prompt asks for it.
-const VERDICT_LINE: &str = "VERDICT:";
+pub const VERDICT_LINE: &str = "VERDICT:";
 
 /// Where a PR stands with its review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
