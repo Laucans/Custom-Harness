@@ -26,7 +26,7 @@
         "pattern": "^[a-z][a-z0-9-]*\\.[A-Za-z][A-Za-z0-9]*$",
         "description": "`<system>.<name>`, the system being the namespace: `credit.requestLimitChange`."
       },
-      "description": "The Capabilities it reads — of its own system, by reference, never by import."
+      "description": "The Capabilities it reads — of any system, by reference, never by import."
     },
     "actions": {
       "type": "array",

@@ -81,8 +81,9 @@ Where it lives: apps/<system>/<micro-ui>/, with micro-ui.json beside the
 code (contract D, contracts/d-micro-ui-manifest.schema.json).
 
 Its manifest (micro-ui.json): `microUi` (its id), `system`, `description`,
-`needs` (Capability ids of its own system, by reference — never by importing
-their code), `actions` (DataCapability ids it may trigger), `props`.
+`needs` (Capability ids of any system, by reference — never by importing
+their code; a Capability others use that must behave differently is
+duplicated into a new id, never changed), `actions` (DataCapability ids it may trigger), `props`.
 
 What it renders names its parts: every actuator (button, form, toggle that
 writes) carries data-writes=\"<DataCapability>\"; every part that shows what
@@ -106,7 +107,7 @@ are read-only on your branch: a kit component that cannot serve is recoded
 on `design-system`, never here.
 
 Gates that judge it: manifests-conform-to-contracts (D), system-frontier
-(every `needs` is a Capability of its own system), write-actions (every
+(every `needs` is a Capability that exists or the plan declares), write-actions (every
 action is an existing DataCapability whose callableBy admits it),
 pages-mocked (listed, fragment present, parts named, listing in sync,
 bundle rebuilt), design-system-single-writer.

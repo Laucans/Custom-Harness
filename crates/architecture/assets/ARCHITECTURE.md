@@ -157,7 +157,8 @@ look for an existing Capability or write a new one.
 
 | Situation | Rule |
 |---|---|
-| A Micro-UI needs a Capability that exists in the same system | It is reused, by reference (`needs:`), never by importing code into the Micro-UI |
+| A Micro-UI needs a Capability that exists, in any system | It is reused, by reference (`needs:`), never by importing code into the Micro-UI — reading is free |
+| A Micro-UI needs an existing Capability to behave differently, and others use it | It does not change it: the Capability is duplicated into a new one (a new id, in the Micro-UI's system), and the new one is changed. A Capability nobody else uses is changed in place, by a new version of its contract |
 | A Capability would need the behaviour of another Capability | It neither invokes nor imports it; it implements locally what it needs, reusing the same Concepts if necessary |
 | A business rule shared between systems | Shared as a Concept with conformance tests, not as a library |
 | A write-side validation or invariant | Never in a Capability: it lives in the DataGuard |
@@ -675,7 +676,7 @@ cannot keep yet is a task like any other, never a gate turned off.
 | Capability isolation | No Capability imports, invokes or references another Capability or any mutation infrastructure | B |
 | Queries | Every persisted query is valid against the current schema and the next | C |
 | Schema impact | A schema change lists the Capabilities touched and blocks until each is migrated | C, I |
-| System frontier | `needs:` — a Micro-UI references only the authorised Capabilities of its system | B |
+| System frontier | `needs:` — a Micro-UI references only Capabilities that exist or the plan declares, in any system; a behaviour change of a shared one is a duplicate, never an edit | B |
 | Write actions | `actions:` references existing DataCapabilities, with compatible `callableBy` and `permissions`; no Capability has an `invokes` field | D, F |
 | Effect classification | An `insert` DataCapability without `touches` contains no update, upsert or trigger | F |
 | Ownership | An `update`, `delete`, `upsert` DataCapability, or one with `touches`, requires a DataGuard and the agent review of the write side | F, I |

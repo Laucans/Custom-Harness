@@ -288,6 +288,23 @@ fn the_healthy_shape_passes_both_readings() {
     assert!(found.is_empty(), "{found:?}");
 }
 
+#[test]
+fn a_micro_ui_reading_another_system_s_capability_passes_both_readings() {
+    let repo = repo("cross-system");
+    write(
+        &repo.root,
+        "apps/orders/order-risk/micro-ui.json",
+        r#"{"microUi":"OrderRisk","system":"orders","description":"x","needs":["credit.calculateRisk"],"actions":[],"props":{}}"#,
+    );
+    let (ok, said) = gate(&repo, "system-frontier");
+    assert!(ok, "reading is free: {said}");
+    let found = loop_violations(&repo);
+    assert!(
+        !found.iter().any(|f| f.contains("credit.calculateRisk")),
+        "{found:?}"
+    );
+}
+
 /// One break per mirrored rule: what to write, and the job it must fail.
 fn breaks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
     vec![
@@ -298,7 +315,7 @@ fn breaks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
             "workspace-members-by-glob",
         ),
         (
-            "frontier",
+            "undeclared-need",
             "apps/credit/risk-badge/micro-ui.json",
             r#"{"microUi":"RiskBadge","system":"credit","needs":["orders.list"],"actions":[]}"#,
             "system-frontier",

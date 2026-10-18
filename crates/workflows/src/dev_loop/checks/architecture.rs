@@ -182,7 +182,7 @@ impl ArchitectureHolds {
 #[async_trait(?Send)]
 impl Verification<Loop> for ArchitectureHolds {
     fn purpose(&self) -> String {
-        "static read of the checkout: every Capability stays isolated, every manifest names its system, every Micro-UI needs Capabilities of its own system, and the unit the task declared is there on the side it said".to_string()
+        "static read of the checkout: every Capability stays isolated, every manifest names its system, every Micro-UI needs Capabilities that exist, and the unit the task declared is there on the side it said".to_string()
     }
 
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {

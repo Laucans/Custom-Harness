@@ -265,14 +265,16 @@ jobs:
           done
           exit $failed
 
-  # Contract B — a Micro-UI's `needs` reference only Capabilities of its own
-  # system: each one is the `capability` of a capability.json whose `system`
-  # is the Micro-UI's.
+  # Contract B — a Micro-UI's `needs` reference Capabilities that exist or
+  # the plan declares, in any system: reading is free. (A shared Capability
+  # that must behave differently is duplicated into a new id, never edited —
+  # a review rule, not a static one.) The job keeps its name: branch
+  # protections require it.
   system-frontier:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Every `needs` of a Micro-UI is a Capability of its own system
+      - name: Every `needs` of a Micro-UI is a Capability that exists or is planned
         shell: bash
         run: |
           set -euo pipefail
@@ -289,14 +291,10 @@ jobs:
             fi
           }
           for ui in apps/**/micro-ui.json; do
-            system=$(jq -r '.system' "$ui")
             for need in $(jq -r '.needs[]? | if type=="string" then . else (.capability // empty) end' "$ui"); do
               found=$(system_of "$need")
               if [ -z "$found" ]; then
                 echo "::error file=$ui::needs $need, which no capability.json declares"
-                failed=1
-              elif [ "$found" != "$system" ]; then
-                echo "::error file=$ui::needs $need of system $found — outside its own system $system"
                 failed=1
               fi
             done

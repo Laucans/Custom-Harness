@@ -8,8 +8,8 @@
 //!
 //! [`violations`] checks what a diff is reviewed against: a Capability depends
 //! on no Capability and on nothing of the write side; its manifest names its
-//! system and invokes nothing; a Micro-UI needs Capabilities that exist, in its
-//! own system, and triggers `DataCapabilities` that exist; a `DataCapability`
+//! system and invokes nothing; a Micro-UI needs Capabilities that exist, in
+//! any system, and triggers `DataCapabilities` that exist; a `DataCapability`
 //! belongs to the `DataGuard` and declares its effect; and the unit a task
 //! declared under `## Architecture` is actually there, on the side it said;
 //! and the mock-up keeps up with the screens and the Micro-UIs — every page
@@ -676,7 +676,7 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
         }
     }
 
-    for (system, manifest) in &tree.micro_uis {
+    for (_, manifest) in &tree.micro_uis {
         let Some(json) = &manifest.json else {
             found.push(format!("{} is not JSON", manifest.path));
             continue;
@@ -687,11 +687,6 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
             {
                 found.push(format!(
                     "{}: needs `{need}`, a Capability no manifest declares",
-                    manifest.path
-                ));
-            } else if system_of_id(&need) != Some(system.as_str()) {
-                found.push(format!(
-                    "{}: needs `{need}`, outside its own system `{system}`",
                     manifest.path
                 ));
             }
@@ -1738,9 +1733,8 @@ mod tests {
                 .any(|f| f.contains("needs `credit.nothing`, a Capability no manifest declares"))
         );
         assert!(
-            found
-                .iter()
-                .any(|f| f.contains("needs `orders.list`, outside its own system"))
+            !found.iter().any(|f| f.contains("needs `orders.list`")),
+            "reading another system's Capability is free"
         );
         assert!(
             found
