@@ -250,7 +250,7 @@ async fn tick(
 /// A `QUOTA` stop: the watch rests, longer with every stop in a row, and
 /// says so once.
 fn rest(pulse: &mut Pulse, log: &Logbook) {
-    let ticks = pulse.rest.struck();
+    let ticks = pulse.quota_struck();
     log.event(&Event::QuotaRest {
         ticks,
         strikes: pulse.rest.strikes,

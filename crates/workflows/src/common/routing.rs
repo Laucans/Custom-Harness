@@ -403,6 +403,15 @@ impl Pulse {
         self.quiet_ticks = self.quiet_ticks.saturating_add(1);
     }
 
+    /// A `QUOTA` stop: the rest starts, and every tap this watch opened is
+    /// forgotten — a session the quota refused made no attempt, and the
+    /// rules' task #107 was left waiting on a person after two refusals.
+    /// Returns the ticks to rest.
+    pub fn quota_struck(&mut self) -> u32 {
+        self.taps.clear();
+        self.rest.struck()
+    }
+
     /// Whether this watch may mark `issue` ready once more, counting it if
     /// so: [`TAP_REOPENS`] times at most, so an issue whose attempt keeps
     /// failing is not paid for again and again.
@@ -793,6 +802,9 @@ mod tests {
         assert!(pulse.may_open(2));
         assert!(!pulse.may_open(2), "a third attempt waits on a person");
         assert!(pulse.may_open(5), "each issue its own count");
+        assert_eq!(pulse.quota_struck(), FIRST_REST);
+        assert!(pulse.may_open(2), "a refusal on the quota was no attempt");
+        assert_eq!(pulse.rest.strikes, 1);
     }
 
     fn issue(number: u64, labels: &[&str]) -> Issue {

@@ -168,6 +168,15 @@ impl Repo for GitCli {
     async fn branches_at_risk(&self, upstream: &str) -> Outcome<Vec<String>> {
         let mut at_risk = Vec::new();
         for branch in self.local_branches().await? {
+            // A branch some remote holds whole is no work to lose, whatever
+            // `upstream` has of it: a task's PR branch fetched to repair it
+            // read as "work origin does not have" and refused the checkout.
+            let unpushed = self
+                .git(&["log", &branch, "--not", "--remotes", "--oneline"])
+                .await?;
+            if unpushed.lines().is_empty() {
+                continue;
+            }
             if self.carries_unmerged_work(upstream, &branch).await? {
                 at_risk.push(branch);
             }
@@ -409,5 +418,59 @@ mod tests {
         assert!(args.contains(&"-u".to_string()));
         assert!(args.contains(&"origin".to_string()));
         assert_eq!(args.last(), Some(&"feat/x".to_string()));
+    }
+
+    /// A real repository: a remote, a clone, one branch pushed, one not.
+    async fn sh(dir: &Path, args: &[&str]) {
+        let out = tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .await
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_branch_a_remote_holds_whole_is_not_at_risk_an_unpushed_one_is() {
+        let root = std::env::temp_dir().join(format!("harness-git-at-risk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let remote = root.join("remote.git");
+        let clone = root.join("clone");
+        std::fs::create_dir_all(&remote).expect("mkdir");
+        sh(&remote, &["init", "-q", "--bare", "-b", "main"]).await;
+        sh(
+            &root,
+            &["clone", "-q", remote.to_str().expect("utf8"), "clone"],
+        )
+        .await;
+        std::fs::write(clone.join("a"), "a").expect("write");
+        sh(&clone, &["add", "a"]).await;
+        sh(&clone, &["commit", "-q", "-m", "base"]).await;
+        sh(&clone, &["push", "-q", "-u", "origin", "HEAD:main"]).await;
+        sh(&clone, &["checkout", "-q", "-b", "pushed"]).await;
+        std::fs::write(clone.join("b"), "b").expect("write");
+        sh(&clone, &["add", "b"]).await;
+        sh(&clone, &["commit", "-q", "-m", "pushed work"]).await;
+        sh(&clone, &["push", "-q", "-u", "origin", "pushed"]).await;
+        sh(&clone, &["checkout", "-q", "-b", "local-only", "main"]).await;
+        std::fs::write(clone.join("c"), "c").expect("write");
+        sh(&clone, &["add", "c"]).await;
+        sh(&clone, &["commit", "-q", "-m", "local work"]).await;
+        let at_risk = GitCli::new(&clone)
+            .branches_at_risk("origin/main")
+            .await
+            .expect("judged");
+        assert_eq!(at_risk, vec!["local-only".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
