@@ -31,11 +31,14 @@ their tests and gates only: no live watch has run them yet.
 
 ## To verify, on ForgeDesMondes
 
-- [ ] The restarted watch reads `plan/graph.json` off `main_agent` (the
-      `saw:` line names `dev_loop=[18, …]`), and #18's lanes keep running.
-- [ ] With #18 building, the milestones the graph knows whose producers
+- [x] The restarted watch reads `plan/graph.json` off `main_agent` (the
+      `saw:` line names `dev_loop=[18]`), and #18's lanes keep running
+      (2026-10-18 05:58Z, `2dde2cb`).
+- [x] With #18 building, the milestones the graph knows whose producers
       are split or landed get split, critical path first, at most 3 building
-      at once (`splits`); `watch: router lanes` names them in that order.
+      at once: lanes 1–3 split #19 (the path), #21 and #23 in one tick, #20
+      waits on #19's split. Needed `2dde2cb` first: the planner's GitHub
+      `blocked_by` chaining had held every milestone.
 - [ ] A lane on `milestone/20-…` picks a task of #20, never of #18
       (`board::read_on`): the `--task` run's log names milestone #20.
 - [ ] A consumer's tasks build against a producer's mocked contract; the
