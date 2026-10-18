@@ -135,7 +135,7 @@ pub fn blockers_pending(issue: &Issue) -> Vec<&Issue> {
         .blocked_by
         .iter()
         .filter(|blocker| blocker.is_open() && !waiting_merge(blocker))
-        .filter(|blocker| !on_mocks || is_human(blocker) || built_on_mocks(blocker))
+        .filter(|blocker| !on_mocks || is_human(blocker) || mock_up_stands_in(blocker))
         .collect()
 }
 
@@ -145,13 +145,6 @@ fn unit_of(issue: &Issue) -> Option<Unit> {
         .get(sections::ARCHITECTURE)
         .and_then(|text| Declaration::parse(text))
         .map(|declaration| declaration.unit)
-}
-
-/// A Micro-UI or a screen, outside the data layer: built against the mocked
-/// contracts, not on a crate.
-fn built_on_mocks(issue: &Issue) -> bool {
-    !issue.has(labels::DATA_LAYER)
-        && matches!(unit_of(issue), Some(Unit::MicroUi | Unit::Composition))
 }
 
 /// Open, ready, not already delivered, and nothing blocking it.
@@ -325,8 +318,16 @@ pub fn tags(issue: &Issue) -> Tags {
 #[must_use]
 pub fn mocked_only<'a>(tasks: &[&'a Issue]) -> (Vec<&'a Issue>, Vec<u64>) {
     let (taken, held): (Vec<&Issue>, Vec<&Issue>) =
-        tasks.iter().partition(|task| built_on_mocks(task));
+        tasks.iter().partition(|task| mock_up_stands_in(task));
     (taken, held.into_iter().map(|task| task.number).collect())
+}
+
+/// Whether the mock-up stands in for what this task builds — a Micro-UI or
+/// a screen, never the data layer — so it may run ahead of its producers.
+#[must_use]
+pub fn mock_up_stands_in(task: &Issue) -> bool {
+    !task.has(labels::DATA_LAYER)
+        && matches!(unit_of(task), Some(Unit::MicroUi | Unit::Composition))
 }
 
 /// The runnable tasks a parallel watch may start now, given those on a lane.
