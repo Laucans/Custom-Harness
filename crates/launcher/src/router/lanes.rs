@@ -196,7 +196,7 @@ fn ahead_startable<'a>(
                 .join(", ")
         };
         log.say(&format!(
-            "watch: lanes -> #{milestone}'s crates ({}) wait on {} to land — ahead work is what the mock-up stands in for",
+            "watch: lanes -> #{milestone}'s crates and screens ({}) wait on {} to land — ahead work is what the mock-up stands in for",
             list(&held),
             list(&waiting_on)
         ));

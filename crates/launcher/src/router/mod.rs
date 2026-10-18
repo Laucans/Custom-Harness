@@ -555,7 +555,7 @@ async fn building_boards(
         // and the only tasks counted as offered — counting the held crates
         // stopped the reads at two boards and left the lanes empty.
         let waiting = !merge_train::producers_landed(graph, number, milestones).is_empty();
-        let may_run = |task: &Issue| !waiting || tasks::mock_up_stands_in(task);
+        let may_run = |task: &Issue| !waiting || tasks::runs_ahead(task);
         if let Some(milestone) = milestones.iter().find(|m| m.number == number)
             && let Ok(board) = board::read_of_those(gh, milestone.clone(), &may_run).await
         {

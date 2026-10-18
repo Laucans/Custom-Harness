@@ -311,20 +311,29 @@ pub fn tags(issue: &Issue) -> Tags {
 /// The tasks a milestone may run while the producers of what it reads have
 /// not landed: what the mock-up stands in for.
 ///
-/// The Micro-UIs and the screens, built against the mocked contracts — and
-/// nothing else. A contract is mocked until built; a table is not (`ForgeDesMondes`' #118,
+/// The Micro-UIs, built against the mocked contracts — and nothing else. A
+/// contract is mocked until built; a table is not (`ForgeDesMondes`' #118,
 /// the `NoteImport` aggregate of #23, needed #18's migrations), nor is a
-/// crate (#216 of #28 needed `crates/session/`, #20's). Everything under
-/// `crates/` waits for the producers to land.
+/// crate (#216 of #28 needed `crates/session/`, #20's), nor a screen: it
+/// composes Micro-UIs other milestones build and proves its rules end to end
+/// (#219 of #28 found five of its six Micro-UIs missing). Everything else
+/// waits for the producers to land.
 #[must_use]
 pub fn mocked_only<'a>(tasks: &[&'a Issue]) -> (Vec<&'a Issue>, Vec<u64>) {
-    let (taken, held): (Vec<&Issue>, Vec<&Issue>) =
-        tasks.iter().partition(|task| mock_up_stands_in(task));
+    let (taken, held): (Vec<&Issue>, Vec<&Issue>) = tasks.iter().partition(|task| runs_ahead(task));
     (taken, held.into_iter().map(|task| task.number).collect())
 }
 
+/// Whether this task may run ahead of its producers: a Micro-UI outside the
+/// data layer, the one unit the mock-up fully stands in for.
+#[must_use]
+pub fn runs_ahead(task: &Issue) -> bool {
+    !task.has(labels::DATA_LAYER) && unit_of(task) == Some(Unit::MicroUi)
+}
+
 /// Whether the mock-up stands in for what this task builds — a Micro-UI or
-/// a screen, never the data layer — so it may run ahead of its producers.
+/// a screen, never the data layer: a blocker of this kind is not waived for
+/// a Micro-UI ([`blockers_pending`]).
 #[must_use]
 pub fn mock_up_stands_in(task: &Issue) -> bool {
     !task.has(labels::DATA_LAYER)
@@ -867,10 +876,10 @@ mod tests {
         let (taken, held) = mocked_only(&[&ui, &screen, &capability, &data, &write, &undeclared]);
         assert_eq!(
             taken.iter().map(|t| t.number).collect::<Vec<_>>(),
-            [60, 61],
-            "the mock server stands in for a Micro-UI's reads and writes; a crate needs its producers' code"
+            [60],
+            "the mock server stands in for a Micro-UI's reads and writes; a crate needs its producers' code, a screen their Micro-UIs"
         );
-        assert_eq!(held, [216, 118, 119, 7]);
+        assert_eq!(held, [61, 216, 118, 119, 7]);
         let (none, nothing) = mocked_only(&[]);
         assert!(none.is_empty() && nothing.is_empty());
     }
