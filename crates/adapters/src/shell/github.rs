@@ -246,6 +246,29 @@ fn mergeable_from(payload: &Value) -> Option<bool> {
     }
 }
 
+/// The check rows `gh pr checks --json` printed, as the two CI reads parse
+/// them.
+///
+/// `gh` prints nothing and says "no checks reported" on a PR GitHub runs
+/// no check for — a PR in conflict with its base is one (no `pull_request`
+/// run is created for it): that is no check at all, not a failed read, and
+/// `ForgeDesMondes`' #251 made every tick fail on it while it waited for the
+/// repair that would have resolved the conflict. Nothing printed for any
+/// other reason is still a read that failed.
+fn ci_rows(pr_ref: &str, ran: &Ran) -> Outcome<Vec<Value>> {
+    if ran.out().is_empty() {
+        if ran.why().contains("no checks reported") {
+            return Ok(Vec::new());
+        }
+        return Err(Halt::Halted(format!(
+            "could not read CI status for {pr_ref} — {}",
+            ran.why()
+        )));
+    }
+    serde_json::from_str(ran.out())
+        .map_err(|e| Halt::Halted(format!("unreadable CI status for {pr_ref}: {e}")))
+}
+
 /// Whether a `gh pr checks --json state` response is green: at least one
 /// check `SUCCESS`, and every other one `SUCCESS`, `SKIPPED` or `NEUTRAL`.
 ///
@@ -1182,15 +1205,7 @@ impl GitHub for GhCli {
         // `gh pr checks` exits non-zero whenever a check is pending or
         // failing — a normal answer, not a failed read. Success is read from
         // the JSON body, which is printed either way.
-        if ran.out().is_empty() {
-            return Err(Halt::Halted(format!(
-                "could not read CI status for {pr_ref} — {}",
-                ran.why()
-            )));
-        }
-        let rows: Vec<Value> = serde_json::from_str(ran.out())
-            .map_err(|e| Halt::Halted(format!("unreadable CI status for {pr_ref}: {e}")))?;
-        Ok(checks_are_green(&rows))
+        Ok(checks_are_green(&ci_rows(pr_ref, &ran)?))
     }
 
     async fn open_prs_labelled(&self, label: &str) -> Outcome<Vec<Pr>> {
@@ -1255,15 +1270,7 @@ impl GitHub for GhCli {
         // Same contract as `pr_checks_green`: a non-zero exit is how `gh`
         // reports "something is pending or failing", which is precisely the
         // answer being asked for. Only an empty body is unreadable.
-        if ran.out().is_empty() {
-            return Err(Halt::Halted(format!(
-                "could not read CI status for {pr_ref} — {}",
-                ran.why()
-            )));
-        }
-        let rows: Vec<Value> = serde_json::from_str(ran.out())
-            .map_err(|e| Halt::Halted(format!("unreadable CI status for {pr_ref}: {e}")))?;
-        Ok(failing_checks(&rows))
+        Ok(failing_checks(&ci_rows(pr_ref, &ran)?))
     }
 
     async fn artifact_file(
@@ -1726,6 +1733,41 @@ mod tests {
         let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "SKIPPED"})];
         assert!(checks_are_green(&rows));
         assert!(!checks_are_green(&[json!({"state": "SKIPPED"})]));
+    }
+
+    #[test]
+    fn no_check_reported_reads_as_no_check_and_any_other_silence_as_a_failed_read() {
+        let silent = |stderr: &str| Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        };
+        let none = super::ci_rows("251", &silent("no checks reported on the 'feat/x' branch"))
+            .expect("no check is a fact");
+        assert!(none.is_empty());
+        assert!(!super::checks_are_green(&none), "nothing green yet");
+        assert!(
+            super::failing_checks(&none).is_empty(),
+            "nothing failing either"
+        );
+        let err = super::ci_rows("251", &silent("could not resolve to a PullRequest"))
+            .expect_err("a read that failed");
+        assert!(
+            err.reason().contains("could not read CI status for 251"),
+            "{}",
+            err.reason()
+        );
+        let rows = super::ci_rows(
+            "251",
+            &Ran {
+                code: Some(1),
+                stdout: r#"[{"state":"FAILURE","name":"rust"}]"#.to_string(),
+                stderr: String::new(),
+            },
+        )
+        .expect("rows");
+        assert_eq!(rows.len(), 1);
+        assert!(super::ci_rows("251", &silent("")).is_err());
     }
 
     #[test]
