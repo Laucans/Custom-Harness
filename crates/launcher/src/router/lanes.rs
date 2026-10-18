@@ -178,11 +178,11 @@ fn issue_version(issue: &Issue) -> String {
 fn ahead_startable<'a>(
     startable: Vec<&'a Issue>,
     milestone: u64,
-    found: &Snapshot,
+    graph: Option<&routing::Graph>,
+    milestones: &[Issue],
     log: &Logbook,
 ) -> Vec<&'a Issue> {
-    let waiting_on =
-        merge_train::producers_landed(found.graph.as_ref(), milestone, &found.milestones);
+    let waiting_on = merge_train::producers_landed(graph, milestone, milestones);
     if waiting_on.is_empty() {
         return startable;
     }
@@ -240,7 +240,8 @@ pub(super) async fn run_lanes(
     let startable = ahead_startable(
         tasks::startable_tasks(&board.tasks, &running),
         milestone,
-        found,
+        found.graph.as_ref(),
+        &found.milestones,
         log,
     );
     for task in startable {
@@ -320,4 +321,72 @@ pub(super) async fn run_lanes(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn issue(number: u64, labels: &[&str], unit: &str) -> Issue {
+        Issue {
+            number,
+            title: format!("task {number}"),
+            state: "open".to_string(),
+            labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            body: format!("## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: media"),
+            ..Issue::default()
+        }
+    }
+
+    fn graph() -> routing::Graph {
+        routing::Graph::parse(
+            r#"{"version":1,"milestones":[
+              {"number":20,"title":"sessions","systems":["session"],"produces":["session.listScenes"],"consumes":[],"depends_on":[]},
+              {"number":19,"title":"media","systems":["media"],"produces":["media.listMedia"],"consumes":["session.listScenes"],"depends_on":[20]}
+            ],"ids":{
+              "media.listMedia":{"kind":"capability","producer":19,"state":"planned","version":1},
+              "session.listScenes":{"kind":"capability","producer":20,"state":"planned","version":1}
+            }}"#,
+        )
+        .expect("a graph")
+    }
+
+    #[test]
+    fn ahead_of_its_producers_a_milestone_starts_its_micro_uis_only() {
+        let ui = issue(60, &[labels::AGENT, labels::READY], "micro-ui");
+        let screen = issue(61, &[labels::AGENT, labels::READY], "composition");
+        let crate_task = issue(62, &[labels::AGENT, labels::READY], "capability");
+        let milestones = [
+            issue(19, &[labels::MILESTONE], "-"),
+            issue(20, &[labels::MILESTONE], "-"),
+        ];
+        let graph = graph();
+        let startable = vec![&ui, &screen, &crate_task];
+        let taken = ahead_startable(
+            startable.clone(),
+            19,
+            Some(&graph),
+            &milestones,
+            &Logbook::null(),
+        );
+        assert_eq!(taken.iter().map(|t| t.number).collect::<Vec<_>>(), [60]);
+        let all = |graph: Option<&routing::Graph>, milestone: u64| {
+            ahead_startable(
+                startable.clone(),
+                milestone,
+                graph,
+                &milestones,
+                &Logbook::null(),
+            )
+            .iter()
+            .map(|t| t.number)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            all(Some(&graph), 20),
+            [60, 61, 62],
+            "no producer: everything"
+        );
+        assert_eq!(all(None, 19), [60, 61, 62], "no graph: everything");
+    }
 }
