@@ -74,7 +74,9 @@ their tests and gates only: no live watch has run them yet.
       commit on `main_agent`) and every building branch takes the landing
       (`brought into #…` in the run record).
 - [ ] A session stopping with `AGENT_LOOP_STOP: contract …` opens the
-      request, the task waits on it, the manager's run evolves the contract
+      request, the task waits on it (**seen 13:53Z**: #167 → #220, `blocked_by`
+      added ✓; the manager then failed `ChangeParses` on a Micro-UI's
+      manifest, which it cannot evolve yet — #220 settled by hand), the manager's run evolves the contract
       (one opus session, ~$1–2), the producer's task appears under the
       producer's milestone with `harness:ready`, the consumer's task runs
       again and reads the new version.
