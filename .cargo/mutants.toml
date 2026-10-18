@@ -41,6 +41,13 @@ exclude_re = [
   "router/routes\\.rs:.*replace (fix_here|rules_here|run_on_lane) ",
   "router/routes\\.rs:.* in dispatch$",
   "router/mod\\.rs:.*replace run_route ",
+  # Equivalent mutants: base64's bit groups never overlap, so `|` and `^`
+  # agree; a milestone never consumes what it produces, so its own position
+  # is never its producer's (`>` and `>=` agree), nor its own dependent
+  # (`skip(i + 1)` and `skip(i * 1)` agree).
+  "shell/github\\.rs:.*replace \\| with \\^ in base64$",
+  "architecture/src/graph\\.rs:.*replace > with >= in Graph::reads_ahead$",
+  "architecture/src/graph\\.rs:.*replace \\+ with \\* in Graph::critical_path$",
   "router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) ",
   "dataguard/src/guard\\.rs:.*NoInvariants",
   "dataguard/src/reconcile\\.rs:.*NoProposer",

@@ -1419,6 +1419,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_files_of_a_pr_github_cannot_read_are_an_error_not_an_empty_list() {
+        use harness_core::ports::shell::github::GitHub as _;
+        // A folder that is there and is no repository: `gh` runs, and fails.
+        let gh = super::GhCli::new(&std::env::temp_dir());
+        assert!(gh.pr_files("1").await.is_err());
+    }
+
+    #[tokio::test]
     async fn a_branch_merge_github_cannot_make_is_an_error_not_a_success() {
         use harness_core::ports::shell::github::GitHub as _;
         let gh = super::GhCli::new(std::path::Path::new("/nonexistent"));

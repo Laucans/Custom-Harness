@@ -392,6 +392,76 @@ mod tests {
         );
     }
 
+    #[derive(Default)]
+    struct Capture(std::cell::RefCell<Vec<String>>);
+
+    impl harness_core::traces::Sink for Capture {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
+    /// What the publish says, for this plan against these components.
+    async fn said(plan: &str, components: Vec<graph::Component>) -> String {
+        let sink = Rc::new(Capture::default());
+        let mut context = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            PlannerState {
+                roadmap: Some(Issue {
+                    number: 4,
+                    ..Issue::default()
+                }),
+                components,
+                ..PlannerState::default()
+            },
+            harness_core::traces::Logbook::new(
+                Rc::clone(&sink) as Rc<dyn harness_core::traces::Sink>,
+                harness_core::traces::Verbosity::Normal,
+            ),
+        );
+        context.results.insert(
+            "plan".to_string(),
+            Reply {
+                text: plan.to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        Write {
+            gh: Rc::new(FakeGitHub::default()),
+            plan_stage: "plan".to_string(),
+            branch: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("published");
+        sink.0.borrow().join("\n")
+    }
+
+    #[tokio::test]
+    async fn the_ids_no_milestone_produces_are_said_and_only_then() {
+        let orphan = vec![graph::Component {
+            name: "Board".to_string(),
+            system: "table".to_string(),
+            needs: vec!["table.getBoard".to_string()],
+            actions: vec![],
+        }];
+        let lines = said(
+            r#"[{"title":"A","goal":"a","systems":["media"],"micro_uis":["Board"]}]"#,
+            orphan,
+        )
+        .await;
+        assert!(
+            lines.contains("no milestone produces table.getBoard"),
+            "{lines}"
+        );
+        let lines = said(r#"[{"title":"A","goal":"a"}]"#, Vec::new()).await;
+        assert!(!lines.contains("no milestone produces"), "{lines}");
+    }
+
     #[tokio::test]
     async fn a_dry_run_writes_nothing() {
         let gh = Rc::new(FakeGitHub::default());

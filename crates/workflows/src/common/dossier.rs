@@ -486,6 +486,34 @@ fn or_none(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_graph_reads_the_micro_frontends_and_the_writes_as_they_are() {
+        let dossier = Dossier {
+            micro_uis: vec![MicroUi {
+                name: "SceneBoard".to_string(),
+                system: "session".to_string(),
+                needs: vec!["session.listScenes".to_string()],
+                actions: vec!["session.addScene".to_string()],
+                ..MicroUi::default()
+            }],
+            writes: vec![Write {
+                id: "session.addScene".to_string(),
+                ..Write::default()
+            }],
+            ..Dossier::default()
+        };
+        assert_eq!(
+            dossier.components(),
+            vec![harness_architecture::graph::Component {
+                name: "SceneBoard".to_string(),
+                system: "session".to_string(),
+                needs: vec!["session.listScenes".to_string()],
+                actions: vec!["session.addScene".to_string()],
+            }]
+        );
+        assert_eq!(dossier.write_ids(), vec!["session.addScene".to_string()]);
+    }
     use crate::common::fake_disk::FakeDisk;
     use std::path::PathBuf;
 

@@ -553,6 +553,38 @@ mod tests {
     }
 
     #[test]
+    fn a_read_no_milestone_of_its_system_reads_goes_to_that_system_s_first() {
+        // #2 reads campaign.listPlayers; #1 works in campaign, no
+        // micro-frontend of #1 reads it: #1 builds it — a read, not a write.
+        let milestones = vec![
+            Milestone {
+                number: 1,
+                title: "Campaigns".to_string(),
+                systems: strings(&["campaign"]),
+                ..Milestone::default()
+            },
+            Milestone {
+                number: 2,
+                title: "Media".to_string(),
+                systems: strings(&["media"]),
+                micro_uis: strings(&["MediaLibrary"]),
+                ..Milestone::default()
+            },
+        ];
+        let components = vec![component(
+            "MediaLibrary",
+            "media",
+            &["campaign.listPlayers"],
+            &["media.uploadMedia"],
+        )];
+        let graph = Graph::derive(&milestones, &components);
+        assert_eq!(graph.ids["campaign.listPlayers"].producer, Some(1));
+        assert_eq!(graph.ids["campaign.listPlayers"].kind, Kind::Capability);
+        assert_eq!(graph.ids["media.uploadMedia"].kind, Kind::DataCapability);
+        assert_eq!(graph.milestones[1].depends_on, vec![1]);
+    }
+
+    #[test]
     fn an_aggregate_is_one_whatever_its_case() {
         let milestones = vec![
             Milestone {
