@@ -1,8 +1,13 @@
-//! A creation's data step: the data model the proof of concept needs,
-//! drafted by an AI off the rules, the mock-up's cut and its fixtures —
-//! the tables and fields (contract M) and the aggregates' integrity rules
-//! (contract I: criticality, invariants, relation policies) — then
-//! reviewed by the human before the factory is initialized.
+//! A creation's data model: the one the proof of concept needs — the
+//! tables and fields (contract M) and the aggregates' integrity rules
+//! (contract I: criticality, invariants, relation policies).
+//!
+//! Drafted **before the mock-up is drawn**, off the brief, the decisions
+//! and the scope, so every page and fixture the sessions draw is shaped
+//! after it (a mock-up drawn first gave `ForgeDesMondes` slug ids where the
+//! columns were uuid). Then, at the data step after the rules, refined off
+//! the rules, the cut and the fixtures, and reviewed by the human before
+//! the factory is initialized.
 //!
 //! Four gates keep it from validation: a business rule no invariant or
 //! derived value carries, a foreign key with no policy, a write touching a
@@ -448,9 +453,88 @@ pub fn rules_print(c: &Creation) -> String {
 /// The shape of the answer, given to the AI.
 const SHAPE: &str = r#"{"tables": [{"name": "campaign", "purpose": "…", "business": ["…"], "fields": [{"name": "id", "type": "uuid", "nullable": false, "purpose": "…", "business": [], "references": "other_table.id"}]}], "aggregates": [{"aggregate": "Campaign", "tables": ["campaign"], "fields": {"campaign.name": {"kind": "authoritative", "criticality": "normal", "rules": []}}, "invariants": [{"id": "name-unique", "rule": "…", "onViolation": "reject", "rules": [3]}], "relations": [{"from": "session.campaign_id", "onDelete": "cascade", "onUpdate": "propagate"}]}], "writes": {"system.verbThing": ["campaign.name"]}}"#;
 
-/// The question that drafts the data model.
+/// The data model as a drawing session reads it, read-only: the tables and
+/// fields its fixtures take their shape from, the writes its actuators name.
 #[must_use]
-pub fn data_prompt(c: &Creation, ctx: &Context, fixtures: &[(String, String)]) -> String {
+pub fn model_part(draft: &DataDraft) -> String {
+    let mut text = String::from(
+        "\nThe data model the proof of concept is built on, drafted already — read it, never \
+         write under `mock/data/`: shape every fixture after its tables and fields (its ids as \
+         the id columns are typed, its names as the fields are named), and name the \
+         DataCapabilities an actuator triggers after its `writes`:\n\n",
+    );
+    for t in &draft.tables {
+        let fields: Vec<String> = t
+            .fields
+            .iter()
+            .map(|f| {
+                let mut field = format!("{} {}", f.name, f.kind);
+                if !f.references.is_empty() {
+                    let _ = write!(field, " → {}", f.references);
+                }
+                field
+            })
+            .collect();
+        let _ = writeln!(
+            text,
+            "- `{}` — {} — {}",
+            t.name,
+            t.purpose.trim(),
+            fields.join(", ")
+        );
+    }
+    if !draft.writes.is_empty() {
+        text.push_str("\nThe writes (DataCapability — fields):\n\n");
+        for (id, fields) in &draft.writes {
+            let _ = writeln!(text, "- `{id}` — {}", fields.join(", "));
+        }
+    }
+    text
+}
+
+/// The question that drafts the data model first, before any page is
+/// drawn: off the brief, the decisions and the scope only — the rules and
+/// the mock-up come after it, and refine it.
+#[must_use]
+pub fn early_data_prompt(c: &Creation) -> String {
+    let mut text = String::from(
+        "You lay the data model of a proof of concept, before its mock-up is drawn, for a \
+         vertical-slice architecture whose data is protected by a single write frontier (a \
+         DataGuard): the tables and fields in PostgreSQL terms, then the aggregates' integrity \
+         rules. Every thing the application keeps is a table; every field with its Postgres type \
+         (ids are `uuid`), its nullability and what it is for; every foreign key named under \
+         `references` and given, in its aggregate's `relations`, an `onDelete` (restrict, \
+         cascade, nullify, archive, review) and an `onUpdate` (propagate, restrict) policy. \
+         Group the tables into aggregates (one per thing a command changes as a whole); give \
+         every field of an aggregate a `kind` (derived or authoritative) and a `criticality` \
+         (low, normal, critical). Prefer derived values to stored totals. List under `writes` \
+         the commands the screens will trigger, `<system>.<verbThing>`, each with the fields it \
+         changes. The pages, fixtures and micro-frontends are drawn after this model and take \
+         their shape from it: name things as the screens will. Write purposes and rules in the \
+         language of the brief. Answer with one JSON object and nothing else, shaped like \
+         this:\n\n",
+    );
+    text.push_str(SHAPE);
+    text.push('\n');
+    text.push_str(&super::creation::product(c));
+    let _ = write!(
+        text,
+        "\nThe proof of concept's scope:\n\n{}\n",
+        c.scope.trim()
+    );
+    text
+}
+
+/// The question that drafts the data model at the data step — refining the
+/// one laid before the mock-up, when there is one, off the rules, the cut
+/// and the fixtures; drafting it whole otherwise.
+#[must_use]
+pub fn data_prompt(
+    c: &Creation,
+    ctx: &Context,
+    fixtures: &[(String, String)],
+    draft: Option<&DataDraft>,
+) -> String {
     let mut text = String::from(
         "You draft the data model of a proof of concept, for a vertical-slice architecture \
          whose data is protected by a single write frontier (a DataGuard): the tables and \
@@ -468,6 +552,21 @@ pub fn data_prompt(c: &Creation, ctx: &Context, fixtures: &[(String, String)]) -
          with one JSON object and nothing else, shaped like this:\n\n",
     );
     text.push_str(SHAPE);
+    if let Some(draft) = draft {
+        let current = serde_json::to_string_pretty(&serde_json::json!({
+            "tables": draft.tables,
+            "aggregates": draft.aggregates,
+            "writes": draft.writes,
+        }))
+        .unwrap_or_default();
+        let _ = write!(
+            text,
+            "\n\nThe model laid before the mock-up was drawn — refine it off the rules, the cut \
+             and the example data below; **keep its table and field names** (the fixtures and \
+             the micro-frontends are shaped after them), add what the rules need, drop nothing \
+             a fixture reads:\n\n```json\n{current}\n```\n"
+        );
+    }
     let _ = write!(
         text,
         "\n\nWhat the application does:\n\n{}\n",
@@ -1016,6 +1115,48 @@ mod tests {
     }
 
     #[test]
+    fn the_model_part_lists_every_table_its_fields_and_the_writes_read_only() {
+        let mut d = draft();
+        let part = model_part(&d);
+        assert!(part.starts_with("\nThe data model the proof of concept is built on"));
+        assert!(part.contains("never write under `mock/data/`"), "{part}");
+        for t in &d.tables {
+            assert!(part.contains(&format!("- `{}` — ", t.name)), "{part}");
+            for f in &t.fields {
+                assert!(part.contains(&format!("{} {}", f.name, f.kind)), "{part}");
+                if !f.references.is_empty() {
+                    assert!(part.contains(&format!("→ {}", f.references)), "{part}");
+                }
+            }
+        }
+        assert!(
+            d.tables
+                .iter()
+                .flat_map(|t| &t.fields)
+                .any(|f| !f.references.is_empty()),
+            "the fixture has a foreign key to show the arrow on"
+        );
+        assert!(
+            part.contains("The writes (DataCapability — fields)"),
+            "{part}"
+        );
+        for (id, fields) in &d.writes {
+            assert!(
+                part.contains(&format!("- `{id}` — {}", fields.join(", "))),
+                "{part}"
+            );
+        }
+        assert!(!d.writes.is_empty(), "the fixture has writes");
+        d.writes.clear();
+        let bare = model_part(&d);
+        assert!(
+            !bare.contains("The writes"),
+            "no writes, no writes block: {bare}"
+        );
+        assert!(bare.len() < part.len());
+    }
+
+    #[test]
     fn the_questions_carry_the_brief_the_rules_the_cut_the_fixtures_and_the_change() {
         let mut c = creation();
         c.brief = "a campaign manager".to_string();
@@ -1033,13 +1174,14 @@ mod tests {
             &c,
             &ctx,
             &[("fixtures/List.json".to_string(), " [1] ".to_string())],
+            None,
         );
         assert!(asked.contains("a campaign manager"));
         assert!(asked.contains("- R1 — business — rule 1 — given"));
         assert!(asked.contains("- R3 — journey —"));
         assert!(asked.contains("- `List` — campagne — campagne.lister — campagne.creer"));
         assert!(asked.contains("`fixtures/List.json`:\n```json\n[1]\n```"));
-        assert!(!data_prompt(&c, &ctx, &[]).contains("example data"));
+        assert!(!data_prompt(&c, &ctx, &[], None).contains("example data"));
         let change = change_prompt(&c, &draft(), " add a note ").expect("asked");
         assert!(change.contains("The change asked:\n\nadd a note\n"));
         assert!(change.contains("\"session.campaign_id\""));

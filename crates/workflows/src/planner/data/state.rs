@@ -18,6 +18,8 @@ pub struct PlannerState {
     pub dossier: String,
     /// The dossier's micro-frontends, as the plan's graph reads them.
     pub components: Vec<harness_architecture::graph::Component>,
+    /// The mock-up's screens, as the plan's graph reads them.
+    pub screens: Vec<harness_architecture::graph::Screen>,
     /// The dossier's writes, by id.
     pub writes: Vec<String>,
     /// Where every id stands in the checkout — built, or a fixture for it.

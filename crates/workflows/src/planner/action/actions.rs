@@ -66,6 +66,7 @@ impl Action<PlannerState> for ReadContext {
             ));
         }
         ctx.state.components = dossier.components();
+        ctx.state.screens = dossier.screens();
         ctx.state.writes = dossier.write_ids();
         ctx.state.standing = crate::plan_graph::Standing::read(self.disk.as_ref(), &self.root);
         ctx.state.dossier = dossier.block(&Filter::default());

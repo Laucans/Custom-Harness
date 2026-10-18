@@ -134,6 +134,18 @@ pub struct Milestone {
     pub micro_uis: Vec<String>,
     /// The writes it adds, by id.
     pub commands: Vec<String>,
+    /// The screens it freezes, by name (`preparation-seance`): it consumes
+    /// the Micro-UIs they compose.
+    pub screens: Vec<String>,
+}
+
+/// A screen of the mock-up: the Micro-UIs it composes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Screen {
+    /// Its name, the page's stem (`preparation-seance`).
+    pub name: String,
+    /// The Micro-UIs it composes.
+    pub micro_uis: Vec<String>,
 }
 
 /// A micro-frontend of the design dossier: what it reads and triggers.
@@ -207,8 +219,11 @@ fn read_by<'a>(m: &'a Milestone, components: &'a [Component]) -> impl Iterator<I
 }
 
 /// Places every id a micro-frontend reads or triggers that no milestone
-/// named: a Capability goes to the first milestone whose own
-/// micro-frontend reads it, working in its system; else to the first
+/// named: a Capability goes to the first milestone, in plan order, whose
+/// own micro-frontend reads it — whatever its system, since a Micro-UI
+/// reads any system's Capabilities — so no milestone reads one a later
+/// milestone builds (`ForgeDesMondes`' #19 and #20 read each other's when
+/// the producer had to work in its system); a write goes to the first
 /// milestone of its system; else to nobody.
 fn place_reads(
     ids: &mut BTreeMap<String, Interface>,
@@ -218,7 +233,7 @@ fn place_reads(
     for m in milestones {
         for ui in &m.micro_uis {
             for need in component(components, ui).map_or(&[][..], |c| c.needs.as_slice()) {
-                if !ids.contains_key(need) && in_system(m, need) {
+                if !ids.contains_key(need) {
                     produce(ids, need, Kind::Capability, m.number);
                 }
             }
@@ -264,7 +279,12 @@ fn place_reads(
 
 /// One milestone's node: what it produces, what it consumes of the rest,
 /// and whose work that is.
-fn node_of(m: &Milestone, ids: &BTreeMap<String, Interface>, components: &[Component]) -> Node {
+fn node_of(
+    m: &Milestone,
+    ids: &BTreeMap<String, Interface>,
+    components: &[Component],
+    screens: &[Screen],
+) -> Node {
     let produces: BTreeSet<String> = ids
         .iter()
         .filter(|(_, i)| i.producer == Some(m.number))
@@ -272,6 +292,12 @@ fn node_of(m: &Milestone, ids: &BTreeMap<String, Interface>, components: &[Compo
         .collect();
     let mut consumes: BTreeSet<String> = read_by(m, components).cloned().collect();
     consumes.extend(m.aggregates.iter().map(|a| canonical(ids, a)));
+    consumes.extend(
+        m.screens
+            .iter()
+            .filter_map(|name| screens.iter().find(|screen| screen.name == *name))
+            .flat_map(|screen| screen.micro_uis.iter().cloned()),
+    );
     let consumes: BTreeSet<String> = consumes.difference(&produces).cloned().collect();
     let depends_on: BTreeSet<u64> = consumes
         .iter()
@@ -289,18 +315,19 @@ fn node_of(m: &Milestone, ids: &BTreeMap<String, Interface>, components: &[Compo
 }
 
 impl Graph {
-    /// Derives the graph from the milestones, in plan order, and the
-    /// dossier's components.
+    /// Derives the graph from the milestones, in plan order, the dossier's
+    /// components and the mock-up's screens.
     ///
     /// An aggregate, a Concept, a micro-frontend or a write is produced by
     /// the first milestone that names it; a Capability by the first milestone
-    /// whose micro-frontends read it and whose systems hold its system, else
-    /// by the first milestone working in that system; an id no milestone
+    /// whose micro-frontends read it, whatever its system, else by the first
+    /// milestone working in that system; an id no milestone
     /// produces is kept with no producer. A milestone consumes the ids its
-    /// micro-frontends read or trigger and the aggregates it names, minus
-    /// what it produces, and depends on their producers.
+    /// micro-frontends read or trigger, the aggregates it names and the
+    /// Micro-UIs its screens compose, minus what it produces, and depends on
+    /// their producers.
     #[must_use]
-    pub fn derive(milestones: &[Milestone], components: &[Component]) -> Self {
+    pub fn derive(milestones: &[Milestone], components: &[Component], screens: &[Screen]) -> Self {
         let mut ids: BTreeMap<String, Interface> = BTreeMap::new();
         for m in milestones {
             for a in &m.aggregates {
@@ -320,7 +347,7 @@ impl Graph {
         place_reads(&mut ids, milestones, components);
         let nodes = milestones
             .iter()
-            .map(|m| node_of(m, &ids, components))
+            .map(|m| node_of(m, &ids, components, screens))
             .collect();
         Self {
             version: VERSION,
@@ -498,6 +525,7 @@ mod tests {
                 concepts: strings(&["Versioning@1"]),
                 micro_uis: strings(&["CampaignOverview"]),
                 commands: strings(&["campaign.createCampaign"]),
+                screens: Vec::new(),
             },
             Milestone {
                 number: 19,
@@ -547,7 +575,7 @@ mod tests {
     #[test]
     fn what_a_milestone_produces_and_consumes_follows_the_dossier() {
         let (milestones, components) = plan();
-        let graph = Graph::derive(&milestones, &components);
+        let graph = Graph::derive(&milestones, &components, &[]);
         let node = |n: u64| {
             graph
                 .milestones
@@ -566,29 +594,33 @@ mod tests {
             ])
         );
         assert_eq!(node(18).consumes, Vec::<String>::new());
-        assert_eq!(
-            node(19).consumes,
-            strings(&["session.listScenes"]),
-            "media.listMedia is its own"
-        );
-        assert_eq!(
-            node(19).depends_on,
-            vec![20],
-            "a read ahead, still a dependency"
+        // MediaLibrary is the first to read session.listScenes: #19 builds
+        // it, whatever its system — a Micro-UI reads any system, and a read
+        // of a later milestone would be a cycle.
+        assert_eq!(node(19).consumes, Vec::<String>::new());
+        assert_eq!(node(19).depends_on, Vec::<u64>::new());
+        assert!(
+            node(19)
+                .produces
+                .contains(&"session.listScenes".to_string())
         );
         // Sessions shares Campaign with #18 and reads from #18 and #19;
         // campaign.listCharacters, which its own SceneBoard reads and no
-        // earlier micro-frontend does, is its to build: it works in
-        // `campaign` too.
+        // earlier micro-frontend does, is its to build.
         assert_eq!(
             node(20).consumes,
-            strings(&["Campaign", "media.listMedia", "table.placeTokens"])
+            strings(&[
+                "Campaign",
+                "media.listMedia",
+                "session.listScenes",
+                "table.placeTokens"
+            ])
         );
         assert_eq!(node(20).depends_on, vec![18, 19]);
         assert_eq!(
             graph.ids["campaign.listCharacters"].producer,
             Some(20),
-            "the first milestone whose micro-frontend reads it, in its system"
+            "the first milestone whose micro-frontend reads it"
         );
         assert!(
             node(20)
@@ -597,20 +629,46 @@ mod tests {
         );
         assert_eq!(graph.ids["table.placeTokens"].kind, Kind::DataCapability);
         assert_eq!(graph.unproduced(), strings(&["table.placeTokens"]));
-        assert_eq!(
-            graph.reads_ahead(),
-            vec![ReadAhead {
-                consumer: 19,
-                id: "session.listScenes".to_string(),
-                producer: 20,
-            }]
+        assert!(graph.reads_ahead().is_empty(), "{:?}", graph.reads_ahead());
+    }
+
+    #[test]
+    fn a_screen_s_milestone_consumes_the_micro_uis_it_composes() {
+        let (mut milestones, components) = plan();
+        milestones.push(Milestone {
+            number: 28,
+            title: "Preparation".to_string(),
+            systems: strings(&["session"]),
+            screens: strings(&["preparation-seance"]),
+            ..Milestone::default()
+        });
+        let screens = [Screen {
+            name: "preparation-seance".to_string(),
+            micro_uis: strings(&["CampaignOverview", "SceneBoard"]),
+        }];
+        let graph = Graph::derive(&milestones, &components, &screens);
+        let node = graph
+            .milestones
+            .iter()
+            .find(|m| m.number == 28)
+            .expect("a node");
+        assert_eq!(node.consumes, strings(&["CampaignOverview", "SceneBoard"]));
+        assert_eq!(node.depends_on, vec![18, 20]);
+        let other = Graph::derive(&milestones, &components, &[]);
+        assert!(
+            other
+                .milestones
+                .iter()
+                .find(|m| m.number == 28)
+                .is_some_and(|m| m.consumes.is_empty()),
+            "a screen the mock-up does not list composes nothing"
         );
     }
 
     #[test]
-    fn a_read_no_milestone_of_its_system_reads_goes_to_that_system_s_first() {
-        // #2 reads campaign.listPlayers; #1 works in campaign, no
-        // micro-frontend of #1 reads it: #1 builds it — a read, not a write.
+    fn a_read_goes_to_the_first_milestone_that_reads_it_whatever_its_system() {
+        // #2 reads campaign.listPlayers; #1 works in campaign, but no
+        // micro-frontend of #1 reads it: #2, its first reader, builds it.
         let milestones = vec![
             Milestone {
                 number: 1,
@@ -632,17 +690,20 @@ mod tests {
             &["campaign.listPlayers"],
             &["media.uploadMedia"],
         )];
-        let graph = Graph::derive(&milestones, &components);
-        assert_eq!(graph.ids["campaign.listPlayers"].producer, Some(1));
+        let graph = Graph::derive(&milestones, &components, &[]);
+        assert_eq!(graph.ids["campaign.listPlayers"].producer, Some(2));
         assert_eq!(graph.ids["campaign.listPlayers"].kind, Kind::Capability);
         assert_eq!(graph.ids["media.uploadMedia"].kind, Kind::DataCapability);
-        assert_eq!(graph.milestones[1].depends_on, vec![1]);
+        assert!(
+            graph.milestones[1].depends_on.is_empty(),
+            "it builds what it reads"
+        );
     }
 
     #[test]
     fn states_follow_the_checkout_and_the_fixtures_but_an_evolution_stays() {
         let (milestones, components) = plan();
-        let mut graph = Graph::derive(&milestones, &components);
+        let mut graph = Graph::derive(&milestones, &components, &[]);
         graph.ids.get_mut("media.listMedia").expect("an id").state = State::Evolving;
         graph.mark_states(&|id| id == "campaign.getCampaign", &|id| {
             id == "session.listScenes" || id == "campaign.getCampaign"
@@ -673,7 +734,7 @@ mod tests {
                 ..Milestone::default()
             },
         ];
-        let graph = Graph::derive(&milestones, &[]);
+        let graph = Graph::derive(&milestones, &[], &[]);
         assert_eq!(
             graph.ids.keys().cloned().collect::<Vec<_>>(),
             strings(&["Campagne", "PJ"])
@@ -685,7 +746,7 @@ mod tests {
     #[test]
     fn the_critical_path_is_the_heaviest_forward_chain() {
         let (milestones, components) = plan();
-        let graph = Graph::derive(&milestones, &components);
+        let graph = Graph::derive(&milestones, &components, &[]);
         // #20 depends on #18 and #19; #19's read of #20 runs backward and
         // is no path. Weights: 18 → 20 is 5 + 2, 19 → 20 is 1 + 2.
         let remaining = |n: u64| match n {
@@ -717,7 +778,7 @@ mod tests {
     #[test]
     fn the_graph_reads_back_as_written_and_defaults_what_an_older_one_lacks() {
         let (milestones, components) = plan();
-        let graph = Graph::derive(&milestones, &components);
+        let graph = Graph::derive(&milestones, &components, &[]);
         let text = graph.to_json().expect("json");
         assert!(text.ends_with('\n'));
         assert_eq!(Graph::parse(&text).expect("parses"), graph);
@@ -745,7 +806,7 @@ mod tests {
                     ..Milestone::default()
                 })
                 .collect();
-            let graph = Graph::derive(&milestones, &[]);
+            let graph = Graph::derive(&milestones, &[], &[]);
             let text = graph.to_json().expect("json");
             prop_assert_eq!(Graph::parse(&text).expect("parses"), graph);
         }

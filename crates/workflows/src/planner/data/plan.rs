@@ -45,6 +45,11 @@ pub struct MilestoneItem {
     /// The writes it adds, by id (`session.addScene`): what it produces.
     #[serde(default)]
     pub commands: Vec<String>,
+    /// The screens it freezes, as the mock-up's pages name them
+    /// (`preparation-seance`): it consumes the Micro-UIs they compose, so it
+    /// waits for the milestones that build them.
+    #[serde(default)]
+    pub screens: Vec<String>,
 }
 
 impl MilestoneItem {
@@ -70,7 +75,7 @@ impl MilestoneItem {
             }
         };
         let body = format!(
-            "{}\n\n## {}\n\nsystems: {}\nconcepts: {}\naggregates: {}\nmicro-uis: {}\ncommands: {}\nside: {}",
+            "{}\n\n## {}\n\nsystems: {}\nconcepts: {}\naggregates: {}\nmicro-uis: {}\ncommands: {}\nscreens: {}\nside: {}",
             self.goal.trim(),
             sections::heading_of(sections::ARCHITECTURE),
             list(&self.systems),
@@ -78,6 +83,7 @@ impl MilestoneItem {
             list(&self.aggregates),
             list(&self.micro_uis),
             list(&self.commands),
+            list(&self.screens),
             self.side().label()
         );
         let rules = list(&self.rules);
@@ -177,6 +183,7 @@ pub fn graph_input(
         concepts: list_of(body, "concepts:"),
         micro_uis,
         commands,
+        screens: list_of(body, "screens:"),
     }
 }
 
@@ -215,11 +222,16 @@ mod tests {
             rules: Vec::new(),
             micro_uis: vec!["RiskBadge".to_string()],
             commands: Vec::new(),
+            screens: vec!["dashboard".to_string()],
         };
         assert_eq!(
             item.body(),
             "Score every customer.\n\n## Architecture\n\nsystems: credit\nconcepts: Risk@3\n\
-             aggregates: Account\nmicro-uis: RiskBadge\ncommands: -\nside: harness:write-side"
+             aggregates: Account\nmicro-uis: RiskBadge\ncommands: -\nscreens: dashboard\nside: harness:write-side"
+        );
+        assert_eq!(
+            graph_input(1, "Risk", &item.body(), &[], &[]).screens,
+            ["dashboard"]
         );
         assert_eq!(item.aggregate_keys(), ["account"]);
         assert_eq!(aggregates_of(&item.body()), ["account"]);
@@ -234,10 +246,11 @@ mod tests {
             aggregates: Vec::new(),
             systems: Vec::new(),
             concepts: Vec::new(),
+            screens: Vec::new(),
             ..item
         };
         assert!(bare.body().ends_with(
-            "systems: -\nconcepts: -\naggregates: -\nmicro-uis: RiskBadge\ncommands: -\nside: harness:read-side"
+            "systems: -\nconcepts: -\naggregates: -\nmicro-uis: RiskBadge\ncommands: -\nscreens: -\nside: harness:read-side"
         ));
         assert_eq!(bare.side(), Side::Read);
     }

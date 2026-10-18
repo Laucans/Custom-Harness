@@ -31,9 +31,23 @@ version {version}, produced by milestone {producer}, read by milestones
 </need>
 
 You are the contract manager: the interface between milestones that build
-side by side. A consumer never edits a contract another milestone produces;
-you evolve it once, for every consumer, and the producer builds the new
-version.
+side by side. A consumer never edits a contract another milestone produces.
+You answer one of three things:
+
+- **evolve** — the contract moves to a new version, same id: when no other
+  consumer reads it, or the change is additive (a field added, nothing a
+  reader relies on removed or renamed).
+- **duplicate** — the architecture's rule for a Capability others use that
+  must *behave differently* for this consumer: the original does not
+  change; a new Capability, in the requester's own system
+  (`<requester's system>.<name>`, version 1), built from the original's
+  code and changed there; the requester reads it instead.
+- **hand_back** — no contract changes: the need is met by what exists (a
+  Micro-UI reads any system's Capabilities as they are; a DataCapability's
+  `callableBy` already admits it; the requester misread a gate), or the
+  requester meets it itself. Say why, for the requester.
+
+Never answer a version that changes no field: that is a hand-back.
 
 Read the repository (checked out on `{base}`): the manifest of `{id}` (a
 `capability.json` or `data-capability.json` under its crate — `grep -rl
@@ -46,21 +60,28 @@ needs and keeps every other consumer working: add before you rename, never
 drop a field a consumer reads, keep the id. Bump `version` by one.
 
 Answer with ONLY a JSON object, these keys and no prose around it:
+- "answer": `evolve`, `duplicate` or `hand_back`;
+- "reason": for a hand-back, why — one or two sentences for the requester
+  (the other keys are then left out);
 - "path": the manifest's path, `crates/<system>/capabilities/<name>/capability.json`
-  or `.../data-capabilities/<name>/data-capability.json`;
-- "manifest": the whole manifest, its `version` at {version} + 1;
+  or `.../data-capabilities/<name>/data-capability.json` — for a duplicate,
+  under the requester's system;
+- "manifest": the whole manifest — an evolution keeps the id, its `version`
+  at {version} + 1; a duplicate carries the new id, `version` 1;
 - "fixture_path": `mock/fixtures/{id}.json`, and "fixture": the whole fixture the
   mock server serves for the new version — or null when none is needed;
 - "summary": the change, one sentence;
 - "task_title": `{id} v<n>: <what changes>`;
-- "task_brief": what the producer builds — fields, behaviour, tests;
+- "task_brief": what the producer builds — fields, behaviour, tests; for a
+  duplicate, what differs from the original;
 - "task_architecture": the task's `## Architecture` lines, one per line:
   `unit: Capability` or `unit: DataCapability`, `id: {id}`, `system: <system>`,
   `side: harness:read-side` or `side: harness:write-side`;
 - "breaking": true or false.
 
 `breaking` is true when what was built against version {version} stops
-working. Never ask; never answer "it depends"."#;
+working (never for a duplicate or a hand-back). Never ask; never answer "it
+depends"."#;
 
 /// The free stage: read the request and the graph.
 #[must_use]

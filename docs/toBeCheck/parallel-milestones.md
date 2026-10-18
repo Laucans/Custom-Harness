@@ -70,6 +70,35 @@ their tests and gates only: no live watch has run them yet.
       gate `6dc5e62`, 15:56Z): the resumed #136, #166, #167, #193, #210,
       #218 pass `system-frontier` with their cross-system needs; PR #226
       (#166) goes green on it once it takes `main_agent`.
+- [ ] **The gate follows a merged PR** (`ArchitectureHolds::follow_merged`):
+      a round that squash-merges its PR and changes nothing after is judged
+      on the tree *with* the merge — the log says `… is merged into
+      \`milestone/…\` — the tree read follows its remote` and no "the
+      checkout has none" / "outside the closure" on the unit's own folder
+      (#166 at 16:13Z, #136 at 16:25Z before the fix).
+- [ ] **A plan with a read-ahead is refused** (`PlanParses`): the next
+      planner run on a plan laid out of order halts with `the plan has a
+      cycle — … reads \`…\`, which … produces later` and retries; the graph
+      it writes has `reads_ahead` empty and no `depends_on` cycle.
+- [ ] **A screen's milestone waits for its Micro-UIs**: the next
+      `plan/graph.json` lists, for a milestone with `screens:`, the Micro-UIs
+      its pages compose under `consumes`, and `depends_on` names their
+      producers (#28 would have waited on #18 and #24).
+- [ ] **The split refuses a misplaced slice**: a plan answering
+      `system: dataguard` for `campaign.*`, a UI slice with no `produces`,
+      or two slices on one Micro-UI is handed back to the session with the
+      gap named, before any task is opened.
+- [ ] **The contract manager's three answers**: a request that needs no
+      change is `hand_back` (comment + close, no task, no graph write); a
+      shared Capability that must behave differently is `duplicate` (new id
+      in the requester's system, graph entry under the requester's
+      milestone, producer task, requester's `needs:` switched); `evolve`
+      only bumps. Never again a version that changes no field (#227).
+- [ ] **The data model is laid before the mock-up** (creation): on the next
+      factory creation, `drawn()` logs `a Claude Code session lays the data
+      model …` before the reference page, the drawing and componentize
+      prompts carry `The data model the proof of concept is built on`, the
+      fixtures use uuid ids, and the Data step refines (not redrafts) it.
 - [ ] A consumer's tasks build against a producer's mocked contract; the
       mock server answers `mocked-data-capability` for a planned write.
 - [ ] A consumer ready to land while its producer still builds logs

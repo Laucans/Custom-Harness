@@ -26,7 +26,9 @@ use crate::domain::creation::{
     parse_proposals, parse_requirements, parse_round, parse_scope, parse_ties, requirements_prompt,
     rule_prompt, rules_change_prompt, scope_prompt,
 };
-use crate::domain::data_draft::{DataEdit, change_prompt, data_prompt, parse_data, rules_print};
+use crate::domain::data_draft::{
+    DataEdit, change_prompt, data_prompt, early_data_prompt, model_part, parse_data, rules_print,
+};
 use crate::domain::design::Entry;
 use crate::domain::divergence;
 use crate::domain::drawing::{
@@ -695,7 +697,9 @@ impl CreationDesk {
         asked.may_enter(Step::Data, self.facts().await)?;
         let ctx = self.context(&asked).await;
         let fixtures = self.fixtures().await;
-        let answer = self.ask(data_prompt(&asked, &ctx, &fixtures)).await?;
+        let answer = self
+            .ask(data_prompt(&asked, &ctx, &fixtures, asked.data.as_ref()))
+            .await?;
         let draft = parse_data(&answer, &rules_print(&asked))?;
         let _held = self.record.lock().await;
         let mut record = self.existing()?;
@@ -1215,6 +1219,11 @@ impl CreationDesk {
         .await
         .map_err(|e| format!("the step did not finish: {e}"))??;
         let examples = examples_part(&self.examples_lent(&mockups, &branch).await);
+        // The model first: the pages, fixtures and micro-frontends are
+        // drawn after it (a mock-up drawn first gave slug ids where the
+        // columns were uuid). Laid once; the data step refines it.
+        let record = self.model_laid(record).await?;
+        let model = record.data.as_ref().map(model_part).unwrap_or_default();
         let put_away = self.pins_put_away(&branch).await;
         if put_away > 0 {
             self.step(&format!(
@@ -1232,6 +1241,7 @@ impl CreationDesk {
             reference.screen.name
         ));
         let mut prompt = reference_prompt(&record, &rules, &kit, &tokens_css, &reference, &all);
+        prompt.push_str(&model);
         prompt.push_str(&examples);
         let mut said = self
             .draw_pages(&drawing, 0, vec![(reference.clone(), prompt)])
@@ -1249,6 +1259,7 @@ impl CreationDesk {
                     &reference.path,
                     &all,
                 );
+                prompt.push_str(&model);
                 prompt.push_str(&examples);
                 (page.clone(), prompt)
             })
@@ -1277,6 +1288,35 @@ impl CreationDesk {
             record.go(Step::Rules, facts)?;
         }
         self.keep(&record)
+    }
+
+    /// The data model laid before the mock-up is drawn, when none is yet:
+    /// asked once, kept, and handed back on the record. A model that does
+    /// not come (no Claude, an answer with no table) never keeps the mock-up
+    /// from being drawn: said, and the data step drafts it later.
+    async fn model_laid(&self, record: Creation) -> Result<Creation, String> {
+        if record.data.is_some() {
+            return Ok(record);
+        }
+        self.step("a Claude Code session lays the data model the mock-up is drawn after");
+        let draft = match self.ask(early_data_prompt(&record)).await {
+            Ok(answer) => parse_data(&answer, &rules_print(&record)),
+            Err(why) => Err(why),
+        };
+        let draft = match draft {
+            Ok(draft) => draft,
+            Err(why) => {
+                self.step(&format!(
+                    "no data model laid ({why}): the mock-up is drawn without one, the data step drafts it"
+                ));
+                return Ok(record);
+            }
+        };
+        let _held = self.record.lock().await;
+        let mut kept = self.existing()?;
+        kept.data = Some(draft);
+        self.keep(&kept)?;
+        Ok(kept)
     }
 
     /// The mock-up read back once the desk has listed its pages: a manifest
@@ -2037,6 +2077,7 @@ impl CreationDesk {
         let (mockups_after, branch_after) = (mockups.clone(), branch.clone());
         let tokens_css = Self::design_tokens(&mockups).await;
         let mut prompt = componentize_prompt(record, &rules, &kit, &tokens_css);
+        prompt.push_str(&record.data.as_ref().map(model_part).unwrap_or_default());
         prompt.push_str(&examples_part(&self.examples_lent(&mockups, &branch).await));
         let model = self.setup.draw_model.clone();
         self.step("a Claude Code session makes the mock-up again of micro-frontends");
@@ -2458,10 +2499,21 @@ mod tests {
                 assert!(prompt.contains("- `Home` —"), "the cut is in the prompt");
                 return Ok(r#"{"findings":[{"check":"write_as_read","units":["ledger.saveLine"],"why":"it saves","fix":"move it to actions"}],"effects":{}}"#.to_string());
             }
+            if prompt.contains("You lay the data model") {
+                assert!(
+                    !prompt.contains("fixtures/Home.json") && !prompt.contains("The rules ("),
+                    "laid off the brief and the scope only, before the mock-up"
+                );
+                return Ok(r#"{"tables":[{"name":"line","purpose":"a line","fields":[{"name":"id","type":"uuid"}]}],"aggregates":[{"aggregate":"Line","fields":{"line.id":{"kind":"authoritative"}},"invariants":[]}]}"#.to_string());
+            }
             if prompt.contains("You draft the data model") {
                 assert!(
                     prompt.contains("`fixtures/Home.json`"),
                     "the example data is in the prompt"
+                );
+                assert!(
+                    prompt.contains("The model laid before the mock-up was drawn"),
+                    "the data step refines the model laid before the mock-up"
                 );
                 return Ok(r#"{"tables":[{"name":"line","purpose":"a line","fields":[{"name":"id","type":"uuid"}]}],"aggregates":[{"aggregate":"Line","fields":{"line.id":{"kind":"authoritative"}},"invariants":[{"id":"every-line","rule":"shown","onViolation":"reject","rules":[1]}]}]}"#.to_string());
             }
@@ -4393,7 +4445,10 @@ mod tests {
     }
 
     impl Oneshot for StagedPages {
-        fn ask(&self, _: &str, _: &str) -> Result<String, String> {
+        fn ask(&self, _: &str, prompt: &str) -> Result<String, String> {
+            if prompt.contains("You lay the data model") {
+                return Ok(r#"{"tables":[{"name":"page","purpose":"a page","fields":[{"name":"id","type":"uuid"}]}]}"#.to_string());
+            }
             Ok(String::new())
         }
 

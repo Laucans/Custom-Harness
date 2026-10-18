@@ -265,7 +265,7 @@
     if ((C.route === 'design' || C.route === 'brief') && kit && kit.validated && kit.waiting && !kit.running && !kit.noClaude) once(`kit-${r.regenerations}`, generateKit);
     if (C.route === 'data') {
       if (!C.mock) loadMock();
-      if (!r.data && r.rules_validated && !running()) once(`data-${r.regenerations}`, () => act('the AI drafts the data model', async () => { await post('data'); reloadEmbed(); }));
+      if ((!r.data || (C.data.dataStale && !r.data.validated)) && r.rules_validated && !running()) once(`data-${r.regenerations}`, () => act('the AI refines the data model off the rules', async () => { await post('data'); reloadEmbed(); }));
     }
     if (C.route === 'ports' && !r.ports && r.data && r.data.validated && !running()) once(`ports-${r.regenerations}`, () => act('the AI lists the ports', () => post('ports')));
     if (C.route === 'rules') {
@@ -1172,7 +1172,7 @@
   function stepData(r) {
     const d = r.data;
     const gaps = (C.data && C.data.dataGaps) || [];
-    const head = `<p class="muted">The data model the proof of concept needs, drafted by the AI off the rules, the micro-frontends and the mock-up's example data: the tables (drawn beside), then each aggregate's integrity rules — what each field's criticality is, the invariants that carry the business rules, what a link does when the row it points at goes. Ask the AI to change the structure; retouch the words and pick the policies here.</p>`;
+    const head = `<p class="muted">The data model the proof of concept needs, laid by the AI before the mock-up, then refined off the rules, the micro-frontends and the mock-up's example data: the tables (drawn beside), then each aggregate's integrity rules — what each field's criticality is, the invariants that carry the business rules, what a link does when the row it points at goes. Ask the AI to change the structure; retouch the words and pick the policies here.</p>`;
     if (!d) return head + (C.busy ? '' : '<div class="cr-actions"><span></span><button type="button" class="cr-btn on" data-cr-data-draft>Draft the data model</button></div>');
     const business = new Map(rules().filter((q) => q.family === 'business').map((q) => [q.id, q]));
     const status = d.validated && !C.data.dataStale ? '<span class="tag ok">validated</span>' : gaps.length ? `<span class="tag bad">${gaps.length} gap${gaps.length > 1 ? 's' : ''}</span>` : '<span class="tag">ready to validate</span>';

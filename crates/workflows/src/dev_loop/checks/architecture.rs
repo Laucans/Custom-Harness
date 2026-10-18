@@ -177,6 +177,49 @@ impl ArchitectureHolds {
         let here = self.repo.current_branch().await.ok()?;
         (here != pr.head).then_some(pr)
     }
+
+    /// Brings the checkout up to the integration branch's remote when the
+    /// task's pull request has been merged into it and the checkout, on that
+    /// branch, holds no local work: the session merged its PR on GitHub,
+    /// and the tree read here would still be the one from before it.
+    ///
+    /// `ForgeDesMondes`' #166: `SessionList` squash-merged in PR #226, and the
+    /// gate, reading the lane's tree as fetched before the round, found "a
+    /// Micro-UI of system `session` and the checkout has none".
+    async fn follow_merged(&self, ctx: &Context<Loop>) -> Outcome<()> {
+        let Some(branch) = crate::dev_loop::data::tasks::declared_branch(&ctx.state.task.body)
+        else {
+            return Ok(());
+        };
+        let Ok(pr) = self.gh.pr(&branch).await else {
+            return Ok(());
+        };
+        if !pr.state.eq_ignore_ascii_case("merged") {
+            return Ok(());
+        }
+        if self.repo.current_branch().await? != self.integration_branch
+            || !self.repo.dirty_files().await?.is_empty()
+        {
+            return Ok(());
+        }
+        if !self.repo.fetch().await?.ok() {
+            ctx.traces
+                .say("architecture: fetch failed — the tree is read as it is");
+            return Ok(());
+        }
+        let reset = self
+            .repo
+            .reset_hard(&format!("origin/{}", self.integration_branch))
+            .await?;
+        if reset.ok() {
+            ctx.traces.say(&format!(
+                "architecture: {} is merged into `{}` — the tree read follows its remote",
+                pr.reference(),
+                self.integration_branch
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
@@ -201,6 +244,7 @@ impl Verification<Loop> for ArchitectureHolds {
             ));
             return Ok(Verdict::Continue);
         }
+        self.follow_merged(ctx).await?;
         let tree = Tree::read(self.disk.as_ref(), &self.root);
         if !tree.under_architecture {
             ctx.traces
@@ -509,6 +553,58 @@ mod tests {
             purpose.contains("every Micro-UI needs Capabilities that exist"),
             "{purpose}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_merged_pr_makes_the_gate_read_the_integration_branch_s_remote_first() {
+        let pr_in = |state: &str| crate::common::fake_github::FakeGitHub {
+            prs: vec![(
+                "feat/risk-badge".to_string(),
+                harness_core::domain::Pr {
+                    num: "226".to_string(),
+                    head: "feat/risk-badge".to_string(),
+                    state: state.to_string(),
+                    ..harness_core::domain::Pr::default()
+                },
+            )],
+            pr_files: std::collections::HashMap::from([(
+                "226".to_string(),
+                vec!["apps/credit/risk-badge/index.ts".to_string()],
+            )]),
+            ..crate::common::fake_github::FakeGitHub::default()
+        };
+        let mut context = ctx("abc123");
+        context
+            .state
+            .task
+            .body
+            .push_str("\n\n## Scope\n\nbranch: feat/risk-badge\n");
+        // The fake checkout is on `main_agent`, which is not the integration
+        // branch here: the merged PR's tree is not this checkout's to follow.
+        let elsewhere = FakeRepos::default();
+        with_github(&elsewhere, pr_in("MERGED"))
+            .verify(&context)
+            .await
+            .expect("holds");
+        assert!(!elsewhere.asked("fetch"), "{:?}", elsewhere.calls());
+        // On the integration branch, clean: fetch, then reset on its remote,
+        // so the tree read holds what the session merged on GitHub.
+        let repos = FakeRepos::default();
+        let mut gate = with_github(&repos, pr_in("MERGED"));
+        gate.integration_branch = "main_agent".to_string();
+        gate.verify(&context).await.expect("holds");
+        assert!(repos.asked("fetch"), "{:?}", repos.calls());
+        assert!(
+            repos.asked("reset_hard origin/main_agent"),
+            "{:?}",
+            repos.calls()
+        );
+        // An open PR is the other rule's: nothing fetched for it.
+        let open = FakeRepos::default();
+        let mut gate = with_github(&open, pr_in("OPEN"));
+        gate.integration_branch = "main_agent".to_string();
+        gate.verify(&context).await.expect("holds");
+        assert!(!open.asked("fetch"), "{:?}", open.calls());
     }
 
     #[tokio::test]

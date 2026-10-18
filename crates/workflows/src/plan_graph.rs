@@ -163,7 +163,7 @@ pub async fn write(
             )
         })
         .collect();
-    let mut graph = Graph::derive(&milestones, &components);
+    let mut graph = Graph::derive(&milestones, &components, &dossier.screens());
     graph.mark_states(&|id| standing.built.iter().any(|b| b == id), &|id| {
         standing.mocked.iter().any(|m| m == id)
     });
@@ -288,7 +288,11 @@ mod tests {
             [18, 19, 20],
             "milestones only, in number order"
         );
-        assert_eq!(written.graph.ids["session.listScenes"].producer, Some(20));
+        assert_eq!(
+            written.graph.ids["session.listScenes"].producer,
+            Some(19),
+            "its first reader builds it, whatever the system"
+        );
         assert_eq!(
             written.graph.ids["session.listScenes"].state,
             harness_architecture::graph::State::Mocked
@@ -303,17 +307,14 @@ mod tests {
         );
         assert_eq!(
             written.reads_ahead,
-            vec![ReadAhead {
-                consumer: 19,
-                id: "session.listScenes".to_string(),
-                producer: 20,
-            }]
+            Vec::<ReadAhead>::new(),
+            "no milestone reads what a later one builds"
         );
         assert_eq!(written.unproduced, vec!["table.placeTokens".to_string()]);
         let lines = written.lines();
         assert_eq!(lines[0], "plan graph: 3 milestone(s), 9 id(s)");
-        assert!(lines[1].starts_with("read ahead: #19 reads `session.listScenes`, which #20"));
-        assert_eq!(lines[2], "no milestone produces: table.placeTokens");
+        assert_eq!(lines[1], "no milestone produces: table.placeTokens");
+        assert_eq!(lines.len(), 2, "no read ahead to say: {lines:?}");
         let writes = gh.writes();
         let Some(Wrote::PutFile(path, branch, text)) = writes.first() else {
             panic!("{writes:?}");

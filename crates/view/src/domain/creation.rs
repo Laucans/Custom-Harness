@@ -1270,6 +1270,9 @@ impl Creation {
     pub fn regenerate(&mut self) {
         self.regenerations = self.regenerations.saturating_add(1);
         self.mocked = None;
+        // The model is laid before the mock-up and the mock-up is shaped
+        // after it: drawn again, it is laid again.
+        self.data = None;
         self.mocked_scope.clear();
         self.accepted = false;
         self.componentized = None;

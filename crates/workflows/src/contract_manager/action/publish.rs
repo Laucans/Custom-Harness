@@ -15,7 +15,7 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
 use crate::common::{labels, sections};
-use crate::contract_manager::data::change::{self, Change};
+use crate::contract_manager::data::change::{self, Answer, Change};
 use crate::contract_manager::data::state::ManagerState;
 
 /// Writes the new version and carries it to everyone it concerns.
@@ -29,8 +29,8 @@ pub struct Apply {
 }
 
 impl Apply {
-    /// The change as the session answered it.
-    fn change(&self, ctx: &Context<ManagerState>) -> Outcome<Change> {
+    /// What the session answered.
+    fn answer(&self, ctx: &Context<ManagerState>) -> Outcome<Answer> {
         let Some(reply) = ctx.results.get(&self.evolve_stage) else {
             return Err(Halt::Failed(format!(
                 "no reply under {} — the evolve stage did not run",
@@ -80,10 +80,72 @@ impl Apply {
         Ok(())
     }
 
+    /// The request handed back: no contract changes, the requester told why,
+    /// the request closed, no task opened, nothing paid further.
+    async fn hand_back(&self, ctx: &Context<ManagerState>, reason: &str) -> Outcome<()> {
+        let issue = ctx.state.issue();
+        let request = ctx.state.request();
+        self.gh
+            .post_issue_comment(
+                request.task,
+                &format!(
+                    "The contract of `{}` does not change ({}): {reason} Build with it as it is.",
+                    request.id,
+                    issue.reference()
+                ),
+            )
+            .await?;
+        self.gh
+            .post_issue_comment(
+                issue.number,
+                &format!("Handed back — no contract change: {reason}"),
+            )
+            .await?;
+        self.gh.close_issue(issue.number).await?;
+        ctx.traces.say(&format!(
+            "{}: `{}` handed back to #{} — {reason}",
+            issue.reference(),
+            request.id,
+            request.task
+        ));
+        Ok(())
+    }
+
+    /// The requester reads the duplicate instead of the original: its
+    /// `needs:` line under `## Architecture` switched, its body rewritten.
+    async fn switch_requester(&self, ctx: &ManagerState, change: &Change) -> Outcome<()> {
+        let request = ctx.request();
+        let task = self.gh.issue(request.task).await?;
+        let switched = task
+            .body
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("needs:") && trimmed.contains(&request.id) {
+                    line.replace(&request.id, &change.id)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if switched != task.body {
+            self.gh.set_body(request.task, &switched).await?;
+        }
+        Ok(())
+    }
+
     /// The manifest, the fixture, the graph: written on the integration
-    /// branch, one commit each.
-    async fn write_contract(&self, ctx: &ManagerState, change: &Change) -> Outcome<()> {
-        let id = &ctx.request().id;
+    /// branch, one commit each. An evolution bumps the id's version in the
+    /// graph; a duplicate enters it as a new id the requester's milestone
+    /// produces.
+    async fn write_contract(
+        &self,
+        ctx: &ManagerState,
+        change: &Change,
+        duplicate: bool,
+    ) -> Outcome<()> {
+        let id = &change.id;
         let pretty = |value: &serde_json::Value| {
             serde_json::to_string_pretty(value).map_or_else(|_| value.to_string(), |t| t + "\n")
         };
@@ -105,30 +167,56 @@ impl Apply {
                 )
                 .await?;
         }
-        if let Some(mut graph) = ctx.graph.clone()
-            && let Some(interface) = graph.ids.get_mut(id)
-        {
-            interface.version = change.version;
-            interface.state = State::Evolving;
-            let text = graph
-                .to_json()
-                .map_err(|e| Halt::Failed(format!("the plan's graph cannot be written: {e}")))?;
-            self.gh
-                .put_file(
-                    graph::PATH,
-                    &self.base_branch,
-                    &text,
-                    &format!("chore(plan): {id} evolves to v{}", change.version),
-                )
-                .await?;
+        if let Some(mut graph) = ctx.graph.clone() {
+            let written = if duplicate {
+                let kind = ctx.known.map_or(Kind::Capability, |(kind, _)| kind);
+                graph.ids.insert(
+                    id.clone(),
+                    graph::Interface {
+                        kind,
+                        producer: ctx.request().milestone,
+                        state: State::Planned,
+                        version: change.version,
+                    },
+                );
+                true
+            } else if let Some(interface) = graph.ids.get_mut(id) {
+                interface.version = change.version;
+                interface.state = State::Evolving;
+                true
+            } else {
+                false
+            };
+            if written {
+                let text = graph.to_json().map_err(|e| {
+                    Halt::Failed(format!("the plan's graph cannot be written: {e}"))
+                })?;
+                let message = if duplicate {
+                    format!(
+                        "chore(plan): {id} duplicates {} for #{}",
+                        ctx.request().id,
+                        ctx.request().task
+                    )
+                } else {
+                    format!("chore(plan): {id} evolves to v{}", change.version)
+                };
+                self.gh
+                    .put_file(graph::PATH, &self.base_branch, &text, &message)
+                    .await?;
+            }
         }
         Ok(())
     }
 
     /// The task that builds the new version, under the producer's milestone
     /// while it is open, else the requester's; its tap open.
-    async fn producer_task(&self, ctx: &ManagerState, change: &Change) -> Outcome<u64> {
-        let id = &ctx.request().id;
+    async fn producer_task(
+        &self,
+        ctx: &ManagerState,
+        change: &Change,
+        duplicate: bool,
+    ) -> Outcome<u64> {
+        let id = &change.id;
         let kind = ctx.known.map_or(Kind::Capability, |(kind, _)| kind);
         let slug: String = id
             .chars()
@@ -140,17 +228,29 @@ impl Apply {
                 }
             })
             .collect();
+        let why = if duplicate {
+            format!(
+                "`{id}` duplicates `{}` for #{} (`{}`): {}. Build it, from the original's code, \
+                 in its own system; the requester reads it already, from the fixture that \
+                 stands for it.",
+                ctx.request().id,
+                ctx.request().task,
+                change.path,
+                change.summary
+            )
+        } else {
+            format!(
+                "The contract of `{id}` moved to v{} (`{}`): {}. Build the new version; its \
+                 consumers read it already, from the fixture that stands for it.",
+                change.version, change.path, change.summary
+            )
+        };
         let mut body = format!(
-            "## {}\n\nbranch: feat/{}-v{}\n\n{}\n\nThe contract of `{id}` moved to v{} \
-             (`{}`): {}. Build the new version; its consumers read it already, from the \
-             fixture that stands for it.",
+            "## {}\n\nbranch: feat/{}-v{}\n\n{}\n\n{why}",
             sections::heading_of(sections::SCOPE),
             slug.trim_matches('-'),
             change.version,
-            change.task.brief,
-            change.version,
-            change.path,
-            change.summary
+            change.task.brief
         );
         if !change.task.architecture.is_empty() {
             let _ = write!(
@@ -174,7 +274,12 @@ impl Apply {
             .gh
             .create_issue(&change.task.title, &body, &side)
             .await?;
-        if let Some(milestone) = ctx.target_milestone {
+        let under = if duplicate {
+            ctx.request().milestone
+        } else {
+            ctx.target_milestone
+        };
+        if let Some(milestone) = under {
             self.gh.create_sub_issue_link(milestone, task).await?;
         }
         Ok(task)
@@ -241,6 +346,48 @@ impl Apply {
             .await?;
         self.gh.close_issue(issue.number).await
     }
+
+    /// The requester told to read the duplicate, the request closed. The
+    /// original's other consumers are not told: it does not change.
+    async fn tell_duplicate(
+        &self,
+        ctx: &ManagerState,
+        change: &Change,
+        producer_task: u64,
+    ) -> Outcome<()> {
+        let request = ctx.request();
+        let issue = ctx.issue();
+        self.gh
+            .post_issue_comment(
+                request.task,
+                &format!(
+                    "`{}` does not change ({}): `{}` is yours instead — a duplicate in your \
+                     system, {}. #{producer_task} builds it; its fixture{} stands for it. Your \
+                     `needs:` now reads it.",
+                    request.id,
+                    issue.reference(),
+                    change.id,
+                    change.summary,
+                    change
+                        .fixture
+                        .as_ref()
+                        .map(|(path, _)| format!(" (`{path}`)"))
+                        .unwrap_or_default()
+                ),
+            )
+            .await?;
+        self.gh
+            .post_issue_comment(
+                issue.number,
+                &format!(
+                    "Duplicated: `{}` for #{} — manifest `{}`, built by #{producer_task}; `{}` \
+                     unchanged.",
+                    change.id, request.task, change.path, request.id
+                ),
+            )
+            .await?;
+        self.gh.close_issue(issue.number).await
+    }
 }
 
 #[async_trait(?Send)]
@@ -253,12 +400,25 @@ impl Action<ManagerState> for Apply {
             self.requester_s_own(ctx).await?;
             return Ok(Verdict::Continue);
         }
-        let change = self.change(ctx)?;
-        self.write_contract(&ctx.state, &change).await?;
-        let producer_task = self.producer_task(&ctx.state, &change).await?;
-        self.tell(&ctx.state, &change, producer_task).await?;
+        let (change, duplicate) = match self.answer(ctx)? {
+            Answer::HandBack(reason) => {
+                self.hand_back(ctx, &reason).await?;
+                return Ok(Verdict::Continue);
+            }
+            Answer::Evolve(change) => (change, false),
+            Answer::Duplicate(change) => (change, true),
+        };
+        self.write_contract(&ctx.state, &change, duplicate).await?;
+        let producer_task = self.producer_task(&ctx.state, &change, duplicate).await?;
+        if duplicate {
+            self.switch_requester(&ctx.state, &change).await?;
+            self.tell_duplicate(&ctx.state, &change, producer_task)
+                .await?;
+        } else {
+            self.tell(&ctx.state, &change, producer_task).await?;
+        }
         ctx.traces.event(&Event::ContractEvolved {
-            id: ctx.state.request().id.clone(),
+            id: change.id.clone(),
             version: change.version,
             task: ctx.state.request().task,
             producer_task,
@@ -445,6 +605,140 @@ mod tests {
                 labels::DATA_LAYER,
                 labels::READY
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_enters_the_graph_under_the_requester_and_switches_its_needs() {
+        let dup = r#"{"answer":"duplicate","path":"crates/media/capabilities/list-scenes-of-media/capability.json",
+          "manifest":{"capability":"media.listScenesOfMedia","system":"media","version":1},
+          "fixture_path":"mock/fixtures/media.listScenesOfMedia.json","fixture":{"scenes":[]},
+          "summary":"media lists the scenes its battlemaps are in","task_title":"media.listScenesOfMedia v1",
+          "task_brief":"From session.listScenes.","task_architecture":"unit: Capability\nside: harness:read-side"}"#;
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![Issue {
+                number: 61,
+                body: "## Scope\n\nx\n\n## Architecture\n\nunit: micro-ui\nsystem: media\nneeds: media.listMedia, session.listScenes".to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(true, Some(dup));
+        apply(&gh).run(&mut context).await.expect("duplicated");
+        let writes = gh.writes();
+        let graph = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::PutFile(path, _, text) if path == "plan/graph.json" => Some(text.clone()),
+                _ => None,
+            })
+            .expect("the graph written");
+        let graph = Graph::parse(&graph).expect("a graph");
+        assert_eq!(
+            graph.ids["media.listScenesOfMedia"].producer,
+            Some(19),
+            "the requester's milestone"
+        );
+        assert_eq!(graph.ids["media.listScenesOfMedia"].version, 1);
+        assert_eq!(
+            graph.ids["session.listScenes"].version, 1,
+            "the original is untouched"
+        );
+        assert!(
+            writes
+                .iter()
+                .any(|w| matches!(w, Wrote::SubIssueLink(19, _))),
+            "under the requester's milestone: {writes:?}"
+        );
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Body(61, body) if body.contains("needs: media.listMedia, media.listScenesOfMedia"))),
+            "{writes:?}"
+        );
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::Comment(21, _))),
+            "the original's other consumer is not told: {writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Closed(70)));
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_switches_the_needs_line_that_names_the_id_and_nothing_else() {
+        let dup = r#"{"answer":"duplicate","path":"crates/media/capabilities/list-scenes-of-media/capability.json",
+          "manifest":{"capability":"media.listScenesOfMedia","system":"media","version":1},
+          "summary":"s","task_title":"t","task_brief":"b","task_architecture":"unit: Capability"}"#;
+        // `session.listScenes` is named in the scope prose and in `produces:`
+        // of some other line — only the `needs:` line that names it moves.
+        let body = "## Scope\n\nReads session.listScenes.\n\n## Architecture\n\nunit: micro-ui\nsystem: media\nproduces: session.listScenes-view\nneeds: media.listMedia, session.listScenes\nnotes: needs: nothing here";
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![Issue {
+                number: 61,
+                body: body.to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(true, Some(dup));
+        apply(&gh).run(&mut context).await.expect("duplicated");
+        let written = gh
+            .writes()
+            .into_iter()
+            .find_map(|w| match w {
+                Wrote::Body(61, body) => Some(body),
+                _ => None,
+            })
+            .expect("the body rewritten");
+        assert!(
+            written.contains("needs: media.listMedia, media.listScenesOfMedia"),
+            "{written}"
+        );
+        assert!(
+            written.contains("Reads session.listScenes."),
+            "prose untouched: {written}"
+        );
+        assert!(
+            written.contains("produces: session.listScenes-view"),
+            "other lines untouched: {written}"
+        );
+        assert!(
+            written.contains("notes: needs: nothing here"),
+            "a line not starting with needs: stays: {written}"
+        );
+        // A requester whose needs: line does not name the id is not rewritten.
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![Issue {
+                number: 61,
+                body: "## Architecture\n\nneeds: media.listMedia".to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(true, Some(dup));
+        apply(&gh).run(&mut context).await.expect("duplicated");
+        assert!(
+            !gh.writes().iter().any(|w| matches!(w, Wrote::Body(..))),
+            "{:?}",
+            gh.writes()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hand_back_tells_the_requester_why_and_opens_no_task() {
+        let back = r#"{"answer":"hand_back","reason":"a Micro-UI reads any system's Capabilities: read it as it is."}"#;
+        let gh = Rc::new(FakeGitHub::default());
+        let mut context = ctx(true, Some(back));
+        apply(&gh).run(&mut context).await.expect("handed back");
+        let writes = gh.writes();
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Comment(61, said) if said.contains("does not change") && said.contains("read it as it is"))),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Closed(70)));
+        assert!(
+            !writes.iter().any(|w| matches!(
+                w,
+                Wrote::PutFile(..) | Wrote::CreatedIssue(..) | Wrote::Body(..)
+            )),
+            "{writes:?}"
         );
     }
 

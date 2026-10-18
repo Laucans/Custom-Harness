@@ -69,7 +69,8 @@ impl Write {
                 &ctx.state.writes,
             ));
         }
-        let mut found = graph::Graph::derive(&milestones, &ctx.state.components);
+        let mut found =
+            graph::Graph::derive(&milestones, &ctx.state.components, &ctx.state.screens);
         found.mark_states(
             &|id| ctx.state.standing.built.iter().any(|b| b == id),
             &|id| ctx.state.standing.mocked.iter().any(|m| m == id),
@@ -280,7 +281,7 @@ mod tests {
             vec![
                 Wrote::CreatedIssue(
                     "A".to_string(),
-                    "do A\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: PJ\nmicro-uis: -\ncommands: -\nside: harness:read-side"
+                    "do A\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: PJ\nmicro-uis: -\ncommands: -\nscreens: -\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -288,7 +289,7 @@ mod tests {
                 Wrote::Label(1, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "B".to_string(),
-                    "do B\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: Campagne\nmicro-uis: -\ncommands: -\nside: harness:read-side"
+                    "do B\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: Campagne\nmicro-uis: -\ncommands: -\nscreens: -\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -296,7 +297,7 @@ mod tests {
                 Wrote::Label(2, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "C".to_string(),
-                    "do C\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: pj, Campagne\nmicro-uis: -\ncommands: -\nside: harness:read-side"
+                    "do C\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: pj, Campagne\nmicro-uis: -\ncommands: -\nscreens: -\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -306,7 +307,7 @@ mod tests {
                 Wrote::Label(3, labels::READY.to_string()),
                 Wrote::CreatedIssue(
                     "D".to_string(),
-                    "do D\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: -\nmicro-uis: -\ncommands: -\nside: harness:read-side"
+                    "do D\n\n## Architecture\n\nsystems: -\nconcepts: -\naggregates: -\nmicro-uis: -\ncommands: -\nscreens: -\nside: harness:read-side"
                         .to_string(),
                     vec![labels::MILESTONE.to_string()]
                 ),
@@ -447,11 +448,15 @@ mod tests {
 
     #[tokio::test]
     async fn the_ids_no_milestone_produces_are_said_and_only_then() {
+        // A read always has a producer now — its first reader builds it,
+        // whatever the system. A write triggered by a micro-frontend of a
+        // milestone of another system, named by no milestone's `commands`,
+        // is what stays unproduced.
         let orphan = vec![graph::Component {
             name: "Board".to_string(),
             system: "table".to_string(),
             needs: vec!["table.getBoard".to_string()],
-            actions: vec![],
+            actions: vec!["table.placeTokens".to_string()],
         }];
         let lines = said(
             r#"[{"title":"A","goal":"a","systems":["media"],"micro_uis":["Board"]}]"#,
@@ -459,7 +464,11 @@ mod tests {
         )
         .await;
         assert!(
-            lines.contains("no milestone produces table.getBoard"),
+            !lines.contains("no milestone produces table.getBoard"),
+            "its reader builds it: {lines}"
+        );
+        assert!(
+            lines.contains("no milestone produces table.placeTokens"),
             "{lines}"
         );
         let lines = said(r#"[{"title":"A","goal":"a"}]"#, Vec::new()).await;

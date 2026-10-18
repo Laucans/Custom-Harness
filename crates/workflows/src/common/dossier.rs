@@ -21,6 +21,10 @@ use serde_json::Value;
 
 /// The record the creation leaves beside the mock-up.
 pub const RECORD: &str = "mock/proof-of-concept.json";
+
+/// The mock-up's listing (contract N): its pages and the Micro-UIs each
+/// composes.
+pub const PAGES: &str = "mock/pages.json";
 /// Where the drafted aggregates lie, one file each.
 pub const AGGREGATES_DIR: &str = "mock/data/aggregates";
 /// The rules (contract P).
@@ -114,6 +118,8 @@ pub struct Dossier {
     pub rules: Vec<Rule>,
     /// The ports.
     pub ports: Vec<Port>,
+    /// The screens: a page's stem and the Micro-UIs it composes.
+    pub screens: Vec<(String, Vec<String>)>,
 }
 
 /// What part of the dossier a block shows: all of it when every list is
@@ -203,6 +209,53 @@ fn text(value: Option<&Value>) -> String {
         .to_string()
 }
 
+/// The rules as `rules.json` holds them, each criterion in one line.
+fn rules_of(rules: &Value) -> Vec<Rule> {
+    rules
+        .get("rules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|r| {
+            let criterion = r.get("criterion");
+            let part = |key: &str| text(criterion.and_then(|c| c.get(key)));
+            Rule {
+                id: text(r.get("id")),
+                family: text(r.get("family")),
+                title: text(r.get("title")),
+                criterion: format!(
+                    "given {}, when {}, then {}",
+                    part("given"),
+                    part("when"),
+                    part("then")
+                ),
+                components: strings(r.get("components")),
+            }
+        })
+        .collect()
+}
+
+/// The screens the mock-up's listing names: a page's stem and the Micro-UIs
+/// it composes.
+fn screens_of(pages: &Value) -> Vec<(String, Vec<String>)> {
+    pages
+        .get("pages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|page| {
+            let path = text(page.get("path"));
+            let stem = path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&path)
+                .trim_end_matches(".html")
+                .to_string();
+            (!stem.is_empty()).then(|| (stem, strings(page.get("components"))))
+        })
+        .collect()
+}
+
 impl Dossier {
     /// The dossier under a checkout's root; what is missing reads as empty.
     #[must_use]
@@ -211,7 +264,12 @@ impl Dossier {
             disk.read_to_string(path)
                 .and_then(|t| serde_json::from_str(&t).ok())
         };
-        let mut dossier = Self::default();
+        let mut dossier = Self {
+            screens: json(&root.join(PAGES))
+                .map(|pages| screens_of(&pages))
+                .unwrap_or_default(),
+            ..Self::default()
+        };
         if let Some(record) = json(&root.join(RECORD)) {
             for c in record
                 .get("components")
@@ -266,27 +324,7 @@ impl Dossier {
             });
         }
         if let Some(rules) = json(&root.join(RULES)) {
-            for r in rules
-                .get("rules")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let criterion = r.get("criterion");
-                let part = |key: &str| text(criterion.and_then(|c| c.get(key)));
-                dossier.rules.push(Rule {
-                    id: text(r.get("id")),
-                    family: text(r.get("family")),
-                    title: text(r.get("title")),
-                    criterion: format!(
-                        "given {}, when {}, then {}",
-                        part("given"),
-                        part("when"),
-                        part("then")
-                    ),
-                    components: strings(r.get("components")),
-                });
-            }
+            dossier.rules = rules_of(&rules);
         }
         if let Some(ports) = json(&root.join(PORTS)) {
             for p in ports
@@ -359,6 +397,18 @@ impl Dossier {
                 system: ui.system.clone(),
                 needs: ui.needs.clone(),
                 actions: ui.actions.clone(),
+            })
+            .collect()
+    }
+
+    /// The screens as the plan's graph reads them.
+    #[must_use]
+    pub fn screens(&self) -> Vec<harness_architecture::graph::Screen> {
+        self.screens
+            .iter()
+            .map(|(name, micro_uis)| harness_architecture::graph::Screen {
+                name: name.clone(),
+                micro_uis: micro_uis.clone(),
             })
             .collect()
     }
@@ -516,6 +566,48 @@ mod tests {
     }
     use crate::common::fake_disk::FakeDisk;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_screens_are_read_off_the_mock_up_s_listing_by_page_stem() {
+        let root = PathBuf::from("/repo");
+        let mut disk = FakeDisk::default();
+        disk.existing.insert(
+            root.join(PAGES),
+            r#"{"version":1,"pages":[
+                {"path":"pages/preparation-seance.html","title":"Preparation","components":["SceneBoard","OralBrief"]},
+                {"path":"pages/soundbox.html","title":"Sounds","components":[]},
+                {"path":"","title":"nameless","components":["X"]}],
+              "components":[]}"#
+                .to_string(),
+        );
+        let dossier = Dossier::read(&disk, &root);
+        assert_eq!(
+            dossier.screens,
+            vec![
+                (
+                    "preparation-seance".to_string(),
+                    vec!["SceneBoard".to_string(), "OralBrief".to_string()]
+                ),
+                ("soundbox".to_string(), Vec::new()),
+            ],
+            "by stem, in the listing's order; a page with no path is no screen"
+        );
+        assert_eq!(
+            dossier.screens(),
+            vec![
+                harness_architecture::graph::Screen {
+                    name: "preparation-seance".to_string(),
+                    micro_uis: vec!["SceneBoard".to_string(), "OralBrief".to_string()],
+                },
+                harness_architecture::graph::Screen {
+                    name: "soundbox".to_string(),
+                    micro_uis: Vec::new(),
+                },
+            ]
+        );
+        let none = Dossier::read(&FakeDisk::default(), &root);
+        assert!(none.screens.is_empty() && none.screens().is_empty());
+    }
 
     fn disk() -> FakeDisk {
         let root = PathBuf::from("/repo");

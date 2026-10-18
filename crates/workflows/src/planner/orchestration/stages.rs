@@ -67,7 +67,12 @@ harness writes the plan's graph (`plan/graph.json`, contract R): what each
 milestone produces — its aggregates, writes, Capabilities, Micro-UIs — and
 what it consumes of the others. **Order the plan so that a milestone comes
 after every milestone it reads from**: a Micro-UI that lists scenes comes
-after the milestone that adds `session.listScenes`, or in it.
+after the milestone that adds `session.listScenes`, or in it. A Micro-UI
+reads any system's Capabilities: the first milestone whose micro-frontend
+reads one builds it, whatever the milestone's system. **Name the `screens`
+each milestone freezes** (the mock-up's page stems, `preparation-seance`):
+a screen composes Micro-UIs, so its milestone comes after every milestone
+that builds one of them — or the plan has a cycle, and is refused.
 
 **The design dossier** — what the factory's creation decided: every
 micro-frontend with what it reads and triggers, every write with its effect
@@ -107,7 +112,7 @@ builds all it needs.
 Answer with a JSON array and nothing else, one object per milestone, in
 delivery order:
 ```json
-[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "aggregates": ["Account"], "writes": false, "rules": ["R3"], "micro_uis": ["RiskBadge"], "commands": ["credit.approve"]}]
+[{"title": "a short, specific title", "goal": "a few sentences on what this milestone achieves", "systems": ["credit"], "concepts": ["Risk@3"], "aggregates": ["Account"], "writes": false, "rules": ["R3"], "micro_uis": ["RiskBadge"], "commands": ["credit.approve"], "screens": ["dashboard"]}]
 ```
 An empty array `[]` means this roadmap item needs no further milestone right
 now."#;

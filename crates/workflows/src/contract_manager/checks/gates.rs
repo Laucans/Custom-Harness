@@ -39,8 +39,9 @@ pub struct ChangeParses {
 #[async_trait(?Send)]
 impl Verification<ManagerState> for ChangeParses {
     fn purpose(&self) -> String {
-        "the reply reads as a change: the manifest's path, the manifest at a higher version, a \
-         summary"
+        "the reply reads as an answer: the contract evolved (its manifest at a higher version), \
+         duplicated (a new id in the requester's system, at version 1), or handed back with a \
+         reason"
             .to_string()
     }
 
@@ -147,5 +148,12 @@ mod tests {
             Verdict::Continue
         );
         assert!(gate.purpose().contains("higher version"));
+        let back = r#"{"answer":"hand_back","reason":"nothing to change"}"#;
+        assert_eq!(
+            gate.verify(&ctx(Some(back), Some((Kind::Capability, 1))))
+                .await
+                .expect("a verdict"),
+            Verdict::Continue
+        );
     }
 }
