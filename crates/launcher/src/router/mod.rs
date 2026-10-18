@@ -202,8 +202,14 @@ async fn tick(
         }
         Activity::Unchanged => pulse.etag.clone(),
     };
-    let (mut found, idle, watching_ci) =
-        snapshot(gh.as_ref(), &args.branch, args.parallel.max(1), log).await?;
+    let (mut found, idle, watching_ci) = snapshot(
+        gh.as_ref(),
+        &args.branch,
+        args.parallel.max(1),
+        &lanes.running(),
+        log,
+    )
+    .await?;
     pulse.read_in_full(etag, watching_ci);
     if args.no_human_gate {
         routing::open_taps(gh.as_ref(), &mut found, pulse, log).await?;
@@ -361,6 +367,7 @@ async fn snapshot(
     gh: &dyn GitHub,
     branch: &str,
     lanes: usize,
+    running: &[u64],
     log: &Logbook,
 ) -> Outcome<(Snapshot, Option<String>, bool)> {
     let roadmap = gh.issues_labelled(labels::ROADMAP, "open").await?;
@@ -373,9 +380,13 @@ async fn snapshot(
     // The two labelled lists once, for the three reads that need them.
     let to_fix = by_number(gh.open_prs_labelled(labels::PR_FIX).await?);
     let to_review = by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?);
-    let watching_ci = !to_fix.is_empty() || !to_review.is_empty();
-    let pr_to_fix = lowest_red_pr(gh, &to_fix, &to_review).await?;
-    let pr_to_review = lowest_pr_worth_reviewing(gh, &to_review).await?;
+    let watching_ci = watching_ci(&to_fix, &to_review);
+    // A PR a lane is already repairing or reviewing is not the tick's to
+    // pick again: picked, it ended the tick on "already on a lane" while
+    // the other PRs waited (`ForgeDesMondes`' four reviews ran one at a
+    // time on five lanes, 19:44Z–20:10Z).
+    let pr_to_fix = lowest_red_pr(gh, &not_running(&to_fix, running), &to_review).await?;
+    let pr_to_review = lowest_pr_worth_reviewing(gh, &not_running(&to_review, running)).await?;
     // The plan's graph, when the plan wrote one: what orders the milestones
     // and says which may build side by side.
     let graph = routing::parse_graph(gh.file_text(routing::GRAPH_PATH, branch).await?.as_deref());
@@ -499,6 +510,25 @@ async fn lowest_pr_worth_reviewing(gh: &dyn GitHub, to_review: &[Pr]) -> Outcome
     Ok(None)
 }
 
+/// Whether a PR of the harness's is under CI at all: the pulse then reads
+/// the board even when nothing moved on it.
+const fn watching_ci(to_fix: &[Pr], to_review: &[Pr]) -> bool {
+    !to_fix.is_empty() || !to_review.is_empty()
+}
+
+/// The PRs no lane holds: a lane is keyed by the number it works on, a PR's
+/// for a repair or a review.
+fn not_running(prs: &[Pr], running: &[u64]) -> Vec<Pr> {
+    prs.iter()
+        .filter(|pr| {
+            pr.num
+                .parse::<u64>()
+                .is_ok_and(|number| !running.contains(&number))
+        })
+        .cloned()
+        .collect()
+}
+
 /// PRs in number order, the ones whose number is unreadable last — a PR ref
 /// that is not a number cannot be ordered, and dropping it silently would
 /// hide it instead.
@@ -568,6 +598,33 @@ async fn with_split_blockers(gh: &dyn GitHub, milestones: Vec<Issue>) -> Outcome
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pr_a_lane_holds_is_not_offered_again() {
+        let pr = |num: &str| Pr {
+            num: num.to_string(),
+            ..Pr::default()
+        };
+        let prs = vec![pr("251"), pr("252"), pr("x")];
+        let left: Vec<String> = not_running(&prs, &[252, 7])
+            .into_iter()
+            .map(|pr| pr.num)
+            .collect();
+        assert_eq!(
+            left,
+            ["251"],
+            "the one on a lane and the unnumbered are out"
+        );
+        assert_eq!(not_running(&prs, &[]).len(), 2);
+    }
+
+    #[test]
+    fn ci_is_watched_while_any_pr_is_to_fix_or_to_review() {
+        let one = vec![Pr::default()];
+        assert!(!watching_ci(&[], &[]));
+        assert!(watching_ci(&one, &[]));
+        assert!(watching_ci(&[], &one));
+    }
 
     #[test]
     fn a_quota_strike_rests_the_watch_and_forgets_its_taps() {

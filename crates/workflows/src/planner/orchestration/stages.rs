@@ -97,8 +97,9 @@ wire protocol and `GET /health`, loading the mock-up's fixtures from
 from there; until they exist every rule's test stays pending. **The Data
 layer comes next, whole**: right after the skeleton, one milestone lays
 every aggregate of the dossier (`mock/data/aggregates/`, contract I) as a
-working base — its table, its migration, its `aggregate.json` — before any
-unit reads or writes it; the later milestones change a table by a new
+working base — the schema first, every migration in one task, then one task
+per aggregate for its `aggregate.json` and invariants — before any unit
+reads or writes it; the later milestones change a table by a new
 migration, documented in `data/model.json` in the same pull request, never
 by rewriting it. Milestones that build side by side then wait on no one's
 tables. Name in each milestone's `rules` the rules whose tests turn green

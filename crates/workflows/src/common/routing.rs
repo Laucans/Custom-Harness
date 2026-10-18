@@ -234,18 +234,22 @@ pub fn decide(snapshot: &Snapshot) -> Route {
             milestone: *milestone,
         };
     }
+    // A reviewed, green PR merges before anything is paid for: one call,
+    // run in the tick, and the tasks waiting on it start. Behind the
+    // reviews, `ForgeDesMondes`' #251 (clean at 19:50Z) waited on four
+    // reviews taken one tick at a time while #255 waited on it.
+    if let Some((task, pr)) = &snapshot.task_to_merge {
+        return Route::MergeIntoMilestone {
+            task: *task,
+            pr: pr.num.clone(),
+            base: pr.base.clone(),
+        };
+    }
     if let Some(pr) = &snapshot.pr_to_fix {
         return Route::PrFix { pr: pr.num.clone() };
     }
     if let Some(pr) = &snapshot.pr_to_review {
         return Route::PrReview {
-            pr: pr.num.clone(),
-            base: pr.base.clone(),
-        };
-    }
-    if let Some((task, pr)) = &snapshot.task_to_merge {
-        return Route::MergeIntoMilestone {
-            task: *task,
             pr: pr.num.clone(),
             base: pr.base.clone(),
         };
@@ -1085,6 +1089,26 @@ mod tests {
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::MergeMainAgent { milestone: 7 });
+    }
+
+    #[test]
+    fn a_green_task_pr_merges_before_a_repair_or_a_review_is_paid() {
+        let snapshot = Snapshot {
+            task_to_merge: Some((31, pr("34", "milestone/4-territory"))),
+            pr_to_fix: Some(pr("32", "milestone/4-territory")),
+            pr_to_review: Some(pr("33", "milestone/4-territory")),
+            ready_to_merge: Some(7),
+            dev_loop_milestones: vec![3],
+            ..empty()
+        };
+        assert_eq!(
+            decide(&snapshot),
+            Route::MergeIntoMilestone {
+                task: 31,
+                pr: "34".to_string(),
+                base: "milestone/4-territory".to_string(),
+            }
+        );
     }
 
     #[test]

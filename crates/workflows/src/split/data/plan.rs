@@ -177,6 +177,7 @@ pub fn spec_gaps(items: &[TaskItem]) -> Vec<String> {
         }
         gaps.extend(placement_gaps(&named, item));
     }
+    gaps.extend(schema_gaps(items));
     let mut producers: Vec<(String, usize)> = Vec::new();
     for (index, item) in items.iter().enumerate().filter(|(_, i)| !i.needs_human) {
         for id in ids(&item.produces) {
@@ -188,6 +189,61 @@ pub fn spec_gaps(items: &[TaskItem]) -> Vec<String> {
                 ));
             } else {
                 producers.push((id, index));
+            }
+        }
+    }
+    gaps
+}
+
+/// Whether a slice is the Data layer's schema: an `infrastructure` slice
+/// that writes the migrations.
+#[must_use]
+pub fn is_schema(item: &TaskItem) -> bool {
+    item.declaration().unit == Unit::Infrastructure
+        && item.technical.contains("crates/data/migrations/")
+}
+
+/// Where a plan lays its aggregates wrong: the migrations belong to one
+/// schema slice that comes first, and an aggregate slice writes none —
+/// chained on one another's migration, `ForgeDesMondes`' aggregates held
+/// three of five lanes.
+fn schema_gaps(items: &[TaskItem]) -> Vec<String> {
+    let aggregates: Vec<(usize, &TaskItem)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| !item.needs_human && item.declaration().unit == Unit::Aggregate)
+        .collect();
+    let schema = items.iter().position(is_schema);
+    let mut gaps = Vec::new();
+    match schema {
+        None if aggregates.len() >= 2 => gaps.push(
+            "the milestone lays several aggregates and no `infrastructure` slice writes their \
+             migrations: one schema slice, first, lays every migration from the design, and \
+             the aggregates then build side by side"
+                .to_string(),
+        ),
+        None => {}
+        Some(schema) => {
+            for (index, item) in
+                items.iter().take(schema).enumerate().filter(|(_, item)| {
+                    !item.needs_human && item.declaration().unit == Unit::Aggregate
+                })
+            {
+                gaps.push(format!(
+                    "slice {index} ({:?}) comes before the schema slice {schema}, whose tables it \
+                     builds on",
+                    item.title
+                ));
+            }
+            for (index, item) in aggregates {
+                let named = format!("slice {index} ({:?})", item.title);
+                if item.technical.contains("crates/data/migrations/") {
+                    gaps.push(format!(
+                        "{named} names a migration: the schema slice {schema} writes them all, an \
+                         aggregate slice installs its `aggregate.json` and invariants on tables \
+                         already there"
+                    ));
+                }
             }
         }
     }
@@ -327,6 +383,63 @@ mod tests {
             r#"{{"title":"List","brief":"b","branch":"feat/list","unit":"capability","system":"media","produces":["session.listScenes"],{WHOLE}}}"#
         ));
         assert_eq!(spec_gaps(&[capability]).len(), 1);
+    }
+
+    fn aggregate(name: &str, technical: &str) -> String {
+        format!(
+            r#"{{"title":"{name}","brief":"b","branch":"feat/{name}","unit":"aggregate","system":"dataguard","aggregate":"{name}","produces":["{name}"],"technical":"{technical}",{WHOLE}}}"#
+        )
+    }
+
+    const SCHEMA: &str = r#"{"title":"Schema","brief":"b","branch":"feat/schema","unit":"infrastructure","system":"-","technical":"crates/data/migrations/0005_media.sql, 0006_session.sql","goal":"g","acceptance":["given a, when b, then c"]}"#;
+
+    #[test]
+    fn several_aggregates_need_a_schema_slice_first_and_write_no_migration() {
+        let media = aggregate("Media", "crates/dataguard/aggregates/Media/");
+        let session = aggregate("Session", "crates/dataguard/aggregates/Session/");
+        let chained = parse(&format!("[{media},{session}]")).expect("parse");
+        let gaps = spec_gaps(&chained);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(gaps[0].contains("one schema slice, first"), "{}", gaps[0]);
+
+        let one = parse(&format!("[{media}]")).expect("parse");
+        assert!(
+            spec_gaps(&one).is_empty(),
+            "a lone aggregate may carry its migration"
+        );
+
+        let laid = parse(&format!("[{SCHEMA},{media},{session}]")).expect("parse");
+        assert!(spec_gaps(&laid).is_empty(), "{:?}", spec_gaps(&laid));
+        assert!(is_schema(&laid[0]) && !is_schema(&laid[1]));
+
+        let tooling = r#"{"title":"Shell","brief":"b","branch":"feat/shell","unit":"tooling","system":"-","technical":"apps/shell/","goal":"g","acceptance":["given a, when b, then c"]}"#;
+        let shell_first = parse(&format!("[{tooling},{SCHEMA},{media}]")).expect("parse");
+        assert!(
+            spec_gaps(&shell_first).is_empty(),
+            "only an aggregate before the schema is early"
+        );
+        let early = parse(&format!("[{media},{SCHEMA},{session}]")).expect("parse");
+        let gaps = spec_gaps(&early);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(gaps[0].contains("before the schema slice 1"), "{}", gaps[0]);
+
+        let plain = parse(
+            r#"[{"title":"Server","brief":"b","branch":"feat/server","unit":"infrastructure","system":"-","technical":"crates/server/","goal":"g","acceptance":["given a, when b, then c"]}]"#,
+        )
+        .expect("parse");
+        assert!(
+            !is_schema(&plain[0]),
+            "an infrastructure slice without migrations"
+        );
+        let own = aggregate("Sound", "crates/data/migrations/0007_sound.sql");
+        assert!(
+            !is_schema(&parse(&format!("[{own}]")).expect("parse")[0]),
+            "an aggregate with one"
+        );
+        let doubled = parse(&format!("[{SCHEMA},{media},{own}]")).expect("parse");
+        let gaps = spec_gaps(&doubled);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(gaps[0].contains("names a migration"), "{}", gaps[0]);
     }
 
     #[test]

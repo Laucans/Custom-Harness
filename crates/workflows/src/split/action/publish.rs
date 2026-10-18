@@ -27,7 +27,8 @@ use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
-use std::collections::BTreeMap;
+use harness_architecture::vocabulary::Unit;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use crate::common::{branching, labels, sections};
@@ -122,6 +123,96 @@ fn rules_section(rules: &[String]) -> Option<String> {
 /// needs. An id nobody produces is already there — nothing to wait on. Ids
 /// compare case-insensitively: a manifest's `campagne.ajouterPj` and a
 /// slice's `campagne.ajouterpj` are one.
+/// `unblocked`, or `blocked by #a, #b`.
+fn blocked_phrase(blockers: &[u64]) -> String {
+    if blockers.is_empty() {
+        "unblocked".to_string()
+    } else {
+        format!(
+            "blocked by {}",
+            blockers
+                .iter()
+                .map(|b| format!("#{b}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+/// The tasks a split has opened so far, as a slice's blockers are read off
+/// them.
+struct Chain<'a> {
+    /// The tasks opened, in plan order: what `depends_on` indexes.
+    created: &'a [u64],
+    /// Who produces which id among them.
+    producers: &'a BTreeMap<String, u64>,
+    /// The aggregate tasks among them.
+    aggregates: &'a BTreeSet<u64>,
+    /// The schema task, when the plan has one.
+    schema: Option<u64>,
+}
+
+/// What task `number` waits on: the slices it `depends_on`, then the
+/// producers of what it `needs`, each once.
+fn blockers_of(
+    number: u64,
+    item: &plan::TaskItem,
+    declaration: &harness_architecture::vocabulary::Declaration,
+    chain: &Chain<'_>,
+    traces: &harness_core::traces::Logbook,
+) -> Vec<u64> {
+    let mut blockers: Vec<u64> = Vec::new();
+    for dependency in &item.depends_on {
+        match chain.created.get(*dependency) {
+            Some(blocker) => blockers.push(*blocker),
+            None => traces.warn(&format!(
+                "task #{number} depends on slice {dependency}, which is not \
+                 before it in the plan — dependency ignored"
+            )),
+        }
+    }
+    for blocker in chained(
+        declaration.unit,
+        &declaration.needs,
+        chain.producers,
+        chain.aggregates,
+        chain.schema,
+    ) {
+        if !blockers.contains(&blocker) {
+            blockers.push(blocker);
+        }
+    }
+    blockers
+}
+
+/// What a slice waits on among the tasks before it: the producers of its
+/// `needs`
+/// — except that an aggregate waits on the schema slice, never on another
+/// aggregate: the table it references is laid there, with every other
+/// (`ForgeDesMondes`' `Session` waited on `Media`'s migration, `SoundPlayback`
+/// on both; with the schema laid first they build side by side).
+fn chained(
+    unit: Unit,
+    needs: &[String],
+    producers: &BTreeMap<String, u64>,
+    aggregates: &BTreeSet<u64>,
+    schema: Option<u64>,
+) -> Vec<u64> {
+    let mut blockers = graph_blockers(needs, producers);
+    if unit == Unit::Aggregate
+        && let Some(schema) = schema
+    {
+        for blocker in &mut blockers {
+            if aggregates.contains(blocker) {
+                *blocker = schema;
+            }
+        }
+        blockers.sort_unstable();
+        blockers.dedup();
+    }
+    blockers
+}
+
 fn graph_blockers(needs: &[String], producers: &BTreeMap<String, u64>) -> Vec<u64> {
     // The id as written first — `Media` the aggregate is not `media` the
     // system's wiring, and the one written last would have hidden the other
@@ -186,6 +277,8 @@ impl Action<SplitState> for Write {
         // Who produces what, among the tasks this split opened: what a later
         // task that needs the id waits on.
         let mut producers: BTreeMap<String, u64> = BTreeMap::new();
+        let mut aggregates: BTreeSet<u64> = BTreeSet::new();
+        let mut schema: Option<u64> = None;
         let mut created: Vec<u64> = Vec::new();
         for (index, item) in items.iter().enumerate() {
             let kind = if item.needs_human {
@@ -202,44 +295,36 @@ impl Action<SplitState> for Write {
             self.gh
                 .create_sub_issue_link(milestone_number, number)
                 .await?;
-            let mut blockers: Vec<u64> = Vec::new();
-            for dependency in &item.depends_on {
-                match created.get(*dependency) {
-                    Some(blocker) => blockers.push(*blocker),
-                    None => ctx.traces.warn(&format!(
-                        "task #{number} depends on slice {dependency}, which is not \
-                         before it in the plan — dependency ignored"
-                    )),
-                }
-            }
-            for blocker in graph_blockers(&declaration.needs, &producers) {
-                if !blockers.contains(&blocker) {
-                    blockers.push(blocker);
-                }
-            }
+            let blockers = blockers_of(
+                number,
+                item,
+                &declaration,
+                &Chain {
+                    created: &created,
+                    producers: &producers,
+                    aggregates: &aggregates,
+                    schema,
+                },
+                &ctx.traces,
+            );
             for blocker in &blockers {
                 self.gh.add_blocked_by(number, *blocker).await?;
             }
             for id in &declaration.produces {
                 producers.entry(id.clone()).or_insert(number);
             }
+            if declaration.unit == Unit::Aggregate {
+                aggregates.insert(number);
+            }
+            if schema.is_none() && plan::is_schema(item) {
+                schema = Some(number);
+            }
             ctx.traces.say(&format!(
                 "opened task #{number}: {} ({kind}, {}, {}, {})",
                 item.title,
                 side.label(),
                 layer.name(),
-                if blockers.is_empty() {
-                    "unblocked".to_string()
-                } else {
-                    format!(
-                        "blocked by {}",
-                        blockers
-                            .iter()
-                            .map(|b| format!("#{b}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
+                blocked_phrase(&blockers)
             ));
             created.push(number);
             debug_assert_eq!(created.len(), index + 1);
@@ -430,6 +515,95 @@ mod tests {
             "any spelling when no exact id; sorted, deduplicated"
         );
         assert!(graph_blockers(&["Nothing".to_string()], &producers).is_empty());
+    }
+
+    #[test]
+    fn the_trace_says_what_a_task_is_blocked_by() {
+        assert_eq!(blocked_phrase(&[]), "unblocked");
+        assert_eq!(blocked_phrase(&[7, 12]), "blocked by #7, #12");
+    }
+
+    #[tokio::test]
+    async fn the_split_chains_an_aggregate_on_the_schema_task_and_a_write_on_its_aggregate() {
+        let gh = Rc::new(gh_with_base());
+        let mut context = ctx(
+            false,
+            r#"[{"title":"Shell","brief":"b","branch":"feat/shell","unit":"tooling","system":"-","technical":"apps/shell/"},
+               {"title":"Schema","brief":"b","branch":"feat/schema","unit":"infrastructure","system":"-","technical":"crates/data/migrations/0005_media.sql"},
+               {"title":"Media","brief":"b","branch":"feat/media","unit":"aggregate","system":"media","aggregate":"Media","produces":["Media"],"needs":["Campaign"],"depends_on":[1]},
+               {"title":"Session","brief":"b","branch":"feat/session","unit":"aggregate","system":"session","aggregate":"Session","produces":["Session"],"needs":["Media"]},
+               {"title":"Save","brief":"b","branch":"feat/save","unit":"data-capability","system":"session","aggregate":"Session","produces":["session.save"],"needs":["Session","Media"]}]"#,
+        );
+        Write {
+            gh: gh.clone(),
+            slice_stage: "slice".to_string(),
+            base_branch: "main_agent".to_string(),
+            profile: "mid".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("published");
+        assert_eq!(
+            links(&gh),
+            vec![(3, 2), (4, 2), (5, 3), (5, 4)],
+            "Media and Session wait on the schema (#2, not the tooling before it); the write \
+             waits on both aggregates"
+        );
+
+        // No schema slice: the first task is not taken for one, and the
+        // aggregates chain on each other as before.
+        let gh = Rc::new(gh_with_base());
+        let mut context = ctx(
+            false,
+            r#"[{"title":"Shell","brief":"b","branch":"feat/shell","unit":"tooling","system":"-","technical":"apps/shell/"},
+               {"title":"Media","brief":"b","branch":"feat/media","unit":"aggregate","system":"media","aggregate":"Media","produces":["Media"]},
+               {"title":"Session","brief":"b","branch":"feat/session","unit":"aggregate","system":"session","aggregate":"Session","produces":["Session"],"needs":["Media"]}]"#,
+        );
+        Write {
+            gh: gh.clone(),
+            slice_stage: "slice".to_string(),
+            base_branch: "main_agent".to_string(),
+            profile: "mid".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("published");
+        assert_eq!(links(&gh), vec![(3, 2)]);
+    }
+
+    #[test]
+    fn an_aggregate_waits_on_the_schema_slice_not_on_another_aggregate() {
+        let producers = BTreeMap::from([
+            ("Media".to_string(), 117),
+            ("Campaign".to_string(), 105),
+            ("media".to_string(), 90),
+        ]);
+        let aggregates = BTreeSet::from([117, 105]);
+        let needs = [
+            "Media".to_string(),
+            "Campaign".to_string(),
+            "media".to_string(),
+        ];
+        assert_eq!(
+            chained(Unit::Aggregate, &needs, &producers, &aggregates, Some(200)),
+            [90, 200]
+        );
+        assert_eq!(
+            chained(Unit::Aggregate, &needs, &producers, &aggregates, None),
+            [90, 105, 117],
+            "no schema slice: the aggregates chain as before"
+        );
+        assert_eq!(
+            chained(
+                Unit::DataCapability,
+                &needs,
+                &producers,
+                &aggregates,
+                Some(200)
+            ),
+            [90, 105, 117],
+            "a write waits on its aggregate's own task"
+        );
     }
 
     #[tokio::test]

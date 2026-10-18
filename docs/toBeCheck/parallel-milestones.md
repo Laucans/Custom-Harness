@@ -136,6 +136,18 @@ their tests and gates only: no live watch has run them yet.
 - [ ] **The split says copy, never move, for an aggregate's tables**: the next Data layer split's
       slices read "copies its tables from mock/data/model.json into data/model.json"; no PR of
       the layer touches `mock/data/model.json` (#243–#250 reworded by hand at 19:25Z).
+- [ ] **The Data layer's schema is one slice, first, and the aggregates do not chain**: the next
+      Data layer split opens one `infrastructure` task writing every migration from the design
+      (`plan::is_schema`), then one task per aggregate `blocked_by` the schema task only (a need
+      on another aggregate is rerouted, `publish::chained`); `spec_gaps` refuses two aggregates
+      without a schema slice, an aggregate before it, or one naming a migration. On
+      ForgeDesMondes: #255 (schema, blocked by #243/#244/#245) then #246–#250 side by side —
+      expected five lanes busy at once when #255 closes.
+- [ ] **Reviews and repairs take the free lanes, and a green PR merges first**: with several
+      `to-review` PRs, the ticks route one `PrReview` per tick onto distinct lanes (the PR a lane
+      holds is not offered again, `not_running`), and `MergeIntoMilestone` comes before `PrFix`
+      and `PrReview` in `decide`. Expected on ForgeDesMondes after the redeploy: #251 (clean, green
+      since 19:50Z) merges on the first tick; #252/#254 reviews run side by side.
 - [ ] **The planner refuses a plan whose Data layer is not first**
       (`data_layer_not_first`): the next roadmap item's plan, if it lays an
       aggregate in a feature milestone, halts with `the Data layer is split

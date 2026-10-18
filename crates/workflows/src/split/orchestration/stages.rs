@@ -115,17 +115,20 @@ creation decided:
 Ids in `produces` and `needs`, a write's `effect` and `touches`, are copied
 from it, never invented. A micro-frontend slice names its fragment and its
 fixtures (`mock/fixtures/<Capability>.json`, one per Capability it needs).
-An aggregate slice installs its draft `mock/data/aggregates/<Aggregate>.aggregate.json`
-as `crates/dataguard/aggregates/<Aggregate>/aggregate.json` and copies its
-tables from `mock/data/model.json` into `data/model.json` with its
-migration — `mock/data/model.json` is the design and stays as it is; the
-architecture gate refuses a build that touches it. **Number every aggregate slice's migration in the plan itself**,
-in its `technical`: `crates/data/migrations/NNNN_<aggregate_snake>.sql`,
-NNNN counting on from the migrations the inventory shows, one number per
-slice, in foreign-key order — a table comes after every table it
-references, so an aggregate that `needs` another takes the later number.
-Slices on distinct aggregates run side by side: two of them inventing the
-same number would collide at the merge. A slice whose unit uses a port the milestone has not built yet
+**The Data layer's schema is one slice, first.** When the milestone lays
+aggregates, its first slice is an `infrastructure` one that writes every
+migration of the milestone from `mock/data/model.json` — one file per
+aggregate, `crates/data/migrations/NNNN_<aggregate_snake>.sql`, NNNN counting
+on from the migrations the inventory shows, in foreign-key order (a table
+after every table it references) — and copies those tables into
+`data/model.json`; `mock/data/model.json` is the design and stays as it is,
+the architecture gate refuses a build that touches it. Then one slice per
+aggregate, each `depends_on` the schema slice and on no other aggregate:
+it installs its draft `mock/data/aggregates/<Aggregate>.aggregate.json` as
+`crates/dataguard/aggregates/<Aggregate>/aggregate.json` with its invariants
+and their tests, on tables already there, and writes no migration. The
+aggregates then build side by side (ForgeDesMondes' first Data layer
+chained them on one another's migration and five lanes held three). A slice whose unit uses a port the milestone has not built yet
 builds it first, or a slice before it does: `crates/ports/<port>/` with its
 trait, its fake and contract tests, then its adapter as ports.json names it.
 Its manifest names the port under `ports`.
