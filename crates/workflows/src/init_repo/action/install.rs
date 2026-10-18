@@ -56,6 +56,15 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<Vec<String>> {
             "nothing to install — {} already carries every file",
             config.branch
         ));
+        // A diverged file is not this harness's any more: said every time,
+        // or a gate fixed here never reaches the product and nobody knows
+        // (`ForgeDesMondes`' gates.yml missed the stale-`builtFrom` check).
+        if !plan.diverged.is_empty() {
+            lines.push(format!(
+                "diverged, the product's own now — kept: {}",
+                plan.diverged.join(", ")
+            ));
+        }
         return Ok(lines);
     }
     for (path, content) in &plan.writes {
@@ -381,6 +390,57 @@ mod tests {
         assert!(!repos.asked("commit") && !repos.asked("push"));
         assert!(disk.written.borrow().is_empty(), "expected nothing");
         assert!(lines[0].starts_with("nothing to install"));
+        assert_eq!(lines.len(), 1, "nothing diverged: {lines:?}");
+    }
+
+    #[tokio::test]
+    async fn nothing_to_install_still_names_what_diverged() {
+        let clone = PathBuf::from("/tmp/init/o-r");
+        let mut existing = std::collections::HashMap::new();
+        existing.insert(clone.clone(), String::new());
+        for asset in &FILES {
+            existing.insert(clone.join(asset.path), asset.content.to_string());
+        }
+        existing.insert(
+            clone.join(CLAUDE_MD),
+            harness_architecture::assets::CLAUDE_RULES.to_string(),
+        );
+        let recorded = crate::init_repo::data::install::InstallPlan::new(
+            &|path| existing.get(&clone.join(path)).cloned(),
+            false,
+        );
+        let manifest = recorded
+            .writes
+            .iter()
+            .find(|(path, _)| path == crate::init_repo::data::install::MANIFEST)
+            .map(|(_, text)| text.clone())
+            .expect("a manifest");
+        existing.insert(
+            clone.join(crate::init_repo::data::install::MANIFEST),
+            manifest,
+        );
+        let gates = FILES
+            .iter()
+            .find(|asset| asset.path.ends_with("gates.yml"))
+            .expect("gates.yml is installed");
+        existing.insert(clone.join(gates.path), "name: mine\n".to_string());
+        let disk = Rc::new(FakeDisk {
+            existing,
+            ..FakeDisk::default()
+        });
+        let repos = FakeRepos::default();
+        let lines = run(
+            &ports(Rc::clone(&disk), repos.clone()),
+            &config_fake::config(),
+        )
+        .await
+        .expect("nothing to do");
+        assert!(!repos.asked("commit"));
+        assert!(lines[0].starts_with("nothing to install"), "{lines:?}");
+        assert_eq!(
+            lines.get(1).map(String::as_str),
+            Some(format!("diverged, the product's own now — kept: {}", gates.path).as_str())
+        );
     }
 
     #[tokio::test]

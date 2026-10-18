@@ -716,7 +716,10 @@ jobs:
           done
           exit $failed
       # The bundles are the real Micro-UIs' code: a change under apps/ or
-      # mock/src/ without a rebuild would show stale code on the easel.
+      # mock/src/ without a rebuild would show stale code on the easel. The
+      # `builtFrom` digests in mock/pages.json are part of the build — a
+      # bundle whose code came out the same but whose digest is stale let a
+      # milestone land, and two branches rebuilding it later collided there.
       - name: The micro-frontends' bundles are rebuilt from the Micro-UIs' code
         shell: bash
         run: |
@@ -724,8 +727,8 @@ jobs:
           [ -f mock/build.sh ] || exit 0
           [ -f package.json ] && npm ci --no-audit --no-fund --loglevel=error
           sh mock/build.sh
-          if ! git diff --exit-code --stat -- mock/components; then
-            echo "::error file=mock/build.sh::the bundles under mock/components/ are stale — run mock/build.sh and commit them"
+          if ! git diff --exit-code --stat -- mock/components mock/pages.json; then
+            echo "::error file=mock/build.sh::the bundles under mock/components/ or their builtFrom in mock/pages.json are stale — run mock/build.sh and commit them"
             exit 1
           fi
 
