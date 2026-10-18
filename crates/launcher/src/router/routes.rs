@@ -56,7 +56,11 @@ pub(super) async fn dispatch(
     // Recorded before anything is repaired: the record is what the repair
     // reads, and what says — next tick — that it has already been treated.
     let Some((workflow, halt)) = failed else {
-        return if nothing && args.parallel <= 1 {
+        // Only a route that ran here, and went through, proves the quota is
+        // back: a route handed to a lane has not run yet, and its lane says
+        // `QUOTA` when it strikes. Counting the hand-over as `Went` cleared
+        // the rest every tick — 309 refused sessions in a quota's night.
+        return if nothing || on_a_lane {
             Dispatched::Nothing
         } else {
             Dispatched::Went
