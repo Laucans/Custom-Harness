@@ -141,16 +141,27 @@ pub async fn read_on(gh: &dyn GitHub, branch: &str) -> Outcome<Board> {
     read_of(gh, milestone.clone()).await
 }
 
-/// This milestone's board: its sub-issues, blockers read.
+/// This milestone's board: its sub-issues, the open ones' blockers read —
+/// a closed task runs no more, and its blockers were one GitHub call each.
 ///
 /// # Errors
 /// Adapter failure, propagated as-is.
 pub async fn read_of(gh: &dyn GitHub, milestone: Issue) -> Outcome<Board> {
     let subs = gh.sub_issues(milestone.number).await?;
-    let held = gh.with_blockers(subs).await?;
+    let open: Vec<Issue> = subs.iter().filter(|t| t.is_open()).cloned().collect();
+    let held = gh.with_blockers(open).await?;
+    let tasks = subs
+        .into_iter()
+        .map(|task| {
+            held.iter()
+                .find(|h| h.number == task.number)
+                .cloned()
+                .unwrap_or(task)
+        })
+        .collect();
     Ok(Board {
         milestone,
-        tasks: held,
+        tasks,
         resuming: None,
     })
 }
@@ -274,5 +285,22 @@ mod tests {
         let said = board.stuck();
         assert!(said.contains(labels::READY));
         assert!(!said.contains("waiting for you to merge"));
+    }
+
+    #[tokio::test]
+    async fn the_blockers_of_the_open_tasks_alone_are_read_and_the_order_is_kept() {
+        let mut done = task(12);
+        done.state = "closed".to_string();
+        let gh = FakeGitHub {
+            issues: vec![issue(4, &[labels::MILESTONE])],
+            subs: vec![(4, vec![task(11), done, task(13)])],
+            ..FakeGitHub::default()
+        };
+        let board = read(&gh).await.expect("a board");
+        assert_eq!(
+            board.tasks.iter().map(|t| t.number).collect::<Vec<_>>(),
+            [11, 12, 13]
+        );
+        assert_eq!(*gh.blockers_asked.borrow(), vec![11, 13]);
     }
 }

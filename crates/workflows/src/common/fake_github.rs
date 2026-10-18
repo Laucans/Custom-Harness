@@ -120,6 +120,8 @@ pub struct FakeGitHub {
     pub activity: Option<Activity>,
     /// The branches that refuse a merge into them (a conflict), by name.
     pub refused_merges: Vec<String>,
+    /// The tasks whose blockers were asked for, in order.
+    pub blockers_asked: RefCell<Vec<u64>>,
 }
 
 impl FakeGitHub {
@@ -220,6 +222,9 @@ impl GitHub for FakeGitHub {
 
     async fn with_blockers(&self, tasks: Vec<Issue>) -> Outcome<Vec<Issue>> {
         self.ok()?;
+        self.blockers_asked
+            .borrow_mut()
+            .extend(tasks.iter().map(|t| t.number));
         Ok(tasks)
     }
 

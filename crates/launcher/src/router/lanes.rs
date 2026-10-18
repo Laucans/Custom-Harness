@@ -10,7 +10,7 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Event, Logbook};
 use harness_workflows::common::routing::{self, Snapshot};
 use harness_workflows::common::{branching, labels};
-use harness_workflows::dev_loop::data::{board, tasks};
+use harness_workflows::dev_loop::data::tasks;
 use harness_workflows::main_agent_merge::data::merge_train;
 
 use crate::cli::WatchArgs;
@@ -187,21 +187,15 @@ pub(super) async fn run_lanes(
     lanes: &mut Lanes,
     log: &Logbook,
 ) -> Option<Halt> {
-    let Some(named) = found.milestones.iter().find(|m| m.number == milestone) else {
+    let Some(board) = found
+        .boards
+        .iter()
+        .find(|b| b.milestone.number == milestone)
+    else {
         log.warn(&format!(
-            "watch: lanes -> milestone #{milestone} left the board since the route was decided"
+            "watch: lanes -> no board read for milestone #{milestone} this tick"
         ));
         return None;
-    };
-    let board = match board::read_of(gh, named.clone()).await {
-        Ok(board) => board,
-        Err(halt) => {
-            log.warn(&format!(
-                "watch: lanes -> cannot read the board of #{milestone}: {}",
-                halt.reason()
-            ));
-            return Some(halt);
-        }
     };
     let branch = branching::milestone_branch(milestone, &board.milestone.title);
     let running = lanes.running();

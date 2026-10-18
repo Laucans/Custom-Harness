@@ -202,7 +202,8 @@ async fn tick(
         }
         Activity::Unchanged => pulse.etag.clone(),
     };
-    let (mut found, idle, watching_ci) = snapshot(gh.as_ref(), &args.branch, log).await?;
+    let (mut found, idle, watching_ci) =
+        snapshot(gh.as_ref(), &args.branch, args.parallel.max(1), log).await?;
     pulse.read_in_full(etag, watching_ci);
     if args.no_human_gate {
         routing::open_taps(gh.as_ref(), &mut found, pulse, log).await?;
@@ -359,6 +360,7 @@ fn resolve_gh(args: &WatchArgs, here: &Path) -> Outcome<Rc<dyn GitHub>> {
 async fn snapshot(
     gh: &dyn GitHub,
     branch: &str,
+    lanes: usize,
     log: &Logbook,
 ) -> Outcome<(Snapshot, Option<String>, bool)> {
     let roadmap = gh.issues_labelled(labels::ROADMAP, "open").await?;
@@ -392,7 +394,7 @@ async fn snapshot(
     // purpose: "no open milestone at all" is this probe's most common
     // answer, not a failure — `dev_loop::run` itself is where that
     // distinction matters and is already made.
-    let boards = building_boards(gh, &milestones, graph.as_ref()).await;
+    let boards = building_boards(gh, &milestones, graph.as_ref(), lanes).await;
     let dev_loop_milestones: Vec<u64> = boards
         .iter()
         .filter(|b| b.next().is_some())
@@ -412,6 +414,7 @@ async fn snapshot(
             break;
         }
     }
+    let boards_read = boards;
     let snapshot = Snapshot {
         task_to_merge,
         roadmap,
@@ -424,6 +427,7 @@ async fn snapshot(
         tech_refining,
         arbitrating,
         dev_loop_milestones,
+        boards: boards_read,
         graph,
         contract_changes,
         test_debt,
@@ -530,18 +534,26 @@ async fn lowest_ready_to_merge(
 
 /// The boards of the milestones building now ([`routing::building`]): the
 /// critical path's first, the lowest open milestone's when none is split
-/// yet. A board that cannot be read is left out.
+/// yet — read until they offer `lanes` runnable tasks, since a tick fills
+/// that many lanes at most and every board is one GitHub call per open
+/// task. A board that cannot be read is left out.
 async fn building_boards(
     gh: &dyn GitHub,
     milestones: &[Issue],
     graph: Option<&harness_workflows::common::routing::Graph>,
+    lanes: usize,
 ) -> Vec<board::Board> {
     let building = routing::building(milestones, graph);
     let mut boards = Vec::with_capacity(building.len());
+    let mut offered = 0usize;
     for number in building {
+        if offered >= lanes {
+            break;
+        }
         if let Some(milestone) = milestones.iter().find(|m| m.number == number)
             && let Ok(board) = board::read_of(gh, milestone.clone()).await
         {
+            offered = offered.saturating_add(tasks::runnable_tasks(&board.tasks).len());
             boards.push(board);
         }
     }

@@ -65,6 +65,13 @@ their tests and gates only: no live watch has run them yet.
       `main_agent` parked #60, #110, #111, #114, #115 — is said as a warning
       (`architecture: N violation(s) were there before this round`) and the
       round goes on; one the round causes still halts it.
+- [ ] GitHub reads per tick stay well under the rate limit with 5 lanes
+      and several milestones building: `gh api rate_limit` over an hour of
+      watch shows a comfortable `remaining` (12:30Z: exceeded, 8 boards read
+      twice per tick before the fix).
+- [ ] At most `MAX_CURRENT` (3) milestones build beside the critical path's
+      next step: the `saw:` line's `dev_loop=[…]` has ≤ 4 entries once the
+      current 8 have landed.
 - [ ] A contract the graph does not produce is handed back without a
       session (comment on the task, request closed).
 - [ ] The view shows the `Contract manager` line and the

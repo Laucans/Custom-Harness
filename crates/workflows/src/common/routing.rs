@@ -174,6 +174,10 @@ pub struct Snapshot {
     /// critical path's first ([`critical_path`]) — empty when no open
     /// milestone has one.
     pub dev_loop_milestones: Vec<u64>,
+    /// The boards read this tick, in the same order — what the lanes take
+    /// their tasks from, read once: a second read per lane was what spent
+    /// the GitHub rate limit on eight building milestones.
+    pub boards: Vec<crate::dev_loop::data::board::Board>,
     /// The plan's graph (contract R), read off the integration branch, when
     /// the plan wrote one.
     pub graph: Option<Graph>,
@@ -577,9 +581,12 @@ pub const MAX_CURRENT: usize = 3;
 
 /// The milestones to split now, in the order to split them.
 ///
-/// The critical path's first ([`critical_path`]), then the rest by number —
-/// those only while fewer than [`MAX_CURRENT`] milestones build
-/// (`harness:triggered`, not delivered).
+/// The critical path's **next step** first ([`critical_path`]) — the one
+/// path milestone not yet building, whatever the cap: the path never waits
+/// on the ahead work — then the rest by number, those only while fewer than
+/// [`MAX_CURRENT`] milestones build (`harness:triggered`, not delivered).
+/// Every path member passing the cap at once put eight milestones in
+/// construction on ForgeDesMondes.
 #[must_use]
 pub fn splits(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
     let building = milestones
@@ -593,9 +600,15 @@ pub fn splits(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
         .map(|m| m.number)
         .collect();
     by_critical_path(&mut found, &path);
+    let next_on_path = path.iter().copied().find(|number| {
+        milestones
+            .iter()
+            .find(|m| m.number == *number)
+            .is_some_and(|m| m.is_open() && !m.has(labels::TRIGGERED))
+    });
     let mut room = MAX_CURRENT.saturating_sub(building);
     found.retain(|number| {
-        if path.contains(number) {
+        if Some(*number) == next_on_path {
             return true;
         }
         let kept = room > 0;
@@ -852,6 +865,7 @@ mod tests {
             tech_refining: Vec::new(),
             arbitrating: Vec::new(),
             dev_loop_milestones: Vec::new(),
+            boards: Vec::new(),
             graph: None,
             contract_changes: Vec::new(),
             test_debt: Vec::new(),
@@ -895,6 +909,7 @@ mod tests {
             ],
             lowest_roadmap_has_milestone: false,
             graph: None,
+            boards: Vec::new(),
             contract_changes: Vec::new(),
             milestones: vec![issue(5, &[labels::MILESTONE, labels::READY])],
             pr_to_fix: Some(pr("32", "main_agent")),
@@ -1456,6 +1471,33 @@ mod tests {
         // Two build: one ahead slot left, the path first.
         let two = vec![building(18), building(21), ready(20), ready(30), ready(31)];
         assert_eq!(splits(&two, Some(&graph)), [20, 30]);
+        // Only the path's next step passes over the cap: #19 and #22 both
+        // read #20, built; three build already — #19 (on the path) goes, #22
+        // waits for a slot.
+        let chain = vec![
+            building(18),
+            building(20),
+            building(30),
+            ready(19),
+            ready(22),
+        ];
+        assert_eq!(splits(&chain, Some(&graph)), [19]);
+        let landed = vec![
+            issue(
+                18,
+                &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+            ),
+            building(20),
+            building(30),
+            building(31),
+            ready(19),
+            ready(22),
+        ];
+        assert_eq!(
+            splits(&landed, Some(&graph)),
+            [19],
+            "a landed path member is no next step"
+        );
         let mut numbers = vec![22, 19, 21, 20, 18];
         by_critical_path(&mut numbers, &[18, 20, 19]);
         assert_eq!(numbers, [18, 20, 19, 21, 22]);
