@@ -53,19 +53,24 @@ impl Action<DecideState> for ReadCase {
             THREAD_BUDGET,
         );
         // The PR the decision may merge or repair: a task's on its declared
-        // branch, the rules' task's on `rules/<n>`.
+        // branch, the rules' task's on `rules/<n>`. Whatever the labels say:
+        // #51 had lost `review-pending` while PR #105 stayed blocked, and a
+        // decision that could not see the PR answered nothing the router
+        // could act on — asked again every tick.
         let branch = if rules {
             Some(format!("rules/{}", issue.number))
-        } else if review_pending {
-            tasks::declared_branch(&issue.body)
         } else {
-            None
+            tasks::declared_branch(&issue.body)
         };
         if let Some(branch) = branch
             && let Ok(pr) = self.gh.pr(&branch).await
+            && (rules || review_pending || pr.state.eq_ignore_ascii_case("open"))
         {
             ctx.state.pr_comments = latest(&self.gh.pr_comments(&pr.num).await?, THREAD_BUDGET);
             ctx.state.pr = Some(pr);
+            if ctx.state.kind == "spec" {
+                ctx.state.kind = "review".to_string();
+            }
         }
         ctx.traces.say(&format!(
             "{}: a decision is asked ({}){}{}",
@@ -303,5 +308,72 @@ mod tests {
         assert!(kept.starts_with("(earlier words left out)\n"));
         assert!(!kept.contains("aaaaaaaaaa"), "the oldest words go first");
         assert_eq!(latest("short", THREAD_BUDGET), "short");
+    }
+
+    #[tokio::test]
+    async fn a_task_whose_open_pr_lost_its_label_is_still_read_with_the_pr() {
+        // ForgeDesMondes #51: `review-pending` gone, PR #105 open and blocked,
+        // the router re-asking every tick a decision that saw no PR.
+        let gh = Rc::new(FakeGitHub {
+            prs: vec![(
+                "feat/save-entity".to_string(),
+                Pr {
+                    num: "105".to_string(),
+                    head: "feat/save-entity".to_string(),
+                    base: "milestone/18-x".to_string(),
+                    state: "OPEN".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(Issue {
+            number: 51,
+            body: "## Scope\n\nbranch: feat/save-entity\n\nsave\n\n## Decision\n\nkind: spec\nblocks: asked\nround: 1".to_string(),
+            labels: vec![labels::AGENT.to_string()],
+            ..Issue::default()
+        });
+        ReadCase {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+        }
+        .run(&mut context)
+        .await
+        .expect("read");
+        assert_eq!(
+            context.state.pr.as_ref().map(|p| p.num.as_str()),
+            Some("105")
+        );
+        assert_eq!(context.state.kind, "review");
+        let spliced = values(&context.state);
+        assert!(
+            spliced
+                .iter()
+                .any(|(k, v)| *k == "actions" && v.contains("`merge`"))
+        );
+        // A closed PR on the declared branch is history, not a case.
+        let closed = Rc::new(FakeGitHub {
+            prs: vec![(
+                "feat/old".to_string(),
+                Pr {
+                    num: "9".to_string(),
+                    state: "MERGED".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(Issue {
+            number: 52,
+            body: "## Scope\n\nbranch: feat/old".to_string(),
+            ..Issue::default()
+        });
+        ReadCase {
+            gh: Rc::clone(&closed) as Rc<dyn GitHub>,
+        }
+        .run(&mut context)
+        .await
+        .expect("read");
+        assert!(context.state.pr.is_none());
+        assert_eq!(context.state.kind, "spec");
     }
 }

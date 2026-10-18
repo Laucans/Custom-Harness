@@ -526,17 +526,19 @@ pub fn split_candidate(milestone: &Issue) -> bool {
 
 /// Whether this milestone is ready to be split now.
 ///
-/// A candidate, every milestone it is `blocked_by` delivered — closed, or
-/// `waiting-merge` with its code on the integration branch — and what the
-/// plan says it waits on:
+/// A candidate, and what it waits on:
 ///
 /// - a milestone the plan's graph knows (contract R) waits on the producers
 ///   of what it consumes, until each is **split** (`harness:triggered`) or
-///   delivered: from there the contract it reads is in place, mocked until
-///   built, and the two build side by side;
-/// - one the graph does not know waits on every milestone before it (a
-///   lower number) delivered, the order of a plan written without a graph
-///   being the dependency it does not write.
+///   delivered — closed, or `waiting-merge` with its code on the integration
+///   branch: from there the contract it reads is in place, mocked until
+///   built, and the two build side by side. A `blocked_by` on another
+///   milestone the graph knows is the planner's own chaining, which the
+///   graph supersedes; a blocker the graph does not know — a person's task —
+///   must be delivered;
+/// - one the graph does not know waits on every milestone it is `blocked_by`
+///   and every milestone before it (a lower number) delivered, the order of a
+///   plan written without a graph being the dependency it does not write.
 ///
 /// `milestone.blocked_by` must have been read ([`GitHub::with_blockers`]);
 /// empty reads as nothing blocking.
@@ -545,31 +547,27 @@ pub fn split_candidate(milestone: &Issue) -> bool {
 #[must_use]
 pub fn splittable(milestone: &Issue, milestones: &[Issue], graph: Option<&Graph>) -> bool {
     let delivered = |other: &Issue| other.is_closed() || other.has(labels::WAITING_MERGE);
-    if !split_candidate(milestone) || !milestone.blocked_by.iter().all(delivered) {
+    if !split_candidate(milestone) {
         return false;
     }
-    graph
-        .and_then(|graph| graph.node(milestone.number))
-        .map_or_else(
-            || {
-                milestones
-                    .iter()
-                    .filter(|other| other.number < milestone.number)
-                    .all(delivered)
-            },
-            |node| {
-                graph
-                    .map(|graph| graph.waits_on(node.number))
-                    .unwrap_or_default()
-                    .iter()
-                    .all(|producer| {
-                        milestones
-                            .iter()
-                            .find(|other| other.number == *producer)
-                            .is_none_or(|other| delivered(other) || other.has(labels::TRIGGERED))
-                    })
-            },
-        )
+    let Some(graph) = graph.filter(|graph| graph.node(milestone.number).is_some()) else {
+        return milestone.blocked_by.iter().all(delivered)
+            && milestones
+                .iter()
+                .filter(|other| other.number < milestone.number)
+                .all(delivered);
+    };
+    milestone
+        .blocked_by
+        .iter()
+        .filter(|blocker| graph.node(blocker.number).is_none())
+        .all(delivered)
+        && graph.waits_on(milestone.number).iter().all(|producer| {
+            milestones
+                .iter()
+                .find(|other| other.number == *producer)
+                .is_none_or(|other| delivered(other) || other.has(labels::TRIGGERED))
+        })
 }
 
 /// How many milestones build at once, at most, beyond the critical path's:
@@ -1383,6 +1381,26 @@ mod tests {
         // A milestone the graph does not know keeps the old rule.
         let unknown = vec![building(18), ready(40)];
         assert!(!splittable(&unknown[1], &unknown, Some(&graph)));
+        // ForgeDesMondes: the planner chained #21 behind #18, #19 and #20
+        // on GitHub; the graph supersedes that chaining. A person's task
+        // among the blockers still holds.
+        let chained = Issue {
+            blocked_by: vec![building(18), ready(19), ready(20)],
+            ..ready(21)
+        };
+        assert!(splittable(&chained, &milestones, Some(&graph)));
+        let held = Issue {
+            blocked_by: vec![issue(3, &[labels::HUMAN])],
+            ..ready(21)
+        };
+        assert!(
+            !splittable(&held, &milestones, Some(&graph)),
+            "a person's task holds"
+        );
+        assert!(
+            !splittable(&chained, &milestones, None),
+            "without the graph the chaining is the rule"
+        );
     }
 
     #[test]
