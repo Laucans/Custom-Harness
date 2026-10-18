@@ -186,7 +186,7 @@ fn ahead_startable<'a>(
     if waiting_on.is_empty() {
         return startable;
     }
-    let (taken, held) = tasks::mocked_only(&startable);
+    let (taken, held) = tasks::mocked_only(&startable, milestone, graph, &waiting_on);
     if !held.is_empty() {
         let list = |numbers: &[u64]| {
             numbers
@@ -196,7 +196,7 @@ fn ahead_startable<'a>(
                 .join(", ")
         };
         log.say(&format!(
-            "watch: lanes -> #{milestone}'s crates and screens ({}) wait on {} to land — ahead work is what the mock-up stands in for",
+            "watch: lanes -> #{milestone}'s tasks reading tables, Concepts or Micro-UIs still building ({}) wait on {} to land — ahead work is what the mock-up stands in for",
             list(&held),
             list(&waiting_on)
         ));
@@ -328,12 +328,18 @@ mod tests {
     use super::*;
 
     fn issue(number: u64, labels: &[&str], unit: &str) -> Issue {
+        needing(number, labels, unit, "")
+    }
+
+    fn needing(number: u64, labels: &[&str], unit: &str, needs: &str) -> Issue {
         Issue {
             number,
             title: format!("task {number}"),
             state: "open".to_string(),
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
-            body: format!("## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: media"),
+            body: format!(
+                "## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: media\nneeds: {needs}"
+            ),
             ..Issue::default()
         }
     }
@@ -345,17 +351,31 @@ mod tests {
               {"number":19,"title":"media","systems":["media"],"produces":["media.listMedia"],"consumes":["session.listScenes"],"depends_on":[20]}
             ],"ids":{
               "media.listMedia":{"kind":"capability","producer":19,"state":"planned","version":1},
-              "session.listScenes":{"kind":"capability","producer":20,"state":"planned","version":1}
+              "session.listScenes":{"kind":"capability","producer":20,"state":"planned","version":1},
+              "Session":{"kind":"aggregate","producer":20,"state":"planned","version":1},
+              "SceneBoard":{"kind":"micro-ui","producer":20,"state":"planned","version":1}
             }}"#,
         )
         .expect("a graph")
     }
 
     #[test]
-    fn ahead_of_its_producers_a_milestone_starts_its_micro_uis_only() {
-        let ui = issue(60, &[labels::AGENT, labels::READY], "micro-ui");
-        let screen = issue(61, &[labels::AGENT, labels::READY], "composition");
-        let crate_task = issue(62, &[labels::AGENT, labels::READY], "capability");
+    fn ahead_of_its_producers_a_milestone_starts_what_reads_contracts_only() {
+        // #60 reads a contract of #20 (mocked); #61 composes a Micro-UI #20
+        // builds; #62 reads #20's table — the last two wait for #20.
+        let ui = needing(
+            60,
+            &[labels::AGENT, labels::READY],
+            "micro-ui",
+            "session.listScenes",
+        );
+        let screen = needing(
+            61,
+            &[labels::AGENT, labels::READY],
+            "composition",
+            "SceneBoard",
+        );
+        let crate_task = needing(62, &[labels::AGENT, labels::READY], "capability", "Session");
         let milestones = [
             issue(19, &[labels::MILESTONE], "-"),
             issue(20, &[labels::MILESTONE], "-"),

@@ -197,7 +197,8 @@ pub async fn read_of_those(
 /// cannot be read is left out.
 ///
 /// While a milestone's producers still build, only what may run ahead
-/// ([`tasks::runs_ahead`]) is worth its blockers' GitHub calls and counts as
+/// ([`tasks::runs_ahead`], judged on what each task needs) is worth its
+/// blockers' GitHub calls and counts as
 /// offered — counting the held crates stopped the reads at two boards and
 /// left the lanes empty.
 pub async fn building(
@@ -213,8 +214,10 @@ pub async fn building(
         if offered >= lanes {
             break;
         }
-        let waiting = !merge_train::producers_landed(graph, number, milestones).is_empty();
-        let may_run = |task: &Issue| !waiting || tasks::runs_ahead(task);
+        let waiting_on = merge_train::producers_landed(graph, number, milestones);
+        let may_run = |task: &Issue| {
+            waiting_on.is_empty() || tasks::runs_ahead(task, number, graph, &waiting_on)
+        };
         if let Some(milestone) = milestones.iter().find(|m| m.number == number)
             && let Ok(board) = read_of_those(gh, milestone.clone(), &may_run).await
         {
@@ -393,7 +396,8 @@ mod tests {
               {"number":19,"title":"media","systems":["media"],"produces":["media.listMedia"],"consumes":["session.listScenes"],"depends_on":[20]}
             ],"ids":{
               "media.listMedia":{"kind":"capability","producer":19,"state":"planned","version":1},
-              "session.listScenes":{"kind":"capability","producer":20,"state":"planned","version":1}
+              "session.listScenes":{"kind":"capability","producer":20,"state":"planned","version":1},
+              "Session":{"kind":"aggregate","producer":20,"state":"planned","version":1}
             }}"#,
         )
         .expect("a graph");
@@ -401,11 +405,25 @@ mod tests {
             issue(19, &[labels::MILESTONE, labels::TRIGGERED]),
             issue(20, &[labels::MILESTONE, labels::TRIGGERED]),
         ];
+        // #31 reads a contract of #20 (mocked by its fixture); #32 reads
+        // #20's table, which no fixture stands in for.
+        let needing = |number: u64, unit: &str, needs: &str| Issue {
+            body: format!(
+                "## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: media\nneeds: {needs}"
+            ),
+            ..task(number)
+        };
         let fake = || FakeGitHub {
             issues: milestones.clone(),
             subs: vec![
                 (20, vec![unit(21, "capability")]),
-                (19, vec![unit(31, "micro-ui"), unit(32, "capability")]),
+                (
+                    19,
+                    vec![
+                        needing(31, "micro-ui", "session.listScenes"),
+                        needing(32, "capability", "Session"),
+                    ],
+                ),
             ],
             ..FakeGitHub::default()
         };
@@ -419,7 +437,7 @@ mod tests {
         assert_eq!(
             asked,
             [21, 31],
-            "#19 waits on #20: its crate #32 is not worth a call"
+            "#19 waits on #20: #32 reads its table and is not worth a call"
         );
         let gh = fake();
         let one = building(&gh, &milestones, Some(&graph), 1).await;

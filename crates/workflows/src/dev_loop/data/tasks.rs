@@ -31,6 +31,7 @@
 use harness_core::domain::{Issue, Tags};
 
 use crate::common::{labels, sections};
+use harness_architecture::graph::{Graph, Kind};
 use harness_architecture::vocabulary::{Declaration, Side, Unit};
 
 /// True if the issue is a task the agent can run.
@@ -309,26 +310,56 @@ pub fn tags(issue: &Issue) -> Tags {
 }
 
 /// The tasks a milestone may run while the producers of what it reads have
-/// not landed: what the mock-up stands in for.
+/// not landed, judged on what each one `needs`.
 ///
-/// The Micro-UIs, built against the mocked contracts — and nothing else. A
-/// contract is mocked until built; a table is not (`ForgeDesMondes`' #118,
-/// the `NoteImport` aggregate of #23, needed #18's migrations), nor is a
-/// crate (#216 of #28 needed `crates/session/`, #20's), nor a screen: it
-/// composes Micro-UIs other milestones build and proves its rules end to end
-/// (#219 of #28 found five of its six Micro-UIs missing). Everything else
-/// waits for the producers to land.
+/// What the mock-up stands in for is a **contract**: a Capability or a
+/// `DataCapability` another milestone builds is mocked by its fixture until
+/// built, so a task that needs only those runs ahead — a Micro-UI, but a
+/// Capability too (`ForgeDesMondes`' #131 read nothing of another
+/// milestone and was held a whole afternoon by its unit alone). What no
+/// fixture stands in for is a **table, a Concept or a Micro-UI** a producer
+/// still building must land: #118 (the `NoteImport` aggregate of #23)
+/// needed #18's migrations, #216 (a Capability of #28) needed #20's
+/// `Session` and its read crate, #219 (a screen of #28) composed five
+/// Micro-UIs of #18 and #24 — each is held, by that need, until the
+/// producer lands. A need of the task's own milestone, one no milestone
+/// produces, or one the graph does not know (a system's wiring) holds
+/// nothing. Without a graph nothing is held: there is no producer to wait
+/// for.
 #[must_use]
-pub fn mocked_only<'a>(tasks: &[&'a Issue]) -> (Vec<&'a Issue>, Vec<u64>) {
-    let (taken, held): (Vec<&Issue>, Vec<&Issue>) = tasks.iter().partition(|task| runs_ahead(task));
+pub fn mocked_only<'a>(
+    tasks: &[&'a Issue],
+    milestone: u64,
+    graph: Option<&Graph>,
+    building: &[u64],
+) -> (Vec<&'a Issue>, Vec<u64>) {
+    let (taken, held): (Vec<&Issue>, Vec<&Issue>) = tasks
+        .iter()
+        .partition(|task| runs_ahead(task, milestone, graph, building));
     (taken, held.into_iter().map(|task| task.number).collect())
 }
 
-/// Whether this task may run ahead of its producers: a Micro-UI outside the
-/// data layer, the one unit the mock-up fully stands in for.
+/// Whether this task may run while `building` — the producers of its
+/// milestone that have not landed — still build: nothing it `needs` is an
+/// uncontracted id one of them produces ([`mocked_only`]).
 #[must_use]
-pub fn runs_ahead(task: &Issue) -> bool {
-    !task.has(labels::DATA_LAYER) && unit_of(task) == Some(Unit::MicroUi)
+pub fn runs_ahead(task: &Issue, milestone: u64, graph: Option<&Graph>, building: &[u64]) -> bool {
+    let Some(graph) = graph else {
+        return true;
+    };
+    let needs = sections::parse(&task.body)
+        .get(sections::ARCHITECTURE)
+        .and_then(|text| Declaration::parse(text))
+        .map(|declaration| declaration.needs)
+        .unwrap_or_default();
+    !needs.iter().any(|id| {
+        graph.ids.get(id).is_some_and(|interface| {
+            !matches!(interface.kind, Kind::Capability | Kind::DataCapability)
+                && interface
+                    .producer
+                    .is_some_and(|producer| producer != milestone && building.contains(&producer))
+        })
+    })
 }
 
 /// Whether the mock-up stands in for what this task builds — a Micro-UI or
@@ -838,49 +869,70 @@ mod tests {
 
     #[test]
     fn ahead_work_is_what_the_mock_up_stands_in_for() {
-        let with = |number: u64, labels: &[&str], unit: &str| Issue {
-            body: format!("## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: session"),
-            ..issue(number, labels)
+        // #18 builds the Campaign table and campaign.listCharacters; #23
+        // (the milestone judged) builds NoteImport; #24 builds OralBrief.
+        let graph = Graph::parse(
+            r#"{"version":1,"milestones":[
+              {"number":18,"title":"campaigns","systems":["campaign"],"produces":["Campaign","campaign.listCharacters","campaign.saveEntity"],"consumes":[],"depends_on":[]},
+              {"number":23,"title":"notes","systems":["ai"],"produces":["NoteImport","campaign.listImportedNotes"],"consumes":["Campaign"],"depends_on":[18]},
+              {"number":24,"title":"brief","systems":["session"],"produces":["OralBrief"],"consumes":[],"depends_on":[]}
+            ],"ids":{
+              "Campaign":{"kind":"aggregate","producer":18,"state":"planned","version":1},
+              "campaign.listCharacters":{"kind":"capability","producer":18,"state":"mocked","version":1},
+              "campaign.saveEntity":{"kind":"data-capability","producer":18,"state":"planned","version":1},
+              "NoteImport":{"kind":"aggregate","producer":23,"state":"planned","version":1},
+              "campaign.listImportedNotes":{"kind":"capability","producer":23,"state":"planned","version":1},
+              "OralBrief":{"kind":"micro-ui","producer":24,"state":"planned","version":1},
+              "Orphan":{"kind":"concept","producer":null,"state":"planned","version":1}
+            }}"#,
+        )
+        .expect("a graph");
+        let with = |number: u64, unit: &str, needs: &str| Issue {
+            body: format!(
+                "## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: ai\nneeds: {needs}"
+            ),
+            ..issue(number, &[labels::AGENT, labels::READY])
         };
+        // Reads contracts of #18 and a table of its own milestone: the
+        // fixtures stand in for the former, the latter is its to build.
         let ui = with(
-            60,
-            &[labels::AGENT, labels::READY, labels::READ_SIDE],
+            136,
             "micro-ui",
+            "campaign.listCharacters, campaign.saveEntity, NoteImport",
         );
-        let screen = with(
-            61,
-            &[labels::AGENT, labels::READY, labels::READ_SIDE],
-            "composition",
-        );
-        let capability = with(
-            216,
-            &[labels::AGENT, labels::READY, labels::READ_SIDE],
-            "capability",
-        );
-        let data = with(
-            118,
-            &[
-                labels::AGENT,
-                labels::READY,
-                labels::WRITE_SIDE,
-                labels::DATA_LAYER,
-            ],
-            "aggregate",
-        );
-        let write = with(
-            119,
-            &[labels::AGENT, labels::READY, labels::WRITE_SIDE],
-            "data-capability",
-        );
-        let undeclared = issue(7, &[labels::AGENT, labels::READY]);
-        let (taken, held) = mocked_only(&[&ui, &screen, &capability, &data, &write, &undeclared]);
+        let own_capability = with(131, "capability", "NoteImport, ai");
+        // Reads #18's table: held until #18 lands — however it is a read.
+        let reads_table = with(118, "aggregate", "Campaign, NoteImport");
+        let reads_concept = with(140, "capability", "Campaign");
+        // Composes a Micro-UI #24 builds: held until #24 lands.
+        let screen = with(219, "composition", "OralBrief, ai.listNotes");
+        // An id nobody produces, or one the graph does not know, holds nothing.
+        let free = with(7, "capability", "Orphan, wiring");
+        let undeclared = issue(8, &[labels::AGENT, labels::READY]);
+        let all = [
+            &ui,
+            &own_capability,
+            &reads_table,
+            &reads_concept,
+            &screen,
+            &free,
+            &undeclared,
+        ];
+        let (taken, held) = mocked_only(&all, 23, Some(&graph), &[18, 24]);
         assert_eq!(
             taken.iter().map(|t| t.number).collect::<Vec<_>>(),
-            [60],
-            "the mock server stands in for a Micro-UI's reads and writes; a crate needs its producers' code, a screen their Micro-UIs"
+            [136, 131, 7, 8],
+            "a contract is mocked; a table, a Concept or a Micro-UI of a building producer is not"
         );
-        assert_eq!(held, [61, 216, 118, 119, 7]);
-        let (none, nothing) = mocked_only(&[]);
+        assert_eq!(held, [118, 140, 219]);
+        // Once #18 has landed, only the screen waits on #24.
+        let (_, held) = mocked_only(&all, 23, Some(&graph), &[24]);
+        assert_eq!(held, [219]);
+        // No graph: no producer to wait for.
+        let (taken, held) = mocked_only(&all, 23, None, &[18, 24]);
+        assert_eq!(taken.len(), all.len());
+        assert!(held.is_empty());
+        let (none, nothing) = mocked_only(&[], 23, Some(&graph), &[18]);
         assert!(none.is_empty() && nothing.is_empty());
     }
 
