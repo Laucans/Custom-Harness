@@ -27,13 +27,14 @@ and lanes that serve the critical path first.
 - [ ] Its plan carries `micro-uis:` and `commands:` for every milestone, and
       every dossier component and write lands in exactly one.
 - [ ] A read ahead, if any, is in the planner's log as a warning.
-- [ ] ForgeDesMondes' current plan (#18–#30) gets its graph: no command
-      writes it yet for an existing plan — `harness plan-graph <roadmap>` or
-      the watch at start (step 1b).
+- [x] ForgeDesMondes' current plan (#18–#30) has its graph: `harness
+      plan-graph 4` wrote it on `main_agent` (15 milestones, 123 ids, 5 reads
+      ahead: #19 → #20 ×3, #20 → #25 ×2).
+- [ ] The gates validate `plan/graph.json` against contract R on the next
+      push of `main_agent`.
 
 ## Next steps (the design, in order)
 
-1b. A command that (re)writes the graph for an existing plan.
 2. Contracts mocked until built: manifests B/F + fixtures at planning, the
    server serving a fixture for an unbuilt id, gate `contract-untouched`.
 3. Several current milestones in the watch, lanes serving the critical path
