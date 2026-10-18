@@ -68,6 +68,8 @@ impl Verification<Loop> for LabelsExist {
 pub struct MilestoneIsReachable {
     /// What reads the board.
     pub gh: Rc<dyn GitHub>,
+    /// The branch this run works on: a milestone's own names the board.
+    pub branch: String,
 }
 
 #[async_trait(?Send)]
@@ -77,7 +79,7 @@ impl Verification<Loop> for MilestoneIsReachable {
     }
 
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
-        let here = board::read(self.gh.as_ref()).await?;
+        let here = board::read_on(self.gh.as_ref(), &self.branch).await?;
         ctx.traces.debug(&format!(
             "milestone {}: {} — {} open task(s)",
             here.milestone.reference(),
@@ -550,10 +552,13 @@ mod tests {
             ..FakeGitHub::default()
         });
         assert_eq!(
-            MilestoneIsReachable { gh }
-                .verify(&ctx())
-                .await
-                .expect("a verdict"),
+            MilestoneIsReachable {
+                gh,
+                branch: String::new(),
+            }
+            .verify(&ctx())
+            .await
+            .expect("a verdict"),
             Verdict::Continue
         );
     }

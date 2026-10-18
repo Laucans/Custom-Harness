@@ -116,6 +116,7 @@ mod tests {
             turn: 1,
             pick: PickTask {
                 gh: Rc::clone(&port),
+                branch: String::new(),
                 spending: Rc::clone(&ports.spending),
                 repo: Rc::clone(&ports.repo),
                 resuming: None,

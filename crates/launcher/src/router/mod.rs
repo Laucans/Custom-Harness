@@ -58,6 +58,7 @@ use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
 use harness_workflows::common::{branching, labels, review};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
+use harness_workflows::main_agent_merge::data::merge_train;
 use harness_workflows::pr_review::data::skip_rules;
 
 use crate::adapters::sink::Both;
@@ -201,7 +202,7 @@ async fn tick(
         }
         Activity::Unchanged => pulse.etag.clone(),
     };
-    let (mut found, idle, watching_ci) = snapshot(gh.as_ref(), log).await?;
+    let (mut found, idle, watching_ci) = snapshot(gh.as_ref(), &args.branch, log).await?;
     pulse.read_in_full(etag, watching_ci);
     if args.no_human_gate {
         routing::open_taps(gh.as_ref(), &mut found, pulse, log).await?;
@@ -224,7 +225,7 @@ async fn tick(
         found.pr_to_fix.as_ref().map(|pr| pr.num.clone()),
         found.pr_to_review.as_ref().map(|pr| pr.num.clone()),
         found.ready_to_merge,
-        found.dev_loop_milestone,
+        found.dev_loop_milestones,
     ));
     let route = routing::decide(&found);
     if matches!(route, Route::Nothing)
@@ -355,7 +356,11 @@ fn resolve_gh(args: &WatchArgs, here: &Path) -> Outcome<Rc<dyn GitHub>> {
 /// The snapshot, the idle reason if the board has nothing runnable, and
 /// whether a pull request the board waits on is open — what tells the next
 /// tick it cannot trust a quiet activity read.
-async fn snapshot(gh: &dyn GitHub, log: &Logbook) -> Outcome<(Snapshot, Option<String>, bool)> {
+async fn snapshot(
+    gh: &dyn GitHub,
+    branch: &str,
+    log: &Logbook,
+) -> Outcome<(Snapshot, Option<String>, bool)> {
     let roadmap = gh.issues_labelled(labels::ROADMAP, "open").await?;
     let lowest_roadmap_has_milestone = match routing::plannable_roadmap(&roadmap) {
         Some(lowest) => !gh.sub_issues(lowest.number).await?.is_empty(),
@@ -369,7 +374,10 @@ async fn snapshot(gh: &dyn GitHub, log: &Logbook) -> Outcome<(Snapshot, Option<S
     let watching_ci = !to_fix.is_empty() || !to_review.is_empty();
     let pr_to_fix = lowest_red_pr(gh, &to_fix, &to_review).await?;
     let pr_to_review = lowest_pr_worth_reviewing(gh, &to_review).await?;
-    let ready_to_merge = lowest_ready_to_merge(gh, &milestones).await?;
+    // The plan's graph, when the plan wrote one: what orders the milestones
+    // and says which may build side by side.
+    let graph = routing::parse_graph(gh.file_text(routing::GRAPH_PATH, branch).await?.as_deref());
+    let ready_to_merge = lowest_ready_to_merge(gh, &milestones, graph.as_ref()).await?;
     let refining = gh.issues_labelled(labels::REFINEMENT, "open").await?;
     let tech_refining = gh.issues_labelled(labels::TECH_REFINEMENT, "open").await?;
     let arbitrating = gh
@@ -378,22 +386,32 @@ async fn snapshot(gh: &dyn GitHub, log: &Logbook) -> Outcome<(Snapshot, Option<S
     let test_debt = gh.issues_labelled(labels::TEST_DEBT, "open").await?;
     let rules = gh.issues_labelled(labels::RULES, "open").await?;
     let deciding = gh.issues_labelled(labels::NEEDS_DECISION, "open").await?;
-    // Tolerant on purpose: "no open milestone at all" is this probe's most
-    // common answer, not a failure — `dev_loop::run` itself is where that
+    let contract_changes = gh.issues_labelled(labels::CONTRACT_CHANGE, "open").await?;
+    // One board per milestone building (`harness:triggered`), the critical
+    // path's first; the lowest open one when none is split yet. Tolerant on
+    // purpose: "no open milestone at all" is this probe's most common
+    // answer, not a failure — `dev_loop::run` itself is where that
     // distinction matters and is already made.
-    let board = board::read(gh).await.ok();
-    let dev_loop_milestone = board
-        .as_ref()
+    let boards = building_boards(gh, &milestones, graph.as_ref()).await;
+    let dev_loop_milestones: Vec<u64> = boards
+        .iter()
         .filter(|b| b.next().is_some())
-        .map(|b| b.milestone.number);
-    let idle = board
-        .as_ref()
-        .filter(|b| b.next().is_none())
-        .map(|b| tasks::idle_reason(b.milestone.number, &b.tasks));
-    let task_to_merge = match &board {
-        Some(board) => green_task_pr(gh, &board.tasks, &to_review, log).await?,
-        None => None,
+        .map(|b| b.milestone.number)
+        .collect();
+    let idle = if dev_loop_milestones.is_empty() {
+        boards
+            .first()
+            .map(|b| tasks::idle_reason(b.milestone.number, &b.tasks))
+    } else {
+        None
     };
+    let mut task_to_merge = None;
+    for board in &boards {
+        task_to_merge = green_task_pr(gh, &board.tasks, &to_review, log).await?;
+        if task_to_merge.is_some() {
+            break;
+        }
+    }
     let snapshot = Snapshot {
         task_to_merge,
         roadmap,
@@ -405,7 +423,9 @@ async fn snapshot(gh: &dyn GitHub, log: &Logbook) -> Outcome<(Snapshot, Option<S
         refining,
         tech_refining,
         arbitrating,
-        dev_loop_milestone,
+        dev_loop_milestones,
+        graph,
+        contract_changes,
         test_debt,
         rules,
         deciding,
@@ -484,15 +504,19 @@ fn by_number(mut prs: Vec<Pr>) -> Vec<Pr> {
 }
 
 /// The lowest-numbered open milestone, not yet `harness:waiting-merge`,
-/// whose own tasks are all closed — one extra read per candidate, in
-/// number order, stopping at the first match.
+/// whose own tasks are all closed and whose producers (the plan's graph)
+/// have landed — one extra read per candidate, in number order, stopping at
+/// the first match. The train's order: a consumer never lands before what
+/// it reads.
 async fn lowest_ready_to_merge(
     gh: &dyn harness_core::ports::shell::github::GitHub,
     milestones: &[harness_core::domain::Issue],
+    graph: Option<&harness_workflows::common::routing::Graph>,
 ) -> Outcome<Option<u64>> {
     let mut candidates: Vec<&harness_core::domain::Issue> = milestones
         .iter()
         .filter(|issue| issue.is_open() && !issue.has(labels::WAITING_MERGE))
+        .filter(|issue| merge_train::producers_landed(graph, issue.number, milestones).is_empty())
         .collect();
     candidates.sort_by_key(|issue| issue.number);
     for candidate in candidates {
@@ -502,6 +526,36 @@ async fn lowest_ready_to_merge(
         }
     }
     Ok(None)
+}
+
+/// The boards of the milestones building now — `harness:triggered`, not
+/// delivered — the critical path's first; the lowest open milestone's when
+/// none is split yet. A board that cannot be read is left out.
+async fn building_boards(
+    gh: &dyn GitHub,
+    milestones: &[Issue],
+    graph: Option<&harness_workflows::common::routing::Graph>,
+) -> Vec<board::Board> {
+    let mut building: Vec<u64> = milestones
+        .iter()
+        .filter(|m| m.is_open() && m.has(labels::TRIGGERED) && !m.has(labels::WAITING_MERGE))
+        .map(|m| m.number)
+        .collect();
+    routing::by_critical_path(&mut building, &routing::critical_path(milestones, graph));
+    if building.is_empty()
+        && let Some(lowest) = tasks::current_milestone(milestones)
+    {
+        building.push(lowest.number);
+    }
+    let mut boards = Vec::with_capacity(building.len());
+    for number in building {
+        if let Some(milestone) = milestones.iter().find(|m| m.number == number)
+            && let Ok(board) = board::read_of(gh, milestone.clone()).await
+        {
+            boards.push(board);
+        }
+    }
+    boards
 }
 
 /// A task's PR its repairs did not clear: a decision asked of the harness,

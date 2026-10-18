@@ -20,6 +20,7 @@
 
 pub mod arbiter;
 pub mod common;
+pub mod contract_manager;
 pub mod data_diagnosis;
 pub mod data_model_draft;
 pub mod data_snapshot;

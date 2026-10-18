@@ -43,6 +43,8 @@ use harness_core::domain::{Issue, Outcome, Pr};
 use harness_core::ports::shell::github::{Activity, GitHub};
 use harness_core::traces::{Event, Logbook};
 
+pub use harness_architecture::graph::Graph;
+
 use crate::common::labels;
 
 /// What the router decides to run next.
@@ -116,6 +118,11 @@ pub enum Route {
         /// The issue's number.
         issue: u64,
     },
+    /// Evolve the contract a consumer needs changed — `contract_manager`.
+    ContractChange {
+        /// The `harness:contract-change` issue's number.
+        issue: u64,
+    },
     /// Write the rules and their tests, or settle a contest — `rules`.
     Rules {
         /// The rules' issue number.
@@ -163,10 +170,15 @@ pub struct Snapshot {
     pub tech_refining: Vec<Issue>,
     /// Open `harness:needs-ai-decision` issues, any order.
     pub arbitrating: Vec<Issue>,
-    /// The current milestone, if its board has a runnable task right now —
-    /// `None` either because there's no open milestone, or because the one
-    /// there is has nothing runnable.
-    pub dev_loop_milestone: Option<u64>,
+    /// The milestones building now whose board has a runnable task, the
+    /// critical path's first ([`critical_path`]) — empty when no open
+    /// milestone has one.
+    pub dev_loop_milestones: Vec<u64>,
+    /// The plan's graph (contract R), read off the integration branch, when
+    /// the plan wrote one.
+    pub graph: Option<Graph>,
+    /// Open `harness:contract-change` issues, any order.
+    pub contract_changes: Vec<Issue>,
     /// Open `harness:test-debt` issues, any order.
     pub test_debt: Vec<Issue>,
     /// Open `harness:rules` issues, any order.
@@ -206,14 +218,16 @@ pub fn decide(snapshot: &Snapshot) -> Route {
             issue: issue.number,
         };
     }
-    if let Some(ready) = snapshot
-        .milestones
-        .iter()
-        .filter(|issue| splittable(issue, &snapshot.milestones))
-        .min_by_key(|issue| issue.number)
-    {
+    // A contract a consumer waits on blocks a task already cut: evolved
+    // before anything new is cut against the old version.
+    if let Some(issue) = lowest_open(&snapshot.contract_changes) {
+        return Route::ContractChange {
+            issue: issue.number,
+        };
+    }
+    if let Some(milestone) = splits(&snapshot.milestones, snapshot.graph.as_ref()).first() {
         return Route::Split {
-            milestone: ready.number,
+            milestone: *milestone,
         };
     }
     if let Some(pr) = &snapshot.pr_to_fix {
@@ -245,10 +259,12 @@ pub fn decide(snapshot: &Snapshot) -> Route {
     }
     // Delivering before preparing: a runnable task is work already decided,
     // and a pending refinement only ever prepares the next one.
-    if let Some(milestone) = snapshot.dev_loop_milestone
+    if let Some(milestone) = snapshot.dev_loop_milestones.first()
         && rules_first(snapshot).is_none()
     {
-        return Route::DevLoop { milestone };
+        return Route::DevLoop {
+            milestone: *milestone,
+        };
     }
     if let Some(issue) = lowest_open(&snapshot.refining) {
         return Route::Refinement {
@@ -269,10 +285,11 @@ pub fn decide(snapshot: &Snapshot) -> Route {
 }
 
 /// What a parallel watch hands its free lanes, in the order it hands it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaneWork {
-    /// The milestone whose runnable tasks take the free lanes first.
-    pub tasks_of: Option<u64>,
+    /// The milestones whose runnable tasks take the free lanes first, in
+    /// the order they are served: the critical path's, then the rest.
+    pub tasks_of: Vec<u64>,
     /// Whether a milestone waits on its split or an issue on its business
     /// refinement — what takes the lanes the tasks left.
     pub preparation: bool,
@@ -287,14 +304,13 @@ pub struct LaneWork {
 #[must_use]
 pub fn lane_work(snapshot: &Snapshot) -> LaneWork {
     LaneWork {
-        tasks_of: snapshot
-            .dev_loop_milestone
-            .filter(|_| rules_first(snapshot).is_none()),
+        tasks_of: if rules_first(snapshot).is_none() {
+            snapshot.dev_loop_milestones.clone()
+        } else {
+            Vec::new()
+        },
         preparation: snapshot.refining.iter().any(Issue::is_open)
-            || snapshot
-                .milestones
-                .iter()
-                .any(|issue| splittable(issue, &snapshot.milestones)),
+            || !splits(&snapshot.milestones, snapshot.graph.as_ref()).is_empty(),
     }
 }
 
@@ -502,26 +518,136 @@ pub fn split_candidate(milestone: &Issue) -> bool {
 /// Whether this milestone is ready to be split now.
 ///
 /// A candidate, every milestone it is `blocked_by` delivered — closed, or
-/// `waiting-merge` with its code on the integration branch — and every
-/// milestone before it in `milestones` (a lower number) delivered too.
+/// `waiting-merge` with its code on the integration branch — and what the
+/// plan says it waits on:
 ///
-/// Its tasks are cut against the code the previous milestone leaves: split
-/// before that code exists, they plan for a guess. The planner only chains
-/// milestones that share an aggregate, so a skeleton every later milestone
-/// stands on blocks none of them: the order of the plan is the dependency
-/// it does not write. `milestone.blocked_by` must have been read
-/// ([`GitHub::with_blockers`]); empty reads as nothing blocking.
+/// - a milestone the plan's graph knows (contract R) waits on the producers
+///   of what it consumes, until each is **split** (`harness:triggered`) or
+///   delivered: from there the contract it reads is in place, mocked until
+///   built, and the two build side by side;
+/// - one the graph does not know waits on every milestone before it (a
+///   lower number) delivered, the order of a plan written without a graph
+///   being the dependency it does not write.
+///
+/// `milestone.blocked_by` must have been read ([`GitHub::with_blockers`]);
+/// empty reads as nothing blocking.
 ///
 /// [`GitHub::with_blockers`]: harness_core::ports::shell::github::GitHub::with_blockers
 #[must_use]
-pub fn splittable(milestone: &Issue, milestones: &[Issue]) -> bool {
+pub fn splittable(milestone: &Issue, milestones: &[Issue], graph: Option<&Graph>) -> bool {
     let delivered = |other: &Issue| other.is_closed() || other.has(labels::WAITING_MERGE);
-    split_candidate(milestone)
-        && milestone.blocked_by.iter().all(delivered)
-        && milestones
+    if !split_candidate(milestone) || !milestone.blocked_by.iter().all(delivered) {
+        return false;
+    }
+    graph
+        .and_then(|graph| graph.node(milestone.number))
+        .map_or_else(
+            || {
+                milestones
+                    .iter()
+                    .filter(|other| other.number < milestone.number)
+                    .all(delivered)
+            },
+            |node| {
+                graph
+                    .map(|graph| graph.waits_on(node.number))
+                    .unwrap_or_default()
+                    .iter()
+                    .all(|producer| {
+                        milestones
+                            .iter()
+                            .find(|other| other.number == *producer)
+                            .is_none_or(|other| delivered(other) || other.has(labels::TRIGGERED))
+                    })
+            },
+        )
+}
+
+/// How many milestones build at once, at most, beyond the critical path's:
+/// the ahead work is taken on the resources left, never instead of what the
+/// path waits on.
+pub const MAX_CURRENT: usize = 3;
+
+/// The milestones to split now, in the order to split them.
+///
+/// The critical path's first ([`critical_path`]), then the rest by number —
+/// those only while fewer than [`MAX_CURRENT`] milestones build
+/// (`harness:triggered`, not delivered).
+#[must_use]
+pub fn splits(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
+    let building = milestones
+        .iter()
+        .filter(|m| m.is_open() && m.has(labels::TRIGGERED) && !m.has(labels::WAITING_MERGE))
+        .count();
+    let path = critical_path(milestones, graph);
+    let mut found: Vec<u64> = milestones
+        .iter()
+        .filter(|m| splittable(m, milestones, graph))
+        .map(|m| m.number)
+        .collect();
+    by_critical_path(&mut found, &path);
+    let mut room = MAX_CURRENT.saturating_sub(building);
+    found.retain(|number| {
+        if path.contains(number) {
+            return true;
+        }
+        let kept = room > 0;
+        room = room.saturating_sub(1);
+        kept
+    });
+    found
+}
+
+/// The critical path of the plan among what is left to build.
+///
+/// The chain of milestones, each producing what the next consumes, that
+/// weighs the most — a delivered milestone weighs nothing, an open one what
+/// it produces. What a free lane serves first; empty without a graph.
+#[must_use]
+pub fn critical_path(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
+    let Some(graph) = graph else {
+        return Vec::new();
+    };
+    let delivered = |number: u64| {
+        milestones
             .iter()
-            .filter(|other| other.number < milestone.number)
-            .all(delivered)
+            .find(|m| m.number == number)
+            .is_none_or(|m| m.is_closed() || m.has(labels::WAITING_MERGE))
+    };
+    graph.critical_path(&|number| {
+        if delivered(number) {
+            0
+        } else {
+            graph.node(number).map_or(1, |node| {
+                u64::try_from(node.produces.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1)
+            })
+        }
+    })
+}
+
+/// Sorts milestone numbers: the critical path's first, in the path's order,
+/// then the rest by number.
+pub fn by_critical_path(numbers: &mut [u64], path: &[u64]) {
+    numbers.sort_by_key(|number| {
+        (
+            path.iter()
+                .position(|on_path| on_path == number)
+                .unwrap_or(usize::MAX),
+            *number,
+        )
+    });
+}
+
+/// Where the plan's graph is read from, on the integration branch.
+pub const GRAPH_PATH: &str = harness_architecture::graph::PATH;
+
+/// The graph a `plan/graph.json` text holds, if it reads; `None` for no
+/// file or one that does not parse — a plan without a graph.
+#[must_use]
+pub fn parse_graph(text: Option<&str>) -> Option<Graph> {
+    text.and_then(|text| Graph::parse(text).ok())
 }
 
 /// The roadmap item the planner works on: the lowest open one not already
@@ -630,7 +756,10 @@ mod tests {
         let next = issue(17, &[labels::MILESTONE, labels::READY]);
         let mut snapshot = empty();
         snapshot.milestones = vec![skeleton, next.clone()];
-        assert!(!splittable(&next, &snapshot.milestones), "#16 still open");
+        assert!(
+            !splittable(&next, &snapshot.milestones, None),
+            "#16 still open"
+        );
         assert_ne!(decide(&snapshot), Route::Split { milestone: 17 });
         let landed = |labels: &[&str], state: &str| Issue {
             state: state.to_string(),
@@ -641,11 +770,18 @@ mod tests {
             landed(&[labels::MILESTONE], "closed"),
         ] {
             snapshot.milestones = vec![done, next.clone()];
-            assert!(splittable(&next, &snapshot.milestones), "#16 delivered");
+            assert!(
+                splittable(&next, &snapshot.milestones, None),
+                "#16 delivered"
+            );
             assert_eq!(decide(&snapshot), Route::Split { milestone: 17 });
         }
         assert!(
-            splittable(&issue(16, &[labels::MILESTONE, labels::READY]), &[next]),
+            splittable(
+                &issue(16, &[labels::MILESTONE, labels::READY]),
+                &[next],
+                None
+            ),
             "a later one holds nobody"
         );
     }
@@ -680,7 +816,9 @@ mod tests {
             refining: Vec::new(),
             tech_refining: Vec::new(),
             arbitrating: Vec::new(),
-            dev_loop_milestone: None,
+            dev_loop_milestones: Vec::new(),
+            graph: None,
+            contract_changes: Vec::new(),
             test_debt: Vec::new(),
             rules: Vec::new(),
             deciding: Vec::new(),
@@ -721,6 +859,8 @@ mod tests {
                 issue(4, &[labels::ROADMAP, labels::READY]),
             ],
             lowest_roadmap_has_milestone: false,
+            graph: None,
+            contract_changes: Vec::new(),
             milestones: vec![issue(5, &[labels::MILESTONE, labels::READY])],
             pr_to_fix: Some(pr("32", "main_agent")),
             pr_to_review: Some(pr("33", "main_agent")),
@@ -729,7 +869,7 @@ mod tests {
             refining: vec![issue(6, &[labels::REFINEMENT])],
             tech_refining: vec![],
             arbitrating: Vec::new(),
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             test_debt: vec![issue(8, &[labels::TEST_DEBT])],
             rules: vec![issue(2, &[labels::RULES, labels::READY])],
             deciding: vec![issue(3, &[labels::NEEDS_DECISION])],
@@ -744,29 +884,29 @@ mod tests {
         let ready = Snapshot {
             rules: vec![settled.clone(), issue(5, &[labels::RULES, labels::READY])],
             milestones: vec![issue(9, &[labels::MILESTONE, labels::READY])],
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(decide(&ready), Route::Rules { issue: 5 });
         // Taken, failed, waiting on a human: the development still waits.
         let waiting = Snapshot {
             rules: vec![issue(5, &[labels::RULES, labels::HUMAN])],
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             refining: vec![issue(6, &[labels::REFINEMENT])],
             ..empty()
         };
         assert_eq!(rules_first(&waiting), Some(5));
         assert_eq!(decide(&waiting), Route::Refinement { issue: 6 });
-        assert_eq!(lane_work(&waiting).tasks_of, None);
+        assert!(lane_work(&waiting).tasks_of.is_empty());
         // Settled: the development goes on.
         let settled = Snapshot {
             rules: vec![settled],
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(rules_first(&settled), None);
         assert_eq!(decide(&settled), Route::DevLoop { milestone: 3 });
-        assert_eq!(lane_work(&settled).tasks_of, Some(3));
+        assert_eq!(lane_work(&settled).tasks_of, [3]);
     }
 
     #[test]
@@ -811,7 +951,7 @@ mod tests {
             deciding: vec![decided, issue(8, &[labels::NEEDS_DECISION, labels::AGENT])],
             milestones: vec![issue(9, &[labels::MILESTONE, labels::READY])],
             pr_to_fix: Some(pr("32", "milestone/3-x")),
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::Decide { issue: 8 });
@@ -851,7 +991,7 @@ mod tests {
             milestones: vec![issue(9, &[labels::MILESTONE, labels::READY])],
             ready_to_merge: Some(7),
             refining: vec![issue(6, &[labels::REFINEMENT])],
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::Split { milestone: 9 });
@@ -891,7 +1031,7 @@ mod tests {
         let snapshot = Snapshot {
             ready_to_merge: Some(7),
             refining: vec![issue(6, &[labels::REFINEMENT])],
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::MergeMainAgent { milestone: 7 });
@@ -906,7 +1046,7 @@ mod tests {
             pr_to_review: Some(pr("33", "milestone/4-territory")),
             ready_to_merge: Some(7),
             refining: vec![issue(6, &[labels::REFINEMENT])],
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(
@@ -923,7 +1063,7 @@ mod tests {
             pr_to_review: Some(pr("33", "milestone/4-territory")),
             ready_to_merge: Some(7),
             refining: vec![issue(6, &[labels::REFINEMENT])],
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(
@@ -986,7 +1126,7 @@ mod tests {
     fn a_graph_in_question_outranks_the_dev_loop_and_refinement_but_not_a_merge() {
         let mut snapshot = empty();
         snapshot.arbitrating = vec![issue(9, &[labels::AGENT, labels::NEEDS_AI_DECISION])];
-        snapshot.dev_loop_milestone = Some(3);
+        snapshot.dev_loop_milestones = vec![3];
         snapshot.refining = vec![issue(6, &[labels::REFINEMENT])];
         assert_eq!(decide(&snapshot), Route::Arbiter { issue: 9 });
         snapshot.ready_to_merge = Some(7);
@@ -999,7 +1139,7 @@ mod tests {
             refining: vec![issue(6, &[labels::REFINEMENT])],
             tech_refining: vec![issue(7, &[labels::TECH_REFINEMENT])],
             arbitrating: Vec::new(),
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::DevLoop { milestone: 3 });
@@ -1036,7 +1176,7 @@ mod tests {
     #[test]
     fn a_runnable_task_runs_the_dev_loop_when_nothing_outranks_it() {
         let snapshot = Snapshot {
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(decide(&snapshot), Route::DevLoop { milestone: 3 });
@@ -1132,13 +1272,13 @@ mod tests {
     fn lanes_take_the_tasks_and_the_preparation_together() {
         let snapshot = Snapshot {
             refining: vec![issue(6, &[labels::REFINEMENT])],
-            dev_loop_milestone: Some(3),
+            dev_loop_milestones: vec![3],
             ..empty()
         };
         assert_eq!(
             lane_work(&snapshot),
             LaneWork {
-                tasks_of: Some(3),
+                tasks_of: vec![3],
                 preparation: true,
             }
         );
@@ -1167,9 +1307,155 @@ mod tests {
         assert_eq!(
             lane_work(&empty()),
             LaneWork {
-                tasks_of: None,
+                tasks_of: Vec::new(),
                 preparation: false,
             }
         );
+    }
+
+    const GRAPH: &str = r#"{"version":1,"milestones":[
+      {"number":18,"title":"Campaigns","systems":["campaign"],"produces":["campaign.listCampaigns"],"consumes":[],"depends_on":[]},
+      {"number":20,"title":"Sessions","systems":["session"],"produces":["session.listScenes","session.addScene"],"consumes":["campaign.listCampaigns"],"depends_on":[18]},
+      {"number":19,"title":"Media","systems":["media"],"produces":["media.listMedia"],"consumes":["session.listScenes"],"depends_on":[20]},
+      {"number":21,"title":"Sound","systems":["sound"],"produces":["sound.play"],"consumes":[],"depends_on":[]},
+      {"number":22,"title":"Battle","systems":["battle"],"produces":["battle.start"],"consumes":["session.listScenes"],"depends_on":[20]},
+      {"number":30,"title":"Home","systems":["home"],"produces":["home.show"],"consumes":[],"depends_on":[]},
+      {"number":31,"title":"Archive","systems":["archive"],"produces":["archive.export"],"consumes":[],"depends_on":[]}
+    ],"ids":{}}"#;
+
+    fn graph() -> Graph {
+        parse_graph(Some(GRAPH)).expect("a graph")
+    }
+
+    #[test]
+    fn with_a_graph_a_milestone_splits_once_its_producers_are_split_whatever_its_number() {
+        let graph = graph();
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        let building = |n: u64| issue(n, &[labels::MILESTONE, labels::TRIGGERED]);
+        // #18 builds: #20 reads it — its contract is mocked, #20 may split;
+        // #21 reads nothing and splits; #19 and #22 wait on #20's split.
+        let milestones = vec![building(18), ready(19), ready(20), ready(21), ready(22)];
+        assert!(splittable(&milestones[2], &milestones, Some(&graph)), "#20");
+        assert!(splittable(&milestones[3], &milestones, Some(&graph)), "#21");
+        assert!(
+            !splittable(&milestones[1], &milestones, Some(&graph)),
+            "#19 waits on #20"
+        );
+        assert!(
+            !splittable(&milestones[4], &milestones, Some(&graph)),
+            "#22 waits on #20"
+        );
+        // Without the graph, the old rule: #18 open holds every later one.
+        assert!(!splittable(&milestones[3], &milestones, None));
+        // A producer split suffices — its contract is mocked — one not yet
+        // split does not; one absent from the open list is closed: delivered.
+        let waiting = vec![ready(19), ready(20)];
+        assert!(
+            !splittable(&waiting[0], &waiting, Some(&graph)),
+            "#20 not split"
+        );
+        let later = vec![ready(19), building(20)];
+        assert!(splittable(&later[0], &later, Some(&graph)), "#20 building");
+        let landed = vec![
+            ready(19),
+            issue(
+                20,
+                &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+            ),
+        ];
+        assert!(splittable(&landed[0], &landed, Some(&graph)));
+        assert!(
+            splittable(&ready(22), &[ready(22)], Some(&graph)),
+            "#20 gone: closed"
+        );
+        // A milestone the graph does not know keeps the old rule.
+        let unknown = vec![building(18), ready(40)];
+        assert!(!splittable(&unknown[1], &unknown, Some(&graph)));
+    }
+
+    #[test]
+    fn the_critical_path_goes_first_and_the_ahead_work_fills_up_to_the_cap() {
+        let graph = graph();
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        let building = |n: u64| issue(n, &[labels::MILESTONE, labels::TRIGGERED]);
+        // The chain 18 -> 20 -> 19/22 weighs the most: the path, #19 first
+        // in plan order on the tie.
+        let milestones = vec![ready(18), ready(19), ready(20), ready(21), ready(22)];
+        assert_eq!(critical_path(&milestones, Some(&graph)), [18, 20, 19]);
+        assert!(critical_path(&milestones, None).is_empty());
+        // Nothing builds: #18 (the path) and #21 split; #20 waits on #18.
+        assert_eq!(splits(&milestones, Some(&graph)), [18, 21]);
+        // Three build already: the path still goes, the ahead work waits.
+        let crowded = vec![
+            building(18),
+            building(21),
+            building(30),
+            ready(20),
+            ready(31),
+        ];
+        assert_eq!(
+            splits(&crowded, Some(&graph)),
+            [20],
+            "#31 is ahead work past the cap"
+        );
+        // Two build: one ahead slot left, the path first.
+        let two = vec![building(18), building(21), ready(20), ready(30), ready(31)];
+        assert_eq!(splits(&two, Some(&graph)), [20, 30]);
+        let mut numbers = vec![22, 19, 21, 20, 18];
+        by_critical_path(&mut numbers, &[18, 20, 19]);
+        assert_eq!(numbers, [18, 20, 19, 21, 22]);
+    }
+
+    #[test]
+    fn a_delivered_milestone_weighs_nothing_on_the_path() {
+        let graph = graph();
+        let landed = vec![
+            issue(
+                18,
+                &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+            ),
+            issue(20, &[labels::MILESTONE, labels::TRIGGERED]),
+            issue(19, &[labels::MILESTONE, labels::READY]),
+            issue(22, &[labels::MILESTONE, labels::READY]),
+        ];
+        let path = critical_path(&landed, Some(&graph));
+        assert!(path.ends_with(&[20, 19]), "{path:?}");
+    }
+
+    #[test]
+    fn a_graph_that_does_not_read_is_no_graph() {
+        assert!(parse_graph(None).is_none());
+        assert!(parse_graph(Some("{")).is_none());
+        assert_eq!(
+            parse_graph(Some(GRAPH)).map(|g| g.milestones.len()),
+            Some(7)
+        );
+        assert_eq!(GRAPH_PATH, "plan/graph.json");
+    }
+
+    #[test]
+    fn a_contract_change_outranks_a_split_and_the_lanes_take_every_building_milestone() {
+        let snapshot = Snapshot {
+            contract_changes: vec![issue(70, &[labels::CONTRACT_CHANGE])],
+            milestones: vec![issue(5, &[labels::MILESTONE, labels::READY])],
+            dev_loop_milestones: vec![20, 18],
+            ..empty()
+        };
+        assert_eq!(decide(&snapshot), Route::ContractChange { issue: 70 });
+        assert_eq!(lane_work(&snapshot).tasks_of, [20, 18]);
+        let closed = Snapshot {
+            contract_changes: vec![Issue {
+                state: "closed".to_string(),
+                ..issue(70, &[labels::CONTRACT_CHANGE])
+            }],
+            ..snapshot
+        };
+        assert_eq!(closed.dev_loop_milestones, [20, 18]);
+        assert_eq!(decide(&closed), Route::Split { milestone: 5 });
+        let building = Snapshot {
+            milestones: Vec::new(),
+            ..closed
+        };
+        assert_eq!(decide(&building), Route::DevLoop { milestone: 20 });
     }
 }

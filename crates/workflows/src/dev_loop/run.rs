@@ -114,7 +114,10 @@ pub fn workspace_gates(
                 now: quota.now,
             }),
             Box::new(preflight::LabelsExist { gh: Rc::clone(&gh) }),
-            Box::new(preflight::MilestoneIsReachable { gh }),
+            Box::new(preflight::MilestoneIsReachable {
+                gh,
+                branch: config.integration_branch.clone(),
+            }),
             Box::new(preflight::SkillsExist {
                 disk: Rc::clone(&disk),
                 skills,
@@ -234,6 +237,7 @@ fn rounds(
             turn,
             pick: PickTask {
                 gh: Rc::clone(&gh),
+                branch: branch.clone(),
                 spending: Rc::clone(&spending),
                 repo: Rc::clone(&repo),
                 resuming: if turn == 1 { resuming.clone() } else { None },

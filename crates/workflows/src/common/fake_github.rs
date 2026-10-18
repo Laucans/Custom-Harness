@@ -118,6 +118,8 @@ pub struct FakeGitHub {
     /// What `activity` answers. Absent, the board has always just moved —
     /// the answer that keeps every full read in a test happening.
     pub activity: Option<Activity>,
+    /// The branches that refuse a merge into them (a conflict), by name.
+    pub refused_merges: Vec<String>,
 }
 
 impl FakeGitHub {
@@ -339,6 +341,9 @@ impl GitHub for FakeGitHub {
     }
 
     async fn merge_branch(&self, base: &str, head: &str) -> Outcome<()> {
+        if self.refused_merges.iter().any(|b| b == base) {
+            return Err(Halt::Failed(format!("{base} conflicts with {head}")));
+        }
         self.wrote
             .borrow_mut()
             .push(Wrote::MergedBranch(base.to_string(), head.to_string()));

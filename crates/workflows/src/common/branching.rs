@@ -35,6 +35,18 @@ pub fn milestone_branch(number: u64, title: &str) -> String {
     format!("milestone/{number}-{}", slugify(title))
 }
 
+/// The milestone a branch of [`milestone_branch`]'s shape names, if it is
+/// one: `milestone/18-campaigns` is #18's; `main_agent` is nobody's.
+#[must_use]
+pub fn milestone_number(branch: &str) -> Option<u64> {
+    branch
+        .strip_prefix("milestone/")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// Lowercase, non-alphanumeric runs collapsed to one `-`, trimmed of
 /// leading/trailing `-`.
 fn slugify(text: &str) -> String {

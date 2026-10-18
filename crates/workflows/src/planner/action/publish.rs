@@ -562,4 +562,54 @@ mod tests {
         .expect_err("must fail");
         assert!(matches!(err, Halt::Failed(_)));
     }
+
+    #[tokio::test]
+    async fn the_graph_marks_what_the_checkout_builds_and_what_a_fixture_stands_for() {
+        let gh = Rc::new(FakeGitHub::default());
+        let mut context = ctx(false);
+        context.state.components = vec![graph::Component {
+            name: "Board".to_string(),
+            system: "pj".to_string(),
+            needs: vec!["pj.list".to_string(), "pj.get".to_string()],
+            actions: vec![],
+        }];
+        context.state.standing = crate::plan_graph::Standing {
+            built: vec!["pj.list".to_string(), "PJ".to_string()],
+            mocked: vec!["pj.get".to_string(), "pj.list".to_string()],
+        };
+        context.results.insert(
+            "plan".to_string(),
+            Reply {
+                text: r#"[{"title":"A","goal":"do A","systems":["pj"],"aggregates":["PJ"],"micro_uis":["Board"]}]"#.to_string(),
+                stop_line: None,
+                spend: Spend::default(),
+            },
+        );
+        Write {
+            gh: gh.clone(),
+            plan_stage: "plan".to_string(),
+            branch: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("published");
+        let text = gh
+            .writes()
+            .into_iter()
+            .find_map(|w| match w {
+                Wrote::PutFile(path, _, text) if path == graph::PATH => Some(text),
+                _ => None,
+            })
+            .expect("the graph");
+        let written = graph::Graph::parse(&text).expect("a graph");
+        let state = |id: &str| written.ids[id].state;
+        assert_eq!(
+            state("pj.list"),
+            graph::State::Built,
+            "built wins over mocked"
+        );
+        assert_eq!(state("PJ"), graph::State::Built);
+        assert_eq!(state("pj.get"), graph::State::Mocked);
+        assert_eq!(state("Board"), graph::State::Planned);
+    }
 }

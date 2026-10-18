@@ -390,4 +390,37 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].aggregates, vec!["Campaign".to_string()]);
     }
+
+    #[test]
+    fn the_standing_is_read_off_a_checkout_s_manifests_and_fixtures() {
+        use crate::common::fake_disk::FakeDisk;
+        let mut disk = FakeDisk::default();
+        for (path, text) in [
+            (
+                "/r/crates/credit/capabilities/risk/capability.json",
+                r#"{"capability":"credit.calculateRisk","system":"credit","version":1}"#,
+            ),
+            (
+                "/r/crates/credit/capabilities/risk/Cargo.toml",
+                "[package]\nname = \"credit-risk\"\n",
+            ),
+            ("/r/mock/fixtures/credit.listAccounts.json", "[]"),
+            ("/r/mock/fixtures/credit.calculateRisk.json", "{}"),
+            ("/r/mock/fixtures/README.md", "not a fixture"),
+        ] {
+            disk.existing
+                .insert(std::path::PathBuf::from(path), text.to_string());
+        }
+        let standing = Standing::read(&disk, std::path::Path::new("/r"));
+        assert_eq!(standing.built, vec!["credit.calculateRisk".to_string()]);
+        assert_eq!(
+            standing.mocked,
+            vec![
+                "credit.calculateRisk".to_string(),
+                "credit.listAccounts".to_string()
+            ]
+        );
+        let bare = Standing::read(&FakeDisk::default(), std::path::Path::new("/r"));
+        assert!(bare.built.is_empty() && bare.mocked.is_empty());
+    }
 }

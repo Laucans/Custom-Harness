@@ -17,6 +17,7 @@
 
 use crate::arbiter::orchestration::stages as arbiter;
 use crate::common::explore;
+use crate::contract_manager::orchestration::stages as contract_manager;
 use crate::decide::orchestration::stages as decide;
 use crate::dev_loop::orchestration::stages as dev_loop;
 use crate::planner::orchestration::stages as planner;
@@ -75,6 +76,8 @@ pub const RULES_FIDELITY: &str = "rules/fidelity";
 pub const DECIDE: &str = "decide/decide";
 /// The arbiter's one session: which task produces each open id.
 pub const ARBITRATE: &str = "arbiter/arbitrate";
+/// The contract manager's one session: the new version of a contract.
+pub const CONTRACT_EVOLVE: &str = "contract-manager/evolve";
 
 /// One editable prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +238,12 @@ const CATALOG: &[Prompt] = &[
         title: "Arbiter: which task produces what a refinement found missing",
         stations: &[("arbiter", "arbitrate")],
         default: arbiter::ARBITRATE_PROMPT,
+    },
+    Prompt {
+        key: CONTRACT_EVOLVE,
+        title: "Contract manager: the new version of a contract a consumer needs",
+        stations: &[("contract-manager", "evolve")],
+        default: contract_manager::EVOLVE_PROMPT,
     },
 ];
 

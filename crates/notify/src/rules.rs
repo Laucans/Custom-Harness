@@ -298,7 +298,9 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::MilestoneLanded { .. }
         | Event::RoadmapDelivered { .. }
         | Event::DecisionTaken { .. }
-        | Event::HumanTaskOpened { .. } => progress(board, event, at),
+        | Event::HumanTaskOpened { .. }
+        | Event::ContractChangeAsked { .. }
+        | Event::ContractEvolved { .. } => progress(board, event, at),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }

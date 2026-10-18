@@ -40,6 +40,20 @@ pub enum Kind {
     Concept,
 }
 
+impl Kind {
+    /// How the architecture names it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Aggregate => "Aggregate",
+            Self::DataCapability => "DataCapability",
+            Self::Capability => "Capability",
+            Self::MicroUi => "Micro-UI",
+            Self::Concept => "Concept",
+        }
+    }
+}
+
 /// Where an interface stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -331,6 +345,29 @@ impl Graph {
                 State::Planned
             };
         }
+    }
+
+    /// The node of `number`, when the plan has it.
+    #[must_use]
+    pub fn node(&self, number: u64) -> Option<&Node> {
+        self.milestones.iter().find(|m| m.number == number)
+    }
+
+    /// The producers `number` waits on: those of what it consumes that come
+    /// before it in plan order. A read of a later milestone is a plan error
+    /// ([`Self::reads_ahead`]), not a wait — counted as one, two milestones
+    /// reading each other would wait forever.
+    #[must_use]
+    pub fn waits_on(&self, number: u64) -> Vec<u64> {
+        let Some(at) = self.position(number) else {
+            return Vec::new();
+        };
+        self.milestones[at]
+            .depends_on
+            .iter()
+            .copied()
+            .filter(|producer| self.position(*producer).is_some_and(|p| p < at))
+            .collect()
     }
 
     /// The position of `number` in plan order.

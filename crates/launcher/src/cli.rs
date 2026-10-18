@@ -392,6 +392,8 @@ pub enum RouteKind {
     PrFix,
     /// The rules' task on an issue.
     Rules,
+    /// `contract_manager` on a `harness:contract-change` issue.
+    Contract,
 }
 
 /// `harness route <kind> <number>`: one of the router's paid routes, as a

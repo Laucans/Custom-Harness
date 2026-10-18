@@ -102,6 +102,7 @@ pub fn workflow_of_route(route: &str) -> Option<&'static str> {
         "Rules" => Some("rules"),
         "Decide" => Some("decide"),
         "Arbiter" => Some("arbiter"),
+        "ContractChange" => Some("contract-manager"),
         "MergeMainAgent" => Some("main-agent-merge"),
         "MergeIntoMilestone" => Some("milestone-merge"),
         _ => None,

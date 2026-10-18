@@ -304,6 +304,31 @@ pub enum Event {
         /// Why, in a sentence.
         why: String,
     },
+    /// A consumer needs a contract another milestone produces changed: a
+    /// `harness:contract-change` issue was opened, blocking its task, for
+    /// the contract manager.
+    ContractChangeAsked {
+        /// The request issue.
+        issue: u64,
+        /// The task it blocks.
+        task: u64,
+        /// The contract's id.
+        id: String,
+    },
+    /// The contract manager evolved a contract: the new version is on the
+    /// integration branch, a task builds it, every consumer is told.
+    ContractEvolved {
+        /// The contract's id.
+        id: String,
+        /// The version it moved to.
+        version: u32,
+        /// The task that asked, unblocked.
+        task: u64,
+        /// The task that builds the new version.
+        producer_task: u64,
+        /// The change, in a sentence.
+        summary: String,
+    },
     /// A workflow stopped. Told in the run's own log as `STOP: …` — the line
     /// a reader of that log jumps to — and kept.
     Halted {
@@ -479,6 +504,18 @@ impl Event {
             Self::HumanTaskOpened { task, blocks, why } => {
                 format!("#{task} opened for a human, blocking #{blocks}: {why}")
             }
+            Self::ContractChangeAsked { issue, task, id } => {
+                format!("#{issue} opened for the contract manager: #{task} needs `{id}` changed")
+            }
+            Self::ContractEvolved {
+                id,
+                version,
+                task,
+                producer_task,
+                summary,
+            } => format!(
+                "contract `{id}` -> v{version} ({summary}); #{producer_task} builds it, #{task} goes on"
+            ),
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
@@ -499,6 +536,7 @@ impl Event {
             | Self::DataSnapshotFailed { .. }
             | Self::DecisionTaken { .. }
             | Self::HumanTaskOpened { .. }
+            | Self::ContractChangeAsked { .. }
             | Self::Halted { .. }
             | Self::LaneEnded {
                 code: Some(1 | 3), ..

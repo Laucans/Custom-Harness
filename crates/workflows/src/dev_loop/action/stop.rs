@@ -32,6 +32,7 @@ use harness_core::traces::Event;
 
 use crate::common::decision::Question;
 use crate::common::{labels, sections};
+use crate::contract_manager::data::request::{self as contract, Request};
 use crate::dev_loop::data::state::Loop;
 
 /// The round a stop on one task goes to a human instead of a decision.
@@ -47,7 +48,9 @@ pub fn kind_of(halt: &Halt) -> Option<&'static str> {
     let Halt::Halted(reason) = halt else {
         return None;
     };
-    if port_asked(reason).is_some() {
+    if contract::asked(reason).is_some() {
+        Some("contract")
+    } else if port_asked(reason).is_some() {
         Some("port")
     } else if reason.contains("AGENT_LOOP_STOP") {
         Some("stop")
@@ -110,7 +113,12 @@ impl RaiseDecision {
             .filter(|q| matches!(q.kind.as_deref(), Some("stop" | "breaker")))
             .map_or(1, |q| q.round.saturating_add(1));
         let port = port_asked(&reason).filter(|_| !self.autonomous);
-        if let Some(port) = port {
+        if let Some((id, need)) = contract::asked(&reason) {
+            // A contract another milestone produces: the contract manager's,
+            // with or without a human gate — it is the harness's own work.
+            self.contract_to_evolve(ctx, number, &issue.body, &id, &need)
+                .await?;
+        } else if let Some(port) = port {
             self.port_to_approve(ctx, number, &issue.title, &issue.body, port)
                 .await?;
         } else if round >= HUMAN_AT_ROUND && !self.autonomous {
@@ -131,6 +139,65 @@ impl RaiseDecision {
         }
         ctx.state.handed_over = true;
         Ok(Verdict::Continue)
+    }
+
+    /// A contract asked: kept under the task's `## Decision` (`kind:
+    /// contract`), and the contract manager's to evolve, in a
+    /// `harness:contract-change` issue blocking the task.
+    async fn contract_to_evolve(
+        &self,
+        ctx: &Context<Loop>,
+        number: u64,
+        body: &str,
+        id: &str,
+        need: &str,
+    ) -> Outcome<()> {
+        let question = Question {
+            kind: Some("contract".to_string()),
+            blocks: format!("contract {id} — {need}"),
+            ..Question::default()
+        };
+        let kept = sections::replace(body, &[(sections::DECISION, &question.render())]);
+        self.gh.set_body(number, &kept).await?;
+        if !self
+            .gh
+            .labels()
+            .await?
+            .iter()
+            .any(|l| l == labels::CONTRACT_CHANGE)
+        {
+            let label = labels::ALL
+                .iter()
+                .find(|l| l.name == labels::CONTRACT_CHANGE);
+            self.gh
+                .create_label(
+                    labels::CONTRACT_CHANGE,
+                    label.map_or("bfdadc", |l| l.color),
+                    label.map_or("", |l| l.description),
+                )
+                .await?;
+        }
+        let request = Request {
+            id: id.to_string(),
+            task: number,
+            milestone: ctx.state.milestone.number.parse::<u64>().ok(),
+            need: need.to_string(),
+        };
+        let issue = self
+            .gh
+            .create_issue(
+                &request.title(),
+                &request.render(),
+                &[labels::CONTRACT_CHANGE],
+            )
+            .await?;
+        self.gh.add_blocked_by(number, issue).await?;
+        ctx.traces.event(&Event::ContractChangeAsked {
+            issue,
+            task: number,
+            id: id.to_string(),
+        });
+        Ok(())
     }
 
     /// A port asked: kept under the task's `## Decision`, and a person's
@@ -471,5 +538,59 @@ mod tests {
         assert!(raise.on_halt(&mut ctx(true), stop()).await.is_err());
         let seen = &gh.writes();
         assert!(seen.is_empty(), "{seen:?}");
+    }
+
+    #[tokio::test]
+    async fn a_contract_asked_goes_to_the_contract_manager_with_or_without_a_human_gate() {
+        let asked = || {
+            Halt::Halted(
+                "AGENT_LOOP_STOP: contract session.listScenes — the scenes' media ids (/code)"
+                    .to_string(),
+            )
+        };
+        assert_eq!(kind_of(&asked()), Some("contract"));
+        for autonomous in [false, true] {
+            let gh = gh("## Scope\n\nbranch: feat/media\n\nmedia");
+            let mut context = ctx(false);
+            RaiseDecision {
+                gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+                autonomous,
+            }
+            .on_halt(&mut context, asked())
+            .await
+            .expect("handed over");
+            let writes = gh.writes();
+            let Wrote::Body(11, body) = &writes[0] else {
+                panic!("{writes:?}");
+            };
+            assert!(body.contains("kind: contract"), "{body}");
+            assert!(
+                writes.iter().any(|w| matches!(w, Wrote::CreatedLabel(name, ..) if name == labels::CONTRACT_CHANGE)),
+                "the label is created on a board that lacks it"
+            );
+            let created = writes
+                .iter()
+                .find_map(|w| match w {
+                    Wrote::CreatedIssue(title, body, labels) => Some((title, body, labels)),
+                    _ => None,
+                })
+                .expect("the request");
+            assert_eq!(created.0, "Contract change: session.listScenes for #11");
+            assert!(
+                created.1.contains("id: session.listScenes") && created.1.contains("milestone: #4")
+            );
+            assert!(created.1.contains("need: the scenes' media ids (/code)"));
+            assert_eq!(created.2, &[labels::CONTRACT_CHANGE.to_string()]);
+            assert!(
+                writes
+                    .iter()
+                    .any(|w| matches!(w, Wrote::BlockedByLink(11, _)))
+            );
+            assert!(
+                !writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())),
+                "no decision asked: the manager answers"
+            );
+            assert!(context.state.handed_over);
+        }
     }
 }

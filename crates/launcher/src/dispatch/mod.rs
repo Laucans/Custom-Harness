@@ -33,6 +33,7 @@
 //! it) or `router` (a poll found the conditions met).
 
 pub mod arbiter;
+pub mod contract_manager;
 pub mod costs;
 pub mod data_diagnosis;
 pub mod data_model_draft;

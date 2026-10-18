@@ -193,6 +193,14 @@ pub const TEST_DEBT: &str = "harness:test-debt";
 /// development task starts** — the tests come first. Not in [`LOOP`].
 pub const RULES: &str = "harness:rules";
 
+/// A contract a consumer needs changed.
+///
+/// Opened on `AGENT_LOOP_STOP: contract <id> — <what it needs>`: the
+/// `contract_manager` workflow evolves it — a new version of the manifest and
+/// its fixture, a task on the producer's milestone, a note to every consumer
+/// — and closes the issue, which unblocks the task that asked.
+pub const CONTRACT_CHANGE: &str = "harness:contract-change";
+
 /// The thirteen the loop requires.
 ///
 /// `REFINEMENT` is not among them: the loop does not read it, and its
@@ -225,12 +233,12 @@ pub struct Label {
     pub description: &'static str,
 }
 
-/// The twenty-two labels `init-repo` creates when they are missing.
+/// The twenty-three labels `init-repo` creates when they are missing.
 ///
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 22] = [
+pub const ALL: [Label; 23] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -340,6 +348,11 @@ pub const ALL: [Label; 22] = [
         name: AI_DECIDED,
         color: "c5def5",
         description: "The harness decided here: read ## Decision; take the label off once read",
+    },
+    Label {
+        name: CONTRACT_CHANGE,
+        color: "bfdadc",
+        description: "A contract a consumer needs changed: the contract manager evolves it",
     },
 ];
 

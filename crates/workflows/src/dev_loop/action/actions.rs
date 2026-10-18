@@ -57,6 +57,9 @@ fn number_of(ctx: &Context<Loop>) -> Outcome<u64> {
 pub struct PickTask {
     /// What reads the board.
     pub gh: Rc<dyn GitHub>,
+    /// The branch this run works on: a milestone's own names the board to
+    /// read, anything else reads the lowest open milestone's.
+    pub branch: String,
     /// What remembers a stage a previous run left interrupted on the task,
     /// so this run resumes its session rather than paying the turns again.
     pub spending: Rc<dyn Spending>,
@@ -89,7 +92,7 @@ impl Action<Loop> for PickTask {
     async fn run(&self, ctx: &mut Context<Loop>) -> Outcome<Verdict> {
         // One board read per round. The launcher read the resume pointer, not
         // the board: so there aren't two reads that could give different answers.
-        let here = board::read(self.gh.as_ref()).await?;
+        let here = board::read_on(self.gh.as_ref(), &self.branch).await?;
         ctx.state.milestone = Named {
             number: here.milestone.number.to_string(),
             title: here.milestone.title.clone(),
@@ -506,6 +509,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            branch: String::new(),
             spending: Rc::new(Recorded::default()),
             repo: test_repo(),
             resuming: None,
@@ -530,6 +534,7 @@ mod tests {
         context.session_spec = Some(opus_high());
         PickTask {
             gh,
+            branch: String::new(),
             spending: Rc::new(Recorded::default()),
             repo: test_repo(),
             resuming: None,
@@ -553,6 +558,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            branch: String::new(),
             spending: Rc::new(Recorded::default()),
             repo: test_repo(),
             resuming: None,
@@ -584,6 +590,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            branch: String::new(),
             spending: Rc::new(Recorded::default()),
             repo: test_repo(),
             resuming: None,
@@ -622,6 +629,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            branch: String::new(),
             spending: Rc::new(Recorded::default()),
             repo: test_repo(),
             resuming: Some("11".to_string()),
@@ -648,6 +656,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         PickTask {
             gh,
+            branch: String::new(),
             spending: Rc::new(Recorded::default()),
             repo: test_repo(),
             resuming: None,
@@ -673,6 +682,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         let err = PickTask {
             gh,
+            branch: String::new(),
             spending: Rc::new(Recorded::default()),
             repo: test_repo(),
             resuming: None,
@@ -697,6 +707,7 @@ mod tests {
         let mut context = ctx(Loop::default());
         let err = PickTask {
             gh,
+            branch: String::new(),
             spending: Rc::new(Recorded::default()),
             repo: test_repo(),
             resuming: None,

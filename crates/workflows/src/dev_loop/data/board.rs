@@ -15,7 +15,7 @@
 use harness_core::domain::{Halt, Issue, Outcome};
 use harness_core::ports::shell::github::GitHub;
 
-use crate::common::labels;
+use crate::common::{branching, labels};
 use crate::dev_loop::data::tasks;
 
 /// What the loop sees of the board, at a given moment.
@@ -104,16 +104,48 @@ impl Board {
 /// - adapter failure, propagated as-is. A read that fails never becomes
 ///   an empty board, which would read "milestone done" and trigger `/planner`.
 pub async fn read(gh: &dyn GitHub) -> Outcome<Board> {
+    read_on(gh, "").await
+}
+
+/// The board the branch names.
+///
+/// A milestone's own branch (`milestone/<n>-…`, [`branching::milestone_number`])
+/// reads that milestone — several build at once, and a lane on #20's branch
+/// must not pick #18's tasks — anything else the lowest open one, as [`read`]
+/// does.
+///
+/// # Errors
+/// [`Halt::Halted`] when the milestone the branch names is not open, or no
+/// milestone is; adapter failure propagated as-is.
+pub async fn read_on(gh: &dyn GitHub, branch: &str) -> Outcome<Board> {
     let found = gh.issues_labelled(labels::MILESTONE, "open").await?;
-    let Some(milestone) = tasks::current_milestone(&found) else {
-        return Err(Halt::Halted(format!(
-            "no open {} issue — there is nothing to work from. /planner opens \
-             one from a {} issue, triggered on its own rather than from here.",
-            labels::MILESTONE,
-            labels::ROADMAP
-        )));
+    let milestone = if let Some(number) = branching::milestone_number(branch) {
+        let Some(named) = found.iter().find(|m| m.number == number && m.is_open()) else {
+            return Err(Halt::Halted(format!(
+                "milestone #{number}, which {branch} belongs to, is not open — nothing to \
+                 work from on this branch"
+            )));
+        };
+        named
+    } else {
+        let Some(lowest) = tasks::current_milestone(&found) else {
+            return Err(Halt::Halted(format!(
+                "no open {} issue — there is nothing to work from. /planner opens \
+                 one from a {} issue, triggered on its own rather than from here.",
+                labels::MILESTONE,
+                labels::ROADMAP
+            )));
+        };
+        lowest
     };
-    let milestone = milestone.clone();
+    read_of(gh, milestone.clone()).await
+}
+
+/// This milestone's board: its sub-issues, blockers read.
+///
+/// # Errors
+/// Adapter failure, propagated as-is.
+pub async fn read_of(gh: &dyn GitHub, milestone: Issue) -> Outcome<Board> {
     let subs = gh.sub_issues(milestone.number).await?;
     let held = gh.with_blockers(subs).await?;
     Ok(Board {
@@ -155,6 +187,30 @@ mod tests {
         let board = read(&gh).await.expect("a board");
         assert_eq!(board.milestone.number, 4);
         assert_eq!(board.next().expect("a task").number, 11);
+    }
+
+    #[tokio::test]
+    async fn a_milestone_branch_reads_its_own_milestone_s_board() {
+        let gh = FakeGitHub {
+            issues: vec![
+                issue(9, &[labels::MILESTONE]),
+                issue(4, &[labels::MILESTONE]),
+            ],
+            subs: vec![(4, vec![task(11)]), (9, vec![task(21)])],
+            ..FakeGitHub::default()
+        };
+        let board = read_on(&gh, "milestone/9-sessions").await.expect("a board");
+        assert_eq!(board.milestone.number, 9);
+        assert_eq!(board.next().expect("a task").number, 21);
+        let lowest = read_on(&gh, "main_agent").await.expect("a board");
+        assert_eq!(lowest.milestone.number, 4);
+        let err = read_on(&gh, "milestone/7-gone")
+            .await
+            .expect_err("not open");
+        assert!(
+            matches!(err, Halt::Halted(ref said) if said.contains("#7")),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

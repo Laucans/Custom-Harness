@@ -1,10 +1,12 @@
 //! The one place that sequences a merge attempt: read, decide, write.
 
-use harness_core::domain::Outcome;
+use harness_architecture::graph::{self, Graph};
+use harness_core::domain::{Issue, Outcome};
 
 use crate::common::{branching, delivery, labels};
 use crate::main_agent_merge::config::Config;
 use crate::main_agent_merge::data::audit;
+use crate::main_agent_merge::data::merge_train;
 use crate::main_agent_merge::data::report::Outcome as MergeOutcome;
 use crate::main_agent_merge::ports::Ports;
 
@@ -24,6 +26,14 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
 
     let issue = ports.gh.issue(milestone).await?;
     let branch = branching::milestone_branch(milestone, &issue.title);
+    // The train's order: a consumer lands after the producers of what it
+    // reads, whatever its number.
+    let graph = read_graph(ports, &config.base_branch).await;
+    let open = ports.gh.issues_labelled(labels::MILESTONE, "open").await?;
+    let waiting = merge_train::producers_landed(graph.as_ref(), milestone, &open);
+    if !waiting.is_empty() {
+        return Ok(MergeOutcome::WaitingOnProducers(waiting));
+    }
 
     // The label said delivered; this asks git. A task whose PR was opened
     // and never merged — red CI, abandoned — carries the same label as one
@@ -44,10 +54,14 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             ports.gh.merge_pr(&pr.num).await?;
             ports.gh.add_label(milestone, labels::WAITING_MERGE).await?;
             close_delivered(ports, &tasks, &pr.reference()).await?;
+            let built = mark_built(ports, config, graph, milestone, &pr.num).await?;
+            let caught_up = catch_up_building(ports, config, &open, milestone, &branch).await?;
             let roadmap = roadmap_landed(ports, milestone).await?;
             Ok(MergeOutcome::Merged {
                 pr: pr.reference(),
                 roadmap,
+                built,
+                caught_up,
             })
         } else {
             // Checks that ran on an older base do not run again by
@@ -81,6 +95,93 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             .await?;
         Ok(MergeOutcome::OpenedPr(url))
     }
+}
+
+/// The plan's graph on the base branch, when the plan wrote one.
+async fn read_graph(ports: &Ports, base: &str) -> Option<Graph> {
+    let text = ports.gh.file_text(graph::PATH, base).await.ok().flatten()?;
+    Graph::parse(&text).ok()
+}
+
+/// Marks `built`, in the plan's graph, every id whose manifest the merged
+/// pull request carried — the mock server stops standing in for them — and
+/// writes the graph back to the base branch when something changed.
+async fn mark_built(
+    ports: &Ports,
+    config: &Config,
+    graph: Option<Graph>,
+    milestone: u64,
+    pr: &str,
+) -> Outcome<Vec<String>> {
+    let Some(mut graph) = graph else {
+        return Ok(Vec::new());
+    };
+    let files = ports.gh.pr_files(pr).await.unwrap_or_default();
+    let mut manifests = Vec::new();
+    for path in files.iter().filter(|path| merge_train::is_manifest(path)) {
+        if let Some(text) = ports.gh.file_text(path, &config.base_branch).await?
+            && let Some(declared) = merge_train::declared(&text)
+        {
+            manifests.push(declared);
+        }
+    }
+    let built = merge_train::mark_built(&mut graph, &manifests);
+    if built.is_empty() {
+        return Ok(built);
+    }
+    let text = graph.to_json().map_err(|e| {
+        harness_core::domain::Halt::Failed(format!("the plan's graph cannot be written: {e}"))
+    })?;
+    ports
+        .gh
+        .put_file(
+            graph::PATH,
+            &config.base_branch,
+            &text,
+            &format!(
+                "chore(plan): milestone #{milestone} built {} — {}",
+                built.len(),
+                built.join(", ")
+            ),
+        )
+        .await?;
+    Ok(built)
+}
+
+/// Brings the landing into every other milestone still building, so the
+/// next merge meets no surprise. A branch that refuses it (a conflict) is
+/// told on its milestone: the conflict shows on its own pull request, where
+/// the repair route meets it.
+async fn catch_up_building(
+    ports: &Ports,
+    config: &Config,
+    open: &[Issue],
+    landed: u64,
+    landed_branch: &str,
+) -> Outcome<Vec<u64>> {
+    let mut caught_up = Vec::new();
+    for other in merge_train::building(open, landed) {
+        let branch = branching::milestone_branch(other.number, &other.title);
+        match ports.gh.merge_branch(&branch, &config.base_branch).await {
+            Ok(()) => caught_up.push(other.number),
+            Err(halt) => {
+                ports
+                    .gh
+                    .post_issue_comment(
+                        other.number,
+                        &format!(
+                            "Milestone #{landed} landed on `{}` (`{landed_branch}`), and `{branch}` \
+                             could not take it: {}. The conflict will show on this milestone's \
+                             pull request; it is met there.",
+                            config.base_branch,
+                            halt.reason()
+                        ),
+                    )
+                    .await?;
+            }
+        }
+    }
+    Ok(caught_up)
 }
 
 /// The roadmap item whose milestones have now all landed — this one the
@@ -358,7 +459,9 @@ mod tests {
             outcome,
             MergeOutcome::Merged {
                 pr: "#99".to_string(),
-                roadmap: None
+                roadmap: None,
+                built: Vec::new(),
+                caught_up: Vec::new(),
             }
         );
         let writes = gh.writes();
@@ -396,7 +499,9 @@ mod tests {
             outcome,
             MergeOutcome::Merged {
                 pr: "#99".to_string(),
-                roadmap: None
+                roadmap: None,
+                built: Vec::new(),
+                caught_up: Vec::new(),
             }
         );
         assert_eq!(
@@ -449,7 +554,9 @@ mod tests {
             outcome,
             MergeOutcome::Merged {
                 pr: "#99".to_string(),
-                roadmap: Some(2)
+                roadmap: Some(2),
+                built: Vec::new(),
+                caught_up: Vec::new(),
             }
         );
         let writes = gh.writes();
@@ -462,6 +569,144 @@ mod tests {
                 .iter()
                 .any(|w| matches!(w, crate::common::fake_github::Wrote::Label(7, _))),
             "a roadmap item with a milestone still to land is not delivered"
+        );
+    }
+
+    const GRAPH: &str = r#"{"version":1,"milestones":[
+      {"number":5,"title":"Sessions","systems":["session"],"produces":["session.listScenes"],"consumes":[],"depends_on":[]},
+      {"number":4,"title":"Territory tooling","systems":["territory"],"produces":["territory.listZones"],"consumes":["session.listScenes"],"depends_on":[5]}
+    ],"ids":{
+      "session.listScenes":{"kind":"capability","producer":5,"state":"mocked","version":1},
+      "territory.listZones":{"kind":"capability","producer":4,"state":"planned","version":1}
+    }}"#;
+
+    // One scenario told whole — the train's order, then its landing — reads
+    // better than two halves sharing a fixture.
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn the_train_lands_a_consumer_after_its_producer_marks_what_it_built_and_reaches_the_others()
+     {
+        use crate::common::fake_github::Wrote;
+        let territory = || {
+            issue(
+                4,
+                "open",
+                "Territory tooling",
+                &[labels::MILESTONE, labels::TRIGGERED],
+            )
+        };
+        let delivered = |gh: FakeGitHub| FakeGitHub {
+            subs: vec![(4, vec![task(11, "closed")])],
+            merged: merged_closing(&[11]),
+            prs: vec![(
+                "milestone/4-territory-tooling".to_string(),
+                Pr {
+                    num: "99".to_string(),
+                    base: "main_agent".to_string(),
+                    head: "milestone/4-territory-tooling".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            pr_checks: HashMap::from([("99".to_string(), true)]),
+            pr_files: HashMap::from([(
+                "99".to_string(),
+                vec![
+                    "crates/territory/capabilities/list-zones/capability.json".to_string(),
+                    "crates/territory/src/lib.rs".to_string(),
+                ],
+            )]),
+            files: HashMap::from([
+                (
+                    ("plan/graph.json".to_string(), "main_agent".to_string()),
+                    GRAPH.to_string(),
+                ),
+                (
+                    (
+                        "crates/territory/capabilities/list-zones/capability.json".to_string(),
+                        "main_agent".to_string(),
+                    ),
+                    r#"{"capability":"territory.listZones","system":"territory"}"#.to_string(),
+                ),
+            ]),
+            ..gh
+        };
+        // The producer still builds: the consumer waits, whatever its number.
+        let gh = Rc::new(delivered(FakeGitHub {
+            issues: vec![
+                territory(),
+                issue(
+                    5,
+                    "open",
+                    "Sessions",
+                    &[labels::MILESTONE, labels::TRIGGERED],
+                ),
+            ],
+            ..FakeGitHub::default()
+        }));
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(outcome, MergeOutcome::WaitingOnProducers(vec![5]));
+        assert!(gh.writes().is_empty());
+        // The producer landed: the consumer lands, its id is marked built,
+        // the branches still building take it, the one that cannot is told.
+        let gh = Rc::new(delivered(FakeGitHub {
+            issues: vec![
+                territory(),
+                issue(
+                    5,
+                    "open",
+                    "Sessions",
+                    &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+                ),
+                issue(6, "open", "Media", &[labels::MILESTONE, labels::TRIGGERED]),
+                issue(7, "open", "Sound", &[labels::MILESTONE, labels::TRIGGERED]),
+                issue(8, "open", "Later", &[labels::MILESTONE, labels::READY]),
+            ],
+            refused_merges: vec!["milestone/7-sound".to_string()],
+            ..FakeGitHub::default()
+        }));
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(
+            outcome,
+            MergeOutcome::Merged {
+                pr: "#99".to_string(),
+                roadmap: None,
+                built: vec!["territory.listZones".to_string()],
+                caught_up: vec![6],
+            }
+        );
+        let writes = gh.writes();
+        let graph_written = writes.iter().find_map(|w| match w {
+            Wrote::PutFile(path, branch, text) if path == "plan/graph.json" => {
+                Some((branch.clone(), text.clone()))
+            }
+            _ => None,
+        });
+        let (branch, text) = graph_written.expect("the graph is written back");
+        assert_eq!(branch, "main_agent");
+        let graph = Graph::parse(&text).expect("a graph");
+        assert_eq!(
+            graph.ids["territory.listZones"].state,
+            harness_architecture::graph::State::Built
+        );
+        assert!(writes.contains(&Wrote::MergedBranch(
+            "milestone/6-media".to_string(),
+            "main_agent".to_string()
+        )));
+        assert!(
+            writes.iter().any(
+                |w| matches!(w, Wrote::Comment(7, said) if said.contains("could not take it"))
+            ),
+            "{writes:?}"
+        );
+        assert!(
+            !writes
+                .iter()
+                .any(|w| matches!(w, Wrote::MergedBranch(b, _) if b.starts_with("milestone/8"))),
+            "a milestone not split yet has no branch to bring up"
         );
     }
 }

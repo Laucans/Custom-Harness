@@ -33,6 +33,8 @@ src/dispatch/     one module per thing that can be run, plus what they share
                      read-only checkout, for the manifests
   decide.rs         a decision taken where a human was asked — the shared read-only
                      checkout, the session reading the design dossier
+  contract_manager.rs  a contract a consumer needs changed, evolved for every consumer —
+                     the shared read-only checkout, the writes on the integration branch
   pr_review.rs      an advisory review on a PR
   pr_fix.rs         one repair attempt on a red PR — a writable checkout of its own
   test_debt.rs      the tests one file owes, from its test-debt issue — writable too,

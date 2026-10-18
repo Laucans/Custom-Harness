@@ -31,15 +31,19 @@ pub(super) async fn fill_lanes(
     lanes: &mut Lanes,
 ) -> Option<(&'static str, Halt)> {
     let work = routing::lane_work(found);
-    if let Some(milestone) = work.tasks_of
-        && lanes.free_slot().is_some()
-        && let Some(halt) = run_lanes(args, here, gh, milestone, lanes, log).await
-    {
-        return Some(("dev_loop", halt));
+    // The critical path's milestone first: the ahead work only takes the
+    // lanes it leaves free.
+    for milestone in &work.tasks_of {
+        if lanes.free_slot().is_none() {
+            break;
+        }
+        if let Some(halt) = run_lanes(args, here, gh, *milestone, found, lanes, log).await {
+            return Some(("dev_loop", halt));
+        }
     }
     if work.preparation
         && lanes.free_slot().is_some()
-        && let Some(halt) = run_router_lanes(args, here, gh, lanes, log).await
+        && let Some(halt) = run_router_lanes(args, here, gh, found, lanes, log).await
     {
         return Some(("router_lanes", halt));
     }
@@ -57,6 +61,7 @@ pub(super) async fn run_router_lanes(
     args: &WatchArgs,
     here: &Path,
     gh: &dyn GitHub,
+    found: &Snapshot,
     lanes: &mut Lanes,
     log: &Logbook,
 ) -> Option<Halt> {
@@ -77,13 +82,9 @@ pub(super) async fn run_router_lanes(
         }
     };
     let running = lanes.running();
-    let mut splits: Vec<u64> = milestones
-        .iter()
-        .filter(|issue| routing::splittable(issue, &milestones))
-        .map(|issue| issue.number)
-        .filter(|number| !running.contains(number))
-        .collect();
-    splits.sort_unstable();
+    let splits = routing::splits(&milestones, found.graph.as_ref())
+        .into_iter()
+        .filter(|number| !running.contains(number));
     let mut refining: Vec<&Issue> = refining
         .iter()
         .filter(|issue| issue.is_open() && !running.contains(&issue.number))
@@ -95,7 +96,6 @@ pub(super) async fn run_router_lanes(
         refines.push((issue.number, branch));
     }
     let work = splits
-        .into_iter()
         .map(|number| ("split", number, args.branch.clone()))
         .chain(
             refines
@@ -182,26 +182,26 @@ pub(super) async fn run_lanes(
     here: &Path,
     gh: &dyn GitHub,
     milestone: u64,
+    found: &Snapshot,
     lanes: &mut Lanes,
     log: &Logbook,
 ) -> Option<Halt> {
-    let board = match board::read(gh).await {
+    let Some(named) = found.milestones.iter().find(|m| m.number == milestone) else {
+        log.warn(&format!(
+            "watch: lanes -> milestone #{milestone} left the board since the route was decided"
+        ));
+        return None;
+    };
+    let board = match board::read_of(gh, named.clone()).await {
         Ok(board) => board,
         Err(halt) => {
             log.warn(&format!(
-                "watch: lanes -> cannot read the board: {}",
+                "watch: lanes -> cannot read the board of #{milestone}: {}",
                 halt.reason()
             ));
             return Some(halt);
         }
     };
-    if board.milestone.number != milestone {
-        log.warn(&format!(
-            "watch: lanes -> the board moved to milestone #{} since the route was decided",
-            board.milestone.number
-        ));
-        return None;
-    }
     let branch = branching::milestone_branch(milestone, &board.milestone.title);
     let running = lanes.running();
     let mut parked = Vec::new();

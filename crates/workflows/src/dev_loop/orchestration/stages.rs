@@ -164,6 +164,11 @@ approve: stop with `AGENT_LOOP_STOP: port <id> — <provider>, <cost>, <why>`
 instead of adding it. A `## Decision` of kind `port` with no verdict is
 approved — its approval task closed: add the port to ports.json and build
 it, its fake and contract tests first; with a verdict, follow it.
+A contract another milestone produces (plan/graph.json, gate
+`contracts-untouched`) is not yours to edit: stop with `AGENT_LOOP_STOP:
+contract <id> — <what you need>`; the contract manager evolves it for every
+consumer and this task runs again against the new version. A `## Decision`
+of kind `contract` means it did: read the manifest anew.
 No human is reachable while you work: every answer you had to assume goes
 in the PR body under `## Assumptions (autonomous run)`. Anything a human
 must do first becomes its own `{human}` issue, a sub-issue of
@@ -244,6 +249,11 @@ approve: stop with `AGENT_LOOP_STOP: port <id> — <provider>, <cost>, <why>`
 instead of adding it. A `## Decision` of kind `port` with no verdict is
 approved — its approval task closed: add the port to ports.json and build
 it, its fake and contract tests first; with a verdict, follow it.
+A contract another milestone produces (plan/graph.json, gate
+`contracts-untouched`) is not yours to edit: stop with `AGENT_LOOP_STOP:
+contract <id> — <what you need>`; the contract manager evolves it for every
+consumer and this task runs again against the new version. A `## Decision`
+of kind `contract` means it did: read the manifest anew.
 No human is reachable while you work: every answer you had to assume goes
 in the PR body under `## Assumptions (autonomous run)`. Anything a human
 must do first becomes its own `{human}` issue, a sub-issue of

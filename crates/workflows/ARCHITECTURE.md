@@ -367,6 +367,25 @@ is never decided over) and `DecisionParses`, and `apply` (writes `## Decision`
 with `decided-by: ai`, carries it out, labels `harness:ai-decided`, records
 `DecisionTaken`); lock per issue.
 
+**The one that evolves a contract:** `contract_manager` — any open issue
+carrying `harness:contract-change`, which `dev_loop::action::stop` opens when
+a session stops with `AGENT_LOOP_STOP: contract <id> — <what it needs>`: a
+consumer never edits a contract another milestone produces (gate
+`contracts-untouched`, rule 17), and the request blocks its task. Routed
+right after `decide`, before any split: a contract blocks work already cut.
+State `ManagerState`; `remaining` 1; stages `context` (reads the request, the
+plan's graph — the id's kind and version, its producer, its consumers — and
+the milestone the producer's task goes under: the producer's while open,
+else the requester's), `evolve` (opus: the whole manifest at version + 1,
+the fixture that stands for it, a summary, the producer's task drafted),
+gated by `NeedsASession` (an id the graph does not produce is the
+requester's own: told, closed, nothing paid) and `ChangeParses`, and `apply`
+(`put_file` the manifest, the fixture and the graph — `version` up, state
+`evolving` — on the integration branch; a `harness:agent` task under the
+target milestone, its tap open; every consumer and the requester told; the
+request closed, which unblocks the task; `ContractEvolved`); lock per
+request.
+
 **The one that works a task's graph:** `arbiter` — a task whose technical
 refinement found the design could not hold its `## Architecture` as `split`
 cut it: an id it builds on that `needs` does not name, written as a question
@@ -405,7 +424,12 @@ levels of one fold: `milestone_merge` merges a task's PR into its milestone
 branch once the agent review has run and every check is green — the write
 side's PR, which the session leaves open — and marks the task delivered;
 `main_agent_merge` opens, then merges, the milestone branch's PR into the
-integration branch once every task is merged into it and its CI is green.
+integration branch once every task is merged into it and its CI is green —
+and is the **merge train** when the plan has a graph (`data/merge_train`):
+a consumer waits on the producers of what it reads (`WaitingOnProducers`,
+whatever its number); a landing marks `built` in `plan/graph.json` every id
+whose manifest its PR carried, and brings the integration branch into every
+other milestone still building, telling the one that cannot take it.
 `data_snapshot` dumps the data model of every branch whose head moved and
 archives it on the target's `harness/data-model` branch; `data_model_draft`
 asks one session for the first `model.json` of a branch that has none, from

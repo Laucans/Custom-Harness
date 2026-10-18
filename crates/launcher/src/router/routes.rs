@@ -162,6 +162,7 @@ async fn dispatched(
         Route::Arbiter { issue } => arbitrate_here(args, here, issue, log).await,
         Route::Decide { issue } => decide_here(args, here, issue, log).await,
         Route::Rules { issue } => rules_here(args, here, issue, log).await,
+        Route::ContractChange { issue } => contract_here(args, here, issue, log).await,
         Route::TestDebt { issue } => report_failure(
             "test_debt",
             crate::dispatch::test_debt::run(
@@ -242,6 +243,28 @@ async fn rules_here(
             &args.branch,
             &args.permission_mode,
             route_workspace(args),
+            args.dry_run,
+        )
+        .await,
+        log,
+    )
+}
+
+/// One contract evolved in this process, on the shared checkout.
+async fn contract_here(
+    args: &WatchArgs,
+    here: &Path,
+    issue: u64,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    report_failure(
+        "contract_manager",
+        crate::dispatch::contract_manager::run(
+            issue,
+            here,
+            &shared_checkout(args),
+            &args.branch,
+            &args.permission_mode,
             args.dry_run,
         )
         .await,
@@ -336,6 +359,7 @@ pub(super) fn lane_route(kind: RouteKind, number: u64, base: &str) -> Route {
     match kind {
         RouteKind::Decide => Route::Decide { issue: number },
         RouteKind::Rules => Route::Rules { issue: number },
+        RouteKind::Contract => Route::ContractChange { issue: number },
         RouteKind::PrFix => Route::PrFix {
             pr: number.to_string(),
         },
@@ -364,6 +388,7 @@ fn lane_work(route: &Route) -> Option<(RouteKind, u64, String)> {
     match route {
         Route::Decide { issue } => Some((RouteKind::Decide, *issue, String::new())),
         Route::Rules { issue } => Some((RouteKind::Rules, *issue, String::new())),
+        Route::ContractChange { issue } => Some((RouteKind::Contract, *issue, String::new())),
         Route::PrFix { pr } => pr
             .parse()
             .ok()
@@ -571,7 +596,12 @@ pub(super) async fn run_main_agent_merge(
                 MergeReport::OpenedPr(url) => Some(format!(
                     "milestone #{milestone}: every task merged — opened {url} to the integration branch"
                 )),
-                MergeReport::Merged { pr, roadmap } => {
+                MergeReport::Merged {
+                    pr,
+                    roadmap,
+                    built,
+                    caught_up,
+                } => {
                     log.event(&Event::MilestoneLanded {
                         milestone,
                         pr: pr.clone(),
@@ -580,10 +610,23 @@ pub(super) async fn run_main_agent_merge(
                         log.event(&Event::RoadmapDelivered { roadmap: *roadmap });
                     }
                     Some(format!(
-                        "milestone #{milestone}: CI green — merged into the integration branch, its tasks closed"
+                        "milestone #{milestone}: CI green — merged into the integration branch, its tasks \
+                         closed; {} id(s) marked built, brought into {}",
+                        built.len(),
+                        if caught_up.is_empty() {
+                            "no other branch".to_string()
+                        } else {
+                            caught_up
+                                .iter()
+                                .map(|n| format!("#{n}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
                     ))
                 }
-                MergeReport::NotReady | MergeReport::WaitingOnChecks => None,
+                MergeReport::NotReady
+                | MergeReport::WaitingOnProducers(_)
+                | MergeReport::WaitingOnChecks => None,
             };
             if let Some(line) = said {
                 record_run(here, "main-agent-merge", milestone, &line, log);

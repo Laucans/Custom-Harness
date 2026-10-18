@@ -33,10 +33,6 @@ and lanes that serve the critical path first.
 - [ ] The gates validate `plan/graph.json` against contract R on the next
       push of `main_agent`.
 
-## Next steps (the design, in order)
+## Next steps
 
-2. Contracts mocked until built: manifests B/F + fixtures at planning, the
-   server serving a fixture for an unbuilt id, gate `contract-untouched`.
-3. Several current milestones in the watch, lanes serving the critical path
-   first, the merge train replacing `main_agent_merge`.
-4. The contract manager.
+Steps 2–4 shipped: see `parallel-milestones.md`.

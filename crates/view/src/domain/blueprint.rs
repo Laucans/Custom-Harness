@@ -293,6 +293,7 @@ pub fn lines() -> Vec<Line> {
         rules_line(),
         decide_line(),
         arbiter_line(),
+        contract_manager_line(),
         milestone_merge_line(),
         main_agent_merge_line(),
     ]
@@ -846,6 +847,50 @@ fn decide_line() -> Line {
                 Kind::Arm,
                 "Writes the decision, merges, repairs or closes, labels harness:ai-decided and \
                  tells the human.",
+            )],
+        ],
+    )
+}
+
+fn contract_manager_line() -> Line {
+    line(
+        "contract-manager",
+        "Contract manager",
+        "harness:contract-change on an issue",
+        "Evolves a contract a consumer needs changed, for every consumer at once: the new \
+         version of the manifest and its fixture on the integration branch, the plan's graph \
+         bumped, a task on the producer's milestone, every consumer told.",
+        vec![
+            vec![free(
+                "context",
+                "read the request",
+                Kind::Printer,
+                "Reads the request, the plan's graph — who produces the id, who reads it, its \
+                 version — and where the producer's task goes.",
+            )],
+            paid(
+                "evolve",
+                "evolve",
+                Kind::Inspector,
+                "opus",
+                "One session reads the manifest, its schema, its fixture and the consumers, and \
+                 answers the new version — add before rename, never drop what a consumer reads.",
+                Some(gate(
+                    "evolve requires",
+                    "The plan's graph knows the id: another milestone produces it.",
+                )),
+                Some(gate(
+                    "evolve must answer",
+                    "The reply reads as a change: the manifest's path, the manifest at a higher \
+                     version, a summary.",
+                )),
+            ),
+            vec![free(
+                "apply",
+                "write and tell",
+                Kind::Arm,
+                "Writes the manifest, the fixture and the graph, opens the producer's task, tells \
+                 every consumer and the requester, closes the request.",
             )],
         ],
     )
