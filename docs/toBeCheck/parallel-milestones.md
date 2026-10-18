@@ -61,6 +61,10 @@ their tests and gates only: no live watch has run them yet.
       (one opus session, ~$1–2), the producer's task appears under the
       producer's milestone with `harness:ready`, the consumer's task runs
       again and reads the new version.
+- [ ] A violation older than the round — the stale AiSettings bundle on
+      `main_agent` parked #60, #110, #111, #114, #115 — is said as a warning
+      (`architecture: N violation(s) were there before this round`) and the
+      round goes on; one the round causes still halts it.
 - [ ] A contract the graph does not produce is handed back without a
       session (comment on the task, request closed).
 - [ ] The view shows the `Contract manager` line and the

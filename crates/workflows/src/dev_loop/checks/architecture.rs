@@ -98,6 +98,31 @@ fn dirty_paths(lines: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Whether a violation is this round's: it names a path the round changed
+/// (or a folder on the way to one), or the unit the task declared — its
+/// system, what it produces, its concept or its aggregate.
+fn blamed(violation: &str, changed: &[String], declaration: Option<&Declaration>) -> bool {
+    let names_a_change = changed.iter().any(|path| {
+        violation.contains(path.as_str())
+            || path
+                .rsplit_once('/')
+                .is_some_and(|(folder, _)| !folder.is_empty() && violation.contains(folder))
+    });
+    let names_the_unit = declaration.is_some_and(|d| {
+        [
+            Some(d.system.as_str()),
+            d.concept.as_deref(),
+            d.aggregate.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(d.produces.iter().map(String::as_str))
+        .filter(|word| !word.is_empty())
+        .any(|word| violation.contains(word))
+    });
+    names_a_change || names_the_unit
+}
+
 /// The round kept the architecture: see the module.
 pub struct ArchitectureHolds {
     /// What reads the checkout.
@@ -167,6 +192,22 @@ impl Verification<Loop> for ArchitectureHolds {
                 }
             };
             changed.extend(dirty_paths(&self.repo.dirty_files().await?));
+            // A violation that names nothing this round touched — nor the
+            // unit it builds — was there before it: said, not blamed.
+            // ForgeDesMondes' stale AiSettings bundle on `main_agent` parked
+            // every task of every milestone (#60, #110, #111, #114, #115).
+            let (own, before): (Vec<String>, Vec<String>) = found
+                .into_iter()
+                .partition(|violation| blamed(violation, &changed, declaration.as_ref()));
+            found = own;
+            if !before.is_empty() {
+                ctx.traces.warn(&format!(
+                    "architecture: {} violation(s) were there before this round, no task's to \
+                     fix here — left as they were:\n  - {}",
+                    before.len(),
+                    before.join("\n  - ")
+                ));
+            }
             for path in outside_closure(&tree, declaration.as_ref(), &changed) {
                 found.push(format!(
                     "{path}: changed by this round, outside the closure of the {} it builds — a \
@@ -468,5 +509,49 @@ mod tests {
             .await
             .expect("no diff to judge");
         assert!(!repos.asked("diff"), "{:?}", repos.calls());
+    }
+
+    #[test]
+    fn a_violation_is_the_round_s_when_it_names_what_the_round_touched_or_its_unit() {
+        let changed = vec![
+            "crates/notes/aggregates/NoteImport/aggregate.json".to_string(),
+            "crates/data/migrations/0005_note.sql".to_string(),
+        ];
+        let stale = "mock/pages.json: the bundle of AiSettings is stale — apps/ai/ai-settings changed since mock/build.sh last ran; run it and commit";
+        assert!(!blamed(stale, &changed, None), "nothing of the round's");
+        assert!(blamed(
+            "crates/notes/aggregates/NoteImport/aggregate.json: no `fields`",
+            &changed,
+            None
+        ));
+        assert!(
+            blamed(
+                "crates/data/migrations: two migrations numbered 0005",
+                &changed,
+                None
+            ),
+            "the folder of a changed file"
+        );
+        let unit = Declaration::parse(
+            "unit: micro-ui\nsystem: credit\nproduces: RiskBadge\nneeds: credit.calculateRisk",
+        )
+        .expect("a declaration");
+        assert!(
+            blamed(
+                "mock/pages.json: the micro-frontend RiskBadge lists other `needs` than its micro-ui.json",
+                &["apps/credit/risk-badge/micro-ui.json".to_string()],
+                Some(&unit)
+            ),
+            "what the unit produces is named"
+        );
+        assert!(
+            blamed(
+                "crates/credit/capabilities/x/capability.json: names system `credit`, a folder of another",
+                &[],
+                Some(&unit)
+            ),
+            "the unit's system is named"
+        );
+        assert!(!blamed(stale, &[], Some(&unit)));
     }
 }
