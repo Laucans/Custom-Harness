@@ -15,8 +15,10 @@
 use harness_core::domain::{Halt, Issue, Outcome};
 use harness_core::ports::shell::github::GitHub;
 
+use crate::common::routing::{self, Graph};
 use crate::common::{branching, labels};
 use crate::dev_loop::data::tasks;
+use crate::main_agent_merge::data::merge_train;
 
 /// What the loop sees of the board, at a given moment.
 #[derive(Debug, Clone, Default)]
@@ -186,6 +188,47 @@ pub async fn read_of_those(
     })
 }
 
+/// The boards of the milestones building now, read until they offer `lanes`
+/// runnable tasks.
+///
+/// In [`routing::building`]'s order: the critical path's first, the lowest
+/// open milestone's when none is split yet. A tick fills that many lanes at
+/// most, and every board is one GitHub call per open task. A board that
+/// cannot be read is left out.
+///
+/// While a milestone's producers still build, only what may run ahead
+/// ([`tasks::runs_ahead`]) is worth its blockers' GitHub calls and counts as
+/// offered — counting the held crates stopped the reads at two boards and
+/// left the lanes empty.
+pub async fn building(
+    gh: &dyn GitHub,
+    milestones: &[Issue],
+    graph: Option<&Graph>,
+    lanes: usize,
+) -> Vec<Board> {
+    let building = routing::building(milestones, graph);
+    let mut boards = Vec::with_capacity(building.len());
+    let mut offered = 0usize;
+    for number in building {
+        if offered >= lanes {
+            break;
+        }
+        let waiting = !merge_train::producers_landed(graph, number, milestones).is_empty();
+        let may_run = |task: &Issue| !waiting || tasks::runs_ahead(task);
+        if let Some(milestone) = milestones.iter().find(|m| m.number == number)
+            && let Ok(board) = read_of_those(gh, milestone.clone(), &may_run).await
+        {
+            let could_start = tasks::runnable_tasks(&board.tasks)
+                .into_iter()
+                .filter(|task| may_run(task))
+                .count();
+            offered = offered.saturating_add(could_start);
+            boards.push(board);
+        }
+    }
+    boards
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +379,55 @@ mod tests {
             .expect("a board");
         assert_eq!(board.tasks.len(), 3, "every task is on the board");
         assert_eq!(*gh.blockers_asked.borrow(), vec![11, 13]);
+    }
+
+    #[tokio::test]
+    async fn the_building_boards_read_what_may_run_until_the_lanes_are_offered() {
+        let unit = |number: u64, unit: &str| Issue {
+            body: format!("## Scope\n\nx\n\n## Architecture\n\nunit: {unit}\nsystem: media"),
+            ..task(number)
+        };
+        let graph = Graph::parse(
+            r#"{"version":1,"milestones":[
+              {"number":20,"title":"sessions","systems":["session"],"produces":["session.listScenes"],"consumes":[],"depends_on":[]},
+              {"number":19,"title":"media","systems":["media"],"produces":["media.listMedia"],"consumes":["session.listScenes"],"depends_on":[20]}
+            ],"ids":{
+              "media.listMedia":{"kind":"capability","producer":19,"state":"planned","version":1},
+              "session.listScenes":{"kind":"capability","producer":20,"state":"planned","version":1}
+            }}"#,
+        )
+        .expect("a graph");
+        let milestones = vec![
+            issue(19, &[labels::MILESTONE, labels::TRIGGERED]),
+            issue(20, &[labels::MILESTONE, labels::TRIGGERED]),
+        ];
+        let fake = || FakeGitHub {
+            issues: milestones.clone(),
+            subs: vec![
+                (20, vec![unit(21, "capability")]),
+                (19, vec![unit(31, "micro-ui"), unit(32, "capability")]),
+            ],
+            ..FakeGitHub::default()
+        };
+        let gh = fake();
+        let boards = building(&gh, &milestones, Some(&graph), 5).await;
+        let mut read: Vec<u64> = boards.iter().map(|b| b.milestone.number).collect();
+        read.sort_unstable();
+        assert_eq!(read, [19, 20]);
+        let mut asked = gh.blockers_asked.borrow().clone();
+        asked.sort_unstable();
+        assert_eq!(
+            asked,
+            [21, 31],
+            "#19 waits on #20: its crate #32 is not worth a call"
+        );
+        let gh = fake();
+        let one = building(&gh, &milestones, Some(&graph), 1).await;
+        assert_eq!(one.len(), 1, "one lane, offered by the first board");
+        assert!(
+            building(&fake(), &milestones, Some(&graph), 0)
+                .await
+                .is_empty()
+        );
     }
 }

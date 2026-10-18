@@ -394,7 +394,7 @@ async fn snapshot(
     // purpose: "no open milestone at all" is this probe's most common
     // answer, not a failure — `dev_loop::run` itself is where that
     // distinction matters and is already made.
-    let boards = building_boards(gh, &milestones, graph.as_ref(), lanes).await;
+    let boards = board::building(gh, &milestones, graph.as_ref(), lanes).await;
     let dev_loop_milestones: Vec<u64> = boards
         .iter()
         .filter(|b| b.next().is_some())
@@ -530,44 +530,6 @@ async fn lowest_ready_to_merge(
         }
     }
     Ok(None)
-}
-
-/// The boards of the milestones building now ([`routing::building`]): the
-/// critical path's first, the lowest open milestone's when none is split
-/// yet — read until they offer `lanes` runnable tasks, since a tick fills
-/// that many lanes at most and every board is one GitHub call per open
-/// task. A board that cannot be read is left out.
-async fn building_boards(
-    gh: &dyn GitHub,
-    milestones: &[Issue],
-    graph: Option<&harness_workflows::common::routing::Graph>,
-    lanes: usize,
-) -> Vec<board::Board> {
-    let building = routing::building(milestones, graph);
-    let mut boards = Vec::with_capacity(building.len());
-    let mut offered = 0usize;
-    for number in building {
-        if offered >= lanes {
-            break;
-        }
-        // While the producers still build, only what the mock-up stands in
-        // for may run: its blockers are the only ones worth a GitHub call,
-        // and the only tasks counted as offered — counting the held crates
-        // stopped the reads at two boards and left the lanes empty.
-        let waiting = !merge_train::producers_landed(graph, number, milestones).is_empty();
-        let may_run = |task: &Issue| !waiting || tasks::runs_ahead(task);
-        if let Some(milestone) = milestones.iter().find(|m| m.number == number)
-            && let Ok(board) = board::read_of_those(gh, milestone.clone(), &may_run).await
-        {
-            let could_start = tasks::runnable_tasks(&board.tasks)
-                .into_iter()
-                .filter(|task| may_run(task))
-                .count();
-            offered = offered.saturating_add(could_start);
-            boards.push(board);
-        }
-    }
-    boards
 }
 
 /// A task's PR its repairs did not clear: a decision asked of the harness,
