@@ -22,6 +22,8 @@ pub struct PlannerState {
     pub screens: Vec<harness_architecture::graph::Screen>,
     /// The dossier's writes, by id.
     pub writes: Vec<String>,
+    /// The dossier's aggregates, by name: what the Data layer lays whole.
+    pub aggregates: Vec<String>,
     /// Where every id stands in the checkout — built, or a fixture for it.
     pub standing: crate::plan_graph::Standing,
     /// What the free `explore` entry read from the repo. Only the explorer

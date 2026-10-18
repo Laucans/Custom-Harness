@@ -54,6 +54,9 @@ impl Verification<PlannerState> for PlanParses {
                 )));
             }
         };
+        if let Some(why) = data_layer_not_first(ctx, &items) {
+            return Err(Halt::Failed(why));
+        }
         let ahead = reads_ahead(ctx, &items);
         if ahead.is_empty() {
             return Ok(Verdict::Continue);
@@ -64,6 +67,110 @@ impl Verification<PlannerState> for PlanParses {
             ahead.join("\n  - ")
         )))
     }
+}
+
+/// Why the plan does not lay the Data layer first, when the dossier has
+/// aggregates the checkout has not built yet.
+///
+/// The database is designed whole at the creation (`mock/data/model.json`,
+/// one `aggregate.json` per aggregate); laid one aggregate per feature
+/// milestone, every feature waits on the one before it for its tables —
+/// `ForgeDesMondes` had 53 of 63 open tasks queued behind one table at a
+/// time, with five lanes. So: one milestone produces every aggregate not
+/// built yet, and no milestone before it builds a Micro-UI or a write — the
+/// skeleton (tooling) alone may come first. Refused with the gap named, for
+/// the retry to lay the Data layer whole.
+fn data_layer_not_first(
+    ctx: &Context<PlannerState>,
+    items: &[plan::MilestoneItem],
+) -> Option<String> {
+    let built = &ctx.state.standing.built;
+    let unbuilt: Vec<&String> = ctx
+        .state
+        .aggregates
+        .iter()
+        .filter(|a| !built.iter().any(|b| b.eq_ignore_ascii_case(a)))
+        .collect();
+    if unbuilt.is_empty() {
+        return None;
+    }
+    // The existing milestones already produce what they produce: only a
+    // plan that opens the first aggregate milestone is judged.
+    let existing_produce_aggregates = ctx.state.existing.iter().any(|issue| {
+        !plan::graph_input(issue.number, &issue.title, &issue.body, &[], &[])
+            .aggregates
+            .is_empty()
+    });
+    if existing_produce_aggregates {
+        return None;
+    }
+    let producers: Vec<(usize, &plan::MilestoneItem)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| !item.aggregates.is_empty())
+        .collect();
+    let Some((at, data_layer)) = producers.first().copied() else {
+        return Some(format!(
+            "the plan lays no aggregate, and the dossier has {} the checkout has not built ({}): \
+             one milestone, right after the skeleton, lays them all — their tables, migrations \
+             and aggregate.json — before any milestone reads or writes them",
+            unbuilt.len(),
+            unbuilt
+                .iter()
+                .map(|a| a.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    };
+    if producers.len() > 1 {
+        return Some(format!(
+            "the Data layer is split over {} milestones ({}): one milestone, right after the \
+             skeleton, lays every aggregate of the dossier whole; the later ones change a \
+             table by a new migration, never produce it",
+            producers.len(),
+            producers
+                .iter()
+                .map(|(_, m)| format!("{:?}", m.title))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let missing: Vec<&str> = unbuilt
+        .iter()
+        .filter(|a| {
+            !data_layer
+                .aggregates
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(a))
+        })
+        .map(|a| a.as_str())
+        .collect();
+    if !missing.is_empty() {
+        return Some(format!(
+            "{:?} lays the Data layer but leaves out {}: every aggregate of the dossier is laid \
+             there, whole, in one milestone",
+            data_layer.title,
+            missing.join(", ")
+        ));
+    }
+    let consumer_before: Vec<&str> = items[..at]
+        .iter()
+        .filter(|m| !m.micro_uis.is_empty() || !m.commands.is_empty() || !m.screens.is_empty())
+        .map(|m| m.title.as_str())
+        .collect();
+    if !consumer_before.is_empty() {
+        return Some(format!(
+            "{} come(s) before the Data layer ({:?}) and build(s) a Micro-UI, a write or a \
+             screen: only the skeleton (tooling) may come before the aggregates",
+            consumer_before
+                .iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            data_layer.title
+        ));
+    }
+    None
 }
 
 /// Every read of a later milestone the plan would make, said for the retry.
@@ -193,6 +300,119 @@ mod tests {
         );
         let in_order = r#"[{"title":"Sessions","goal":"scenes","systems":["session"],"micro_uis":["SceneBoard"]},{"title":"Preparation","goal":"freeze","systems":["session"],"screens":["preparation-seance"]}]"#;
         context.results.insert("plan".to_string(), reply(in_order));
+        assert_eq!(
+            gate.verify(&context).await.expect("verdict"),
+            Verdict::Continue
+        );
+    }
+
+    #[tokio::test]
+    async fn the_data_layer_is_laid_whole_in_one_milestone_right_after_the_skeleton() {
+        let mut context = ctx(false);
+        context.state.aggregates = vec!["Campaign".to_string(), "Media".to_string()];
+        let gate = PlanParses {
+            stage: "plan".to_string(),
+        };
+        // Per feature: refused, the two aggregates are laid by two milestones.
+        let per_feature = r#"[{"title":"Skeleton","goal":"s","systems":["platform"]},{"title":"Campaigns","goal":"c","systems":["campaign"],"aggregates":["Campaign"],"micro_uis":["CampaignList"]},{"title":"Media","goal":"m","systems":["media"],"aggregates":["Media"]}]"#;
+        context
+            .results
+            .insert("plan".to_string(), reply(per_feature));
+        let err = gate.verify(&context).await.expect_err("split data layer");
+        assert!(
+            err.reason().contains("split over 2 milestones"),
+            "{}",
+            err.reason()
+        );
+        // One milestone, but a consumer before it: refused.
+        let consumer_first = r#"[{"title":"Campaign list","goal":"c","systems":["campaign"],"micro_uis":["CampaignList"]},{"title":"Data layer","goal":"d","systems":["campaign","media"],"aggregates":["Campaign","Media"]}]"#;
+        context
+            .results
+            .insert("plan".to_string(), reply(consumer_first));
+        let err = gate.verify(&context).await.expect_err("consumer first");
+        assert!(
+            err.reason().contains("come(s) before the Data layer"),
+            "{}",
+            err.reason()
+        );
+        // One milestone, an aggregate left out: refused.
+        let partial = r#"[{"title":"Data layer","goal":"d","systems":["campaign"],"aggregates":["Campaign"]}]"#;
+        context.results.insert("plan".to_string(), reply(partial));
+        let err = gate.verify(&context).await.expect_err("partial");
+        assert!(
+            err.reason().contains("leaves out Media"),
+            "{}",
+            err.reason()
+        );
+        // Skeleton, then the Data layer whole, then the features: passes.
+        let whole = r#"[{"title":"Skeleton","goal":"s","systems":["platform"]},{"title":"Data layer","goal":"d","systems":["campaign","media"],"aggregates":["Campaign","Media"]},{"title":"Campaigns","goal":"c","systems":["campaign"],"micro_uis":["CampaignList"]}]"#;
+        context.results.insert("plan".to_string(), reply(whole));
+        assert_eq!(
+            gate.verify(&context).await.expect("verdict"),
+            Verdict::Continue
+        );
+        // A consumer before it that only writes, or only freezes a screen:
+        // refused the same.
+        let writer_first = r#"[{"title":"Approvals","goal":"w","systems":["campaign"],"commands":["campaign.approve"]},{"title":"Data layer","goal":"d","systems":["campaign","media"],"aggregates":["Campaign","Media"]}]"#;
+        context
+            .results
+            .insert("plan".to_string(), reply(writer_first));
+        let err = gate.verify(&context).await.expect_err("writer first");
+        assert!(
+            err.reason().contains("\"Approvals\" come(s) before"),
+            "{}",
+            err.reason()
+        );
+        let screen_first = r#"[{"title":"Home","goal":"h","systems":["campaign"],"screens":["home"]},{"title":"Data layer","goal":"d","systems":["campaign","media"],"aggregates":["Campaign","Media"]}]"#;
+        context
+            .results
+            .insert("plan".to_string(), reply(screen_first));
+        let err = gate.verify(&context).await.expect_err("screen first");
+        assert!(
+            err.reason().contains("\"Home\" come(s) before"),
+            "{}",
+            err.reason()
+        );
+        // An existing milestone already lays an aggregate: the Data layer was
+        // judged when it was opened; a later plan is not held to it.
+        context.state.existing = vec![Issue {
+            number: 18,
+            title: "Campaigns".to_string(),
+            body: "x\n\n## Architecture\n\nsystems: campaign\naggregates: Campaign\nside: harness:write-side".to_string(),
+            ..Issue::default()
+        }];
+        context
+            .results
+            .insert("plan".to_string(), reply(per_feature));
+        assert_eq!(
+            gate.verify(&context).await.expect("verdict"),
+            Verdict::Continue
+        );
+        // An existing milestone that lays nothing (the skeleton) keeps the
+        // new plan under judgement.
+        context.state.existing = vec![Issue {
+            number: 16,
+            title: "Skeleton".to_string(),
+            body:
+                "x\n\n## Architecture\n\nsystems: platform\naggregates: -\nside: harness:read-side"
+                    .to_string(),
+            ..Issue::default()
+        }];
+        context
+            .results
+            .insert("plan".to_string(), reply(per_feature));
+        let err = gate.verify(&context).await.expect_err("still judged");
+        assert!(
+            err.reason().contains("split over 2 milestones"),
+            "{}",
+            err.reason()
+        );
+        // Already built in the checkout: nothing to lay, any plan passes.
+        context.state.existing = Vec::new();
+        context.state.standing.built = vec!["Campaign".to_string(), "Media".to_string()];
+        context
+            .results
+            .insert("plan".to_string(), reply(per_feature));
         assert_eq!(
             gate.verify(&context).await.expect("verdict"),
             Verdict::Continue

@@ -164,12 +164,26 @@ fn router_lane_command(
     Some(command)
 }
 
-/// What a parked task is compared on: its body and labels. Answering the
-/// stop — editing the SPEC, a label — moves it.
+/// What a parked task is compared on: its body, its labels and the blockers
+/// still open on it. Answering the stop — editing the SPEC, a label — moves
+/// it; so does a blocker closing: `ForgeDesMondes`' #247 and #248, taken in
+/// the second before their `blocked_by` were posted, stopped on "cannot run:
+/// blocked" and would have stayed parked after #244 and #246 closed.
 fn issue_version(issue: &Issue) -> String {
     let mut labels = issue.labels.clone();
     labels.sort_unstable();
-    harness_core::domain::breaker::fingerprint(&format!("{}\n{}", issue.body, labels.join(",")))
+    let mut open_blockers: Vec<u64> = issue
+        .blocked_by
+        .iter()
+        .filter(|b| b.is_open())
+        .map(|b| b.number)
+        .collect();
+    open_blockers.sort_unstable();
+    harness_core::domain::breaker::fingerprint(&format!(
+        "{}\n{}\n{open_blockers:?}",
+        issue.body,
+        labels.join(",")
+    ))
 }
 
 /// What may start of the milestone's tasks: runnable, not on a lane, and —
@@ -410,6 +424,32 @@ mod tests {
             rules: Vec::new(),
             deciding: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_parked_task_moves_when_a_blocker_closes_as_when_its_body_or_labels_do() {
+        let mut task = issue(247, &[labels::AGENT, labels::READY], "aggregate");
+        let mut blocker = issue(244, &[labels::AGENT, labels::READY], "aggregate");
+        task.blocked_by = vec![blocker.clone()];
+        let parked_on = issue_version(&task);
+        assert_eq!(
+            issue_version(&task),
+            parked_on,
+            "stable while nothing moves"
+        );
+        blocker.state = "closed".to_string();
+        task.blocked_by = vec![blocker];
+        assert_ne!(
+            issue_version(&task),
+            parked_on,
+            "its blocker closed: it moved"
+        );
+        let unparked = issue_version(&task);
+        task.labels.push(labels::NEEDS_DECISION.to_string());
+        assert_ne!(issue_version(&task), unparked, "a label moves it");
+        task.labels.pop();
+        task.body.push_str("\nmore");
+        assert_ne!(issue_version(&task), unparked, "its body moves it");
     }
 
     #[test]

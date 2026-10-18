@@ -115,6 +115,22 @@ their tests and gates only: no live watch has run them yet.
       #51/PR #105 (red on R4) comes first by number. Left to see: `milestone/18`
       pushed into #105's branch and `rules-hold` green there; then #51 merges,
       #52 and #53 run, #18 lands.
+- [ ] **The Data layer laid whole parallelises** (owner, 18:40Z): with #243,
+      #244, #245 runnable on #18 (distinct aggregates, no blocker), the next
+      ticks take three at once (`takes #243`, `takes #244`, `takes #245` on
+      one tick), then #246, then #247/#248/#249 together, then #250 — the
+      measure the owner asked for: lanes busy per tick and data-layer PRs
+      merged per hour against the baseline (17:00–18:59Z: 15 takes, 0
+      data-layer PR). Two tasks on distinct aggregates never collide on a
+      migration number (fixed in each SPEC).
+- [ ] **The split numbers the aggregates' migrations in FK order**: the
+      next Data layer split writes `crates/data/migrations/NNNN_<agg>.sql`
+      in each aggregate slice's `technical`, one number per slice, a table
+      after every table it references — no two slices with the same NNNN.
+- [ ] **The planner refuses a plan whose Data layer is not first**
+      (`data_layer_not_first`): the next roadmap item's plan, if it lays an
+      aggregate in a feature milestone, halts with `the Data layer is split
+      over N milestones` / `come(s) before the Data layer` and retries.
 - [ ] **Ahead work resumes as producers land**: when #18 lands, the tick
       takes #117/#119/#123 (#19's data layer) and #112/#116 (#21's) on the
       next read, with no restart.

@@ -118,7 +118,13 @@ fixtures (`mock/fixtures/<Capability>.json`, one per Capability it needs).
 An aggregate slice installs its draft `mock/data/aggregates/<Aggregate>.aggregate.json`
 as `crates/dataguard/aggregates/<Aggregate>/aggregate.json` and moves its
 tables from `mock/data/model.json` into `data/model.json` with its
-migration. A slice whose unit uses a port the milestone has not built yet
+migration. **Number every aggregate slice's migration in the plan itself**,
+in its `technical`: `crates/data/migrations/NNNN_<aggregate_snake>.sql`,
+NNNN counting on from the migrations the inventory shows, one number per
+slice, in foreign-key order — a table comes after every table it
+references, so an aggregate that `needs` another takes the later number.
+Slices on distinct aggregates run side by side: two of them inventing the
+same number would collide at the merge. A slice whose unit uses a port the milestone has not built yet
 builds it first, or a slice before it does: `crates/ports/<port>/` with its
 trait, its fake and contract tests, then its adapter as ports.json names it.
 Its manifest names the port under `ports`.
