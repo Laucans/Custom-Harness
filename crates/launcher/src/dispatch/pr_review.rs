@@ -7,8 +7,9 @@
 //! have. The router triggers it on a label instead (`harness:to-review`),
 //! the same gesture every other stage of the flow is opened by.
 //!
-//! Against the shared read-only checkout (`shared::mount_shared`), like
-//! `planner.rs` — a review posts a comment and never commits. The passes
+//! Against a read-only checkout (`shared::mount_checkout`): its lane's own
+//! on a parallel watch, the shared one otherwise — a review posts a comment
+//! and never commits. The passes
 //! read the change through `gh pr diff` and `/code-review <pr>`, so the
 //! checkout only has to be a checkout of the right repository, not of the
 //! PR's own branch.
@@ -46,8 +47,7 @@ pub async fn run(
     pr_ref: &str,
     base: &str,
     here: &Path,
-    target_repo_url: &str,
-    branch: &str,
+    checkout: &shared::Checkout<'_>,
     permission_mode: &str,
     dry_run: bool,
 ) -> Outcome<Verdict> {
@@ -65,7 +65,9 @@ pub async fn run(
     );
     let log = Logbook::new(Rc::clone(&sink) as Rc<dyn Sink>, Verbosity::Normal);
 
-    let mount = shared::mount_shared(here, target_repo_url, branch, &run_id, dry_run, &log).await?;
+    // A lane's own checkout when it has one: two reviews on the shared
+    // one at once each reset it under the other (`ForgeDesMondes`, 21:20Z).
+    let mount = shared::mount_checkout(here, checkout, &run_id, dry_run, &log).await?;
     let workspace = &mount.workspace;
     let built = shared::adapters(
         workspace,

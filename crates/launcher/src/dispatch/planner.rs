@@ -1,7 +1,7 @@
 //! Launcher wiring for the `planner` workflow.
 //!
 //! The second place (besides `dev_loop.rs`) that builds concrete adapters —
-//! against the shared read-only checkout (`shared::mount_shared`) rather
+//! against a read-only checkout (`shared::mount_checkout`: its lane's own, or the shared one) rather
 //! than an exclusive one, since this workflow never commits.
 
 use std::path::Path;
@@ -32,8 +32,7 @@ use crate::dispatch::shared;
 pub async fn run(
     roadmap: u64,
     here: &Path,
-    target_repo_url: &str,
-    branch: &str,
+    checkout: &shared::Checkout<'_>,
     permission_mode: &str,
     dry_run: bool,
 ) -> Outcome<Verdict> {
@@ -51,7 +50,9 @@ pub async fn run(
     );
     let log = Logbook::new(Rc::clone(&sink) as Rc<dyn Sink>, Verbosity::Normal);
 
-    let mount = shared::mount_shared(here, target_repo_url, branch, &run_id, dry_run, &log).await?;
+    // A lane's own checkout when it has one: two reviews on the shared
+    // one at once each reset it under the other (`ForgeDesMondes`, 21:20Z).
+    let mount = shared::mount_checkout(here, checkout, &run_id, dry_run, &log).await?;
     let workspace = &mount.workspace;
     let built = shared::adapters(
         workspace,
@@ -83,7 +84,7 @@ pub async fn run(
         root: workspace.root().to_path_buf(),
         artifacts_dir: artifacts_dir.clone(),
         explore: false,
-        branch: branch.to_string(),
+        branch: checkout.branch.to_string(),
         plan: SessionSpec {
             model: "opus".to_string(),
             effort: "high".to_string(),

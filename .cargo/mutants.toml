@@ -34,6 +34,9 @@ exclude_re = [
   # logic they call is tested in `workflows`, the wiring itself has no fake.
   "dispatch/init_repo\\.rs:.*replace upgrade with \\(\\)",
   "router/mod\\.rs:.*delete ! in run",
+  # The tick wires a snapshot read to the scheduler and the lanes: what it
+  # decides is `pace`, `routing::schedule` and `routing::plan`, all tested.
+  "router/mod\\.rs:.* in tick$",
   # The lanes spawn `harness` children: what they hand them is
   # `routing::lane_work`, `routing::splits` and `routing::building`, tested;
   # the spawning itself has no fake. `building_boards` reads one board per

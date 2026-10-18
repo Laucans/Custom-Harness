@@ -79,6 +79,20 @@ use routes::dispatch;
 /// recorded in the error ledger and the next tick is taken. A dispatch
 /// failure was already swallowed — see the module doc.
 pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
+    // One watch per checkout: two started at the same second (two restarts
+    // racing, `ForgeDesMondes` 21:20Z) merged the same PR twice and shared
+    // their lanes' checkouts. An OS lock, released when the process ends.
+    let lock_dir = Workspace::new(here).state_root().join(".llocal/watch-lock");
+    if !harness_core::ports::store::lock::Locks::acquire(
+        &harness_adapters::store::lock::DirLocks,
+        &lock_dir,
+        "watch",
+    )? {
+        return Err(Halt::Failed(format!(
+            "another watch already runs on this checkout ({} is held) — stop it first",
+            lock_dir.display()
+        )));
+    }
     let journal = Workspace::new(here).loop_dir().join("watch.log");
     let sink = Rc::new(Both::new(&journal).map_err(|e| {
         Halt::Failed(format!(

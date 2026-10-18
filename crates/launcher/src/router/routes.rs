@@ -95,8 +95,7 @@ pub(super) async fn dispatched(
             crate::dispatch::planner::run(
                 roadmap,
                 here,
-                &args.target_repo_url,
-                &args.branch,
+                &shared_checkout(args),
                 &args.permission_mode,
                 args.dry_run,
             )
@@ -124,8 +123,7 @@ pub(super) async fn dispatched(
                 &pr,
                 &base,
                 here,
-                &args.target_repo_url,
-                &args.branch,
+                &shared_checkout(args),
                 &args.permission_mode,
                 args.dry_run,
             )
