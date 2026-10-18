@@ -56,7 +56,14 @@ Nothing is edited before this.
 - **Blocking human actions.** List the issue's `blocked_by` issues with
   their state. If any is still open, stop and quote it — an open
   `harness:human` issue blocks by construction, and the loop would not
-  have offered you this task. The SPEC's `Human actions` lines for *while
+  have offered you this task. **One exception: a Micro-UI** (`unit:
+  micro-ui`). The loop runs it ahead of the Capabilities and
+  DataCapabilities it reads and writes — the mock-up stands in for them.
+  An open blocker that builds one of those (under `crates/`) is not
+  yours to wait on: build against the contracts and `mock/fixtures/`, call
+  them by identifier; the gates accept an id that `plan/graph.json`
+  declares (`state: planned`). A Micro-UI still stops on an open
+  `harness:human`, another Micro-UI, or a screen. The SPEC's `Human actions` lines for *while
   Claude works* and *before merging* are **not** blockers for starting;
   name them so the human knows what's coming, then carry on.
 - **Working tree.** Run `git status --short` and name every dirty file
