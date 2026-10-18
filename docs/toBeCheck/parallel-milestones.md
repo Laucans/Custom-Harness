@@ -58,6 +58,14 @@ their tests and gates only: no live watch has run them yet.
       Micro-UIs deliver green against the fixtures alone, their PRs pass
       `pages-mocked`, and no freeze/screen task starts before its
       capabilities.
+- [ ] **`pages-mocked` checks the `builtFrom` digests** (template and
+      ForgeDesMondes' `main_agent`, `ab64636`, 13:35Z): the next PR that
+      changes a Micro-UI's code without `mock/build.sh` goes red on this
+      step, and the landing waits for `pr_fix` instead of carrying a stale
+      digest onto `main_agent`. No more `main_agent` → milestone 409 on
+      `mock/pages.json`. The watch's start now says `upgrade: diverged …
+      kept: .github/workflows/gates.yml, …` — the product's copy gets no
+      template fix by itself.
 - [ ] A consumer's tasks build against a producer's mocked contract; the
       mock server answers `mocked-data-capability` for a planned write.
 - [ ] A consumer ready to land while its producer still builds logs
