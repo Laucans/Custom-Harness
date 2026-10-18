@@ -70,7 +70,10 @@ their tests and gates only: no live watch has run them yet.
       gate `6dc5e62`, 15:56Z): the resumed #136, #166, #167, #193, #210,
       #218 pass `system-frontier` with their cross-system needs; PR #226
       (#166) goes green on it once it takes `main_agent`.
-- [ ] **The gate follows a merged PR** (`ArchitectureHolds::follow_merged`):
+- [x] **The gate follows a merged PR** (`ArchitectureHolds::follow_merged`)
+      — seen 16:52Z on #136: `#238 is merged into \`milestone/23-…\` — the
+      tree read follows its remote`, no "the checkout has none" (the halt
+      left was the SPEC's missing `produces`, fixed by hand):
       a round that squash-merges its PR and changes nothing after is judged
       on the tree *with* the merge — the log says `… is merged into
       \`milestone/…\` — the tree read follows its remote` and no "the
