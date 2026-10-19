@@ -12,7 +12,7 @@ to one of them is its own task, and lists the units it touches.
 | `c-persisted-query.schema.json` | C. Persisted query registry | `queries/registry.json` |
 | `d-micro-ui-manifest.schema.json` | D. Micro-UI manifest | `apps/<system>/<micro-ui>/micro-ui.json` |
 | `e-screen-composition.schema.json` | E. Screen composition | `apps/screens/<screen>.json` |
-| `f-data-capability.schema.json` | F. DataCapability | `crates/dataguard/data-capabilities/<name>/data-capability.json` |
+| `f-data-capability.schema.json` | F. DataCapability | `crates/<system>/data-capabilities/<name>/data-capability.json` |
 | `g-queue-entry.schema.json` | G. DataQueue entry | what the queue stores and shows an author |
 | `h-command-result.schema.json` | H. Command result | what the DataGuard answers a caller |
 | `i-aggregate.schema.json` | I. Aggregate | `crates/dataguard/aggregates/<Aggregate>/aggregate.json` |

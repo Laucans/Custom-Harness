@@ -13,7 +13,9 @@
 #    (crates/<system>/data-capabilities/<name>/) depends on no other
 #    Capability or DataCapability, directly or transitively.
 # 2. It depends only on crates of its own system (crates/<system>/…),
-#    never on another system's. A DataCapability's system is the DataGuard's.
+#    never on another system's. A DataCapability's system is its id's
+#    namespace, the folder it sits under (campaign.saveEntity under
+#    crates/campaign/): the DataGuard owns it, it does not house it.
 #    A port (crates/ports/<port>/, contract Q) belongs to no system: every
 #    system reaches the outside through it.
 # 3. A crate shared inside a system — one that a Capability or a

@@ -35,7 +35,7 @@ apps/shell/                             the frontend's host (npm build, serve)
 crates/<system>/capabilities/<name>/    a Capability + capability.json (B)
 crates/<system>/queries/<name>.graphql  persisted queries, queries/registry.json (C)
 crates/<system>/<name>/                 a system's plumbing (adapter, source, read crate)
-crates/<system>/data-capabilities/<name>/  a DataCapability + data-capability.json (F), system `dataguard`
+crates/<system>/data-capabilities/<name>/  a DataCapability + data-capability.json (F), under its id's system
 crates/<system>/aggregates/<Aggregate>/aggregate.json  invariants, relations (I)
 crates/data/  crates/dataguard/         the Data layer; the DataQueue, DataGuard, Resolver
 crates/server/                          the one binary: the shell's wire protocol, GET /health

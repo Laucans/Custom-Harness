@@ -59,13 +59,13 @@ const DIRS: [(&str, &str); 8] = [
     ("credit-query", "crates/credit/query"),
     ("credit-utils", "crates/credit/utils"),
     ("dataguard", "crates/dataguard"),
-    ("limit", "crates/dataguard/data-capabilities/limit"),
+    ("limit", "crates/credit/data-capabilities/limit"),
     ("orders-query", "crates/orders/query"),
     ("llm", "crates/ports/llm"),
 ];
 
-/// The healthy shape: two Capabilities on their system's plumbing, one
-/// DataCapability on the DataGuard, a crate of another system beside.
+/// The healthy shape: two Capabilities and one `DataCapability` on their
+/// system's plumbing, the DataGuard's and another system's crates beside.
 fn repo(case: &str) -> Repo {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -103,9 +103,9 @@ fn repo(case: &str) -> Repo {
     krate(&root, "crates/dataguard", "dataguard", &[]);
     krate(
         &root,
-        "crates/dataguard/data-capabilities/limit",
+        "crates/credit/data-capabilities/limit",
         "limit",
-        &["dataguard"],
+        &["credit-query"],
     );
     krate(&root, "crates/orders/query", "orders-query", &[]);
     krate(&root, "crates/ports/llm", "llm", &[]);
@@ -222,9 +222,9 @@ fn a_data_capability_reaching_a_capability_fails() {
     let repo = repo("write-side");
     krate(
         &repo.root,
-        "crates/dataguard/data-capabilities/limit",
+        "crates/credit/data-capabilities/limit",
         "limit",
-        &["dataguard", "risk"],
+        &["credit-query", "risk"],
     );
     let (ok, said) = check(&repo);
     assert!(!ok);

@@ -183,7 +183,9 @@ relations) and the DataGuard's plumbing. What it must not know: any
 Capability, any other DataCapability, any other system's crates.
 
 Gates that judge it: manifests-conform-to-contracts (F),
-capability-isolation (scripts/isolation.sh), data-capability-registered
+data-capability-placed (its folder is its id's namespace, never
+crates/dataguard/), capability-isolation (scripts/isolation.sh),
+data-capability-registered
 (a workspace member, named after its folder, a dependency of the server),
 effect-classification (a pure insert stays one), ownership (its target
 aggregate declares every field it touches), invariants-tested (every

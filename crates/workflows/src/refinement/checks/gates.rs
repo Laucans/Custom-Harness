@@ -166,20 +166,30 @@ pub fn layout_violation(key: &str, architecture: &str, text: &str) -> Option<Str
     }
     let (slot, placed) = match declaration.unit {
         Unit::Capability => (
-            "crates/<system>/capabilities/<name>/",
+            "crates/<system>/capabilities/<name>/".to_string(),
             crate_paths(text).any(|segments| {
                 segments.len() >= 3 && segments[1] == "capabilities" && is_name(segments[2])
             }),
         ),
-        Unit::DataCapability => (
-            "crates/dataguard/data-capabilities/<name>/",
-            crate_paths(text).any(|segments| {
-                segments.len() >= 3
-                    && segments[0] == "dataguard"
-                    && segments[1] == "data-capabilities"
-                    && is_name(segments[2])
-            }),
-        ),
+        Unit::DataCapability => {
+            // Its folder is its id's namespace: the DataGuard owns every
+            // DataCapability and houses none (ForgeDesMondes' milestone 18
+            // built three of `campaign` under crates/dataguard/).
+            let system = data_capability_system(&declaration);
+            (
+                format!(
+                    "crates/{}/data-capabilities/<name>/",
+                    system.as_deref().unwrap_or("<system>")
+                ),
+                crate_paths(text).any(|segments| {
+                    segments.len() >= 3
+                        && segments[0] != "dataguard"
+                        && system.as_deref().is_none_or(|s| segments[0] == s)
+                        && segments[1] == "data-capabilities"
+                        && is_name(segments[2])
+                }),
+            )
+        }
         _ => return None,
     };
     if placed {
@@ -192,6 +202,22 @@ pub fn layout_violation(key: &str, architecture: &str, text: &str) -> Option<Str
          place the crate there, with its manifest beside it.",
         declaration.unit.key()
     ))
+}
+
+/// The system a `DataCapability` task's folder sits under: its id's
+/// namespace, else the system the section declares — never `dataguard`,
+/// the owner of every `DataCapability` and the system of none. `None` when
+/// the task names neither.
+fn data_capability_system(declaration: &Declaration) -> Option<String> {
+    declaration
+        .produces
+        .iter()
+        .find_map(|id| {
+            id.split_once('.')
+                .map(|(namespace, _)| namespace.to_string())
+        })
+        .or_else(|| Some(declaration.system.clone()))
+        .filter(|system| !system.is_empty() && system != "dataguard")
 }
 
 /// Every path written after `crates/` in `text`, split into its segments —
@@ -319,6 +345,37 @@ mod tests {
         assert!(why.contains("reclassification"), "{why}");
         let plumbing = "unit: infrastructure\nsystem: bestiary\nside: harness:write-side";
         assert_eq!(layout_violation("technical", plumbing, beside), None);
+    }
+
+    #[test]
+    fn a_data_capability_sits_under_the_system_its_id_names_never_the_dataguard() {
+        // ForgeDesMondes milestone 18: the sketches said
+        // crates/dataguard/data-capabilities/ and three were built there.
+        let save = "unit: data-capability\nsystem: campaign\neffect: upsert\n\
+                    produces: campaign.saveEntity\nside: harness:write-side";
+        let under_the_dataguard = "Crate: `crates/dataguard/data-capabilities/save-entity/`, \
+                                   a dependency of crates/dataguard/server/.";
+        let why = layout_violation("technical", save, under_the_dataguard).expect("misplaced");
+        assert!(
+            why.contains("crates/campaign/data-capabilities/<name>/"),
+            "{why}"
+        );
+        let placed = "Crate: `crates/campaign/data-capabilities/save-entity/`, a dependency \
+                      of crates/dataguard/server/.";
+        assert_eq!(layout_violation("technical", save, placed), None);
+        // The id's namespace rules, the declared system stands in for it,
+        // and `dataguard` is never a system.
+        let declared_only = "unit: data-capability\nsystem: campaign\nside: harness:write-side";
+        assert!(layout_violation("technical", declared_only, under_the_dataguard).is_some());
+        assert_eq!(layout_violation("technical", declared_only, placed), None);
+        let owner_as_system = "unit: data-capability\nsystem: dataguard\nside: harness:write-side";
+        let why = layout_violation("technical", owner_as_system, under_the_dataguard)
+            .expect("the DataGuard houses none");
+        assert!(
+            why.contains("crates/<system>/data-capabilities/<name>/"),
+            "{why}"
+        );
+        assert_eq!(layout_violation("technical", owner_as_system, placed), None);
     }
 
     #[test]

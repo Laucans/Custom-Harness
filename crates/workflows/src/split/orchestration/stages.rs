@@ -41,7 +41,9 @@ in the repository map): every slice is exactly one unit of it. Name the
 `capability`, `persisted-query`, `micro-ui`, `composition` or `tooling` —
 the `system` it belongs to (the bounded context, e.g. `credit` — for a
 Capability or a DataCapability, its id's namespace: `campaign.saveEntity` is
-`campaign`; a DataCapability's `owner` is `dataguard`, never its system), the
+`campaign`; a DataCapability's `owner` is `dataguard`, never its system, and
+its folder is its system's, `crates/campaign/data-capabilities/save-entity/`
+— `crates/dataguard/data-capabilities/` is nobody's folder), the
 `concept` it implements when there is one (`Risk@3`), and for the data
 layer the `aggregate` it writes or shapes (as its manifest's
 `target.aggregate` names it) — a `data-capability` also its `effect`

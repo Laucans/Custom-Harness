@@ -59,7 +59,7 @@ fn git(root: &Path, args: &[&str]) {
     assert!(status.status.success(), "git {args:?}: {status:?}");
 }
 
-const MEMBERS: &str = r#""crates/credit/capabilities/risk", "crates/credit/capabilities/score", "crates/credit/server", "crates/dataguard/data-capabilities/limit""#;
+const MEMBERS: &str = r#""crates/credit/capabilities/risk", "crates/credit/capabilities/score", "crates/credit/server", "crates/credit/data-capabilities/limit""#;
 
 /// Two Capabilities — `risk` with an infrastructure crate depending on it —
 /// and one DataCapability.
@@ -90,12 +90,7 @@ fn repo(case: &str) -> Repo {
         "server",
         "risk = { path = \"../capabilities/risk\" }\n",
     );
-    krate(
-        &root,
-        "crates/dataguard/data-capabilities/limit",
-        "limit",
-        "",
-    );
+    krate(&root, "crates/credit/data-capabilities/limit", "limit", "");
     git(&root, &["init", "-q", "-b", "main_agent"]);
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-qm", "init"]);
@@ -144,7 +139,7 @@ fn a_crate_depending_on_the_capability_is_tested_with_it() {
 fn a_data_capability_runs_the_whole_workspace() {
     let repo = repo("data");
     touch(&repo, "crates/credit/capabilities/risk/src/lib.rs");
-    touch(&repo, "crates/dataguard/data-capabilities/limit/src/lib.rs");
+    touch(&repo, "crates/credit/data-capabilities/limit/src/lib.rs");
     assert_eq!(
         scope(&repo, &["main_agent"]),
         "cargo test --workspace --all-features"

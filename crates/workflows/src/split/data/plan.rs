@@ -256,15 +256,33 @@ fn placement_gaps(named: &str, item: &TaskItem) -> Vec<String> {
     let mut gaps = Vec::new();
     if matches!(declaration.unit, Unit::Capability | Unit::DataCapability) {
         for id in &declaration.produces {
-            if let Some((namespace, _)) = id.split_once('.')
-                && namespace != declaration.system
-            {
+            let Some((namespace, _)) = id.split_once('.') else {
+                continue;
+            };
+            if namespace != declaration.system {
                 gaps.push(format!(
                     "{named} declares `system: {}` for `{id}`: the system of a {} is its id's \
                      namespace, `{namespace}` (a DataCapability's `owner` is `dataguard`, not its system)",
                     declaration.system,
                     declaration.unit.key()
                 ));
+            }
+            // The folder the sketch names follows the id too: #51–#53 wrote
+            // crates/dataguard/data-capabilities/ and the sessions built it
+            // there, under a folder the DataGuard owns nothing in.
+            if declaration.unit == Unit::DataCapability {
+                for folder in
+                    data_capability_folders(&format!("{}\n{}", item.brief, item.technical))
+                {
+                    if folder != namespace {
+                        gaps.push(format!(
+                            "{named} places `{id}` under crates/{folder}/data-capabilities/: a \
+                             DataCapability's folder is its id's namespace, \
+                             crates/{namespace}/data-capabilities/<name>/ — the DataGuard owns it, \
+                             it does not house it"
+                        ));
+                    }
+                }
             }
         }
     }
@@ -278,6 +296,29 @@ fn placement_gaps(named: &str, item: &TaskItem) -> Vec<String> {
         ));
     }
     gaps
+}
+
+/// The systems whose `data-capabilities/` folder `text` names, each once —
+/// `crates/dataguard/data-capabilities/save-entity/` gives `dataguard`. A
+/// placeholder (`crates/<system>/…`) or a glob names none.
+fn data_capability_folders(text: &str) -> Vec<&str> {
+    let mut folders: Vec<&str> = Vec::new();
+    for rest in text.split("crates/").skip(1) {
+        let Some((system, after)) = rest.split_once('/') else {
+            continue;
+        };
+        let named = !system.is_empty() && !system.starts_with('<') && !system.contains('*');
+        // The folder's name whole, with or without a trailing slash.
+        let is_the_folder = after.strip_prefix("data-capabilities").is_some_and(|tail| {
+            tail.chars()
+                .next()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+        });
+        if named && is_the_folder && !folders.contains(&system) {
+            folders.push(system);
+        }
+    }
+    folders
 }
 
 #[cfg(test)]
@@ -378,11 +419,53 @@ mod tests {
         let right = slice(&format!(
             r#"{{"title":"Save","brief":"b","branch":"feat/save","unit":"data-capability","system":"campaign","produces":["campaign.saveEntity"],{WHOLE}}}"#
         ));
-        assert!(spec_gaps(&[right]).is_empty());
+        assert_eq!(spec_gaps(&[right]), [] as [String; 0]);
         let capability = slice(&format!(
             r#"{{"title":"List","brief":"b","branch":"feat/list","unit":"capability","system":"media","produces":["session.listScenes"],{WHOLE}}}"#
         ));
         assert_eq!(spec_gaps(&[capability]).len(), 1);
+    }
+
+    #[test]
+    fn a_data_capability_s_folder_is_its_id_s_namespace_never_the_dataguard_s() {
+        // ForgeDesMondes milestone 18: #51–#53 sketched
+        // crates/dataguard/data-capabilities/ and the sessions built there.
+        let save = |technical: &str| {
+            slice(&format!(
+                r#"{{"title":"Save","brief":"b","branch":"feat/save","unit":"data-capability","system":"campaign","produces":["campaign.saveEntity"],"technical":"{technical}",{WHOLE}}}"#
+            ))
+        };
+        let under_the_dataguard = spec_gaps(&[save(
+            "crates/dataguard/data-capabilities/save-entity/ with its data-capability.json",
+        )]);
+        assert_eq!(under_the_dataguard.len(), 1, "{under_the_dataguard:?}");
+        assert!(
+            under_the_dataguard[0].contains("under crates/dataguard/data-capabilities/")
+                && under_the_dataguard[0].contains("crates/campaign/data-capabilities/<name>/"),
+            "{}",
+            under_the_dataguard[0]
+        );
+        let elsewhere = spec_gaps(&[save("crates/media/data-capabilities/save-entity/")]);
+        assert_eq!(elsewhere.len(), 1, "{elsewhere:?}");
+        for fine in [
+            "crates/campaign/data-capabilities/save-entity/ with its data-capability.json",
+            "crates/<system>/data-capabilities/<name>/, crates/*/data-capabilities/*",
+            "crates/dataguard/aggregates/Entity/aggregate.json, crates/dataguard/server/Cargo.toml",
+            "",
+        ] {
+            assert!(spec_gaps(&[save(fine)]).is_empty(), "{fine}");
+        }
+        // The brief is read too: a session follows a path written there.
+        let in_the_brief = slice(&format!(
+            r#"{{"title":"Save","brief":"crates/dataguard/data-capabilities/save-entity/","branch":"feat/save","unit":"data-capability","system":"campaign","produces":["campaign.saveEntity"],{WHOLE}}}"#
+        ));
+        assert_eq!(spec_gaps(&[in_the_brief]).len(), 1);
+        assert_eq!(
+            data_capability_folders(
+                "crates/dataguard/data-capabilities/a/ and crates/dataguard/data-capabilities/b/, crates/ai/data-capabilities/c/"
+            ),
+            ["dataguard", "ai"]
+        );
     }
 
     fn aggregate(name: &str, technical: &str) -> String {

@@ -293,8 +293,9 @@ fn inventory_of(tree: &Tree) -> String {
          - queries/registry.json: {}\n\
          \n\
          The write side (an `aggregate` or a `data-capability` slice builds on these; a \
-         DataCapability is a folder named after itself, a dependency of its server, and \
-         reaches no other slice):\n\
+         DataCapability is a folder named after itself under the system its id names — \
+         crates/<system>/data-capabilities/<name>/, never crates/dataguard/ — a dependency \
+         of its server, and reaches no other slice):\n\
          - aggregates: {}\n\
          - DataCapabilities: {}\n\
          \n\

@@ -392,6 +392,42 @@ jobs:
           done <<< "$members"
           exit $failed
 
+  # Contract F — a DataCapability's folder is its id's namespace:
+  # `campaign.saveEntity` sits under crates/campaign/data-capabilities/
+  # save-entity/. The DataGuard owns every DataCapability (`owner`) and
+  # houses none: crates/dataguard/data-capabilities/ is nobody's folder.
+  data-capability-placed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every DataCapability sits under the system its id names
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          failed=0
+          for manifest in crates/*/data-capabilities/*/data-capability.json; do
+            folder=$(cut -d/ -f2 <<< "$manifest")
+            name=$(cut -d/ -f4 <<< "$manifest")
+            id=$(jq -r '.dataCapability // empty' "$manifest")
+            if [ -z "$id" ]; then
+              echo "::error file=$manifest::names no dataCapability"
+              failed=1
+              continue
+            fi
+            namespace=${id%%.*}
+            if [ "$namespace" = "$id" ] || [ "$namespace" = "dataguard" ]; then
+              echo "::error file=$manifest::$id names no system as its id's namespace — a DataCapability is <system>.<name>, under crates/<system>/data-capabilities/$name/; the DataGuard owns it, it is not its system"
+              failed=1
+              continue
+            fi
+            if [ "$folder" != "$namespace" ]; then
+              echo "::error file=$manifest::$id belongs under crates/$namespace/data-capabilities/$name/, its id's namespace — the DataGuard owns a DataCapability (owner: dataguard), it does not house it"
+              failed=1
+            fi
+          done
+          exit $failed
+
   # Contract F, rule 2 — a DataCapability is a folder, never an edit of a
   # shared file: every crates/<system>/data-capabilities/<name>/ is a workspace
   # member, its library is named after its folder (what the server's build
