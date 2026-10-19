@@ -156,8 +156,10 @@ what would build on the red or merge into it (`routing::base_red`: the
 tasks, whose milestone branch takes the integration branch first, and the
 two merges), keeping the reviews, the repairs, the rules, the test debt and
 the decisions. The board is read in full every tick meanwhile, as for a PR
-under CI, since the push that turns it green moves no issue; green closes
-the issue and the jobs resume. `--dry-run` reads and says, writes nothing.
+under CI, since the push that turns it green moves no issue; the hold lasts
+until green — runs still in progress on the fix's push hold as the red did,
+while the issue is open — and green closes the issue and the jobs resume.
+`--dry-run` reads and says, writes nothing.
 
 Three rules, and they are not symmetric:
 

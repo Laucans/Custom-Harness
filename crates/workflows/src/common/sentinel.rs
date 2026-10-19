@@ -1,6 +1,6 @@
-//! The integration branch's own CI, read by `harness watch` once per tick:
-//! a red base holds what would build on it or merge into it, and says so
-//! once on the board.
+//! The integration branch's own CI, read by `harness watch` on every full
+//! read of the board, before the snapshot: a red base holds what would
+//! build on it or merge into it, and says so once on the board.
 //!
 //! Why: the integration branch (`main_agent`) is not protected and takes
 //! direct pushes, so its CI goes red with no pull request to carry the
@@ -8,12 +8,22 @@
 //! takes the integration branch first, and opening PRs that inherited the
 //! red — for two hours, told to nobody (`ForgeDesMondes`, 2026-10-18).
 //!
+//! Once per full read, not once per tick: a quiet tick (`routing::may_skip`)
+//! reads nothing and starts nothing, so the hold loses nothing by waiting
+//! for the valve (`routing::FULL_READ_EVERY`); only the issue and the line
+//! lag by as much. A red base then keeps the full reads going every tick,
+//! like a pull request under CI.
+//!
 //! What it writes is one `harness:human` issue titled [`issue_title`],
 //! found again by that title among the open ones so neither the next tick
 //! nor a restart opens a second. What it decides is handed to the router as
 //! [`Snapshot::base_checks`](crate::common::routing::Snapshot::base_checks):
 //! the hold itself is [`routing::base_red`](crate::common::routing::base_red),
-//! pure. Repairing the base is a human's: the issue says what to look at.
+//! pure. **The hold lasts until green**: while that issue is open, runs
+//! still in progress on a newer head — the fix pushed after the red — hold
+//! the plant as the red did, so the unverified base spreads into no
+//! milestone branch before its checks pass. Repairing the base is a
+//! human's: the issue says what to look at.
 
 use harness_core::domain::{Issue, Outcome};
 use harness_core::ports::shell::github::GitHub;
@@ -44,12 +54,24 @@ pub fn held_line(branch: &str) -> String {
     format!("integration branch {branch} is red: development and merges wait")
 }
 
+/// The journal line a base not green again yet after a red writes every
+/// tick it still holds the plant.
+#[must_use]
+pub fn pending_line(branch: &str) -> String {
+    format!(
+        "integration branch {branch} is not green again yet: its checks run — development \
+         and merges wait"
+    )
+}
+
 /// Reads the integration branch's checks and keeps the board in step.
 ///
 /// Red opens the issue once and says so each tick; green closes it, once; a
-/// check still running, or none yet, changes nothing. Answers what it read,
-/// for the router's snapshot. Under `dry_run` nothing is written: the read
-/// and the journal line only.
+/// check still running, or none yet, changes nothing — the hold stays while
+/// the red's issue is open, and lifts when none is. Answers what the router
+/// holds on, for its snapshot: `Some(false)` is the hold, whether the base
+/// is red or not green again yet. Under `dry_run` nothing is written: the
+/// reads and the journal line only.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from the checks read, the issue list or
@@ -104,7 +126,18 @@ pub async fn watch(
                 });
             }
         }
-        None => {}
+        None => {
+            // Runs in progress, or none yet. After a red, that is the fix's
+            // push under CI: held until it passes, or the unverified base
+            // would spread into every milestone branch a task takes it
+            // into meanwhile. Only the open issue says a red came before;
+            // a human who closed it by hand lifted the hold.
+            let human = gh.issues_labelled(labels::HUMAN, "open").await?;
+            if open_issue(&human, branch).is_some() {
+                log.say(&pending_line(branch));
+                return Ok(Some(false));
+            }
+        }
     }
     Ok(checks)
 }
@@ -202,6 +235,12 @@ mod tests {
             told.iter().any(|line| line == &held_line("main_agent")),
             "{told:?}"
         );
+        // The line the brief asks for, by its letter: the helper is what
+        // every other assertion compares to.
+        assert_eq!(
+            held_line("main_agent"),
+            "integration branch main_agent is red: development and merges wait"
+        );
         assert_eq!(
             journal.events.borrow().clone(),
             vec![Event::BaseRed {
@@ -289,7 +328,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_check_still_running_or_none_yet_changes_nothing() {
+    async fn a_check_still_running_after_a_red_holds_the_plant_until_green() {
+        // A red spell, then the fix pushed: its runs are queued for minutes.
+        // The hold lasts — or catch_up would merge the unverified base into
+        // every milestone branch a task takes it into meanwhile.
         let gh = board(
             None,
             vec![human_issue(
@@ -300,10 +342,47 @@ mod tests {
         );
         let (journal, log) = capture();
         let read = watch(&gh, "main_agent", false, &log).await.expect("read");
-        assert_eq!(read, None);
+        assert_eq!(read, Some(false), "held until green");
         assert_eq!(gh.writes(), [] as [Wrote; 0], "the issue stays until green");
+        assert!(journal.events.borrow().is_empty(), "no second red");
+        assert_eq!(
+            journal.lines.borrow().clone(),
+            vec![pending_line("main_agent")]
+        );
+        assert_eq!(
+            pending_line("main_agent"),
+            "integration branch main_agent is not green again yet: its checks run — \
+             development and merges wait"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_check_still_running_or_none_yet_with_no_red_before_changes_nothing() {
+        let gh = board(
+            None,
+            vec![human_issue(5, "Create the Stripe account", "open")],
+        );
+        let (journal, log) = capture();
+        let read = watch(&gh, "main_agent", false, &log).await.expect("read");
+        assert_eq!(read, None);
+        assert_eq!(gh.writes(), [] as [Wrote; 0]);
         assert!(journal.lines.borrow().is_empty());
-        // An absent branch in the fake is `None` too.
+        // A red closed by hand lifted the hold; an absent branch in the fake
+        // is `None` too.
+        let closed_by_hand = board(
+            None,
+            vec![human_issue(
+                7,
+                "Integration branch main_agent is red",
+                "closed",
+            )],
+        );
+        assert_eq!(
+            watch(&closed_by_hand, "main_agent", false, &log)
+                .await
+                .expect("read"),
+            None
+        );
         let unknown = FakeGitHub::default();
         assert_eq!(
             watch(&unknown, "main_agent", false, &log)

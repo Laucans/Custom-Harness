@@ -206,11 +206,12 @@ pub struct Snapshot {
     pub rules: Vec<Issue>,
     /// Open `harness:needs-decision` issues, any order.
     pub deciding: Vec<Issue>,
-    /// The integration branch's own checks, as
-    /// [`GitHub::branch_checks`](harness_core::ports::shell::github::GitHub::branch_checks)
-    /// answers: `Some(false)` holds everything that would build on the red
-    /// base or merge into it ([`base_red`]); `None` and `Some(true)` hold
-    /// nothing.
+    /// The integration branch's own checks, as the sentinel
+    /// (`common::sentinel::watch`) answers them from
+    /// [`GitHub::branch_checks`](harness_core::ports::shell::github::GitHub::branch_checks):
+    /// `Some(false)` — red, or not green again yet after a red — holds
+    /// everything that would build on the base or merge into it
+    /// ([`base_red`]); `None` and `Some(true)` hold nothing.
     pub base_checks: Option<bool>,
 }
 

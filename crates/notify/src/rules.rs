@@ -380,8 +380,6 @@ fn snapshot_failed(board: &mut Board, branch: &str, sha: &str, reason: &str, at:
     ));
 }
 
-/// The watch's life is one line, telling its last state.
-/// The watch started on changes the human left waiting.
 /// The integration branch's own CI failed: nothing is built on it or merged
 /// into it until it is green, which clears this (`BaseGreen`).
 fn base_red(board: &mut Board, branch: &str, sha: Option<&str>, at: &str) {
