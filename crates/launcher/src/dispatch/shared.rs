@@ -349,6 +349,7 @@ pub fn apply_drafts(here: &Path, now: u64) -> Outcome<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harness_adapters::shell::process;
 
     #[test]
     fn a_router_checkout_is_permanent_harness_named_and_drops_a_session_s_leftovers() {
@@ -366,5 +367,69 @@ mod tests {
         assert!(asked.create_if_missing);
         assert!(asked.drop_uncommitted);
         assert!(wanted("", "router-prfix", true).force_reset);
+    }
+
+    /// Runs `git` in `dir` with a throwaway identity, so a commit needs no
+    /// configuration of the machine's own.
+    async fn git(dir: &Path, args: &[&str]) -> String {
+        let with_identity: Vec<String> = ["-c", "user.name=t", "-c", "user.email=t@t"]
+            .iter()
+            .chain(args)
+            .map(|arg| (*arg).to_string())
+            .collect();
+        let ran = process::run("git", &with_identity, dir)
+            .await
+            .expect("git runs");
+        assert!(ran.ok(), "git {args:?}: {}", ran.stderr);
+        ran.out().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_released_checkout_is_given_back_clean_by_the_real_git() {
+        // The one teardown every router-dispatched workflow ends on, built
+        // against the real `git`: a release that did nothing would leave
+        // the lane as the session left it — the live failure it exists to
+        // end. A clone of a local origin, left with an untracked file and a
+        // branch of its own, as a session leaves them.
+        let root = std::env::temp_dir().join(format!("harness-release-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        git(&root, &["init", "-q", "-b", "main", "origin"]).await;
+        let origin = root.join("origin");
+        std::fs::write(origin.join("a"), "base").expect("write");
+        git(&origin, &["add", "a"]).await;
+        git(&origin, &["commit", "-q", "-m", "base"]).await;
+        let origin_url = origin.display().to_string();
+        git(&root, &["clone", "-q", &origin_url, "lane"]).await;
+        let lane = root.join("lane");
+        std::fs::write(lane.join("scratch"), "left behind").expect("write");
+        git(&lane, &["branch", "scratch"]).await;
+        let mount = Mount {
+            workspace: Workspace::new(&root).at(&lane),
+            name: "router-lane-1".to_string(),
+            path: Some(lane.clone()),
+            branch: "main".to_string(),
+            disposable: false,
+        };
+        release_checkout(&mount, &Logbook::null()).await;
+        assert!(
+            !lane.join("scratch").exists(),
+            "the untracked file is dropped"
+        );
+        assert!(
+            lane.join("a").exists(),
+            "the checkout itself stays: permanent"
+        );
+        assert_eq!(git(&lane, &["status", "--porcelain"]).await, "", "clean");
+        assert_eq!(
+            git(
+                &lane,
+                &["for-each-ref", "--format=%(refname:short)", "refs/heads"]
+            )
+            .await,
+            "main",
+            "the scratch branch is gone, the run's branch stays"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
