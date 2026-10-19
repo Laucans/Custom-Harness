@@ -105,8 +105,14 @@ without waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
 Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
-checks the same rules after you), then branch -> PR ->
-gh pr merge --squash. A Micro-UI or a screen composition ships with its
+checks the same rules after you), then branch -> PR -> `gh pr checks <n>
+--watch` in the foreground -> gh pr merge --squash. The CI wait is the one
+wait you take, and only in the foreground: never a background watcher,
+never Monitor, never a sleep loop or a scheduled wake-up — a session silent
+for twenty minutes is killed, and its open PR then goes to the harness's
+own cycle (labelled `{to_review}`, reviewed, merged once green), not back
+to you; a foreground watch that runs out before the checks end is simply
+run again. A Micro-UI or a screen composition ships with its
 mock-up: open the page under mock/pages/ and the micro-frontend under
 mock/components/ first (they are the screen as the human wants it; a
 `mockup/*` branch may carry a newer one). Build FROM their code, never
@@ -219,13 +225,17 @@ read-only on yours — a kit component that cannot serve as it is recoded on
 `design-system` with a `recoded` line; then
 branch -> PR, and
 STOP THERE: open the pull request against the milestone branch with
-`gh pr create --label {to_review}` (the agent review runs on it), wait for
-its CI with `gh pr checks`, and do NOT run `gh pr merge` — a write-side PR
-is merged by `milestone_merge` once the review has run and every check is
-green. The PR body MUST carry the line `Closes #{num}` on its own: the loop
-reads that line off the PR to know the task is delivered once it is merged.
-The issue will carry `{review_pending}` until then —
-that is expected, not a failure. Do not close the issue yourself.
+`gh pr create --label {to_review}` (the agent review runs on it), say its
+number in your reply and END YOUR TURN. The harness watches its CI from
+here: never wait on it — never poll `gh pr checks`, never a background
+watcher, never Monitor, never a sleep loop or a scheduled wake-up (a session
+silent for twenty minutes is killed) — and do NOT run `gh pr merge`: a
+write-side PR is merged by `milestone_merge` once the review has run and
+every check is green, and its red checks are the repair route's. The PR
+body MUST carry the line `Closes #{num}` on its own: the loop reads that
+line off the PR to know the task is delivered once it is merged. The issue
+will carry `{review_pending}` until then — that is expected, not a
+failure. Do not close the issue yourself.
 If the SPEC has a `## Rules` section, the tests of those rules, under
 tests/rules/ (contract P), are written already and are what this task
 turns green: start the product with `bash scripts/rules-runtime.sh serve`
@@ -611,6 +621,51 @@ mod tests {
         assert!(
             read.contains("gh pr merge --squash"),
             "the read side still merges"
+        );
+    }
+
+    #[test]
+    fn no_code_session_waits_on_its_ci_in_the_background() {
+        // ForgeDesMondes' #248, #249, #250 (2026-10-18): pushed their PR,
+        // waited on its CI through a background watcher as the prompt
+        // said to wait, and were killed as hung twenty minutes later.
+        let write = flat(&with_labels(CODE_WRITE_SIDE));
+        assert!(write.contains("END YOUR TURN"), "{write}");
+        assert!(write.contains("never poll `gh pr checks`"));
+        assert!(write.contains("never a background watcher"));
+        assert!(write.contains("never Monitor"));
+        assert!(
+            !write.contains("wait for its CI"),
+            "the sentence that killed three sessions"
+        );
+        let read = flat(&with_labels(CODE));
+        assert!(read.contains("in the foreground"), "{read}");
+        assert!(read.contains("never a background watcher"));
+        assert!(read.contains("never Monitor"));
+        assert!(
+            read.contains(&format!("labelled `{}`", labels::TO_REVIEW)),
+            "where a killed session's PR goes"
+        );
+    }
+
+    /// The text on one line, wrapped prose compared as prose.
+    fn flat(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The skill the prompt carries out, as the harness lends it.
+    const CODE_SKILL: &str = include_str!("../../../../../.claude/skills/code/SKILL.md");
+
+    #[test]
+    fn the_code_skill_says_the_same_the_harness_watches_ci() {
+        let skill = flat(CODE_SKILL);
+        assert!(skill.contains("never a background watcher"));
+        assert!(skill.contains("never `Monitor`"));
+        assert!(skill.contains("end your turn"));
+        assert!(skill.contains("in the foreground"));
+        assert!(
+            !skill.contains("Wait for `ci` with `gh pr checks`, then"),
+            "the step that had every session wait"
         );
     }
 

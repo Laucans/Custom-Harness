@@ -117,7 +117,7 @@ fn delivery(board: &mut Board, event: &Event, at: &str) {
         Event::PrOpened { task, pr, base } => board.add(Notification::once(
             format!("pr:#{task}"),
             Level::Info,
-            format!("#{task}: PR {pr} open on the write side"),
+            format!("#{task}: PR {pr} open, in the harness's hands"),
             format!(
                 "its review runs, and it is merged into {base} once the review is clean and \
                  every check green — to stop it, close the PR"

@@ -163,14 +163,17 @@ pub const WRITE_SIDE: &str = harness_architecture::vocabulary::WRITE_SIDE;
 /// task without it simply runs on the stages' own models.
 pub const DATA_LAYER: &str = "harness:data-layer";
 
-/// A write-side task's PR is open and waits for its review and a green CI,
-/// after which `milestone_merge` merges it.
+/// A task's PR is open and waits for its review and a green CI, after which
+/// `milestone_merge` merges it.
 ///
-/// Posed by the dev loop once the session has opened the PR (with
+/// Posed by the dev loop once a write-side session has opened the PR (with
 /// `harness:to-review`, so the agent review runs on it) and stopped short of
-/// merging. While it is there the loop neither replays the task nor starts
-/// one that depends on it; `milestone_merge` merges the PR once its review
-/// is clean and every check green, takes the label off and closes the task.
+/// merging — or once a session of either side was killed for its silence
+/// with its PR open: the PR gets `harness:to-review` from the loop, and the
+/// same cycle takes it. While it is there the loop neither replays the task
+/// nor starts one that depends on it; `milestone_merge` merges the PR once
+/// its review is clean and every check green, takes the label off and
+/// closes the task.
 pub const REVIEW_PENDING: &str = "harness:review-pending";
 
 /// An issue of **test debt**: code `cargo mutants` can break without a test
@@ -327,7 +330,7 @@ pub const ALL: [Label; 23] = [
     Label {
         name: REVIEW_PENDING,
         color: "f9d0c4",
-        description: "A write-side PR is open and waits for its review and a green CI",
+        description: "The task's PR is open and waits for its review and a green CI",
     },
     Label {
         name: DATA_LAYER,

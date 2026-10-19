@@ -28,7 +28,7 @@
 //!
 //! Pure business logic: no I/O, no subprocess.
 
-use harness_core::domain::{Issue, Tags};
+use harness_core::domain::{Issue, Pr, Tags};
 
 use crate::common::{labels, sections};
 use harness_architecture::graph::{Graph, Kind};
@@ -107,6 +107,26 @@ pub fn declared_branch(body: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix("branch:"))
         .map(|branch| branch.trim().trim_matches('`').to_string())
         .filter(|branch| !branch.is_empty())
+}
+
+/// Whether `pr` is this task's: open on the branch the task's body declares,
+/// or titled with the task's number (`#248`, as a whole token).
+///
+/// The branch is what the loop writes and reads; the title is the second
+/// reading, for a PR a session opened off the declared branch. A PR of
+/// another task — `#2480` for #248 — names nothing.
+#[must_use]
+pub fn pr_names_task(pr: &Pr, task: &Issue) -> bool {
+    if declared_branch(&task.body).is_some_and(|branch| pr.head == branch) {
+        return true;
+    }
+    let token = format!("#{}", task.number);
+    pr.title.match_indices(&token).any(|(at, _)| {
+        pr.title
+            .get(at + token.len()..)
+            .and_then(|rest| rest.chars().next())
+            .is_none_or(|next| !next.is_ascii_digit())
+    })
 }
 
 /// `human` or `auto` — how the log names the task kind.
@@ -224,7 +244,7 @@ pub fn why_not(issue: &Issue) -> String {
     }
     if review_pending(issue) {
         return format!(
-            "{} {}: on the write side — its PR is open and waits for its review and a green CI",
+            "{} {}: its PR is open and waits for its review and a green CI",
             issue.reference(),
             issue.title
         );
@@ -490,7 +510,7 @@ pub fn idle_reason(milestone: u64, issues: &[Issue]) -> String {
     }
     if pending_review > 0 {
         parts.push(format!(
-            "{pending_review} write-side PR(s) waiting for their review and a green CI"
+            "{pending_review} PR(s) open, waiting for their review and a green CI"
         ));
     }
     if blocked > 0 {
@@ -838,6 +858,35 @@ mod tests {
         assert!(
             !is_write_side(&issue(4, &[labels::AGENT])),
             "nothing declared: read side"
+        );
+    }
+
+    #[test]
+    fn a_pr_names_a_task_by_its_declared_branch_or_its_number_in_the_title() {
+        let mut declared = task(248);
+        declared.body = "## Scope\n\nbranch: feat/battlemap-instance-aggregate\n".to_string();
+        let on = |head: &str, title: &str| Pr {
+            head: head.to_string(),
+            title: title.to_string(),
+            ..Pr::default()
+        };
+        assert!(pr_names_task(
+            &on("feat/battlemap-instance-aggregate", "x"),
+            &declared
+        ));
+        assert!(pr_names_task(
+            &on("fix/other", "BattlemapInstance aggregate (#248)"),
+            &declared
+        ));
+        assert!(pr_names_task(&on("fix/other", "Closes #248"), &declared));
+        assert!(!pr_names_task(
+            &on("fix/other", "another aggregate (#2480)"),
+            &declared
+        ));
+        assert!(!pr_names_task(&on("fix/other", "no number"), &declared));
+        assert!(
+            !pr_names_task(&on("", "x"), &task(248)),
+            "an empty head names an undeclared task no more"
         );
     }
 

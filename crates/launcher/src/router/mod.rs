@@ -480,6 +480,9 @@ async fn snapshot(
     let to_fix = by_number(gh.open_prs_labelled(labels::PR_FIX).await?);
     let to_review = by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?);
     let watching_ci = watching_ci(&to_fix, &to_review);
+    // Every PR of the harness's cycle, as read: what holds a task's branch
+    // against a second session, whether a lane is on the PR or not.
+    let task_prs = task_prs(&to_fix, &to_review);
     // A PR a lane is already repairing or reviewing is not the tick's to
     // pick again: picked, it ended the tick on "already on a lane" while
     // the other PRs waited (`ForgeDesMondes`' four reviews ran one at a
@@ -545,6 +548,7 @@ async fn snapshot(
     let boards_read = boards;
     let snapshot = Snapshot {
         tasks_to_merge,
+        task_prs,
         roadmap,
         lowest_roadmap_has_milestone,
         milestones,
@@ -630,6 +634,18 @@ async fn prs_worth_reviewing(gh: &dyn GitHub, to_review: &[Pr]) -> Outcome<Vec<P
 /// the board even when nothing moved on it.
 const fn watching_ci(to_fix: &[Pr], to_review: &[Pr]) -> bool {
     !to_fix.is_empty() || !to_review.is_empty()
+}
+
+/// The open PRs of both labelled lists, each once, in number order — what
+/// `routing::pr_cycle_owns` reads.
+fn task_prs(to_fix: &[Pr], to_review: &[Pr]) -> Vec<Pr> {
+    let mut found: Vec<Pr> = to_fix.to_vec();
+    for pr in to_review {
+        if !found.iter().any(|seen| seen.num == pr.num) {
+            found.push(pr.clone());
+        }
+    }
+    by_number(found)
 }
 
 /// The PRs no lane holds: a lane is keyed by the number it works on, a PR's
@@ -732,6 +748,20 @@ mod tests {
             "the one on a lane and the unnumbered are out"
         );
         assert_eq!(not_running(&prs, &[]).len(), 2);
+    }
+
+    #[test]
+    fn the_cycle_s_prs_are_both_lists_each_once_lane_or_not() {
+        let pr = |num: &str| Pr {
+            num: num.to_string(),
+            ..Pr::default()
+        };
+        let found: Vec<String> = task_prs(&[pr("264"), pr("9")], &[pr("264"), pr("262")])
+            .into_iter()
+            .map(|pr| pr.num)
+            .collect();
+        assert_eq!(found, ["9", "262", "264"]);
+        assert!(task_prs(&[], &[]).is_empty());
     }
 
     #[test]

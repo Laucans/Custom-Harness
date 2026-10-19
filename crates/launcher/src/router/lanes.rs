@@ -43,7 +43,7 @@ pub(super) async fn run_schedule(
     let running = lanes.running();
     for board in &found.boards {
         // Said once per tick: what of the board waits on its producers.
-        let _ = startable_now(&board.tasks, &running, board.milestone.number, found, log);
+        let _ = startable_now(board, &running, found, log);
     }
     let jobs = routing::schedule(found, &running, &|route| pulse.waited(route));
     log.say(&format!(
@@ -174,26 +174,28 @@ fn issue_version(issue: &Issue) -> String {
     ))
 }
 
-/// What may start of the milestone's tasks: runnable, not on a lane, and —
+/// What may start of the milestone's tasks — [`routing::startable`].
+///
+/// Runnable, not on a lane, not held by its own pull request's cycle, and —
 /// while the producers of what the milestone reads still build — nothing it
 /// needs is a table, a Concept or a Micro-UI one of them owns. The aggregate
 /// hold is taken among those only: a task held by its producers holds no
 /// aggregate. What is held is said once per tick.
 fn startable_now<'a>(
-    issues: &'a [Issue],
+    board: &'a harness_workflows::dev_loop::data::board::Board,
     running: &[u64],
-    milestone: u64,
     found: &Snapshot,
     log: &Logbook,
 ) -> Vec<&'a Issue> {
+    let milestone = board.milestone.number;
     let waiting_on =
         merge_train::producers_landed(found.graph.as_ref(), milestone, &found.milestones);
     let ahead = |task: &Issue| {
         waiting_on.is_empty()
             || tasks::runs_ahead(task, milestone, found.graph.as_ref(), &waiting_on)
     };
-    say_held(issues, running, milestone, &waiting_on, &ahead, log);
-    tasks::startable_tasks(issues, running, &ahead)
+    say_held(&board.tasks, running, milestone, &waiting_on, &ahead, log);
+    routing::startable(found, board, running)
 }
 
 /// Says once per tick which runnable tasks of the milestone wait on its
@@ -373,6 +375,7 @@ mod tests {
             prs_to_fix: Vec::new(),
             prs_to_review: Vec::new(),
             tasks_to_merge: Vec::new(),
+            task_prs: Vec::new(),
             ready_to_merge: Vec::new(),
             refining: Vec::new(),
             tech_refining: Vec::new(),
@@ -452,14 +455,18 @@ mod tests {
             issue(19, &[labels::MILESTONE], "-"),
             issue(20, &[labels::MILESTONE], "-"),
         ];
-        let issues = [ui, table, on_lane];
+        let board = harness_workflows::dev_loop::data::board::Board {
+            milestone: issue(19, &[labels::MILESTONE], "-"),
+            tasks: vec![ui, table, on_lane],
+            resuming: None,
+        };
         let capture = Rc::new(Capture::default());
         let log = Logbook::new(
             Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
             harness_core::traces::Verbosity::Normal,
         );
         let found = snapshot(milestones.clone(), Some(graph()));
-        let started: Vec<u64> = startable_now(&issues, &[63], 19, &found, &log)
+        let started: Vec<u64> = startable_now(&board, &[63], &found, &log)
             .iter()
             .map(|t| t.number)
             .collect();
@@ -480,12 +487,28 @@ mod tests {
             harness_core::traces::Verbosity::Normal,
         );
         let landed = snapshot(milestones, None);
-        let started: Vec<u64> = startable_now(&issues, &[], 19, &landed, &log)
+        let started: Vec<u64> = startable_now(&board, &[], &landed, &log)
             .iter()
             .map(|t| t.number)
             .collect();
         assert_eq!(started, [60, 62, 63]);
         assert!(capture.0.borrow().is_empty(), "{:?}", capture.0.borrow());
+        // A task its own PR's cycle holds is neither started nor said held.
+        let owned = Snapshot {
+            task_prs: vec![harness_core::domain::Pr {
+                num: "7".to_string(),
+                title: "the micro-ui (#60)".to_string(),
+                state: "OPEN".to_string(),
+                labels: vec![labels::TO_REVIEW.to_string()],
+                ..harness_core::domain::Pr::default()
+            }],
+            ..snapshot(Vec::new(), None)
+        };
+        let started: Vec<u64> = startable_now(&board, &[], &owned, &log)
+            .iter()
+            .map(|t| t.number)
+            .collect();
+        assert_eq!(started, [62, 63], "#60's PR is under review");
     }
 
     #[test]

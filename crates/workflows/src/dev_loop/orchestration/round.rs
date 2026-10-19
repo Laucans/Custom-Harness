@@ -17,6 +17,10 @@
 //!   ├── no task, none open .......... nothing left: NothingLeft
 //!   ├── no task, some open .......... halt: say what gesture unblocks
 //!   └── a task ....................... the sequence, then delivery
+//!         └── a stage halts
+//!               ├── the session was killed at its open PR ... delivered to the PR's cycle
+//!               ├── a stop, a refusal ........................ a decision asked
+//!               └── anything else ............................ the halt, as it was
 //! ```
 
 use async_trait::async_trait;
@@ -64,6 +68,13 @@ impl Executable<Loop> for TaskRound {
         }
         for stage in &self.stages {
             if let Err(halt) = stage.execute(ctx).await {
+                // A session killed waiting on a CI the harness watches, its
+                // PR open: the PR is the delivery, in the harness's own
+                // cycle from here — not a failed round, and not a task the
+                // scheduler may send a second session onto.
+                if self.delivered.pr_stands(ctx, &halt).await? {
+                    return Ok(Verdict::Continue);
+                }
                 return self.raise.on_halt(ctx, halt).await;
             }
         }
@@ -109,7 +120,11 @@ mod tests {
 
     /// A round built against this GitHub.
     fn round(gh: &Rc<FakeGitHub>) -> TaskRound {
-        let ports = ports_fake::with(Rc::clone(gh));
+        round_on(&ports_fake::with(Rc::clone(gh)))
+    }
+
+    /// A round built on these ports.
+    fn round_on(ports: &crate::dev_loop::ports::Ports) -> TaskRound {
         let config = config_fake::config();
         let port = Rc::clone(&ports.gh);
         TaskRound {
@@ -124,7 +139,7 @@ mod tests {
                 data_layer: config.data_layer_spec(),
                 chain: None,
             },
-            stages: stages::table(&ports, &config, 1),
+            stages: stages::table(ports, &config, 1),
             delivered: MarkWaitingMerge {
                 gh: Rc::clone(&port),
                 integration_branch: config.integration_branch.clone(),
@@ -225,6 +240,161 @@ mod tests {
             .expect_err("must stop");
         assert!(err.reason().contains("Closes #11"));
         assert!(err.reason().contains("Stopping rather than looping"));
+    }
+
+    // --- a session killed at its open PR ----------------------------------
+
+    /// A session the idle kill takes: what the adapter says of it.
+    struct Hung;
+
+    #[async_trait(?Send)]
+    impl harness_core::ports::agent::Session for Hung {
+        async fn ask(
+            &mut self,
+            _prompt: &str,
+        ) -> harness_core::domain::Outcome<harness_core::ports::agent::Reply> {
+            Err(Halt::Failed(format!(
+                "claude printed nothing for 1200s and {}",
+                harness_core::domain::KILLED_AS_HUNG
+            )))
+        }
+    }
+
+    struct Hangs;
+
+    #[async_trait(?Send)]
+    impl harness_core::ports::agent::SessionFactory for Hangs {
+        async fn open(
+            &self,
+            _spec: &harness_core::ports::agent::SessionSpec,
+        ) -> harness_core::domain::Outcome<Box<dyn harness_core::ports::agent::Session>> {
+            Ok(Box::new(Hung))
+        }
+
+        async fn fork(
+            &self,
+            spec: &harness_core::ports::agent::SessionSpec,
+            _base: &harness_core::ports::agent::Base,
+        ) -> harness_core::domain::Outcome<Box<dyn harness_core::ports::agent::Session>> {
+            self.open(spec).await
+        }
+    }
+
+    /// A ledger that takes every row and keeps none: the kill is what the
+    /// round is judged on, not the row it leaves.
+    struct Quiet;
+
+    impl harness_core::ports::store::spending::Spending for Quiet {
+        fn record(
+            &self,
+            _entry: &harness_core::ports::store::spending::Entry<'_>,
+        ) -> harness_core::domain::Outcome<()> {
+            Ok(())
+        }
+    }
+
+    /// The board of a task whose session hangs, with its SPEC and its
+    /// branch; `prs` is what `pr(<branch>)` answers.
+    fn hanging(prs: Vec<(String, harness_core::domain::Pr)>) -> (Rc<FakeGitHub>, TaskRound) {
+        let mut task = issue(11, &[labels::AGENT, labels::READY]);
+        task.body = "## Business Goal\n\nthe DM pays\n\n## Acceptance Criteria\n\n- given, when, then\n\n## Scope\n\nbranch: feat/pay\n".to_string();
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(4, &[labels::MILESTONE]), task.clone()],
+            subs: vec![(4, vec![task])],
+            prs,
+            ..FakeGitHub::default()
+        });
+        let mut ports = ports_fake::with(Rc::clone(&gh));
+        ports.sessions = Rc::new(Hangs);
+        ports.spending = Rc::new(Quiet);
+        (gh, round_on(&ports))
+    }
+
+    fn open_pr(num: &str, head: &str, labels: &[&str]) -> harness_core::domain::Pr {
+        harness_core::domain::Pr {
+            num: num.to_string(),
+            base: "milestone/4-pay".to_string(),
+            head: head.to_string(),
+            url: format!("https://github.com/o/r/pull/{num}"),
+            state: "OPEN".to_string(),
+            labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            ..harness_core::domain::Pr::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_killed_at_its_open_pr_delivered_the_pr_to_the_harness_s_cycle() {
+        // ForgeDesMondes' #248, #249, #250: pushed their PR, waited on its CI
+        // through a background watcher, killed as hung, the round FAILED,
+        // the task sent to a second session while the PR was under review.
+        let (gh, round) = hanging(vec![(
+            "feat/pay".to_string(),
+            open_pr("77", "feat/pay", &[]),
+        )]);
+        let mut context = ctx("", false);
+        let verdict = round
+            .execute(&mut context)
+            .await
+            .expect("a delivered round, not a failed one");
+        assert_eq!(verdict, Verdict::Continue);
+        assert!(context.state.pr_stands);
+        let writes = gh.writes();
+        assert_eq!(
+            writes[0],
+            Wrote::Label(77, labels::TO_REVIEW.to_string()),
+            "a read-side PR enters the cycle through its tap: {writes:?}"
+        );
+        assert!(matches!(&writes[1], Wrote::Comment(11, text) if text.contains("pull/77")));
+        assert_eq!(
+            writes[2],
+            Wrote::Label(11, labels::REVIEW_PENDING.to_string())
+        );
+        assert_eq!(writes.len(), 3, "{writes:?}");
+    }
+
+    #[tokio::test]
+    async fn a_write_side_pr_already_in_the_cycle_is_not_labelled_twice() {
+        let (gh, round) = hanging(vec![(
+            "feat/pay".to_string(),
+            open_pr("77", "feat/pay", &[labels::TO_REVIEW]),
+        )]);
+        let mut context = ctx("", false);
+        round
+            .execute(&mut context)
+            .await
+            .expect("a delivered round");
+        let writes = gh.writes();
+        assert!(
+            !writes.contains(&Wrote::Label(77, labels::TO_REVIEW.to_string())),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Label(11, labels::REVIEW_PENDING.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_session_killed_before_its_pr_is_the_failure_it_was() {
+        // No PR on the branch: nothing stands, and the round fails as today.
+        let (gh, round) = hanging(Vec::new());
+        let mut context = ctx("", false);
+        let err = round
+            .execute(&mut context)
+            .await
+            .expect_err("a failed round");
+        assert!(err.killed_as_hung(), "{}", err.reason());
+        assert!(!context.state.pr_stands);
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
+        // A PR of the branch closed since is no delivery either.
+        let closed = harness_core::domain::Pr {
+            state: "CLOSED".to_string(),
+            ..open_pr("77", "feat/pay", &[])
+        };
+        let (gh, round) = hanging(vec![("feat/pay".to_string(), closed)]);
+        let err = round
+            .execute(&mut ctx("", false))
+            .await
+            .expect_err("a failed round");
+        assert!(err.killed_as_hung());
+        assert!(gh.writes().is_empty());
     }
 
     #[tokio::test]

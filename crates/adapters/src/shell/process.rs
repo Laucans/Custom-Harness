@@ -190,8 +190,9 @@ pub async fn run_streaming(
     let stopped = match drained {
         Err(_) => Some(past_cap(binary)),
         Ok(false) => Some(Halt::Failed(format!(
-            "{binary} printed nothing for {}s and was killed as hung",
-            limits.idle.as_secs()
+            "{binary} printed nothing for {}s and {}",
+            limits.idle.as_secs(),
+            harness_core::domain::KILLED_AS_HUNG
         ))),
         Ok(true) => None,
     };
@@ -304,6 +305,11 @@ mod tests {
         .await
         .expect_err("silence must end the run");
         assert!(err.reason().contains("printed nothing"), "{}", err.reason());
+        assert!(
+            err.killed_as_hung(),
+            "the round reads the kill back: {}",
+            err.reason()
+        );
     }
 
     #[tokio::test]

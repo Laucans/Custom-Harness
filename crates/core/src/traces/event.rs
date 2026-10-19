@@ -236,9 +236,12 @@ pub enum Event {
         /// Those that only a human can do.
         human_tasks: Vec<u64>,
     },
-    /// A write-side task's pull request is open: its review runs, and it is
-    /// merged into its milestone once the review is clean and every check
-    /// green — no human gesture asked.
+    /// A task's pull request is open in the harness's own cycle.
+    ///
+    /// A write-side session stopped at its PR, or a session of either side
+    /// was killed waiting on its checks: its review runs, and it is merged
+    /// into its milestone once the review is clean and every check green —
+    /// no human gesture asked.
     PrOpened {
         /// The task.
         task: u64,

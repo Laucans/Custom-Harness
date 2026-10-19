@@ -180,6 +180,13 @@ pub struct Snapshot {
     /// rules' task whose PR the harness decided to merge as it is, once
     /// green (`milestone_merge::rules_ready_to_merge`).
     pub tasks_to_merge: Vec<(u64, Pr)>,
+    /// Every open PR carrying `harness:to-review` or `harness:pr-fix`, as read.
+    ///
+    /// On a lane or not, worth reviewing or not, unlike the two lists above.
+    /// A task one of them names ([`pr_cycle_owns`]) belongs to that PR's own
+    /// cycle — review, repair, merge — until the PR is merged or closed, and
+    /// no second session is sent onto its branch.
+    pub task_prs: Vec<Pr>,
     /// The open milestones whose tasks are all delivered, not
     /// `harness:waiting-merge` yet, whose producers have landed — computed
     /// by the router against each milestone's own sub-issues, which a flat
@@ -582,9 +589,10 @@ pub fn plan(
 
 /// What may start of a building milestone's tasks.
 ///
-/// Runnable, not on a lane, no aggregate another holds — and, while the
-/// producers of what the milestone reads still build, only what runs ahead
-/// of them ([`crate::dev_loop::data::tasks::runs_ahead`]).
+/// Runnable, not on a lane, no aggregate another holds, not held by its own
+/// pull request ([`pr_cycle_owns`]) — and, while the producers of what the
+/// milestone reads still build, only what runs ahead of them
+/// ([`crate::dev_loop::data::tasks::runs_ahead`]).
 #[must_use]
 pub fn startable<'a>(
     snapshot: &Snapshot,
@@ -597,16 +605,41 @@ pub fn startable<'a>(
         milestone,
         &snapshot.milestones,
     );
-    let ahead = |task: &Issue| {
-        waiting_on.is_empty()
-            || crate::dev_loop::data::tasks::runs_ahead(
-                task,
-                milestone,
-                snapshot.graph.as_ref(),
-                &waiting_on,
-            )
+    let may_start = |task: &Issue| {
+        !pr_cycle_owns(snapshot, task)
+            && (waiting_on.is_empty()
+                || crate::dev_loop::data::tasks::runs_ahead(
+                    task,
+                    milestone,
+                    snapshot.graph.as_ref(),
+                    &waiting_on,
+                ))
     };
-    crate::dev_loop::data::tasks::startable_tasks(&board.tasks, running, &ahead)
+    crate::dev_loop::data::tasks::startable_tasks(&board.tasks, running, &may_start)
+}
+
+/// Whether a task's branch is held by its pull request's own cycle.
+///
+/// An open PR of [`Snapshot::task_prs`] names it
+/// ([`crate::dev_loop::data::tasks::pr_names_task`]), or
+/// [`Snapshot::tasks_to_merge`] lists it. Never two writers on one branch. `ForgeDesMondes`, 2026-10-18: three
+/// write-side sessions were killed waiting on their PR's CI, their rounds
+/// filed `FAILED` and their tasks left unmarked; the next tick sent a second
+/// session onto #248's branch while a repair of its PR #264 was pushing to
+/// it, and the restarted watch did it again with #264 under review and
+/// #246's green PR a tick from its merge. The PR's cycle — review, repair,
+/// merge — owns the branch until the PR is merged (the train closes the
+/// task) or closed (the task runs again).
+#[must_use]
+pub fn pr_cycle_owns(snapshot: &Snapshot, task: &Issue) -> bool {
+    snapshot
+        .tasks_to_merge
+        .iter()
+        .any(|(number, _)| *number == task.number)
+        || snapshot
+            .task_prs
+            .iter()
+            .any(|pr| pr.is_open() && crate::dev_loop::data::tasks::pr_names_task(pr, task))
 }
 
 /// The open issues of a list, in number order.
@@ -1183,6 +1216,7 @@ mod tests {
             prs_to_fix: Vec::new(),
             prs_to_review: Vec::new(),
             tasks_to_merge: Vec::new(),
+            task_prs: Vec::new(),
             ready_to_merge: Vec::new(),
             refining: Vec::new(),
             tech_refining: Vec::new(),
@@ -1239,6 +1273,7 @@ mod tests {
             prs_to_fix: vec![pr("32", "main_agent")],
             prs_to_review: vec![pr("33", "main_agent")],
             tasks_to_merge: vec![(40, pr("41", "milestone/3-x"))],
+            task_prs: Vec::new(),
             ready_to_merge: vec![7],
             refining: vec![issue(6, &[labels::REFINEMENT])],
             tech_refining: vec![],
@@ -2364,6 +2399,129 @@ mod tests {
             [Route::DevLoop { milestone: 19 }],
             "no board read for #19: its loop picks its task"
         );
+    }
+
+    /// The four tasks of the live failure, each on its declared branch.
+    fn cycle_tasks() -> Vec<Issue> {
+        let declared = |number: u64, branch: &str| Issue {
+            body: format!("## Scope\n\nbranch: {branch}\n"),
+            ..issue(number, &[labels::AGENT, labels::READY])
+        };
+        vec![
+            declared(246, "feat/session-aggregate"),
+            declared(248, "feat/battlemap-instance-aggregate"),
+            declared(250, "feat/diffusion-aggregate"),
+            declared(251, "feat/free"),
+        ]
+    }
+
+    /// A PR into #18's branch.
+    fn cycle_pr(num: &str, head: &str, title: &str, labels: &[&str], state: &str) -> Pr {
+        Pr {
+            num: num.to_string(),
+            base: "milestone/18-campaigns".to_string(),
+            head: head.to_string(),
+            title: title.to_string(),
+            state: state.to_string(),
+            labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            ..Pr::default()
+        }
+    }
+
+    /// #18 building, with these PRs in the cycle and these tasks green.
+    fn cycle_plant(
+        tasks: Vec<Issue>,
+        task_prs: Vec<Pr>,
+        tasks_to_merge: Vec<(u64, Pr)>,
+    ) -> Snapshot {
+        Snapshot {
+            dev_loop_milestones: vec![18],
+            boards: vec![board(18, tasks)],
+            task_prs,
+            tasks_to_merge,
+            ..empty()
+        }
+    }
+
+    /// The tasks the schedule offers a lane.
+    fn dev_tasks_of(snapshot: &Snapshot) -> Vec<u64> {
+        schedule(snapshot, &[], &|_| 0)
+            .into_iter()
+            .filter_map(|job| match job.route {
+                Route::DevTask { task, .. } => Some(task),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_task_whose_pr_is_in_its_own_cycle_is_never_scheduled_again() {
+        // The live failure: #248's PR #264 under review on a lane, #246's
+        // PR #262 a tick from its merge — and both tasks offered to a lane.
+        let under_review = cycle_pr(
+            "264",
+            "feat/battlemap-instance-aggregate",
+            "BattlemapInstance aggregate",
+            &[labels::TO_REVIEW],
+            "OPEN",
+        );
+        let under_repair = cycle_pr(
+            "260",
+            "fix/elsewhere",
+            "Diffusion aggregate (#250)",
+            &[labels::PR_FIX],
+            "OPEN",
+        );
+        let green = cycle_pr(
+            "262",
+            "feat/session-aggregate",
+            "Session aggregate",
+            &[labels::TO_REVIEW],
+            "OPEN",
+        );
+        let held = cycle_plant(
+            cycle_tasks(),
+            vec![under_review, under_repair],
+            vec![(246, green)],
+        );
+        assert_eq!(
+            dev_tasks_of(&held),
+            [251],
+            "under review by its branch, under repair by its title, a tick from its merge"
+        );
+        let tasks = cycle_tasks();
+        for number in [246, 248, 250] {
+            let task = tasks.iter().find(|t| t.number == number).expect("the task");
+            assert!(pr_cycle_owns(&held, task), "#{number}");
+        }
+        assert!(!pr_cycle_owns(&held, &tasks[3]));
+        // Nothing in the cycle: everything runs.
+        assert_eq!(
+            dev_tasks_of(&cycle_plant(cycle_tasks(), Vec::new(), Vec::new())),
+            [246, 248, 250, 251]
+        );
+    }
+
+    #[test]
+    fn a_pr_merged_or_closed_frees_its_task_s_branch() {
+        let its_pr = |state: &str| {
+            cycle_pr(
+                "264",
+                "feat/battlemap-instance-aggregate",
+                "x",
+                &[labels::TO_REVIEW],
+                state,
+            )
+        };
+        // Merged: the PR is no longer open, and the train closed the task —
+        // nothing of it is offered either way.
+        let mut closed = cycle_tasks();
+        closed[1].state = "closed".to_string();
+        let merged = cycle_plant(closed, vec![its_pr("MERGED")], Vec::new());
+        assert_eq!(dev_tasks_of(&merged), [246, 250, 251]);
+        // Closed unmerged: the branch is nobody's, the task runs again.
+        let abandoned = cycle_plant(cycle_tasks(), vec![its_pr("CLOSED")], Vec::new());
+        assert_eq!(dev_tasks_of(&abandoned), [246, 248, 250, 251]);
     }
 
     #[test]

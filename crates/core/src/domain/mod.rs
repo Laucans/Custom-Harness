@@ -21,7 +21,7 @@ mod resumable;
 mod spend;
 mod verdict;
 
-pub use halt::{Halt, Severity};
+pub use halt::{Halt, KILLED_AS_HUNG, Severity};
 pub use issue::Issue;
 pub use prompts::{Named, Scope, Scoped, Sibling};
 pub use pulls::Pr;
