@@ -301,19 +301,7 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::HumanTaskOpened { .. }
         | Event::ContractChangeAsked { .. }
         | Event::ContractEvolved { .. } => progress(board, event, at),
-        Event::BaseRed { branch, sha } => board.add(Notification::once(
-            format!("base-red:{branch}"),
-            Level::Warning,
-            format!("Integration branch {branch} is red"),
-            format!(
-                "its CI failed at {}: no task starts and nothing merges until it is green — \
-                 look at its last workflow runs, fix or revert the push; the harness closes \
-                 the issue \"Integration branch {branch} is red\" once it is green",
-                sha.as_deref().unwrap_or("its newest head")
-            ),
-            at,
-            Some(screen("journal", at)),
-        )),
+        Event::BaseRed { branch, sha } => base_red(board, branch, sha.as_deref(), at),
         Event::BaseGreen { branch } => board.clear(&format!("base-red:{branch}")),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
@@ -394,6 +382,24 @@ fn snapshot_failed(board: &mut Board, branch: &str, sha: &str, reason: &str, at:
 
 /// The watch's life is one line, telling its last state.
 /// The watch started on changes the human left waiting.
+/// The integration branch's own CI failed: nothing is built on it or merged
+/// into it until it is green, which clears this (`BaseGreen`).
+fn base_red(board: &mut Board, branch: &str, sha: Option<&str>, at: &str) {
+    board.add(Notification::once(
+        format!("base-red:{branch}"),
+        Level::Warning,
+        format!("Integration branch {branch} is red"),
+        format!(
+            "its CI failed at {}: no task starts and nothing merges until it is green — \
+             look at its last workflow runs, fix or revert the push; the harness closes \
+             the issue \"Integration branch {branch} is red\" once it is green",
+            sha.unwrap_or("its newest head")
+        ),
+        at,
+        Some(screen("journal", at)),
+    ));
+}
+
 fn quota_rest(board: &mut Board, ticks: u32, strikes: u32, at: &str) {
     board.add(Notification::once(
         "quota-rest",
