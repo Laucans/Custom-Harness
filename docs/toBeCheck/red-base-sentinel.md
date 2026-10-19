@@ -70,11 +70,34 @@ On the branch `worktree-wf_b56293a2-7f9-2`, to merge into `main` locally:
   `Rules`, `Decide`, `TestDebt`, `ContractChange`, `Split`, `Planner`,
   `Refinement`, `Arbiter` go on. `saw: base=Some(false), …` in the debug
   line.
+- `35cb8bf` — **the train takes a rules PR the harness decided to merge**
+  (review finding): a rules' task's PR (head `rules/<n>`, labelled
+  `harness:rules`) sits on no board, so the `merge_when_green` leg above
+  left it to nobody — and `routing::rules_first` held every task on the
+  open rules' issue. Now `milestone_merge::rules_ready_to_merge` (read by
+  the snapshot only while a rules' issue is open: one
+  `gh pr list --label harness:rules`, then the comments, mergeability and
+  checks of each candidate) offers the PR whose last review is the decision
+  (`review::decided_to_merge`: `MARKER` + `CLEAN` + `DECIDED_MERGE`, no
+  repair after it), mergeable and green, as a `MergeIntoMilestone` job with
+  `base` = the integration branch; the merge closes the rules' issue, which
+  frees the development. A rules PR with no decision, even reviewed clean,
+  is never taken: its own judge merges it.
+- `be9c52d` — **the hold lasts until green**: on `None` (runs in
+  progress, or none) the sentinel reads the open `harness:human` issues and,
+  while `Integration branch <b> is red` is open, answers `Some(false)` and
+  says `integration branch <b> is not green again yet: its checks run —
+  development and merges wait`. Before, the fix's push on a red base lifted
+  the hold for the minutes its runs were queued, and `catch_up` could merge
+  the unverified base into a milestone branch. A human who closes the issue
+  by hand lifts the hold. Also: the sentinel's doc says "once per full
+  read"; the `run_milestone_merge` journal line names the base merged into.
 
 ## To check on a real run
 
 - [ ] Quiet cost: a green base adds **two** `gh` calls per full read
-      (`gh run list`, `gh issue list -l harness:human`); a quiet tick still
+      (`gh run list`, `gh issue list -l harness:human`); a base with runs in
+      progress and no red before adds the same two; a quiet tick still
       reads nothing beyond the activity probe. Count them in the watch's
       journal at `--verbose`.
 - [ ] `gh run list --branch main_agent --limit 20 --json
@@ -116,3 +139,31 @@ On the branch `worktree-wf_b56293a2-7f9-2`, to merge into `main` locally:
       `harness:pr-fix` on the PR.
 - [ ] A task PR the router read green that turns red between the read and
       the merge: `watch: milestone_merge -> #n refused: …`, nothing merged.
+- [ ] A rules' issue decided `merge` while its PR's checks ran (the live
+      case: the judge poses `harness:needs-decision` right after an
+      unfaithful second round): the PR carries the decision comment, the
+      issue says "the watch merges it at the first tick it is green and
+      mergeable"; once green, `saw: … to_merge=[<rules n>]`, `tick:
+      MergeIntoMilestone { task: <rules n>, pr: "<pr>", base: "main_agent" }`,
+      `watch: milestone_merge -> #<rules n> merged into main_agent`, the PR
+      merged, the issue closed with "merged by `milestone_merge`", `#<n>
+      delivered` on the view, and the next tick schedules a `DevTask` (the
+      rules no longer hold). While the rules' issue is open: **one** extra
+      `gh pr list --label harness:rules` per full read, plus three reads per
+      candidate PR; none when no rules' issue is open.
+- [ ] A rules' issue decided `merge` whose PR turns red afterwards, or
+      conflicts: nobody takes it (the train skips it, no `harness:pr-fix`
+      posed) — the development stays held on the rules' issue. Known gap,
+      the owner's call: pose the repair, or escalate once.
+- [ ] After a red, push the fix on `main_agent`: while its runs are queued
+      or in progress, the journal says `integration branch main_agent is not
+      green again yet: its checks run — development and merges wait` each
+      tick, `saw: base=Some(false)`, no `DevTask` / merge scheduled, the
+      issue still open; once the runs pass, the issue is closed and the jobs
+      resume. One `gh issue list -l harness:human` per tick meanwhile.
+- [ ] A product whose `gh run list --branch main_agent` errors (Actions
+      disabled, the API refusing): every tick fails with `TickFailed` and
+      dispatches nothing — the sentinel's read is a routing read, and a
+      failed routing read stops the tick. Products are initialized with CI,
+      so this should never show; if it does, the read should answer `None`
+      instead.
