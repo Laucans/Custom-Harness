@@ -129,6 +129,8 @@ pub struct FakeGitHub {
     /// yet, the answer that changes nothing — so a test that never mentions
     /// the integration branch's CI is not held by it.
     pub branch_checks: HashMap<String, Option<bool>>,
+    /// `branch_checks` refused outright — a rate limit, Actions off.
+    pub branch_checks_refused: bool,
 }
 
 impl FakeGitHub {
@@ -497,6 +499,11 @@ impl GitHub for FakeGitHub {
 
     async fn branch_checks(&self, branch: &str) -> Outcome<Option<bool>> {
         self.ok()?;
+        if self.branch_checks_refused {
+            return Err(Halt::Failed(
+                "failed to get runs: HTTP 403: API rate limit exceeded".to_string(),
+            ));
+        }
         Ok(self.branch_checks.get(branch).copied().flatten())
     }
 

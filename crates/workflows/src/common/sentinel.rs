@@ -84,7 +84,19 @@ pub async fn watch(
     dry_run: bool,
     log: &Logbook,
 ) -> Outcome<Option<bool>> {
-    let checks = gh.branch_checks(branch).await?;
+    // A read GitHub refuses — a rate limit, Actions off — is not a red base
+    // and not the tick's end: unknown this tick, as runs still going are,
+    // and a hold already in force stays (its issue is open).
+    let checks = match gh.branch_checks(branch).await {
+        Ok(checks) => checks,
+        Err(refused) => {
+            log.warn(&format!(
+                "integration branch `{branch}`: its checks could not be read — {} — unknown this tick",
+                refused.reason()
+            ));
+            None
+        }
+    };
     match checks {
         Some(false) => {
             log.say(&held_line(branch));
@@ -438,6 +450,44 @@ mod tests {
                 sha: None,
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn a_read_github_refuses_is_unknown_this_tick_not_the_tick_s_end() {
+        // ForgeDesMondes, 2026-10-19 23:32Z: `gh run list` hit a secondary
+        // rate limit and the whole tick failed on the sentinel.
+        let (capture, log) = capture();
+        let gh = FakeGitHub {
+            branch_checks_refused: true,
+            ..board(Some(false), vec![])
+        };
+        let seen = watch(&gh, "main_agent", false, &log)
+            .await
+            .expect("no halt");
+        assert_eq!(seen, None, "unknown, nothing held");
+        assert!(gh.writes().is_empty(), "no issue opened: {:?}", gh.writes());
+        assert!(
+            capture
+                .lines
+                .borrow()
+                .iter()
+                .any(|l| l.contains("could not be read")),
+            "{:?}",
+            capture.lines.borrow()
+        );
+        // With the issue of an earlier red open, the hold stays.
+        let gh = FakeGitHub {
+            branch_checks_refused: true,
+            ..board(
+                Some(true),
+                vec![human_issue(7, &issue_title("main_agent"), "open")],
+            )
+        };
+        let seen = watch(&gh, "main_agent", false, &log)
+            .await
+            .expect("no halt");
+        assert_eq!(seen, Some(false), "the open issue keeps the hold");
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
     }
 
     #[test]
