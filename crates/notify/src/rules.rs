@@ -301,6 +301,20 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::HumanTaskOpened { .. }
         | Event::ContractChangeAsked { .. }
         | Event::ContractEvolved { .. } => progress(board, event, at),
+        Event::BaseRed { branch, sha } => board.add(Notification::once(
+            format!("base-red:{branch}"),
+            Level::Warning,
+            format!("Integration branch {branch} is red"),
+            format!(
+                "its CI failed at {}: no task starts and nothing merges until it is green — \
+                 look at its last workflow runs, fix or revert the push; the harness closes \
+                 the issue \"Integration branch {branch} is red\" once it is green",
+                sha.as_deref().unwrap_or("its newest head")
+            ),
+            at,
+            Some(screen("journal", at)),
+        )),
+        Event::BaseGreen { branch } => board.clear(&format!("base-red:{branch}")),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }
@@ -559,6 +573,41 @@ mod tests {
             "{}",
             human.detail
         );
+    }
+
+    #[test]
+    fn a_red_base_is_told_until_it_is_green() {
+        let red = from_events(&[stored(
+            1,
+            Event::BaseRed {
+                branch: "main_agent".to_string(),
+                sha: Some("abc1234".to_string()),
+            },
+        )]);
+        let told = red.get("base-red:main_agent").expect("told");
+        assert_eq!(told.level, Level::Warning);
+        assert_eq!(told.title, "Integration branch main_agent is red");
+        assert!(
+            told.detail.contains("abc1234") && told.detail.contains("nothing merges"),
+            "{}",
+            told.detail
+        );
+        let green = from_events(&[
+            stored(
+                1,
+                Event::BaseRed {
+                    branch: "main_agent".to_string(),
+                    sha: None,
+                },
+            ),
+            stored(
+                2,
+                Event::BaseGreen {
+                    branch: "main_agent".to_string(),
+                },
+            ),
+        ]);
+        assert!(green.get("base-red:main_agent").is_none(), "taken back");
     }
 
     #[test]
