@@ -21,6 +21,12 @@ pub const FIX_MARKER: &str = "<!-- agent-fix -->";
 /// What a decision to repair once more leaves on the PR: the repairs before
 /// it are no longer counted.
 pub const DECIDED_MARKER: &str = "<!-- harness-decided: repair -->";
+/// What a decision to merge as it is leaves on a PR whose checks still run.
+///
+/// Posted with [`MARKER`] and [`CLEAN`], it is the review that lets the PR
+/// through, so the merge train takes it once green instead of asking for a
+/// decision again.
+pub const DECIDED_MERGE: &str = "<!-- harness-decided: merge -->";
 
 /// How many repairs a blocking review gets before the harness decides.
 pub const MAX_FIXES: usize = 2;

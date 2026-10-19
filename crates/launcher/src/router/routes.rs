@@ -14,6 +14,7 @@ use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::Route;
 use harness_workflows::common::{branching, hierarchy, labels};
 use harness_workflows::main_agent_merge::data::report::Outcome as MergeReport;
+use harness_workflows::milestone_merge::Attempt;
 use harness_workflows::refinement::data::phase::Phase;
 
 use crate::adapters::sink::Both;
@@ -510,7 +511,7 @@ pub(super) async fn run_milestone_merge(
         harness_workflows::milestone_merge::run(gh, &issue, &pr).await
     };
     match merged.await {
-        Ok(()) => {
+        Ok(Attempt::Merged) => {
             log.say(&format!(
                 "watch: milestone_merge -> #{task} merged into its milestone"
             ));
@@ -523,6 +524,25 @@ pub(super) async fn run_milestone_merge(
                 &format!("task #{task}: reviewed and green — merged into its milestone, closed"),
                 log,
             );
+            None
+        }
+        // The route read the checks green a moment ago; the merge reads
+        // them again and refuses what changed since. Nothing to repair
+        // here: the red one is the repair route's at the next tick.
+        Ok(Attempt::Pending) => {
+            log.say(&format!(
+                "watch: milestone_merge -> #{task} waits: a check of PR {} is still running",
+                told.0
+            ));
+            None
+        }
+        Ok(Attempt::Red(checks)) => {
+            log.warn(&format!(
+                "watch: milestone_merge -> #{task} refused: {} failing check(s) on PR {} — {}",
+                checks.len(),
+                told.0,
+                checks.join("; ")
+            ));
             None
         }
         Err(halt) => {
@@ -583,6 +603,17 @@ pub(super) async fn run_main_agent_merge(
                                 .join(", ")
                         }
                     ))
+                }
+                // Red is told every tick it holds: a milestone PR that
+                // failed does not turn green by waiting.
+                MergeReport::Red { pr, checks } => {
+                    log.warn(&format!(
+                        "watch: main_agent_merge -> PR {pr} of #{milestone} is red: {} failing \
+                         check(s), its repair asked — {}",
+                        checks.len(),
+                        checks.join("; ")
+                    ));
+                    None
                 }
                 MergeReport::NotReady
                 | MergeReport::WaitingOnProducers(_)

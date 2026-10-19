@@ -15,8 +15,18 @@ pub enum Outcome {
     /// No PR existed yet for the milestone branch; one was opened, at this
     /// URL. CI has not had a chance to run; merging waits for a later tick.
     OpenedPr(String),
-    /// A PR exists, but its checks haven't all succeeded yet.
+    /// A PR exists, but a check is still running: nothing done, tried
+    /// again at a later tick.
     WaitingOnChecks,
+    /// A PR exists and a check concluded in failure: nothing done, and
+    /// nothing will be until a push turns it green — told, so a red
+    /// milestone PR is not mistaken for one still running.
+    Red {
+        /// The pull request, `#99`.
+        pr: String,
+        /// The failing checks, one readable line each.
+        checks: Vec<String>,
+    },
     /// A PR's checks were green; it was merged, and the milestone is now
     /// `harness:waiting-merge`.
     Merged {

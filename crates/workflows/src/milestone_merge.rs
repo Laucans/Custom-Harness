@@ -102,14 +102,40 @@ pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &
     candidates(board, open).into_iter().next()
 }
 
+/// What one merge attempt came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attempt {
+    /// Merged, the task closed.
+    Merged,
+    /// A check is still running: nothing was done. The merge train takes
+    /// the PR again once it is green.
+    Pending,
+    /// A check concluded in failure: nothing was done. The repair route's,
+    /// not a merge's — the lines are what the checks said.
+    Red(Vec<String>),
+}
+
 /// Merges `pr` into its milestone branch and closes `task`:
 /// `review-pending` and `needs-decision` off, a comment naming the PR, then
 /// the close — what unblocks the tasks waiting on it.
 ///
+/// **Never on red or pending checks**, whoever calls it: the router reads
+/// the checks before routing here, but a decision to merge "as it is" and
+/// a check that turned red between the read and the merge both reach this
+/// one line, so the guard sits here, on the merge itself.
+///
 /// # Errors
-/// [`harness_core::domain::Halt`] from the merge or any label write —
-/// GitHub refusing the merge is not retried.
-pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
+/// [`harness_core::domain::Halt`] from the checks read, the merge or any
+/// label write — GitHub refusing the merge is not retried.
+pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<Attempt> {
+    if !gh.pr_checks_green(&pr.num).await? {
+        let failing = gh.pr_failing_checks(&pr.num).await?;
+        return Ok(if failing.is_empty() {
+            Attempt::Pending
+        } else {
+            Attempt::Red(failing)
+        });
+    }
     gh.merge_pr(&pr.num).await?;
     if tasks::review_pending(task) {
         gh.remove_label(task.number, labels::REVIEW_PENDING).await?;
@@ -125,7 +151,8 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<()> {
         ),
     )
     .await?;
-    gh.close_issue(task.number).await
+    gh.close_issue(task.number).await?;
+    Ok(Attempt::Merged)
 }
 
 /// Asks for a decision on `task`, once; answers whether it asked now.
@@ -333,10 +360,8 @@ mod tests {
         assert_eq!(again.writes(), [] as [crate::common::fake_github::Wrote; 0]);
     }
 
-    #[tokio::test]
-    async fn a_merge_marks_the_task_delivered() {
-        let gh = FakeGitHub::default();
-        let waiting = task(
+    fn waiting() -> Issue {
+        task(
             64,
             &[
                 labels::AGENT,
@@ -344,14 +369,59 @@ mod tests {
                 labels::NEEDS_DECISION,
             ],
             "chore/rust",
-        );
-        run(&gh, &waiting, &pr("68", "chore/rust"))
+        )
+    }
+
+    #[tokio::test]
+    async fn a_merge_marks_the_task_delivered() {
+        let gh = FakeGitHub {
+            pr_checks: HashMap::from([("68".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
+        let came_to = run(&gh, &waiting(), &pr("68", "chore/rust"))
             .await
             .expect("merged");
+        assert_eq!(came_to, Attempt::Merged);
         let writes = gh.writes();
         assert!(writes.contains(&Wrote::MergedPr("68".to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::REVIEW_PENDING.to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::NEEDS_DECISION.to_string())));
         assert!(writes.contains(&Wrote::Closed(64)));
+    }
+
+    #[tokio::test]
+    async fn nothing_merges_on_a_red_check_nor_on_one_still_running() {
+        // The live failure: PR #231 merged with 7 red checks because the
+        // caller never looked at them. The merge itself looks now.
+        let red = FakeGitHub {
+            pr_checks: HashMap::from([("68".to_string(), false)]),
+            failing_checks: HashMap::from([(
+                "68".to_string(),
+                vec!["ci — FAILURE — https://ci/1".to_string()],
+            )]),
+            ..FakeGitHub::default()
+        };
+        let came_to = run(&red, &waiting(), &pr("68", "chore/rust"))
+            .await
+            .expect("refused, not failed");
+        assert_eq!(
+            came_to,
+            Attempt::Red(vec!["ci — FAILURE — https://ci/1".to_string()])
+        );
+        assert_eq!(red.writes(), [] as [Wrote; 0], "nothing written on red");
+        let pending = FakeGitHub {
+            pr_checks: HashMap::from([("68".to_string(), false)]),
+            failing_checks: HashMap::from([("68".to_string(), Vec::new())]),
+            ..FakeGitHub::default()
+        };
+        let came_to = run(&pending, &waiting(), &pr("68", "chore/rust"))
+            .await
+            .expect("waits, not failed");
+        assert_eq!(came_to, Attempt::Pending);
+        assert_eq!(
+            pending.writes(),
+            [] as [Wrote; 0],
+            "nothing written while pending"
+        );
     }
 }

@@ -87,33 +87,81 @@ impl Apply {
         self.gh.add_label(number, labels::AI_DECIDED).await
     }
 
-    /// What the decision does beyond being written; the action carried out,
-    /// a `merge` on a PR that conflicts being a `repair`.
+    /// The repair path: the decision marked on the PR, so its repairs are
+    /// counted anew, and `harness:pr-fix` posed.
+    async fn repair(&self, pr: &harness_core::domain::Pr, decided: &Decided) -> Outcome<Act> {
+        let number = pr_number(pr)?;
+        self.gh
+            .post_issue_comment(
+                number,
+                &format!(
+                    "{}\nThe harness decided to repair this once more: {}\n\n{}",
+                    review::DECIDED_MARKER,
+                    decided.summary,
+                    decided.answer
+                ),
+            )
+            .await?;
+        self.gh.add_label(number, labels::PR_FIX).await?;
+        Ok(Act::Repair)
+    }
+
+    /// A merge decided while the PR's checks still run: nothing merges now.
+    /// The PR gets the review that lets it through, so the merge train —
+    /// a reviewed, mergeable, green PR of a `review-pending` task — takes
+    /// it once green, and the task says so.
+    async fn merge_when_green(
+        &self,
+        task: &harness_core::domain::Issue,
+        pr: &harness_core::domain::Pr,
+        decided: &Decided,
+    ) -> Outcome<Act> {
+        self.gh
+            .post_issue_comment(
+                pr_number(pr)?,
+                &format!(
+                    "{}\n{}\n{}\nThe harness decided to merge this as it is: {}\n\nIt merges \
+                     when its checks are green.",
+                    review::MARKER,
+                    review::CLEAN,
+                    review::DECIDED_MERGE,
+                    decided.summary
+                ),
+            )
+            .await?;
+        self.gh
+            .post_issue_comment(
+                task.number,
+                &format!(
+                    "PR {} merges when its checks are green — they are still running; the \
+                     merge train takes it then.",
+                    pr.reference()
+                ),
+            )
+            .await?;
+        Ok(Act::Merge)
+    }
+
+    /// What the decision does beyond being written; the action carried out.
+    /// A `merge` on a PR that conflicts, or whose checks failed, is a
+    /// `repair`; one whose checks still run merges once they are green,
+    /// never now.
     async fn carry_out(&self, ctx: &Context<DecideState>, decided: &Decided) -> Outcome<Act> {
         let issue = ctx.state.issue();
         match (decided.action, &ctx.state.pr) {
-            (Act::Merge, Some(pr)) if self.gh.pr_mergeable(&pr.num).await? != Some(false) => {
-                crate::milestone_merge::run(self.gh.as_ref(), issue, pr).await?;
-                Ok(Act::Merge)
+            (Act::Merge, Some(pr)) => {
+                if self.gh.pr_mergeable(&pr.num).await? == Some(false) {
+                    return self.repair(pr, decided).await;
+                }
+                match crate::milestone_merge::run(self.gh.as_ref(), issue, pr).await? {
+                    crate::milestone_merge::Attempt::Merged => Ok(Act::Merge),
+                    crate::milestone_merge::Attempt::Pending => {
+                        self.merge_when_green(issue, pr, decided).await
+                    }
+                    crate::milestone_merge::Attempt::Red(_) => self.repair(pr, decided).await,
+                }
             }
-            (Act::Merge | Act::Repair, Some(pr)) => {
-                let number: u64 = pr.num.parse().map_err(|_| {
-                    Halt::Failed(format!("PR {} has no number to label", pr.reference()))
-                })?;
-                self.gh
-                    .post_issue_comment(
-                        number,
-                        &format!(
-                            "{}\nThe harness decided to repair this once more: {}\n\n{}",
-                            review::DECIDED_MARKER,
-                            decided.summary,
-                            decided.answer
-                        ),
-                    )
-                    .await?;
-                self.gh.add_label(number, labels::PR_FIX).await?;
-                Ok(Act::Repair)
-            }
+            (Act::Repair, Some(pr)) => self.repair(pr, decided).await,
             (Act::Cut, pr) => {
                 self.gh
                     .post_issue_comment(
@@ -141,6 +189,13 @@ impl Apply {
             (action, _) => Ok(action),
         }
     }
+}
+
+/// The PR's number, as a label or a comment on it needs one.
+fn pr_number(pr: &harness_core::domain::Pr) -> Outcome<u64> {
+    pr.num
+        .parse()
+        .map_err(|_| Halt::Failed(format!("PR {} has no number to label", pr.reference())))
 }
 
 #[async_trait(?Send)]
@@ -200,6 +255,8 @@ impl Action<DecideState> for Apply {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::common::fake_github::{FakeGitHub, Wrote};
     use harness_core::domain::{Issue, Pr, Spend};
@@ -314,16 +371,28 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_merge_as_it_is_merges_unless_the_pr_conflicts() {
-        let gh = Rc::new(FakeGitHub {
+    const MERGE: &str =
+        r#"{"action":"merge","summary":"the review asks for style only","confidence":5}"#;
+
+    /// A board whose PR #40 has the checks given: green, or not with these
+    /// failing.
+    fn with_checks(green: bool, failing: &[&str]) -> FakeGitHub {
+        FakeGitHub {
             issues: vec![fifteen()],
             labels: vec![labels::AI_DECIDED.to_string()],
+            pr_checks: HashMap::from([("40".to_string(), green)]),
+            failing_checks: HashMap::from([(
+                "40".to_string(),
+                failing.iter().map(ToString::to_string).collect(),
+            )]),
             ..FakeGitHub::default()
-        });
-        let answer =
-            r#"{"action":"merge","summary":"the review asks for style only","confidence":5}"#;
-        let mut context = ctx(answer, Some(pr()), &[labels::REVIEW_PENDING]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_merge_as_it_is_merges_unless_the_pr_conflicts() {
+        let gh = Rc::new(with_checks(true, &[]));
+        let mut context = ctx(MERGE, Some(pr()), &[labels::REVIEW_PENDING]);
         apply(&gh).run(&mut context).await.expect("applied");
         let writes = gh.writes();
         assert!(writes.contains(&Wrote::MergedPr("40".to_string())));
@@ -336,12 +405,10 @@ mod tests {
             "the label exists"
         );
         let conflicting = Rc::new(FakeGitHub {
-            issues: vec![fifteen()],
-            pr_mergeable: std::collections::HashMap::from([("40".to_string(), Some(false))]),
-            labels: vec![labels::AI_DECIDED.to_string()],
-            ..FakeGitHub::default()
+            pr_mergeable: HashMap::from([("40".to_string(), Some(false))]),
+            ..with_checks(true, &[])
         });
-        let mut context = ctx(answer, Some(pr()), &[labels::REVIEW_PENDING]);
+        let mut context = ctx(MERGE, Some(pr()), &[labels::REVIEW_PENDING]);
         apply(&conflicting)
             .run(&mut context)
             .await
@@ -351,6 +418,68 @@ mod tests {
         assert!(
             writes.contains(&Wrote::Label(40, labels::PR_FIX.to_string())),
             "repaired instead"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_decided_on_red_checks_is_a_repair() {
+        // The live failure: PR #231 merged by a decision with 7 red checks.
+        let gh = Rc::new(with_checks(false, &["capability-isolation — FAILURE"]));
+        let mut context = ctx(MERGE, Some(pr()), &[labels::REVIEW_PENDING]);
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        assert!(!writes.contains(&Wrote::MergedPr("40".to_string())));
+        assert!(
+            matches!(&writes[1], Wrote::Comment(40, said) if said.contains(review::DECIDED_MARKER)),
+            "{writes:?}"
+        );
+        assert_eq!(writes[2], Wrote::Label(40, labels::PR_FIX.to_string()));
+        assert!(
+            matches!(&writes[3], Wrote::Comment(15, said) if said.contains("— repair:")),
+            "{writes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_decided_on_pending_checks_waits_for_the_merge_train() {
+        let gh = Rc::new(with_checks(false, &[]));
+        let mut context = ctx(MERGE, Some(pr()), &[labels::REVIEW_PENDING]);
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        assert!(!writes.contains(&Wrote::MergedPr("40".to_string())));
+        assert!(!writes.contains(&Wrote::Closed(15)), "the task stays open");
+        assert!(
+            !writes.contains(&Wrote::Label(40, labels::PR_FIX.to_string())),
+            "no repair asked"
+        );
+        // The PR reads as reviewed and clean: what the merge train takes.
+        let on_pr = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Comment(40, said) => Some(said.clone()),
+                _ => None,
+            })
+            .expect("a comment on the PR");
+        assert_eq!(review::status(&on_pr), review::Status::Clean);
+        assert!(on_pr.contains(review::DECIDED_MERGE));
+        assert!(
+            writes.iter().any(|w| matches!(
+                w,
+                Wrote::Comment(15, said) if said.contains("merges when its checks are green")
+            )),
+            "{writes:?}"
+        );
+        // The decision is written as a merge, and no decision is left open.
+        assert!(
+            writes.iter().any(|w| matches!(
+                w,
+                Wrote::Comment(15, said) if said.contains("— merge:")
+            )),
+            "{writes:?}"
+        );
+        assert!(
+            !writes.contains(&Wrote::Label(15, labels::NEEDS_DECISION.to_string())),
+            "no decision asked again"
         );
     }
 
