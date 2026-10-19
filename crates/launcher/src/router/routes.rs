@@ -841,3 +841,34 @@ mod lane_route_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod merge_route_tests {
+    use super::*;
+    use crate::testing::NoGitHub;
+
+    #[tokio::test]
+    async fn a_merge_the_board_refuses_is_the_route_s_failure_not_a_quiet_tick() {
+        // The task cannot even be read: the halt comes back under the route's
+        // name, for the tick to tell — never swallowed as a tick that merged
+        // nothing and said nothing.
+        let failed = run_milestone_merge(
+            &NoGitHub,
+            Path::new("/nonexistent"),
+            64,
+            "68".to_string(),
+            "milestone/52-socle".to_string(),
+            &Logbook::null(),
+        )
+        .await;
+        let Some((route, halt)) = failed else {
+            panic!("a refused merge is the route's failure");
+        };
+        assert_eq!(route, "milestone_merge");
+        assert!(
+            halt.reason().contains("no call should leave this test"),
+            "{}",
+            halt.reason()
+        );
+    }
+}

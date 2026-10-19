@@ -328,6 +328,24 @@ fn branch_checks_from(rows: &[Value]) -> Option<bool> {
     green.then_some(true)
 }
 
+/// What one `gh run list` call answered, read as [`GitHub::branch_checks`]
+/// answers: a call that failed is an error, never a quiet `None` — a base
+/// whose runs cannot be listed stops the tick, it does not lift the hold.
+fn branch_checks_of(ran: &Ran, branch: &str) -> Outcome<Option<bool>> {
+    if !ran.ok() {
+        return Err(Halt::Failed(format!(
+            "the workflow runs of {branch} cannot be listed — {}",
+            ran.why()
+        )));
+    }
+    let payload: Value = serde_json::from_str(ran.out())
+        .map_err(|e| Halt::Failed(format!("unreadable workflow runs of {branch}: {e}")))?;
+    Ok(branch_checks_from(rows_of(
+        &payload,
+        &format!("the workflow runs of {branch}"),
+    )?))
+}
+
 /// The array from a response. `null` counts as empty, anything else is unreadable.
 fn rows_of<'a>(payload: &'a Value, what: &str) -> Outcome<&'a [Value]> {
     match payload {
@@ -1312,18 +1330,7 @@ impl GitHub for GhCli {
                 "headSha,status,conclusion,name".to_string(),
             ])
             .await?;
-        if !ran.ok() {
-            return Err(Halt::Failed(format!(
-                "the workflow runs of {branch} cannot be listed — {}",
-                ran.why()
-            )));
-        }
-        let payload: Value = serde_json::from_str(ran.out())
-            .map_err(|e| Halt::Failed(format!("unreadable workflow runs of {branch}: {e}")))?;
-        Ok(branch_checks_from(rows_of(
-            &payload,
-            &format!("the workflow runs of {branch}"),
-        )?))
+        branch_checks_of(&ran, branch)
     }
 
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
@@ -1893,6 +1900,57 @@ mod tests {
             branch_checks_from(&[run("b2", "completed", "skipped")]),
             None
         );
+    }
+
+    #[test]
+    fn a_run_list_gh_could_not_make_is_an_error_and_one_it_made_is_read() {
+        let refused = Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "gh: HTTP 401: Bad credentials".to_string(),
+        };
+        let Err(Halt::Failed(why)) = branch_checks_of(&refused, "main_agent") else {
+            panic!("a listing gh refused is an error, not a quiet None");
+        };
+        assert!(
+            why.contains("main_agent") && why.contains("HTTP 401"),
+            "{why}"
+        );
+        let listed = |rows: &str| Ran {
+            code: Some(0),
+            stdout: rows.to_string(),
+            stderr: String::new(),
+        };
+        assert_eq!(
+            branch_checks_of(
+                &listed(
+                    r#"[{"headSha":"b2","status":"completed","conclusion":"failure","name":"ci"}]"#
+                ),
+                "main_agent"
+            )
+            .expect("read"),
+            Some(false)
+        );
+        assert_eq!(
+            branch_checks_of(
+                &listed(
+                    r#"[{"headSha":"b2","status":"completed","conclusion":"success","name":"ci"}]"#
+                ),
+                "main_agent"
+            )
+            .expect("read"),
+            Some(true)
+        );
+        assert_eq!(
+            branch_checks_of(&listed("[]"), "main_agent").expect("read"),
+            None
+        );
+        assert_eq!(
+            branch_checks_of(&listed("null"), "main_agent").expect("read"),
+            None
+        );
+        assert!(branch_checks_of(&listed("not json"), "main_agent").is_err());
+        assert!(branch_checks_of(&listed(r#"{"runs": []}"#), "main_agent").is_err());
     }
 
     // --- failing_checks ------------------------------------------------------
