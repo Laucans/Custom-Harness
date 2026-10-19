@@ -94,6 +94,28 @@ fn gate(root: &Path, extra: &[&str], base_ref: Option<&str>) -> (bool, String) {
     )
 }
 
+/// The gate as the CI runs it on a pull request: `GITHUB_BASE_REF` and
+/// `GITHUB_HEAD_REF` set as GitHub sets them.
+fn gate_on_pr(root: &Path, base_ref: &str, head_ref: &str) -> (bool, String) {
+    let out = Command::new("node")
+        .arg("scripts/contracts-gate.mjs")
+        .arg("untouched")
+        .arg("main")
+        .current_dir(root)
+        .env("GITHUB_BASE_REF", base_ref)
+        .env("GITHUB_HEAD_REF", head_ref)
+        .output()
+        .expect("node runs");
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
 fn node_present() -> bool {
     let present = Command::new("node").arg("--version").output().is_ok();
     if !present {
@@ -179,5 +201,34 @@ fn a_deleted_manifest_and_a_wrong_usage_are_handled() {
         .output()
         .expect("node runs");
     assert_eq!(out.status.code(), Some(2));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_milestone_s_own_pull_request_is_named_by_its_head_branch() {
+    // ForgeDesMondes' PR #268, milestone/18 into main_agent: the base names
+    // no milestone, the head does — every contract of the milestone is its
+    // own. A task's PR keeps naming it by the base, which wins over the head.
+    if !node_present() {
+        return;
+    }
+    let root = repo("head", true, &change_list_scenes);
+    let (ok, said) = gate_on_pr(&root, "main_agent", "milestone/20-sessions");
+    assert!(ok, "the head names the milestone: {said}");
+    let (ok, said) = gate_on_pr(&root, "main_agent", "milestone/19-media");
+    assert!(!ok, "{said}");
+    assert!(
+        said.contains("session.listScenes belongs to milestone #20, not #19"),
+        "{said}"
+    );
+    let (ok, said) = gate_on_pr(&root, "milestone/19-media", "milestone/20-sessions");
+    assert!(!ok, "the base wins over the head: {said}");
+    assert!(said.contains("not #19"), "{said}");
+    let (ok, said) = gate_on_pr(&root, "main_agent", "feat/list-scenes");
+    assert!(
+        !ok,
+        "neither names a milestone: another's contract is refused: {said}"
+    );
+    assert!(!said.contains(", not #"), "{said}");
     let _ = fs::remove_dir_all(&root);
 }

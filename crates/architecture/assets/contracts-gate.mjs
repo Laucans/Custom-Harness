@@ -8,8 +8,9 @@
 //       it) touches a `capability.json` or a `data-capability.json` only
 //       when the plan's graph (`plan/graph.json`) says the milestone the
 //       change lands in produces that id — read off the branch the pull
-//       request targets (`milestone/<n>-…`, in GITHUB_BASE_REF), or off
-//       `--milestone <n>`. An id the graph does not know is this change's
+//       request targets (`milestone/<n>-…`, in GITHUB_BASE_REF) or, for the
+//       milestone's own pull request into the integration branch, off the
+//       branch it comes from (GITHUB_HEAD_REF), or off `--milestone <n>`. An id the graph does not know is this change's
 //       own: new, and nobody else's. Without a graph, nothing is judged.
 //
 //       A consumer that needs a contract to change does not change it: it
@@ -40,9 +41,14 @@ function graph() {
 function milestoneOf(args) {
   const at = args.indexOf('--milestone');
   if (at >= 0 && args[at + 1]) return Number(args[at + 1]);
-  const base = process.env.GITHUB_BASE_REF || '';
-  const m = /^milestone\/(\d+)(-|$)/.exec(base);
-  return m ? Number(m[1]) : null;
+  // A task's pull request targets its milestone's branch; the milestone's
+  // own pull request targets the integration branch from that branch — so
+  // the milestone is read off the base first, then off the head.
+  for (const ref of [process.env.GITHUB_BASE_REF || '', process.env.GITHUB_HEAD_REF || '']) {
+    const m = /^milestone\/(\d+)(-|$)/.exec(ref);
+    if (m) return Number(m[1]);
+  }
+  return null;
 }
 
 function idOf(file) {
