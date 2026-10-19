@@ -82,13 +82,15 @@ pub enum Route {
         base: String,
     },
     /// Merge this task's reviewed, green PR into its milestone branch —
-    /// `milestone_merge`.
+    /// `milestone_merge`. The rules' task's PR, decided merged by the
+    /// harness, goes the same way into the integration branch.
     MergeIntoMilestone {
         /// The task's number.
         task: u64,
         /// The PR, as the ports name one.
         pr: String,
-        /// The branch it targets — the milestone's.
+        /// The branch it targets — the milestone's, or the integration
+        /// branch for the rules' task.
         base: String,
     },
     /// Open or merge this milestone's PR into the base branch —
@@ -174,7 +176,9 @@ pub struct Snapshot {
     /// costs a mounted checkout per poll.
     pub prs_to_review: Vec<Pr>,
     /// The tasks whose PR is open on their milestone, reviewed and green,
-    /// with that PR — what `milestone_merge` merges, one per board.
+    /// with that PR — what `milestone_merge` merges, one per board — and the
+    /// rules' task whose PR the harness decided to merge as it is, once
+    /// green (`milestone_merge::rules_ready_to_merge`).
     pub tasks_to_merge: Vec<(u64, Pr)>,
     /// The open milestones whose tasks are all delivered, not
     /// `harness:waiting-merge` yet, whose producers have landed — computed

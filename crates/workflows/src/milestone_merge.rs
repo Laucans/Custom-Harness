@@ -9,11 +9,18 @@
 //!
 //! The choice of *which* PR is pure ([`candidate`]); the router reads the
 //! board and the open PRs, asks this, and checks the CI before routing here.
+//!
+//! One pull request sits on no board: the rules' task's, on `rules/<n>`,
+//! judged by its own reader, who merges it. When the harness decided to
+//! merge it as it is while its checks still ran, that reader is gone and
+//! the decision is a review on the PR ([`review::decided_to_merge`]): the
+//! train takes it once green ([`rules_ready_to_merge`]) and closes the
+//! task — which is what frees the development the rules hold.
 
 use harness_core::domain::{Issue, Outcome, Pr};
 use harness_core::ports::shell::github::GitHub;
 
-use crate::common::{delivery, labels};
+use crate::common::{delivery, labels, review};
 use crate::dev_loop::data::tasks;
 
 /// The first task waiting on its PR, with that PR: the task is open and
@@ -68,7 +75,6 @@ pub async fn ready_to_merge<'a>(
     board: &'a [Issue],
     open: &'a [Pr],
 ) -> Outcome<(Option<(&'a Issue, &'a Pr)>, Vec<(u64, String)>)> {
-    use crate::common::review;
     let mut escalated = Vec::new();
     for (task, pr) in candidates(board, open) {
         let comments = gh.pr_comments(&pr.num).await?;
@@ -100,6 +106,60 @@ pub async fn ready_to_merge<'a>(
 #[must_use]
 pub fn candidate<'a>(board: &'a [Issue], open: &'a [Pr]) -> Option<(&'a Issue, &'a Pr)> {
     candidates(board, open).into_iter().next()
+}
+
+/// The branch a rules' task's pull request comes from.
+#[must_use]
+pub fn rules_branch(issue: u64) -> String {
+    format!("rules/{issue}")
+}
+
+/// The open rules' tasks whose pull request is open on [`rules_branch`],
+/// with that PR, lowest number first.
+#[must_use]
+pub fn rules_candidates<'a>(rules: &'a [Issue], open: &'a [Pr]) -> Vec<(&'a Issue, &'a Pr)> {
+    let mut waiting: Vec<&Issue> = rules.iter().filter(|issue| issue.is_open()).collect();
+    waiting.sort_by_key(|issue| issue.number);
+    waiting
+        .into_iter()
+        .filter_map(|issue| {
+            let branch = rules_branch(issue.number);
+            open.iter()
+                .find(|pr| pr.head == branch)
+                .map(|pr| (issue, pr))
+        })
+        .collect()
+}
+
+/// The rules' task whose PR the train merges into the integration branch.
+///
+/// The first of [`rules_candidates`] whose PR the harness decided to merge
+/// as it is ([`review::decided_to_merge`]), which merges and is green now.
+/// A rules' PR is never agent-reviewed: its own reader judges it and
+/// merges it, so a clean review alone is not enough — the decision is. One
+/// whose checks still run, or whose branch conflicts since, waits.
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from any read of a PR's comments, checks
+/// or mergeability.
+pub async fn rules_ready_to_merge<'a>(
+    gh: &dyn GitHub,
+    rules: &'a [Issue],
+    open: &'a [Pr],
+) -> Outcome<Option<(&'a Issue, &'a Pr)>> {
+    for (task, pr) in rules_candidates(rules, open) {
+        if !review::decided_to_merge(&gh.pr_comments(&pr.num).await?) {
+            continue;
+        }
+        if gh.pr_mergeable(&pr.num).await? == Some(false) {
+            continue;
+        }
+        if !gh.pr_checks_green(&pr.num).await? {
+            continue;
+        }
+        return Ok(Some((task, pr)));
+    }
+    Ok(None)
 }
 
 /// What one merge attempt came to.
@@ -390,6 +450,113 @@ mod tests {
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::REVIEW_PENDING.to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::NEEDS_DECISION.to_string())));
         assert!(writes.contains(&Wrote::Closed(64)));
+    }
+
+    fn rules_task(number: u64, state: &str) -> Issue {
+        Issue {
+            number,
+            state: state.to_string(),
+            labels: vec![labels::RULES.to_string(), labels::AI_DECIDED.to_string()],
+            ..Issue::default()
+        }
+    }
+
+    fn rules_pr(num: &str, issue: u64) -> Pr {
+        Pr {
+            num: num.to_string(),
+            base: "main_agent".to_string(),
+            head: rules_branch(issue),
+            state: "OPEN".to_string(),
+            ..Pr::default()
+        }
+    }
+
+    #[test]
+    fn the_rules_candidates_are_the_open_rules_tasks_with_their_pr_on_rules_n() {
+        let rules = vec![
+            rules_task(9, "open"),
+            rules_task(4, "open"),
+            rules_task(2, "closed"),
+        ];
+        let open = [rules_pr("231", 9), rules_pr("200", 2), rules_pr("40", 4)];
+        let found: Vec<(u64, &str)> = rules_candidates(&rules, &open)
+            .into_iter()
+            .map(|(t, p)| (t.number, p.num.as_str()))
+            .collect();
+        assert_eq!(found, [(4, "40"), (9, "231")], "#2 is closed");
+        assert!(rules_candidates(&rules, &[rules_pr("7", 11)]).is_empty());
+        assert_eq!(rules_branch(9), "rules/9");
+    }
+
+    #[tokio::test]
+    async fn a_rules_pr_the_harness_decided_to_merge_is_taken_once_green_and_only_then() {
+        // The live failure's own PR (#231, a rules contest) was decided
+        // while its checks ran: the decision sat on a PR no board holds.
+        let rules = vec![rules_task(9, "open")];
+        let open = [rules_pr("231", 9)];
+        let decided = format!(
+            "{}\n{}\n{}\nThe harness decided to merge this as it is",
+            review::MARKER,
+            review::CLEAN,
+            review::DECIDED_MERGE
+        );
+        let green = FakeGitHub {
+            pr_comment_bodies: vec![("231".to_string(), decided.clone())],
+            pr_checks: HashMap::from([("231".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
+        let found = rules_ready_to_merge(&green, &rules, &open)
+            .await
+            .expect("read");
+        assert_eq!(
+            found.map(|(t, p)| (t.number, p.num.as_str())),
+            Some((9, "231"))
+        );
+        let pending = FakeGitHub {
+            pr_comment_bodies: vec![("231".to_string(), decided.clone())],
+            pr_checks: HashMap::from([("231".to_string(), false)]),
+            ..FakeGitHub::default()
+        };
+        assert!(
+            rules_ready_to_merge(&pending, &rules, &open)
+                .await
+                .expect("read")
+                .is_none(),
+            "its checks still run"
+        );
+        let conflicting = FakeGitHub {
+            pr_comment_bodies: vec![("231".to_string(), decided)],
+            pr_checks: HashMap::from([("231".to_string(), true)]),
+            pr_mergeable: HashMap::from([("231".to_string(), Some(false))]),
+            ..FakeGitHub::default()
+        };
+        assert!(
+            rules_ready_to_merge(&conflicting, &rules, &open)
+                .await
+                .expect("read")
+                .is_none(),
+            "its branch conflicts since the decision"
+        );
+        // Its own reader judges it: no decision, no merge by the train —
+        // even reviewed clean by someone.
+        let judged = FakeGitHub {
+            pr_comment_bodies: vec![(
+                "231".to_string(),
+                format!("{}\n{}", review::MARKER, review::CLEAN),
+            )],
+            pr_checks: HashMap::from([("231".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
+        assert!(
+            rules_ready_to_merge(&judged, &rules, &open)
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            judged.writes().is_empty(),
+            "the train's read writes nothing"
+        );
     }
 
     #[tokio::test]

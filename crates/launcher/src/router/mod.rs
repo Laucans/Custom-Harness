@@ -528,6 +528,20 @@ async fn snapshot(
     for board in &boards {
         tasks_to_merge.extend(green_task_pr(gh, &board.tasks, &to_review, log).await?);
     }
+    // The rules' task the harness decided to merge as it is while its checks
+    // ran: its PR sits on no board, so the train reads it here — once green
+    // it merges into the integration branch and the task closes, which is
+    // what frees the development the rules hold. Nothing is read while no
+    // rules' task is open.
+    if rules.iter().any(Issue::is_open) {
+        let open_rules = by_number(gh.open_prs_labelled(labels::RULES).await?);
+        if let Some((task, pr)) =
+            harness_workflows::milestone_merge::rules_ready_to_merge(gh, &rules, &open_rules)
+                .await?
+        {
+            tasks_to_merge.push((task.number, pr.clone()));
+        }
+    }
     let boards_read = boards;
     let snapshot = Snapshot {
         tasks_to_merge,

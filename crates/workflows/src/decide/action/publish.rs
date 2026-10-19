@@ -108,8 +108,10 @@ impl Apply {
 
     /// A merge decided while the PR's checks still run: nothing merges now.
     /// The PR gets the review that lets it through, so the merge train —
-    /// a reviewed, mergeable, green PR of a `review-pending` task — takes
-    /// it once green, and the task says so.
+    /// a reviewed, mergeable, green PR of a `review-pending` task, or the
+    /// rules' task's PR carrying this very decision
+    /// (`milestone_merge::rules_ready_to_merge`) — takes it once green and
+    /// closes the task, and the task says so.
     async fn merge_when_green(
         &self,
         task: &harness_core::domain::Issue,
@@ -134,7 +136,8 @@ impl Apply {
                 task.number,
                 &format!(
                     "PR {} merges when its checks are green — they are still running; the \
-                     merge train takes it then.",
+                     watch merges it at the first tick it is green and mergeable, and closes \
+                     this task.",
                     pr.reference()
                 ),
             )
@@ -480,6 +483,69 @@ mod tests {
         assert!(
             !writes.contains(&Wrote::Label(15, labels::NEEDS_DECISION.to_string())),
             "no decision asked again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rules_task_decided_merged_on_pending_checks_is_left_to_the_train() {
+        // The live failure's own PR (#231) was a rules contest, decided
+        // right after the judge's second round, before the writer's push
+        // finished CI: pending is the common case for a rules decision.
+        // The train reads a rules PR carrying this decision; nothing else
+        // may be posed, or the writer and the judge run again over it.
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![Issue {
+                labels: vec![labels::RULES.to_string()],
+                ..fifteen()
+            }],
+            ..with_checks(false, &[])
+        });
+        let rules_pr = Pr {
+            num: "40".to_string(),
+            head: crate::milestone_merge::rules_branch(15),
+            base: "main_agent".to_string(),
+            ..Pr::default()
+        };
+        let mut context = ctx(MERGE, Some(rules_pr.clone()), &[labels::RULES]);
+        context.state.kind = "rules".to_string();
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        assert!(!writes.contains(&Wrote::MergedPr("40".to_string())));
+        assert!(!writes.contains(&Wrote::Closed(15)));
+        assert!(
+            !writes.contains(&Wrote::Label(15, labels::READY.to_string())),
+            "the writer is not asked again: {writes:?}"
+        );
+        assert!(
+            !writes.contains(&Wrote::Label(15, labels::NEEDS_DECISION.to_string())),
+            "no decision asked again"
+        );
+        assert!(
+            !writes.contains(&Wrote::Label(40, labels::PR_FIX.to_string())),
+            "no repair asked"
+        );
+        // What the train reads: the decision is the PR's last review.
+        let on_pr = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Comment(40, said) => Some(said.clone()),
+                _ => None,
+            })
+            .expect("a comment on the PR");
+        assert!(review::decided_to_merge(&on_pr));
+        let rules = [gh.issues[0].clone()];
+        let open = [rules_pr];
+        let later = FakeGitHub {
+            pr_comment_bodies: vec![("40".to_string(), on_pr)],
+            pr_checks: HashMap::from([("40".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
+        let taken = crate::milestone_merge::rules_ready_to_merge(&later, &rules, &open)
+            .await
+            .expect("read");
+        assert_eq!(
+            taken.map(|(t, p)| (t.number, p.num.as_str())),
+            Some((15, "40"))
         );
     }
 

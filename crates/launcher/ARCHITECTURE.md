@@ -159,7 +159,10 @@ the decisions. The board is read in full every tick meanwhile, as for a PR
 under CI, since the push that turns it green moves no issue; the hold lasts
 until green — runs still in progress on the fix's push hold as the red did,
 while the issue is open — and green closes the issue and the jobs resume.
-`--dry-run` reads and says, writes nothing.
+The rules' task's PR, decided merged by the harness while its checks ran,
+sits on no board: the snapshot reads it on its own
+(`milestone_merge::rules_ready_to_merge`) and the train merges it into the
+integration branch once green. `--dry-run` reads and says, writes nothing.
 
 Three rules, and they are not symmetric:
 

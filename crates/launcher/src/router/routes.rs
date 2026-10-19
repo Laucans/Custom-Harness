@@ -512,23 +512,29 @@ pub(super) async fn run_milestone_merge(
     };
     match merged.await {
         Ok(Attempt::Merged) => {
-            log.say(&format!(
-                "watch: milestone_merge -> #{task} merged into its milestone"
-            ));
             let (pr, branch) = told;
-            log.event(&Event::TaskDelivered { task, pr, branch });
+            log.say(&format!(
+                "watch: milestone_merge -> #{task} merged into {branch}"
+            ));
+            log.event(&Event::TaskDelivered {
+                task,
+                pr,
+                branch: branch.clone(),
+            });
             record_run(
                 here,
                 "milestone-merge",
                 task,
-                &format!("task #{task}: reviewed and green — merged into its milestone, closed"),
+                &format!("task #{task}: reviewed and green — merged into {branch}, closed"),
                 log,
             );
             None
         }
         // The route read the checks green a moment ago; the merge reads
-        // them again and refuses what changed since. Nothing to repair
-        // here: the red one is the repair route's at the next tick.
+        // them again and refuses what changed since. Nothing is posed here:
+        // the train reads the PR again next tick, and a red one stays where
+        // it is — reviewed clean, it is no repair route's until a label or
+        // a review asks for the repair.
         Ok(Attempt::Pending) => {
             log.say(&format!(
                 "watch: milestone_merge -> #{task} waits: a check of PR {} is still running",
