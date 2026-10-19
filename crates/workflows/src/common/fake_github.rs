@@ -120,6 +120,9 @@ pub struct FakeGitHub {
     pub activity: Option<Activity>,
     /// The branches that refuse a merge into them (a conflict), by name.
     pub refused_merges: Vec<String>,
+    /// Blockers GitHub refuses to set, by the blocker's number — a pull
+    /// request's, for one: "Target issue may only be an issue".
+    pub refused_blockers: Vec<u64>,
     /// The tasks whose blockers were asked for, in order.
     pub blockers_asked: RefCell<Vec<u64>>,
     /// `branch_checks` answers, by branch. An absent key is `None` — no run
@@ -444,6 +447,11 @@ impl GitHub for FakeGitHub {
 
     async fn add_blocked_by(&self, number: u64, blocker: u64) -> Outcome<()> {
         self.ok()?;
+        if self.refused_blockers.contains(&blocker) {
+            return Err(Halt::Failed(format!(
+                "GitHub refused to mark #{number} as blocked by #{blocker}: Target issue may only be an issue"
+            )));
+        }
         self.wrote
             .borrow_mut()
             .push(Wrote::BlockedByLink(number, blocker));

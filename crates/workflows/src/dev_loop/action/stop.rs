@@ -141,27 +141,55 @@ impl RaiseDecision {
                 .await?;
         } else if let Some(on) = self.waited_for(ctx, number, &reason).await {
             // Something another issue produces has not landed: the task
-            // waits for it, for free, however many times it was asked.
-            self.wait_for(ctx, number, &issue.body, on, round, &reason)
-                .await?;
+            // waits for it, for free, however many times it was asked. A
+            // blocker GitHub refuses (ForgeDesMondes' #248 named PR #264,
+            // which is no issue a dependency can point at) is no wait: the
+            // stop asks a decision as before, the round is not lost.
+            if let Err(refused) = self
+                .wait_for(ctx, number, &issue.body, on, round, &reason)
+                .await
+            {
+                ctx.traces.warn(&format!(
+                    "#{number}: cannot wait for #{on} — {} — a decision is asked instead",
+                    refused.reason()
+                ));
+                self.ask(ctx, number, &issue.body, kind, round, &reason)
+                    .await?;
+            }
         } else if round >= HUMAN_AT_ROUND && !self.autonomous {
             self.to_a_human(ctx, number, &issue.title, &reason).await?;
         } else {
-            let question = Question {
-                kind: Some(kind.to_string()),
-                blocks: reason.clone(),
-                round,
-                ..Question::default()
-            };
-            let body = sections::replace(&issue.body, &[(sections::DECISION, &question.render())]);
-            self.gh.set_body(number, &body).await?;
-            self.gh.add_label(number, labels::NEEDS_DECISION).await?;
-            ctx.traces.say(&format!(
-                "#{number}: the session stopped ({kind}, round {round}) — a decision is asked: {reason}"
-            ));
+            self.ask(ctx, number, &issue.body, kind, round, &reason)
+                .await?;
         }
         ctx.state.handed_over = true;
         Ok(Verdict::Continue)
+    }
+
+    /// Writes the stop under the task's `## Decision` and asks `decide` for
+    /// an answer at the next tick (`harness:needs-decision`).
+    async fn ask(
+        &self,
+        ctx: &Context<Loop>,
+        number: u64,
+        body: &str,
+        kind: &str,
+        round: u32,
+        reason: &str,
+    ) -> Outcome<()> {
+        let question = Question {
+            kind: Some(kind.to_string()),
+            blocks: reason.to_string(),
+            round,
+            ..Question::default()
+        };
+        let body = sections::replace(body, &[(sections::DECISION, &question.render())]);
+        self.gh.set_body(number, &body).await?;
+        self.gh.add_label(number, labels::NEEDS_DECISION).await?;
+        ctx.traces.say(&format!(
+            "#{number}: the session stopped ({kind}, round {round}) — a decision is asked: {reason}"
+        ));
+        Ok(())
     }
 
     /// The issue the stop's reason names that has not landed — a milestone
@@ -182,8 +210,11 @@ impl RaiseDecision {
             if candidate == number || Some(candidate) == own {
                 continue;
             }
+            // A milestone or an agent task only: a pull request shares the
+            // number space and GitHub refuses it as a dependency; a human
+            // task or a roadmap item closes long after this task would.
             if let Ok(found) = self.gh.issue(candidate).await
-                && !found.has(labels::ROADMAP)
+                && (found.has(labels::MILESTONE) || found.has(labels::AGENT))
                 && tasks::still_blocks(&found)
             {
                 return Some(candidate);
@@ -988,6 +1019,101 @@ mod tests {
                 "{reason}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_or_a_human_task_named_is_not_waited_for() {
+        // ForgeDesMondes' #248 stopped naming PR #264 (a concurrent repair
+        // on its branch): a pull request shares the issue numbers, GitHub
+        // refuses it as a dependency. A human task mentioned in passing
+        // closes long after the task would. Neither is a wait.
+        let gh = board("pay", &[labels::MILESTONE], "open");
+        let mut issues = gh.issues.clone();
+        issues.push(Issue {
+            number: 264,
+            title: "BattlemapInstance aggregate (#248)".to_string(),
+            state: "open".to_string(),
+            labels: vec![labels::TO_REVIEW.to_string()],
+            ..Issue::default()
+        });
+        issues.push(Issue {
+            number: 30,
+            title: "Provide the secrets".to_string(),
+            state: "open".to_string(),
+            labels: vec![labels::HUMAN.to_string()],
+            ..Issue::default()
+        });
+        let gh = Rc::new(FakeGitHub {
+            issues,
+            files: gh.files.clone(),
+            ..FakeGitHub::default()
+        });
+        RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: true,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut ctx(false),
+            Halt::Halted(
+                "AGENT_LOOP_STOP: a concurrent pr_fix session is repairing PR #264; #30 still open"
+                    .to_string(),
+            ),
+        )
+        .await
+        .expect("handed over");
+        let writes = gh.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::BlockedByLink(..))),
+            "a PR and a human task are no producers: {writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_blocker_github_refuses_asks_a_decision_instead_of_failing_the_round() {
+        let board = board("pay", &[labels::MILESTONE], "open");
+        let gh = Rc::new(FakeGitHub {
+            issues: board.issues.clone(),
+            files: board.files.clone(),
+            refused_blockers: vec![20],
+            ..FakeGitHub::default()
+        });
+        let sink = Rc::new(Capture::default());
+        let mut ctx = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            ctx(false).state,
+            Logbook::new(
+                Rc::clone(&sink) as Rc<dyn harness_core::traces::Sink>,
+                harness_core::traces::Verbosity::Normal,
+            ),
+        );
+        let verdict = RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: true,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut ctx,
+            Halt::Halted("AGENT_LOOP_STOP: wait for #20 — no crates/session/ (/code)".to_string()),
+        )
+        .await
+        .expect("the round goes on");
+        assert_eq!(verdict, Verdict::Continue);
+        let writes = gh.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::BlockedByLink(..))),
+            "the refused blocker is not written: {writes:?}"
+        );
+        assert!(
+            writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())),
+            "the stop asks a decision instead: {writes:?}"
+        );
+        let said = sink.0.borrow().join("\n");
+        assert!(said.contains("cannot wait for #20"), "{said}");
     }
 
     #[tokio::test]
