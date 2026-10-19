@@ -125,7 +125,7 @@ pub async fn run(
         log.clone(),
     );
     let verdict = Guarded::execute(&workflow, &mut ctx).await;
-    shared::unmount_shared(&mount, &log).await;
+    shared::release_checkout(&mount, &log).await;
     verdict
 }
 

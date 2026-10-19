@@ -252,6 +252,20 @@ impl Repo for GitCli {
     async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
         self.git(&["switch", "--orphan", name]).await
     }
+
+    async fn merge_in_progress(&self) -> Outcome<bool> {
+        // `MERGE_HEAD` exists from the first conflict to the merge commit or
+        // its abort: a merge whose conflicts were all resolved but never
+        // committed is still in progress.
+        Ok(self
+            .git(&["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])
+            .await?
+            .ok())
+    }
+
+    async fn abort_merge(&self) -> Outcome<Ran> {
+        self.git(&["merge", "--abort"]).await
+    }
 }
 
 /// `sparse-checkout set --no-cone -- <patterns>`: the patterns are
@@ -471,6 +485,48 @@ mod tests {
             .await
             .expect("judged");
         assert_eq!(at_risk, vec!["local-only".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_conflicted_merge_is_seen_in_progress_and_aborted_whole() {
+        // The lane's state on ForgeDesMondes (23:09Z): a repair merged the
+        // milestone branch, hit a conflict, and left `UU` entries behind.
+        let root = std::env::temp_dir().join(format!("harness-git-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let repo = root.join("repo");
+        sh(&root, &["init", "-q", "-b", "main", "repo"]).await;
+        std::fs::write(repo.join("a"), "base").expect("write");
+        sh(&repo, &["add", "a"]).await;
+        sh(&repo, &["commit", "-q", "-m", "base"]).await;
+        sh(&repo, &["checkout", "-q", "-b", "feat"]).await;
+        std::fs::write(repo.join("a"), "feat").expect("write");
+        sh(&repo, &["commit", "-q", "-am", "feat"]).await;
+        sh(&repo, &["checkout", "-q", "main"]).await;
+        std::fs::write(repo.join("a"), "main").expect("write");
+        sh(&repo, &["commit", "-q", "-am", "main"]).await;
+        sh(&repo, &["checkout", "-q", "feat"]).await;
+        let git = GitCli::new(&repo);
+        assert!(!git.merge_in_progress().await.expect("asked"));
+        // The merge conflicts: `git merge` exits non-zero, which `sh` would
+        // refuse — asked through the port's own process runner instead.
+        let merged = process::run("git", &git.argv(&["merge", "main"]), &repo)
+            .await
+            .expect("ran");
+        assert!(!merged.ok(), "the merge conflicts");
+        assert!(git.merge_in_progress().await.expect("asked"));
+        assert!(
+            git.dirty_files()
+                .await
+                .expect("read")
+                .iter()
+                .any(|line| line.starts_with("UU ")),
+            "an unmerged entry"
+        );
+        assert!(git.abort_merge().await.expect("ran").ok());
+        assert!(!git.merge_in_progress().await.expect("asked"));
+        assert!(git.dirty_files().await.expect("read").is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -17,6 +17,13 @@
 //!   run works in place. Writing half a gigabyte to « call nothing » would be
 //!   the most expensive contradiction in the package.
 //!
+//! One exception to the first rule, for the checkouts only the harness works
+//! in (`Wanted::drop_uncommitted`): uncommitted changes there are a
+//! session's leftovers, dropped and said rather than stopped on — a lane
+//! that stops on a leftover stops for every job after. Commits no remote
+//! has stay under the rule. The same question is asked at [`Provisioner::release`],
+//! when a run gives its checkout back: left clean, or kept whole and said.
+//!
 //! # What the immutability of `Settings` removes
 //!
 //! On the Python side, mounting **rewrote `cfg.workspace`** in place, with the
@@ -32,7 +39,7 @@ use crate::domain::workspace::{Strategy, Wanted, Workspace};
 use crate::domain::{Halt, Outcome, clone_url, same_repo};
 use crate::ports::shell::disk::Disk;
 use crate::ports::shell::git::{Repo, Repos};
-use crate::traces::Logbook;
+use crate::traces::{Event, Logbook};
 
 /// What a mount gave, and what unmount must do with it.
 #[derive(Debug, Clone)]
@@ -229,7 +236,7 @@ impl Provisioner {
             let _ = git.fetch().await;
         }
         let held = match self.what_is_held(path, git.as_ref(), &mount.branch).await {
-            Ok(said) => said,
+            Ok(held) => held.said(),
             // A read that does not succeed does not mean "nothing to lose".
             Err(why) => format!("its state could not be read ({})", why.reason()),
         };
@@ -378,16 +385,118 @@ impl Provisioner {
                 run.branch.to_string()
             };
             let held = self.what_is_held(dest, git.as_ref(), &guard_branch).await?;
-            if !held.is_empty() {
+            if held.work() || (held.dirty > 0 && !run.wanted.drop_uncommitted) {
                 return Err(Halt::Halted(format!(
-                    "the workspace {name:?} carries {held} — look at {}, or \
+                    "the workspace {name:?} carries {} — look at {}, or \
                      re-run with --force-reset to overwrite it",
+                    held.said(),
                     run.source.rel(dest)
                 )));
+            }
+            if held.dirty > 0 {
+                // A checkout only the harness works in: the dirt is a
+                // session's leftovers, and the guard above saw that nothing
+                // under it is unpushed.
+                log.say(&format!(
+                    "workspace {name}: {} uncommitted change(s) a previous run \
+                     left — dropped, nothing on it is unpushed",
+                    held.dirty
+                ));
             }
         }
         self.put_on_branch(git.as_ref(), run.branch, true, log)
             .await
+    }
+
+    /// Puts a checkout back as the next run wants to find it, once its run
+    /// is done — then [`Self::unmount`].
+    ///
+    /// A session leaves what it leaves: a merge it began and never finished,
+    /// files it never committed, a branch it made. The next run on a
+    /// checkout the harness names would stop on all of it, and a lane that
+    /// stops on a leftover stops for every job after (`ForgeDesMondes`,
+    /// 23:09Z: a repair left a conflicted merge on its lane, and the review
+    /// that followed there halted on "2 uncommitted change(s)"). So the
+    /// merge is aborted, the branch put back at `origin`'s state, the
+    /// untracked files and the scratch branches removed.
+    ///
+    /// **Unless the checkout holds commits no remote has.** Those are work
+    /// — a repair that never got pushed — and are kept whole, said as an
+    /// [`Event::WorkKept`]; the next run on this checkout then stops and
+    /// names them, which is the right kind of stop. Only the merge is still
+    /// aborted: what it merged is on `origin`, and a half-merge over the
+    /// commits is noise for whoever comes to look.
+    ///
+    /// Cannot fail a run, like [`Self::unmount`]: what could not be done is
+    /// said, and the next mount says it again.
+    pub async fn release(&self, mount: &Mount, log: &Logbook) {
+        if let Some(path) = &mount.path
+            && !mount.branch.is_empty()
+        {
+            self.tidy(path, mount, log).await;
+        }
+        self.unmount(mount, log).await;
+    }
+
+    /// The release's work on a mounted checkout with a branch: see
+    /// [`Self::release`].
+    async fn tidy(&self, path: &Path, mount: &Mount, log: &Logbook) {
+        let git = self.repos.at(path);
+        abort_merge(git.as_ref(), &mount.name, log).await;
+        // Fresh references, so what the run pushed is not read as unpushed.
+        let _ = git.fetch().await;
+        let held = match self.what_is_held(path, git.as_ref(), &mount.branch).await {
+            Ok(held) => held,
+            Err(why) => {
+                log.warn(&format!(
+                    "workspace {}: its state could not be read ({}) — left as it is",
+                    mount.name,
+                    why.reason()
+                ));
+                return;
+            }
+        };
+        if let Some(wrong) = held.wrong {
+            log.warn(&format!(
+                "workspace {}: {wrong} — left as it is",
+                mount.name
+            ));
+            return;
+        }
+        if held.work() {
+            log.event(&Event::WorkKept {
+                workspace: mount.name.clone(),
+                path: path.display().to_string(),
+                branch: mount.branch.clone(),
+                branches: held.branches.clone(),
+                commits: count(held.commits.len()),
+                stashes: count(held.stashes),
+            });
+            return;
+        }
+        if held.dirty > 0 {
+            log.say(&format!(
+                "workspace {}: {} uncommitted change(s) the run left — dropped, \
+                 nothing on it is unpushed",
+                mount.name, held.dirty
+            ));
+        }
+        match self
+            .put_on_branch(git.as_ref(), &mount.branch, true, log)
+            .await
+        {
+            Ok(_) => log.debug(&format!(
+                "workspace {}: back on origin/{}, clean",
+                mount.name, mount.branch
+            )),
+            Err(why) => log.warn(&format!(
+                "workspace {}: cannot be put back on origin/{} ({}) — the next \
+                 run on it will say so",
+                mount.name,
+                mount.branch,
+                why.reason()
+            )),
+        }
     }
 
     /// Workspace on the workflow's branch, at the state of `origin`.
@@ -485,45 +594,40 @@ impl Provisioner {
         Some("no .git — this is not a workspace this run made")
     }
 
-    /// What this workspace holds that no one else has, stated in words.
+    /// What this workspace holds that no one else has.
     ///
-    /// Empty when there is nothing to lose. **The question asked twice** —
-    /// before a `reset --hard`, before deletion — and one answer,
-    /// because both destroy exactly the same things.
-    async fn what_is_held(&self, dest: &Path, git: &dyn Repo, branch: &str) -> Outcome<String> {
+    /// Empty when there is nothing to lose. **The question asked three
+    /// times** — before a `reset --hard`, before deletion, at a release —
+    /// and one answer, because all three destroy exactly the same things.
+    async fn what_is_held(&self, dest: &Path, git: &dyn Repo, branch: &str) -> Outcome<Held> {
         if let Some(wrong) = self.not_a_workspace(dest) {
-            return Ok(wrong.to_string());
+            return Ok(Held {
+                wrong: Some(wrong),
+                ..Held::default()
+            });
         }
-        let mut said = Vec::new();
-        let stashed = git.stashes().await?;
-        if !stashed.is_empty() {
-            said.push(format!("{} stash entry(ies)", stashed.len()));
-        }
+        let mut held = Held {
+            stashes: git.stashes().await?.len(),
+            ..Held::default()
+        };
         if branch.is_empty() {
-            let commits = git.unpushed().await?;
-            if let Some(first) = commits.first() {
-                said.push(format!("{} unpushed commit(s) ({first})", commits.len()));
+            held.commits = git.unpushed().await?;
+            if !held.commits.is_empty() {
+                let current = git.current_branch().await?;
+                held.branches = vec![if current.is_empty() {
+                    "HEAD".to_string()
+                } else {
+                    current
+                }];
             }
         } else {
-            let at_risk = git.branches_at_risk(&format!("origin/{branch}")).await?;
-            if !at_risk.is_empty() {
-                said.push(format!(
-                    "work on {} branch(es) origin does not have ({})",
-                    at_risk.len(),
-                    at_risk
-                        .iter()
-                        .take(3)
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
+            held.branches = git.branches_at_risk(&format!("origin/{branch}")).await?;
+            if !held.branches.is_empty() {
+                held.commits = git.unpushed().await?;
             }
         }
-        let dirty = git.dirty_files().await?;
-        if !dirty.is_empty() {
-            said.push(format!("{} uncommitted change(s)", dirty.len()));
-        }
-        Ok(said.join(", "))
+        held.dirty = git.dirty_files().await?.len();
+        Ok(held)
     }
 
     /// Warn that the checkout's local work is not in the workspace.
@@ -578,6 +682,89 @@ impl Provisioner {
         }
         held
     }
+}
+
+/// What a checkout holds that no one else has — the answer to the question
+/// asked before a `reset --hard`, before a deletion, and at a release.
+#[derive(Debug, Default)]
+struct Held {
+    /// Why the folder is no workspace at all; nothing else is read then.
+    wrong: Option<&'static str>,
+    /// Entries of `stash list`.
+    stashes: usize,
+    /// The local branches whose patch origin does not have — the current
+    /// one when the run has no branch and commits are unpushed.
+    branches: Vec<String>,
+    /// The commits no remote has, one line each.
+    commits: Vec<String>,
+    /// Uncommitted changes, one per file.
+    dirty: usize,
+}
+
+impl Held {
+    /// Work a reset or a deletion would lose for good: a stash, a commit no
+    /// remote has — or a folder that cannot be read, which counts as such.
+    const fn work(&self) -> bool {
+        self.wrong.is_some() || self.stashes > 0 || !self.branches.is_empty()
+    }
+
+    /// In words, for a halt or a warning; empty when nothing is held.
+    fn said(&self) -> String {
+        if let Some(wrong) = self.wrong {
+            return wrong.to_string();
+        }
+        let mut said = Vec::new();
+        if self.stashes > 0 {
+            said.push(format!("{} stash entry(ies)", self.stashes));
+        }
+        if !self.branches.is_empty() {
+            said.push(format!(
+                "{} unpushed commit(s) on {}",
+                self.commits.len(),
+                self.branches
+                    .iter()
+                    .take(3)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if self.dirty > 0 {
+            said.push(format!("{} uncommitted change(s)", self.dirty));
+        }
+        said.join(", ")
+    }
+}
+
+/// Aborts the merge a session began and never finished. Never work: what
+/// it merged is still on `origin` and can be merged again, and a conflicted
+/// index is what the next run on the checkout would stop on.
+async fn abort_merge(git: &dyn Repo, name: &str, log: &Logbook) {
+    match git.merge_in_progress().await {
+        Ok(false) => {}
+        Ok(true) => match git.abort_merge().await {
+            Ok(done) if done.ok() => {
+                log.say(&format!("workspace {name}: an unfinished merge aborted"));
+            }
+            Ok(done) => log.warn(&format!(
+                "workspace {name}: cannot abort its unfinished merge ({})",
+                done.why()
+            )),
+            Err(why) => log.warn(&format!(
+                "workspace {name}: cannot abort its unfinished merge ({})",
+                why.reason()
+            )),
+        },
+        Err(why) => log.warn(&format!(
+            "workspace {name}: cannot tell whether a merge is unfinished ({})",
+            why.reason()
+        )),
+    }
+}
+
+/// A count as an event carries it.
+fn count(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
 }
 
 /// The name of a workspace no one named.
@@ -635,8 +822,9 @@ fn is_a_name(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::ports::shell::process::Ran;
+    use crate::traces::{Sink, Verbosity};
     use async_trait::async_trait;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::HashSet;
 
     // --- fakes ---------------------------------------------------------------
@@ -647,6 +835,10 @@ mod tests {
     // Writing them against a real clone would be too much to ask.
 
     /// A `git` that responds what we told it, and records what we ask.
+    ///
+    /// Its tree has a state, as far as a release needs one: a merge in
+    /// progress until aborted or reset, dirt until reset or cleaned — so a
+    /// release followed by a mount reads what the release left.
     #[derive(Default)]
     struct FakeRepo {
         remote: String,
@@ -657,6 +849,10 @@ mod tests {
         at_risk: Vec<String>,
         unpushed: Vec<String>,
         dirty: Vec<String>,
+        /// A merge begun and not finished.
+        merging: Cell<bool>,
+        /// `dirty` was wiped by a reset or a clean.
+        swept: Cell<bool>,
         /// The verbs that come back non-zero.
         failing: Vec<&'static str>,
         /// In call order.
@@ -694,6 +890,9 @@ mod tests {
         }
 
         async fn dirty_files(&self) -> Outcome<Vec<String>> {
+            if self.swept.get() {
+                return Ok(Vec::new());
+            }
             Ok(self.dirty.clone())
         }
 
@@ -750,11 +949,32 @@ mod tests {
         }
 
         async fn reset_hard(&self, reference: &str) -> Outcome<Ran> {
-            Ok(self.note(&format!("reset_hard {reference}")))
+            let done = self.note(&format!("reset_hard {reference}"));
+            if done.ok() {
+                self.swept.set(true);
+                self.merging.set(false);
+            }
+            Ok(done)
         }
 
         async fn clean(&self) -> Outcome<Ran> {
-            Ok(self.note("clean"))
+            let done = self.note("clean");
+            if done.ok() {
+                self.swept.set(true);
+            }
+            Ok(done)
+        }
+
+        async fn merge_in_progress(&self) -> Outcome<bool> {
+            Ok(self.merging.get())
+        }
+
+        async fn abort_merge(&self) -> Outcome<Ran> {
+            let done = self.note("abort_merge");
+            if done.ok() {
+                self.merging.set(false);
+            }
+            Ok(done)
         }
 
         async fn delete_branch(&self, name: &str) -> Outcome<Ran> {
@@ -775,6 +995,23 @@ mod tests {
 
         async fn push(&self, branch: &str) -> Outcome<Ran> {
             Ok(self.note(&format!("push {branch}")))
+        }
+    }
+
+    /// A journal that keeps its lines and its events, to be read back.
+    #[derive(Default)]
+    struct Journal {
+        lines: RefCell<Vec<String>>,
+        events: RefCell<Vec<Event>>,
+    }
+
+    impl Sink for Journal {
+        fn emit(&self, line: &str) {
+            self.lines.borrow_mut().push(line.to_string());
+        }
+
+        fn record(&self, event: &Event) {
+            self.events.borrow_mut().push(event.clone());
         }
     }
 
@@ -883,6 +1120,16 @@ mod tests {
         wanted: &Wanted,
         dry_run: bool,
     ) -> Outcome<Mount> {
+        mount_logged(git, disk, wanted, dry_run, &Logbook::null()).await
+    }
+
+    async fn mount_logged(
+        git: &Rc<FakeRepo>,
+        disk: &Rc<FakeDisk>,
+        wanted: &Wanted,
+        dry_run: bool,
+        log: &Logbook,
+    ) -> Outcome<Mount> {
         let here = source();
         provisioner(git, Rc::clone(disk))
             .mount(
@@ -893,7 +1140,7 @@ mod tests {
                     run_id: "20261002-1",
                     dry_run,
                 },
-                &Logbook::null(),
+                log,
             )
             .await
     }
@@ -1012,14 +1259,20 @@ mod tests {
     async fn a_reused_workspace_carrying_work_halts_instead_of_resetting() {
         let git = repo(FakeRepo {
             at_risk: vec!["fix/something".to_string()],
+            unpushed: vec!["abc1234 the fix".to_string()],
             ..clean_repo()
         });
         let disk = Rc::new(disk_with_workspace());
         let err = mount_with(&git, &disk, &wanted(), false)
             .await
             .expect_err("must stop");
-        assert!(err.reason().contains("fix/something"));
-        assert!(err.reason().contains("--force-reset"), "name the exit");
+        assert_eq!(
+            err.reason(),
+            "the workspace \"event_assistant\" carries 1 unpushed commit(s) on fix/something \
+             — look at .llocal/agentic_workspaces/event_assistant, or re-run with \
+             --force-reset to overwrite it",
+            "the branch, how many, and the exit"
+        );
         let calls = git.calls();
         assert!(
             !calls.iter().any(|c| c.starts_with("reset_hard")),
@@ -1313,6 +1566,354 @@ mod tests {
         let disk = Rc::new(disk_with_workspace());
         unmount_with(&git, &disk, &disposable("")).await;
         assert_eq!(disk.removed(), [] as [std::path::PathBuf; 0]);
+    }
+
+    // --- the release: a checkout given back clean, or kept whole ---------
+
+    /// Where a lane's checkout lives, `.git` included.
+    const LANE: &str = "/depot/.llocal/agentic_workspaces/router-lane-1";
+
+    fn disk_with_lane() -> FakeDisk {
+        FakeDisk {
+            there: [PathBuf::from(LANE), PathBuf::from(LANE).join(".git")]
+                .into_iter()
+                .collect(),
+            ..FakeDisk::default()
+        }
+    }
+
+    /// A lane's checkout: permanent, named by the harness, on the branch
+    /// the run worked on.
+    fn lane(branch: &str) -> Mount {
+        Mount {
+            workspace: source().at(Path::new(DEST)),
+            name: "router-lane-1".to_string(),
+            path: Some(PathBuf::from(LANE)),
+            branch: branch.to_string(),
+            disposable: false,
+        }
+    }
+
+    /// What a read-only tenant of a lane asks for: no `force_reset`, and
+    /// the leftovers of a session dropped.
+    fn lane_wanted() -> Wanted {
+        Wanted {
+            id: "router-lane-1".to_string(),
+            create_if_missing: true,
+            drop_uncommitted: true,
+            ..wanted()
+        }
+    }
+
+    fn journal() -> (Rc<Journal>, Logbook) {
+        let journal = Rc::new(Journal::default());
+        let log = Logbook::new(Rc::clone(&journal) as Rc<dyn Sink>, Verbosity::Normal);
+        (journal, log)
+    }
+
+    /// The lane as the repair left it on `ForgeDesMondes` (23:09Z): a merge
+    /// of the milestone branch stopped on a conflict, files it added, a
+    /// folder it never committed — and nothing unpushed.
+    fn conflicted_lane() -> FakeRepo {
+        FakeRepo {
+            dirty: vec![
+                "UU crates/dataguard/server/src/lib.rs".to_string(),
+                "A  crates/dataguard/server/src/diffusion.rs".to_string(),
+                "?? scratch/".to_string(),
+            ],
+            merging: Cell::new(true),
+            local: vec![
+                "feat/diffusion-aggregate".to_string(),
+                "milestone/18-campaigns".to_string(),
+            ],
+            ..clean_repo()
+        }
+    }
+
+    fn position(calls: &[String], verb: &str) -> usize {
+        calls
+            .iter()
+            .position(|c| c == verb)
+            .unwrap_or_else(|| panic!("{verb} was not asked: {calls:?}"))
+    }
+
+    #[tokio::test]
+    async fn a_run_that_left_a_conflicted_merge_gives_its_checkout_back_clean() {
+        // The review that took the lane next halted on "2 uncommitted
+        // change(s)": the unmount only forced a checkout, which left the
+        // untracked files, and never said what it dropped.
+        let git = repo(conflicted_lane());
+        let disk = Rc::new(disk_with_lane());
+        let (journal, log) = journal();
+        provisioner(&git, Rc::clone(&disk))
+            .release(&lane("feat/diffusion-aggregate"), &log)
+            .await;
+        let calls = git.calls();
+        let abort = position(&calls, "abort_merge");
+        let fetch = position(&calls, "fetch");
+        let guard = position(&calls, "branches_at_risk");
+        let reset = position(&calls, "reset_hard origin/feat/diffusion-aggregate");
+        assert!(
+            abort < fetch && fetch < guard && guard < reset,
+            "the merge first, fresh refs before the guard, the guard before \
+             anything destructive: {calls:?}"
+        );
+        assert!(calls.contains(&"checkout feat/diffusion-aggregate --force".to_string()));
+        assert!(calls.contains(&"clean".to_string()));
+        assert!(calls.contains(&"delete_branch milestone/18-campaigns".to_string()));
+        assert!(!calls.contains(&"delete_branch feat/diffusion-aggregate".to_string()));
+        assert!(!git.merging.get(), "the merge is gone");
+        assert!(git.dirty_files().await.expect("read").is_empty());
+        assert!(journal.events.borrow().is_empty(), "nothing was kept");
+        let lines = journal.lines.borrow();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "workspace router-lane-1: an unfinished merge aborted"),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l
+                == "workspace router-lane-1: 3 uncommitted change(s) the run left — \
+                    dropped, nothing on it is unpushed"),
+            "{lines:?}"
+        );
+        assert_eq!(
+            disk.removed(),
+            [] as [PathBuf; 0],
+            "permanent: never deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_next_read_only_tenant_mounts_a_lane_a_release_left_clean() {
+        let git = repo(conflicted_lane());
+        let disk = Rc::new(disk_with_lane());
+        provisioner(&git, Rc::clone(&disk))
+            .release(&lane("feat/diffusion-aggregate"), &Logbook::null())
+            .await;
+        let (journal, log) = journal();
+        let mount = mount_logged(&git, &disk, &lane_wanted(), false, &log)
+            .await
+            .expect("the lane is clean: the review mounts it");
+        assert_eq!(mount.branch, "main_agent");
+        assert_eq!(mount.name, "router-lane-1");
+        assert!(
+            !journal.lines.borrow().iter().any(|l| l.contains("dropped")),
+            "nothing to drop, nothing said: {:?}",
+            journal.lines.borrow()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lane_dirty_with_nothing_unpushed_is_reset_at_mount_and_says_so() {
+        // A killed run never releases: the next tenant meets the dirt
+        // itself. Nothing under it is unpushed, so it is dropped and said,
+        // not halted on — a lane that halts on a leftover halts for every
+        // job after.
+        let git = repo(conflicted_lane());
+        let disk = Rc::new(disk_with_lane());
+        let (journal, log) = journal();
+        let mount = mount_logged(&git, &disk, &lane_wanted(), false, &log)
+            .await
+            .expect("mounted");
+        assert_eq!(mount.branch, "main_agent");
+        let calls = git.calls();
+        assert!(calls.contains(&"checkout main_agent --force".to_string()));
+        assert!(calls.contains(&"reset_hard origin/main_agent".to_string()));
+        assert!(calls.contains(&"clean".to_string()));
+        assert!(git.dirty_files().await.expect("read").is_empty());
+        assert!(
+            journal.lines.borrow().iter().any(|l| l
+                == "workspace router-lane-1: 3 uncommitted change(s) a previous run \
+                    left — dropped, nothing on it is unpushed"),
+            "{:?}",
+            journal.lines.borrow()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_human_s_workspace_still_halts_on_the_same_dirt() {
+        // `drop_uncommitted` is the whole difference: without it, the rule
+        // "nothing is overwritten without saying so" stands as it was.
+        let git = repo(conflicted_lane());
+        let disk = Rc::new(disk_with_lane());
+        let asked = Wanted {
+            drop_uncommitted: false,
+            ..lane_wanted()
+        };
+        let err = mount_with(&git, &disk, &asked, false)
+            .await
+            .expect_err("must stop");
+        assert!(err.reason().contains("3 uncommitted change(s)"));
+        assert!(!git.calls().iter().any(|c| c.starts_with("reset_hard")));
+    }
+
+    #[tokio::test]
+    async fn a_lane_holding_unpushed_commits_halts_naming_the_branch_and_how_many() {
+        // router-lane-1 on ForgeDesMondes, the morning after: a repair's
+        // merge commit never pushed. Dropping the dirt would not make that
+        // work pushed; the halt names it for whoever comes to look.
+        let git = repo(FakeRepo {
+            at_risk: vec!["feat/battlemap-instance-aggregate".to_string()],
+            unpushed: vec!["3e07a57 Merge milestone/18 into feat/battlemap".to_string()],
+            dirty: vec!["?? scratch/".to_string()],
+            ..clean_repo()
+        });
+        let disk = Rc::new(disk_with_lane());
+        let err = mount_with(&git, &disk, &lane_wanted(), false)
+            .await
+            .expect_err("must stop");
+        assert_eq!(
+            err.reason(),
+            "the workspace \"router-lane-1\" carries 1 unpushed commit(s) on \
+             feat/battlemap-instance-aggregate, 1 uncommitted change(s) — look at \
+             .llocal/agentic_workspaces/router-lane-1, or re-run with --force-reset to \
+             overwrite it"
+        );
+        assert!(
+            !git.calls().iter().any(|c| c.starts_with("reset_hard")),
+            "nothing was overwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_keeps_unpushed_commits_whole_and_says_so_as_an_event() {
+        let git = repo(FakeRepo {
+            at_risk: vec!["feat/x".to_string()],
+            unpushed: vec!["a1 fix".to_string(), "b2 fix again".to_string()],
+            dirty: vec![" M src/lib.rs".to_string()],
+            merging: Cell::new(true),
+            local: vec!["feat/x".to_string(), "scratch".to_string()],
+            ..clean_repo()
+        });
+        let disk = Rc::new(disk_with_lane());
+        let (journal, log) = journal();
+        provisioner(&git, Rc::clone(&disk))
+            .release(&lane("feat/x"), &log)
+            .await;
+        assert_eq!(
+            *journal.events.borrow(),
+            [Event::WorkKept {
+                workspace: "router-lane-1".to_string(),
+                path: LANE.to_string(),
+                branch: "feat/x".to_string(),
+                branches: vec!["feat/x".to_string()],
+                commits: 2,
+                stashes: 0,
+            }]
+        );
+        let calls = git.calls();
+        assert!(
+            calls.contains(&"abort_merge".to_string()),
+            "the half-merge is noise"
+        );
+        assert!(
+            !calls.iter().any(|c| c.starts_with("reset_hard")
+                || c == "clean"
+                || c.starts_with("checkout")
+                || c.starts_with("delete_branch")),
+            "nothing else is touched: {calls:?}"
+        );
+        assert_eq!(
+            git.dirty_files().await.expect("read").len(),
+            1,
+            "kept whole"
+        );
+        assert!(
+            journal.lines.borrow().iter().any(|l| l.starts_with(
+                "warning: workspace router-lane-1 kept as it is: 2 unpushed commit(s) on feat/x"
+            )),
+            "{:?}",
+            journal.lines.borrow()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stash_alone_is_work_a_release_keeps() {
+        let git = repo(FakeRepo {
+            stashes: vec!["stash@{0}: WIP".to_string()],
+            ..clean_repo()
+        });
+        let disk = Rc::new(disk_with_lane());
+        let (journal, log) = journal();
+        provisioner(&git, Rc::clone(&disk))
+            .release(&lane("feat/x"), &log)
+            .await;
+        assert_eq!(
+            *journal.events.borrow(),
+            [Event::WorkKept {
+                workspace: "router-lane-1".to_string(),
+                path: LANE.to_string(),
+                branch: "feat/x".to_string(),
+                branches: Vec::new(),
+                commits: 0,
+                stashes: 1,
+            }]
+        );
+        assert!(!git.calls().iter().any(|c| c.starts_with("reset_hard")));
+    }
+
+    #[tokio::test]
+    async fn a_merge_nobody_began_is_not_aborted_and_a_clean_lane_is_still_put_back() {
+        let git = repo(clean_repo());
+        let disk = Rc::new(disk_with_lane());
+        let (journal, log) = journal();
+        provisioner(&git, Rc::clone(&disk))
+            .release(&lane("feat/x"), &log)
+            .await;
+        let calls = git.calls();
+        assert!(!calls.contains(&"abort_merge".to_string()), "{calls:?}");
+        assert!(calls.contains(&"reset_hard origin/feat/x".to_string()));
+        assert!(
+            !journal.lines.borrow().iter().any(|l| l.contains("dropped")),
+            "nothing to drop, nothing said: {:?}",
+            journal.lines.borrow()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_abort_that_fails_is_said_and_the_reset_still_clears_the_merge() {
+        let git = repo(FakeRepo {
+            failing: vec!["abort_merge"],
+            ..conflicted_lane()
+        });
+        let disk = Rc::new(disk_with_lane());
+        let (journal, log) = journal();
+        provisioner(&git, Rc::clone(&disk))
+            .release(&lane("feat/diffusion-aggregate"), &log)
+            .await;
+        assert!(
+            journal.lines.borrow().iter().any(|l| l.starts_with(
+                "warning: workspace router-lane-1: cannot abort its unfinished merge"
+            )),
+            "{:?}",
+            journal.lines.borrow()
+        );
+        assert!(!git.merging.get(), "`reset --hard` drops MERGE_HEAD too");
+    }
+
+    #[tokio::test]
+    async fn a_release_without_a_mount_or_a_branch_asks_git_nothing() {
+        let git = repo(conflicted_lane());
+        let disk = Rc::new(disk_with_lane());
+        let prov = provisioner(&git, Rc::clone(&disk));
+        prov.release(&Mount::in_place(source()), &Logbook::null())
+            .await;
+        prov.release(&lane(""), &Logbook::null()).await;
+        assert_eq!(git.calls(), [] as [String; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_disposable_checkout_left_clean_by_its_release_is_removed() {
+        // The release leaves nothing to lose, so the unmount that follows
+        // finds nothing to keep.
+        let git = repo(conflicted_lane());
+        let disk = Rc::new(disk_with_workspace());
+        provisioner(&git, Rc::clone(&disk))
+            .release(&disposable("main_agent"), &Logbook::null())
+            .await;
+        assert_eq!(disk.removed(), vec![PathBuf::from(DEST)]);
     }
 
     // --- pure functions ---------------------------------------------------

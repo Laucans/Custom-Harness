@@ -270,6 +270,9 @@ async fn mount(
         // a typo must be refused, never cloned beside it. A lane's workspace
         // is named by the watch, and the first run on it creates it.
         create_if_missing: args.lane,
+        // A dirty tree here still stops the run and names itself: the
+        // exclusive workspace is the one a human may `--use-workspace`.
+        drop_uncommitted: false,
     };
     Provisioner {
         repos: Rc::clone(repos),

@@ -303,6 +303,7 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::ContractEvolved { .. } => progress(board, event, at),
         Event::BaseRed { branch, sha } => base_red(board, branch, sha.as_deref(), at),
         Event::BaseGreen { branch } => board.clear(&format!("base-red:{branch}")),
+        Event::WorkKept { .. } => work_kept(board, event, at),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }
@@ -378,6 +379,46 @@ fn snapshot_failed(board: &mut Board, branch: &str, sha: &str, reason: &str, at:
         Level::Warning,
         format!("The data model of {branch} was not archived"),
         format!("{sha}: {reason}"),
+        at,
+        Some(screen("journal", at)),
+    ));
+}
+
+/// A run gave its checkout back holding work no remote has: the harness
+/// kept it whole, and the lane on that checkout stops at every job until
+/// someone has looked. Nothing clears it but the human's gesture, so it is
+/// told once per checkout and counts up.
+fn work_kept(board: &mut Board, event: &Event, at: &str) {
+    let Event::WorkKept {
+        workspace,
+        path,
+        branches,
+        commits,
+        stashes,
+        ..
+    } = event
+    else {
+        return;
+    };
+    let mut held = Vec::new();
+    if *stashes > 0 {
+        held.push(format!("{stashes} stash entry(ies)"));
+    }
+    if !branches.is_empty() {
+        held.push(format!(
+            "{commits} unpushed commit(s) on {}",
+            branches.join(", ")
+        ));
+    }
+    board.add(Notification::once(
+        format!("work-kept:{workspace}"),
+        Level::Warning,
+        format!("Work kept on {workspace}"),
+        format!(
+            "{} — look at {path}: push or drop it, then re-run with --force-reset; the \
+             checkout takes no job until it is clean",
+            held.join(", ")
+        ),
         at,
         Some(screen("journal", at)),
     ));
@@ -537,6 +578,68 @@ mod tests {
                 code,
             },
         )
+    }
+
+    #[test]
+    fn work_kept_on_a_checkout_asks_someone_to_look_and_counts_up() {
+        let kept = |minute| {
+            stored(
+                minute,
+                Event::WorkKept {
+                    workspace: "router-lane-1".to_string(),
+                    path: "/f/.llocal/agentic_workspaces/router-lane-1".to_string(),
+                    branch: "feat/x".to_string(),
+                    branches: vec!["feat/x".to_string()],
+                    commits: 2,
+                    stashes: 1,
+                },
+            )
+        };
+        let board = from_events(&[kept(1), kept(2)]);
+        let told = board.get("work-kept:router-lane-1").expect("told");
+        assert_eq!(told.level, Level::Warning);
+        assert_eq!(told.title, "Work kept on router-lane-1");
+        assert!(
+            told.detail.starts_with(
+                "1 stash entry(ies), 2 unpushed commit(s) on feat/x — look at \
+                 /f/.llocal/agentic_workspaces/router-lane-1"
+            ),
+            "{}",
+            told.detail
+        );
+        assert!(told.detail.contains("--force-reset"), "{}", told.detail);
+        assert_eq!(told.count, 2, "the same checkout, told once");
+        assert_eq!(told.link, Some(screen("journal", &at(2))));
+
+        // Each kind of work is named only when there is some.
+        let held = |branches: Vec<&str>, commits, stashes| {
+            let board = from_events(&[stored(
+                3,
+                Event::WorkKept {
+                    workspace: "router-lane-3".to_string(),
+                    path: "/f/router-lane-3".to_string(),
+                    branch: "main_agent".to_string(),
+                    branches: branches.iter().map(ToString::to_string).collect(),
+                    commits,
+                    stashes,
+                },
+            )]);
+            board
+                .get("work-kept:router-lane-3")
+                .expect("told")
+                .detail
+                .clone()
+        };
+        let commits_only = held(vec!["feat/y"], 3, 0);
+        assert!(
+            commits_only.starts_with("3 unpushed commit(s) on feat/y —"),
+            "{commits_only}"
+        );
+        let stash_only = held(Vec::new(), 0, 1);
+        assert!(
+            stash_only.starts_with("1 stash entry(ies) —"),
+            "{stash_only}"
+        );
     }
 
     #[test]

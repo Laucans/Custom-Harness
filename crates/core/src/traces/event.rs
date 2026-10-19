@@ -365,6 +365,23 @@ pub enum Event {
         /// The integration branch.
         branch: String,
     },
+    /// A run gave its checkout back holding work no remote has — commits
+    /// never pushed, a stash. Nothing on it was reset: the work is kept
+    /// whole, and the next run on this checkout stops until someone looks.
+    WorkKept {
+        /// The checkout, by name (`router-lane-1`).
+        workspace: String,
+        /// Its folder.
+        path: String,
+        /// The branch the run was on.
+        branch: String,
+        /// The local branches whose patch origin does not have.
+        branches: Vec<String>,
+        /// How many commits no remote has.
+        commits: u64,
+        /// How many stash entries.
+        stashes: u64,
+    },
 }
 
 impl Event {
@@ -555,6 +572,30 @@ impl Event {
                     "watch: integration branch {branch} is green again — development and merges resume"
                 )
             }
+            Self::WorkKept {
+                workspace,
+                path,
+                branches,
+                commits,
+                stashes,
+                ..
+            } => {
+                let mut held = Vec::new();
+                if *stashes > 0 {
+                    held.push(format!("{stashes} stash entry(ies)"));
+                }
+                if !branches.is_empty() {
+                    held.push(format!(
+                        "{commits} unpushed commit(s) on {}",
+                        branches.join(", ")
+                    ));
+                }
+                format!(
+                    "workspace {workspace} kept as it is: {} — it is at {path}; the next \
+                     run on it stops until someone looks",
+                    held.join(", ")
+                )
+            }
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
@@ -577,6 +618,7 @@ impl Event {
             | Self::HumanTaskOpened { .. }
             | Self::ContractChangeAsked { .. }
             | Self::BaseRed { .. }
+            | Self::WorkKept { .. }
             | Self::Halted { .. }
             | Self::LaneEnded {
                 code: Some(1 | 3), ..
@@ -821,6 +863,43 @@ mod tests {
             reason: "no such file".to_string(),
         };
         assert_eq!(refused.level(), Level::Error);
+    }
+
+    #[test]
+    fn work_kept_on_a_checkout_names_it_warns_and_reads_back() {
+        let kept = Event::WorkKept {
+            workspace: "router-lane-1".to_string(),
+            path: "/f/.llocal/agentic_workspaces/router-lane-1".to_string(),
+            branch: "feat/x".to_string(),
+            branches: vec!["feat/x".to_string()],
+            commits: 2,
+            stashes: 0,
+        };
+        assert_eq!(
+            kept.line().as_deref(),
+            Some(
+                "workspace router-lane-1 kept as it is: 2 unpushed commit(s) on feat/x — it \
+                 is at /f/.llocal/agentic_workspaces/router-lane-1; the next run on it stops \
+                 until someone looks"
+            )
+        );
+        assert_eq!(kept.level(), Level::Warning, "someone has to look");
+        let json = serde_json::to_string(&kept).expect("json");
+        assert!(json.contains("\"event\":\"work_kept\""), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, kept);
+
+        let stash = Event::WorkKept {
+            workspace: "router-lane-1".to_string(),
+            path: "/f/.llocal/agentic_workspaces/router-lane-1".to_string(),
+            branch: "feat/x".to_string(),
+            branches: Vec::new(),
+            commits: 0,
+            stashes: 1,
+        };
+        let line = stash.line().expect("a line");
+        assert!(line.contains("1 stash entry(ies)"), "{line}");
+        assert!(!line.contains("unpushed"), "{line}");
     }
 
     #[test]
