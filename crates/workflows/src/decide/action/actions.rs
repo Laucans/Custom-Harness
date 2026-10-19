@@ -114,14 +114,14 @@ fn values(state: &DecideState) -> Vec<(&'static str, String)> {
             (
                 "(none)".to_string(),
                 "(none)".to_string(),
-                "`answer` or `cut`".to_string(),
+                "`answer`, `wait` or `cut`".to_string(),
             )
         },
         |pr| {
             (
                 format!("{} ({} -> {})", pr.reference(), pr.head, pr.base),
                 state.pr_comments.clone(),
-                "`answer`, `merge`, `repair` or `cut`".to_string(),
+                "`answer`, `merge`, `repair`, `wait` or `cut`".to_string(),
             )
         },
     );
@@ -152,13 +152,14 @@ impl SessionAction<DecideState> for AskDecider {
         let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let prompt = splice(&self.template, &pairs);
         let task = open.state.issue().reference();
+        let number = open.state.issue().number;
         let has_pr = open.state.pr.is_some();
         let reply =
             ask_and_record(open, &prompt, &self.stage, 1, &task, self.spending.as_ref()).await?;
-        if let Err(why) = decision::parse(&reply.text, has_pr) {
+        if let Err(why) = decision::parse(&reply.text, has_pr, number) {
             let retry = format!(
                 "Your answer does not read as a decision: {why}. Answer again with ONLY the JSON \
-                 object — action, summary, answer, confidence — no prose."
+                 object — action, summary, answer, confidence, and `on` for a wait — no prose."
             );
             ask_and_record(open, &retry, &self.stage, 1, &task, self.spending.as_ref()).await?;
         }
@@ -261,7 +262,7 @@ mod tests {
                 .find(|(key, _)| *key == k)
                 .map(|(_, v)| v.clone())
         };
-        assert_eq!(get("actions").as_deref(), Some("`answer` or `cut`"));
+        assert_eq!(get("actions").as_deref(), Some("`answer`, `wait` or `cut`"));
         assert!(
             get("decision")
                 .unwrap_or_default()

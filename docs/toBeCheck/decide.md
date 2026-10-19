@@ -15,7 +15,8 @@ This is M5 of the plan "autonomous development from the design dossier".
 
 - **The `decide` workflow**, routed right after the rules' task, on any open
   `harness:needs-decision`. It takes the label, then one opus session answers
-  `answer`, `merge`, `repair` or `cut`.
+  `answer`, `merge`, `repair`, `wait` (a blocker on the issue waited for,
+  `docs/toBeCheck/wait-for-a-producer.md`) or `cut`.
   - It writes `## Decision` (`decided-by: ai`) and carries the decision out.
   - It labels `harness:ai-decided` (created on boards that lack it) and
     records `DecisionTaken`.

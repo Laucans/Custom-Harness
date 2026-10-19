@@ -59,7 +59,12 @@ impl Apply {
                 self.decide_stage
             )));
         };
-        decision::parse(&reply.text, ctx.state.pr.is_some()).map_err(|why| {
+        decision::parse(
+            &reply.text,
+            ctx.state.pr.is_some(),
+            ctx.state.issue().number,
+        )
+        .map_err(|why| {
             Halt::Failed(format!(
                 "the decision did not read, even after one retry: {why} — DecisionParses should \
                  have stopped the round"
@@ -138,8 +143,26 @@ impl Apply {
                 self.gh.add_label(issue.number, labels::READY).await?;
                 Ok(Act::Answer)
             }
+            (Act::Wait { on }, _) => {
+                // The blocker holds the task until `on` lands, for free; one
+                // already there is not posted twice.
+                let blocked_by = self.gh.blocked_by(issue.number).await?;
+                if !blocked_by.iter().any(|blocker| blocker.number == on) {
+                    self.gh.add_blocked_by(issue.number, on).await?;
+                }
+                Ok(Act::Wait { on })
+            }
             (action, _) => Ok(action),
         }
+    }
+}
+
+/// What a comment adds for the action carried out: a wait names what the
+/// task is blocked by.
+fn carried(done: Act) -> String {
+    match done {
+        Act::Wait { on } => format!("\n\nBlocked by #{on} until it lands; no session before."),
+        _ => String::new(),
     }
 }
 
@@ -173,14 +196,15 @@ impl Action<DecideState> for Apply {
             .post_issue_comment(
                 issue.number,
                 &format!(
-                    "**The harness decided** ({}) — {}: {} ({}/5)\n\n{}\n\nTo overrule it, answer \
-                     under `## Decision` with `decided-by: owner` and pose `{}` again; take `{}` \
-                     off once read.",
+                    "**The harness decided** ({}) — {}: {} ({}/5)\n\n{}{}\n\nTo overrule it, \
+                     answer under `## Decision` with `decided-by: owner` and pose `{}` again; \
+                     take `{}` off once read.",
                     ctx.state.kind,
                     done.name(),
                     decided.summary,
                     decided.confidence,
                     decided.answer,
+                    carried(done),
                     labels::NEEDS_DECISION,
                     labels::AI_DECIDED
                 ),
@@ -457,5 +481,101 @@ mod tests {
         apply(&dry).run(&mut context).await.expect("nothing");
         let writes = dry.writes();
         assert!(writes.is_empty(), "{writes:?}");
+    }
+
+    #[derive(Default)]
+    struct Capture(std::cell::RefCell<Vec<String>>);
+
+    impl harness_core::traces::Sink for Capture {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_wait_blocks_the_task_on_what_it_waits_for_once_and_leaves_no_label_to_decide() {
+        // ForgeDesMondes: 60 of a day's 82 decisions answered "keep waiting"
+        // — each a body change that had the task taken again next tick.
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            labels: vec![labels::AI_DECIDED.to_string()],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r##"{"action":"wait","on":"#20","summary":"#20 has not landed its session crate","confidence":5}"##,
+            None,
+            &[],
+        );
+        context.state.kind = "stop".to_string();
+        let capture = Rc::new(Capture::default());
+        context.traces = Logbook::new(
+            Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        let Wrote::Body(15, body) = &writes[0] else {
+            panic!("the body first: {writes:?}");
+        };
+        assert!(
+            body.contains("verdict: wait — #20 has not landed its session crate (5/5)"),
+            "{body}"
+        );
+        assert_eq!(writes[1], Wrote::BlockedByLink(15, 20));
+        assert!(
+            matches!(&writes[2], Wrote::Comment(15, said) if said.contains("Blocked by #20 until it lands")),
+            "{writes:?}"
+        );
+        assert_eq!(
+            writes.last(),
+            Some(&Wrote::Label(15, labels::AI_DECIDED.to_string()))
+        );
+        assert!(
+            !writes.contains(&Wrote::Label(15, labels::NEEDS_DECISION.to_string())),
+            "nothing calls decide again"
+        );
+        assert!(
+            capture
+                .0
+                .borrow()
+                .iter()
+                .any(|line| line.contains("decide: #15 (stop) -> wait, 5/5")),
+            "{:?}",
+            capture.0.borrow()
+        );
+
+        // The blocker already there is not posted twice.
+        let mut blocked = Issue {
+            number: 15,
+            state: "open".to_string(),
+            ..Issue::default()
+        };
+        blocked.blocked_by = vec![Issue {
+            number: 20,
+            state: "open".to_string(),
+            ..Issue::default()
+        }];
+        let again = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            labels: vec![labels::AI_DECIDED.to_string()],
+            subs: vec![(4, vec![blocked])],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r#"{"action":"wait","on":20,"summary":"still #20"}"#,
+            Some(pr()),
+            &[labels::REVIEW_PENDING],
+        );
+        apply(&again).run(&mut context).await.expect("applied");
+        let writes = again.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::BlockedByLink(..))),
+            "{writes:?}"
+        );
+        assert!(
+            !writes.contains(&Wrote::MergedPr("40".to_string()))
+                && !writes.contains(&Wrote::Label(40, labels::PR_FIX.to_string())),
+            "a wait touches no PR: {writes:?}"
+        );
     }
 }

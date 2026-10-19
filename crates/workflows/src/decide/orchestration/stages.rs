@@ -64,6 +64,10 @@ What you may do here: {actions}.
   what to change.
 - `cut`: the task is closed — it is out of scope, or the plan no longer
   needs it; say why.
+- `wait`: this task cannot proceed until issue #N — a milestone or a task
+  — lands; give N in `on`. A GitHub blocker then holds the task, for free,
+  until #N lands: never `answer` "keep waiting", which pays a session every
+  tick to learn the same thing.
 For a port a person refused (`port`, the refusal in the comments): `answer`
 how the task does without it — inside the product, or through a port
 ports.json already has — or `cut` it when nothing of it stands without.
@@ -78,7 +82,8 @@ name it.
 
 Answer with ONLY a JSON object:
 {"action": "answer", "summary": "the decision, one sentence", "answer": "what the next session reads: the choices made, markdown", "confidence": 4}
-`confidence` is how sure you are, 1 to 5."#;
+`confidence` is how sure you are, 1 to 5. A `wait` adds `"on": N`, the
+number of the issue waited for."#;
 
 /// The free stage: read the case, then take the request.
 #[must_use]

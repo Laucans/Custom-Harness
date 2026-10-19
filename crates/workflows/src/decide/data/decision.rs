@@ -17,6 +17,12 @@ pub enum Action {
     Repair,
     /// The task is closed, with why.
     Cut,
+    /// The task waits for another issue — a milestone or a task — to land,
+    /// through a GitHub blocker: nothing is paid until it does.
+    Wait {
+        /// The issue waited for.
+        on: u64,
+    },
 }
 
 impl Action {
@@ -28,16 +34,7 @@ impl Action {
             Self::Merge => "merge",
             Self::Repair => "repair",
             Self::Cut => "cut",
-        }
-    }
-
-    fn of(name: &str) -> Option<Self> {
-        match name.trim().to_lowercase().as_str() {
-            "answer" | "proceed" => Some(Self::Answer),
-            "merge" => Some(Self::Merge),
-            "repair" => Some(Self::Repair),
-            "cut" => Some(Self::Cut),
-            _ => None,
+            Self::Wait { .. } => "wait",
         }
     }
 }
@@ -51,6 +48,18 @@ struct Answered {
     answer: String,
     #[serde(default)]
     confidence: u8,
+    /// For a `wait`: the issue waited for, as a number or as `#20`.
+    #[serde(default)]
+    on: Option<serde_json::Value>,
+}
+
+/// An issue number as a session writes it: `20`, `"20"` or `"#20"`.
+fn issue_number(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.trim().trim_start_matches('#').parse().ok(),
+        _ => None,
+    }
 }
 
 /// A decision, read and checked.
@@ -67,21 +76,40 @@ pub struct Decided {
     pub confidence: u8,
 }
 
-/// The decision a session answered, for a case with or without a PR.
+/// The decision a session answered, for issue `number`, with or without a
+/// PR.
 ///
 /// # Errors
 ///
 /// No JSON object, an action it does not have, a `merge` or a `repair`
-/// without a PR, an empty summary.
-pub fn parse(text: &str, has_pr: bool) -> Result<Decided, String> {
+/// without a PR, a `wait` naming no issue or the issue itself, an empty
+/// summary.
+pub fn parse(text: &str, has_pr: bool, number: u64) -> Result<Decided, String> {
     let answered: Answered =
         json_reply::parse_object(text).map_err(|e: ParseError| e.to_string())?;
-    let action = Action::of(&answered.action).ok_or_else(|| {
-        format!(
-            "`{}` is no action: answer, merge, repair or cut",
-            answered.action
-        )
-    })?;
+    let action = match answered.action.trim().to_lowercase().as_str() {
+        "answer" | "proceed" => Action::Answer,
+        "merge" => Action::Merge,
+        "repair" => Action::Repair,
+        "cut" => Action::Cut,
+        "wait" => {
+            let on = answered.on.as_ref().and_then(issue_number).ok_or_else(|| {
+                "`wait` names no issue: give `on`, the number of the issue waited for".to_string()
+            })?;
+            if on == number {
+                return Err(format!(
+                    "`wait` on #{number} itself: nothing would ever land"
+                ));
+            }
+            Action::Wait { on }
+        }
+        _ => {
+            return Err(format!(
+                "`{}` is no action: answer, merge, repair, wait or cut",
+                answered.action
+            ));
+        }
+    };
     if !has_pr && matches!(action, Action::Merge | Action::Repair) {
         return Err(format!(
             "`{}` needs a pull request, and this issue has none",
@@ -98,7 +126,6 @@ pub fn parse(text: &str, has_pr: bool) -> Result<Decided, String> {
         confidence: answered.confidence.clamp(1, 5),
     })
 }
-
 /// What kind of decision is asked.
 ///
 /// The `kind:` of `## Decision` when it says, else what the issue shows — a
@@ -156,24 +183,24 @@ mod tests {
         let text = r#"I looked. ```json
 {"action": "repair", "summary": " fix the null check ", "answer": "- keep the API", "confidence": 9}
 ```"#;
-        let read = parse(text, true).expect("read");
+        let read = parse(text, true, 15).expect("read");
         assert_eq!(read.action, Action::Repair);
         assert_eq!(read.summary, "fix the null check");
         assert_eq!(read.confidence, 5, "clamped");
         assert!(
-            parse(text, false)
+            parse(text, false, 15)
                 .expect_err("no PR")
                 .contains("needs a pull request")
         );
-        assert!(parse(r#"{"action":"vote","summary":"x"}"#, true).is_err());
-        assert!(parse(r#"{"action":"cut","summary":" "}"#, true).is_err());
+        assert!(parse(r#"{"action":"vote","summary":"x"}"#, true, 15).is_err());
+        assert!(parse(r#"{"action":"cut","summary":" "}"#, true, 15).is_err());
         assert_eq!(
-            parse(r#"{"action":"proceed","summary":"go"}"#, false)
+            parse(r#"{"action":"proceed","summary":"go"}"#, false, 15)
                 .expect("an alias")
                 .action,
             Action::Answer
         );
-        assert!(parse("no json", true).is_err());
+        assert!(parse("no json", true, 15).is_err());
     }
 
     #[test]
@@ -192,6 +219,41 @@ mod tests {
         };
         assert_eq!(kind_of(Some(&graph), false, false), "graph");
         assert_eq!(kind_of(None, false, false), "spec");
+    }
+
+    #[test]
+    fn a_wait_names_the_issue_waited_for_and_never_the_issue_itself() {
+        for on in ["20", r#""20""#, r##""#20""##, r#"" #20 ""#] {
+            let text = format!(r##"{{"action":"Wait","on":{on},"summary":"#20 first"}}"##);
+            assert_eq!(
+                parse(&text, false, 15).expect("read").action,
+                Action::Wait { on: 20 },
+                "{on}"
+            );
+        }
+        assert_eq!(Action::Wait { on: 20 }.name(), "wait");
+        assert!(
+            parse(r#"{"action":"wait","summary":"x"}"#, true, 15)
+                .expect_err("no issue")
+                .contains("names no issue")
+        );
+        assert!(
+            parse(r#"{"action":"wait","on":"soon","summary":"x"}"#, true, 15)
+                .expect_err("no number")
+                .contains("names no issue")
+        );
+        assert!(
+            parse(r#"{"action":"wait","on":15,"summary":"x"}"#, true, 15)
+                .expect_err("itself")
+                .contains("itself")
+        );
+        assert_eq!(
+            parse(r#"{"action":"answer","on":15,"summary":"x"}"#, true, 15)
+                .expect("read")
+                .action,
+            Action::Answer,
+            "`on` means nothing to another action"
+        );
     }
 
     #[test]
@@ -220,8 +282,8 @@ mod tests {
 
     proptest! {
         #[test]
-        fn reading_any_answer_never_panics(text in ".{0,300}", has_pr in any::<bool>()) {
-            let _ = parse(&text, has_pr);
+        fn reading_any_answer_never_panics(text in ".{0,300}", has_pr in any::<bool>(), number in any::<u64>()) {
+            let _ = parse(&text, has_pr, number);
         }
     }
 }

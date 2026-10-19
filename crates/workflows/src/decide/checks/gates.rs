@@ -49,13 +49,17 @@ impl Verification<DecideState> for DecisionParses {
                 self.stage
             )));
         };
-        decision::parse(&reply.text, ctx.state.pr.is_some())
-            .map(|_| Verdict::Continue)
-            .map_err(|why| {
-                Halt::Failed(format!(
-                    "the decision did not read, even after one retry: {why}"
-                ))
-            })
+        decision::parse(
+            &reply.text,
+            ctx.state.pr.is_some(),
+            ctx.state.issue().number,
+        )
+        .map(|_| Verdict::Continue)
+        .map_err(|why| {
+            Halt::Failed(format!(
+                "the decision did not read, even after one retry: {why}"
+            ))
+        })
     }
 }
 
