@@ -144,7 +144,7 @@ async fn attempt(
         session.ask(&prompt).await
     }
     .await;
-    shared::unmount_shared(&mount, &log).await;
+    shared::release_checkout(&mount, &log).await;
     Ok((prompt.chars().count(), answered?))
 }
 

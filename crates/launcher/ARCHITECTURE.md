@@ -297,6 +297,20 @@ Three checkouts, and the difference is whether the tenant commits:
 | its own, writable | `router-testdebt` | `test_debt` | it commits; `force_reset`, on the integration branch |
 | its own, writable | `router-rules` | `rules` | it commits; `force_reset`, on the integration branch |
 
+Under `--parallel`, a route runs on a lane and mounts the lane's own
+`router-lane-<k>` instead of the shared or the writable id, so a writing
+tenant (`pr_fix`, `rules`) and a read-only one (`pr_review`, `planner`,
+`split`, a refinement) take turns in the same checkout. Two facts keep the
+turns clean, both in `dispatch/shared.rs` and executed by
+`Provisioner::release` / `Provisioner::mount`: every tenant **releases** the
+checkout when it ends (`release_checkout`: an unfinished merge aborted, the
+branch back at `origin`, untracked files and scratch branches gone), and every
+router checkout is `drop_uncommitted` (a read-only mount that still meets
+uncommitted leftovers drops them and says so, instead of halting). Commits no
+remote has are kept whole either way, said as `Event::WorkKept`, and the next
+mount halts naming the branch and how many — a human's gesture, not a
+`--force-reset` a watch passes blindly.
+
 `init_repo` and `main_agent_merge` mount nothing: both only talk to GitHub.
 
 **Adding a workflow** means a new module in `dispatch/` that builds the

@@ -179,4 +179,7 @@ impl Repo for FakeRepo {
     async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
         Ok(self.note(&format!("create_orphan_branch {name}")))
     }
+    async fn abort_merge(&self) -> Outcome<Ran> {
+        Ok(self.note("abort_merge"))
+    }
 }

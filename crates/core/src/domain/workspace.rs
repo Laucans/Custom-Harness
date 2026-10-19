@@ -91,6 +91,10 @@ impl Strategy {
 }
 
 /// The workspace a workflow asks for. A **declaration**, not a mount.
+// Four flags, each a switch of its own (`--keep-workspace`, `--force-reset`)
+// or a fact of who named the workspace, read once at the mount and never
+// combined: four two-variant enums would say the same thing in more words.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default)]
 pub struct Wanted {
     /// What becomes of the folder.
@@ -120,6 +124,15 @@ pub struct Wanted {
     /// — a fixed id a workflow reserves for its own checkout, which nobody
     /// could have created by hand beforehand.
     pub create_if_missing: bool,
+    /// Reset a reused workspace whose only dirt is uncommitted changes,
+    /// instead of stopping and naming them.
+    ///
+    /// **True only for a checkout the harness alone works in** — a lane's
+    /// `router-lane-<k>`: the dirt there is what a session left behind, never
+    /// a human's work, and a lane that halts on it halts for every job
+    /// after. Commits no remote has still stop the run: those are kept and
+    /// named, whatever this says.
+    pub drop_uncommitted: bool,
 }
 
 /// A run's checkout, and where its accounting lands.

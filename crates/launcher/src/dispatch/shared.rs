@@ -110,8 +110,9 @@ pub async fn mount_shared(
 /// `force_reset` is what separates a read-only tenant from one that commits:
 /// a workflow that pushes leaves commits behind when it fails, and the next
 /// run of it wants them gone rather than to be told the workspace is dirty.
-/// A read-only tenant passes `false`, so an unexpected local change still
-/// stops the run and names itself.
+/// A read-only tenant passes `false`, so commits no remote has still stop
+/// the run and name themselves — uncommitted leftovers do not (see
+/// [`wanted`]).
 ///
 /// # Errors
 /// Whatever [`Provisioner::mount`] propagates — a workspace cloned from
@@ -132,18 +133,7 @@ pub async fn mount_named(
     let source = Workspace::new(here);
     let lender: Rc<dyn Disk> = Rc::new(RealDisk);
     let repos: Rc<dyn Repos> = Rc::new(GitRepos);
-    let wanted = Wanted {
-        strategy: Strategy::Permanent,
-        url: target_repo_url.to_string(),
-        id: id.to_string(),
-        base: String::new(),
-        keep: false,
-        force_reset,
-        // The harness chose this name, not a human: nobody could have cloned
-        // it beforehand, so refusing a missing one would make the whole
-        // router path unreachable on a fresh machine.
-        create_if_missing: true,
-    };
+    let wanted = wanted(target_repo_url, id, force_reset);
     let mount = Provisioner {
         repos,
         disk: Rc::clone(&lender),
@@ -168,36 +158,45 @@ pub async fn mount_named(
     Ok(mount)
 }
 
-/// Unmounts a checkout mounted here — a no-op for a named `Permanent`
-/// workspace, called anyway for symmetry with `dev_loop`'s own "unmount
-/// happens no matter what".
+/// The checkout a router-dispatched workflow asks for: permanent, under the
+/// name the harness chose, and **only the harness ever works in it**.
 ///
-/// **And drops what the run left on it.** These checkouts are read-only:
-/// nothing on them is ever pushed, so a branch a session made there — a pull
-/// request fetched to be reviewed — is scratch. Left behind, it read as work
-/// origin does not have, and the next mount refused the whole checkout.
-pub async fn unmount_shared(mount: &Mount, log: &Logbook) {
-    let repos: Rc<dyn Repos> = Rc::new(GitRepos);
-    if let Some(path) = &mount.path
-        && !mount.branch.is_empty()
-    {
-        let git = repos.at(path);
-        if git
-            .checkout(&mount.branch, true)
-            .await
-            .is_ok_and(|ran| ran.ok())
-        {
-            for branch in git.local_branches().await.unwrap_or_default() {
-                if branch != mount.branch
-                    && git.delete_branch(&branch).await.is_ok_and(|ran| ran.ok())
-                {
-                    log.say(&format!("workspace: dropped the scratch branch {branch}"));
-                }
-            }
-        }
+/// That last fact is `drop_uncommitted`: whatever a session leaves
+/// uncommitted on it — a merge it never finished, files it never committed
+/// — is a leftover, dropped at the next mount rather than halted on. A lane
+/// that halts on a leftover halts for every job after it (`ForgeDesMondes`,
+/// 23:09Z: a repair's conflicted merge on `router-lane-1` stopped the review
+/// that followed there, and `router-lane-3` was in the same state). Commits
+/// no remote has are not leftovers: they still stop the mount, named.
+fn wanted(target_repo_url: &str, id: &str, force_reset: bool) -> Wanted {
+    Wanted {
+        strategy: Strategy::Permanent,
+        url: target_repo_url.to_string(),
+        id: id.to_string(),
+        base: String::new(),
+        keep: false,
+        force_reset,
+        // The harness chose this name, not a human: nobody could have cloned
+        // it beforehand, so refusing a missing one would make the whole
+        // router path unreachable on a fresh machine.
+        create_if_missing: true,
+        drop_uncommitted: true,
     }
+}
+
+/// Gives a checkout mounted here back, whatever the run did on it —
+/// called no matter what, like `dev_loop`'s own unmount.
+///
+/// [`Provisioner::release`] does the work: an unfinished merge aborted, the
+/// branch put back at `origin`'s state, untracked files and scratch branches
+/// gone — so the next tenant of the lane, read-only or not, finds it clean.
+/// Commits no remote has are the exception: kept whole and said in the
+/// journal (`Event::WorkKept`), never deleted; the next mount then stops and
+/// names them.
+pub async fn release_checkout(mount: &Mount, log: &Logbook) {
+    let repos: Rc<dyn Repos> = Rc::new(GitRepos);
     let disk: Rc<dyn Disk> = Rc::new(RealDisk);
-    Provisioner { repos, disk }.unmount(mount, log).await;
+    Provisioner { repos, disk }.release(mount, log).await;
 }
 
 /// The adapters every router-dispatched workflow needs, built against a
@@ -217,7 +216,7 @@ pub struct Adapters {
 
 /// Builds the adapters for one run against this mounted workspace.
 ///
-/// `unmount_shared` is the matching teardown, whichever mount built it.
+/// `release_checkout` is the matching teardown, whichever mount built it.
 /// `trace` is the folder where paid sessions append what they did, live — see
 /// [`trace_dir`].
 /// The run's own folder, derived from where its `run.log` is.
@@ -345,4 +344,92 @@ pub fn apply_drafts(here: &Path, now: u64) -> Outcome<Vec<String>> {
         return Err(halt);
     }
     Ok(applied)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_adapters::shell::process;
+
+    #[test]
+    fn a_router_checkout_is_permanent_harness_named_and_drops_a_session_s_leftovers() {
+        // The two facts the lanes' live failure turned on: the checkout is
+        // the harness's own (so a missing one is cloned, a dirty one swept),
+        // and `force_reset` is the tenant's to pass — a read-only one does
+        // not, so commits no remote has still stop it.
+        let asked = wanted("git@github.com:o/r.git", "router-lane-1", false);
+        assert_eq!(asked.strategy, Strategy::Permanent);
+        assert_eq!(asked.url, "git@github.com:o/r.git");
+        assert_eq!(asked.id, "router-lane-1");
+        assert!(asked.base.is_empty());
+        assert!(!asked.keep);
+        assert!(!asked.force_reset);
+        assert!(asked.create_if_missing);
+        assert!(asked.drop_uncommitted);
+        assert!(wanted("", "router-prfix", true).force_reset);
+    }
+
+    /// Runs `git` in `dir` with a throwaway identity, so a commit needs no
+    /// configuration of the machine's own.
+    async fn git(dir: &Path, args: &[&str]) -> String {
+        let with_identity: Vec<String> = ["-c", "user.name=t", "-c", "user.email=t@t"]
+            .iter()
+            .chain(args)
+            .map(|arg| (*arg).to_string())
+            .collect();
+        let ran = process::run("git", &with_identity, dir)
+            .await
+            .expect("git runs");
+        assert!(ran.ok(), "git {args:?}: {}", ran.stderr);
+        ran.out().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_released_checkout_is_given_back_clean_by_the_real_git() {
+        // The one teardown every router-dispatched workflow ends on, built
+        // against the real `git`: a release that did nothing would leave
+        // the lane as the session left it — the live failure it exists to
+        // end. A clone of a local origin, left with an untracked file and a
+        // branch of its own, as a session leaves them.
+        let root = std::env::temp_dir().join(format!("harness-release-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        git(&root, &["init", "-q", "-b", "main", "origin"]).await;
+        let origin = root.join("origin");
+        std::fs::write(origin.join("a"), "base").expect("write");
+        git(&origin, &["add", "a"]).await;
+        git(&origin, &["commit", "-q", "-m", "base"]).await;
+        let origin_url = origin.display().to_string();
+        git(&root, &["clone", "-q", &origin_url, "lane"]).await;
+        let lane = root.join("lane");
+        std::fs::write(lane.join("scratch"), "left behind").expect("write");
+        git(&lane, &["branch", "scratch"]).await;
+        let mount = Mount {
+            workspace: Workspace::new(&root).at(&lane),
+            name: "router-lane-1".to_string(),
+            path: Some(lane.clone()),
+            branch: "main".to_string(),
+            disposable: false,
+        };
+        release_checkout(&mount, &Logbook::null()).await;
+        assert!(
+            !lane.join("scratch").exists(),
+            "the untracked file is dropped"
+        );
+        assert!(
+            lane.join("a").exists(),
+            "the checkout itself stays: permanent"
+        );
+        assert_eq!(git(&lane, &["status", "--porcelain"]).await, "", "clean");
+        assert_eq!(
+            git(
+                &lane,
+                &["for-each-ref", "--format=%(refname:short)", "refs/heads"]
+            )
+            .await,
+            "main",
+            "the scratch branch is gone, the run's branch stays"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

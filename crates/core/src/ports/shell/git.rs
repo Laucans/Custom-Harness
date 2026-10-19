@@ -243,6 +243,33 @@ pub trait Repo {
             stderr: format!("this git cannot create the orphan branch {name}"),
         })
     }
+
+    /// Is a merge unfinished — `MERGE_HEAD` still there, conflicts
+    /// resolved or not?
+    ///
+    /// False by default: an adapter that cannot tell has no merge to
+    /// abort, and the reset that follows clears one anyway.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn merge_in_progress(&self) -> Outcome<bool> {
+        Ok(false)
+    }
+
+    /// `merge --abort`: put the tree back as it was before the merge began.
+    ///
+    /// Refused by default, like [`Self::create_orphan_branch`]: only a real
+    /// `git` and the fakes that test a release know how.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn abort_merge(&self) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "this git cannot abort a merge".to_string(),
+        })
+    }
 }
 
 /// Open a [`Repo`] on a given repository.

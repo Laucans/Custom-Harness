@@ -167,12 +167,22 @@ The first two judge, the third writes — decision #1 applied to what used to be
 three branches inside one Python function, impossible to read from the table or
 test alone.
 
-### `provisioning.rs` — mount and unmount
+### `provisioning.rs` — mount, release, unmount
 
 What `domain::workspace::Wanted` declares, this executes: find or clone, reset
 to `origin`, delete at the end when disposable. Three rules, each against a way
 to lose work: nothing is overwritten silently (`--force-reset` is the human's
 exit), nothing is deleted silently, and **a dry-run doesn't clone**.
+
+One exception to the first, for a checkout only the harness works in
+(`Wanted::drop_uncommitted`, the router's `router-lane-<k>`): uncommitted
+changes there are a session's leftovers, dropped and said at the mount rather
+than halted on — a lane that halts on a leftover halts for every job after.
+Commits no remote has, a stash, still halt it, naming the branch and how many.
+`Provisioner::release` asks the same question when a run gives its checkout
+back: an unfinished merge aborted, the branch put back at `origin`'s state,
+untracked files and scratch branches gone — or, when commits no remote has are
+on it, nothing reset and an `Event::WorkKept` in the journal.
 
 ## Where to add what
 
