@@ -150,17 +150,20 @@ fn start_route(
 }
 
 /// What a parked task is compared on: its body, its labels and the blockers
-/// still open on it. Answering the stop — editing the SPEC, a label — moves
-/// it; so does a blocker closing: `ForgeDesMondes`' #247 and #248, taken in
-/// the second before their `blocked_by` were posted, stopped on "cannot run:
-/// blocked" and would have stayed parked after #244 and #246 closed.
+/// still holding it ([`tasks::still_blocks`]). Answering the stop — editing
+/// the SPEC, a label — moves it; so does a blocker landing: `ForgeDesMondes`'
+/// #247 and #248, taken in the second before their `blocked_by` were posted,
+/// stopped on "cannot run: blocked" and would have stayed parked after #244
+/// and #246 closed; a task parked until a milestone lands moves at its
+/// `harness:waiting-merge`, when the code it needs is on the integration
+/// branch, not at the close that comes later.
 fn issue_version(issue: &Issue) -> String {
     let mut labels = issue.labels.clone();
     labels.sort_unstable();
     let mut open_blockers: Vec<u64> = issue
         .blocked_by
         .iter()
-        .filter(|b| b.is_open())
+        .filter(|b| tasks::still_blocks(b))
         .map(|b| b.number)
         .collect();
     open_blockers.sort_unstable();
@@ -408,6 +411,28 @@ mod tests {
         task.labels.pop();
         task.body.push_str("\nmore");
         assert_ne!(issue_version(&task), unparked, "its body moves it");
+    }
+
+    #[test]
+    fn a_task_parked_until_a_milestone_lands_moves_at_its_waiting_merge() {
+        // #214 waited for #20 (its stop's blocker): parked on the version
+        // with #20 open, it moves when #20's PR lands on the integration
+        // branch — the label — not only when #20 closes.
+        let mut task = issue(214, &[labels::AGENT, labels::READY], "capability");
+        let mut producer = issue(20, &[labels::MILESTONE, labels::TRIGGERED], "");
+        task.blocked_by = vec![producer.clone()];
+        let parked_on = issue_version(&task);
+        producer.labels.push(labels::WAITING_MERGE.to_string());
+        task.blocked_by = vec![producer.clone()];
+        let landed = issue_version(&task);
+        assert_ne!(landed, parked_on, "its producer landed: it moved");
+        producer.state = "closed".to_string();
+        task.blocked_by = vec![producer];
+        assert_eq!(
+            issue_version(&task),
+            landed,
+            "closing a landed producer changes nothing it waits on"
+        );
     }
 
     #[test]

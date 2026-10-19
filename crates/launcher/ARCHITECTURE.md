@@ -22,7 +22,7 @@ src/router/       what decides on its own: `harness watch`
   mod.rs            the loop: a tick, its reads of the board, the rest after a `QUOTA` stop — and, starting, the prompt drafts applied (`shared::apply_drafts`)
   routes.rs         what a tick decided, run in this process: the route's workflow, the merges, a refinement round, the record a failed dispatch leaves for the doctor
   lanes.rs          the lanes of a parallel watch filled: a `harness` child per runnable task, split or refinement, in a checkout of its own
-src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`; a lane that stops (exit 1) parks its task until the issue's body or labels change
+src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`; a lane that stops (exit 1) parks its task until the issue's body or labels change, or a blocker holding it lands
 
 src/dispatch/     one module per thing that can be run, plus what they share
   dev_loop.rs       the first workflow: an exclusive workspace, several sessions deep
