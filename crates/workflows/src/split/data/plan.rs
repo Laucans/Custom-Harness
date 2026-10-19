@@ -468,6 +468,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_folder_that_only_starts_with_data_capabilities_is_not_the_folder() {
+        // `crates/media/data-capabilities-legacy/` and
+        // `crates/media/data-capabilitiesx/` name another folder: the name is
+        // read whole, a letter, a digit, `-` or `_` after it is more name.
+        assert_eq!(
+            data_capability_folders(
+                "crates/media/data-capabilities-legacy/x/, crates/media/data-capabilitiesx/, \
+                 crates/media/data-capabilities_2/, crates/media/data-capabilities9/"
+            ),
+            [] as [&str; 0]
+        );
+        // The folder itself, closed by a slash, a space, the end or punctuation.
+        assert_eq!(
+            data_capability_folders(
+                "crates/media/data-capabilities/, crates/ai/data-capabilities and \
+                 crates/credit/data-capabilities, crates/campaign/data-capabilities"
+            ),
+            ["media", "ai", "credit", "campaign"]
+        );
+        // So a sketch naming such a folder places nothing wrong.
+        let save = slice(&format!(
+            r#"{{"title":"Save","brief":"b","branch":"feat/save","unit":"data-capability","system":"campaign","produces":["campaign.saveEntity"],"technical":"crates/dataguard/data-capabilities-old/save-entity/",{WHOLE}}}"#
+        ));
+        assert_eq!(spec_gaps(&[save]), [] as [String; 0]);
+    }
+
     fn aggregate(name: &str, technical: &str) -> String {
         format!(
             r#"{{"title":"{name}","brief":"b","branch":"feat/{name}","unit":"aggregate","system":"dataguard","aggregate":"{name}","produces":["{name}"],"technical":"{technical}",{WHOLE}}}"#
