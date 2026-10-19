@@ -381,6 +381,7 @@ mod tests {
             test_debt: Vec::new(),
             rules: Vec::new(),
             deciding: Vec::new(),
+            base_checks: None,
         }
     }
 

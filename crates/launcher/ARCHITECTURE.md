@@ -147,6 +147,18 @@ freed — the tick ends there (`routing::may_skip`, `routing::Pulse`). The
 forty-odd reads of a snapshot are paid when something changed, or every
 `routing::FULL_READ_EVERY` ticks as a valve.
 
+**A red integration branch holds the plant.** On every full read, before the
+snapshot, the sentinel (`workflows::common::sentinel::watch`) reads the
+integration branch's own workflow runs (`GitHub::branch_checks`): a failed
+run on its newest head opens one `harness:human` issue, `Integration branch
+<b> is red` — found again by its title, never twice — and the schedule drops
+what would build on the red or merge into it (`routing::base_red`: the
+tasks, whose milestone branch takes the integration branch first, and the
+two merges), keeping the reviews, the repairs, the rules, the test debt and
+the decisions. The board is read in full every tick meanwhile, as for a PR
+under CI, since the push that turns it green moves no issue; green closes
+the issue and the jobs resume. `--dry-run` reads and says, writes nothing.
+
 Three rules, and they are not symmetric:
 
 - **A failed routing read stops the loop.** Bad credentials or an unreadable

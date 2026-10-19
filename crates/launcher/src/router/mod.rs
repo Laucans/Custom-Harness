@@ -55,7 +55,7 @@ use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug};
 use harness_core::ports::shell::github::{Activity, GitHub};
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
-use harness_workflows::common::{branching, labels, review};
+use harness_workflows::common::{branching, labels, review, sentinel};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
 use harness_workflows::main_agent_merge::data::merge_train;
@@ -226,15 +226,21 @@ async fn tick(
         }
         Activity::Unchanged => pulse.etag.clone(),
     };
+    // The base first: what the rest of the read may build on, and the one
+    // issue a red base opens, before anything is decided on it.
+    let base_checks = sentinel::watch(gh.as_ref(), &args.branch, args.dry_run, log).await?;
     let (mut found, idle, watching_ci) = snapshot(
         gh.as_ref(),
         &args.branch,
         args.parallel.max(1),
         &lanes.running(),
+        base_checks,
         log,
     )
     .await?;
-    pulse.read_in_full(etag, watching_ci);
+    // A red base is read in full every tick like a pull request waiting on
+    // its checks: the push that turns it green moves no issue.
+    pulse.read_in_full(etag, watching_ci || routing::base_red(&found));
     if args.no_human_gate {
         routing::open_taps(gh.as_ref(), &mut found, pulse, log).await?;
     }
@@ -291,9 +297,10 @@ async fn tick(
 /// wrong: the counts are the whole input to `routing::schedule`.
 fn say_saw(found: &Snapshot, log: &Logbook) {
     log.debug(&format!(
-        "saw: {} roadmap, {} milestone(s), {} refining, {} tech-refining, {} arbitrating, \
-         {} test-debt, {} rules, pr_fix={:?}, pr_review={:?}, to_merge={:?}, ready_to_merge={:?}, \
-         dev_loop={:?}",
+        "saw: base={:?}, {} roadmap, {} milestone(s), {} refining, {} tech-refining, \
+         {} arbitrating, {} test-debt, {} rules, pr_fix={:?}, pr_review={:?}, to_merge={:?}, \
+         ready_to_merge={:?}, dev_loop={:?}",
+        found.base_checks,
         found.roadmap.len(),
         found.milestones.len(),
         found.refining.len(),
@@ -452,12 +459,14 @@ fn resolve_gh(args: &WatchArgs, here: &Path) -> Outcome<Rc<dyn GitHub>> {
 /// why the current milestone offers no task when it does not.
 /// The snapshot, the idle reason if the board has nothing runnable, and
 /// whether a pull request the board waits on is open — what tells the next
-/// tick it cannot trust a quiet activity read.
+/// tick it cannot trust a quiet activity read. `base_checks` is what the
+/// sentinel read of the integration branch, already.
 async fn snapshot(
     gh: &dyn GitHub,
     branch: &str,
     lanes: usize,
     running: &[u64],
+    base_checks: Option<bool>,
     log: &Logbook,
 ) -> Outcome<(Snapshot, Option<String>, bool)> {
     let roadmap = gh.issues_labelled(labels::ROADMAP, "open").await?;
@@ -538,6 +547,7 @@ async fn snapshot(
         test_debt,
         rules,
         deciding,
+        base_checks,
     };
     // The tests come first: a development that waits on them says so.
     let idle = routing::rules_first(&snapshot)
