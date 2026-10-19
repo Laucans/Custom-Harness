@@ -51,6 +51,11 @@ pub struct Loop {
     /// over — a decision asked, or a task opened for a human: the round
     /// achieved what it could.
     pub handed_over: bool,
+    /// The session was killed at its open pull request, which stands.
+    ///
+    /// The PR is in the harness's own cycle (reviewed, merged once green),
+    /// and is what the round delivered.
+    pub pr_stands: bool,
     /// What the working tree is narrowed to, one folder per line, while a
     /// stage runs on the task's closure; empty when the tree is whole. Set
     /// by `Narrow`, read by `Ask` for the prompt, cleared by `Widen`.

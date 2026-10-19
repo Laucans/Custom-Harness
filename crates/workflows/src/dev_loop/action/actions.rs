@@ -276,8 +276,11 @@ impl Action<Loop> for MarkWaitingMerge {
 }
 
 impl MarkWaitingMerge {
-    /// The write side's own delivery: no merged PR, but an open one carrying
-    /// `harness:to-review` on the task's declared branch. The task is then
+    /// The delivery of a PR left open in the harness's cycle.
+    ///
+    /// No merged PR, but an open one carrying `harness:to-review` on the
+    /// task's declared branch — the write side's own way, or a session of
+    /// either side killed at its PR ([`Self::pr_stands`]). The task is then
     /// marked `review-pending` — the loop stops replaying it, the next task
     /// waits, and `milestone_merge` merges it once its review is clean and
     /// every check green. Nothing is asked of a human: they are told.
@@ -290,7 +293,7 @@ impl MarkWaitingMerge {
         here: &harness_core::domain::Issue,
         number: u64,
     ) -> Outcome<Verdict> {
-        if !ctx.state.write_side || tasks::review_pending(here) {
+        if tasks::review_pending(here) {
             return Ok(Verdict::Continue);
         }
         let branch = tasks::declared_branch(&here.body);
@@ -299,17 +302,32 @@ impl MarkWaitingMerge {
             .iter()
             .find(|pr| branch.as_deref() == Some(pr.head.as_str()))
         else {
-            ctx.traces.say(&format!(
-                "#{number} is on the write side and no open PR carrying {} is on its \
-                 branch {} yet",
-                labels::TO_REVIEW,
-                branch.as_deref().unwrap_or("(undeclared)")
-            ));
+            // The read side merges its own PR: no PR left open is its
+            // normal case, and the postcondition says what is missing.
+            if ctx.state.write_side {
+                ctx.traces.say(&format!(
+                    "#{number} is on the write side and no open PR carrying {} is on its \
+                     branch {} yet",
+                    labels::TO_REVIEW,
+                    branch.as_deref().unwrap_or("(undeclared)")
+                ));
+            }
             return Ok(Verdict::Continue);
         };
+        self.mark_review_pending(ctx, number, pr).await?;
+        Ok(Verdict::Continue)
+    }
+
+    /// Marks the task `review-pending` for `pr`, says so on the issue and
+    /// in the journal, and records [`Event::PrOpened`].
+    async fn mark_review_pending(
+        &self,
+        ctx: &Context<Loop>,
+        number: u64,
+        pr: &harness_core::domain::Pr,
+    ) -> Outcome<()> {
         ctx.traces.say(&format!(
-            "#{number} is on the write side: PR {} is open, merged once reviewed and \
-             green — marked {}",
+            "#{number}: PR {} is open, merged once reviewed and green — marked {}",
             pr.reference(),
             labels::REVIEW_PENDING
         ));
@@ -317,8 +335,8 @@ impl MarkWaitingMerge {
             .post_issue_comment(
                 number,
                 &format!(
-                    "PR {} is open on the write side of the architecture: `milestone_merge` \
-                     merges it once its review has run and every check is green.",
+                    "PR {} is open: `milestone_merge` merges it once its review has run \
+                     and every check is green.",
                     pr.url
                 ),
             )
@@ -329,7 +347,65 @@ impl MarkWaitingMerge {
             pr: pr.reference(),
             base: pr.base.clone(),
         });
-        Ok(Verdict::Continue)
+        Ok(())
+    }
+
+    /// A session killed at its open pull request delivered that PR.
+    ///
+    /// Killed for its silence ([`Halt::killed_as_hung`]) while its PR was
+    /// already open: the PR is the delivery, not a failed round. Three
+    /// write-side sessions pushed their PR, waited on its CI through a
+    /// background watcher, and were killed twenty minutes later; each round
+    /// was filed `FAILED`, the task never marked, and the scheduler sent a
+    /// second session onto a branch the PR's own review and repair were
+    /// working.
+    ///
+    /// The PR is handed to the harness's own cycle: labelled
+    /// `harness:to-review` when it is not yet (a read-side session merges
+    /// its own PR and labels nothing), the task marked `review-pending`,
+    /// `pr_stands` set so the postcondition accepts the round. Whether it
+    /// stood: `false` for any other halt, for a task with no declared
+    /// branch, and for a branch with no open PR — the failure it was.
+    ///
+    /// # Errors
+    /// The GitHub writes' — the label on the PR, the comment and label on
+    /// the task.
+    pub async fn pr_stands(&self, ctx: &mut Context<Loop>, halt: &Halt) -> Outcome<bool> {
+        if !halt.killed_as_hung() || ctx.settings.dry_run || !ctx.state.has_task() {
+            return Ok(false);
+        }
+        let number = number_of(ctx)?;
+        let Some(branch) = tasks::declared_branch(&ctx.state.task.body) else {
+            return Ok(false);
+        };
+        // No PR on the branch is among the failures `pr` answers with: the
+        // session died before its push, and the round failed as it says.
+        let Ok(pr) = self.gh.pr(&branch).await else {
+            return Ok(false);
+        };
+        if !pr.is_open() {
+            return Ok(false);
+        }
+        ctx.traces.warn(&format!(
+            "#{number}: the session was killed while waiting on PR {}'s checks ({}) — the PR \
+             stands on {branch}: the harness watches its CI from here, and merges it once \
+             reviewed and green",
+            pr.reference(),
+            halt.reason()
+        ));
+        if !pr.has(labels::TO_REVIEW) {
+            let pr_number = pr
+                .num
+                .parse::<u64>()
+                .map_err(|_| Halt::Failed(format!("{:?} is not a PR number", pr.num)))?;
+            self.gh.add_label(pr_number, labels::TO_REVIEW).await?;
+        }
+        let here = self.gh.issue(number).await?;
+        if !tasks::review_pending(&here) {
+            self.mark_review_pending(ctx, number, &pr).await?;
+        }
+        ctx.state.pr_stands = true;
+        Ok(true)
     }
 }
 
@@ -852,6 +928,74 @@ mod tests {
         .await
         .expect("nothing to mark");
         assert_eq!(gh.writes(), [] as [crate::common::fake_github::Wrote; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_pr_stands_only_behind_a_killed_session_with_a_task_outside_a_dry_run() {
+        // Each guard refuses on its own, the PR open on the declared branch
+        // every time: any other halt is the failure it was, a dry run writes
+        // nothing, and no task means nothing to mark.
+        let killed = || {
+            Halt::Failed(format!(
+                "claude printed nothing for 1200s and {}",
+                harness_core::domain::KILLED_AS_HUNG
+            ))
+        };
+        let on_branch = || {
+            let mut state = with_task("11");
+            state.task.body = "## Scope\n\nbranch: feat/limit\n".to_string();
+            state
+        };
+        let refused: [(&str, Halt, bool, Loop); 4] = [
+            (
+                "a stop, not a kill",
+                Halt::Halted("AGENT_LOOP_STOP: wait for #20".to_string()),
+                false,
+                on_branch(),
+            ),
+            (
+                "a plain failure, not a kill",
+                Halt::Failed("claude exited with code 1".to_string()),
+                false,
+                on_branch(),
+            ),
+            ("a dry run", killed(), true, on_branch()),
+            ("no task", killed(), false, Loop::default()),
+        ];
+        for (why, halt, dry_run, state) in refused {
+            let gh = Rc::new(FakeGitHub {
+                issues: vec![issue(11, &[labels::AGENT])],
+                prs: vec![(
+                    "feat/limit".to_string(),
+                    harness_core::domain::Pr {
+                        num: "77".to_string(),
+                        head: "feat/limit".to_string(),
+                        url: "https://github.com/o/r/pull/77".to_string(),
+                        state: "OPEN".to_string(),
+                        ..harness_core::domain::Pr::default()
+                    },
+                )],
+                ..FakeGitHub::default()
+            });
+            let mut context = Context::new(
+                Settings {
+                    dry_run,
+                    stages: String::new(),
+                },
+                state,
+                Logbook::null(),
+            );
+            let stood = MarkWaitingMerge {
+                gh: gh.clone(),
+                integration_branch: "main_agent".to_string(),
+            }
+            .pr_stands(&mut context, &halt)
+            .await
+            .expect(why);
+            assert!(!stood, "{why}");
+            assert!(!context.state.pr_stands, "{why}");
+            assert_eq!(gh.writes(), [] as [Wrote; 0], "{why}");
+        }
     }
 
     #[tokio::test]

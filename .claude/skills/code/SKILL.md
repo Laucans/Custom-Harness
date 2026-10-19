@@ -158,8 +158,9 @@ stated — quietly ignoring one is what this step exists to catch.
 ## 7. Land it
 
 Branch → PR → merge, every task, no exceptions (`CLAUDE.md`, Repository
-etiquette). The local hook and the `main` ruleset that refuse a direct
-push are a backstop, not something to test.
+etiquette) — the merge being the harness's own on the write side. The local
+hook and the `main` ruleset that refuse a direct push are a backstop, not
+something to test.
 
 1. `git fetch --prune`, update **the integration branch** (`main` unless
    the execution context names another — in a loop run this is the
@@ -177,12 +178,27 @@ push are a backstop, not something to test.
    its own line in the body** — the issue number of the task. That line
    is what closes the task: no `Closes`, no closed issue, and the loop
    stops rather than replay a task that still looks open.
-5. Wait for `ci` with `gh pr checks`, then `gh pr merge --squash` — the
-   only method enabled: one commit, titled `<PR title> (#n)`, its body the
-   PR's; the branch auto-deletes.
-6. Confirm GitHub did close it: `gh issue view <n> --json state`. Nobody
+5. **On the write side** (`harness:write-side`, or the loop's prompt says
+   so), stop here: open the PR with `--label harness:to-review`, report its
+   number and end your turn. The harness watches its CI from here — it
+   reviews, repairs and merges the PR itself (`milestone_merge`) and closes
+   the task. Never wait on the checks: never poll `gh pr checks`, never a
+   background watcher, never `Monitor`, never a sleep loop or a scheduled
+   wake-up — a session silent for twenty minutes is killed, and it never
+   comes back to its PR.
+6. **On the read side**, wait for `ci` with `gh pr checks <n> --watch`
+   **in the foreground** — the one wait you take — then
+   `gh pr merge --squash`, the only method enabled: one commit, titled
+   `<PR title> (#n)`, its body the PR's; the branch auto-deletes. A watch
+   that runs out before the checks end is run again; never a background
+   watcher, never `Monitor`, never a sleep loop. A session killed while
+   waiting has still delivered: the harness labels its open PR
+   `harness:to-review` and takes it through its own cycle.
+7. Confirm GitHub did close it: `gh issue view <n> --json state`. Nobody
    closes it by hand, so a PR merged without the `Closes` line leaves the
-   task open and the round unfinished.
+   task open and the round unfinished. On the write side the task stays
+   open under `harness:review-pending` until the harness merges the PR —
+   expected, not a failure.
 
 ## 8. Edge cases
 
@@ -221,7 +237,8 @@ End by telling the user:
 - anything left undone, and the named later task it belongs to;
 - the SPEC's *before merging* human actions — theirs to run, not yours;
 - that issue #n is closed (or, if it isn't, that the `Closes` line is
-  missing and the task is not done).
+  missing and the task is not done) — on the write side, that PR #p is
+  open under `harness:to-review` and the harness merges it.
 
 This skill never closes an issue by hand and never touches a
 `harness:` label.

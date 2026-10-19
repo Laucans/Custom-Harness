@@ -154,8 +154,13 @@ impl Verification<Loop> for AMergedPrClosesTheTask {
 
     async fn verify(&self, ctx: &Context<Loop>) -> Outcome<Verdict> {
         // Handed over — a decision asked, or a task opened for a human — is
-        // what a round that stopped could achieve.
-        if ctx.settings.dry_run || !ctx.state.has_task() || ctx.state.handed_over {
+        // what a round that stopped could achieve; a PR left standing by a
+        // killed session is what it delivered.
+        if ctx.settings.dry_run
+            || !ctx.state.has_task()
+            || ctx.state.handed_over
+            || ctx.state.pr_stands
+        {
             return Ok(Verdict::Continue);
         }
         let number: u64 = ctx.state.task.number.parse().map_err(|_| {
@@ -169,9 +174,10 @@ impl Verification<Loop> for AMergedPrClosesTheTask {
         if here.is_closed() || tasks::waiting_merge(&here) {
             return Ok(Verdict::Continue);
         }
-        // The write side delivers an open PR, not a merged one: the round
-        // marked it `review-pending`, and that is what it had to achieve.
-        if ctx.state.write_side && tasks::review_pending(&here) {
+        // An open PR in the harness's own cycle is a delivery too: the write
+        // side's, or a killed session's on either side — the round marked it
+        // `review-pending`, and that is what it had to achieve.
+        if tasks::review_pending(&here) {
             return Ok(Verdict::Continue);
         }
         let merged = self.gh.merged_prs(&self.integration_branch).await?;
@@ -428,6 +434,51 @@ mod tests {
         );
         let seen = &gh.writes();
         assert!(seen.is_empty(), "{seen:?}");
+    }
+
+    #[tokio::test]
+    async fn a_pr_left_standing_by_a_killed_session_needs_no_merged_pr() {
+        let gh = Rc::new(FakeGitHub {
+            broken: Some(Halt::Unreadable("must not be called".to_string())),
+            ..FakeGitHub::default()
+        });
+        let gate = AMergedPrClosesTheTask {
+            gh,
+            integration_branch: "milestone/3-x".to_string(),
+            code_runs: true,
+            stages: String::new(),
+        };
+        let mut state = with_task("34", "");
+        state.pr_stands = true;
+        assert_eq!(
+            gate.verify(&ctx(state)).await.expect("the PR stands"),
+            Verdict::Continue
+        );
+    }
+
+    #[tokio::test]
+    async fn a_review_pending_task_is_delivered_on_either_side() {
+        // The label is the harness's own mark: a read-side session killed at
+        // its PR gets it too, and its round must end as delivered.
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(34, &[labels::REVIEW_PENDING], "")],
+            ..FakeGitHub::default()
+        });
+        let gate = AMergedPrClosesTheTask {
+            gh,
+            integration_branch: "main_agent".to_string(),
+            code_runs: true,
+            stages: String::new(),
+        };
+        for write_side in [false, true] {
+            let mut state = with_task("34", "");
+            state.write_side = write_side;
+            assert_eq!(
+                gate.verify(&ctx(state)).await.expect("verdict"),
+                Verdict::Continue,
+                "write_side={write_side}"
+            );
+        }
     }
 
     #[tokio::test]

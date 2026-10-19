@@ -175,10 +175,12 @@ pub trait GitHub {
     // there is no empty list here that could read as "nothing left to do" — a
     // PR we cannot read is an ordinary failure, not an ambiguity.
 
-    /// A PR's metadata, by its number or URL.
+    /// A PR's metadata, by its number, its URL or its head branch — the
+    /// newest PR of that branch, open or not: the caller reads its state.
     ///
     /// # Errors
-    /// [`Halt::Failed`](crate::domain::Halt::Failed) if `gh` cannot read it.
+    /// [`Halt::Failed`](crate::domain::Halt::Failed) if `gh` cannot read it —
+    /// a branch with no PR among the reasons.
     async fn pr(&self, pr_ref: &str) -> Outcome<Pr>;
 
     /// The paths a PR changes, by its number, URL or head branch.

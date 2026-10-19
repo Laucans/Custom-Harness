@@ -15,6 +15,14 @@ pub enum Severity {
     Error,
 }
 
+/// What a session's halt says when its carrier killed it for its silence.
+///
+/// The process adapter's idle kill (`<binary> printed nothing for <n>s and
+/// was killed as hung`). One text, read back by [`Halt::killed_as_hung`]: a
+/// round that finds the session's pull request already open treats such a
+/// halt as a delivery, not as a failed round.
+pub const KILLED_AS_HUNG: &str = "was killed as hung";
+
 /// The four ways a run stops without raising.
 ///
 /// Exit codes, prefixes and levels are those already read by the Python
@@ -75,6 +83,13 @@ impl Halt {
         }
     }
 
+    /// Whether this is a session killed for its silence ([`KILLED_AS_HUNG`]):
+    /// a failure of the session, which may still have delivered.
+    #[must_use]
+    pub fn killed_as_hung(&self) -> bool {
+        matches!(self, Self::Failed(reason) if reason.contains(KILLED_AS_HUNG))
+    }
+
     /// The reason carried, whatever the variant.
     #[must_use]
     pub fn reason(&self) -> &str {
@@ -125,6 +140,20 @@ mod tests {
                 "{halt:?}"
             );
         }
+    }
+
+    #[test]
+    fn only_a_failure_that_says_so_is_a_session_killed_as_hung() {
+        let hung = Halt::Failed(format!(
+            "claude printed nothing for 1200s and {KILLED_AS_HUNG}"
+        ));
+        assert!(hung.killed_as_hung());
+        assert!(!Halt::Failed("claude exited with code 1".into()).killed_as_hung());
+        assert!(
+            !Halt::Halted(format!("the session {KILLED_AS_HUNG}")).killed_as_hung(),
+            "a voluntary stop is never a kill"
+        );
+        assert!(!Halt::Quota(KILLED_AS_HUNG.into()).killed_as_hung());
     }
 
     #[test]
