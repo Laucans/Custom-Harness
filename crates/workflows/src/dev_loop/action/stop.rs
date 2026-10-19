@@ -1015,8 +1015,17 @@ mod tests {
             );
             assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
         }
+        // #4 is the task's own milestone, open and building: on the board,
+        // so that skipping it is the guard's doing, not a lookup that failed.
         let gh = board("pay", &[labels::MILESTONE], "open");
         let mut issues = gh.issues.clone();
+        issues.push(Issue {
+            number: 4,
+            title: "pay".to_string(),
+            state: "open".to_string(),
+            labels: vec![labels::MILESTONE.to_string(), labels::TRIGGERED.to_string()],
+            ..Issue::default()
+        });
         issues.push(Issue {
             number: 5,
             state: "open".to_string(),
