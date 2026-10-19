@@ -136,9 +136,22 @@ pub fn blockers_pending(issue: &Issue) -> Vec<&Issue> {
     issue
         .blocked_by
         .iter()
-        .filter(|blocker| blocker.is_open() && !waiting_merge(blocker))
+        .filter(|blocker| still_blocks(blocker))
         .filter(|blocker| !on_mocks || !is_agent(blocker) || mock_up_stands_in(blocker))
         .collect()
+}
+
+/// Whether a blocker still holds what it blocks: open, and not landed.
+///
+/// A task lands on its milestone's branch (`harness:waiting-merge`, then
+/// closed by the merge); a milestone lands on the integration branch the
+/// same way — `main_agent_merge` merges its PR, labels it, and closes it
+/// later. A task waiting for a milestone (`ForgeDesMondes`' #214 on #20,
+/// parked by its stop) starts again at the label, when the code it needs
+/// is there, not at the close.
+#[must_use]
+pub fn still_blocks(blocker: &Issue) -> bool {
+    blocker.is_open() && !waiting_merge(blocker)
 }
 
 /// The unit the task's `## Architecture` declares, if any.
@@ -693,6 +706,27 @@ mod tests {
         let mut next = task(12);
         next.blocked_by = vec![issue(11, &[labels::AGENT, labels::WAITING_MERGE])];
         assert!(runnable(&next));
+    }
+
+    #[test]
+    fn a_milestone_blocks_until_it_lands_closed_or_waiting_merge() {
+        // #214 waited for #20, the milestone producing the session system:
+        // pending while #20 builds, over once its PR is on the integration
+        // branch — before it closes.
+        let mut held = task(214);
+        held.blocked_by = vec![issue(20, &[labels::MILESTONE, labels::TRIGGERED])];
+        assert!(still_blocks(&held.blocked_by[0]));
+        assert!(!runnable(&held));
+        assert_eq!(blockers_pending(&held).len(), 1);
+        held.blocked_by = vec![issue(
+            20,
+            &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+        )];
+        assert!(!still_blocks(&held.blocked_by[0]));
+        assert!(runnable(&held), "landed: the task starts again");
+        held.blocked_by = vec![closed(issue(20, &[labels::MILESTONE]))];
+        assert!(!still_blocks(&held.blocked_by[0]));
+        assert!(runnable(&held));
     }
 
     #[test]

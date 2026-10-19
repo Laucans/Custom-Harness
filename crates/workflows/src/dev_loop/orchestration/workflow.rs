@@ -176,6 +176,7 @@ mod tests {
                     raise: RaiseDecision {
                         gh,
                         autonomous: false,
+                        integration_branch: config.integration_branch.clone(),
                     },
                     post: Gate::empty("delivered"),
                 }

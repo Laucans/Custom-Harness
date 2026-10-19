@@ -132,6 +132,7 @@ mod tests {
             raise: RaiseDecision {
                 gh: Rc::clone(&port),
                 autonomous: false,
+                integration_branch: config.integration_branch.clone(),
             },
             post: Gate {
                 name: "the round must deliver",

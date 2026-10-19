@@ -356,13 +356,23 @@ task to a `harness:human` task instead), or a person refused a port. A stop
 asking for a port ports.json has not (`AGENT_LOOP_STOP: port <id> — …`) is
 never decided: `stop` keeps it as `kind: port` and opens a `harness:human`
 "Approve the port …" task blocking the task, approved or refused from the
-view's Ports pane; a refusal comes here to do without it. Routed right after the rules' task,
+view's Ports pane; a refusal comes here to do without it. A stop on what
+another issue has not landed is never decided either: when the reason names
+an issue (`#20`), a milestone's branch (`milestone/20-…`), or an id or a
+path the plan's graph attributes to a milestone (`crates/session/`,
+`dev_loop::data::waits`), and that issue is open and not
+`harness:waiting-merge` (`tasks::still_blocks`), `stop` writes a GitHub
+blocker on it, keeps the stop as `kind: wait` (the round kept, so the third
+stop still counts) and records `TaskWaits` — no label, no session, until the
+producer lands; the task itself, its milestone and a roadmap item are never
+waited for. Routed right after the rules' task,
 before any work it unblocks; a task carrying the label is not runnable.
 State `DecideState`; `remaining` 1; core's `Round<S>`; stages `context`
 (reads the issue, its `## Decision`, its comments, the task's PR and review,
 then takes the label — one label, one decision), `decide` (opus: `answer`,
 `merge`, `repair` — the repairs counted anew from `review::DECIDED_MARKER` —
-or `cut`), gated by `NeedsASession` (an owner's answer, `decided-by: owner`,
+`wait` — `on: N`, a blocker on #N written once, no label calling `decide`
+again — or `cut`), gated by `NeedsASession` (an owner's answer, `decided-by: owner`,
 is never decided over) and `DecisionParses`, and `apply` (writes `## Decision`
 with `decided-by: ai`, carries it out, labels `harness:ai-decided`, records
 `DecisionTaken`); lock per issue.

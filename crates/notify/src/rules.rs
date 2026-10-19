@@ -308,12 +308,15 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         // A gate's verdict is the line's business, not a sign: a halt that matters
         // arrives as the `Halted` event that follows it. Failing checks are
         // being repaired; the repair that gives up says so (`RepairsExhausted`).
+        // A task waiting for a producer to land asks nothing of anyone: the
+        // blocker on GitHub and the journal line say it.
         Event::SessionEnded { .. }
         | Event::PreparationTaken { .. }
         | Event::LaneTaken { .. }
         | Event::TapOpened { .. }
         | Event::GateChecked { .. }
-        | Event::ChecksFailed { .. } => {}
+        | Event::ChecksFailed { .. }
+        | Event::TaskWaits { .. } => {}
     }
 }
 

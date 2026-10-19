@@ -115,6 +115,17 @@ pub enum Event {
         /// The exit code; `None` when a signal ended it.
         code: Option<i32>,
     },
+    /// A task's session stopped on something another issue — a milestone or
+    /// a task — has not landed yet: the task waits for it through a GitHub
+    /// blocker, and no decision is paid for.
+    TaskWaits {
+        /// The task.
+        task: u64,
+        /// The issue it waits for.
+        on: u64,
+        /// The stop's reason, in a line.
+        why: String,
+    },
     /// A task whose lane stopped for a human is not taken again until its
     /// issue changes.
     TaskParked {
@@ -410,6 +421,9 @@ impl Event {
                 status,
                 ..
             } => format!("watch: lanes -> lane {lane} done with #{issue} ({status})"),
+            Self::TaskWaits { task, on, why } => {
+                format!("#{task} parked until #{on} lands (wait): {why}")
+            }
             Self::TaskParked { task } => format!(
                 "watch: lanes -> #{task} parked: it stopped for a human, and is not taken \
                  again until its issue changes"
@@ -742,5 +756,23 @@ mod tests {
         assert_eq!(json, r#"{"event":"task_parked","task":15}"#);
         let back: Event = serde_json::from_str(&json).expect("back");
         assert_eq!(back, Event::TaskParked { task: 15 });
+    }
+
+    #[test]
+    fn a_task_that_waits_says_what_it_waits_for_and_reads_back() {
+        let waits = Event::TaskWaits {
+            task: 214,
+            on: 20,
+            why: "origin/main_agent has no crates/session/".to_string(),
+        };
+        assert_eq!(
+            waits.line().as_deref(),
+            Some("#214 parked until #20 lands (wait): origin/main_agent has no crates/session/")
+        );
+        assert_eq!(waits.level(), Level::Info, "nothing went wrong: it waits");
+        let json = serde_json::to_string(&waits).expect("json");
+        assert!(json.contains("\"event\":\"task_waits\""), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, waits);
     }
 }

@@ -255,6 +255,7 @@ fn rounds(
             raise: RaiseDecision {
                 gh: Rc::clone(&gh),
                 autonomous,
+                integration_branch: branch.clone(),
             },
             post: Gate {
                 name: "round must have delivered",

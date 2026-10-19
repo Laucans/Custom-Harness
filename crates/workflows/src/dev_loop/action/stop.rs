@@ -20,11 +20,21 @@
 //! too — `decide` approves or refuses it. Every one is written under the
 //! task's `## Decision` and commented by `decide`, which is what documents it.
 //!
+//! **A stop on what has not landed is no decision either.** When the reason
+//! names an issue, a milestone's branch, or an id or a path the plan's graph
+//! attributes to a milestone ([`waits`]), and that issue has not landed
+//! ([`tasks::still_blocks`]), the task waits for it through a GitHub
+//! blocker: `blocked_by` is written, the stop is kept under `## Decision`
+//! (`kind: wait`), and nothing is paid until it lands. `ForgeDesMondes`'
+//! #214 and #215 paid 23 code sessions and 23 decide sessions each, every
+//! decision saying "keep waiting" — the blocker says it for free.
+//!
 //! A halt of any other kind — a gate that refused, an unreadable input — is
 //! not a decision to take, and goes on as it was.
 
 use std::rc::Rc;
 
+use harness_architecture::graph::{self, Graph};
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::Context;
 use harness_core::ports::shell::github::GitHub;
@@ -34,6 +44,7 @@ use crate::common::decision::Question;
 use crate::common::{labels, sections};
 use crate::contract_manager::data::request::{self as contract, Request};
 use crate::dev_loop::data::state::Loop;
+use crate::dev_loop::data::{tasks, waits};
 
 /// The round a stop on one task goes to a human instead of a decision.
 pub const HUMAN_AT_ROUND: u32 = 3;
@@ -86,6 +97,9 @@ pub struct RaiseDecision {
     /// `--no-human-gate`: no task is ever opened for a person; the harness
     /// decides, and documents it.
     pub autonomous: bool,
+    /// The branch the plan's graph is read on (`plan/graph.json`), to tell
+    /// which milestone produces what a stop says is missing.
+    pub integration_branch: String,
 }
 
 impl RaiseDecision {
@@ -109,9 +123,13 @@ impl RaiseDecision {
         let asked = sections::parse(&issue.body)
             .get(sections::DECISION)
             .and_then(|text| Question::parse(text));
-        let round = asked
-            .filter(|q| matches!(q.kind.as_deref(), Some("stop" | "breaker")))
-            .map_or(1, |q| q.round.saturating_add(1));
+        let round = asked.map_or(1, |q| match q.kind.as_deref() {
+            Some("stop" | "breaker") => q.round.saturating_add(1),
+            // A wait decided nothing: the round it kept is this stop's, so
+            // the third stop still goes to a human.
+            Some("wait") => q.round,
+            _ => 1,
+        });
         let port = port_asked(&reason).filter(|_| !self.autonomous);
         if let Some((id, need)) = contract::asked(&reason) {
             // A contract another milestone produces: the contract manager's,
@@ -120,6 +138,11 @@ impl RaiseDecision {
                 .await?;
         } else if let Some(port) = port {
             self.port_to_approve(ctx, number, &issue.title, &issue.body, port)
+                .await?;
+        } else if let Some(on) = self.waited_for(ctx, number, &reason).await {
+            // Something another issue produces has not landed: the task
+            // waits for it, for free, however many times it was asked.
+            self.wait_for(ctx, number, &issue.body, on, round, &reason)
                 .await?;
         } else if round >= HUMAN_AT_ROUND && !self.autonomous {
             self.to_a_human(ctx, number, &issue.title, &reason).await?;
@@ -139,6 +162,68 @@ impl RaiseDecision {
         }
         ctx.state.handed_over = true;
         Ok(Verdict::Continue)
+    }
+
+    /// The issue the stop's reason names that has not landed — a milestone
+    /// or a task, never the stopped task itself, its own milestone, nor a
+    /// roadmap item (it closes after the task's own milestone lands: waiting
+    /// on it would never end) — if any. An issue the board cannot read names
+    /// nothing.
+    async fn waited_for(&self, ctx: &Context<Loop>, number: u64, reason: &str) -> Option<u64> {
+        let graph = self
+            .gh
+            .file_text(graph::PATH, &self.integration_branch)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|text| Graph::parse(&text).ok());
+        let own = ctx.state.milestone.number.parse::<u64>().ok();
+        for candidate in waits::named(reason, graph.as_ref()) {
+            if candidate == number || Some(candidate) == own {
+                continue;
+            }
+            if let Ok(found) = self.gh.issue(candidate).await
+                && !found.has(labels::ROADMAP)
+                && tasks::still_blocks(&found)
+            {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Parks the task until `on` lands: a GitHub blocker, written once, the
+    /// stop kept under `## Decision` (`kind: wait`, carrying `round` so the
+    /// stops decided before it still count), and nothing to decide.
+    async fn wait_for(
+        &self,
+        ctx: &Context<Loop>,
+        number: u64,
+        body: &str,
+        on: u64,
+        round: u32,
+        reason: &str,
+    ) -> Outcome<()> {
+        let blocked_by = self.gh.blocked_by(number).await?;
+        if !blocked_by.iter().any(|blocker| blocker.number == on) {
+            self.gh.add_blocked_by(number, on).await?;
+        }
+        let question = Question {
+            kind: Some("wait".to_string()),
+            blocks: reason.to_string(),
+            round,
+            decided_by: Some("harness".to_string()),
+            verdict: Some(format!("wait — until #{on} lands")),
+            ..Question::default()
+        };
+        let kept = sections::replace(body, &[(sections::DECISION, &question.render())]);
+        self.gh.set_body(number, &kept).await?;
+        ctx.traces.event(&Event::TaskWaits {
+            task: number,
+            on,
+            why: reason.to_string(),
+        });
+        Ok(())
     }
 
     /// A contract asked: kept under the task's `## Decision` (`kind:
@@ -355,6 +440,7 @@ mod tests {
         let verdict = RaiseDecision {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             autonomous: false,
+            integration_branch: "main_agent".to_string(),
         }
         .on_halt(&mut context, stop())
         .await
@@ -390,6 +476,7 @@ mod tests {
         RaiseDecision {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             autonomous: false,
+            integration_branch: "main_agent".to_string(),
         }
         .on_halt(&mut context, stop())
         .await
@@ -426,6 +513,7 @@ mod tests {
         RaiseDecision {
             gh: Rc::clone(&third) as Rc<dyn GitHub>,
             autonomous: true,
+            integration_branch: "main_agent".to_string(),
         }
         .on_halt(&mut context, stop())
         .await
@@ -448,6 +536,7 @@ mod tests {
         RaiseDecision {
             gh: Rc::clone(&port) as Rc<dyn GitHub>,
             autonomous: true,
+            integration_branch: "main_agent".to_string(),
         }
         .on_halt(&mut ctx(false), asked)
         .await
@@ -480,6 +569,7 @@ mod tests {
         RaiseDecision {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             autonomous: false,
+            integration_branch: "main_agent".to_string(),
         }
         .on_halt(&mut context, asked)
         .await
@@ -532,6 +622,7 @@ mod tests {
         let raise = RaiseDecision {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
             autonomous: false,
+            integration_branch: "main_agent".to_string(),
         };
         let gate = Halt::Halted("issue #11 carries no SPEC".to_string());
         assert!(raise.on_halt(&mut ctx(false), gate).await.is_err());
@@ -555,6 +646,7 @@ mod tests {
             RaiseDecision {
                 gh: Rc::clone(&gh) as Rc<dyn GitHub>,
                 autonomous,
+                integration_branch: "main_agent".to_string(),
             }
             .on_halt(&mut context, asked())
             .await
@@ -613,6 +705,7 @@ mod tests {
         RaiseDecision {
             gh: Rc::clone(&labelled) as Rc<dyn GitHub>,
             autonomous: true,
+            integration_branch: "main_agent".to_string(),
         }
         .on_halt(&mut ctx(false), asked())
         .await
@@ -625,5 +718,332 @@ mod tests {
             "{:?}",
             labelled.writes()
         );
+    }
+
+    // --- a stop on what has not landed waits, for free ----------------------
+
+    /// The plan: #20 produces the session system, #18 the `Entity`
+    /// aggregate; the task is #11 of milestone #4.
+    const GRAPH: &str = r#"{"version":1,"milestones":[
+      {"number":18,"title":"notes","systems":["note"],"produces":["Entity"],"consumes":[],"depends_on":[]},
+      {"number":20,"title":"sessions","systems":["session"],"produces":["Session"],"consumes":[],"depends_on":[]},
+      {"number":4,"title":"pay","systems":["pay"],"produces":[],"consumes":["Session"],"depends_on":[20]}
+    ],"ids":{
+      "Entity":{"kind":"aggregate","producer":18,"state":"planned","version":1},
+      "Session":{"kind":"aggregate","producer":20,"state":"planned","version":1}
+    }}"#;
+
+    /// A board with the task, milestone #20 as `labels` say it, and the
+    /// plan's graph on the integration branch.
+    fn board(body: &str, producer_labels: &[&str], producer_state: &str) -> Rc<FakeGitHub> {
+        let producer = Issue {
+            number: 20,
+            title: "sessions".to_string(),
+            state: producer_state.to_string(),
+            labels: producer_labels.iter().map(ToString::to_string).collect(),
+            ..Issue::default()
+        };
+        Rc::new(FakeGitHub {
+            issues: vec![
+                Issue {
+                    number: 11,
+                    title: "Pay".to_string(),
+                    state: "open".to_string(),
+                    body: body.to_string(),
+                    labels: vec![labels::AGENT.to_string(), labels::READY.to_string()],
+                    ..Issue::default()
+                },
+                producer,
+            ],
+            files: std::collections::HashMap::from([(
+                ("plan/graph.json".to_string(), "main_agent".to_string()),
+                GRAPH.to_string(),
+            )]),
+            ..FakeGitHub::default()
+        })
+    }
+
+    #[derive(Default)]
+    struct Capture(std::cell::RefCell<Vec<String>>);
+
+    impl harness_core::traces::Sink for Capture {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stop_on_a_producer_not_landed_parks_the_task_until_it_lands() {
+        // #214 and #215 on ForgeDesMondes: 23 code sessions and 23 decide
+        // sessions each, every decision "keep waiting for #20".
+        let gh = board(
+            "## Scope\n\nbranch: feat/pay\n\npay",
+            &[labels::MILESTONE],
+            "open",
+        );
+        let capture = Rc::new(Capture::default());
+        let mut context = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            ctx(false).state,
+            Logbook::new(
+                Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+                harness_core::traces::Verbosity::Normal,
+            ),
+        );
+        let verdict = RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: false,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut context,
+            Halt::Halted(
+                "AGENT_LOOP_STOP: wait for #20 — origin/main_agent has no crates/session/ (/code)"
+                    .to_string(),
+            ),
+        )
+        .await
+        .expect("handed over");
+        assert_eq!(verdict, Verdict::Continue);
+        assert!(context.state.handed_over);
+        let writes = gh.writes();
+        assert_eq!(writes[0], Wrote::BlockedByLink(11, 20));
+        let Wrote::Body(11, body) = &writes[1] else {
+            panic!("{writes:?}");
+        };
+        let kept = Question::parse(
+            sections::parse(body)
+                .get(sections::DECISION)
+                .map_or("", String::as_str),
+        )
+        .expect("a question");
+        assert_eq!(kept.kind.as_deref(), Some("wait"));
+        assert_eq!(kept.decided_by.as_deref(), Some("harness"));
+        assert_eq!(kept.verdict.as_deref(), Some("wait — until #20 lands"));
+        assert!(
+            kept.blocks.contains("no crates/session/"),
+            "{}",
+            kept.blocks
+        );
+        assert!(
+            body.contains("branch: feat/pay"),
+            "the rest of the SPEC kept"
+        );
+        assert_eq!(writes.len(), 2, "no label, no issue: {writes:?}");
+        assert!(
+            capture.0.borrow().iter().any(|line| line
+                .contains("#11 parked until #20 lands (wait): AGENT_LOOP_STOP: wait for #20")),
+            "{:?}",
+            capture.0.borrow()
+        );
+
+        // The next tick: blocked by #20, the task is not startable — no
+        // session, no decision — until #20 lands, when it is again.
+        let mut task = gh.issues[0].clone();
+        task.blocked_by = vec![gh.issues[1].clone()];
+        assert!(!task.has(labels::NEEDS_DECISION));
+        assert!(
+            tasks::startable_tasks(std::slice::from_ref(&task), &[], &|_| true).is_empty(),
+            "parked"
+        );
+        task.blocked_by[0]
+            .labels
+            .push(labels::WAITING_MERGE.to_string());
+        assert_eq!(
+            tasks::startable_tasks(std::slice::from_ref(&task), &[], &|_| true)
+                .iter()
+                .map(|t| t.number)
+                .collect::<Vec<_>>(),
+            [11],
+            "#20 landed: taken again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_outranks_the_third_stop_and_is_written_once() {
+        // A third stop would open a task for a human; one that names a
+        // producer waits instead, and a blocker already there is not posted
+        // twice.
+        let gh = board(
+            "## Decision\n\nkind: stop\nblocks: which provider\nround: 2\ndecided-by: ai\nverdict: answer — Stripe (3/5)",
+            &[labels::MILESTONE],
+            "open",
+        );
+        let mut context = ctx(false);
+        RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: false,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut context,
+            Halt::Halted("AGENT_LOOP_STOP: milestone/20-sessions is not merged yet".to_string()),
+        )
+        .await
+        .expect("handed over");
+        let writes = gh.writes();
+        assert_eq!(writes[0], Wrote::BlockedByLink(11, 20));
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
+            "{writes:?}"
+        );
+        assert!(!writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+        let Wrote::Body(11, waited) = &writes[1] else {
+            panic!("{writes:?}");
+        };
+        let kept = Question::parse(
+            sections::parse(waited)
+                .get(sections::DECISION)
+                .map_or("", String::as_str),
+        )
+        .expect("a question");
+        assert_eq!(kept.round, 3, "the two stops decided before it still count");
+
+        // The next stop, on nothing to wait for: the third, a person's.
+        let after = board(waited, &[labels::MILESTONE], "open");
+        RaiseDecision {
+            gh: Rc::clone(&after) as Rc<dyn GitHub>,
+            autonomous: false,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(&mut ctx(false), stop())
+        .await
+        .expect("handed over");
+        assert!(
+            after
+                .writes()
+                .iter()
+                .any(|w| matches!(w, Wrote::CreatedIssue(title, _, l) if title.starts_with("Decide for #11") && l == &[labels::HUMAN])),
+            "{:?}",
+            after.writes()
+        );
+
+        let mut blocked = gh.issues[0].clone();
+        blocked.blocked_by = vec![gh.issues[1].clone()];
+        let already = Rc::new(FakeGitHub {
+            issues: gh.issues.clone(),
+            subs: vec![(4, vec![blocked])],
+            ..FakeGitHub::default()
+        });
+        RaiseDecision {
+            gh: Rc::clone(&already) as Rc<dyn GitHub>,
+            autonomous: true,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut ctx(false),
+            Halt::Halted("AGENT_LOOP_STOP: still waiting for #20".to_string()),
+        )
+        .await
+        .expect("handed over");
+        let writes = already.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::BlockedByLink(..))),
+            "{writes:?}"
+        );
+        assert!(matches!(&writes[0], Wrote::Body(11, body) if body.contains("kind: wait")));
+    }
+
+    #[tokio::test]
+    async fn what_the_graph_attributes_to_a_milestone_is_waited_for() {
+        // No issue number in the reason: the path names #20's system, the
+        // migration names #18's aggregate — the graph says whose they are.
+        for (reason, producer) in [
+            (
+                "AGENT_LOOP_STOP: origin/main_agent has no crates/session/ yet",
+                20,
+            ),
+            (
+                "AGENT_LOOP_STOP: missing crates/data/migrations/0004_entity.sql",
+                18,
+            ),
+        ] {
+            let gh = board("pay", &[labels::MILESTONE], "open");
+            let mut issues = gh.issues.clone();
+            issues.push(Issue {
+                number: 18,
+                state: "open".to_string(),
+                labels: vec![labels::MILESTONE.to_string()],
+                ..Issue::default()
+            });
+            let gh = Rc::new(FakeGitHub {
+                issues,
+                files: gh.files.clone(),
+                ..FakeGitHub::default()
+            });
+            RaiseDecision {
+                gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+                autonomous: false,
+                integration_branch: "main_agent".to_string(),
+            }
+            .on_halt(&mut ctx(false), Halt::Halted(reason.to_string()))
+            .await
+            .expect("handed over");
+            assert_eq!(
+                gh.writes()[0],
+                Wrote::BlockedByLink(11, producer),
+                "{reason}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_landed_producer_itself_its_milestone_or_a_roadmap_asks_a_decision_as_before() {
+        let stop = || {
+            Halt::Halted("AGENT_LOOP_STOP: wait for #20 — no crates/session/ (/code)".to_string())
+        };
+        for (producer_labels, state) in [
+            (vec![labels::MILESTONE, labels::WAITING_MERGE], "open"),
+            (vec![labels::MILESTONE], "closed"),
+        ] {
+            let gh = board("pay", &producer_labels, state);
+            RaiseDecision {
+                gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+                autonomous: false,
+                integration_branch: "main_agent".to_string(),
+            }
+            .on_halt(&mut ctx(false), stop())
+            .await
+            .expect("handed over");
+            let writes = gh.writes();
+            assert!(
+                !writes.iter().any(|w| matches!(w, Wrote::BlockedByLink(..))),
+                "landed: {writes:?}"
+            );
+            assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+        }
+        let gh = board("pay", &[labels::MILESTONE], "open");
+        let mut issues = gh.issues.clone();
+        issues.push(Issue {
+            number: 5,
+            state: "open".to_string(),
+            labels: vec![labels::ROADMAP.to_string()],
+            ..Issue::default()
+        });
+        let gh = Rc::new(FakeGitHub {
+            issues,
+            files: gh.files.clone(),
+            ..FakeGitHub::default()
+        });
+        RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: false,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut ctx(false),
+            Halt::Halted("AGENT_LOOP_STOP: #11 needs #4, #5 and #999 first".to_string()),
+        )
+        .await
+        .expect("handed over");
+        let writes = gh.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::BlockedByLink(..))),
+            "itself, its milestone, a roadmap, an unknown issue: {writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
     }
 }
