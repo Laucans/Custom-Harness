@@ -628,7 +628,7 @@ mod tests {
                 ),
             ],
             data_capabilities: vec![manifest(
-                "crates/dataguard/data-capabilities/request-limit/data-capability.json",
+                "crates/credit/data-capabilities/request-limit/data-capability.json",
                 r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard"}"#,
             )],
             aggregates: vec![manifest(
@@ -668,12 +668,12 @@ mod tests {
                 Crate {
                     name: "dataguard-server".to_string(),
                     dir: "crates/dataguard/server".to_string(),
-                    deps: vec!["request-limit".to_string()],
+                    deps: vec!["request-limit".to_string(), "dataguard-engine".to_string()],
                 },
                 Crate {
                     name: "request-limit".to_string(),
-                    dir: "crates/dataguard/data-capabilities/request-limit".to_string(),
-                    deps: vec!["dataguard-engine".to_string()],
+                    dir: "crates/credit/data-capabilities/request-limit".to_string(),
+                    deps: vec!["credit-types".to_string()],
                 },
                 Crate {
                     name: "dataguard-engine".to_string(),
@@ -782,13 +782,13 @@ mod tests {
     fn a_new_data_capability_gets_what_the_server_names_and_the_glob_placeholders() {
         // #40: the server names every DataCapability by path, and an empty
         // member glob fails the workspace — cargo loaded nothing.
-        let task = declared(Unit::DataCapability, "dataguard", &["dataguard.other"], &[]);
+        let task = declared(Unit::DataCapability, "credit", &["credit.other"], &[]);
         let manifest = "[workspace]\nmembers = [\"crates/*/capabilities/*\", \"crates/data\"]\n";
         let found = closure(&tree(), &task, Some(&graph()), Some(manifest));
         assert!(
             found
                 .patterns
-                .contains(&"/crates/dataguard/data-capabilities/request-limit/".to_string()),
+                .contains(&"/crates/credit/data-capabilities/request-limit/".to_string()),
             "{:?}",
             found.patterns
         );
@@ -834,7 +834,7 @@ mod tests {
         let found = closure(&tree(), &task, Some(&graph()), Some(manifest));
         for dir in [
             "/crates/dataguard/server/",
-            "/crates/dataguard/data-capabilities/request-limit/",
+            "/crates/credit/data-capabilities/request-limit/",
             "/crates/dataguard/engine/",
         ] {
             assert!(
@@ -945,16 +945,34 @@ mod tests {
             aggregate: Some("Account".to_string()),
             ..declared(
                 Unit::DataCapability,
-                "dataguard",
+                "credit",
                 &["credit.requestLimitChange"],
                 &[],
             )
         };
         let found = closure(&tree(), &task, Some(&graph()), None);
+        // The unit is resolved where its manifest sits: under the system its
+        // id names, with that system's plumbing — never under the DataGuard,
+        // which houses no DataCapability.
         assert!(
             found
                 .patterns
-                .contains(&"/crates/dataguard/data-capabilities/request-limit/".to_string())
+                .contains(&"/crates/credit/data-capabilities/request-limit/".to_string())
+        );
+        assert!(
+            found
+                .patterns
+                .contains(&"/crates/credit/types/".to_string()),
+            "its own system's plumbing: {:?}",
+            found.patterns
+        );
+        assert!(
+            !found
+                .patterns
+                .iter()
+                .any(|p| p.contains("dataguard/data-capabilities")),
+            "{:?}",
+            found.patterns
         );
         assert!(
             found
@@ -1018,7 +1036,7 @@ mod tests {
             )
         );
         assert!(found.patterns.contains(
-            &"/crates/dataguard/data-capabilities/request-limit/data-capability.json".to_string()
+            &"/crates/credit/data-capabilities/request-limit/data-capability.json".to_string()
         ));
         assert!(
             !found

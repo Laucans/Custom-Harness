@@ -7,7 +7,7 @@
 //! Only the jobs that are pure shell over the files are run here (no
 //! `cargo metadata`, no `npx`): members by glob, the system frontier of a
 //! Micro-UI's `needs`, its `actions`, the ownership of a mutating
-//! DataCapability, and the Concepts a Capability implements.
+//! DataCapability, its folder, and the Concepts a Capability implements.
 
 use std::collections::HashMap;
 use std::fs;
@@ -139,7 +139,7 @@ fn repo(case: &str) -> Repo {
     );
     write(
         &root,
-        "crates/dataguard/data-capabilities/request-limit/data-capability.json",
+        "crates/credit/data-capabilities/request-limit/data-capability.json",
         r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.creditLimit"],"callableBy":["credit.*","RiskBadge"],"invariants":[]}"#,
     );
     write(
@@ -218,6 +218,7 @@ fn mirrored() -> HashMap<&'static str, &'static str> {
         ("system-frontier", "needs"),
         ("write-actions", "triggers"),
         ("ownership", "touches"),
+        ("data-capability-placed", "its id's namespace"),
         ("concepts-documented", "implements"),
         ("queries-registered", "contract C"),
     ])
@@ -328,9 +329,17 @@ fn breaks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
         ),
         (
             "ownership",
-            "crates/dataguard/data-capabilities/request-limit/data-capability.json",
+            "crates/credit/data-capabilities/request-limit/data-capability.json",
             r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.tags"],"callableBy":["*"],"invariants":[]}"#,
             "ownership",
+        ),
+        (
+            // ForgeDesMondes milestone 18: `campaign` DataCapabilities laid
+            // under the DataGuard's folder, where no gate looked.
+            "misplaced",
+            "crates/dataguard/data-capabilities/close-account/data-capability.json",
+            r#"{"dataCapability":"credit.closeAccount","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.creditLimit"],"callableBy":["*"],"invariants":[]}"#,
+            "data-capability-placed",
         ),
         (
             "concept",

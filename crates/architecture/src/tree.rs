@@ -2,15 +2,17 @@
 //!
 //! [`Tree::read`] walks the folders the architecture asks for — Capability
 //! crates under `crates/<system>/capabilities/`, Micro-UIs under `apps/`,
-//! `DataCapabilities` and aggregates under `crates/dataguard/`, Concepts under
-//! `concepts/` — through the `Disk` port, and fails on nothing: an absent or
-//! unreadable manifest is one the rules report.
+//! `DataCapabilities` under `crates/<system>/data-capabilities/`, aggregates
+//! under `crates/dataguard/`, Concepts under `concepts/` — through the `Disk`
+//! port, and fails on nothing: an absent or unreadable manifest is one the
+//! rules report.
 //!
 //! [`violations`] checks what a diff is reviewed against: a Capability depends
 //! on no Capability and on nothing of the write side; its manifest names its
 //! system and invokes nothing; a Micro-UI needs Capabilities that exist, in
 //! any system, and triggers `DataCapabilities` that exist; a `DataCapability`
-//! belongs to the `DataGuard` and declares its effect; and the unit a task
+//! belongs to the `DataGuard`, sits under the system its id names (never
+//! under `crates/dataguard/`) and declares its effect; and the unit a task
 //! declared under `## Architecture` is actually there, on the side it said;
 //! and the mock-up keeps up with the screens and the Micro-UIs — every page
 //! `mock/pages.json` lists is there, every frozen screen under `apps/screens/`
@@ -544,6 +546,33 @@ fn system_of_id(id: &str) -> Option<&str> {
     id.split_once('.').map(|(system, _)| system)
 }
 
+/// Why a `DataCapability` manifest read at `path` does not sit where its id
+/// says, in one line — `None` when it does. The path is the one
+/// [`Tree::read`] writes, `crates/<system>/data-capabilities/<name>/…`,
+/// and the folder must be the id's namespace: never `dataguard`, which
+/// owns every `DataCapability` and is the system of none.
+fn misplaced(path: &str, id: Option<&str>) -> Option<String> {
+    let mut parts = path.split('/');
+    let folder = parts.nth(1).unwrap_or_default();
+    let name = parts.nth(1).unwrap_or_default();
+    let Some(id) = id else {
+        return Some(format!("{path} names no `dataCapability`"));
+    };
+    match system_of_id(id) {
+        Some(namespace) if namespace == folder && namespace != "dataguard" => None,
+        Some(namespace) if namespace != "dataguard" => Some(format!(
+            "{path}: `{id}` belongs under crates/{namespace}/data-capabilities/{name}/, its \
+             id's namespace — the DataGuard owns a DataCapability (`owner: dataguard`), it \
+             does not house it"
+        )),
+        _ => Some(format!(
+            "{path}: `{id}` names no system as its id's namespace — a DataCapability is \
+             `<system>.<name>`, under crates/<system>/data-capabilities/{name}/; the DataGuard \
+             owns it, it is not its system"
+        )),
+    }
+}
+
 /// The side a `DataCapability` manifest declares.
 fn manifest_side(json: &Value) -> Side {
     let effect = str_of(json, "effect").and_then(Effect::parse);
@@ -713,6 +742,14 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
                 "{}: `owner` is not `dataguard` — a DataCapability belongs to the DataGuard",
                 manifest.path
             ));
+        }
+        // Its folder is its id's namespace (`campaign.saveEntity` sits under
+        // crates/campaign/data-capabilities/save-entity/): the DataGuard
+        // owns every DataCapability, it houses none — ForgeDesMondes'
+        // milestone 18 laid three of `campaign` under crates/dataguard/, and
+        // two conventions coexisted with no gate to say so.
+        if let Some(why) = misplaced(&manifest.path, str_of(json, "dataCapability")) {
+            found.push(why);
         }
         if str_of(json, "effect").and_then(Effect::parse).is_none() {
             found.push(format!(
@@ -1178,7 +1215,7 @@ mod tests {
                 ),
             )],
             data_capabilities: vec![manifest(
-                "crates/dataguard/data-capabilities/request-limit-change/data-capability.json",
+                "crates/credit/data-capabilities/request-limit-change/data-capability.json",
                 r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.creditLimit"]}"#,
             )],
             aggregates: vec![manifest(
@@ -1208,7 +1245,7 @@ mod tests {
         let with = |data_capability: &str, aggregate: Option<&str>| {
             let mut tree = sound();
             tree.data_capabilities = vec![manifest(
-                "crates/dataguard/data-capabilities/x/data-capability.json",
+                "crates/credit/data-capabilities/x/data-capability.json",
                 data_capability,
             )];
             tree.aggregates = aggregate
@@ -1447,6 +1484,8 @@ mod tests {
     #[test]
     fn a_data_capability_is_read_under_any_system() {
         // #43: ai.saveSettings sits under crates/ai/, as the rules lay it out.
+        // The DataGuard's folder is read too — not as a home, so that
+        // `violations` can name the one it belongs in.
         let mut disk = crate::fake_disk::FakeDisk::default();
         for (path, text) in [
             (
@@ -1455,7 +1494,7 @@ mod tests {
             ),
             (
                 "/r/crates/dataguard/data-capabilities/limit/data-capability.json",
-                r#"{"dataCapability":"dataguard.limit"}"#,
+                r#"{"dataCapability":"credit.limit"}"#,
             ),
         ] {
             disk.existing
@@ -1474,6 +1513,97 @@ mod tests {
         assert!(
             paths.contains(&"crates/dataguard/data-capabilities/limit/data-capability.json"),
             "{paths:?}"
+        );
+        let found = violations(&tree, None);
+        assert!(
+            found.iter().any(|v| {
+                v.starts_with("crates/dataguard/data-capabilities/limit/")
+                    && v.contains("belongs under crates/credit/data-capabilities/limit/")
+            }),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_data_capability_sits_under_the_system_its_id_names_never_under_the_dataguard() {
+        // ForgeDesMondes milestone 18: campaign.saveEntity was laid under
+        // crates/dataguard/data-capabilities/ while ai.saveSettings sat
+        // under crates/ai/, and nothing said which was the rule.
+        const SAVE: &str = r#"{"dataCapability":"campaign.saveEntity","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.creditLimit"]}"#;
+        // What the rules say of that one manifest (the Micro-UI of `sound`
+        // then triggers a DataCapability nobody declares: not this test's).
+        let with = |path: &str, json: &str| {
+            let mut tree = sound();
+            tree.data_capabilities = vec![manifest(path, json)];
+            violations(&tree, None)
+                .into_iter()
+                .filter(|v| v.starts_with(path))
+                .collect::<Vec<_>>()
+        };
+        let placed = with(
+            "crates/campaign/data-capabilities/save-entity/data-capability.json",
+            SAVE,
+        );
+        assert!(
+            !placed.iter().any(|v| v.contains("namespace")),
+            "its id's namespace is its folder: {placed:?}"
+        );
+        let under_the_dataguard = with(
+            "crates/dataguard/data-capabilities/save-entity/data-capability.json",
+            SAVE,
+        );
+        assert_eq!(
+            under_the_dataguard,
+            [
+                "crates/dataguard/data-capabilities/save-entity/data-capability.json: \
+              `campaign.saveEntity` belongs under crates/campaign/data-capabilities/save-entity/, \
+              its id's namespace — the DataGuard owns a DataCapability (`owner: dataguard`), it \
+              does not house it"
+            ]
+        );
+        // Any other system's folder is as wrong as the DataGuard's.
+        let elsewhere = with(
+            "crates/media/data-capabilities/save-entity/data-capability.json",
+            SAVE,
+        );
+        assert!(
+            elsewhere
+                .iter()
+                .any(|v| v.contains("belongs under crates/campaign/data-capabilities/save-entity/")),
+            "{elsewhere:?}"
+        );
+        // `dataguard` is the owner of every DataCapability, the system of none.
+        let owner_as_system = with(
+            "crates/dataguard/data-capabilities/limit/data-capability.json",
+            r#"{"dataCapability":"dataguard.limit","owner":"dataguard","effect":"insert","touches":[]}"#,
+        );
+        assert!(
+            owner_as_system.iter().any(|v| {
+                v.contains("`dataguard.limit` names no system as its id's namespace")
+                    && v.contains("crates/<system>/data-capabilities/limit/")
+            }),
+            "{owner_as_system:?}"
+        );
+        let no_namespace = with(
+            "crates/credit/data-capabilities/limit/data-capability.json",
+            r#"{"dataCapability":"limit","owner":"dataguard","effect":"insert","touches":[]}"#,
+        );
+        assert!(
+            no_namespace
+                .iter()
+                .any(|v| v.contains("`limit` names no system as its id's namespace")),
+            "{no_namespace:?}"
+        );
+        let no_id = with(
+            "crates/credit/data-capabilities/limit/data-capability.json",
+            r#"{"owner":"dataguard","effect":"insert","touches":[]}"#,
+        );
+        assert!(
+            no_id.iter().any(|v| {
+                v == "crates/credit/data-capabilities/limit/data-capability.json names no \
+                      `dataCapability`"
+            }),
+            "{no_id:?}"
         );
     }
 
@@ -1516,7 +1646,7 @@ mod tests {
                 .any(|v| v.contains("listed as a member by name")),
             "{by_name:?}"
         );
-        let data = violations(&listed("\"crates/dataguard/data-capabilities/add\""), None);
+        let data = violations(&listed("\"crates/credit/data-capabilities/add\""), None);
         assert!(data.iter().any(|v| v.contains("by name")), "{data:?}");
         for fine in [
             "\"crates/*/capabilities/*\"",
@@ -1747,7 +1877,7 @@ mod tests {
     fn a_data_capability_outside_the_dataguard_or_with_no_effect_is_caught() {
         let mut tree = sound();
         tree.data_capabilities[0] = manifest(
-            "crates/dataguard/data-capabilities/x/data-capability.json",
+            "crates/credit/data-capabilities/x/data-capability.json",
             r#"{"dataCapability":"credit.x","owner":"credit","effect":"patch"}"#,
         );
         let found = violations(&tree, None);
