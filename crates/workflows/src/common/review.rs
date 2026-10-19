@@ -21,6 +21,12 @@ pub const FIX_MARKER: &str = "<!-- agent-fix -->";
 /// What a decision to repair once more leaves on the PR: the repairs before
 /// it are no longer counted.
 pub const DECIDED_MARKER: &str = "<!-- harness-decided: repair -->";
+/// What a decision to merge as it is leaves on a PR whose checks still run.
+///
+/// Posted with [`MARKER`] and [`CLEAN`], it is the review that lets the PR
+/// through, so the merge train takes it once green instead of asking for a
+/// decision again.
+pub const DECIDED_MERGE: &str = "<!-- harness-decided: merge -->";
 
 /// How many repairs a blocking review gets before the harness decides.
 pub const MAX_FIXES: usize = 2;
@@ -80,6 +86,20 @@ pub fn status(comments: &str) -> Status {
     } else {
         Status::Clean
     }
+}
+
+/// Whether the harness decided to merge the PR as it is: its last review is
+/// that decision ([`DECIDED_MERGE`]) and no repair came after it.
+///
+/// What lets a pull request no agent review ever reads — the rules' task's,
+/// judged by its own reader — be taken by the merge train once green.
+#[must_use]
+pub fn decided_to_merge(comments: &str) -> bool {
+    status(comments) == Status::Clean
+        && comments
+            .rfind(MARKER)
+            .and_then(|at| comments.get(at..))
+            .is_some_and(|last_review| last_review.contains(DECIDED_MERGE))
 }
 
 /// How many repairs were attempted on a PR, whatever asked for them — a red
@@ -175,6 +195,24 @@ mod tests {
         let twice = format!("{once}{FIX_MARKER}{}", review(BLOCKING));
         assert!(status(&twice).exhausted());
         assert!(!status(&twice).wants_a_fix());
+    }
+
+    #[test]
+    fn a_decision_to_merge_is_the_last_review_with_no_repair_after_it() {
+        let decided = format!("{MARKER}\n{CLEAN}\n{DECIDED_MERGE}\nmerge as it is");
+        assert!(decided_to_merge(&decided));
+        assert!(
+            !decided_to_merge(&review(CLEAN)),
+            "a clean review is not a decision"
+        );
+        assert!(!decided_to_merge("nothing"));
+        let repaired = format!("{decided}\n{FIX_MARKER}\n");
+        assert!(
+            !decided_to_merge(&repaired),
+            "a repair after the decision owes a review"
+        );
+        let overruled = format!("{decided}\n{}", review(BLOCKING));
+        assert!(!decided_to_merge(&overruled), "a later review decides");
     }
 
     #[test]

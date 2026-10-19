@@ -25,6 +25,7 @@ pub mod labels;
 pub mod review;
 pub mod routing;
 pub mod sections;
+pub mod sentinel;
 
 #[cfg(test)]
 pub(crate) mod fake_disk;

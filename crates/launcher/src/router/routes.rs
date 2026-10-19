@@ -14,6 +14,7 @@ use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::Route;
 use harness_workflows::common::{branching, hierarchy, labels};
 use harness_workflows::main_agent_merge::data::report::Outcome as MergeReport;
+use harness_workflows::milestone_merge::Attempt;
 use harness_workflows::refinement::data::phase::Phase;
 
 use crate::adapters::sink::Both;
@@ -510,19 +511,44 @@ pub(super) async fn run_milestone_merge(
         harness_workflows::milestone_merge::run(gh, &issue, &pr).await
     };
     match merged.await {
-        Ok(()) => {
-            log.say(&format!(
-                "watch: milestone_merge -> #{task} merged into its milestone"
-            ));
+        Ok(Attempt::Merged) => {
             let (pr, branch) = told;
-            log.event(&Event::TaskDelivered { task, pr, branch });
+            log.say(&format!(
+                "watch: milestone_merge -> #{task} merged into {branch}"
+            ));
+            log.event(&Event::TaskDelivered {
+                task,
+                pr,
+                branch: branch.clone(),
+            });
             record_run(
                 here,
                 "milestone-merge",
                 task,
-                &format!("task #{task}: reviewed and green — merged into its milestone, closed"),
+                &format!("task #{task}: reviewed and green — merged into {branch}, closed"),
                 log,
             );
+            None
+        }
+        // The route read the checks green a moment ago; the merge reads
+        // them again and refuses what changed since. Nothing is posed here:
+        // the train reads the PR again next tick, and a red one stays where
+        // it is — reviewed clean, it is no repair route's until a label or
+        // a review asks for the repair.
+        Ok(Attempt::Pending) => {
+            log.say(&format!(
+                "watch: milestone_merge -> #{task} waits: a check of PR {} is still running",
+                told.0
+            ));
+            None
+        }
+        Ok(Attempt::Red(checks)) => {
+            log.warn(&format!(
+                "watch: milestone_merge -> #{task} refused: {} failing check(s) on PR {} — {}",
+                checks.len(),
+                told.0,
+                checks.join("; ")
+            ));
             None
         }
         Err(halt) => {
@@ -583,6 +609,17 @@ pub(super) async fn run_main_agent_merge(
                                 .join(", ")
                         }
                     ))
+                }
+                // Red is told every tick it holds: a milestone PR that
+                // failed does not turn green by waiting.
+                MergeReport::Red { pr, checks } => {
+                    log.warn(&format!(
+                        "watch: main_agent_merge -> PR {pr} of #{milestone} is red: {} failing \
+                         check(s), its repair asked — {}",
+                        checks.len(),
+                        checks.join("; ")
+                    ));
+                    None
                 }
                 MergeReport::NotReady
                 | MergeReport::WaitingOnProducers(_)
@@ -802,5 +839,36 @@ mod lane_route_tests {
         ] {
             assert_eq!(lane_work(&free), None, "{free:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_route_tests {
+    use super::*;
+    use crate::testing::NoGitHub;
+
+    #[tokio::test]
+    async fn a_merge_the_board_refuses_is_the_route_s_failure_not_a_quiet_tick() {
+        // The task cannot even be read: the halt comes back under the route's
+        // name, for the tick to tell — never swallowed as a tick that merged
+        // nothing and said nothing.
+        let failed = run_milestone_merge(
+            &NoGitHub,
+            Path::new("/nonexistent"),
+            64,
+            "68".to_string(),
+            "milestone/52-socle".to_string(),
+            &Logbook::null(),
+        )
+        .await;
+        let Some((route, halt)) = failed else {
+            panic!("a refused merge is the route's failure");
+        };
+        assert_eq!(route, "milestone_merge");
+        assert!(
+            halt.reason().contains("no call should leave this test"),
+            "{}",
+            halt.reason()
+        );
     }
 }

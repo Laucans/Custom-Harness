@@ -15,6 +15,8 @@ mod adapters;
 mod cli;
 mod dispatch;
 mod router;
+#[cfg(test)]
+mod testing;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

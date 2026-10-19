@@ -70,21 +70,27 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             // milestone, and its push runs them anew. Nothing to take is a
             // no-op; a conflict is left to the PR, where it shows.
             let _ = ports.gh.merge_branch(&branch, &config.base_branch).await;
-            // A check that failed, not one still running, is the repair
-            // route's: no session owns a milestone's branch, and #17's PR
-            // stayed red on a settled contest's CONTEST.md that `pr_fix`
-            // knows to remove.
-            let failing = ports
+            // Not green is two things: still running, or failed. The first
+            // waits; the second waits too — nothing merges on red — but is
+            // told apart, since no later tick turns it green by itself, and
+            // is the repair route's: no session owns a milestone's branch,
+            // and #17's PR stayed red on a settled contest's CONTEST.md
+            // that `pr_fix` knows to remove.
+            let checks = ports
                 .gh
                 .pr_failing_checks(&pr.num)
                 .await
                 .unwrap_or_default();
-            if !failing.is_empty()
-                && let Ok(number) = pr.num.parse::<u64>()
-            {
+            if checks.is_empty() {
+                return Ok(MergeOutcome::WaitingOnChecks);
+            }
+            if let Ok(number) = pr.num.parse::<u64>() {
                 ports.gh.add_label(number, labels::PR_FIX).await?;
             }
-            Ok(MergeOutcome::WaitingOnChecks)
+            Ok(MergeOutcome::Red {
+                pr: pr.reference(),
+                checks,
+            })
         }
     } else {
         let title = format!("Milestone #{milestone}: {}", issue.title);
@@ -363,7 +369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_existing_pr_with_red_checks_waits() {
+    async fn an_existing_pr_with_pending_checks_waits() {
         let gh = Rc::new(FakeGitHub {
             issues: vec![issue(4, "open", "Territory tooling", &[labels::MILESTONE])],
             subs: vec![(4, vec![task(11, "closed")])],
@@ -378,6 +384,7 @@ mod tests {
                 },
             )],
             pr_checks: HashMap::from([("99".to_string(), false)]),
+            failing_checks: HashMap::from([("99".to_string(), Vec::new())]),
             ..FakeGitHub::default()
         });
         let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
@@ -395,7 +402,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_existing_pr_with_failed_checks_goes_to_repair() {
+    async fn an_existing_pr_with_failed_checks_is_refused_told_red_and_sent_to_repair() {
+        // Nothing merges on red: the outcome tells a failed check apart from
+        // one still running, and the repair is asked — no session owns a
+        // milestone's branch, and #17's PR stayed red on a settled
+        // contest's CONTEST.md that `pr_fix` knows to remove.
         let gh = Rc::new(FakeGitHub {
             issues: vec![issue(4, "open", "Territory tooling", &[labels::MILESTONE])],
             subs: vec![(4, vec![task(11, "closed")])],
@@ -412,22 +423,40 @@ mod tests {
             pr_checks: HashMap::from([("99".to_string(), false)]),
             failing_checks: HashMap::from([(
                 "99".to_string(),
-                vec!["rule-tests-untouched".to_string()],
+                vec!["rule-tests-untouched — FAILURE — https://ci/9".to_string()],
             )]),
             ..FakeGitHub::default()
         });
         let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
             .await
             .expect("a verdict");
-        assert_eq!(outcome, MergeOutcome::WaitingOnChecks);
+        assert_eq!(
+            outcome,
+            MergeOutcome::Red {
+                pr: "#99".to_string(),
+                checks: vec!["rule-tests-untouched — FAILURE — https://ci/9".to_string()],
+            }
+        );
+        let writes = gh.writes();
         assert!(
-            gh.writes()
-                .contains(&crate::common::fake_github::Wrote::Label(
-                    99,
-                    labels::PR_FIX.to_string()
-                )),
-            "{:?}",
-            gh.writes()
+            !writes.contains(&crate::common::fake_github::Wrote::MergedPr(
+                "99".to_string()
+            )),
+            "nothing merged"
+        );
+        assert!(
+            !writes.contains(&crate::common::fake_github::Wrote::Label(
+                4,
+                labels::WAITING_MERGE.to_string()
+            )),
+            "the milestone is not delivered"
+        );
+        assert!(
+            writes.contains(&crate::common::fake_github::Wrote::Label(
+                99,
+                labels::PR_FIX.to_string()
+            )),
+            "{writes:?}"
         );
     }
 

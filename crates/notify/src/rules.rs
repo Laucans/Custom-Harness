@@ -301,6 +301,8 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::HumanTaskOpened { .. }
         | Event::ContractChangeAsked { .. }
         | Event::ContractEvolved { .. } => progress(board, event, at),
+        Event::BaseRed { branch, sha } => base_red(board, branch, sha.as_deref(), at),
+        Event::BaseGreen { branch } => board.clear(&format!("base-red:{branch}")),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }
@@ -381,8 +383,24 @@ fn snapshot_failed(board: &mut Board, branch: &str, sha: &str, reason: &str, at:
     ));
 }
 
-/// The watch's life is one line, telling its last state.
-/// The watch started on changes the human left waiting.
+/// The integration branch's own CI failed: nothing is built on it or merged
+/// into it until it is green, which clears this (`BaseGreen`).
+fn base_red(board: &mut Board, branch: &str, sha: Option<&str>, at: &str) {
+    board.add(Notification::once(
+        format!("base-red:{branch}"),
+        Level::Warning,
+        format!("Integration branch {branch} is red"),
+        format!(
+            "its CI failed at {}: no task starts and nothing merges until it is green — \
+             look at its last workflow runs, fix or revert the push; the harness closes \
+             the issue \"Integration branch {branch} is red\" once it is green",
+            sha.unwrap_or("its newest head")
+        ),
+        at,
+        Some(screen("journal", at)),
+    ));
+}
+
 fn quota_rest(board: &mut Board, ticks: u32, strikes: u32, at: &str) {
     board.add(Notification::once(
         "quota-rest",
@@ -562,6 +580,41 @@ mod tests {
             "{}",
             human.detail
         );
+    }
+
+    #[test]
+    fn a_red_base_is_told_until_it_is_green() {
+        let red = from_events(&[stored(
+            1,
+            Event::BaseRed {
+                branch: "main_agent".to_string(),
+                sha: Some("abc1234".to_string()),
+            },
+        )]);
+        let told = red.get("base-red:main_agent").expect("told");
+        assert_eq!(told.level, Level::Warning);
+        assert_eq!(told.title, "Integration branch main_agent is red");
+        assert!(
+            told.detail.contains("abc1234") && told.detail.contains("nothing merges"),
+            "{}",
+            told.detail
+        );
+        let green = from_events(&[
+            stored(
+                1,
+                Event::BaseRed {
+                    branch: "main_agent".to_string(),
+                    sha: None,
+                },
+            ),
+            stored(
+                2,
+                Event::BaseGreen {
+                    branch: "main_agent".to_string(),
+                },
+            ),
+        ]);
+        assert!(green.get("base-red:main_agent").is_none(), "taken back");
     }
 
     #[test]

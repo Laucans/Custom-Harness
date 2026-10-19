@@ -28,6 +28,14 @@
 //! ([`rules_first`]). [`decide`] is the schedule's first job, for a watch
 //! that runs one route at a time.
 //!
+//! **While the integration branch is red** ([`base_red`]), the jobs that
+//! would build on it or merge into it — a task's start, since its milestone
+//! branch takes the integration branch first; a merge into a milestone; a
+//! merge into the base — are not scheduled; the reviews, the repairs, the
+//! rules, the test debt and the decisions go on. The red is read by the
+//! sentinel (`common::sentinel`), which also opens the one issue that says
+//! it.
+//!
 //! `harness:ready` is the same tap at every issue level: it means "plan
 //! this" on a roadmap item, "split this" on a milestone, and "build this" on
 //! a task. The factory's Initialize opens it on the roadmap item, the planner
@@ -74,13 +82,15 @@ pub enum Route {
         base: String,
     },
     /// Merge this task's reviewed, green PR into its milestone branch —
-    /// `milestone_merge`.
+    /// `milestone_merge`. The rules' task's PR, decided merged by the
+    /// harness, goes the same way into the integration branch.
     MergeIntoMilestone {
         /// The task's number.
         task: u64,
         /// The PR, as the ports name one.
         pr: String,
-        /// The branch it targets — the milestone's.
+        /// The branch it targets — the milestone's, or the integration
+        /// branch for the rules' task.
         base: String,
     },
     /// Open or merge this milestone's PR into the base branch —
@@ -166,7 +176,9 @@ pub struct Snapshot {
     /// costs a mounted checkout per poll.
     pub prs_to_review: Vec<Pr>,
     /// The tasks whose PR is open on their milestone, reviewed and green,
-    /// with that PR — what `milestone_merge` merges, one per board.
+    /// with that PR — what `milestone_merge` merges, one per board — and the
+    /// rules' task whose PR the harness decided to merge as it is, once
+    /// green (`milestone_merge::rules_ready_to_merge`).
     pub tasks_to_merge: Vec<(u64, Pr)>,
     /// The open milestones whose tasks are all delivered, not
     /// `harness:waiting-merge` yet, whose producers have landed — computed
@@ -198,6 +210,26 @@ pub struct Snapshot {
     pub rules: Vec<Issue>,
     /// Open `harness:needs-decision` issues, any order.
     pub deciding: Vec<Issue>,
+    /// The integration branch's own checks, as the sentinel
+    /// (`common::sentinel::watch`) answers them from
+    /// [`GitHub::branch_checks`](harness_core::ports::shell::github::GitHub::branch_checks):
+    /// `Some(false)` — red, or not green again yet after a red — holds
+    /// everything that would build on the base or merge into it
+    /// ([`base_red`]); `None` and `Some(true)` hold nothing.
+    pub base_checks: Option<bool>,
+}
+
+/// Whether the integration branch is red: its newest head has a failed
+/// workflow run.
+///
+/// A milestone branch takes the integration branch before a task starts, so
+/// a task started now would build on the red; a merge into a milestone or
+/// into the base would spread it or bury it. Both wait; the reviews, the
+/// repairs, the rules, the test debt and the decisions do not touch the base
+/// and go on.
+#[must_use]
+pub const fn base_red(snapshot: &Snapshot) -> bool {
+    matches!(snapshot.base_checks, Some(false))
 }
 
 /// The rules' task development waits on: the lowest open `harness:rules`
@@ -362,22 +394,28 @@ fn of_issues(snapshot: &Snapshot, issues: &[Issue], route: fn(u64) -> Route) -> 
 /// What is in flight: the merges, the plan, the rules' tests, the
 /// decisions and contracts asked, the PRs to repair or review.
 fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
-    let mut found: Vec<Found> = snapshot
-        .ready_to_merge
-        .iter()
-        .map(|m| (Route::MergeMainAgent { milestone: *m }, *m, Some(*m)))
-        .collect();
-    found.extend(snapshot.tasks_to_merge.iter().map(|(task, pr)| {
-        (
-            Route::MergeIntoMilestone {
-                task: *task,
-                pr: pr.num.clone(),
-                base: pr.base.clone(),
-            },
-            *task,
-            crate::common::branching::milestone_number(&pr.base),
-        )
-    }));
+    let mut found: Vec<Found> = Vec::new();
+    // Nothing merges on a red base: a merge into a milestone would spread
+    // it, a merge into the base would bury it.
+    if !base_red(snapshot) {
+        found.extend(
+            snapshot
+                .ready_to_merge
+                .iter()
+                .map(|m| (Route::MergeMainAgent { milestone: *m }, *m, Some(*m))),
+        );
+        found.extend(snapshot.tasks_to_merge.iter().map(|(task, pr)| {
+            (
+                Route::MergeIntoMilestone {
+                    task: *task,
+                    pr: pr.num.clone(),
+                    base: pr.base.clone(),
+                },
+                *task,
+                crate::common::branching::milestone_number(&pr.base),
+            )
+        }));
+    }
     if let Some(lowest) = plannable_roadmap(&snapshot.roadmap)
         && lowest.has(labels::READY)
         && !snapshot.lowest_roadmap_has_milestone
@@ -433,7 +471,8 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
 }
 
 /// What builds and prepares: the splits, the graph questions, the tasks of
-/// the building milestones — none while a rules' task is open — the
+/// the building milestones — none while a rules' task is open, none on a
+/// red base, which the task's milestone branch would take first — the
 /// refinements and the test debt.
 fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
     let mut found: Vec<Found> = splits(&snapshot.milestones, snapshot.graph.as_ref())
@@ -443,7 +482,7 @@ fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
     found.extend(of_issues(snapshot, &snapshot.arbitrating, |issue| {
         Route::Arbiter { issue }
     }));
-    if rules_first(snapshot).is_none() {
+    if rules_first(snapshot).is_none() && !base_red(snapshot) {
         for milestone in &snapshot.dev_loop_milestones {
             let Some(board) = snapshot
                 .boards
@@ -588,7 +627,8 @@ pub struct Pulse {
     pub etag: Option<String>,
     /// Whether the last full read saw a pull request the board waits on —
     /// a check run or a review changes nothing on an issue, so those are
-    /// read in full every tick while one is open.
+    /// read in full every tick while one is open. A red integration branch
+    /// is watched the same way: the push that turns it green moves no issue.
     pub watching_ci: bool,
     /// Ticks since the last full read.
     pub quiet_ticks: u32,
@@ -1154,6 +1194,7 @@ mod tests {
             test_debt: Vec::new(),
             rules: Vec::new(),
             deciding: Vec::new(),
+            base_checks: None,
         }
     }
 
@@ -1206,6 +1247,7 @@ mod tests {
             test_debt: vec![issue(8, &[labels::TEST_DEBT])],
             rules: vec![issue(2, &[labels::RULES, labels::READY])],
             deciding: vec![issue(3, &[labels::NEEDS_DECISION])],
+            base_checks: Some(true),
         };
         // The free merges go first, in the tick; then the plan.
         assert_eq!(
@@ -1220,6 +1262,96 @@ mod tests {
                 Route::Planner { roadmap: 4 },
             ]
         );
+    }
+
+    #[test]
+    fn a_red_base_holds_the_merges_and_the_tasks_and_nothing_else() {
+        // The live failure: main_agent red for two hours while the watch kept
+        // starting tasks on it and opening PRs that inherited the red.
+        let plant = |checks: Option<bool>| Snapshot {
+            tasks_to_merge: vec![(64, pr("68", "milestone/52-socle"))],
+            ready_to_merge: vec![52],
+            dev_loop_milestones: vec![52],
+            boards: vec![board(52, vec![issue(60, &[labels::AGENT, labels::READY])])],
+            prs_to_fix: vec![pr("32", "milestone/52-socle")],
+            prs_to_review: vec![pr("33", "milestone/52-socle")],
+            deciding: vec![issue(3, &[labels::NEEDS_DECISION])],
+            test_debt: vec![issue(8, &[labels::TEST_DEBT])],
+            base_checks: checks,
+            ..empty()
+        };
+        let red = plant(Some(false));
+        assert!(base_red(&red));
+        assert_eq!(
+            routes(&red),
+            [
+                Route::Decide { issue: 3 },
+                Route::PrFix {
+                    pr: "32".to_string()
+                },
+                Route::PrReview {
+                    pr: "33".to_string(),
+                    base: "milestone/52-socle".to_string(),
+                },
+                Route::TestDebt { issue: 8 },
+            ],
+            "no merge, no task: what does not touch the base goes on"
+        );
+        assert_eq!(decide(&red), Route::Decide { issue: 3 });
+        // The rules' tests go on too; a milestone whose board was not read
+        // does not run its loop either.
+        let rules = Snapshot {
+            rules: vec![issue(5, &[labels::RULES, labels::READY])],
+            boards: Vec::new(),
+            ..plant(Some(false))
+        };
+        assert_eq!(decide(&rules), Route::Rules { issue: 5 });
+        assert!(
+            !routes(&Snapshot {
+                boards: Vec::new(),
+                ..plant(Some(false))
+            })
+            .contains(&Route::DevLoop { milestone: 52 }),
+            "no board read: its loop would pick a task on the red"
+        );
+        // Green again, or not known yet: the merges and the task are back,
+        // the merges first.
+        for checks in [Some(true), None] {
+            let back = plant(checks);
+            assert!(!base_red(&back));
+            assert_eq!(
+                routes(&back),
+                [
+                    Route::MergeIntoMilestone {
+                        task: 64,
+                        pr: "68".to_string(),
+                        base: "milestone/52-socle".to_string(),
+                    },
+                    Route::MergeMainAgent { milestone: 52 },
+                    Route::Decide { issue: 3 },
+                    Route::PrFix {
+                        pr: "32".to_string()
+                    },
+                    Route::PrReview {
+                        pr: "33".to_string(),
+                        base: "milestone/52-socle".to_string(),
+                    },
+                    Route::DevTask {
+                        milestone: 52,
+                        task: 60,
+                    },
+                    Route::TestDebt { issue: 8 },
+                ],
+                "{checks:?}"
+            );
+            assert!(
+                routes(&Snapshot {
+                    boards: Vec::new(),
+                    ..plant(checks)
+                })
+                .contains(&Route::DevLoop { milestone: 52 })
+            );
+        }
     }
 
     #[test]

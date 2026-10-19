@@ -58,7 +58,7 @@ impl Action<DecideState> for ReadCase {
         // decision that could not see the PR answered nothing the router
         // could act on — asked again every tick.
         let branch = if rules {
-            Some(format!("rules/{}", issue.number))
+            Some(crate::milestone_merge::rules_branch(issue.number))
         } else {
             tasks::declared_branch(&issue.body)
         };

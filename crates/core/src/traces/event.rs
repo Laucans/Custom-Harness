@@ -350,6 +350,21 @@ pub enum Event {
         /// Why, in the run's own words.
         reason: String,
     },
+    /// The integration branch's own CI is red: nothing is built on it or
+    /// merged into it until it is green again, and a `harness:human` issue
+    /// says so. Recorded once per red spell, not per tick.
+    BaseRed {
+        /// The integration branch.
+        branch: String,
+        /// Its head sha when the red was found, when it could be read.
+        sha: Option<String>,
+    },
+    /// The integration branch is green again: development and merges
+    /// resume, and the issue the red opened is closed.
+    BaseGreen {
+        /// The integration branch.
+        branch: String,
+    },
 }
 
 impl Event {
@@ -530,6 +545,16 @@ impl Event {
             } => format!(
                 "contract `{id}` -> v{version} ({summary}); #{producer_task} builds it, #{task} goes on"
             ),
+            Self::BaseRed { branch, sha } => format!(
+                "watch: integration branch {branch} is red at {} — development and merges wait \
+                 until it is green",
+                sha.as_deref().unwrap_or("an unread sha")
+            ),
+            Self::BaseGreen { branch } => {
+                format!(
+                    "watch: integration branch {branch} is green again — development and merges resume"
+                )
+            }
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
@@ -551,6 +576,7 @@ impl Event {
             | Self::DecisionTaken { .. }
             | Self::HumanTaskOpened { .. }
             | Self::ContractChangeAsked { .. }
+            | Self::BaseRed { .. }
             | Self::Halted { .. }
             | Self::LaneEnded {
                 code: Some(1 | 3), ..
@@ -608,6 +634,53 @@ mod tests {
         assert_eq!(failed.level(), Level::Info);
         let json = serde_json::to_string(&failed).expect("json");
         assert!(json.contains("\"event\":\"checks_failed\""), "{json}");
+    }
+
+    #[test]
+    fn a_red_base_is_told_with_its_sha_and_a_green_one_lifts_it() {
+        let red = Event::BaseRed {
+            branch: "main_agent".to_string(),
+            sha: Some("abc1234".to_string()),
+        };
+        assert_eq!(
+            red.line().as_deref(),
+            Some(
+                "watch: integration branch main_agent is red at abc1234 — development and \
+                 merges wait until it is green"
+            )
+        );
+        assert_eq!(red.level(), Level::Warning);
+        let unread = Event::BaseRed {
+            branch: "main_agent".to_string(),
+            sha: None,
+        };
+        assert!(
+            unread
+                .line()
+                .is_some_and(|line| line.contains("red at an unread sha")),
+            "{unread:?}"
+        );
+        let green = Event::BaseGreen {
+            branch: "main_agent".to_string(),
+        };
+        assert_eq!(
+            green.line().as_deref(),
+            Some(
+                "watch: integration branch main_agent is green again — development and merges \
+                 resume"
+            )
+        );
+        assert_eq!(green.level(), Level::Info);
+        for event in [red, green] {
+            let json = serde_json::to_string(&event).expect("json");
+            let back: Event = serde_json::from_str(&json).expect("read back");
+            assert_eq!(back, event, "{json}");
+        }
+        let json = serde_json::to_string(&Event::BaseGreen {
+            branch: "main_agent".to_string(),
+        })
+        .expect("json");
+        assert!(json.contains("\"event\":\"base_green\""), "{json}");
     }
 
     #[test]

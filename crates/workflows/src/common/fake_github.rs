@@ -122,6 +122,10 @@ pub struct FakeGitHub {
     pub refused_merges: Vec<String>,
     /// The tasks whose blockers were asked for, in order.
     pub blockers_asked: RefCell<Vec<u64>>,
+    /// `branch_checks` answers, by branch. An absent key is `None` — no run
+    /// yet, the answer that changes nothing — so a test that never mentions
+    /// the integration branch's CI is not held by it.
+    pub branch_checks: HashMap<String, Option<bool>>,
 }
 
 impl FakeGitHub {
@@ -481,6 +485,11 @@ impl GitHub for FakeGitHub {
     async fn pr_mergeable(&self, pr_ref: &str) -> Outcome<Option<bool>> {
         self.ok()?;
         Ok(self.pr_mergeable.get(pr_ref).copied().unwrap_or(Some(true)))
+    }
+
+    async fn branch_checks(&self, branch: &str) -> Outcome<Option<bool>> {
+        self.ok()?;
+        Ok(self.branch_checks.get(branch).copied().flatten())
     }
 
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
