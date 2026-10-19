@@ -328,7 +328,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_merge_removes_only_the_labels_the_task_carries() {
-        let gh = FakeGitHub::default();
+        let gh = FakeGitHub {
+            pr_checks: HashMap::from([("77".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
         let bare = task(39, &[labels::AGENT, labels::WRITE_SIDE], "feat/save");
         run(&gh, &bare, &pr("77", "feat/save"))
             .await
