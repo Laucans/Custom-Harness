@@ -931,6 +931,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pr_stands_only_behind_a_killed_session_with_a_task_outside_a_dry_run() {
+        // Each guard refuses on its own, the PR open on the declared branch
+        // every time: any other halt is the failure it was, a dry run writes
+        // nothing, and no task means nothing to mark.
+        let killed = || {
+            Halt::Failed(format!(
+                "claude printed nothing for 1200s and {}",
+                harness_core::domain::KILLED_AS_HUNG
+            ))
+        };
+        let on_branch = || {
+            let mut state = with_task("11");
+            state.task.body = "## Scope\n\nbranch: feat/limit\n".to_string();
+            state
+        };
+        let refused: [(&str, Halt, bool, Loop); 4] = [
+            (
+                "a stop, not a kill",
+                Halt::Halted("AGENT_LOOP_STOP: wait for #20".to_string()),
+                false,
+                on_branch(),
+            ),
+            (
+                "a plain failure, not a kill",
+                Halt::Failed("claude exited with code 1".to_string()),
+                false,
+                on_branch(),
+            ),
+            ("a dry run", killed(), true, on_branch()),
+            ("no task", killed(), false, Loop::default()),
+        ];
+        for (why, halt, dry_run, state) in refused {
+            let gh = Rc::new(FakeGitHub {
+                issues: vec![issue(11, &[labels::AGENT])],
+                prs: vec![(
+                    "feat/limit".to_string(),
+                    harness_core::domain::Pr {
+                        num: "77".to_string(),
+                        head: "feat/limit".to_string(),
+                        url: "https://github.com/o/r/pull/77".to_string(),
+                        state: "OPEN".to_string(),
+                        ..harness_core::domain::Pr::default()
+                    },
+                )],
+                ..FakeGitHub::default()
+            });
+            let mut context = Context::new(
+                Settings {
+                    dry_run,
+                    stages: String::new(),
+                },
+                state,
+                Logbook::null(),
+            );
+            let stood = MarkWaitingMerge {
+                gh: gh.clone(),
+                integration_branch: "main_agent".to_string(),
+            }
+            .pr_stands(&mut context, &halt)
+            .await
+            .expect(why);
+            assert!(!stood, "{why}");
+            assert!(!context.state.pr_stands, "{why}");
+            assert_eq!(gh.writes(), [] as [Wrote; 0], "{why}");
+        }
+    }
+
+    #[tokio::test]
     async fn the_merge_of_a_write_side_pr_drops_review_pending_and_closes_the_task() {
         let gh = Rc::new(FakeGitHub {
             issues: vec![issue(
