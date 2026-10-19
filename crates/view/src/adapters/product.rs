@@ -390,6 +390,10 @@ mod tests {
         async fn pr_mergeable(&self, _pr_ref: &str) -> Outcome<Option<bool>> {
             Err(refused())
         }
+
+        async fn branch_checks(&self, _branch: &str) -> Outcome<Option<bool>> {
+            Ok(None)
+        }
     }
 
     fn refused() -> Halt {

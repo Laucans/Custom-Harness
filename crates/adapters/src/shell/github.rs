@@ -288,6 +288,46 @@ fn state_of(row: &Value) -> &str {
     row.get("state").and_then(Value::as_str).unwrap_or("")
 }
 
+/// What `gh run list --json headSha,status,conclusion,name` says of a
+/// branch: the runs of its newest head sha — the first row's, since `gh`
+/// lists the newest run first — read as [`GitHub::branch_checks`] answers.
+///
+/// A failed run is final for that sha, so one is `Some(false)` whatever
+/// still runs beside it; then a run not completed is `None`; then green is
+/// what [`checks_are_green`] calls green — at least one `success`, nothing
+/// but `success`, `skipped` or `neutral`. A sha whose runs were all
+/// cancelled is `None` too: it proved nothing either way.
+fn branch_checks_from(rows: &[Value]) -> Option<bool> {
+    let text = |row: &Value, field: &str| {
+        row.get(field)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let newest = text(rows.first()?, "headSha");
+    let runs: Vec<(String, String)> = rows
+        .iter()
+        .filter(|row| text(row, "headSha") == newest)
+        .map(|row| (text(row, "status"), text(row, "conclusion")))
+        .collect();
+    if runs.iter().any(|(_, conclusion)| {
+        matches!(
+            conclusion.as_str(),
+            "failure" | "timed_out" | "startup_failure" | "action_required"
+        )
+    }) {
+        return Some(false);
+    }
+    if runs.iter().any(|(status, _)| status != "completed") {
+        return None;
+    }
+    let green = runs.iter().any(|(_, conclusion)| conclusion == "success")
+        && runs.iter().all(|(_, conclusion)| {
+            matches!(conclusion.as_str(), "success" | "skipped" | "neutral")
+        });
+    green.then_some(true)
+}
+
 /// The array from a response. `null` counts as empty, anything else is unreadable.
 fn rows_of<'a>(payload: &'a Value, what: &str) -> Outcome<&'a [Value]> {
     match payload {
@@ -1257,6 +1297,35 @@ impl GitHub for GhCli {
         Ok(mergeable_from(&payload))
     }
 
+    async fn branch_checks(&self, branch: &str) -> Outcome<Option<bool>> {
+        // Twenty runs: enough to hold every workflow of the newest push and
+        // the ones of the push before, which `branch_checks_from` drops.
+        let ran = self
+            .gh(&[
+                "run".to_string(),
+                "list".to_string(),
+                "--branch".to_string(),
+                branch.to_string(),
+                "--limit".to_string(),
+                "20".to_string(),
+                "--json".to_string(),
+                "headSha,status,conclusion,name".to_string(),
+            ])
+            .await?;
+        if !ran.ok() {
+            return Err(Halt::Failed(format!(
+                "the workflow runs of {branch} cannot be listed — {}",
+                ran.why()
+            )));
+        }
+        let payload: Value = serde_json::from_str(ran.out())
+            .map_err(|e| Halt::Failed(format!("unreadable workflow runs of {branch}: {e}")))?;
+        Ok(branch_checks_from(rows_of(
+            &payload,
+            &format!("the workflow runs of {branch}"),
+        )?))
+    }
+
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
         let ran = self
             .gh(&[
@@ -1774,6 +1843,56 @@ mod tests {
     fn no_checks_at_all_is_not_green() {
         // Proof CI ran is the point, not the absence of a reason to refuse.
         assert!(!checks_are_green(&[]));
+    }
+
+    // --- branch_checks_from --------------------------------------------------
+
+    fn run(sha: &str, status: &str, conclusion: &str) -> Value {
+        json!({"headSha": sha, "status": status, "conclusion": conclusion, "name": "ci"})
+    }
+
+    #[test]
+    fn a_branch_whose_newest_runs_all_succeeded_is_green() {
+        let rows = vec![
+            run("b2", "completed", "success"),
+            run("b2", "completed", "skipped"),
+            run("a1", "completed", "failure"),
+        ];
+        assert_eq!(
+            branch_checks_from(&rows),
+            Some(true),
+            "the older sha's red is gone"
+        );
+    }
+
+    #[test]
+    fn one_failed_run_on_the_newest_sha_is_red_even_while_another_runs() {
+        let rows = vec![
+            run("b2", "in_progress", ""),
+            run("b2", "completed", "failure"),
+            run("a1", "completed", "success"),
+        ];
+        assert_eq!(branch_checks_from(&rows), Some(false));
+        assert_eq!(
+            branch_checks_from(&[run("b2", "completed", "timed_out")]),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_run_still_going_or_none_at_all_says_nothing_yet() {
+        assert_eq!(branch_checks_from(&[]), None);
+        let rows = vec![run("b2", "queued", ""), run("b2", "completed", "success")];
+        assert_eq!(branch_checks_from(&rows), None);
+        // Cancelled runs proved nothing; a skipped run alone proved nothing.
+        assert_eq!(
+            branch_checks_from(&[run("b2", "completed", "cancelled")]),
+            None
+        );
+        assert_eq!(
+            branch_checks_from(&[run("b2", "completed", "skipped")]),
+            None
+        );
     }
 
     // --- failing_checks ------------------------------------------------------

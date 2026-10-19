@@ -394,6 +394,21 @@ pub trait GitHub {
     /// [`Halt::Failed`](crate::domain::Halt::Failed) if the PR cannot be read.
     async fn pr_mergeable(&self, pr_ref: &str) -> Outcome<Option<bool>>;
 
+    /// Whether the workflow runs on this branch's newest head are green:
+    /// `Some(true)` when every run on that sha completed successfully,
+    /// `Some(false)` when one of them failed, `None` when none ran yet or
+    /// one is still running.
+    ///
+    /// For a branch, not a pull request: the integration branch receives
+    /// direct pushes and has no PR whose checks could be read. What the
+    /// router holds on a `Some(false)` is everything that would build on
+    /// the red base or merge into it.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`](crate::domain::Halt::Failed) if the runs cannot be
+    /// listed at all.
+    async fn branch_checks(&self, branch: &str) -> Outcome<Option<bool>>;
+
     /// The file `file` of the artifact `artifact` the latest finished run of
     /// the workflow `workflow` on `branch` kept — `None` when no finished run
     /// is there, or it kept no such file. A board with no CI keeps nothing.
