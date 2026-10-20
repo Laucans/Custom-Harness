@@ -22,3 +22,8 @@ No route repaired them, some for 9 h, while dev tasks kept opening new PRs.
       repair.
 - [ ] Open task PRs go down within ~2 h (from 10+ to <= 5).
 - [ ] Lanes do not sit idle once the backlog is below the limit.
+
+## Cap on repair decisions (added after #312)
+- `escalate` asks `decide` at most twice about a task's PR. A third time,
+  it comments and labels the task `harness:human`, and asks nothing more.
+- [ ] A PR past two decisions gets `harness:human` and no more repairs.

@@ -224,6 +224,9 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<Attempt> {
     Ok(Attempt::Merged)
 }
 
+/// How many times `decide` is asked about one task's PR before a human is.
+const REVIEW_DECISIONS: u32 = 2;
+
 /// Asks for a decision on `task`, once; answers whether it asked now.
 ///
 /// Its PR's review stayed blocking, or its branch conflicting, after every
@@ -234,7 +237,7 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<Attempt> {
 /// # Errors
 /// [`harness_core::domain::Halt`] from the label or the comment write.
 pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<bool> {
-    if task.has(labels::NEEDS_DECISION) {
+    if task.has(labels::NEEDS_DECISION) || task.has(labels::HUMAN) {
         return Ok(false);
     }
     let why = format!(
@@ -256,6 +259,23 @@ pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<bool> {
     let round = asked
         .filter(|q| q.kind.as_deref() == Some("review"))
         .map_or(1, |q| q.round.saturating_add(1));
+    // Each decision that says "repair" buys two more repairs: past
+    // `REVIEW_DECISIONS` of them, the PR is a human's, not a third paid
+    // cycle (ForgeDesMondes' #312, 2026-10-20: repair, decide, repair, decide).
+    if round > REVIEW_DECISIONS {
+        gh.post_issue_comment(
+            task.number,
+            &format!(
+                "{why} The harness already decided {REVIEW_DECISIONS} times to repair it; \
+                 it stops spending on it. A human decides: repair it by hand, merge it \
+                 as it is, or cut the task — then remove `{}`.",
+                labels::HUMAN
+            ),
+        )
+        .await?;
+        gh.add_label(task.number, labels::HUMAN).await?;
+        return Ok(true);
+    }
     let question = crate::common::decision::Question {
         kind: Some("review".to_string()),
         blocks: why.clone(),
@@ -399,6 +419,28 @@ mod tests {
             })
             .expect("rewritten");
         assert!(body.contains("round: 2"), "{body}");
+        // Asked a third time: a human's, and no decision is asked.
+        let mut third = again.clone();
+        third.body = body;
+        let gh = FakeGitHub::default();
+        assert!(
+            escalate(&gh, &third, &pr("279", "feat/create-session"))
+                .await
+                .expect("hands over")
+        );
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Label(157, labels::HUMAN.to_string())));
+        assert!(!writes.contains(&Wrote::Label(157, labels::NEEDS_DECISION.to_string())));
+        // Once a human's, never asked again.
+        let mut held = third.clone();
+        held.labels.push(labels::HUMAN.to_string());
+        let gh = FakeGitHub::default();
+        assert!(
+            !escalate(&gh, &held, &pr("279", "feat/create-session"))
+                .await
+                .expect("reads")
+        );
+        assert!(gh.writes().is_empty());
     }
 
     #[tokio::test]
