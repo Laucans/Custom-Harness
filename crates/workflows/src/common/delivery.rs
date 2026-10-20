@@ -89,7 +89,11 @@ pub fn merged_note(branch: &str, pr_ref: &str) -> String {
 pub fn every_task_merged(tasks: &[Issue], merged: &[Issue]) -> bool {
     !tasks.is_empty()
         && tasks.iter().all(|task| {
-            if task.has(crate::common::labels::HUMAN) {
+            // A task closed as not planned was given up or covered by
+            // another: no PR of its own will ever land (ForgeDesMondes' #19,
+            // 2026-10-20: #117, #119 and #123, covered by #243 under #18,
+            // held the milestone's merge at every tick).
+            if task.has(crate::common::labels::HUMAN) || task.not_planned {
                 task.is_closed()
             } else {
                 first_closing(merged, task.number).is_some()
@@ -100,6 +104,43 @@ pub fn every_task_merged(tasks: &[Issue], merged: &[Issue]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_closed_as_not_planned_needs_no_merged_pr() {
+        let covered = Issue {
+            number: 117,
+            state: "closed".to_string(),
+            not_planned: true,
+            ..Issue::default()
+        };
+        let shipped = Issue {
+            number: 114,
+            state: "closed".to_string(),
+            ..Issue::default()
+        };
+        let merged = vec![pr(145, "Closes #114")];
+        assert!(every_task_merged(
+            &[shipped.clone(), covered.clone()],
+            &merged
+        ));
+        let open_covered = Issue {
+            state: "open".to_string(),
+            ..covered
+        };
+        assert!(
+            !every_task_merged(&[shipped.clone(), open_covered], &merged),
+            "still open, it is not given up yet"
+        );
+        let unshipped = Issue {
+            number: 119,
+            state: "closed".to_string(),
+            ..Issue::default()
+        };
+        assert!(
+            !every_task_merged(&[shipped, unshipped], &merged),
+            "closed as done, it needs its PR"
+        );
+    }
 
     #[test]
     fn a_closed_human_task_needs_no_merged_pr() {

@@ -188,6 +188,7 @@ fn issue_from(payload: &Value) -> Outcome<Issue> {
         labels,
         body: text_at(payload, "body"),
         blocked_by: Vec::new(),
+        not_planned: text_at(payload, "state_reason") == "not_planned",
     })
 }
 
@@ -2307,6 +2308,18 @@ mod tests {
     fn a_null_body_reads_as_empty_not_as_the_word_null() {
         let issue = issue_from(&json!({ "number": 1, "body": null })).expect("parse");
         assert_eq!(issue.body, "");
+    }
+
+    #[test]
+    fn an_issue_closed_as_not_planned_says_so_and_no_other_does() {
+        let read = |reason: Value| {
+            issue_from(&json!({ "number": 117, "state": "closed", "state_reason": reason }))
+                .expect("parse")
+                .not_planned
+        };
+        assert!(read(json!("not_planned")));
+        assert!(!read(json!("completed")));
+        assert!(!read(Value::Null));
     }
 
     #[test]

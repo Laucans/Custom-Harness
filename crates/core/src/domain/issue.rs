@@ -31,6 +31,9 @@ pub struct Issue {
     /// Its blockers, **with their state**: knowing an issue is blocked is not
     /// enough, you must know if the blocker is still open.
     pub blocked_by: Vec<Self>,
+    /// Closed as not planned (GitHub's `state_reason`): work given up or
+    /// covered elsewhere, which no merged PR delivers.
+    pub not_planned: bool,
 }
 
 impl Issue {

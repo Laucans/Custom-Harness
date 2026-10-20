@@ -1056,6 +1056,7 @@ mod tests {
             labels: labels.iter().map(ToString::to_string).collect(),
             body: String::new(),
             blocked_by: vec![],
+            not_planned: false,
         }
     }
 

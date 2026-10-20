@@ -655,6 +655,7 @@ mod tests {
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
             body: body.to_string(),
             blocked_by: Vec::new(),
+            not_planned: false,
         }
     }
 
