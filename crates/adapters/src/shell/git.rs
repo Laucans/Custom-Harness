@@ -266,6 +266,10 @@ impl Repo for GitCli {
     async fn abort_merge(&self) -> Outcome<Ran> {
         self.git(&["merge", "--abort"]).await
     }
+
+    async fn clear_stashes(&self) -> Outcome<Ran> {
+        self.git(&["stash", "clear"]).await
+    }
 }
 
 /// `sparse-checkout set --no-cone -- <patterns>`: the patterns are

@@ -270,6 +270,21 @@ pub trait Repo {
             stderr: "this git cannot abort a merge".to_string(),
         })
     }
+
+    /// `stash clear`: drop every stash entry a session left behind.
+    ///
+    /// Refused by default, like [`Self::abort_merge`]: only a real `git`
+    /// and the fakes that test a release know how.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn clear_stashes(&self) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "this git cannot clear stashes".to_string(),
+        })
+    }
 }
 
 /// Open a [`Repo`] on a given repository.

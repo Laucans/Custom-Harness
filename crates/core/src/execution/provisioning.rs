@@ -403,6 +403,7 @@ impl Provisioner {
                     held.dirty
                 ));
             }
+            drop_stashes(git.as_ref(), name, held.stashes, log).await;
         }
         self.put_on_branch(git.as_ref(), run.branch, true, log)
             .await
@@ -481,6 +482,7 @@ impl Provisioner {
                 mount.name, held.dirty
             ));
         }
+        drop_stashes(git.as_ref(), &mount.name, held.stashes, log).await;
         match self
             .put_on_branch(git.as_ref(), &mount.branch, true, log)
             .await
@@ -702,10 +704,13 @@ struct Held {
 }
 
 impl Held {
-    /// Work a reset or a deletion would lose for good: a stash, a commit no
-    /// remote has — or a folder that cannot be read, which counts as such.
+    /// Work a reset or a deletion would lose for good: a commit no remote
+    /// has — or a folder that cannot be read, which counts as such. A stash
+    /// is none: a session stashed and went, nobody will pop it, and a lane
+    /// that held it stopped every read-only job after (`ForgeDesMondes`,
+    /// 2026-10-20 03:23Z: a repair's stash from two days before).
     const fn work(&self) -> bool {
-        self.wrong.is_some() || self.stashes > 0 || !self.branches.is_empty()
+        self.wrong.is_some() || !self.branches.is_empty()
     }
 
     /// In words, for a halt or a warning; empty when nothing is held.
@@ -733,6 +738,27 @@ impl Held {
             said.push(format!("{} uncommitted change(s)", self.dirty));
         }
         said.join(", ")
+    }
+}
+
+/// Drops the stash entries a session left: leftovers, not work (see
+/// [`Held::work`]). Nothing to do, nothing said.
+async fn drop_stashes(git: &dyn Repo, name: &str, stashes: usize, log: &Logbook) {
+    if stashes == 0 {
+        return;
+    }
+    match git.clear_stashes().await {
+        Ok(done) if done.ok() => log.say(&format!(
+            "workspace {name}: {stashes} stash entry(ies) a session left — dropped"
+        )),
+        Ok(done) => log.warn(&format!(
+            "workspace {name}: cannot drop its {stashes} stash entry(ies) ({})",
+            done.why()
+        )),
+        Err(why) => log.warn(&format!(
+            "workspace {name}: cannot drop its {stashes} stash entry(ies) ({})",
+            why.reason()
+        )),
     }
 }
 
@@ -975,6 +1001,10 @@ mod tests {
                 self.merging.set(false);
             }
             Ok(done)
+        }
+
+        async fn clear_stashes(&self) -> Outcome<Ran> {
+            Ok(self.note("clear_stashes"))
         }
 
         async fn delete_branch(&self, name: &str) -> Outcome<Ran> {
@@ -1830,7 +1860,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stash_alone_is_work_a_release_keeps() {
+    async fn a_stash_alone_is_a_leftover_the_release_drops() {
         let git = repo(FakeRepo {
             stashes: vec!["stash@{0}: WIP".to_string()],
             ..clean_repo()
@@ -1840,18 +1870,26 @@ mod tests {
         provisioner(&git, Rc::clone(&disk))
             .release(&lane("feat/x"), &log)
             .await;
-        assert_eq!(
-            *journal.events.borrow(),
-            [Event::WorkKept {
-                workspace: "router-lane-1".to_string(),
-                path: LANE.to_string(),
-                branch: "feat/x".to_string(),
-                branches: Vec::new(),
-                commits: 0,
-                stashes: 1,
-            }]
+        assert!(
+            journal.events.borrow().is_empty(),
+            "no work kept: {:?}",
+            journal.events.borrow()
         );
-        assert!(!git.calls().iter().any(|c| c.starts_with("reset_hard")));
+        let calls = git.calls();
+        assert!(calls.contains(&"clear_stashes".to_string()), "{calls:?}");
+        assert!(
+            calls.iter().any(|c| c.starts_with("reset_hard")),
+            "{calls:?}"
+        );
+        assert!(
+            journal
+                .lines
+                .borrow()
+                .iter()
+                .any(|l| l.contains("1 stash entry(ies) a session left — dropped")),
+            "{:?}",
+            journal.lines.borrow()
+        );
     }
 
     #[tokio::test]
