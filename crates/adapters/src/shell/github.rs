@@ -28,6 +28,20 @@ use harness_core::ports::shell::process::Ran;
 /// The called binary.
 const BINARY: &str = "gh";
 
+/// How long a call GitHub throttled waits before its second try.
+const THROTTLE_PAUSE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether `gh` was refused for a burst: GitHub's secondary rate limit
+/// (or its primary one, which the same pause cannot help, but a tick later
+/// is as good a time to find out), as `gh` prints it.
+#[must_use]
+fn throttled(ran: &Ran) -> bool {
+    !ran.ok()
+        && (ran.stderr.contains("rate limit exceeded")
+            || ran.stderr.contains("secondary rate limit")
+            || ran.stderr.contains("abuse detection"))
+}
+
 /// Enough for a personal repo.
 ///
 /// And a reason not to depend on `--paginate`: its multi-page output is not a
@@ -397,15 +411,30 @@ impl GhCli {
         // `gh pr …` infers the repo from the cwd, and a slug-only adapter has
         // none that means anything (it would hit the harness's own repo), so
         // name the target explicitly. `api` calls already carry the slug.
-        if args.first().is_some_and(|a| a == "pr" || a == "run")
+        let named;
+        let args = if args.first().is_some_and(|a| a == "pr" || a == "run")
             && let Some(name) = self.name.get()
         {
-            let mut named = args.to_vec();
-            named.push("-R".to_string());
-            named.push(name.clone());
-            return process::run(BINARY, &named, &self.root).await;
+            let mut with_repo = args.to_vec();
+            with_repo.push("-R".to_string());
+            with_repo.push(name.clone());
+            named = with_repo;
+            named.as_slice()
+        } else {
+            args
+        };
+        // GitHub refuses a burst with a 403 "rate limit exceeded" while the
+        // hour's quota is far from spent (its secondary limit): a minute
+        // later the same call goes through. One pause, two tries — a round
+        // or a tick is not lost on a comment GitHub would take next minute
+        // (ForgeDesMondes, 2026-10-20 04:25Z: a code round failed on its
+        // own comment, a tick on the board's read).
+        let mut ran = process::run(BINARY, args, &self.root).await?;
+        if throttled(&ran) {
+            tokio::time::sleep(THROTTLE_PAUSE).await;
+            ran = process::run(BINARY, args, &self.root).await?;
         }
-        process::run(BINARY, args, &self.root).await
+        Ok(ran)
     }
 
     /// An API read. `path` is relative to the repo.
@@ -1474,6 +1503,35 @@ fn activity_from(ran: &Ran) -> Outcome<Activity> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_burst_github_refused_is_throttled_and_nothing_else_is() {
+        let refused = |stderr: &str| Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        };
+        assert!(throttled(&refused(
+            "gh: API rate limit exceeded for user ID 97902739. If you reach out to GitHub Support"
+        )));
+        assert!(throttled(&refused(
+            "You have exceeded a secondary rate limit"
+        )));
+        assert!(!throttled(&refused("gh: Not Found (HTTP 404)")));
+        assert!(!throttled(&Ran {
+            code: Some(0),
+            stdout: "rate limit exceeded is what the body says".to_string(),
+            stderr: String::new(),
+        }));
+        assert!(
+            !throttled(&Ran {
+                code: Some(0),
+                stdout: String::new(),
+                stderr: "rate limit exceeded".to_string(),
+            }),
+            "a call that went through is not throttled, whatever it printed"
+        );
+    }
     #[test]
     fn a_refusal_says_github_s_own_reasons_when_the_response_has_them() {
         let why = "gh: Validation Failed (HTTP 422)";
