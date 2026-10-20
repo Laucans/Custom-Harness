@@ -395,7 +395,27 @@ pub struct GhCli {
     /// Each PR's comments, kept with the update time they were read at:
     /// read again only once the PR moved.
     comments: Mutex<HashMap<u64, (String, String)>>,
+    /// The board's issue reads (`issues/…` lists: labelled issues,
+    /// sub-issues, blockers), by path and query, kept while
+    /// [`GitHub::activity`] says nothing moved: no issue's or pull
+    /// request's update time changed, so none of these lists did. `None`
+    /// until a first activity read: a lane that never asks it keeps
+    /// nothing. Dropped by any write and after [`BOARD_KEPT_AT_MOST`].
+    board: Mutex<Option<KeptBoard>>,
 }
+
+/// The board's issue reads kept between two ticks of an unchanged board.
+struct KeptBoard {
+    /// When the board was last seen moving (or first read).
+    since: Instant,
+    /// By `path?query`: the payload as read.
+    reads: HashMap<String, Value>,
+}
+
+/// The longest a kept board read answers, however quiet the board: the
+/// valve for a change the activity read cannot see (a dependency added by
+/// hand).
+const BOARD_KEPT_AT_MOST: Duration = Duration::from_secs(600);
 
 /// One read of every open PR: what the watch asked of each, one request at
 /// a time, before (`ForgeDesMondes`, 2026-10-20: the token's 5 000 calls an
@@ -514,6 +534,29 @@ impl GhCli {
         if let Ok(mut kept) = self.open_prs.lock() {
             *kept = None;
         }
+        if let Ok(mut board) = self.board.lock()
+            && let Some(board) = board.as_mut()
+        {
+            board.reads.clear();
+        }
+    }
+
+    /// A kept board read for `key`, when the board has not moved since.
+    fn kept_board_read(&self, key: &str) -> Option<Value> {
+        self.board.lock().ok()?.as_ref().and_then(|board| {
+            (board.since.elapsed() < BOARD_KEPT_AT_MOST)
+                .then(|| board.reads.get(key).cloned())
+                .flatten()
+        })
+    }
+
+    /// Keeps a board read for `key`, when an activity read has been seen.
+    fn keep_board_read(&self, key: String, payload: &Value) {
+        if let Ok(mut board) = self.board.lock()
+            && let Some(board) = board.as_mut()
+        {
+            board.reads.insert(key, payload.clone());
+        }
     }
 
     /// What the one read of the open PRs says of PR `number`, read again
@@ -562,6 +605,7 @@ impl GhCli {
             name: OnceLock::new(),
             open_prs: Mutex::new(None),
             comments: Mutex::new(HashMap::new()),
+            board: Mutex::new(None),
         }
     }
 
@@ -580,6 +624,7 @@ impl GhCli {
             name: OnceLock::from(slug.to_string()),
             open_prs: Mutex::new(None),
             comments: Mutex::new(HashMap::new()),
+            board: Mutex::new(None),
         }
     }
 
@@ -621,6 +666,28 @@ impl GhCli {
     /// The repo is resolved here rather than by the caller: it is the only way
     /// an unreadable repo name is a failure propagated like any other.
     async fn read(&self, what: &str, path: &str, query: &[(&str, String)]) -> Outcome<Value> {
+        // An issue read is kept while the board does not move: every issue
+        // or pull request changed bumps the update time the activity read
+        // watches (see `board`).
+        let key = path.starts_with("issues").then(|| {
+            query
+                .iter()
+                .fold(path.to_string(), |key, (k, v)| key + "&" + k + "=" + v)
+        });
+        if let Some(key) = &key
+            && let Some(kept) = self.kept_board_read(key)
+        {
+            return Ok(kept);
+        }
+        let value = self.read_fresh(what, path, query).await?;
+        if let Some(key) = key {
+            self.keep_board_read(key, &value);
+        }
+        Ok(value)
+    }
+
+    /// [`Self::read`] without the kept board.
+    async fn read_fresh(&self, what: &str, path: &str, query: &[(&str, String)]) -> Outcome<Value> {
         let repo = self.repo().await?;
         let mut args = vec![
             "api".to_string(),
@@ -941,7 +1008,20 @@ impl GitHub for GhCli {
             args.push("-H".to_string());
             args.push(format!("If-None-Match: {etag}"));
         }
-        activity_from(&self.gh(&args).await?)
+        let activity = activity_from(&self.gh(&args).await?)?;
+        if let Ok(mut board) = self.board.lock() {
+            let quiet = matches!(activity, Activity::Unchanged)
+                && board
+                    .as_ref()
+                    .is_some_and(|b| b.since.elapsed() < BOARD_KEPT_AT_MOST);
+            if !quiet {
+                *board = Some(KeptBoard {
+                    since: Instant::now(),
+                    reads: HashMap::new(),
+                });
+            }
+        }
+        Ok(activity)
     }
 
     async fn merged_prs(&self, base: &str) -> Outcome<Vec<Issue>> {
@@ -1805,6 +1885,37 @@ mod tests {
         assert_eq!(prs[&268].head, "abc123");
         assert_eq!(prs[&279].head, "", "no head read, no pin");
         assert!(open_prs_from(&json!({"message": "x"})).is_none());
+    }
+
+    #[test]
+    fn a_board_read_is_kept_only_after_an_activity_read_and_until_a_write() {
+        let gh = GhCli::new(Path::new("."));
+        gh.keep_board_read("issues/4/sub_issues".to_string(), &json!([1]));
+        assert!(
+            gh.kept_board_read("issues/4/sub_issues").is_none(),
+            "no activity read yet: a lane keeps nothing"
+        );
+        *gh.board.lock().expect("lock") = Some(KeptBoard {
+            since: Instant::now(),
+            reads: HashMap::new(),
+        });
+        gh.keep_board_read("issues/4/sub_issues".to_string(), &json!([1]));
+        assert_eq!(gh.kept_board_read("issues/4/sub_issues"), Some(json!([1])));
+        gh.forget_open_prs();
+        assert!(
+            gh.kept_board_read("issues/4/sub_issues").is_none(),
+            "a write drops it"
+        );
+        *gh.board.lock().expect("lock") = Some(KeptBoard {
+            since: Instant::now()
+                .checked_sub(BOARD_KEPT_AT_MOST + Duration::from_secs(1))
+                .expect("an instant"),
+            reads: HashMap::from([("issues/4/sub_issues".to_string(), json!([1]))]),
+        });
+        assert!(
+            gh.kept_board_read("issues/4/sub_issues").is_none(),
+            "past the valve"
+        );
     }
 
     #[test]
