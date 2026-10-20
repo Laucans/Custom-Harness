@@ -169,6 +169,19 @@ pub async fn run_streaming(
     let deadline = tokio::time::Instant::now() + limits.cap;
     let mut stdout = String::new();
     let mut stderr = String::new();
+    // Silence is not idleness when the session's own processes work: a
+    // `cargo build` from a fresh target says nothing for twenty minutes
+    // (ForgeDesMondes #182, 2026-10-20 08:52Z, killed mid-build). The
+    // probe compares the process group's CPU time between two checks.
+    let root = child.id();
+    let threshold = limits.idle.as_secs_f64() / BUSY_SHARE;
+    let mut last_cpu = cpu_seconds_of_tree(root);
+    let mut busy = move || {
+        let now = cpu_seconds_of_tree(root);
+        let moved = now > last_cpu + threshold;
+        last_cpu = now;
+        moved
+    };
     let drained = tokio::time::timeout_at(
         deadline,
         drain(
@@ -178,6 +191,7 @@ pub async fn run_streaming(
             &mut stderr,
             limits.idle,
             watch,
+            &mut busy,
         ),
     )
     .await;
@@ -213,7 +227,9 @@ pub async fn run_streaming(
 }
 
 /// Reads both pipes until each reaches its end, keeping what they said —
-/// `false` if neither said anything for `idle`.
+/// `false` if neither said anything for `idle` while `busy` found the
+/// process doing nothing either; a silent process at work is waited on,
+/// one `idle` at a time, and told so on its error stream.
 ///
 /// A read error ends that pipe rather than the call: the process may still
 /// have something to say on the other one, and its exit code remains the
@@ -225,6 +241,7 @@ async fn drain<O, E>(
     stderr: &mut String,
     idle: Duration,
     watch: &mut dyn FnMut(Stream, &str),
+    busy: &mut dyn FnMut() -> bool,
 ) -> bool
 where
     O: tokio::io::AsyncBufRead + Unpin,
@@ -253,10 +270,84 @@ where
                 }
                 _ => err_open = false,
             },
-            () = tokio::time::sleep_until(quiet_until) => return false,
+            () = tokio::time::sleep_until(quiet_until) => {
+                if !busy() {
+                    return false;
+                }
+                watch(
+                    Stream::Err,
+                    &format!(
+                        "[harness] silent for {}s but its processes work on — waited on",
+                        idle.as_secs()
+                    ),
+                );
+                quiet_until = tokio::time::Instant::now() + idle;
+            }
         }
     }
     true
+}
+
+/// What share of a silence a process tree must have spent on the CPU to
+/// count as at work: a tenth — two minutes of twenty for a build, nothing
+/// for a session waiting on something outside.
+const BUSY_SHARE: f64 = 10.0;
+
+/// The CPU time, in seconds, of `root` and every process under it — `ps`
+/// summed over `pgrep -P` walked down; 0 when the tree cannot be read
+/// (then silence is idleness, as before).
+fn cpu_seconds_of_tree(root: Option<u32>) -> f64 {
+    let Some(root) = root else {
+        return 0.0;
+    };
+    let mut pids = vec![root.to_string()];
+    let mut frontier = vec![root.to_string()];
+    while let Some(parent) = frontier.pop() {
+        let Ok(children) = std::process::Command::new("pgrep")
+            .args(["-P", &parent])
+            .output()
+        else {
+            break;
+        };
+        for child in String::from_utf8_lossy(&children.stdout).lines() {
+            let child = child.trim();
+            if !child.is_empty() && !pids.iter().any(|p| p == child) {
+                pids.push(child.to_string());
+                frontier.push(child.to_string());
+            }
+        }
+    }
+    let Ok(times) = std::process::Command::new("ps")
+        .args(["-o", "time=", "-p", &pids.join(",")])
+        .output()
+    else {
+        return 0.0;
+    };
+    String::from_utf8_lossy(&times.stdout)
+        .lines()
+        .map(cpu_time_seconds)
+        .sum()
+}
+
+/// `ps`'s `time` column as seconds: `MM:SS.ss`, `HH:MM:SS`, `D-HH:MM:SS`;
+/// 0 for what does not parse.
+fn cpu_time_seconds(text: &str) -> f64 {
+    let text = text.trim();
+    let (days, clock) = match text.split_once('-') {
+        Some((d, rest)) => (d.parse::<f64>().unwrap_or(0.0), rest),
+        None => (0.0, text),
+    };
+    let parts: Vec<f64> = clock
+        .split(':')
+        .map(|p| p.trim().parse::<f64>().unwrap_or(0.0))
+        .collect();
+    let clock = match parts.as_slice() {
+        [h, m, s] => h * 3600.0 + m * 60.0 + s,
+        [m, s] => m * 60.0 + s,
+        [s] => *s,
+        _ => 0.0,
+    };
+    days * 86400.0 + clock
 }
 
 #[cfg(test)]
@@ -287,6 +378,46 @@ mod tests {
             .expect("a talkative run is not hung");
         assert!(ran.ok());
         assert_eq!(ran.stdout.lines().count(), 6);
+    }
+
+    #[test]
+    fn ps_times_read_as_seconds() {
+        assert!((cpu_time_seconds(" 0:01.23") - 1.23).abs() < 1e-9);
+        assert!((cpu_time_seconds("12:30.00") - 750.0).abs() < 1e-9);
+        assert!((cpu_time_seconds("1:02:03") - 3723.0).abs() < 1e-9);
+        assert!((cpu_time_seconds("2-01:00:00") - 176_400.0).abs() < 1e-9);
+        assert!((cpu_time_seconds("garbage") - 0.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn a_silent_run_whose_processes_work_is_waited_on() {
+        // ForgeDesMondes #182: a cargo build from a fresh target says
+        // nothing for twenty minutes and was killed mid-build.
+        let limits = Limits {
+            idle: Duration::from_millis(400),
+            cap: Duration::from_secs(20),
+        };
+        let mut told = Vec::new();
+        let ran = run_streaming(
+            "sh",
+            &sh("echo a; i=0; while [ $i -lt 600000 ]; do i=$((i+1)); done; echo b"),
+            Path::new("."),
+            limits,
+            &mut |stream, line| {
+                if matches!(stream, Stream::Err) {
+                    told.push(line.to_string());
+                }
+            },
+        )
+        .await
+        .expect("a busy run is not hung");
+        assert!(ran.ok(), "{ran:?}");
+        assert_eq!(ran.stdout.lines().count(), 2, "{}", ran.stdout);
+        assert!(
+            told.iter()
+                .any(|l| l.contains("silent for 0s but its processes work on")),
+            "{told:?}"
+        );
     }
 
     #[tokio::test]
