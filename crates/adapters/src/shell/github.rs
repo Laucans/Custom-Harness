@@ -51,6 +51,63 @@ fn throttled(ran: &Ran) -> bool {
             || ran.stderr.contains("abuse detection"))
 }
 
+/// A write GitHub took but whose answer `gh` lost: its body came back empty
+/// or cut, and `gh` failed to parse it. The write itself may well have
+/// landed (#125's comment, `ForgeDesMondes` 2026-10-20 14:13Z).
+fn answer_lost(ran: &Ran) -> bool {
+    !ran.ok() && ran.stderr.contains(ANSWER_LOST)
+}
+
+/// What `gh` prints when the answer it parses is empty or cut.
+const ANSWER_LOST: &str = "unexpected end of JSON input";
+
+/// The halt a refused write ends on.
+fn write_refused(what: &str, method: &str, url: &str, ran: &Ran) -> Halt {
+    Halt::Halted(format!(
+        "GitHub refused to {what} ({method} {url}): {}. Nothing is retried \
+         and nothing is undone here — a partially applied change is easier \
+         to finish by hand than to guess.",
+        refusal(&ran.why(), ran.out())
+    ))
+}
+
+/// Whether a write may be sent a second time without doing it twice.
+fn idempotent(method: &str) -> bool {
+    matches!(method, "PATCH" | "PUT" | "DELETE")
+}
+
+/// Whether a write is sent again: its answer was lost and repeating it
+/// cannot do it twice.
+fn repeats(ran: &Ran, method: &str) -> bool {
+    answer_lost(ran) && idempotent(method)
+}
+
+/// A comment's post, confirmed when `gh` lost GitHub's answer: the issue's
+/// comments are read once (`latest`), and the post stands if the comment is
+/// there. Any other outcome is the post's own.
+async fn confirmed<F, Fut>(posted: Outcome<()>, body: &str, latest: F) -> Outcome<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Outcome<Vec<String>>>,
+{
+    match posted {
+        Err(Halt::Halted(why)) if why.contains(ANSWER_LOST) => {
+            if comment_landed(&latest().await?, body) {
+                Ok(())
+            } else {
+                Err(Halt::Halted(why))
+            }
+        }
+        other => other,
+    }
+}
+
+/// Whether the comment just posted is the issue's latest — the proof a
+/// post whose answer was lost landed after all.
+fn comment_landed(bodies: &[String], body: &str) -> bool {
+    bodies.last().is_some_and(|last| last.trim() == body.trim())
+}
+
 /// Enough for a personal repo.
 ///
 /// And a reason not to depend on `--paginate`: its multi-page output is not a
@@ -737,16 +794,15 @@ impl GhCli {
             args.push("-f".to_string());
             args.push(format!("{key}={value}"));
         }
-        let ran = self.gh(&args).await?;
+        let mut ran = self.gh(&args).await?;
+        // A lost answer to a write that is safe to repeat: repeated once.
+        if repeats(&ran, method) {
+            ran = self.gh(&args).await?;
+        }
         if ran.ok() {
             return Ok(());
         }
-        Err(Halt::Halted(format!(
-            "GitHub refused to {what} ({method} {url}): {}. Nothing is retried \
-             and nothing is undone here — a partially applied change is easier \
-             to finish by hand than to guess.",
-            refusal(&ran.why(), ran.out())
-        )))
+        Err(write_refused(what, method, &url, &ran))
     }
 
     /// Issues from an entry point that lists them, read as-is.
@@ -1115,13 +1171,17 @@ impl GitHub for GhCli {
     }
 
     async fn post_issue_comment(&self, number: u64, body: &str) -> Outcome<()> {
-        self.write(
-            &format!("comment on #{number}"),
-            "POST",
-            &format!("issues/{number}/comments"),
-            &[("body", body.to_string())],
-        )
-        .await
+        let posted = self
+            .write(
+                &format!("comment on #{number}"),
+                "POST",
+                &format!("issues/{number}/comments"),
+                &[("body", body.to_string())],
+            )
+            .await;
+        // A POST is not repeated — a second comment is a second answer — but
+        // a lost answer is checked: the comment is often there.
+        confirmed(posted, body, || self.issue_comments(number)).await
     }
 
     async fn close_issue(&self, number: u64) -> Outcome<()> {
@@ -1974,6 +2034,56 @@ mod tests {
             "a call that went through is not throttled, whatever it printed"
         );
     }
+    #[test]
+    fn a_lost_answer_is_told_apart_and_only_safe_writes_repeat() {
+        let ran = |code: i32, stderr: &str| Ran {
+            code: Some(code),
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        };
+        assert!(answer_lost(&ran(1, "unexpected end of JSON input")));
+        assert!(!answer_lost(&ran(0, "unexpected end of JSON input")));
+        assert!(!answer_lost(&ran(1, "gh: Not Found (HTTP 404)")));
+        assert!(idempotent("PATCH") && idempotent("PUT") && idempotent("DELETE"));
+        assert!(!idempotent("POST"));
+        assert!(repeats(&ran(1, ANSWER_LOST), "PATCH"));
+        assert!(!repeats(&ran(1, ANSWER_LOST), "POST"));
+        assert!(!repeats(&ran(1, "gh: Not Found (HTTP 404)"), "PATCH"));
+    }
+
+    #[tokio::test]
+    async fn a_lost_comment_answer_stands_only_when_the_comment_is_there() {
+        let lost = || {
+            Err(Halt::Halted(format!(
+                "GitHub refused to comment: {ANSWER_LOST}"
+            )))
+        };
+        let there = || async { Ok(vec!["old".to_string(), "the answer".to_string()]) };
+        let absent = || async { Ok(vec!["old".to_string()]) };
+        assert!(confirmed(lost(), "the answer", there).await.is_ok());
+        assert!(confirmed(lost(), "the answer", absent).await.is_err());
+        let refused = Err(Halt::Halted("gh: Not Found (HTTP 404)".to_string()));
+        assert!(
+            confirmed(refused, "the answer", there).await.is_err(),
+            "a refusal is not checked against the thread"
+        );
+        assert!(confirmed(Ok(()), "the answer", absent).await.is_ok());
+    }
+
+    #[test]
+    fn a_comment_landed_when_it_is_the_issue_s_latest() {
+        let bodies = |all: &[&str]| all.iter().map(|b| (*b).to_string()).collect::<Vec<_>>();
+        assert!(comment_landed(
+            &bodies(&["old", "the answer\n"]),
+            "the answer"
+        ));
+        assert!(!comment_landed(
+            &bodies(&["the answer", "newer"]),
+            "the answer"
+        ));
+        assert!(!comment_landed(&[], "the answer"));
+    }
+
     #[test]
     fn a_refusal_says_github_s_own_reasons_when_the_response_has_them() {
         let why = "gh: Validation Failed (HTTP 422)";
