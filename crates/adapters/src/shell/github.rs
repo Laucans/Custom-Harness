@@ -587,6 +587,36 @@ impl GhCli {
     }
 
     /// Drops the kept read of the open PRs: something was just written.
+    /// What an activity read leaves of the caches: all of them while
+    /// nothing moved, none once something did.
+    ///
+    /// The open PRs' list goes too: another process's write (a decision
+    /// posted on a PR by a `decide` lane) moves the board but not this
+    /// process's list, whose stale update times kept the PR's old comments
+    /// — and #280 was escalated a second time ten seconds after the first
+    /// decision, on a repair count that decision had reset
+    /// (`ForgeDesMondes`, 2026-10-20 15:13Z).
+    fn kept_through(&self, activity: &Activity) {
+        let Ok(mut board) = self.board.lock() else {
+            return;
+        };
+        let quiet = matches!(activity, Activity::Unchanged)
+            && board
+                .as_ref()
+                .is_some_and(|b| b.since.elapsed() < BOARD_KEPT_AT_MOST);
+        if quiet {
+            return;
+        }
+        *board = Some(KeptBoard {
+            since: Instant::now(),
+            reads: HashMap::new(),
+        });
+        drop(board);
+        if let Ok(mut kept) = self.open_prs.lock() {
+            *kept = None;
+        }
+    }
+
     fn forget_open_prs(&self) {
         if let Ok(mut kept) = self.open_prs.lock() {
             *kept = None;
@@ -1065,18 +1095,7 @@ impl GitHub for GhCli {
             args.push(format!("If-None-Match: {etag}"));
         }
         let activity = activity_from(&self.gh(&args).await?)?;
-        if let Ok(mut board) = self.board.lock() {
-            let quiet = matches!(activity, Activity::Unchanged)
-                && board
-                    .as_ref()
-                    .is_some_and(|b| b.since.elapsed() < BOARD_KEPT_AT_MOST);
-            if !quiet {
-                *board = Some(KeptBoard {
-                    since: Instant::now(),
-                    reads: HashMap::new(),
-                });
-            }
-        }
+        self.kept_through(&activity);
         Ok(activity)
     }
 
@@ -1945,6 +1964,36 @@ mod tests {
         assert_eq!(prs[&268].head, "abc123");
         assert_eq!(prs[&279].head, "", "no head read, no pin");
         assert!(open_prs_from(&json!({"message": "x"})).is_none());
+    }
+
+    #[test]
+    fn a_moved_board_drops_the_open_prs_and_a_quiet_one_keeps_them() {
+        let gh = GhCli::new(Path::new("."));
+        let kept = || OpenPrs {
+            at: Instant::now(),
+            prs: HashMap::new(),
+        };
+        let moved = Activity::Changed {
+            etag: None,
+            moved_at: None,
+        };
+        *gh.open_prs.lock().expect("lock") = Some(kept());
+        gh.kept_through(&moved);
+        assert!(
+            gh.open_prs.lock().expect("lock").is_none(),
+            "moved: re-read"
+        );
+        assert!(
+            gh.board.lock().expect("lock").is_some(),
+            "a board is kept from now"
+        );
+        *gh.open_prs.lock().expect("lock") = Some(kept());
+        gh.keep_board_read("issues/4/sub_issues".to_string(), &json!([1]));
+        gh.kept_through(&Activity::Unchanged);
+        assert!(gh.open_prs.lock().expect("lock").is_some(), "quiet: kept");
+        assert_eq!(gh.kept_board_read("issues/4/sub_issues"), Some(json!([1])));
+        gh.kept_through(&moved);
+        assert!(gh.kept_board_read("issues/4/sub_issues").is_none());
     }
 
     #[test]

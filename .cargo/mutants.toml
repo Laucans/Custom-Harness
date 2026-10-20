@@ -56,6 +56,9 @@ exclude_re = [
   # is never its producer's (`>` and `>=` agree), nor its own dependent
   # (`skip(i + 1)` and `skip(i * 1)` agree).
   "shell/github\\.rs:.*replace \\| with \\^ in base64$",
+  # A board kept exactly `BOARD_KEPT_AT_MOST` long: a clock read never
+  # lands on the bound to the nanosecond, so `<` and `<=` agree.
+  "shell/github\\.rs:.*replace < with <= in GhCli::kept_through$",
   "architecture/src/graph\\.rs:.*replace > with >= in Graph::reads_ahead$",
   "architecture/src/graph\\.rs:.*replace \\+ with \\* in Graph::critical_path$",
   "router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) ",

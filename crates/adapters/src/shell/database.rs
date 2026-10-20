@@ -78,11 +78,11 @@ mod tests {
             answers(&format!("postgres://u:p@127.0.0.1:{port}/d")).await,
             Some(true)
         );
+        // Not the port just released: a test beside this one may bind it
+        // again first. Port 1 (tcpmux) is privileged and served by nothing
+        // on a developer machine or a CI runner.
         drop(listener);
-        assert_eq!(
-            answers(&format!("postgres://u:p@127.0.0.1:{port}/d")).await,
-            Some(false)
-        );
+        assert_eq!(answers("postgres://u:p@127.0.0.1:1/d").await, Some(false));
         assert_eq!(answers("not a url").await, None);
     }
 }
