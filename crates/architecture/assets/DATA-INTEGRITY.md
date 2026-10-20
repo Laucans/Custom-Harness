@@ -96,6 +96,23 @@ after a recompute. The author may also cancel at any time before application.
 overwriting them: they are never stale and **need no confirmation**; only the
 invariants are checked, at application.
 
+**Merging fields** (`merge` in `aggregate.json`) are never stale either: a
+value declared ahead, or one that moved since the author read it, asks
+nothing. `merge: set` unions the arrays written, in order, without
+duplicates (`tags: [a]` then `[b, a]` gives `[a, b]`); `merge: last-writer`
+lets the last write win. The projected view still shows what is ahead.
+
+**Derived fields** (`kind: derived`) are recomputed from other rows: the
+engine refuses (`Forbidden`) a command that writes one, before it is
+queued.
+
+**What the engine checks of its units.** At start, every invariant a
+`DataCapability` lists must be one its target aggregate declares, or the
+engine refuses to start (`Misconfigured`). A payload key the manifest's
+`payload` does not declare is accepted with a warning in `Submitted.warnings`.
+`onUpdate` on a relation is deprecated and ignored: a partition's id never
+changes.
+
 ### Default durations
 
 | What | Default |

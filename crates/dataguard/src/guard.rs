@@ -113,12 +113,27 @@ pub fn classify(manifest: &DataCapability, collision: &Collision) -> Classificat
     }
 }
 
-/// The row after the command: the confirmed row, the command's payload on
-/// top — a relative command adds its numbers instead of replacing them.
+/// The row after the command: the confirmed row, the command's payload on top.
+///
+/// A relative command adds its numbers instead of replacing them, and a
+/// field among `sets` (`merge: set`) takes the union of what it held and
+/// what the command adds, in that order.
 #[must_use]
-pub fn projected(row: &BTreeMap<String, Value>, entry: &Entry) -> BTreeMap<String, Value> {
+pub fn projected(
+    row: &BTreeMap<String, Value>,
+    entry: &Entry,
+    sets: &[String],
+) -> BTreeMap<String, Value> {
     let mut state = row.clone();
     for (field, value) in &entry.payload {
+        if sets.contains(field)
+            && let (Some(Value::Array(held)), Value::Array(added)) = (state.get(field), value)
+        {
+            let mut union = held.clone();
+            union.extend(added.iter().filter(|v| !held.contains(v)).cloned());
+            state.insert(field.clone(), Value::Array(union));
+            continue;
+        }
         let combined = match (entry.mode, state.get(field), value) {
             (crate::command::Mode::Relative, Some(Value::Number(now)), Value::Number(delta)) => {
                 match (now.as_i64(), delta.as_i64()) {
@@ -237,6 +252,13 @@ pub fn check(
         }
     }
     verdict
+}
+
+/// The derived fields a command writes: what no command may write, since
+/// the aggregate recomputes them from other rows.
+#[must_use]
+pub fn derived_touched(aggregate: &Aggregate, entry: &Entry) -> Vec<String> {
+    aggregate.derived_among(&entry.fields())
 }
 
 /// The approver roles a command's critical fields require, and whether
@@ -375,25 +397,82 @@ mod tests {
         );
     }
 
+    fn projected_plain(row: &BTreeMap<String, Value>, entry: &Entry) -> BTreeMap<String, Value> {
+        projected(row, entry, &[])
+    }
+
+    fn with_payload(mut entry: Entry, field: &str, value: Value) -> Entry {
+        entry.payload = BTreeMap::from([(field.to_string(), value)]);
+        entry
+    }
+
+    #[test]
+    fn a_set_field_takes_the_union_and_any_other_is_replaced() {
+        let row = BTreeMap::from([("tags".to_string(), serde_json::json!(["a", "b"]))]);
+        let adding = with_payload(
+            entry(Mode::Overwrite, "tags", 0),
+            "tags",
+            serde_json::json!(["b", "c"]),
+        );
+        let sets = ["tags".to_string()];
+        assert_eq!(
+            projected(&row, &adding, &sets)["tags"],
+            serde_json::json!(["a", "b", "c"])
+        );
+        assert_eq!(
+            projected(&row, &adding, &[])["tags"],
+            serde_json::json!(["b", "c"]),
+            "not a set: the write replaces"
+        );
+        let scalar = with_payload(entry(Mode::Overwrite, "tags", 0), "tags", Value::from(3));
+        assert_eq!(
+            projected(&row, &scalar, &sets)["tags"],
+            Value::from(3),
+            "not an array: nothing to union"
+        );
+        let fresh = projected(&BTreeMap::new(), &adding, &sets);
+        assert_eq!(
+            fresh["tags"],
+            serde_json::json!(["b", "c"]),
+            "nothing held yet"
+        );
+    }
+
+    #[test]
+    fn a_command_writing_a_derived_field_is_named() {
+        let aggregate = Aggregate::parse(
+            r#"{"aggregate":"Account","fields":{"balance":{"kind":"derived","criticality":"normal"},"creditLimit":{"kind":"authoritative","criticality":"normal"}}}"#,
+        )
+        .expect("contract I");
+        assert_eq!(
+            derived_touched(&aggregate, &entry(Mode::Overwrite, "balance", 1)),
+            ["balance"]
+        );
+        assert_eq!(
+            derived_touched(&aggregate, &entry(Mode::Overwrite, "creditLimit", 1)),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn the_projected_state_replaces_or_adds_as_the_mode_says() {
         let row = BTreeMap::from([("stock".to_string(), Value::from(10))]);
         assert_eq!(
-            projected(&row, &entry(Mode::Relative, "stock", -2))["stock"],
+            projected_plain(&row, &entry(Mode::Relative, "stock", -2))["stock"],
             Value::from(8)
         );
         assert_eq!(
-            projected(&row, &entry(Mode::Overwrite, "stock", 7))["stock"],
+            projected_plain(&row, &entry(Mode::Overwrite, "stock", 7))["stock"],
             Value::from(7)
         );
         assert_eq!(
-            projected(&row, &entry(Mode::Relative, "fresh", 3))["fresh"],
+            projected_plain(&row, &entry(Mode::Relative, "fresh", 3))["fresh"],
             Value::from(3),
             "nothing to add to: set"
         );
         let floats = BTreeMap::from([("stock".to_string(), Value::from(1.5))]);
         assert_eq!(
-            projected(&floats, &entry(Mode::Relative, "stock", 2))["stock"],
+            projected_plain(&floats, &entry(Mode::Relative, "stock", 2))["stock"],
             Value::from(3.5)
         );
     }

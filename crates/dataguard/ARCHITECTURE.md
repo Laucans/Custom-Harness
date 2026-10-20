@@ -39,10 +39,10 @@ sessions, not about a product's data.
 | module | contract | what it holds |
 | --- | --- | --- |
 | `manifest` | F | a `DataCapability` manifest: effect, target, `touches`, mode, permissions, `callableBy`, idempotency |
-| `aggregate` | I | an `aggregate.json`: fields and their criticality, invariants and what a violation does, relations and `onDelete`, holds |
+| `aggregate` | I | an `aggregate.json`: fields, their kind (a derived one is never written) and criticality, how they merge (`set`, `last-writer`), invariants and what a violation does, relations and `onDelete` (`onUpdate` is deprecated, ignored), holds |
 | `registry` | C | the persisted queries served, by Capability and hash; the readers of a field |
 | `command` | G, H | an entry of the queue, its projection, its states; the command result (five fields) |
-| `queue` | G | **pure**: one FIFO per partition, fixed positions, projected view, `ValueDeclaredAhead`, confirmations, parked (24 h), holds (1 min), expiry |
+| `queue` | G | **pure**: one FIFO per partition, fixed positions, projected view and `projected_row` (the row as the pending commands leave it), `ValueDeclaredAhead` (never for a merging field), confirmations, parked (24 h), holds (1 min), expiry |
 | `guard` | F, H, I | **pure**: authorisation, static then dynamic classification of the effect, the invariants on a projected and on the real state — a rule written `<field> <op> <value>` in `aggregate.json` is judged here (as the mock judges it), any other is the product's code behind `Invariants`, and the two add up |
 | `resolver` | J | **pure**: the impact plan — readers, holds, cascade by relation policy, the decision `auto / confirm / human_review / blocked / rejected` |
 | `reconcile` | K | **pure**: a review, the AI's proposal behind a trait, a human's decision by role |

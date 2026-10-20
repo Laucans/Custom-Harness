@@ -480,7 +480,7 @@ invariants:
     rule: "Risk@3 computed less than 24h ago"
     onViolation: human_review
 relations:
-  - { from: Payment.accountId, onDelete: restrict, onUpdate: propagate }
+  - { from: Payment.accountId, onDelete: restrict }
   - { from: Document.subject, semantic: true, onDelete: review }
 holds: { maxTtl: 1m, renewable: true }
 ```

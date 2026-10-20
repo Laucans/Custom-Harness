@@ -2,7 +2,8 @@
 //! engine does — a DataCapability nobody handles is rejected, a value
 //! declared ahead asks its author, a confirmed command applies, a parked
 //! one comes back at the end, a critical field waits for its approver, an
-//! invariant of the aggregate rejects on the payload. Skipped, loudly, when
+//! invariant of the aggregate rejects on the payload, a field that merges is
+//! never asked about, a derived field is refused. Skipped, loudly, when
 //! `node` is not on the path.
 
 use std::fs;
@@ -17,11 +18,12 @@ const COMMANDS: &str = r"
 export const COMMANDS = {
   'credit.requestLimitChange': async () => undefined,
   'credit.setStatus': async () => undefined,
+  'credit.tag': async () => undefined,
   'credit.addPayment': async (server, { payload }) => (payload.amount > 0 ? undefined : ['amount-positive']),
 };
 ";
 
-const ACCOUNT: &str = r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative","criticality":"normal"},"status":{"kind":"authoritative","criticality":"critical","review":"role:credit-manager"}},"invariants":[{"id":"limit-under-ceiling","rule":"creditLimit <= 10000","onViolation":"reject"}]}"#;
+const ACCOUNT: &str = r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative","criticality":"normal"},"status":{"kind":"authoritative","criticality":"critical","review":"role:credit-manager"},"tags":{"kind":"authoritative","criticality":"low","merge":"set"},"balance":{"kind":"derived","criticality":"normal"}},"invariants":[{"id":"limit-under-ceiling","rule":"creditLimit <= 10000","onViolation":"reject"}]}"#;
 
 const SHIMS: &str = r"
 import fs from 'node:fs/promises';
@@ -103,6 +105,13 @@ expect(bad.body.result.status === 'rejected' && bad.body.result.violations[0] ==
 const read = await call('/capabilities/account', { variables: {} });
 expect(read.status === 200 && read.body.data.id === '881' && read.body.asOf === s.dataVersion, 'a fixture read');
 expect(s.messages.filter((m) => m.message === 'CommandApplied').length === 4, 'four applications told');
+
+const tag = (by, tags, read) => ({ dataCapability: 'credit.tag@1', payload: { tags }, target: { aggregate: 'Account', id: '881' }, basedOn: { version: 1, values: { tags: read } }, caller: { by } });
+const firstTag = await call('/commands', tag('alice', ['a'], []));
+const movedTag = await call('/commands', tag('bob', ['b'], ['stale']));
+expect(firstTag.body.result.status === 'applied' && movedTag.body.result.status === 'applied', 'a merging field is never asked: ' + JSON.stringify(movedTag));
+const derived = await call('/commands', { dataCapability: 'credit.tag@1', payload: { balance: 3 }, target: { aggregate: 'Account', id: '881' }, caller: { by: 'eve' } });
+expect(derived.status === 403 && derived.body.error.includes('derived field(s) balance'), 'a derived field is refused: ' + JSON.stringify(derived));
 console.log('ok');
 "#;
 

@@ -118,16 +118,52 @@ impl Engine {
         self
     }
 
-    /// Loads what the store kept: the pending entries and the live holds.
+    /// Loads what the store kept: the pending entries and the live holds,
+    /// once the units it was given fit together ([`Self::fits`]).
     ///
     /// # Errors
     ///
-    /// The store's.
+    /// [`Error::Misconfigured`], or the store's.
     pub async fn load(&self) -> Result<()> {
+        self.fits()?;
         let pending = self.store.pending().await?;
         let holds = self.store.holds().await?;
         *self.lock_queue() = Queue::load(pending, holds);
         Ok(())
+    }
+
+    /// Whether the units fit together: every invariant a `DataCapability`
+    /// lists is one its target aggregate declares — a manifest naming
+    /// another is a typo the `DataGuard` would never judge.
+    fn fits(&self) -> Result<()> {
+        for manifest in self.manifests.values() {
+            let aggregate = self.aggregates.get(&manifest.target.aggregate);
+            let unknown: Vec<&str> = manifest
+                .invariants
+                .iter()
+                .filter(|id| aggregate.is_none_or(|a| a.invariant(id).is_none()))
+                .map(String::as_str)
+                .collect();
+            if !unknown.is_empty() {
+                return Err(Error::Misconfigured(format!(
+                    "{} lists the invariant(s) {} that {} does not declare",
+                    manifest.versioned(),
+                    unknown.join(", "),
+                    manifest.target.aggregate
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The fields of `partition`'s aggregate that merge instead of asking.
+    fn never_stale(&self, partition: &str) -> Vec<String> {
+        partition
+            .split('/')
+            .next()
+            .and_then(|name| self.aggregates.get(name))
+            .map(Aggregate::never_stale)
+            .unwrap_or_default()
     }
 
     fn lock_queue(&self) -> std::sync::MutexGuard<'_, Queue> {
@@ -255,12 +291,34 @@ impl Engine {
             requeued_from: None,
             idempotency_key: submission.idempotency_key.clone(),
         };
+        if let Some(aggregate) = self.aggregates.get(&manifest.target.aggregate) {
+            let derived = guard::derived_touched(aggregate, &entry);
+            if !derived.is_empty() {
+                return Err(Error::Forbidden(format!(
+                    "{} writes the derived field(s) {}: {} recomputes them",
+                    manifest.data_capability,
+                    derived.join(", "),
+                    aggregate.aggregate
+                )));
+            }
+        }
+        let undeclared = Self::undeclared_keys(&manifest, &submission.payload);
         let Judged {
             mut warnings,
             mut messages,
             needs_review,
         } = self.judge(&manifest, &entry, &row, &submission.caller);
-        let (entry, queued) = self.lock_queue().submit(entry, row, needs_review);
+        if !undeclared.is_empty() {
+            warnings.push(format!(
+                "payload key(s) {} not declared by {}",
+                undeclared.join(", "),
+                manifest.data_capability
+            ));
+        }
+        let never_stale = self.never_stale(&partition);
+        let (entry, queued) = self
+            .lock_queue()
+            .submit(entry, row, needs_review, &never_stale);
         messages.extend(queued);
         self.store.save(&entry).await?;
         self.notify_all(&messages);
@@ -274,6 +332,27 @@ impl Engine {
             warnings,
             result: self.result_of(&entry),
         })
+    }
+
+    /// The payload's keys the manifest does not declare: nothing when it
+    /// declares none, and the key naming the target is always declared.
+    fn undeclared_keys(
+        manifest: &DataCapability,
+        payload: &BTreeMap<String, Value>,
+    ) -> Vec<String> {
+        if manifest.payload.is_empty() {
+            return Vec::new();
+        }
+        let target = manifest
+            .target
+            .id
+            .as_deref()
+            .map(|id| id.trim_start_matches('$'));
+        payload
+            .keys()
+            .filter(|key| !manifest.payload.contains_key(*key) && Some(key.as_str()) != target)
+            .cloned()
+            .collect()
     }
 
     /// The row's id named by the payload, when the manifest says which
@@ -324,7 +403,7 @@ impl Engine {
         let Some(aggregate) = self.aggregates.get(&manifest.target.aggregate) else {
             return judged;
         };
-        let projected = guard::projected(row, entry);
+        let projected = guard::projected(row, entry, &aggregate.sets());
         let verdict = guard::check(aggregate, self.invariants.as_ref(), &projected, entry);
         if !verdict.holds() {
             let at_risk: Vec<String> = verdict
@@ -492,7 +571,8 @@ impl Engine {
     pub async fn requeue(&self, command: &str, by: &str) -> Result<Submitted> {
         let partition = self.owned(command, by, "requeue")?.partition;
         let row = self.store.row(&partition).await?;
-        let (fresh, messages) = self.lock_queue().requeue(command, row)?;
+        let never_stale = self.never_stale(&partition);
+        let (fresh, messages) = self.lock_queue().requeue(command, row, &never_stale)?;
         let old = self.entry(command)?;
         self.store.save(&old).await?;
         self.store.save(&fresh).await?;
@@ -678,8 +758,9 @@ impl Engine {
         let entry = self.entry(head)?;
         let manifest = self.manifest(&entry.data_capability)?.clone();
         let row = self.store.row(&entry.partition).await?;
-        let projected = guard::projected(&row, &entry);
         let aggregate = self.aggregates.get(&manifest.target.aggregate);
+        let sets = aggregate.map(Aggregate::sets).unwrap_or_default();
+        let projected = guard::projected(&row, &entry, &sets);
         let verdict = aggregate.map_or_else(Verdict::default, |aggregate| {
             guard::check(aggregate, self.invariants.as_ref(), &projected, &entry)
         });
@@ -944,6 +1025,197 @@ mod tests {
                 ..carol()
             },
         }
+    }
+
+    const BOARD: &str = r#"{"aggregate":"Board","fields":{"tags":{"kind":"authoritative","criticality":"low","merge":"set"},"note":{"kind":"authoritative","criticality":"low","merge":"last-writer"},"score":{"kind":"derived","criticality":"normal"}},"invariants":[{"id":"score-positive","rule":"score >= 0","onViolation":"reject"}]}"#;
+
+    fn board_capability(name: &str, field: &str, extra: &str) -> DataCapability {
+        DataCapability::parse(&format!(
+            r#"{{"dataCapability":"board.{name}","owner":"board","version":1,"effect":"update","target":{{"aggregate":"Board","id":"$boardId"}},"touches":["Board.{field}"],"callableBy":["*"]{extra}}}"#
+        ))
+        .expect("F")
+    }
+
+    fn board_plant(row: BTreeMap<String, Value>) -> Plant {
+        let store = Arc::new(MemoryStore::default().with_row("Board/1", row));
+        let notifier = Arc::new(MemoryNotifier::default());
+        let clock = Arc::new(FixedClock::at(1000));
+        let engine = Engine::new(store.clone(), notifier.clone(), clock.clone())
+            .with_aggregate(Aggregate::parse(BOARD).expect("I"))
+            .with_data_capability(board_capability("tag", "tags", ""))
+            .with_data_capability(board_capability("note", "note", ""))
+            .with_data_capability(board_capability("score", "score", ""))
+            .with_data_capability(board_capability(
+                "rename",
+                "note",
+                r#","payload":{"boardId":"string","note":"string"}"#,
+            ));
+        Plant {
+            engine,
+            store,
+            notifier,
+            clock,
+        }
+    }
+
+    fn on_board(capability: &str, by: &str, field: &str, value: Value, read: Value) -> Submission {
+        Submission {
+            data_capability: format!("board.{capability}"),
+            payload: BTreeMap::from([
+                ("boardId".to_string(), Value::from("1")),
+                (field.to_string(), value),
+            ]),
+            target_id: None,
+            based_on: Some(based_on(1, &[(field, read)])),
+            idempotency_key: None,
+            caller: Caller {
+                by: by.to_string(),
+                ..carol()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_writing_a_derived_field_is_forbidden() {
+        let plant = board_plant(BTreeMap::new());
+        let refused = plant
+            .engine
+            .submit(on_board(
+                "score",
+                "alice",
+                "score",
+                Value::from(3),
+                Value::Null,
+            ))
+            .await;
+        assert!(
+            matches!(&refused, Err(Error::Forbidden(why)) if why.contains("derived field(s) score")),
+            "{refused:?}"
+        );
+        assert!(
+            plant.engine.run_once().await.expect("ran").is_empty(),
+            "nothing was queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_set_field_is_never_asked_and_its_writes_union() {
+        let plant = board_plant(BTreeMap::from([(
+            "tags".to_string(),
+            serde_json::json!(["a"]),
+        )]));
+        for (by, tags) in [
+            ("alice", serde_json::json!(["b"])),
+            ("bob", serde_json::json!(["c", "a"])),
+        ] {
+            let submitted = plant
+                .engine
+                .submit(on_board("tag", by, "tags", tags, serde_json::json!(["x"])))
+                .await
+                .expect("queued");
+            assert_eq!(submitted.result.status, State::Queued, "{by} is not asked");
+            assert!(submitted.warnings.is_empty(), "{:?}", submitted.warnings);
+        }
+        plant.engine.run_once().await.expect("ran");
+        plant.engine.run_once().await.expect("ran");
+        assert_eq!(
+            plant.store.row_now("Board/1")["tags"],
+            serde_json::json!(["a", "b", "c"])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_last_writer_field_is_never_asked_and_the_last_write_wins() {
+        let plant = board_plant(BTreeMap::from([("note".to_string(), Value::from("old"))]));
+        for (by, note) in [("alice", "first"), ("bob", "second")] {
+            let submitted = plant
+                .engine
+                .submit(on_board(
+                    "note",
+                    by,
+                    "note",
+                    Value::from(note),
+                    Value::from("stale"),
+                ))
+                .await
+                .expect("queued");
+            assert_eq!(submitted.result.status, State::Queued, "{by} is not asked");
+        }
+        plant.engine.run_once().await.expect("ran");
+        plant.engine.run_once().await.expect("ran");
+        assert_eq!(
+            plant.store.row_now("Board/1")["note"],
+            Value::from("second")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_payload_key_the_manifest_does_not_declare_is_a_warning() {
+        let plant = board_plant(BTreeMap::new());
+        let mut submission = on_board("rename", "alice", "note", Value::from("n"), Value::Null);
+        let clean = plant
+            .engine
+            .submit(submission.clone())
+            .await
+            .expect("queued");
+        assert!(clean.warnings.is_empty(), "{:?}", clean.warnings);
+        submission
+            .payload
+            .insert("colour".to_string(), Value::from("red"));
+        let warned = plant.engine.submit(submission).await.expect("queued");
+        assert_eq!(
+            warned.warnings,
+            ["payload key(s) colour not declared by board.rename"]
+        );
+        let undeclared = plant
+            .engine
+            .submit(on_board(
+                "note",
+                "bob",
+                "note",
+                Value::from("n"),
+                Value::Null,
+            ))
+            .await
+            .expect("queued");
+        assert!(
+            undeclared.warnings.is_empty(),
+            "a manifest declaring no payload warns of nothing: {:?}",
+            undeclared.warnings
+        );
+    }
+
+    #[tokio::test]
+    async fn load_refuses_a_manifest_listing_an_invariant_its_aggregate_lacks() {
+        let fitting = board_plant(BTreeMap::new());
+        assert_eq!(fitting.engine.load().await, Ok(()));
+        let declared = board_capability("ok", "note", r#","invariants":["score-positive"]"#);
+        let typo = board_capability("typo", "note", r#","invariants":["score-positiv"]"#);
+        let store = Arc::new(MemoryStore::default());
+        let notifier = Arc::new(MemoryNotifier::default());
+        let clock = Arc::new(FixedClock::at(1000));
+        let base = || {
+            Engine::new(store.clone(), notifier.clone(), clock.clone())
+                .with_aggregate(Aggregate::parse(BOARD).expect("I"))
+        };
+        assert_eq!(base().with_data_capability(declared).load().await, Ok(()));
+        let refused = base().with_data_capability(typo).load().await;
+        assert!(
+            matches!(&refused, Err(Error::Misconfigured(why)) if why.contains("score-positiv ") && why.contains("Board")),
+            "{refused:?}"
+        );
+        let orphan = Engine::new(store.clone(), notifier.clone(), clock.clone())
+            .with_data_capability(board_capability(
+                "o",
+                "note",
+                r#","invariants":["score-positive"]"#,
+            ))
+            .load()
+            .await;
+        assert!(
+            matches!(orphan, Err(Error::Misconfigured(_))),
+            "an aggregate the engine does not know declares nothing"
+        );
     }
 
     #[tokio::test]

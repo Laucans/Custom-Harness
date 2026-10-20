@@ -177,19 +177,32 @@ impl Queue {
     /// projection and state are set here. What the author is told comes
     /// back with it.
     ///
-    /// `confirmed` is the row as the store holds it now.
+    /// `confirmed` is the row as the store holds it now. `never_stale` are
+    /// the fields that merge instead (`merge` in contract I): a value
+    /// declared ahead on them, or moved since the author read it, asks
+    /// nothing — the projection still shows what is ahead.
     pub fn submit(
         &mut self,
         mut entry: Entry,
         confirmed: BTreeMap<String, Value>,
         needs_review: bool,
+        never_stale: &[String],
     ) -> (Entry, Vec<Message>) {
         let fields = entry.fields();
+        let askable: Vec<String> = fields
+            .iter()
+            .filter(|f| !never_stale.contains(f))
+            .cloned()
+            .collect();
         entry.position = self.take_position(&entry.partition);
         let pending_ahead = self.ahead_of(&entry.partition, &fields);
-        let stale_ahead = pending_ahead.first().cloned();
-        let moved = Self::moved_since(&entry.based_on, &confirmed, &fields);
-        let field = fields.first().cloned().unwrap_or_default();
+        let stale_ahead = self.ahead_of(&entry.partition, &askable).first().cloned();
+        let moved = Self::moved_since(&entry.based_on, &confirmed, &askable);
+        let field = askable
+            .first()
+            .or_else(|| fields.first())
+            .cloned()
+            .unwrap_or_default();
         let applied_value = confirmed.get(&field).cloned().unwrap_or(Value::Null);
         entry.projection = Projection {
             confirmed,
@@ -231,6 +244,25 @@ impl Queue {
         };
         self.entries.push(entry.clone());
         (entry, messages)
+    }
+
+    /// The row of `partition` as the commands still pending in it leave
+    /// it, in position order on top of `row`: what a command written now
+    /// builds on. A parked command is not ahead — it comes back at the end
+    /// if ever — and `sets` union as they do when applied.
+    #[must_use]
+    pub fn projected_row(
+        &self,
+        partition: &str,
+        row: &BTreeMap<String, Value>,
+        sets: &[String],
+    ) -> BTreeMap<String, Value> {
+        self.pending_in(partition)
+            .into_iter()
+            .filter(|e| e.state != State::Parked)
+            .fold(row.clone(), |state, e| {
+                crate::guard::projected(&state, e, sets)
+            })
     }
 
     /// The author accepts to overwrite what is declared ahead.
@@ -343,6 +375,7 @@ impl Queue {
         &mut self,
         command: &str,
         confirmed: BTreeMap<String, Value>,
+        never_stale: &[String],
     ) -> Result<(Entry, Vec<Message>)> {
         let old = self.entry_mut(command)?;
         if old.state != State::Parked {
@@ -361,7 +394,7 @@ impl Queue {
             requeued_from: Some(command.to_string()),
             ..old.clone()
         };
-        Ok(self.submit(fresh, confirmed, false))
+        Ok(self.submit(fresh, confirmed, false, never_stale))
     }
 
     /// A workflow freezes `partition` from its next position, for
@@ -622,6 +655,7 @@ mod tests {
             entry("c_120", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         assert_eq!(alice.position, 0);
         assert_eq!(alice.state, State::Queued);
@@ -636,11 +670,13 @@ mod tests {
             entry("c_120", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         let (bob, said) = queue.submit(
             entry("c_123", "bob", "creditLimit", 3000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         assert_eq!(bob.position, 1);
         assert_eq!(bob.state, State::AwaitingConfirmation);
@@ -671,6 +707,7 @@ mod tests {
             entry("c_130", "carol", "creditLimit", 4500, Mode::ConfirmOnStale),
             row(8000),
             false,
+            &[],
         );
         assert_eq!(carol.state, State::AwaitingConfirmation);
         let ahead = said[1].declared_ahead.as_ref().expect("the applied value");
@@ -685,11 +722,13 @@ mod tests {
             entry("c_1", "alice", "stock", 10, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         let (relative, said) = queue.submit(
             entry("c_2", "bob", "stock", -2, Mode::Relative),
             row(5000),
             false,
+            &[],
         );
         assert_eq!(relative.state, State::Queued);
         assert_eq!(kinds(&said), [Kind::CommandQueued]);
@@ -697,8 +736,107 @@ mod tests {
             entry("c_3", "carol", "stock", 7, Mode::Overwrite),
             row(5000),
             false,
+            &[],
         );
         assert_eq!(over.state, State::Queued);
+    }
+
+    #[test]
+    fn a_never_stale_field_is_never_asked_but_still_sees_what_is_ahead() {
+        let mut queue = Queue::default();
+        queue.submit(
+            entry("c_1", "alice", "note", 1, Mode::ConfirmOnStale),
+            row(5000),
+            false,
+            &[],
+        );
+        let never = ["note".to_string()];
+        let (bob, said) = queue.submit(
+            entry("c_2", "bob", "note", 2, Mode::ConfirmOnStale),
+            row(5000),
+            false,
+            &never,
+        );
+        assert_eq!(bob.state, State::Queued);
+        assert_eq!(kinds(&said), [Kind::CommandQueued]);
+        assert_eq!(
+            bob.projection.pending_ahead.len(),
+            1,
+            "the projection still shows alice"
+        );
+        let (carol, said) = queue.submit(
+            entry("c_3", "carol", "note", 3, Mode::ConfirmOnStale),
+            row(5000),
+            false,
+            &[],
+        );
+        assert_eq!(
+            carol.state,
+            State::AwaitingConfirmation,
+            "without the merge, asked"
+        );
+        assert_eq!(
+            kinds(&said),
+            [Kind::CommandQueued, Kind::ValueDeclaredAhead]
+        );
+    }
+
+    #[test]
+    fn the_projected_row_is_the_row_as_the_pending_commands_leave_it() {
+        let mut queue = Queue::default();
+        assert_eq!(
+            queue.projected_row("Account/881", &row(5000), &[]),
+            row(5000)
+        );
+        queue.submit(
+            entry("c_1", "alice", "creditLimit", 100, Mode::Relative),
+            row(5000),
+            false,
+            &[],
+        );
+        queue.submit(
+            entry("c_2", "bob", "creditLimit", 250, Mode::Relative),
+            row(5000),
+            false,
+            &[],
+        );
+        assert_eq!(
+            queue.projected_row("Account/881", &row(5000), &[])["creditLimit"],
+            Value::from(5350)
+        );
+        assert_eq!(
+            queue.projected_row("Account/999", &row(5000), &[]),
+            row(5000),
+            "another partition's commands are not ahead"
+        );
+        queue.cancel("c_1").expect("cancelled");
+        assert_eq!(
+            queue.projected_row("Account/881", &row(5000), &[])["creditLimit"],
+            Value::from(5250),
+            "a final command is not ahead"
+        );
+    }
+
+    #[test]
+    fn a_parked_command_is_not_ahead_in_the_projected_row() {
+        let mut queue = Queue::default();
+        queue.submit(
+            entry("c_1", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
+            row(5000),
+            false,
+            &[],
+        );
+        queue.submit(
+            entry("c_2", "bob", "creditLimit", 3000, Mode::ConfirmOnStale),
+            row(5000),
+            false,
+            &[],
+        );
+        queue.entry_mut("c_2").expect("held").state = State::Parked;
+        assert_eq!(
+            queue.projected_row("Account/881", &row(5000), &[])["creditLimit"],
+            Value::from(8000)
+        );
     }
 
     #[test]
@@ -708,11 +846,13 @@ mod tests {
             entry("c_1", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         queue.submit(
             entry("c_2", "bob", "creditLimit", 3000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         queue.applied("c_1", 1).expect("applied");
         let (step, _) = queue.advance("Account/881", 1000);
@@ -738,6 +878,7 @@ mod tests {
             entry("c_1", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
             row(5000),
             true,
+            &[],
         );
         assert_eq!(waiting.state, State::AwaitingReview);
         let (step, _) = queue.advance("Account/881", 0);
@@ -750,6 +891,7 @@ mod tests {
             entry("c_2", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
             row(5000),
             true,
+            &[],
         );
         assert_eq!(
             other.reviewed("c_2", false).expect("rejected").state,
@@ -765,16 +907,19 @@ mod tests {
             entry("c_120", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         queue.submit(
             entry("c_123", "bob", "creditLimit", 3000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         queue.submit(
             entry("c_130", "carol", "creditLimit", 4500, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         // Carol confirms: she keeps position 2.
         let carol = queue.confirm("c_130", "carol").expect("confirmed");
@@ -830,6 +975,7 @@ mod tests {
             entry("c_123", "bob", "creditLimit", 3000, Mode::ConfirmOnStale),
             row(8000),
             false,
+            &[],
         );
         queue.advance("Account/881", 100);
         queue.advance("Account/881", 100 + CONFIRM_GRACE_SECONDS);
@@ -838,8 +984,9 @@ mod tests {
             entry("c_140", "dave", "creditLimit", 6000, Mode::Overwrite),
             row(8000),
             false,
+            &[],
         );
-        let (fresh, said) = queue.requeue("c_123", row(8000)).expect("requeued");
+        let (fresh, said) = queue.requeue("c_123", row(8000), &[]).expect("requeued");
         assert_eq!(fresh.command, "c_123-r");
         assert_eq!(fresh.requeued_from.as_deref(), Some("c_123"));
         assert_eq!(fresh.position, 2, "at the end, behind dave");
@@ -863,7 +1010,7 @@ mod tests {
             Some(State::Cancelled)
         );
         assert!(matches!(
-            queue.requeue("c_140", row(8000)),
+            queue.requeue("c_140", row(8000), &[]),
             Err(Error::NotNow(_))
         ));
         // Another parked one, left alone, expires after its ttl.
@@ -872,6 +1019,7 @@ mod tests {
             entry("c_1", "bob", "creditLimit", 3000, Mode::ConfirmOnStale),
             row(8000),
             false,
+            &[],
         );
         other.advance("Account/881", 1000 - CONFIRM_GRACE_SECONDS);
         other.advance("Account/881", 1000);
@@ -907,11 +1055,13 @@ mod tests {
             entry("c_120", "alice", "creditLimit", 8000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         queue.submit(
             entry("c_123", "bob", "creditLimit", 3000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         let said = queue.cancel("c_120").expect("cancelled");
         assert_eq!(kinds(&said), [Kind::AheadResolved]);
@@ -934,6 +1084,7 @@ mod tests {
             entry("c_1", "alice", "creditLimit", 8000, Mode::Overwrite),
             row(5000),
             false,
+            &[],
         );
         let hold = queue.hold("w_77", "Account/881", "credit.limitReview", 60, 1000);
         assert_eq!(hold.position, 1);
@@ -945,6 +1096,7 @@ mod tests {
             entry("c_2", "bob", "creditLimit", 7000, Mode::Overwrite),
             row(8000),
             false,
+            &[],
         );
         let (step, said) = queue.advance("Account/881", 1001);
         assert_eq!(step, Step::Blocked("c_2".to_string()));
@@ -988,11 +1140,13 @@ mod tests {
             entry("c_1", "alice", "creditLimit", 99_000, Mode::Overwrite),
             row(5000),
             false,
+            &[],
         );
         queue.submit(
             entry("c_2", "bob", "creditLimit", 7000, Mode::ConfirmOnStale),
             row(5000),
             false,
+            &[],
         );
         let said = queue
             .rejected(
@@ -1013,6 +1167,7 @@ mod tests {
             entry("c_1", "alice", "creditLimit", 1, Mode::Overwrite),
             row(0),
             false,
+            &[],
         );
         queue.hold("w_1", "Account/881", "x", 60, 0);
         let loaded = Queue::load(queue.entries().to_vec(), queue.holds().to_vec());
@@ -1021,6 +1176,7 @@ mod tests {
             entry("c_2", "bob", "creditLimit", 2, Mode::Overwrite),
             row(0),
             false,
+            &[],
         );
         assert_eq!(next.position, 2);
         assert_eq!(queue.entries().len(), 1);
@@ -1034,6 +1190,30 @@ mod tests {
 
     proptest::proptest! {
         #[test]
+        fn the_projected_row_adds_every_pending_delta_and_keeps_the_last_overwrite(
+            deltas in proptest::collection::vec(-1000i64..1000, 0..10),
+            last in proptest::option::of(-1000i64..1000),
+        ) {
+            let mut queue = Queue::default();
+            for (i, delta) in deltas.iter().enumerate() {
+                queue.submit(entry(&format!("r_{i}"), "a", "creditLimit", *delta, Mode::Relative), row(0), false, &[]);
+            }
+            let sum: i64 = deltas.iter().sum();
+            proptest::prop_assert_eq!(
+                queue.projected_row("Account/881", &row(5000), &[])["creditLimit"].clone(),
+                Value::from(5000 + sum)
+            );
+            if let Some(value) = last {
+                queue.submit(entry("w", "b", "creditLimit", value, Mode::Overwrite), row(0), false, &[]);
+                proptest::prop_assert_eq!(
+                    queue.projected_row("Account/881", &row(5000), &[])["creditLimit"].clone(),
+                    Value::from(value)
+                );
+            }
+        }
+
+
+        #[test]
         fn positions_are_fixed_and_strictly_increasing_whatever_happens(
             authors in proptest::collection::vec(0u8..4, 1..12),
             confirms in proptest::collection::vec(proptest::bool::ANY, 12),
@@ -1044,7 +1224,7 @@ mod tests {
                 let id = format!("c_{n}");
                 let by = format!("author{author}");
                 let n = u64::try_from(n).expect("small");
-                let (e, _) = queue.submit(entry(&id, &by, "creditLimit", i64::try_from(n).expect("small"), Mode::ConfirmOnStale), row(5000), false);
+                let (e, _) = queue.submit(entry(&id, &by, "creditLimit", i64::try_from(n).expect("small"), Mode::ConfirmOnStale), row(5000), false, &[]);
                 proptest::prop_assert_eq!(e.position, n);
                 ids.push(id);
             }

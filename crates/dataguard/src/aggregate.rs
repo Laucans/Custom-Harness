@@ -27,6 +27,18 @@ pub enum Criticality {
     Critical,
 }
 
+/// How concurrent writes to a field merge, instead of asking the author.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Merge {
+    /// The field holds a set: a write adds its elements to what is there,
+    /// so it overwrites nothing and is never asked about.
+    Set,
+    /// The last write wins: the author is never asked about a value
+    /// declared ahead.
+    LastWriter,
+}
+
 /// One field of the aggregate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Field {
@@ -39,7 +51,7 @@ pub struct Field {
     pub review: Option<String>,
     /// How concurrent writes to a low-criticality field merge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub merge: Option<String>,
+    pub merge: Option<Merge>,
 }
 
 /// What happens when an invariant does not hold.
@@ -88,10 +100,12 @@ pub struct Relation {
     /// What a deletion does.
     #[serde(rename = "onDelete")]
     pub on_delete: OnDelete,
-    /// What an update does: `propagate` or `restrict`.
-    #[serde(default, rename = "onUpdate", skip_serializing_if = "Option::is_none")]
-    pub on_update: Option<String>,
     /// The link exists outside a foreign key.
+    ///
+    /// Contract I's `onUpdate` is not read: a partition's id never
+    /// changes, so an update never reaches the rows pointing here — a key
+    /// that does change is the schema's, propagated by the database
+    /// (`ON UPDATE`). The key is deprecated and ignored.
     #[serde(default)]
     pub semantic: bool,
 }
@@ -165,6 +179,42 @@ impl Aggregate {
             .collect()
     }
 
+    /// The fields among `fields` the aggregate declares derived:
+    /// recomputed from other rows, never written by a command.
+    #[must_use]
+    pub fn derived_among(&self, fields: &[String]) -> Vec<String> {
+        fields
+            .iter()
+            .filter(|name| {
+                self.fields
+                    .get(*name)
+                    .is_some_and(|field| field.kind == Kind::Derived)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The fields that merge instead of asking the author about a value
+    /// declared ahead: every field with a `merge`.
+    #[must_use]
+    pub fn never_stale(&self) -> Vec<String> {
+        self.fields
+            .iter()
+            .filter(|(_, field)| field.merge.is_some())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// The fields that hold a set: a write unions its elements in.
+    #[must_use]
+    pub fn sets(&self) -> Vec<String> {
+        self.fields
+            .iter()
+            .filter(|(_, field)| field.merge == Some(Merge::Set))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// The invariant with this id.
     #[must_use]
     pub fn invariant(&self, id: &str) -> Option<&Invariant> {
@@ -191,7 +241,9 @@ mod tests {
       "fields": {
         "creditLimit": { "kind": "authoritative", "criticality": "critical", "review": "role:credit-manager" },
         "contactEmail": { "kind": "authoritative", "criticality": "normal" },
-        "tags": { "kind": "authoritative", "criticality": "low", "merge": "set" }
+        "tags": { "kind": "authoritative", "criticality": "low", "merge": "set" },
+        "note": { "kind": "authoritative", "criticality": "low", "merge": "last-writer" },
+        "balance": { "kind": "derived", "criticality": "normal" }
       },
       "invariants": [
         { "id": "limit-under-ceiling", "rule": "creditLimit <= policy.maxLimit(riskLevel)", "onViolation": "reject" },
@@ -208,7 +260,10 @@ mod tests {
     fn the_contract_s_example_parses_whole() {
         let account = Aggregate::parse(ACCOUNT).expect("contract I");
         assert_eq!(account.aggregate, "Account");
-        assert_eq!(account.fields.len(), 3);
+        assert_eq!(account.fields.len(), 5);
+        assert_eq!(account.fields["tags"].merge, Some(Merge::Set));
+        assert_eq!(account.fields["note"].merge, Some(Merge::LastWriter));
+        assert_eq!(account.fields["creditLimit"].merge, None);
         assert_eq!(account.invariants.len(), 2);
         assert_eq!(account.relations[1].on_delete, OnDelete::Review);
         assert!(account.relations[1].semantic);
@@ -232,6 +287,33 @@ mod tests {
                 Some("role:credit-manager".to_string())
             )]
         );
+    }
+
+    #[test]
+    fn a_merging_field_is_never_stale_and_only_a_set_unions() {
+        let account = Aggregate::parse(ACCOUNT).expect("contract I");
+        assert_eq!(account.never_stale(), ["note", "tags"]);
+        assert_eq!(account.sets(), ["tags"]);
+    }
+
+    #[test]
+    fn only_the_derived_fields_among_those_named_are_derived() {
+        let account = Aggregate::parse(ACCOUNT).expect("contract I");
+        let named = ["balance", "creditLimit", "unknown"].map(String::from);
+        assert_eq!(account.derived_among(&named), ["balance"]);
+        assert_eq!(account.derived_among(&[]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_unknown_merge_is_refused_and_on_update_is_ignored() {
+        let unknown = r#"{"aggregate":"X","fields":{"a":{"kind":"authoritative","criticality":"low","merge":"sum"}}}"#;
+        assert!(
+            Aggregate::parse(unknown).is_err(),
+            "contract I names two merges"
+        );
+        let deprecated = r#"{"aggregate":"X","fields":{},"relations":[{"from":"Y.x","onDelete":"cascade","onUpdate":"propagate"}]}"#;
+        let read = Aggregate::parse(deprecated).expect("onUpdate is still accepted");
+        assert_eq!(read.relations[0].on_delete, OnDelete::Cascade);
     }
 
     #[test]

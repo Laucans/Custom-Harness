@@ -127,8 +127,9 @@ export function mockServer() {
   /** The pending entries of a partition, by position. */
   const pendingIn = (partition) => [...s.queue.values()].filter((e) => e.partition === partition && !FINAL.has(e.state)).sort((a, b) => a.position - b.position);
   /** What `basedOn` read that moved, or that a pending command ahead declares: `{ by, command, value }` or null. */
-  const declaredAhead = (entry) => {
-    const fields = Object.keys(entry.payload);
+  // `merging`: the fields whose aggregate says `merge` — never asked about.
+  const declaredAhead = (entry, merging = new Set()) => {
+    const fields = Object.keys(entry.payload).filter((f) => !merging.has(f));
     const ahead = pendingIn(entry.partition).find((e) => e.position < entry.position && e.state !== 'parked' && fields.some((f) => f in e.payload));
     if (ahead) { const f = fields.find((x) => x in ahead.payload); return { by: ahead.by, command: ahead.commandId, value: ahead.payload[f], field: f }; }
     const read = (entry.basedOn && entry.basedOn.values) || {};
@@ -197,8 +198,12 @@ export function mockServer() {
       const seen = [...s.queue.values()].find((e) => e.idempotencyKey === body.idempotencyKey && e.dataCapability === dataCapability);
       if (seen) return answer(seen, true);
     }
-    const commandId = uuid();
     const aggregate = target.aggregate || null;
+    const declared = ((aggregate && (await s.load(`aggregates/${aggregate}`))) || { fields: {} }).fields || {};
+    // A derived field is recomputed by the aggregate: no command writes it.
+    const derived = Object.keys(payload).filter((f) => declared[f] && declared[f].kind === 'derived');
+    if (derived.length) return json({ error: `${dataCapability} writes the derived field(s) ${derived.join(', ')}: ${aggregate} recomputes them` }, 403);
+    const commandId = uuid();
     const partition = `${aggregate || dataCapability}/${targetId || commandId}`;
     const entry = { commandId, dataCapability, version: Number(version) || 1, aggregate, partition, targetId, by, payload, basedOn: body.basedOn, idempotencyKey: body.idempotencyKey, handler, position: s.next(), state: 'queued', warnings: [] };
     s.queue.set(commandId, entry);
@@ -222,9 +227,9 @@ export function mockServer() {
       entry.warnings.push(`invariant(s) at risk: ${verdict.reject.concat(verdict.review).join(', ')}`);
       s.tell('InvariantAtRisk', by, commandId, { violations: verdict.reject.concat(verdict.review) });
     }
-    const critical = ((await s.load(`aggregates/${aggregate}`)) || { fields: {} }).fields || {};
-    const needsReview = verdict.review.length > 0 || Object.keys(payload).some((f) => critical[f] && critical[f].criticality === 'critical');
-    const ahead = declaredAhead(entry);
+    const needsReview = verdict.review.length > 0 || Object.keys(payload).some((f) => declared[f] && declared[f].criticality === 'critical');
+    const merging = new Set(Object.keys(declared).filter((f) => declared[f].merge));
+    const ahead = declaredAhead(entry, merging);
     if (needsReview) {
       entry.state = 'awaiting_review';
       entry.reviewId = `r_${s.next()}`;

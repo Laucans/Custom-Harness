@@ -19,7 +19,8 @@
             "enum": [
               "derived",
               "authoritative"
-            ]
+            ],
+            "description": "`derived`: recomputed from other rows; the engine refuses a command that writes it (Forbidden)."
           },
           "criticality": {
             "enum": [
@@ -37,7 +38,7 @@
               "set",
               "last-writer"
             ],
-            "description": "How concurrent writes to a low-criticality field merge."
+            "description": "How concurrent writes to a low-criticality field merge, instead of asking the author: `set` unions the arrays written, `last-writer` lets the last write win. Either way the author is never asked about a value declared ahead."
           }
         },
         "required": [
@@ -98,7 +99,9 @@
             "enum": [
               "propagate",
               "restrict"
-            ]
+            ],
+            "deprecated": true,
+            "description": "Deprecated and ignored by the engine: a partition's id never changes, so an update never reaches the rows pointing here. A key that does change is the database's (`ON UPDATE`)."
           },
           "semantic": {
             "type": "boolean",

@@ -12,7 +12,7 @@ build = "build.rs"
 # `data-capability-registered` requires and `build.rs` turns into the
 # registry the server starts with.
 [dependencies]
-harness-dataguard = { git = "https://github.com/laucans/custom-harness", tag = "dataguard-v1", features = ["postgres"] }
+harness-dataguard = { git = "https://github.com/laucans/custom-harness", tag = "dataguard-v2", features = ["postgres"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"

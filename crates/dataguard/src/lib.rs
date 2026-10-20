@@ -57,6 +57,10 @@ pub enum Error {
     /// A store did not answer.
     #[error("the store failed: {0}")]
     Store(String),
+    /// The engine was given units that do not fit together: a
+    /// `DataCapability` listing an invariant its aggregate does not declare.
+    #[error("misconfigured: {0}")]
+    Misconfigured(String),
     /// A read names a query the registry does not serve.
     #[error("{0} is not a registered persisted query")]
     UnregisteredQuery(String),
