@@ -708,6 +708,24 @@ impl ClaudeCliFactory {
         }
     }
 
+    /// The session a stage opens (resumed and bounded as `opening` says):
+    /// every stage opens its session here, so the short cache is asked here
+    /// too, for a workflow whose sessions are never forked.
+    fn opened(&self, spec: &SessionSpec, opening: &Opening) -> ClaudeCli {
+        let mut session = ClaudeCli::new(
+            self.cwd.clone(),
+            spec,
+            &self.permission_mode,
+            self.traces.clone(),
+        );
+        session.session_id.clone_from(&opening.resume);
+        session.max_turns = opening.max_turns;
+        if self.short_cache {
+            session.cache_ttl = Some("5m");
+        }
+        session
+    }
+
     /// The same factory whose fresh sessions write a five-minute cache: for
     /// workflows that never fork a session (code, repair). A fork or a
     /// resume keeps the hour, which a later stage may come back to.
@@ -751,20 +769,32 @@ impl SessionFactory for ClaudeCliFactory {
     /// Resumed: the first `ask` passes `--resume` with the conversation a
     /// previous run left. Bounded: every `ask` passes `--max-turns`.
     async fn open_with(&self, spec: &SessionSpec, opening: &Opening) -> Outcome<Box<dyn Session>> {
-        let mut session = ClaudeCli::new(
-            self.cwd.clone(),
-            spec,
-            &self.permission_mode,
-            self.traces.clone(),
-        );
-        session.session_id.clone_from(&opening.resume);
-        session.max_turns = opening.max_turns;
-        Ok(Box::new(session))
+        Ok(Box::new(self.opened(spec, opening)))
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn a_short_cache_factory_asks_five_minutes_on_every_opening_and_a_plain_one_never() {
+        // ForgeDesMondes, 2026-10-20 12:56Z: the first repair on the deploy
+        // still wrote an hour — stages open through `open_with`.
+        let spec = SessionSpec {
+            model: "sonnet".to_string(),
+            effort: "high".to_string(),
+        };
+        let fresh = Opening::default();
+        let resumed = Opening {
+            resume: Some("abc".to_string()),
+            ..Opening::default()
+        };
+        let short = ClaudeCliFactory::new(Path::new("."), "default", None).with_short_cache();
+        let plain = ClaudeCliFactory::new(Path::new("."), "default", None);
+        assert_eq!(short.opened(&spec, &fresh).cache_ttl, Some("5m"));
+        assert_eq!(short.opened(&spec, &resumed).cache_ttl, Some("5m"));
+        assert_eq!(plain.opened(&spec, &fresh).cache_ttl, None);
+    }
     use super::*;
 
     #[test]
