@@ -106,7 +106,8 @@ without waiting for a go-ahead and without /clear, carry out
 Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
 checks the same rules after you), then branch -> PR -> `gh pr checks <n>
---watch` in the foreground -> gh pr merge --squash. The CI wait is the one
+--watch --interval 60` in the foreground -> gh pr merge --squash (one call a
+minute: the product's GitHub quota is 5 000 calls an hour for every lane). The CI wait is the one
 wait you take, and only in the foreground: never a background watcher,
 never Monitor, never a sleep loop or a scheduled wake-up — a session silent
 for twenty minutes is killed, and its open PR then goes to the harness's

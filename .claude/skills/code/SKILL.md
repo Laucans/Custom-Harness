@@ -186,8 +186,9 @@ something to test.
    background watcher, never `Monitor`, never a sleep loop or a scheduled
    wake-up — a session silent for twenty minutes is killed, and it never
    comes back to its PR.
-6. **On the read side**, wait for `ci` with `gh pr checks <n> --watch`
-   **in the foreground** — the one wait you take — then
+6. **On the read side**, wait for `ci` with `gh pr checks <n> --watch
+   --interval 60` **in the foreground** — the one wait you take, one call a
+   minute (the GitHub quota is 5 000 calls an hour for every lane) — then
    `gh pr merge --squash`, the only method enabled: one commit, titled
    `<PR title> (#n)`, its body the PR's; the branch auto-deletes. A watch
    that runs out before the checks end is run again; never a background
