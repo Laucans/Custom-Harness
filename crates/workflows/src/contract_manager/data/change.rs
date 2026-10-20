@@ -281,7 +281,10 @@ mod tests {
         let change = evolved(bare, "x.do", 2).expect("a change");
         assert_eq!(change.fixture, None);
         assert_eq!(change.task.title, "Build x.do v3");
-        assert!(change.task.brief.is_empty());
+        assert!(
+            change.task.brief.is_empty(),
+            "change.task.brief should be empty"
+        );
         let blank_path = r#"{"path":"crates/x/data-capability.json","manifest":{"dataCapability":"x.do","version":3},"summary":"s","fixture_path":"  ","fixture":{"a":1}}"#;
         assert_eq!(
             evolved(blank_path, "x.do", 2).expect("a change").fixture,

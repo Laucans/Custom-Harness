@@ -304,7 +304,10 @@ mod tests {
             delivered_ids(&with("open", &[labels::WAITING_MERGE])),
             vec!["database"]
         );
-        assert!(delivered_ids(&with("open", &[labels::READY])).is_empty());
+        assert!(
+            delivered_ids(&with("open", &[labels::READY])).is_empty(),
+            "delivered_ids(&with('open', &[labels::READY])) should be empty"
+        );
     }
 
     #[tokio::test]

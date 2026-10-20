@@ -1085,7 +1085,7 @@ mod tests {
         // No graph: no producer to wait for.
         let (taken, held) = mocked_only(&all, 23, None, &[18, 24]);
         assert_eq!(taken.len(), all.len());
-        assert!(held.is_empty());
+        assert!(held.is_empty(), "held should be empty");
         let (none, nothing) = mocked_only(&[], 23, Some(&graph), &[18]);
         assert!(none.is_empty() && nothing.is_empty());
     }

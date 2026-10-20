@@ -501,6 +501,10 @@ mod tests {
         std::fs::create_dir_all(&root).expect("mkdir");
         let repo = root.join("repo");
         sh(&root, &["init", "-q", "-b", "main", "repo"]).await;
+        // The merge below runs through the port, without the helper's
+        // identity: a runner with no global git user refuses it otherwise.
+        sh(&repo, &["config", "user.name", "t"]).await;
+        sh(&repo, &["config", "user.email", "t@t"]).await;
         std::fs::write(repo.join("a"), "base").expect("write");
         sh(&repo, &["add", "a"]).await;
         sh(&repo, &["commit", "-q", "-m", "base"]).await;
@@ -530,7 +534,10 @@ mod tests {
         );
         assert!(git.abort_merge().await.expect("ran").ok());
         assert!(!git.merge_in_progress().await.expect("asked"));
-        assert!(git.dirty_files().await.expect("read").is_empty());
+        assert!(
+            git.dirty_files().await.expect("read").is_empty(),
+            "the abort leaves a clean tree"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

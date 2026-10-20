@@ -130,7 +130,10 @@ mod tests {
             issue(20, &[labels::MILESTONE, labels::TRIGGERED], "open"),
         ];
         assert_eq!(producers_landed(Some(&graph), 19, &open), [20]);
-        assert!(producers_landed(Some(&graph), 20, &open).is_empty());
+        assert!(
+            producers_landed(Some(&graph), 20, &open).is_empty(),
+            "producers_landed(Some(&graph), 20, &open) should be empty"
+        );
         let landed = [
             issue(19, &[labels::MILESTONE, labels::TRIGGERED], "open"),
             issue(
@@ -139,7 +142,10 @@ mod tests {
                 "open",
             ),
         ];
-        assert!(producers_landed(Some(&graph), 19, &landed).is_empty());
+        assert!(
+            producers_landed(Some(&graph), 19, &landed).is_empty(),
+            "producers_landed(Some(&graph), 19, &landed) should be empty"
+        );
         assert!(
             producers_landed(Some(&graph), 19, &[open[0].clone()]).is_empty(),
             "a producer gone from the open list is closed"
@@ -157,7 +163,10 @@ mod tests {
             ],"ids":{}}"#,
         )
         .expect("a graph");
-        assert!(producers_landed(Some(&ahead), 19, &open).is_empty());
+        assert!(
+            producers_landed(Some(&ahead), 19, &open).is_empty(),
+            "producers_landed(Some(&ahead), 19, &open) should be empty"
+        );
     }
 
     #[test]

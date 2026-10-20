@@ -405,7 +405,7 @@ mod tests {
             false,
         );
         assert_eq!(plan.diverged, [path]);
-        assert!(plan.upgraded.is_empty());
+        assert!(plan.upgraded.is_empty(), "plan.upgraded should be empty");
         assert!(!plan.writes.iter().any(|(p, _)| p == path));
         let (_, recorded) = plan
             .writes

@@ -514,7 +514,10 @@ mod tests {
             [3, 114, 117],
             "any spelling when no exact id; sorted, deduplicated"
         );
-        assert!(graph_blockers(&["Nothing".to_string()], &producers).is_empty());
+        assert!(
+            graph_blockers(&["Nothing".to_string()], &producers).is_empty(),
+            "graph_blockers(&['Nothing'.to_string()], &producers) should be empty"
+        );
     }
 
     #[test]

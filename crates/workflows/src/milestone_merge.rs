@@ -440,7 +440,7 @@ mod tests {
                 .await
                 .expect("reads")
         );
-        assert!(gh.writes().is_empty());
+        assert!(gh.writes().is_empty(), "gh.writes() should be empty");
     }
 
     #[tokio::test]
@@ -655,7 +655,10 @@ mod tests {
             .map(|(t, p)| (t.number, p.num.as_str()))
             .collect();
         assert_eq!(found, [(4, "40"), (9, "231")], "#2 is closed");
-        assert!(rules_candidates(&rules, &[rules_pr("7", 11)]).is_empty());
+        assert!(
+            rules_candidates(&rules, &[rules_pr("7", 11)]).is_empty(),
+            "rules_candidates(&rules, &[rules_pr('7', 11)]) should be empty"
+        );
         assert_eq!(rules_branch(9), "rules/9");
     }
 

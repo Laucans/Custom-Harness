@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(asked.strategy, Strategy::Permanent);
         assert_eq!(asked.url, "git@github.com:o/r.git");
         assert_eq!(asked.id, "router-lane-1");
-        assert!(asked.base.is_empty());
+        assert!(asked.base.is_empty(), "asked.base should be empty");
         assert!(!asked.keep);
         assert!(!asked.force_reset);
         assert!(asked.create_if_missing);

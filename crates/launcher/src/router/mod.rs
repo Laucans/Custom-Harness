@@ -812,7 +812,10 @@ mod tests {
             .map(|pr| pr.num)
             .collect();
         assert_eq!(found, ["9", "262", "264"]);
-        assert!(task_prs(&[], &[]).is_empty());
+        assert!(
+            task_prs(&[], &[]).is_empty(),
+            "task_prs(&[], &[]) should be empty"
+        );
     }
 
     #[test]

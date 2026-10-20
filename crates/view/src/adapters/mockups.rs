@@ -1300,7 +1300,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         assert!(refused.is_err(), "{refused:?}");
         assert_eq!(edited, Ok(true), "left to save aside");
-        assert!(!theirs.is_empty());
+        assert!(!theirs.is_empty(), "theirs should not be empty");
     }
 
     #[test]

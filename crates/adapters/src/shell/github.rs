@@ -1951,7 +1951,10 @@ mod tests {
             !checks_are_green(&prs[&280].checks),
             "a run in progress is pending"
         );
-        assert!(failing_checks(&prs[&280].checks).is_empty());
+        assert!(
+            failing_checks(&prs[&280].checks).is_empty(),
+            "nothing failing on #280"
+        );
         assert_eq!(
             mergeable_from(&prs[&280].mergeable),
             None,
@@ -2492,7 +2495,7 @@ mod tests {
         };
         let none = super::ci_rows("251", &silent("no checks reported on the 'feat/x' branch"))
             .expect("no check is a fact");
-        assert!(none.is_empty());
+        assert!(none.is_empty(), "no rows at all");
         assert!(!super::checks_are_green(&none), "nothing green yet");
         assert!(
             super::failing_checks(&none).is_empty(),

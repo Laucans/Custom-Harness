@@ -424,7 +424,10 @@ mod tests {
         let mut told = Vec::new();
         let ran = run_streaming(
             "sh",
-            &sh("echo a; while [ $SECONDS -lt 6 ]; do :; done; echo b"),
+            // POSIX only: `$SECONDS` is bash's, and Linux's `sh` is dash.
+            &sh("echo a; t=$(date +%s); \
+                 while [ $(($(date +%s) - t)) -lt 6 ]; do \
+                 i=0; while [ $i -lt 5000 ]; do i=$((i + 1)); done; done; echo b"),
             Path::new("."),
             limits,
             &mut |stream, line| {

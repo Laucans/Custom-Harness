@@ -824,7 +824,10 @@ mod tests {
         .expect("a graph");
         assert_eq!(graph.waits_on(19), [18], "#20 comes later, #19 is itself");
         assert_eq!(graph.waits_on(20), [18, 19]);
-        assert!(graph.waits_on(18).is_empty());
+        assert!(
+            graph.waits_on(18).is_empty(),
+            "a node with no producers waits on nothing"
+        );
         assert!(graph.waits_on(7).is_empty(), "unknown to the plan");
         assert_eq!(graph.node(20).map(|n| n.title.as_str()), Some("c"));
         assert_eq!(graph.node(19).map(|n| n.number), Some(19));

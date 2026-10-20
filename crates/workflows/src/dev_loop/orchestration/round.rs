@@ -394,7 +394,7 @@ mod tests {
             .await
             .expect_err("a failed round");
         assert!(err.killed_as_hung());
-        assert!(gh.writes().is_empty());
+        assert!(gh.writes().is_empty(), "gh.writes() should be empty");
     }
 
     #[tokio::test]

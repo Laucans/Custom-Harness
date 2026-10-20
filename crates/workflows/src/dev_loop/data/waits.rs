@@ -148,8 +148,14 @@ mod tests {
             ),
             [20, 18]
         );
-        assert!(named("which payment provider? (/code)", None).is_empty());
-        assert!(named("#abc and # 20 name nothing", None).is_empty());
+        assert!(
+            named("which payment provider? (/code)", None).is_empty(),
+            "named('which payment provider? (/code)', None) should be empty"
+        );
+        assert!(
+            named("#abc and # 20 name nothing", None).is_empty(),
+            "named('#abc and # 20 name nothing', None) should be empty"
+        );
     }
 
     #[test]

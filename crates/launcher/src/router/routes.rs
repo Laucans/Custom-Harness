@@ -827,7 +827,7 @@ mod lane_route_tests {
             Route::TestDebt { issue: 8 },
         ] {
             let (kind, number, base) = lane_work(&route).expect("a lane's");
-            assert!(base.is_empty());
+            assert!(base.is_empty(), "base should be empty");
             assert_eq!(lane_route(kind, number, &base), route);
         }
         for free in [

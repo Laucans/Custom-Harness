@@ -1984,7 +1984,10 @@ mod tests {
             jobs.iter().filter_map(|j| j.exclusive).collect::<Vec<_>>(),
             ["tech-refinement", "test-debt"]
         );
-        assert!(schedule(&empty(), &[], &|_| 0).is_empty());
+        assert!(
+            schedule(&empty(), &[], &|_| 0).is_empty(),
+            "schedule(&empty(), &[], &|_| 0) should be empty"
+        );
         assert_eq!(decide(&empty()), Route::Nothing);
     }
 
@@ -2139,7 +2142,10 @@ mod tests {
         // in plan order on the tie.
         let milestones = vec![ready(18), ready(19), ready(20), ready(21), ready(22)];
         assert_eq!(critical_path(&milestones, Some(&graph)), [18, 20, 19]);
-        assert!(critical_path(&milestones, None).is_empty());
+        assert!(
+            critical_path(&milestones, None).is_empty(),
+            "critical_path(&milestones, None) should be empty"
+        );
         // Nothing builds: #18 (the path) and #21 split; #20 waits on #18.
         assert_eq!(splits(&milestones, Some(&graph)), [18, 21]);
         // Three build already: the path still goes, the ahead work waits.
@@ -2317,7 +2323,10 @@ mod tests {
             [19],
             "the lowest open milestone"
         );
-        assert!(building(&[], Some(&graph)).is_empty());
+        assert!(
+            building(&[], Some(&graph)).is_empty(),
+            "building(&[], Some(&graph)) should be empty"
+        );
     }
 
     fn job(route: Route, key: u64, cost: Cost, exclusive: Option<&'static str>) -> Job {
@@ -2373,7 +2382,7 @@ mod tests {
         );
         let resting = plan(jobs.clone(), &[], &[], 3, false);
         assert_eq!(keys(&resting.free), [2], "a quota rest keeps the free work");
-        assert!(resting.paid.is_empty());
+        assert!(resting.paid.is_empty(), "resting.paid should be empty");
         assert_eq!(resting.left.len(), 5);
         let held = plan(jobs.clone(), &[], &["tech-refinement"], 9, true);
         assert_eq!(keys(&held.paid), [50, 51, 40], "a lane holds the group");
@@ -2410,7 +2419,7 @@ mod tests {
             [42],
             "one job per PR: the repair, not also the review"
         );
-        assert!(twice.left.is_empty());
+        assert!(twice.left.is_empty(), "twice.left should be empty");
     }
 
     /// A task of a board, with its unit and what it needs.

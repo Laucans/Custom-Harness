@@ -676,7 +676,7 @@ mod tests {
             .await
             .expect("a verdict");
         assert_eq!(outcome, MergeOutcome::WaitingOnProducers(vec![5]));
-        assert!(gh.writes().is_empty());
+        assert!(gh.writes().is_empty(), "gh.writes() should be empty");
         // The producer landed: the consumer lands, its id is marked built,
         // the branches still building take it, the one that cannot is told.
         let gh = Rc::new(delivered(FakeGitHub {

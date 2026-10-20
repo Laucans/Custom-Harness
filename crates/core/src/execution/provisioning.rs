@@ -1693,7 +1693,10 @@ mod tests {
         assert!(calls.contains(&"delete_branch milestone/18-campaigns".to_string()));
         assert!(!calls.contains(&"delete_branch feat/diffusion-aggregate".to_string()));
         assert!(!git.merging.get(), "the merge is gone");
-        assert!(git.dirty_files().await.expect("read").is_empty());
+        assert!(
+            git.dirty_files().await.expect("read").is_empty(),
+            "the checkout is clean"
+        );
         assert!(journal.events.borrow().is_empty(), "nothing was kept");
         let lines = journal.lines.borrow();
         assert!(
@@ -1752,7 +1755,10 @@ mod tests {
         assert!(calls.contains(&"checkout main_agent --force".to_string()));
         assert!(calls.contains(&"reset_hard origin/main_agent".to_string()));
         assert!(calls.contains(&"clean".to_string()));
-        assert!(git.dirty_files().await.expect("read").is_empty());
+        assert!(
+            git.dirty_files().await.expect("read").is_empty(),
+            "the checkout is clean"
+        );
         assert!(
             journal.lines.borrow().iter().any(|l| l
                 == "workspace router-lane-1: 3 uncommitted change(s) a previous run \

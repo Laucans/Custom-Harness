@@ -867,7 +867,8 @@ mod tests {
         assert!(
             closure(&planned, &task, Some(&graph()), None)
                 .missing
-                .is_empty()
+                .is_empty(),
+            "a planned producer is nothing missing"
         );
         assert_eq!(
             closure(&tree(), &task, Some(&graph()), None).missing,

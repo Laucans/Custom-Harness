@@ -765,7 +765,7 @@ mod tests {
         let mut dry = ctx(true, None);
         dry.settings.dry_run = true;
         apply(&gh).run(&mut dry).await.expect("dry");
-        assert!(gh.writes().is_empty());
+        assert!(gh.writes().is_empty(), "gh.writes() should be empty");
         let err = apply(&gh)
             .run(&mut ctx(true, None))
             .await
