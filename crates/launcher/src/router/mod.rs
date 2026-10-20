@@ -709,11 +709,14 @@ fn not_running(prs: &[Pr], running: &[u64]) -> Vec<Pr> {
         .collect()
 }
 
-/// PRs in number order, the ones whose number is unreadable last — a PR ref
+/// PRs in number order, each once, the ones whose number is unreadable last — a PR ref
 /// that is not a number cannot be ordered, and dropping it silently would
 /// hide it instead.
 fn by_number(mut prs: Vec<Pr>) -> Vec<Pr> {
     prs.sort_by_key(|pr| pr.num.parse::<u64>().unwrap_or(u64::MAX));
+    // A PR carrying both `harness:pr-fix` and `harness:to-review` is found
+    // twice; it is one repair, not two (#304, 2026-10-20).
+    prs.dedup_by(|later, earlier| later.num == earlier.num);
     prs
 }
 
@@ -810,6 +813,19 @@ mod tests {
             .collect();
         assert_eq!(found, ["9", "262", "264"]);
         assert!(task_prs(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_pr_found_twice_is_listed_once_in_number_order() {
+        let pr = |num: &str| Pr {
+            num: num.to_string(),
+            ..Pr::default()
+        };
+        let found: Vec<String> = by_number(vec![pr("304"), pr("280"), pr("304"), pr("x")])
+            .into_iter()
+            .map(|pr| pr.num)
+            .collect();
+        assert_eq!(found, ["280", "304", "x"]);
     }
 
     #[test]
