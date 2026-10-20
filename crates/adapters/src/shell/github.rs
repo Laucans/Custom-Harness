@@ -14,8 +14,10 @@
 //! promises, and what that invariant costs when broken, is documented with it
 //! in [`ports::shell::github`](harness_core::ports::shell::github).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -386,15 +388,180 @@ pub struct GhCli {
     /// module's futures non-`Send` for memoization. It also removes the `RefCell`
     /// pitfall: there is no borrow to keep open across an `await`.
     name: OnceLock<String>,
+    /// The open PRs' CI, mergeability and update time, read in one request
+    /// and kept for [`OPEN_PRS_FRESH`]; dropped by any write. A `Mutex` for
+    /// the same reason `name` is a `OnceLock`, never held across an await.
+    open_prs: Mutex<Option<OpenPrs>>,
+    /// Each PR's comments, kept with the update time they were read at:
+    /// read again only once the PR moved.
+    comments: Mutex<HashMap<u64, (String, String)>>,
+}
+
+/// One read of every open PR: what the watch asked of each, one request at
+/// a time, before (`ForgeDesMondes`, 2026-10-20: the token's 5 000 calls an
+/// hour spent by 40–50 calls a tick, one CI, one mergeability and one
+/// comments read per open PR).
+struct OpenPrs {
+    /// When it was read.
+    at: Instant,
+    /// By PR number: its check rows as `gh pr checks` gives them, its
+    /// mergeability, its update time.
+    prs: HashMap<u64, OpenPr>,
+}
+
+/// What the one read says of a PR.
+struct OpenPr {
+    checks: Vec<Value>,
+    mergeable: Value,
+    updated_at: String,
+    /// The commit those checks ran on: a merge decided on them merges it
+    /// and nothing pushed since.
+    head: String,
+}
+
+/// How long one read of the open PRs answers for: longer than a tick's
+/// reads, shorter than anything a check run changes meanwhile.
+const OPEN_PRS_FRESH: Duration = Duration::from_secs(45);
+
+/// The fields the one read asks for.
+const OPEN_PR_FIELDS: &str = "number,updatedAt,mergeable,headRefOid,statusCheckRollup";
+
+/// A check of `statusCheckRollup` as a row of `gh pr checks --json
+/// name,state,link`: a check run's conclusion once completed (`PENDING`
+/// before), a status context's state.
+fn check_row(rollup: &Value) -> Value {
+    let text = |key: &str| rollup.get(key).and_then(Value::as_str).unwrap_or("");
+    let (name, state, link) = if rollup.get("context").is_some() {
+        (
+            text("context"),
+            text("state").to_string(),
+            text("targetUrl"),
+        )
+    } else {
+        let state = if text("status") == "COMPLETED" {
+            text("conclusion").to_uppercase()
+        } else {
+            "PENDING".to_string()
+        };
+        (text("name"), state, text("detailsUrl"))
+    };
+    serde_json::json!({ "name": name, "state": state, "link": link })
+}
+
+/// The one read's rows by PR number; `None` when it is no list.
+fn open_prs_from(payload: &Value) -> Option<HashMap<u64, OpenPr>> {
+    let rows = payload.as_array()?;
+    Some(
+        rows.iter()
+            .filter_map(|row| {
+                let number = row.get("number")?.as_u64()?;
+                let checks = row
+                    .get("statusCheckRollup")
+                    .and_then(Value::as_array)
+                    .map(|checks| checks.iter().map(check_row).collect())
+                    .unwrap_or_default();
+                Some((
+                    number,
+                    OpenPr {
+                        checks,
+                        mergeable: serde_json::json!({ "mergeable": row.get("mergeable").cloned().unwrap_or(Value::Null) }),
+                        updated_at: row
+                            .get("updatedAt")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        head: row
+                            .get("headRefOid")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                    },
+                ))
+            })
+            .collect(),
+    )
+}
+
+/// A PR reference as its number: `123` or `#123`; `None` for a branch.
+fn pr_number(pr_ref: &str) -> Option<u64> {
+    pr_ref.trim_start_matches('#').parse().ok()
+}
+
+/// Whether `gh` with these arguments changes something on GitHub — what
+/// makes a read kept before it stale.
+fn writes(args: &[String]) -> bool {
+    match (
+        args.first().map(String::as_str),
+        args.get(1).map(String::as_str),
+    ) {
+        (Some("api"), _) => args.windows(2).any(|w| w[0] == "-X" && w[1] != "GET"),
+        (Some("pr"), Some(verb)) => !matches!(verb, "view" | "list" | "checks" | "diff" | "status"),
+        (Some("issue"), Some(verb)) => !matches!(verb, "view" | "list" | "status"),
+        _ => false,
+    }
 }
 
 impl GhCli {
+    /// The head commit the kept read of the open PRs saw for PR `number`,
+    /// without reading anything again.
+    fn kept_head(&self, number: u64) -> Option<String> {
+        let kept = self.open_prs.lock().ok()?;
+        kept.as_ref()?.prs.get(&number).map(|pr| pr.head.clone())
+    }
+
+    /// Drops the kept read of the open PRs: something was just written.
+    fn forget_open_prs(&self) {
+        if let Ok(mut kept) = self.open_prs.lock() {
+            *kept = None;
+        }
+    }
+
+    /// What the one read of the open PRs says of PR `number`, read again
+    /// when older than [`OPEN_PRS_FRESH`]; `None` when the PR is not open,
+    /// or the read failed (the caller then asks GitHub as before).
+    async fn open_pr<T>(&self, number: u64, take: impl Fn(&OpenPr) -> T) -> Option<T> {
+        let fresh = |kept: &Option<OpenPrs>| {
+            kept.as_ref()
+                .is_some_and(|k| k.at.elapsed() < OPEN_PRS_FRESH)
+        };
+        let stale = self.open_prs.lock().map_or(true, |k| !fresh(&k));
+        if stale {
+            let ran = self
+                .gh(&[
+                    "pr".to_string(),
+                    "list".to_string(),
+                    "--state".to_string(),
+                    "open".to_string(),
+                    "--limit".to_string(),
+                    "100".to_string(),
+                    "--json".to_string(),
+                    OPEN_PR_FIELDS.to_string(),
+                ])
+                .await
+                .ok()?;
+            if !ran.ok() {
+                return None;
+            }
+            let prs = open_prs_from(&serde_json::from_str(ran.out()).ok()?)?;
+            if let Ok(mut kept) = self.open_prs.lock() {
+                *kept = Some(OpenPrs {
+                    at: Instant::now(),
+                    prs,
+                });
+            }
+        }
+        let kept = self.open_prs.lock().ok()?;
+        kept.as_ref()?.prs.get(&number).map(take)
+    }
+
     /// `gh`, on this repo.
     #[must_use]
     pub fn new(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
             name: OnceLock::new(),
+            open_prs: Mutex::new(None),
+            comments: Mutex::new(HashMap::new()),
         }
     }
 
@@ -411,6 +578,8 @@ impl GhCli {
         Self {
             root: PathBuf::from("."),
             name: OnceLock::from(slug.to_string()),
+            open_prs: Mutex::new(None),
+            comments: Mutex::new(HashMap::new()),
         }
     }
 
@@ -436,6 +605,9 @@ impl GhCli {
         // or a tick is not lost on a comment GitHub would take next minute
         // (ForgeDesMondes, 2026-10-20 04:25Z: a code round failed on its
         // own comment, a tick on the board's read).
+        if writes(args) {
+            self.forget_open_prs();
+        }
         let mut ran = process::run(BINARY, args, &self.root).await?;
         if throttled(&ran) {
             tokio::time::sleep(THROTTLE_PAUSE).await;
@@ -925,6 +1097,19 @@ impl GitHub for GhCli {
     }
 
     async fn pr_comments(&self, num: &str) -> Outcome<String> {
+        let number = pr_number(num);
+        let updated = if let Some(n) = number {
+            self.open_pr(n, |pr| pr.updated_at.clone()).await
+        } else {
+            None
+        };
+        if let (Some(n), Some(updated)) = (number, updated.as_ref())
+            && let Ok(kept) = self.comments.lock()
+            && let Some((at, text)) = kept.get(&n)
+            && at == updated
+        {
+            return Ok(text.clone());
+        }
         let ran = self
             .gh(&[
                 "pr".to_string(),
@@ -941,6 +1126,11 @@ impl GitHub for GhCli {
                 "cannot tell whether PR #{num} was already reviewed — {}",
                 ran.why()
             )));
+        }
+        if let (Some(n), Some(updated)) = (number, updated)
+            && let Ok(mut kept) = self.comments.lock()
+        {
+            kept.insert(n, (updated, ran.stdout.clone()));
         }
         Ok(ran.stdout)
     }
@@ -1279,14 +1469,20 @@ impl GitHub for GhCli {
     }
 
     async fn merge_pr(&self, pr_ref: &str) -> Outcome<()> {
-        let ran = self
-            .gh(&[
-                "pr".to_string(),
-                "merge".to_string(),
-                pr_ref.to_string(),
-                "--squash".to_string(),
-            ])
-            .await?;
+        // Pinned to the commit whose checks the decision read: a push since
+        // makes GitHub refuse, rather than merge what no check has judged.
+        let head = pr_number(pr_ref).and_then(|n| self.kept_head(n));
+        let mut args = vec![
+            "pr".to_string(),
+            "merge".to_string(),
+            pr_ref.to_string(),
+            "--squash".to_string(),
+        ];
+        if let Some(head) = head.filter(|h| !h.is_empty()) {
+            args.push("--match-head-commit".to_string());
+            args.push(head);
+        }
+        let ran = self.gh(&args).await?;
         if ran.ok() {
             return Ok(());
         }
@@ -1299,6 +1495,13 @@ impl GitHub for GhCli {
     }
 
     async fn pr_checks_green(&self, pr_ref: &str) -> Outcome<bool> {
+        if let Some(number) = pr_number(pr_ref)
+            && let Some(green) = self
+                .open_pr(number, |pr| checks_are_green(&pr.checks))
+                .await
+        {
+            return Ok(green);
+        }
         let ran = self
             .gh(&[
                 "pr".to_string(),
@@ -1343,6 +1546,15 @@ impl GitHub for GhCli {
     }
 
     async fn pr_mergeable(&self, pr_ref: &str) -> Outcome<Option<bool>> {
+        // GitHub computes mergeability lazily: an UNKNOWN in the list is
+        // asked again of the PR itself, which starts the computation.
+        if let Some(number) = pr_number(pr_ref)
+            && let Some(Some(known)) = self
+                .open_pr(number, |pr| mergeable_from(&pr.mergeable))
+                .await
+        {
+            return Ok(Some(known));
+        }
         let ran = self
             .gh(&[
                 "pr".to_string(),
@@ -1382,6 +1594,11 @@ impl GitHub for GhCli {
     }
 
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
+        if let Some(number) = pr_number(pr_ref)
+            && let Some(failing) = self.open_pr(number, |pr| failing_checks(&pr.checks)).await
+        {
+            return Ok(failing);
+        }
         let ran = self
             .gh(&[
                 "pr".to_string(),
@@ -1546,6 +1763,76 @@ mod tests {
             !label_absent(&done),
             "a call that went through needs no excuse"
         );
+    }
+
+    #[test]
+    fn one_read_of_the_open_prs_answers_as_gh_pr_checks_and_view_would() {
+        let payload = json!([
+            {"number": 268, "updatedAt": "2026-10-20T01:00:00Z", "mergeable": "MERGEABLE", "headRefOid": "abc123",
+             "statusCheckRollup": [
+                {"__typename": "CheckRun", "name": "rust", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "u1"},
+                {"__typename": "CheckRun", "name": "gates", "status": "COMPLETED", "conclusion": "SKIPPED", "detailsUrl": "u2"}]},
+            {"number": 279, "updatedAt": "2026-10-20T02:00:00Z", "mergeable": "CONFLICTING",
+             "statusCheckRollup": [
+                {"__typename": "CheckRun", "name": "rust", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "u3"},
+                {"__typename": "StatusContext", "context": "deploy", "state": "PENDING", "targetUrl": "u4"}]},
+            {"number": 280, "updatedAt": "2026-10-20T03:00:00Z", "mergeable": "UNKNOWN",
+             "statusCheckRollup": [
+                {"__typename": "CheckRun", "name": "rust", "status": "IN_PROGRESS", "conclusion": "", "detailsUrl": "u5"}]},
+            {"number": 281, "updatedAt": "2026-10-20T04:00:00Z", "mergeable": "MERGEABLE", "statusCheckRollup": null}
+        ]);
+        let prs = open_prs_from(&payload).expect("a list");
+        assert!(checks_are_green(&prs[&268].checks));
+        assert_eq!(mergeable_from(&prs[&268].mergeable), Some(true));
+        assert!(!checks_are_green(&prs[&279].checks));
+        assert_eq!(failing_checks(&prs[&279].checks), ["rust — FAILURE — u3"]);
+        assert_eq!(mergeable_from(&prs[&279].mergeable), Some(false));
+        assert!(
+            !checks_are_green(&prs[&280].checks),
+            "a run in progress is pending"
+        );
+        assert!(failing_checks(&prs[&280].checks).is_empty());
+        assert_eq!(
+            mergeable_from(&prs[&280].mergeable),
+            None,
+            "UNKNOWN is asked again"
+        );
+        assert!(
+            !checks_are_green(&prs[&281].checks),
+            "no checks is not green"
+        );
+        assert_eq!(prs[&281].updated_at, "2026-10-20T04:00:00Z");
+        assert_eq!(prs[&268].head, "abc123");
+        assert_eq!(prs[&279].head, "", "no head read, no pin");
+        assert!(open_prs_from(&json!({"message": "x"})).is_none());
+    }
+
+    #[test]
+    fn a_write_is_told_from_a_read() {
+        let a = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(writes(&a(&[
+            "api",
+            "-X",
+            "POST",
+            "repos/x/issues/1/comments"
+        ])));
+        assert!(writes(&a(&[
+            "api",
+            "-X",
+            "DELETE",
+            "repos/x/issues/1/labels/l"
+        ])));
+        assert!(!writes(&a(&["api", "repos/x/issues/1", "-X", "GET"])));
+        assert!(!writes(&a(&["api", "rate_limit"])));
+        assert!(writes(&a(&["pr", "merge", "12", "--squash"])));
+        assert!(writes(&a(&["pr", "create", "--title", "t"])));
+        assert!(!writes(&a(&["pr", "checks", "12"])));
+        assert!(!writes(&a(&["pr", "list", "--state", "open"])));
+        assert!(writes(&a(&["issue", "edit", "12"])));
+        assert!(!writes(&a(&["run", "list"])));
+        assert_eq!(pr_number("#279"), Some(279));
+        assert_eq!(pr_number("279"), Some(279));
+        assert_eq!(pr_number("feat/x"), None);
     }
 
     #[test]
