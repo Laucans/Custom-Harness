@@ -31,6 +31,19 @@ fn write(root: &Path, path: &str, text: &str) {
     fs::write(path, text).expect("write");
 }
 
+#[test]
+fn the_skeleton_takes_the_engine_at_a_release_tag_never_a_branch() {
+    let line = CARGO_TOML
+        .lines()
+        .find(|l| l.starts_with("harness-dataguard = { git = "))
+        .expect("the git line the product takes the engine by");
+    assert!(line.contains("tag = \"dataguard-v"), "{line}");
+    assert!(
+        !line.contains("branch =") && !line.contains("rev ="),
+        "a branch moves under the product, a bare rev names no release: {line}"
+    );
+}
+
 /// The skeleton's manifest with the engine taken from this checkout.
 fn local_manifest() -> String {
     let engine = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -253,6 +253,10 @@ the rules a diff is checked against:
   `harness:test-debt` issue per file (`scripts/test-debt.sh`), which
   `harness watch` routes to the `test_debt` workflow when nothing else
   waits.
+- `harness-dataguard` ships by release tag: a change to the engine lands on
+  `main`, CI green, then `dataguard-vN` is cut on that commit and pushed on
+  the owner's word, and the skeleton's `tag =` line names it. A tag is never
+  moved (`crates/dataguard/ARCHITECTURE.md`, *Releases*).
 - `cargo update` is a deliberate action with its own PR — never bundled
   with feature work.
 - Add `default-features = false` on a dependency when only some of its

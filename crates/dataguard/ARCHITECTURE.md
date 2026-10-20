@@ -85,6 +85,26 @@ the same states and messages, in memory, in the page: a Micro-UI built on the
 mock meets no surprise on the real server. `crates/architecture/tests/mock_server.rs`
 runs the contract's scenario against both.
 
+## Releases: one tag per engine change
+
+A product takes the engine at a release tag, `dataguard-vN`
+(`assets/dataguard-server/Cargo.toml`), never at `main`: a branch would move
+under every product at its next `cargo update`. The release step, for every
+change to this crate's public behaviour:
+
+1. The change lands on harness `main`, and `main`'s CI is green on it.
+2. The skeleton's `tag = "dataguard-vN"` line names the next number, in the
+   same change or the one right after it.
+3. The tag `dataguard-vN` is cut on that green commit and pushed on the
+   owner's word. A tag is never moved or deleted: a product's
+   `Cargo.lock` holds the commit it resolved, and a moved tag breaks every
+   product that fetches it again.
+4. A product moves to the new tag in a change of its own (`cargo update` is
+   its own PR), never bundled with feature work.
+
+A changed engine API is a contract change for every product: the release
+note says what a product must change to move.
+
 ## Testing
 
 Every rule has a unit test in its module; `queue` has a property test (fixed,
