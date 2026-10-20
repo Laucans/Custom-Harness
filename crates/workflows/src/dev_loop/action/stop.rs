@@ -132,10 +132,22 @@ impl RaiseDecision {
         });
         let port = port_asked(&reason).filter(|_| !self.autonomous);
         if let Some((id, need)) = contract::asked(&reason) {
-            // A contract another milestone produces: the contract manager's,
-            // with or without a human gate — it is the harness's own work.
-            self.contract_to_evolve(ctx, number, &issue.body, &id, &need)
-                .await?;
+            // A contract another milestone still builds is the contract
+            // manager's, with or without a human gate — it is the harness's
+            // own work. One the task may evolve itself — an aggregate, whose
+            // invariants are the writer's (contract I), or a contract whose
+            // producer has landed on the integration branch — is answered
+            // here: ForgeDesMondes' #157 asked `Session` changed, an
+            // aggregate landed with #18, and the manager, which reads
+            // capability and data-capability manifests only, would have
+            // halted on it every tick.
+            if let Some(why) = self.contract_is_the_tasks_own(ctx, &id).await {
+                self.contract_answered(ctx, number, &issue.body, &id, &need, &why)
+                    .await?;
+            } else {
+                self.contract_to_evolve(ctx, number, &issue.body, &id, &need)
+                    .await?;
+            }
         } else if let Some(port) = port {
             self.port_to_approve(ctx, number, &issue.title, &issue.body, port)
                 .await?;
@@ -260,6 +272,63 @@ impl RaiseDecision {
     /// A contract asked: kept under the task's `## Decision` (`kind:
     /// contract`), and the contract manager's to evolve, in a
     /// `harness:contract-change` issue blocking the task.
+    /// Why the contract `id` is the task's own to evolve, if it is: an
+    /// aggregate (its invariants are the writer's), the task's own
+    /// milestone's, or one whose producer has landed. `None` when another
+    /// milestone still builds it, or the graph does not know it.
+    async fn contract_is_the_tasks_own(&self, ctx: &Context<Loop>, id: &str) -> Option<String> {
+        let graph = self
+            .gh
+            .file_text(graph::PATH, &self.integration_branch)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|text| Graph::parse(&text).ok())?;
+        let entry = graph.ids.get(id)?;
+        if entry.kind == harness_architecture::graph::Kind::Aggregate {
+            return Some(format!(
+                "`{id}` is an aggregate: its invariants are the writer's"
+            ));
+        }
+        let producer = entry.producer?;
+        if ctx.state.milestone.number.parse::<u64>().ok() == Some(producer) {
+            return Some(format!("`{id}` is this milestone's own (#{producer})"));
+        }
+        let found = self.gh.issue(producer).await.ok()?;
+        (!tasks::still_blocks(&found))
+            .then(|| format!("`{id}`'s producer, milestone #{producer}, has landed"))
+    }
+
+    /// Tells the task its contract request is its own to carry out: the
+    /// answer under `## Decision`, no label, no issue — the loop takes the
+    /// task again at the next tick.
+    async fn contract_answered(
+        &self,
+        ctx: &Context<Loop>,
+        number: u64,
+        body: &str,
+        id: &str,
+        need: &str,
+        why: &str,
+    ) -> Outcome<()> {
+        let question = Question {
+            kind: Some("contract".to_string()),
+            blocks: format!("contract {id} — {need}"),
+            decided_by: Some("harness".to_string()),
+            verdict: Some(format!(
+                "answer — {why}: evolve it in this task, versioned — the manifest or \
+                 aggregate.json with its version raised, what reads or judges it, their tests"
+            )),
+            ..Question::default()
+        };
+        let kept = sections::replace(body, &[(sections::DECISION, &question.render())]);
+        self.gh.set_body(number, &kept).await?;
+        ctx.traces.say(&format!(
+            "#{number}: asked a change of `{id}` — {why}: told to evolve it in the task"
+        ));
+        Ok(())
+    }
+
     async fn contract_to_evolve(
         &self,
         ctx: &Context<Loop>,
@@ -1019,6 +1088,114 @@ mod tests {
                 "{reason}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_contract_the_task_may_evolve_itself_is_answered_not_managed() {
+        // ForgeDesMondes' #157: `Session`, an aggregate — the manager reads
+        // capability and data-capability manifests only.
+        let gh = board("pay", &[labels::MILESTONE], "open");
+        RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: true,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut ctx(false),
+            Halt::Halted(
+                "AGENT_LOOP_STOP: contract Session — declare oneshot-single-session (/code)"
+                    .to_string(),
+            ),
+        )
+        .await
+        .expect("handed over");
+        let writes = gh.writes();
+        assert!(
+            !writes
+                .iter()
+                .any(|w| matches!(w, Wrote::CreatedIssue(..) | Wrote::BlockedByLink(..))),
+            "no manager issue for an aggregate: {writes:?}"
+        );
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Body(11, body) if body.contains("decided-by: harness") && body.contains("is an aggregate"))),
+            "the task is told: {writes:?}"
+        );
+        assert!(
+            !writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())),
+            "no decision to pay: {writes:?}"
+        );
+        // A capability another milestone still builds stays the manager's.
+        let gh = board("pay", &[labels::MILESTONE], "open");
+        let mut files = gh.files.clone();
+        files.insert(
+            ("plan/graph.json".to_string(), "main_agent".to_string()),
+            GRAPH.replace(
+                r#""Session":{"kind":"aggregate""#,
+                r#""session.listScenes":{"kind":"capability","producer":20,"state":"planned","version":1},"Session":{"kind":"aggregate""#,
+            ),
+        );
+        let gh = Rc::new(FakeGitHub {
+            issues: gh.issues.clone(),
+            files,
+            ..FakeGitHub::default()
+        });
+        RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: true,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut ctx(false),
+            Halt::Halted(
+                "AGENT_LOOP_STOP: contract session.listScenes — a field (/code)".to_string(),
+            ),
+        )
+        .await
+        .expect("handed over");
+        let writes = gh.writes();
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
+            "the manager's: {writes:?}"
+        );
+        // The same capability once #20 has landed: the task's own.
+        let gh = board("pay", &[labels::MILESTONE, labels::WAITING_MERGE], "open");
+        let mut files = gh.files.clone();
+        files.insert(
+            ("plan/graph.json".to_string(), "main_agent".to_string()),
+            GRAPH.replace(
+                r#""Session":{"kind":"aggregate""#,
+                r#""session.listScenes":{"kind":"capability","producer":20,"state":"built","version":1},"Session":{"kind":"aggregate""#,
+            ),
+        );
+        let gh = Rc::new(FakeGitHub {
+            issues: gh.issues.clone(),
+            files,
+            ..FakeGitHub::default()
+        });
+        RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: true,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut ctx(false),
+            Halt::Halted(
+                "AGENT_LOOP_STOP: contract session.listScenes — a field (/code)".to_string(),
+            ),
+        )
+        .await
+        .expect("handed over");
+        let writes = gh.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
+            "landed: the task's own: {writes:?}"
+        );
+        assert!(
+            writes
+                .iter()
+                .any(|w| matches!(w, Wrote::Body(11, body) if body.contains("has landed"))),
+            "{writes:?}"
+        );
     }
 
     #[tokio::test]
