@@ -46,6 +46,21 @@ use crate::contract_manager::data::request::{self as contract, Request};
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::data::{tasks, waits};
 
+/// Whether a stop's reason asks for a decision in so many words.
+#[must_use]
+fn asks_a_decision(reason: &str) -> bool {
+    let lower = reason.to_lowercase();
+    [
+        "needs a decision",
+        "need a decision",
+        "a decision is needed",
+        "decision needed",
+        "spec contradicts",
+    ]
+    .iter()
+    .any(|said| lower.contains(said))
+}
+
 /// The round a stop on one task goes to a human instead of a decision.
 pub const HUMAN_AT_ROUND: u32 = 3;
 
@@ -151,7 +166,15 @@ impl RaiseDecision {
         } else if let Some(port) = port {
             self.port_to_approve(ctx, number, &issue.title, &issue.body, port)
                 .await?;
-        } else if let Some(on) = self.waited_for(ctx, number, &reason).await {
+        } else if let Some(on) = if asks_a_decision(&reason) {
+            // A stop that says it needs a decision is one, whatever issues it
+            // names on the way (ForgeDesMondes #182: "SPEC contradicts the
+            // engine … same pattern in #188 … needs a Decision" waited on
+            // #188, which will stop on the same question).
+            None
+        } else {
+            self.waited_for(ctx, number, &reason).await
+        } {
             // Something another issue produces has not landed: the task
             // waits for it, for free, however many times it was asked. A
             // blocker GitHub refuses (ForgeDesMondes' #248 named PR #264,
@@ -1196,6 +1219,34 @@ mod tests {
                 .any(|w| matches!(w, Wrote::Body(11, body) if body.contains("has landed"))),
             "{writes:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_asks_a_decision_is_one_whatever_it_names() {
+        let gh = board("pay", &[labels::MILESTONE], "open");
+        RaiseDecision {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            autonomous: true,
+            integration_branch: "main_agent".to_string(),
+        }
+        .on_halt(
+            &mut ctx(false),
+            Halt::Halted(
+                "AGENT_LOOP_STOP: SPEC contradicts the engine; same in #20; needs a Decision (/code)"
+                    .to_string(),
+            ),
+        )
+        .await
+        .expect("handed over");
+        let writes = gh.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::BlockedByLink(..))),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+        assert!(!asks_a_decision(
+            "missing crates/session/read — #20 not landed"
+        ));
     }
 
     #[tokio::test]
