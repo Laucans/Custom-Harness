@@ -110,6 +110,13 @@ pub fn repairs(comments: &str) -> usize {
     since_decision(comments).matches(FIX_MARKER).count()
 }
 
+/// How many repairs a PR has had in all, decisions to repair once more
+/// included — what decides which model the next one runs on.
+#[must_use]
+pub fn repairs_in_all(comments: &str) -> usize {
+    comments.matches(FIX_MARKER).count()
+}
+
 /// The comments since the last decision to repair once more: what the cap
 /// counts in.
 fn since_decision(comments: &str) -> &str {
@@ -180,6 +187,7 @@ mod tests {
         let review = format!("{MARKER}\n{BLOCKING}");
         let used = format!("{FIX_MARKER} {review} {FIX_MARKER} {review}");
         assert_eq!(repairs(&used), 2);
+        assert!(repairs_in_all(&used) >= repairs(&used));
         assert!(status(&used).exhausted());
         let decided = format!("{used} {DECIDED_MARKER} repair once more");
         assert_eq!(repairs(&decided), 0);

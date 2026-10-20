@@ -103,6 +103,19 @@ const NO_SCHEDULING: [&str; 2] = [
     "ScheduleWakeup,CronCreate,CronDelete,CronList,RemoteTrigger,Monitor",
 ];
 
+/// The only tools a robot's session is given: the ones they use. Measured
+/// over 15 500 tool calls (`ForgeDesMondes`, 2026-10-17/20): Bash, Write,
+/// Edit, Read, Skill — and none of the fourteen others, whose definitions
+/// still filled half the first message (30.6k tokens down to 14.9k with
+/// this list, relayed at every turn).
+const TOOLS: [&str; 2] = ["--tools", "Bash,Read,Edit,Write,Skill"];
+
+/// The prompt-cache lifetime a session asks, through the CLI's
+/// environment. A fresh session's turns follow each other seconds apart
+/// (0.8 % of calls came more than five minutes after the one before): the
+/// five-minute write, 1.25× the input price, against 2× for an hour.
+const CACHE_TTL_ENV: &str = "CLAUDE_CODE_PROMPT_CACHE_TTL";
+
 /// How long one turn may run, and how long it may stay silent.
 ///
 /// The silence is what says a turn hung: a working session reports every
@@ -215,6 +228,9 @@ pub struct ClaudeCli {
     /// How many model turns a call may take (`--max-turns`); `None` lets
     /// the CLI decide.
     max_turns: Option<u32>,
+    /// The prompt-cache lifetime asked (`5m`), or `None` for the CLI's own
+    /// (an hour), which a session later forked or resumed keeps.
+    cache_ttl: Option<&'static str>,
 }
 
 impl ClaudeCli {
@@ -239,6 +255,7 @@ impl ClaudeCli {
             max_turns: None,
             traces,
             turn: 0,
+            cache_ttl: None,
         }
     }
 
@@ -306,6 +323,7 @@ impl ClaudeCli {
         ];
         args.extend(LEAN.iter().map(ToString::to_string));
         args.extend(NO_SCHEDULING.iter().map(ToString::to_string));
+        args.extend(TOOLS.iter().map(ToString::to_string));
         match (&self.session_id, &self.base) {
             (Some(id), _) => {
                 args.push("--resume".to_string());
@@ -608,7 +626,19 @@ impl ClaudeCli {
                     &stamped(&rendered, started.elapsed()),
                 );
             };
-            process::run_streaming(BINARY, &self.argv(prompt), &self.cwd, limits, &mut watch).await
+            let env: Vec<(&str, &str)> = self
+                .cache_ttl
+                .map(|ttl| vec![(CACHE_TTL_ENV, ttl)])
+                .unwrap_or_default();
+            process::run_streaming_with_env(
+                BINARY,
+                &self.argv(prompt),
+                &env,
+                &self.cwd,
+                limits,
+                &mut watch,
+            )
+            .await
         };
         let out = match out {
             Ok(out) => out,
@@ -658,6 +688,8 @@ pub struct ClaudeCliFactory {
     cwd: PathBuf,
     permission_mode: String,
     traces: Option<PathBuf>,
+    /// Fresh sessions ask a five-minute cache: none of them is forked.
+    short_cache: bool,
 }
 
 impl ClaudeCliFactory {
@@ -672,7 +704,17 @@ impl ClaudeCliFactory {
             cwd: cwd.to_path_buf(),
             permission_mode: permission_mode.to_string(),
             traces,
+            short_cache: false,
         }
+    }
+
+    /// The same factory whose fresh sessions write a five-minute cache: for
+    /// workflows that never fork a session (code, repair). A fork or a
+    /// resume keeps the hour, which a later stage may come back to.
+    #[must_use]
+    pub const fn with_short_cache(mut self) -> Self {
+        self.short_cache = true;
+        self
     }
 }
 
@@ -684,12 +726,16 @@ impl SessionFactory for ClaudeCliFactory {
     /// of the choice: nothing to tear down, nothing that leaks if a stage dies
     /// along the way.
     async fn open(&self, spec: &SessionSpec) -> Outcome<Box<dyn Session>> {
-        Ok(Box::new(ClaudeCli::new(
+        let mut session = ClaudeCli::new(
             self.cwd.clone(),
             spec,
             &self.permission_mode,
             self.traces.clone(),
-        )))
+        );
+        if self.short_cache {
+            session.cache_ttl = Some("5m");
+        }
+        Ok(Box::new(session))
     }
 
     async fn fork(&self, spec: &SessionSpec, base: &Base) -> Outcome<Box<dyn Session>> {
@@ -928,6 +974,10 @@ mod tests {
             "nor waits on a condition: {options}"
         );
         assert!(options.contains("--setting-sources project,local"));
+        assert!(
+            options.contains("--tools Bash,Read,Edit,Write,Skill"),
+            "{options}"
+        );
         assert!(options.contains("--exclude-dynamic-system-prompt-sections"));
     }
 

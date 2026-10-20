@@ -19,7 +19,6 @@ use harness_adapters::shell::github::GhCli;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Outcome, Slug, Verdict};
 use harness_core::execution::{Context, Gate, Guarded, Settings};
-use harness_core::ports::agent::SessionSpec;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Logbook, Sink, Verbosity};
 use harness_workflows::pr_fix::config::Config;
@@ -80,16 +79,32 @@ pub async fn run(
     )
     .await?;
     let workspace = &mount.workspace;
-    let built = shared::adapters(
+    let built = shared::adapters_caching(
         workspace,
         &run_id,
         permission_mode,
         dry_run,
         &log,
         Some(shared::trace_dir(sink.path())),
+        true,
     )
     .await;
 
+    // How many repairs the PR already had decides the model; an unreadable
+    // PR counts as a first repair (the precheck stops it anyway).
+    let repairs_before = built
+        .gh
+        .pr_comments(pr_ref.trim_start_matches('#'))
+        .await
+        .map_or(0, |comments| {
+            harness_workflows::common::review::repairs_in_all(&comments)
+        });
+    log.say(&format!(
+        "#{}: repair {} on this PR — {}",
+        pr_ref.trim_start_matches('#'),
+        repairs_before + 1,
+        harness_workflows::pr_fix::config::fix_spec(repairs_before).model
+    ));
     let ports = Ports {
         gh: Rc::clone(&built.gh),
         sessions: Rc::clone(&built.sessions),
@@ -99,13 +114,10 @@ pub async fn run(
     let config = Config {
         prompts: shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?,
         fix_dir: workspace.state_root().join(".llocal/pr-fix-locks"),
-        // Diagnosing why CI broke from logs and a diff is the kind of work
-        // the better model earns its cost on — a wrong fix pushed to a PR is
-        // more expensive than the session that found the right one.
-        fix: SessionSpec {
-            model: "opus".to_string(),
-            effort: "high".to_string(),
-        },
+        // Sonnet for the first two repairs of a PR, opus once they failed
+        // (the owner's rule, 2026-10-20): 65 repairs on opus, 55 % enough
+        // on their own; most are a conflict or tests for survivors.
+        fix: harness_workflows::pr_fix::config::fix_spec(repairs_before),
     };
 
     let workflow = run::build(

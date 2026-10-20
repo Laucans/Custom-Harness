@@ -143,11 +143,32 @@ pub async fn run_streaming(
     limits: Limits,
     watch: &mut dyn FnMut(Stream, &str),
 ) -> Outcome<Ran> {
+    run_streaming_with_env(binary, args, &[], cwd, limits, watch).await
+}
+
+/// [`run_streaming`], with variables added to the child's environment.
+///
+/// # Errors
+///
+/// As [`run_streaming`].
+///
+/// # Panics
+///
+/// As [`run_streaming`]: never, the pipes being asked for.
+pub async fn run_streaming_with_env(
+    binary: &str,
+    args: &[String],
+    env: &[(&str, &str)],
+    cwd: &Path,
+    limits: Limits,
+    watch: &mut dyn FnMut(Stream, &str),
+) -> Outcome<Ran> {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let mut child = tokio::process::Command::new(binary)
         .args(args)
+        .envs(env.iter().copied())
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

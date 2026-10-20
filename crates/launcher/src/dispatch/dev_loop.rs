@@ -520,11 +520,14 @@ async fn turns(
         // A dry-run is a wiring choice, not a framework branch.
         Rc::new(Rehearsal::new(log.clone()))
     } else {
-        Rc::new(ClaudeCliFactory::new(
-            workspace.root(),
-            &args.permission_mode,
-            Some(crate::dispatch::shared::trace_dir(run_log)),
-        ))
+        Rc::new(
+            ClaudeCliFactory::new(
+                workspace.root(),
+                &args.permission_mode,
+                Some(crate::dispatch::shared::trace_dir(run_log)),
+            )
+            .with_short_cache(),
+        )
     };
     let spending: Rc<dyn Spending> = Rc::new(
         LedgerSpending::new(&workspace.ledger(), run_id, &spending::hostname().await)

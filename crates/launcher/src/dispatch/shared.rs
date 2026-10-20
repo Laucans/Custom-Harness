@@ -240,15 +240,39 @@ pub async fn adapters(
     log: &Logbook,
     trace: Option<std::path::PathBuf>,
 ) -> Adapters {
+    adapters_caching(
+        workspace,
+        run_id,
+        permission_mode,
+        dry_run,
+        log,
+        trace,
+        false,
+    )
+    .await
+}
+
+/// [`adapters`], whose fresh sessions write a five-minute prompt cache when
+/// `short_cache`: for a workflow that never forks a session (a repair).
+pub async fn adapters_caching(
+    workspace: &Workspace,
+    run_id: &str,
+    permission_mode: &str,
+    dry_run: bool,
+    log: &Logbook,
+    trace: Option<std::path::PathBuf>,
+    short_cache: bool,
+) -> Adapters {
     let gh: Rc<dyn GitHub> = Rc::new(GhCli::new(workspace.root()));
     let sessions: Rc<dyn SessionFactory> = if dry_run {
         Rc::new(Rehearsal::new(log.clone()))
     } else {
-        Rc::new(ClaudeCliFactory::new(
-            workspace.root(),
-            permission_mode,
-            trace,
-        ))
+        let factory = ClaudeCliFactory::new(workspace.root(), permission_mode, trace);
+        Rc::new(if short_cache {
+            factory.with_short_cache()
+        } else {
+            factory
+        })
     };
     let spend: Rc<dyn Spending> = Rc::new(LedgerSpending::new(
         &workspace.ledger(),
