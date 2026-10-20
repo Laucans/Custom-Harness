@@ -228,15 +228,42 @@ pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<bool> {
     if task.has(labels::NEEDS_DECISION) {
         return Ok(false);
     }
+    let why = format!(
+        "PR {} still does not merge after {} repair attempts — its review blocks \
+         it, or its branch conflicts with the milestone's.",
+        pr.reference(),
+        crate::common::review::MAX_FIXES
+    );
+    // The question is written under `## Decision` as the stop handler
+    // writes its own: an answer the owner gave to an earlier question (a
+    // contract, a port) would otherwise stand for this one, and `decide`
+    // would defer to it at every tick, deciding nothing (ForgeDesMondes'
+    // #157, 2026-10-20: three ticks of "the owner already decided" on PR
+    // #279, blocked after two repairs, while the owner's answer was about
+    // the Session aggregate).
+    let asked = crate::common::sections::parse(&task.body)
+        .get(crate::common::sections::DECISION)
+        .and_then(|text| crate::common::decision::Question::parse(text));
+    let round = asked
+        .filter(|q| q.kind.as_deref() == Some("review"))
+        .map_or(1, |q| q.round.saturating_add(1));
+    let question = crate::common::decision::Question {
+        kind: Some("review".to_string()),
+        blocks: why.clone(),
+        round,
+        ..crate::common::decision::Question::default()
+    };
+    let body = crate::common::sections::replace(
+        &task.body,
+        &[(crate::common::sections::DECISION, &question.render())],
+    );
+    gh.set_body(task.number, &body).await?;
     gh.post_issue_comment(
         task.number,
         &format!(
-            "PR {} still does not merge after {} repair attempts — its review blocks \
-             it, or its branch conflicts with the milestone's. The harness decides at the \
-             next tick — repair it once more, merge it as it is, or cut the task — and says \
-             what it decided; answer under `## Decision` first to decide it yourself.",
-            pr.reference(),
-            crate::common::review::MAX_FIXES
+            "{why} The harness decides at the next tick — repair it once more, merge it \
+             as it is, or cut the task — and says what it decided; answer under \
+             `## Decision` first to decide it yourself."
         ),
     )
     .await?;
@@ -306,6 +333,63 @@ mod tests {
             .collect();
         assert_eq!(all, [(51, "105"), (225, "233")], "#52 has no PR open");
         assert_eq!(candidate(&two, &open).map(|(t, _)| t.number), Some(51));
+    }
+
+    #[tokio::test]
+    async fn an_exhausted_pr_asks_its_own_question_over_an_earlier_owner_answer() {
+        // ForgeDesMondes #157: the owner had answered a contract question;
+        // decide deferred to it on the PR's repairs for three ticks.
+        let mut stale = task(157, &[labels::AGENT, labels::READY], "feat/create-session");
+        stale.body.push_str(
+            "\n## Decision\n\nkind: contract\nblocks: contract Session — an invariant\nround: 0\ndecided-by: owner\nverdict: answer — evolve it in this task\n",
+        );
+        let gh = FakeGitHub::default();
+        assert!(
+            escalate(&gh, &stale, &pr("279", "feat/create-session"))
+                .await
+                .expect("escalates")
+        );
+        let writes = gh.writes();
+        let body = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Body(157, body) => Some(body.clone()),
+                _ => None,
+            })
+            .expect("the body is rewritten");
+        let decision = body
+            .split("## Decision")
+            .nth(1)
+            .expect("a Decision section");
+        assert!(decision.contains("kind: review"), "{decision}");
+        assert!(
+            decision.contains("PR #279 still does not merge"),
+            "{decision}"
+        );
+        assert!(
+            !decision.contains("decided-by: owner"),
+            "the stale answer is gone: {decision}"
+        );
+        assert!(decision.contains("round: 1"), "{decision}");
+        assert!(writes.contains(&Wrote::Label(157, labels::NEEDS_DECISION.to_string())));
+        // Asked again after another two repairs: round 2.
+        let mut again = stale.clone();
+        again.body = body;
+        let gh = FakeGitHub::default();
+        assert!(
+            escalate(&gh, &again, &pr("279", "feat/create-session"))
+                .await
+                .expect("escalates")
+        );
+        let body = gh
+            .writes()
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Body(157, body) => Some(body.clone()),
+                _ => None,
+            })
+            .expect("rewritten");
+        assert!(body.contains("round: 2"), "{body}");
     }
 
     #[tokio::test]
