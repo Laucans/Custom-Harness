@@ -18,14 +18,27 @@ use harness_core::traces::Logbook;
 /// milestone already open: a milestone cut before the one before it landed
 /// had tasks that found no Data layer. A refusal (a conflict) is said and
 /// never forced: the milestone's own merge to the integration branch meets
-/// it there.
-pub async fn catch_up(gh: &dyn GitHub, milestone_branch: &str, integration: &str, log: &Logbook) {
+/// it there. Whether the branch holds the integration branch now — a task
+/// started on a branch that could not take it stops on what the base has
+/// and it lacks (`ForgeDesMondes`, 2026-10-20: five sessions in one tick).
+pub async fn catch_up(
+    gh: &dyn GitHub,
+    milestone_branch: &str,
+    integration: &str,
+    log: &Logbook,
+) -> bool {
     match gh.merge_branch(milestone_branch, integration).await {
-        Ok(()) => log.debug(&format!("{milestone_branch} holds {integration}")),
-        Err(halt) => log.warn(&format!(
-            "{milestone_branch} cannot take {integration}: {}",
-            halt.reason()
-        )),
+        Ok(()) => {
+            log.debug(&format!("{milestone_branch} holds {integration}"));
+            true
+        }
+        Err(halt) => {
+            log.warn(&format!(
+                "{milestone_branch} cannot take {integration}: {}",
+                halt.reason()
+            ));
+            false
+        }
     }
 }
 
@@ -72,7 +85,7 @@ mod tests {
     #[tokio::test]
     async fn a_milestone_branch_takes_the_integration_branch_in() {
         let gh = FakeGitHub::default();
-        catch_up(&gh, "milestone/17-ai", "main_agent", &Logbook::null()).await;
+        assert!(catch_up(&gh, "milestone/17-ai", "main_agent", &Logbook::null()).await);
         assert!(
             gh.wrote.borrow().iter().any(|w| matches!(
                 w,
@@ -81,6 +94,19 @@ mod tests {
             "{:?}",
             gh.wrote.borrow()
         );
+    }
+
+    #[tokio::test]
+    async fn a_merge_github_refuses_is_said_and_answered_false() {
+        let gh = FakeGitHub {
+            refused_merges: vec!["milestone/20-sessions".to_string()],
+            ..FakeGitHub::default()
+        };
+        assert!(
+            !catch_up(&gh, "milestone/20-sessions", "main_agent", &Logbook::null()).await,
+            "a conflict: the branch does not hold the base"
+        );
+        assert!(gh.wrote.borrow().is_empty(), "{:?}", gh.wrote.borrow());
     }
 
     #[test]

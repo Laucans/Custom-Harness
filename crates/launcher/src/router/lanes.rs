@@ -269,7 +269,18 @@ async fn start_task(
     }
     let branch = branching::milestone_branch(milestone, &board.milestone.title);
     if !args.dry_run && !caught_up.contains(&milestone) {
-        branching::catch_up(gh, &branch, &args.branch, log).await;
+        // A branch that cannot take the base is no base to build on: the
+        // session would stop at once on what the base has and it lacks
+        // (ForgeDesMondes, 2026-10-20: five sessions in one tick, $3.40).
+        // The task is held, said once a tick, until a hand catches the
+        // branch up — the merge is tried again at every tick.
+        if !branching::catch_up(gh, &branch, &args.branch, log).await {
+            log.say(&format!(
+                "watch: lanes -> #{number} held: {branch} cannot take {} — merge it by hand, the task starts then",
+                args.branch
+            ));
+            return false;
+        }
         caught_up.push(milestone);
     }
     let Ok(exe) = std::env::current_exe() else {

@@ -655,7 +655,13 @@ pub(super) async fn run_dev_loop(
         }
     };
     let branch = branching::milestone_branch(milestone, &title);
-    branching::catch_up(gh, &branch, &args.branch, log).await;
+    if !branching::catch_up(gh, &branch, &args.branch, log).await {
+        log.say(&format!(
+            "watch: dev_loop -> milestone #{milestone} held: {branch} cannot take {} — merge it by hand",
+            args.branch
+        ));
+        return None;
+    }
     let mut cli = match crate::cli::Cli::try_parse_from(["harness"]) {
         Ok(cli) => cli,
         Err(e) => {
