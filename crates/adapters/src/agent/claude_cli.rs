@@ -116,6 +116,22 @@ const TOOLS: [&str; 2] = ["--tools", "Bash,Read,Edit,Write,Skill"];
 /// five-minute write, 1.25× the input price, against 2× for an hour.
 const CACHE_TTL_ENV: &str = "CLAUDE_CODE_PROMPT_CACHE_TTL";
 
+/// What every session's environment carries: no background work, and a
+/// foreground command allowed an hour.
+///
+/// A print-mode session that starts a command in the background and ends
+/// its turn "to pick it up when the job finishes" never picks it up: the
+/// process stays up, silent, until the idle kill drops its unpushed work
+/// (`ForgeDesMondes` #304, 2026-10-20: 74 mutants backgrounded, $1.35 of
+/// repair lost). The CLI's own ten-minute ceiling on a foreground command
+/// is what pushed it there, so it is raised to the hour an in-diff
+/// `cargo mutants` may take — a hung command is still the idle kill's.
+const FOREGROUND_ONLY: [(&str, &str); 3] = [
+    ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1"),
+    ("BASH_DEFAULT_TIMEOUT_MS", "3600000"),
+    ("BASH_MAX_TIMEOUT_MS", "3600000"),
+];
+
 /// How long one turn may run, and how long it may stay silent.
 ///
 /// The silence is what says a turn hung: a working session reports every
@@ -128,6 +144,14 @@ const LIMITS: Limits = Limits {
     idle: Duration::from_mins(20),
     cap: Duration::from_hours(3),
 };
+
+/// A session's environment: [`FOREGROUND_ONLY`], and the cache lifetime
+/// when one is asked.
+fn environment(cache_ttl: Option<&'static str>) -> Vec<(&'static str, &'static str)> {
+    let mut env = FOREGROUND_ONLY.to_vec();
+    env.extend(cache_ttl.map(|ttl| (CACHE_TTL_ENV, ttl)));
+    env
+}
 
 /// Phrases that mark a failure as an exhausted quota.
 ///
@@ -626,10 +650,7 @@ impl ClaudeCli {
                     &stamped(&rendered, started.elapsed()),
                 );
             };
-            let env: Vec<(&str, &str)> = self
-                .cache_ttl
-                .map(|ttl| vec![(CACHE_TTL_ENV, ttl)])
-                .unwrap_or_default();
+            let env = environment(self.cache_ttl);
             process::run_streaming_with_env(
                 BINARY,
                 &self.argv(prompt),
@@ -794,6 +815,18 @@ mod tests {
         assert_eq!(short.opened(&spec, &fresh).cache_ttl, Some("5m"));
         assert_eq!(short.opened(&spec, &resumed).cache_ttl, Some("5m"));
         assert_eq!(plain.opened(&spec, &fresh).cache_ttl, None);
+        let short_env = environment(Some("5m"));
+        assert!(short_env.contains(&(CACHE_TTL_ENV, "5m")));
+        assert!(
+            !environment(None)
+                .iter()
+                .any(|(key, _)| *key == CACHE_TTL_ENV)
+        );
+        for env in [short_env, environment(None)] {
+            assert!(env.contains(&("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1")));
+            assert!(env.contains(&("BASH_MAX_TIMEOUT_MS", "3600000")));
+            assert!(env.contains(&("BASH_DEFAULT_TIMEOUT_MS", "3600000")));
+        }
     }
     use super::*;
 
