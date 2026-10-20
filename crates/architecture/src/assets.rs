@@ -627,6 +627,16 @@ mod tests {
         );
         let mutants = content_of(".cargo/mutants.toml").unwrap_or_default();
         assert!(mutants.contains("exclude_globs"), "{mutants}");
+        let step = ci
+            .split("- name: Mutants\n")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .unwrap_or_default();
+        assert!(
+            step.contains("github.event_name == 'pull_request'")
+                && step.contains("!startsWith(github.head_ref, 'milestone/')"),
+            "mutants judge a task's pull request only, never a push: {step}"
+        );
     }
 
     #[test]

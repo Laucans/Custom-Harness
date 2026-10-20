@@ -110,13 +110,18 @@ jobs:
       # The tests are judged too: a function cargo-mutants can rewrite
       # without a test failing was never tested. Only the functions the
       # change touches (.cargo/mutants.toml says what is never mutated).
-      # Not on a milestone's own pull request: its diff is the whole
-      # milestone, every task of which already passed this step on its own
-      # change — ForgeDesMondes' #18 ran it for hours on the critical path.
+      # On a task's pull request only. A milestone's own pull request diffs
+      # the whole milestone, every task of which already passed this step on
+      # its own change (ForgeDesMondes' #18 ran it for hours on the critical
+      # path). A push to `milestone/**` or `main_agent` only lands code
+      # already judged — a task's squash, a milestone's merge, or a catch-up
+      # bringing `main_agent` in — and judged again it turned a milestone's
+      # PR red on another milestone's mutants (#321 on #19's list-media,
+      # 2026-10-20).
       - name: Mutants
-        if: hashFiles('Cargo.toml') != '' && !startsWith(github.head_ref, 'milestone/') && (github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000')
+        if: hashFiles('Cargo.toml') != '' && github.event_name == 'pull_request' && !startsWith(github.head_ref, 'milestone/')
         env:
-          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+          BASE: origin/${{ github.base_ref }}
         run: |
           # A base rewritten away (a force push) leaves only the last commit.
           git diff "$BASE" HEAD > change.diff || git diff HEAD~1 HEAD > change.diff
