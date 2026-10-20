@@ -4,6 +4,14 @@
 # push rather than once per commit.
 set -euo pipefail
 
+# The rustup toolchain's clippy, not Homebrew's: `cargo clippy` resolves
+# `cargo-clippy` on PATH, and /opt/homebrew/bin's is a release behind CI's
+# floating stable (fa5e9c9 went red on a lint the local hook never ran).
+if command -v rustup >/dev/null 2>&1; then
+  PATH="$(dirname "$(rustup which cargo)"):$PATH"
+fi
+cargo clippy --version >&2
+
 echo "pre-push: cargo clippy --workspace --all-targets --all-features -- -D warnings" >&2
 if ! cargo clippy --workspace --all-targets --all-features -- -D warnings; then
   echo >&2
