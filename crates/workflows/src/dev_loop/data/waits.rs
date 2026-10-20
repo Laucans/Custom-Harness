@@ -71,8 +71,11 @@ fn trim_punctuation(token: &str) -> &str {
 
 /// The producers a path names, case aside: the producer of an id one of
 /// its words is (`crates/data/migrations/0004_entity.sql`, `Entity`'s)
-/// first — an id is the more specific — then the milestone working in a
-/// system one of its segments is (`crates/session/`).
+/// first — an id is the more specific — then the milestone working in the
+/// system whose crate the path is under: the segment right after `crates/`
+/// (`crates/session/`), never any word of the path. `ForgeDesMondes`'
+/// #156 stopped on `crates/dataguard/aggregates/Campaign/aggregate.json`
+/// and waited on #30, the campaign home, for the word `campaign`.
 fn in_path(path: &str, graph: &Graph) -> Vec<u64> {
     let words: Vec<String> = path
         .split(|c: char| !c.is_alphanumeric())
@@ -86,14 +89,20 @@ fn in_path(path: &str, graph: &Graph) -> Vec<u64> {
             .find(|(id, _)| id.to_lowercase() == *word)
             .and_then(|(_, id)| id.producer)
     });
-    let systems = words.iter().filter_map(|word| {
+    let under_crates = path
+        .to_lowercase()
+        .split('/')
+        .skip_while(|segment| *segment != "crates")
+        .nth(1)
+        .map(str::to_string);
+    let systems = under_crates.into_iter().filter_map(|crate_| {
         graph
             .milestones
             .iter()
             .find(|node| {
                 node.systems
                     .iter()
-                    .any(|system| system.to_lowercase() == *word)
+                    .any(|system| system.to_lowercase() == crate_)
             })
             .map(|node| node.number)
     });
@@ -178,6 +187,18 @@ mod tests {
         assert!(
             named("the session store is slow", Some(&graph)).is_empty(),
             "a bare word is not an id"
+        );
+        assert_eq!(
+            named(
+                "missing crates/dataguard/aggregates/Session/aggregate.json on milestone/28",
+                Some(&graph)
+            ),
+            [20, 28],
+            "a word of the path is an id, never a system: `dataguard` is no system's crate"
+        );
+        assert!(
+            named("the media folder apps/media/library is empty", Some(&graph)).is_empty(),
+            "a system's name anywhere but right under crates/ names no milestone"
         );
     }
 
