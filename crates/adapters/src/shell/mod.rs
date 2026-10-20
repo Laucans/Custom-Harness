@@ -4,6 +4,7 @@
 //! `process` is the only one that talks to the system; the others translate
 //! arguments and read outputs.
 
+pub mod database;
 pub mod disk;
 pub mod git;
 pub mod github;

@@ -127,6 +127,13 @@ earlier one landed.
 
 ## 5. Verify
 
+**Mutants before the PR.** The CI runs `cargo mutants --in-diff` on your
+change and fails on any mutant no test catches. Run it first, in the
+foreground: `git diff origin/<base> > .git/change.diff && cargo mutants
+--in-diff .git/change.diff --in-place`, and add a test for every MISSED one.
+A mutant the CI finds costs a whole repair round; one you kill here costs
+a few minutes.
+
 Run **every** bullet in the SPEC's `Verification` section and show the
 real output. "Looks done" is not verification; a pass/fail signal is
 (`Human_guidelines.md` §1).

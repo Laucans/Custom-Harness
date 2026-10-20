@@ -61,6 +61,8 @@ tokio = { version = "1", default-features = false, features = [
   # Reading a child's pipes line by line while it runs, which is what makes
   # a session's execution log live rather than final.
   "io-util",
+  # One TCP connection: whether the product's database answers.
+  "net",
 ] }
 # The factory view only. A local server for one human watching one plant, so
 # HTTP/1 is enough; `json` and `query` are the two extractors it uses.

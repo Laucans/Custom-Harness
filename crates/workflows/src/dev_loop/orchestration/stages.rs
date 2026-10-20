@@ -105,7 +105,10 @@ without waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
 Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
-checks the same rules after you), then branch -> PR -> `gh pr checks <n>
+checks the same rules after you), then the mutants the CI will judge, in
+the foreground: `git diff origin/<your base> > .git/change.diff && cargo
+mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
+one before the PR (a mutant the CI finds costs a whole repair round), then branch -> PR -> `gh pr checks <n>
 --watch --interval 60` in the foreground -> gh pr merge --squash (one call a
 minute: the product's GitHub quota is 5 000 calls an hour for every lane). The CI wait is the one
 wait you take, and only in the foreground: never a background watcher,
@@ -216,7 +219,10 @@ waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
 Verification bullet with real output, /code-review, run the architecture
 gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
-checks the same rules after you); a Micro-UI or a screen ships with its
+checks the same rules after you), then the mutants the CI will judge, in
+the foreground: `git diff origin/<your base> > .git/change.diff && cargo
+mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
+one before the PR (a mutant the CI finds costs a whole repair round); a Micro-UI or a screen ships with its
 mock-up under mock/, listed in mock/pages.json (contract N), its parts
 named (data-writes / data-reads, contract D), bundles
 rebuilt with mock/build.sh, styled through the design system's variables

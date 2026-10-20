@@ -399,6 +399,7 @@ mod tests {
             rules: Vec::new(),
             deciding: Vec::new(),
             base_checks: None,
+            database_down: false,
         }
     }
 

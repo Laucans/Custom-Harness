@@ -414,14 +414,17 @@ mod tests {
     async fn a_silent_run_whose_processes_work_is_waited_on() {
         // ForgeDesMondes #182: a cargo build from a fresh target says
         // nothing for twenty minutes and was killed mid-build.
+        // Two seconds of silence, a six-second CPU loop of shell builtins: a
+        // tenth of the silence spent working holds even when the test suite
+        // loads the machine.
         let limits = Limits {
-            idle: Duration::from_millis(400),
-            cap: Duration::from_secs(20),
+            idle: Duration::from_secs(2),
+            cap: Duration::from_secs(60),
         };
         let mut told = Vec::new();
         let ran = run_streaming(
             "sh",
-            &sh("echo a; i=0; while [ $i -lt 600000 ]; do i=$((i+1)); done; echo b"),
+            &sh("echo a; while [ $SECONDS -lt 6 ]; do :; done; echo b"),
             Path::new("."),
             limits,
             &mut |stream, line| {
@@ -436,7 +439,7 @@ mod tests {
         assert_eq!(ran.stdout.lines().count(), 2, "{}", ran.stdout);
         assert!(
             told.iter()
-                .any(|l| l.contains("silent for 0s but its processes work on")),
+                .any(|l| l.contains("silent for 2s but its processes work on")),
             "{told:?}"
         );
     }

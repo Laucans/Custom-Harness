@@ -224,6 +224,12 @@ pub struct Snapshot {
     /// everything that would build on the base or merge into it
     /// ([`base_red`]); `None` and `Some(true)` hold nothing.
     pub base_checks: Option<bool>,
+    /// The product's database does not answer (its `DATABASE_URL`): a
+    /// code session or a repair started now would run its tests without it
+    /// — those that need it skip in silence, then fail in CI
+    /// (`ForgeDesMondes`, 2026-10-19/20: Docker down all night, 7 of 20 red
+    /// `rust` checks). Both wait; the rest goes on.
+    pub database_down: bool,
 }
 
 /// Whether the integration branch is red: its newest head has a failed
@@ -459,12 +465,14 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
             )
         })
     };
-    found.extend(
-        snapshot
-            .prs_to_fix
-            .iter()
-            .filter_map(|pr| of_pr(pr, Route::PrFix { pr: pr.num.clone() })),
-    );
+    if !snapshot.database_down {
+        found.extend(
+            snapshot
+                .prs_to_fix
+                .iter()
+                .filter_map(|pr| of_pr(pr, Route::PrFix { pr: pr.num.clone() })),
+        );
+    }
     found.extend(snapshot.prs_to_review.iter().filter_map(|pr| {
         of_pr(
             pr,
@@ -489,7 +497,7 @@ fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
     found.extend(of_issues(snapshot, &snapshot.arbitrating, |issue| {
         Route::Arbiter { issue }
     }));
-    if rules_first(snapshot).is_none() && !base_red(snapshot) {
+    if rules_first(snapshot).is_none() && !base_red(snapshot) && !snapshot.database_down {
         for milestone in &snapshot.dev_loop_milestones {
             let Some(board) = snapshot
                 .boards
@@ -1229,6 +1237,7 @@ mod tests {
             rules: Vec::new(),
             deciding: Vec::new(),
             base_checks: None,
+            database_down: false,
         }
     }
 
@@ -1283,6 +1292,7 @@ mod tests {
             rules: vec![issue(2, &[labels::RULES, labels::READY])],
             deciding: vec![issue(3, &[labels::NEEDS_DECISION])],
             base_checks: Some(true),
+            database_down: false,
         };
         // The free merges go first, in the tick; then the plan.
         assert_eq!(
@@ -1300,6 +1310,48 @@ mod tests {
     }
 
     #[test]
+    fn a_database_down_holds_the_code_and_the_repairs_and_nothing_else() {
+        // ForgeDesMondes, 2026-10-19/20: Docker down all night, every code
+        // session ran its tests without a database, red in CI after.
+        let plant = |down: bool| Snapshot {
+            tasks_to_merge: vec![(64, pr("68", "milestone/52-socle"))],
+            dev_loop_milestones: vec![52],
+            boards: vec![board(52, vec![issue(60, &[labels::AGENT, labels::READY])])],
+            prs_to_fix: vec![pr("32", "milestone/52-socle")],
+            prs_to_review: vec![pr("33", "milestone/52-socle")],
+            database_down: down,
+            ..empty()
+        };
+        let down = routes(&plant(true));
+        assert!(
+            !down.iter().any(|r| matches!(
+                r,
+                Route::PrFix { .. } | Route::DevLoop { .. } | Route::DevTask { .. }
+            )),
+            "{down:?}"
+        );
+        assert!(
+            down.iter()
+                .any(|r| matches!(r, Route::MergeIntoMilestone { .. })),
+            "merges go on: {down:?}"
+        );
+        assert!(
+            down.iter().any(|r| matches!(r, Route::PrReview { .. })),
+            "reviews go on: {down:?}"
+        );
+        let up = routes(&plant(false));
+        assert!(
+            up.iter().any(|r| matches!(r, Route::PrFix { .. })),
+            "{up:?}"
+        );
+        assert!(
+            up.iter()
+                .any(|r| matches!(r, Route::DevLoop { .. } | Route::DevTask { .. })),
+            "{up:?}"
+        );
+    }
+
+    #[test]
     fn a_red_base_holds_the_merges_and_the_tasks_and_nothing_else() {
         // The live failure: main_agent red for two hours while the watch kept
         // starting tasks on it and opening PRs that inherited the red.
@@ -1313,6 +1365,7 @@ mod tests {
             deciding: vec![issue(3, &[labels::NEEDS_DECISION])],
             test_debt: vec![issue(8, &[labels::TEST_DEBT])],
             base_checks: checks,
+            database_down: false,
             ..empty()
         };
         let red = plant(Some(false));

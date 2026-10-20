@@ -238,6 +238,7 @@ async fn tick(
         log,
     )
     .await?;
+    found.database_down = database_down(log).await;
     // A red base is read in full every tick like a pull request waiting on
     // its checks: the push that turns it green moves no issue.
     pulse.read_in_full(etag, watching_ci || routing::base_red(&found));
@@ -291,6 +292,24 @@ async fn tick(
         Dispatched::Nothing | Dispatched::Failed => {}
     }
     Ok(())
+}
+
+/// Whether the product's database (its `DATABASE_URL`) refuses a
+/// connection: a code session or a repair started then tests without it
+/// (see `harness_adapters::shell::database`). Said when it does.
+async fn database_down(log: &Logbook) -> bool {
+    let Ok(url) = std::env::var("DATABASE_URL") else {
+        return false;
+    };
+    let down = harness_adapters::shell::database::answers(&url).await == Some(false);
+    if down {
+        log.warn(&format!(
+            "the database at {} does not answer — code sessions and repairs wait \
+             (is Docker up? `orbctl start`)",
+            harness_adapters::shell::database::address_of(&url).unwrap_or_default()
+        ));
+    }
+    down
 }
 
 /// What the decision was made from, for a tick whose choice later looks
@@ -566,6 +585,7 @@ async fn snapshot(
         rules,
         deciding,
         base_checks,
+        database_down: false,
     };
     // The tests come first: a development that waits on them says so.
     let idle = routing::rules_first(&snapshot)
