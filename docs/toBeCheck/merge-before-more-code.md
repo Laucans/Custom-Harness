@@ -15,15 +15,15 @@ No route repaired them, some for 9 h, while dev tasks kept opening new PRs.
   Reviews, repairs and merges still run.
 
 ## To verify on a live watch
-- [ ] The log shows `watch: N task PRs open for L lane(s) — no new task …`
+- [x] The log shows `watch: N task PRs open for L lane(s) — no new task …`
       while N >= L, and no new task starts meanwhile.
-- [ ] Red PRs reviewed clean get a pr-fix route (journal: `#N: repair K`).
+- [x] Red PRs reviewed clean get a pr-fix route (journal: `#N: repair K`).
 - [ ] A red PR with 2 repairs done gets a `## Decision` comment, not a third
       repair.
-- [ ] Open task PRs go down within ~2 h (from 10+ to <= 5).
-- [ ] Lanes do not sit idle once the backlog is below the limit.
+- [x] Open task PRs go down within ~2 h (from 10+ to <= 5).
+- [x] Lanes do not sit idle once the backlog is below the limit (DevTask 133 at 4 open).
 
 ## Cap on repair decisions (added after #312)
 - `escalate` asks `decide` at most twice about a task's PR. A third time,
   it comments and labels the task `harness:human`, and asks nothing more.
-- [ ] A PR past two decisions gets `harness:human` and no more repairs.
+- [x] A PR past two decisions gets `harness:human` and no more repairs (#186, 18:21 local).
