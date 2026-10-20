@@ -342,12 +342,12 @@ fn cpu_time_seconds(text: &str) -> f64 {
         .map(|p| p.trim().parse::<f64>().unwrap_or(0.0))
         .collect();
     let clock = match parts.as_slice() {
-        [h, m, s] => h * 3600.0 + m * 60.0 + s,
-        [m, s] => m * 60.0 + s,
+        [h, m, s] => h.mul_add(3600.0, m.mul_add(60.0, *s)),
+        [m, s] => m.mul_add(60.0, *s),
         [s] => *s,
         _ => 0.0,
     };
-    days * 86400.0 + clock
+    days.mul_add(86400.0, clock)
 }
 
 #[cfg(test)]
