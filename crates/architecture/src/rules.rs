@@ -40,7 +40,8 @@ What it must not know: any other Capability, any DataCapability, the
 DataQueue, the DataGuard, the Resolver — no import, no call, no `invokes`
 field, no dependency on their crates. It depends only on crates of its own
 system that are plumbing (they reach no slice and no other system), and
-reads through its system's read crate (`<system>-read`): never a database
+reads through its system's read crate (`<system>-read`), itself on the
+Data layer (`crates/data`, the one read-only connection): never a database
 driver of its own (sqlx, tokio-postgres, postgres, diesel, sea-orm,
 rusqlite, mysql are not in its `[dependencies]`). No write statement, no
 DATABASE_URL. No `#[path]`, `include!` or symlink that leaves its folder.

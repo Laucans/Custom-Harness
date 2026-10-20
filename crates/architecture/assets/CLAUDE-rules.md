@@ -55,7 +55,9 @@ scripts/                                queries.sh, isolation.sh, dump-schema.sh
 1. **One unit per task**, the one the issue's `## Architecture` names.
    A second unit is a second task.
 2. **A Capability reads, and only reads**: read-only credentials, its
-   persisted queries, its system's read crate; it reaches no other
+   persisted queries, its system's read crate (itself on `crates/data`, the
+   one read-only connection — no database driver outside the Data layer and
+   the DataGuard); it reaches no other
    Capability, DataCapability or system, and no slice is listed by name in
    the workspace. Gates: `capability-isolation`, `read-only`,
    `workspace-members-by-glob`, `data-capability-registered`.

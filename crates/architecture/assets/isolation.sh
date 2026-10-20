@@ -23,7 +23,9 @@
 #    and no crate of another system: plumbing, never a bridge.
 #
 # 4. A Capability reads through its system's read crate (`<system>-read`,
-#    a read-only connection with no write API), never through a database
+#    no write API), which itself reads through the Data layer (`crates/data`,
+#    the one read-only connection — `externals-behind-ports` keeps every
+#    database driver there and in the DataGuard), never through a database
 #    driver of its own: `sqlx`, `tokio-postgres`, `postgres`, `diesel`,
 #    `sea-orm`, `rusqlite`, `mysql` are not among its dependencies. The
 #    read-only rule is then a fact of the types, and the read-only role is
@@ -141,7 +143,7 @@ for name in "${!kind[@]}"; do
       [ "$from" = "$name" ] || continue
       for driver in $drivers; do
         if [ "$to" = "$driver" ]; then
-          fail "${manifest[$name]}" "a Capability reads through its system's read crate, never a database driver: $name depends on $driver"
+          fail "${manifest[$name]}" "a Capability reads through its system's read crate, itself on the Data layer (crates/data), never a database driver: $name depends on $driver"
         fi
       done
     done <<< "$registry"
