@@ -400,6 +400,7 @@ mod tests {
             deciding: Vec::new(),
             base_checks: None,
             database_down: false,
+            review_backlog_full: false,
         }
     }
 

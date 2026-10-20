@@ -230,6 +230,11 @@ pub struct Snapshot {
     /// (`ForgeDesMondes`, 2026-10-19/20: Docker down all night, 7 of 20 red
     /// `rust` checks). Both wait; the rest goes on.
     pub database_down: bool,
+    /// As many task PRs are open as there are lanes: no new task starts
+    /// until reviews, repairs and merges bring the count down — finishing
+    /// before starting (`ForgeDesMondes`, 2026-10-20: the open PRs grew to
+    /// ten while every lane took new work).
+    pub review_backlog_full: bool,
 }
 
 /// Whether the integration branch is red: its newest head has a failed
@@ -497,7 +502,11 @@ fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
     found.extend(of_issues(snapshot, &snapshot.arbitrating, |issue| {
         Route::Arbiter { issue }
     }));
-    if rules_first(snapshot).is_none() && !base_red(snapshot) && !snapshot.database_down {
+    if rules_first(snapshot).is_none()
+        && !base_red(snapshot)
+        && !snapshot.database_down
+        && !snapshot.review_backlog_full
+    {
         for milestone in &snapshot.dev_loop_milestones {
             let Some(board) = snapshot
                 .boards
@@ -1238,6 +1247,7 @@ mod tests {
             deciding: Vec::new(),
             base_checks: None,
             database_down: false,
+            review_backlog_full: false,
         }
     }
 
@@ -1293,6 +1303,7 @@ mod tests {
             deciding: vec![issue(3, &[labels::NEEDS_DECISION])],
             base_checks: Some(true),
             database_down: false,
+            review_backlog_full: false,
         };
         // The free merges go first, in the tick; then the plan.
         assert_eq!(
@@ -1310,6 +1321,39 @@ mod tests {
     }
 
     #[test]
+    fn a_full_review_backlog_holds_new_tasks_and_keeps_reviews_repairs_and_merges() {
+        let plant = |full: bool| Snapshot {
+            tasks_to_merge: vec![(64, pr("68", "milestone/52-socle"))],
+            dev_loop_milestones: vec![52],
+            boards: vec![board(52, vec![issue(60, &[labels::AGENT, labels::READY])])],
+            prs_to_fix: vec![pr("32", "milestone/52-socle")],
+            prs_to_review: vec![pr("33", "milestone/52-socle")],
+            review_backlog_full: full,
+            ..empty()
+        };
+        let full = routes(&plant(true));
+        assert!(
+            !full
+                .iter()
+                .any(|r| matches!(r, Route::DevLoop { .. } | Route::DevTask { .. })),
+            "{full:?}"
+        );
+        for kept in [
+            |r: &Route| matches!(r, Route::PrFix { .. }),
+            |r: &Route| matches!(r, Route::PrReview { .. }),
+            |r: &Route| matches!(r, Route::MergeIntoMilestone { .. }),
+        ] {
+            assert!(full.iter().any(kept), "{full:?}");
+        }
+        let room = routes(&plant(false));
+        assert!(
+            room.iter()
+                .any(|r| matches!(r, Route::DevLoop { .. } | Route::DevTask { .. })),
+            "{room:?}"
+        );
+    }
+
+    #[test]
     fn a_database_down_holds_the_code_and_the_repairs_and_nothing_else() {
         // ForgeDesMondes, 2026-10-19/20: Docker down all night, every code
         // session ran its tests without a database, red in CI after.
@@ -1320,6 +1364,7 @@ mod tests {
             prs_to_fix: vec![pr("32", "milestone/52-socle")],
             prs_to_review: vec![pr("33", "milestone/52-socle")],
             database_down: down,
+            review_backlog_full: false,
             ..empty()
         };
         let down = routes(&plant(true));
@@ -1366,6 +1411,7 @@ mod tests {
             test_debt: vec![issue(8, &[labels::TEST_DEBT])],
             base_checks: checks,
             database_down: false,
+            review_backlog_full: false,
             ..empty()
         };
         let red = plant(Some(false));

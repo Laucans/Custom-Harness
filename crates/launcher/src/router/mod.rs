@@ -498,6 +498,14 @@ async fn snapshot(
     // The two labelled lists once, for the three reads that need them.
     let to_fix = by_number(gh.open_prs_labelled(labels::PR_FIX).await?);
     let to_review = by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?);
+    let review_backlog_full = open_task_prs(&to_fix, &to_review) >= lanes;
+    if review_backlog_full {
+        log.say(&format!(
+            "watch: {} task PRs open for {lanes} lane(s) — no new task until reviews, repairs \
+             and merges bring them down",
+            open_task_prs(&to_fix, &to_review)
+        ));
+    }
     let watching_ci = watching_ci(&to_fix, &to_review);
     // Every PR of the harness's cycle, as read: what holds a task's branch
     // against a second session, whether a lane is on the PR or not.
@@ -586,6 +594,7 @@ async fn snapshot(
         deciding,
         base_checks,
         database_down: false,
+        review_backlog_full,
     };
     // The tests come first: a development that waits on them says so.
     let idle = routing::rules_first(&snapshot)
@@ -597,6 +606,20 @@ async fn snapshot(
         })
         .or(idle);
     Ok((snapshot, idle, watching_ci))
+}
+
+/// How many task PRs are open — those into a milestone's branch, the
+/// labelled lists joined, each once.
+fn open_task_prs(to_fix: &[Pr], to_review: &[Pr]) -> usize {
+    let mut nums: Vec<&str> = to_fix
+        .iter()
+        .chain(to_review)
+        .filter(|pr| pr.base.starts_with("milestone/"))
+        .map(|pr| pr.num.as_str())
+        .collect();
+    nums.sort_unstable();
+    nums.dedup();
+    nums.len()
 }
 
 /// The open PRs to repair, in number order: those that carry
@@ -616,12 +639,17 @@ async fn red_prs(gh: &dyn GitHub, to_fix: &[Pr], to_review: &[Pr]) -> Outcome<Ve
     // base, asks for a repair as a red check does — the label is posed for
     // it at dispatch, the same request a human makes. Bounded like the
     // rest: past `MAX_FIXES` repairs, the PR is a human's.
+    // A check that failed asks for a repair too, label or not: a task's PR
+    // ends its session at the push, and nobody else poses `harness:pr-fix`
+    // on it (ForgeDesMondes, 2026-10-20: five PRs reviewed clean and red on
+    // `rust` for up to nine hours, repaired by no one).
     for candidate in to_review {
         let comments = gh.pr_comments(&candidate.num).await?;
+        let repairs_left = review::repairs(&comments) < review::MAX_FIXES;
         let blocked = review::status(&comments).wants_a_fix();
-        let conflicting = review::repairs(&comments) < review::MAX_FIXES
-            && gh.pr_mergeable(&candidate.num).await? == Some(false);
-        if blocked || conflicting {
+        let conflicting = repairs_left && gh.pr_mergeable(&candidate.num).await? == Some(false);
+        let red = repairs_left && !gh.pr_failing_checks(&candidate.num).await?.is_empty();
+        if blocked || conflicting || red {
             found.push(candidate.clone());
         }
     }

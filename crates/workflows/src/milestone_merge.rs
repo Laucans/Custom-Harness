@@ -95,6 +95,15 @@ pub async fn ready_to_merge<'a>(
             continue;
         }
         if !gh.pr_checks_green(&pr.num).await? {
+            // Red past its repairs: the harness decides (repair once more,
+            // merge as it is, or cut), as for a review or a conflict that
+            // the repairs did not settle.
+            if review::repairs(&comments) >= review::MAX_FIXES
+                && !gh.pr_failing_checks(&pr.num).await?.is_empty()
+                && escalate(gh, task, pr).await?
+            {
+                escalated.push((task.number, pr.reference()));
+            }
             continue;
         }
         return Ok((Some((task, pr)), escalated));
@@ -390,6 +399,42 @@ mod tests {
             })
             .expect("rewritten");
         assert!(body.contains("round: 2"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_red_pr_past_its_repairs_goes_to_a_decision() {
+        use crate::common::review;
+        let board = vec![task(
+            272,
+            &[labels::AGENT, labels::REVIEW_PENDING],
+            "feat/upload",
+        )];
+        let open = [pr("90", "feat/upload")];
+        let fixes = format!("{}\n", review::FIX_MARKER).repeat(review::MAX_FIXES);
+        // Two repairs, then a clean review: the review is satisfied, the CI
+        // still red (ForgeDesMondes #304).
+        let comments = format!("{fixes}{}\n{}\n", review::MARKER, review::CLEAN);
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![("90".to_string(), comments)],
+            pr_checks: HashMap::from([("90".to_string(), false)]),
+            failing_checks: HashMap::from([("90".to_string(), vec!["rust — FAILURE".to_string()])]),
+            ..FakeGitHub::default()
+        };
+        let (found, escalated) = ready_to_merge(&gh, &board, &open).await.expect("read");
+        assert!(found.is_none());
+        assert_eq!(escalated, [(272, "#90".to_string())]);
+        // Pending (red not yet), or repairs left: no decision.
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![(
+                "90".to_string(),
+                format!("{}\n{}\n", review::MARKER, review::CLEAN),
+            )],
+            pr_checks: HashMap::from([("90".to_string(), false)]),
+            failing_checks: HashMap::from([("90".to_string(), vec!["rust — FAILURE".to_string()])]),
+            ..FakeGitHub::default()
+        };
+        let (_, escalated) = ready_to_merge(&gh, &board, &open).await.expect("read");
+        assert!(escalated.is_empty(), "repairs left: the repair route's");
     }
 
     #[tokio::test]
