@@ -31,6 +31,13 @@ const BINARY: &str = "gh";
 /// How long a call GitHub throttled waits before its second try.
 const THROTTLE_PAUSE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Whether a label removal found no such label on the issue — done
+/// already, as far as the caller cares.
+#[must_use]
+fn label_absent(ran: &Ran) -> bool {
+    !ran.ok() && ran.stderr.contains("Label does not exist")
+}
+
 /// Whether `gh` was refused for a burst: GitHub's secondary rate limit
 /// (or its primary one, which the same pause cannot help, but a tick later
 /// is as good a time to find out), as `gh` prints it.
@@ -824,13 +831,25 @@ impl GitHub for GhCli {
     }
 
     async fn remove_label(&self, number: u64, label: &str) -> Outcome<()> {
-        self.write(
-            &format!("remove {label} from #{number}"),
-            "DELETE",
-            &format!("issues/{number}/labels/{label}"),
-            &[],
-        )
-        .await
+        // Removing a label the issue does not carry is nothing to do, not a
+        // failure: GitHub answers 404 "Label does not exist", and a decide
+        // that ended on it was paid again at every tick (ForgeDesMondes
+        // #213, 2026-10-20 06:22Z; #214 the day before).
+        let repo = self.repo().await?;
+        let args = vec![
+            "api".to_string(),
+            "-X".to_string(),
+            "DELETE".to_string(),
+            format!("repos/{repo}/issues/{number}/labels/{label}"),
+        ];
+        let ran = self.gh(&args).await?;
+        if ran.ok() || label_absent(&ran) {
+            return Ok(());
+        }
+        Err(Halt::Failed(format!(
+            "GitHub refused to remove {label} from #{number} (DELETE repos/{repo}/issues/{number}/labels/{label}): {}",
+            ran.why()
+        )))
     }
 
     async fn set_body(&self, number: u64, body: &str) -> Outcome<()> {
@@ -1503,6 +1522,31 @@ fn activity_from(ran: &Ran) -> Outcome<Activity> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_label_the_issue_does_not_carry_is_removed_already() {
+        let refused = Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "gh: Label does not exist (HTTP 404)".to_string(),
+        };
+        assert!(label_absent(&refused));
+        let other = Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "gh: Not Found (HTTP 404)".to_string(),
+        };
+        assert!(!label_absent(&other), "another 404 is still a refusal");
+        let done = Ran {
+            code: Some(0),
+            stdout: String::new(),
+            stderr: "Label does not exist".to_string(),
+        };
+        assert!(
+            !label_absent(&done),
+            "a call that went through needs no excuse"
+        );
+    }
 
     #[test]
     fn a_burst_github_refused_is_throttled_and_nothing_else_is() {
