@@ -315,6 +315,12 @@ fn merge(sql: Option<&Schema>, declared: Option<&Declared>) -> DataModel {
         let s = schema.tables.iter().find(|t| &t.name == name);
         let d = decl_tables.iter().find(|t| &t.name == name).copied();
         let seen = seen_of(s.is_some(), d.is_some());
+        // A view the model lists among its tables (a computed read model,
+        // `campaign_overview_view`) is in the database as a view: no
+        // divergence, and no column to compare against a table it is not
+        // (ForgeDesMondes, 2026-10-20: five views reported missing).
+        let a_view = s.is_none() && schema.views.iter().any(|v| &v.name == name);
+        let compared = compared && !a_view;
         if compared {
             match seen {
                 Seen::Database => out
@@ -820,6 +826,38 @@ mod tests {
             .find(|t| t.name == table)
             .and_then(|t| t.fields.iter().find(|f| f.name == field))
             .expect("the field is drawn")
+    }
+
+    #[test]
+    fn a_view_the_model_lists_as_a_table_is_no_divergence() {
+        let sql = "CREATE TABLE campaign (id uuid PRIMARY KEY, name text NOT NULL);\n\
+                   CREATE VIEW campaign_overview_view AS SELECT c.id, c.name FROM campaign c;\n";
+        let model = r#"{"version":1,"tables":[
+            {"name":"campaign","purpose":"p","fields":[{"name":"id","purpose":"p"},{"name":"name","purpose":"p"}]},
+            {"name":"campaign_overview_view","purpose":"a computed read model"},
+            {"name":"rulebook","purpose":"not built"}]}"#;
+        let built = build(
+            "acme/dnd @ main_agent",
+            &Ok(Some(sql.into())),
+            &Ok(Some(model.into())),
+        );
+        assert!(built.compared);
+        assert!(
+            !built
+                .divergences
+                .iter()
+                .any(|d| d.contains("campaign_overview_view")),
+            "{:?}",
+            built.divergences
+        );
+        assert!(
+            built
+                .divergences
+                .iter()
+                .any(|d| d == "table rulebook is in the model, not in the database"),
+            "a real gap is still said: {:?}",
+            built.divergences
+        );
     }
 
     #[test]
