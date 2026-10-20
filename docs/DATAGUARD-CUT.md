@@ -52,7 +52,7 @@ layout.
 
 | Phase | What | Depends on | Tag | Size |
 |---|---|---|---|---|
-| A1 | Pin the engine by tag | — | dataguard-v1 | small |
+| A1 | Pin the engine by tag — **done** 08991cc, tag pushed 2026-10-20 | — | dataguard-v1 | small |
 | A2 | The engine honours its contracts | A1 | dataguard-v2 | medium |
 | A3 | Plugins in the engine, in memory | A2 | dataguard-v3 | large |
 | A4 | Plugins over PostgreSQL | A3 | dataguard-v4 | medium |
