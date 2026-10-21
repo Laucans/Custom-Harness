@@ -51,6 +51,40 @@ fn throttled(ran: &Ran) -> bool {
             || ran.stderr.contains("abuse detection"))
 }
 
+/// How long a call GitHub's servers dropped waits before its second try.
+const HICCUP_PAUSE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether GitHub's front answered a server error (502, 503, 504): its own
+/// hiccup, not the request's fault — a tick failed on one reading whether a
+/// PR was reviewed (`ForgeDesMondes`, 2026-10-21 17:53Z).
+fn server_hiccup(ran: &Ran) -> bool {
+    !ran.ok()
+        && [
+            "HTTP 502",
+            "HTTP 503",
+            "HTTP 504",
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+        ]
+        .iter()
+        .any(|sign| ran.stderr.contains(sign))
+}
+
+/// Whether, and after how long, a failed call is tried once more: a burst
+/// GitHub throttled always (a refused call changed nothing), a server
+/// hiccup only for a read — a write it dropped may have landed, and a
+/// second one would do it twice.
+fn retry_pause(args: &[String], ran: &Ran) -> Option<std::time::Duration> {
+    if throttled(ran) {
+        Some(THROTTLE_PAUSE)
+    } else if server_hiccup(ran) && !writes(args) {
+        Some(HICCUP_PAUSE)
+    } else {
+        None
+    }
+}
+
 /// A write GitHub took but whose answer `gh` lost: its body came back empty
 /// or cut, and `gh` failed to parse it. The write itself may well have
 /// landed (#125's comment, `ForgeDesMondes` 2026-10-20 14:13Z).
@@ -742,8 +776,8 @@ impl GhCli {
             self.forget_open_prs();
         }
         let mut ran = process::run(BINARY, args, &self.root).await?;
-        if throttled(&ran) {
-            tokio::time::sleep(THROTTLE_PAUSE).await;
+        if let Some(pause) = retry_pause(args, &ran) {
+            tokio::time::sleep(pause).await;
             ran = process::run(BINARY, args, &self.root).await?;
         }
         Ok(ran)
@@ -2057,6 +2091,52 @@ mod tests {
         assert_eq!(pr_number("#279"), Some(279));
         assert_eq!(pr_number("279"), Some(279));
         assert_eq!(pr_number("feat/x"), None);
+    }
+
+    #[test]
+    fn a_read_github_dropped_is_tried_again_and_a_write_never_is() {
+        let refused = |stderr: &str| Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        };
+        let a = |words: &[&str]| words.iter().map(|w| (*w).to_string()).collect::<Vec<_>>();
+        let read = a(&["api", "graphql"]);
+        let write = a(&["issue", "comment", "12"]);
+        let hiccup = refused("HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)");
+        assert_eq!(retry_pause(&read, &hiccup), Some(HICCUP_PAUSE));
+        assert_eq!(
+            retry_pause(&write, &hiccup),
+            None,
+            "a dropped write may have landed"
+        );
+        for sign in [
+            "HTTP 503",
+            "HTTP 504",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+        ] {
+            assert!(server_hiccup(&refused(sign)), "{sign}");
+        }
+        assert!(!server_hiccup(&refused("gh: Not Found (HTTP 404)")));
+        assert!(
+            !server_hiccup(&Ran {
+                code: Some(0),
+                stdout: String::new(),
+                stderr: "HTTP 502".to_string(),
+            }),
+            "a call that went through is no hiccup"
+        );
+        let burst = refused("API rate limit exceeded for user");
+        assert_eq!(
+            retry_pause(&write, &burst),
+            Some(THROTTLE_PAUSE),
+            "a refused call changed nothing"
+        );
+        assert_eq!(
+            retry_pause(&read, &refused("gh: Not Found (HTTP 404)")),
+            None
+        );
     }
 
     #[test]
