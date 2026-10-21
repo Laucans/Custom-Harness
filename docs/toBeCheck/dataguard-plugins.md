@@ -200,3 +200,15 @@ catch-up regeneration) add their own points below.
       validation filtered "at risk" elements, and the plugin version cannot.
       Decide whether `then` should run before the first command's own
       queueing, or whether "at risk" stays per element.
+
+## Found by the factory restart after the migration (2026-10-21)
+
+- [ ] **A merged PR erased by a branch reset still delivers.**
+      `delivery::first_closing` takes any PR merged into the milestone
+      branch whose body says `Closes #N`, including PRs merged into a former
+      history of a branch since reset. The five frozen milestones were reset
+      to the migrated `main_agent`, and five reopened tasks were closed on
+      their archived PRs. This was fixed by hand: the 58 bodies were
+      neutralised, and `tools/unfreeze.py` now does it. Durable fix: count a
+      PR only if its merge commit is reachable from the branch head, or was
+      merged after the task's latest reopening.
