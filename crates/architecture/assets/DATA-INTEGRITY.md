@@ -196,8 +196,12 @@ impl Prepare for RequestLimit {
         if asked > ceiling {
             return Err(Refusal::unprocessable("over the policy")); // 422
         }
+        let customer = payload.get("customerId").and_then(Value::as_str).unwrap_or_default();
+        if cx.row(&format!("Customer/{customer}")).await?.is_empty() {
+            return Err(Refusal::not_found(format!("no customer {customer}"))); // 404
+        }
         Ok(Prepared { payload: payload.clone(),
-                      target_id: target_id.map(str::to_string), warnings: Vec::new() })
+                      target_id: target_id.map(str::to_string), ..Prepared::default() })
     }
 }
 
@@ -205,6 +209,20 @@ pub fn plugin() -> Plugin {
     Plugin::new().prepare("credit.requestLimitChange", RequestLimit).needs::<Policy>()
 }
 ```
+
+What the `Context` lends: `base`, the target row as the pending commands
+leave it; `cx.row("<Aggregate>/<id>")`, any other row the same way (a
+fixture the product's tables hold is hydrated by its aggregate's
+`ProjectPg::hydrate`); `cx.rows`, read-only SQL over PostgreSQL (`None` in
+memory); `now` and `now_millis`; `ids`; `shared`. What `Prepared` carries
+beside the payload and the row: `warnings`; `then`, follow-up submissions
+the engine makes once this command is queued, in order, by the same caller,
+each through the whole submit path and not atomically (the first refused
+stops the rest and undoes nothing; their outcomes come back in the
+answer's `then`; a follow-up's own `then` is refused); `attachment`, what
+the author reads in the command's result once it is applied (an export's
+archive). The undeclared-key warning judges the payload the author sent,
+before the `Prepare` rewrites it.
 
 **`Judge`** — an aggregate's invariants as code
 (`crates/credit/aggregates/Account/src/lib.rs`, library
@@ -225,7 +243,9 @@ impl Judge for Ceiling {
 **`Project` / `ProjectPg`** — what follows an applied write of the
 aggregate. `Project` sees it in memory; `ProjectPg` writes the product's
 tables inside the transaction that applies it (the engine's `postgres`
-feature), and refusing rolls the whole command back.
+feature), and refusing rolls the whole command back. Its `hydrate` (none by
+default) answers a row its tables hold but the engine never wrote, such as
+fixtures loaded by SQL: the store asks it when it has no row of its own.
 
 ```rust
 struct Ledger;
@@ -284,6 +304,7 @@ state: awaiting_confirmation  # queued | awaiting_confirmation | confirmed | awa
 confirmation: { by: carol }
 parked: { ttl: 24h, onExpire: drop }
 requeuedFrom: null            # the original commandId if requeued
+attachment: null              # what the Prepare computed, answered once applied (H)
 ```
 
 ### H. Command result
@@ -294,6 +315,7 @@ status: applied               # applied | rejected | expired | cancelled
 dataVersion: 1043             # for the consistent read after write
 violations: []                # violated invariants if rejected
 reviewId: null
+attachment: { archive: c_130.zip }  # optional: what the Prepare computed, once applied
 ```
 
 ### J. Impact plan

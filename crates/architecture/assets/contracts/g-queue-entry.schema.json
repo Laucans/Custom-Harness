@@ -132,6 +132,9 @@
         "null"
       ],
       "description": "The original command id, when this one came back at the end of the queue after a recompute."
+    },
+    "attachment": {
+      "description": "What the DataCapability's Prepare computed with the command, kept until it is applied and answered in its result (contract H)."
     }
   },
   "required": [

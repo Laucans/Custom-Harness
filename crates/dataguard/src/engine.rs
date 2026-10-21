@@ -17,6 +17,13 @@
 //! transaction (`ProjectPg`) may refuse the write: the store answers
 //! [`Error::Refused`], and the head is rejected as an invariant rejects it.
 //!
+//! A `Prepare` may read any partition's row as the queue leaves it
+//! ([`Context::row`]) and, over PostgreSQL, the product's tables through
+//! read-only SQL; it may ask for follow-up submissions, which the engine
+//! makes once the first command is queued ([`Prepared::then`]), and attach
+//! what its author reads once the command is applied
+//! ([`Prepared::attachment`]).
+//!
 //! The queue and the reviews live behind `std::sync::Mutex`: every lock is
 //! taken and released between two awaits, never across one.
 
@@ -28,14 +35,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::Value;
 
 use crate::aggregate::Aggregate;
-use crate::api::{Submission, Submitted};
+use crate::api::{FollowUp, Submission, Submitted};
 use crate::command::{BasedOn, CommandResult, Effect, Entry, Projection, State};
 use crate::guard::{self, Caller, Classification, Invariants, Verdict};
 use crate::manifest::{DataCapability, Idempotency};
 use crate::memory::Counter;
 use crate::messages::{Action, Kind, Message, Notifier};
-use crate::plugins::{Context, Judge, Plugins, Prepare, Prepared, Project, Shared};
+use crate::plugins::{Context, Judge, Partitions, Plugins, Prepare, Prepared, Project, Shared};
 use crate::queue::{Hold, Queue, Step};
+use crate::reads::Rows;
 use crate::reconcile::{Base, Candidate, NoProposer, Proposer, Review, Status};
 use crate::registry::Registry;
 use crate::resolver::{self, Decision, ImpactPlan, Situation};
@@ -66,6 +74,28 @@ impl Invariants for Judges {
     }
 }
 
+/// The engine's rows lent to a `Prepare` ([`Context::row`]): the first
+/// failure of the store is kept, and the engine answers it whatever the
+/// `Prepare` made of it.
+struct Lent<'e> {
+    engine: &'e Engine,
+    failed: Mutex<Option<Error>>,
+}
+
+#[async_trait::async_trait]
+impl Partitions for Lent<'_> {
+    async fn row(&self, partition: &str) -> Result<BTreeMap<String, Value>> {
+        let row = self.engine.projected_row(partition).await;
+        if let Err(failure) = &row {
+            self.failed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_or_insert_with(|| failure.clone());
+        }
+        row
+    }
+}
+
 /// The engine.
 pub struct Engine {
     store: Arc<dyn Store>,
@@ -80,6 +110,8 @@ pub struct Engine {
     stored_projections: Vec<String>,
     shared: Shared,
     needs: Vec<crate::plugins::Need>,
+    /// Read-only SQL lent to the `Prepare`s, over PostgreSQL.
+    rows: Option<Arc<dyn Rows>>,
     proposer: Arc<dyn Proposer>,
     aggregates: BTreeMap<String, Aggregate>,
     manifests: BTreeMap<String, DataCapability>,
@@ -113,6 +145,7 @@ impl Engine {
             stored_projections: Vec::new(),
             shared: Shared::default(),
             needs: Vec::new(),
+            rows: None,
             proposer: Arc::new(NoProposer),
             aggregates: BTreeMap::new(),
             manifests: BTreeMap::new(),
@@ -185,6 +218,14 @@ impl Engine {
     #[must_use]
     pub fn with_ids(mut self, ids: Arc<dyn Ids>) -> Self {
         self.row_ids = ids;
+        self
+    }
+
+    /// Read-only SQL over the product's tables, lent to every `Prepare`
+    /// ([`Context::rows`]); none by default, as over memory.
+    #[must_use]
+    pub fn with_rows(mut self, rows: Arc<dyn Rows>) -> Self {
+        self.rows = Some(rows);
         self
     }
 
@@ -366,13 +407,47 @@ impl Engine {
         self.store.data_version().await
     }
 
-    /// A command enters the queue.
+    /// A command enters the queue, then the follow-ups its `Prepare` asked
+    /// for ([`Prepared::then`]), in order, each by the same caller and
+    /// through this same path: authorised, replayed on its idempotency key,
+    /// prepared. They are not atomic with it: a follow-up refused undoes
+    /// nothing, is listed in [`Submitted::then`] with why, and the ones
+    /// after it are not submitted. A replay submits no follow-up.
     ///
     /// # Errors
     ///
-    /// [`Error::UnknownDataCapability`], [`Error::Forbidden`] (the caller,
-    /// a missing idempotency key), or the store's.
+    /// The first command's: [`Error::UnknownDataCapability`],
+    /// [`Error::Forbidden`] (the caller, a missing idempotency key),
+    /// [`Error::Refused`], or the store's. A follow-up's error is in
+    /// [`Submitted::then`].
     pub async fn submit(&self, submission: Submission) -> Result<Submitted> {
+        let caller = submission.caller.clone();
+        let (mut submitted, then) = self.submit_one(submission, true).await?;
+        for mut follow in then {
+            follow.caller = caller.clone();
+            let data_capability = follow.data_capability.clone();
+            match self.submit_one(follow, false).await {
+                Ok((one, _)) => submitted.then.push(FollowUp::Submitted(Box::new(one))),
+                Err(error) => {
+                    submitted.then.push(FollowUp::Refused {
+                        data_capability,
+                        error: error.to_string(),
+                    });
+                    break;
+                }
+            }
+        }
+        Ok(submitted)
+    }
+
+    /// One command enters the queue; its follow-ups come back unsubmitted.
+    /// A follow-up (`leading` false) whose `Prepare` asks for follow-ups of
+    /// its own is refused: one level only, so a chain always ends.
+    async fn submit_one(
+        &self,
+        submission: Submission,
+        leading: bool,
+    ) -> Result<(Submitted, Vec<Submission>)> {
         let manifest = self.manifest(&submission.data_capability)?.clone();
         guard::authorise(&manifest, &submission.caller)?;
         if manifest.idempotency_key == Idempotency::Required && submission.idempotency_key.is_none()
@@ -388,8 +463,11 @@ impl Engine {
                 .by_idempotency_key(&manifest.data_capability, key)
                 .await?
         {
-            return self.replayed(&existing).await;
+            return Ok((self.replayed(&existing).await?, Vec::new()));
         }
+        // What the author sent is what the manifest declares, not what the
+        // `Prepare` rewrote it into.
+        let undeclared = Self::undeclared_keys(&manifest, &submission.payload);
         let named = submission
             .target_id
             .clone()
@@ -398,7 +476,16 @@ impl Engine {
             payload,
             target_id,
             warnings: prepared,
+            then,
+            attachment,
         } = self.prepared(&manifest, &submission, named).await?;
+        if !leading && !then.is_empty() {
+            return Err(Error::Misconfigured(format!(
+                "{} runs as a follow-up: its Prepare may not ask for follow-ups of its own ({} asked)",
+                manifest.data_capability,
+                then.len()
+            )));
+        }
         let target_id = target_id
             .or_else(|| Self::target_from_payload(&manifest, &payload))
             .unwrap_or_else(|| self.row_ids.fresh());
@@ -423,19 +510,9 @@ impl Engine {
             at_head_since: None,
             requeued_from: None,
             idempotency_key: submission.idempotency_key.clone(),
+            attachment,
         };
-        if let Some(aggregate) = self.aggregates.get(&manifest.target.aggregate) {
-            let derived = guard::derived_touched(aggregate, &entry);
-            if !derived.is_empty() {
-                return Err(Error::Forbidden(format!(
-                    "{} writes the derived field(s) {}: {} recomputes them",
-                    manifest.data_capability,
-                    derived.join(", "),
-                    aggregate.aggregate
-                )));
-            }
-        }
-        let undeclared = Self::undeclared_keys(&manifest, &entry.payload);
+        self.writes_no_derived(&manifest, &entry)?;
         let Judged {
             mut warnings,
             mut messages,
@@ -459,13 +536,33 @@ impl Engine {
         if entry.state == State::AwaitingConfirmation {
             warnings.push("a value is declared ahead: confirm or cancel".to_string());
         }
-        Ok(Submitted {
+        let submitted = Submitted {
             command_id: command,
             partition,
             replayed: false,
             warnings,
             result: self.result_of(&entry),
-        })
+            then: Vec::new(),
+        };
+        Ok((submitted, then))
+    }
+
+    /// Refuses an entry that writes a field its aggregate derives.
+    fn writes_no_derived(&self, manifest: &DataCapability, entry: &Entry) -> Result<()> {
+        let Some(aggregate) = self.aggregates.get(&manifest.target.aggregate) else {
+            return Ok(());
+        };
+        let derived = guard::derived_touched(aggregate, entry);
+        if derived.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Forbidden(format!(
+                "{} writes the derived field(s) {}: {} recomputes them",
+                manifest.data_capability,
+                derived.join(", "),
+                aggregate.aggregate
+            )))
+        }
     }
 
     /// The submission as the `DataCapability`'s [`Prepare`] turns it — on
@@ -485,34 +582,55 @@ impl Engine {
             return Ok(Prepared {
                 payload: submission.payload.clone(),
                 target_id,
-                warnings: Vec::new(),
+                ..Prepared::default()
             });
         };
         let base = match &target_id {
             Some(id) => {
-                let partition = format!("{}/{id}", manifest.target.aggregate);
-                let row = self.store.row(&partition).await?;
-                let sets = self
-                    .aggregates
-                    .get(&manifest.target.aggregate)
-                    .map(Aggregate::sets)
-                    .unwrap_or_default();
-                self.lock_queue().projected_row(&partition, &row, &sets)
+                self.projected_row(&format!("{}/{id}", manifest.target.aggregate))
+                    .await?
             }
             None => BTreeMap::new(),
+        };
+        let lent = Lent {
+            engine: self,
+            failed: Mutex::new(None),
         };
         let context = Context {
             manifest,
             caller: &submission.caller,
             base: &base,
             now: self.clock.now(),
+            now_millis: self.clock.now_millis(),
             ids: self.row_ids.as_ref(),
             shared: &self.shared,
+            partitions: &lent,
+            rows: self.rows.as_deref(),
         };
-        prepare
+        let prepared = prepare
             .prepare(&context, &submission.payload, target_id.as_deref())
-            .await
-            .map_err(Error::Refused)
+            .await;
+        if let Some(failure) = lent
+            .failed
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Err(failure);
+        }
+        prepared.map_err(Error::Refused)
+    }
+
+    /// The row of `partition` as the commands pending in it leave it: the
+    /// store's row, then each pending command's write, sets unioned.
+    async fn projected_row(&self, partition: &str) -> Result<BTreeMap<String, Value>> {
+        let row = self.store.row(partition).await?;
+        let sets = partition
+            .split('/')
+            .next()
+            .and_then(|aggregate| self.aggregates.get(aggregate))
+            .map(Aggregate::sets)
+            .unwrap_or_default();
+        Ok(self.lock_queue().projected_row(partition, &row, &sets))
     }
 
     /// The payload's keys the manifest does not declare: nothing when it
@@ -563,6 +681,7 @@ impl Engine {
             replayed: true,
             warnings: Vec::new(),
             result,
+            then: Vec::new(),
         })
     }
 
@@ -764,6 +883,7 @@ impl Engine {
             replayed: false,
             warnings: Vec::new(),
             result: self.result_of(&fresh),
+            then: Vec::new(),
         })
     }
 
@@ -1055,6 +1175,7 @@ impl Engine {
         };
         let mut result = CommandResult {
             status: State::Applied,
+            attachment: entry.attachment.clone(),
             ..CommandResult::of(entry, None)
         };
         let version = match self.store.apply(&write, &result).await {
@@ -2478,6 +2599,7 @@ mod tests {
                     ]),
                     target_id: Some("2".to_string()),
                     warnings: vec!["renamed".to_string()],
+                    ..Prepared::default()
                 })
             },
         );
@@ -2524,11 +2646,8 @@ mod tests {
         assert_eq!(submitted.partition, "Board/2", "the target rewritten");
         assert_eq!(
             submitted.warnings,
-            [
-                "renamed",
-                "payload key(s) colour not declared by board.rename"
-            ],
-            "the Prepare's warnings first, then the engine's on the payload it wrote"
+            ["renamed"],
+            "the Prepare's warnings; the keys it wrote are its own, never undeclared"
         );
         plant.engine.run_once().await.expect("ran");
         let row = plant.store.row_now("Board/2");
@@ -2619,6 +2738,7 @@ mod tests {
                     payload: payload.clone(),
                     target_id: target.map(ToString::to_string),
                     warnings: Vec::new(),
+                    ..Prepared::default()
                 })
             },
         );
@@ -2659,6 +2779,7 @@ mod tests {
                     payload: payload.clone(),
                     target_id: None,
                     warnings: Vec::new(),
+                    ..Prepared::default()
                 })
             },
         );
@@ -2687,6 +2808,7 @@ mod tests {
                     payload: payload.clone(),
                     target_id: None,
                     warnings: Vec::new(),
+                    ..Prepared::default()
                 })
             },
         );
@@ -2950,5 +3072,500 @@ mod tests {
             .load()
             .await;
         assert_eq!(by_a_plugin, Ok(()), "another plugin shares it");
+    }
+
+    #[tokio::test]
+    async fn undeclared_keys_are_the_submitted_ones_never_those_a_prepare_writes() {
+        let retitle = By(
+            |_: &Context<'_>, payload: &BTreeMap<String, Value>, target: Option<&str>| {
+                let mut written = payload.clone();
+                if let Some(title) = written.remove("title") {
+                    written.insert("note".to_string(), title);
+                }
+                Ok(Prepared {
+                    payload: written,
+                    target_id: target.map(ToString::to_string),
+                    ..Prepared::default()
+                })
+            },
+        );
+        let plant = board_plant(BTreeMap::new());
+        let engine = plant
+            .engine
+            .with_data_capability(board_capability(
+                "retitle",
+                "note",
+                r#","payload":{"boardId":"string","title":"string"}"#,
+            ))
+            .with_plugins(plugins(Plugin::new().prepare("board.retitle", retitle)));
+        let clean = engine
+            .submit(on_board(
+                "retitle",
+                "alice",
+                "title",
+                Value::from("t"),
+                Value::Null,
+            ))
+            .await
+            .expect("queued");
+        assert!(
+            clean.warnings.is_empty(),
+            "note is the Prepare's key, title the author's: {:?}",
+            clean.warnings
+        );
+        let mut sent = on_board("retitle", "bob", "title", Value::from("u"), Value::Null);
+        sent.payload
+            .insert("colour".to_string(), Value::from("red"));
+        let warned = engine.submit(sent).await.expect("queued");
+        assert_eq!(
+            warned.warnings,
+            ["payload key(s) colour not declared by board.retitle"]
+        );
+        engine.run_once().await.expect("ran");
+        assert_eq!(plant.store.row_now("Board/1")["note"], Value::from("u"));
+    }
+
+    /// Notes on the board the credit limit of the account its payload
+    /// names, as the queue leaves it; refuses when there is no such
+    /// account.
+    struct Linked;
+
+    #[async_trait::async_trait]
+    impl Prepare for Linked {
+        async fn prepare(
+            &self,
+            context: &Context<'_>,
+            payload: &BTreeMap<String, Value>,
+            target_id: Option<&str>,
+        ) -> std::result::Result<Prepared, Refusal> {
+            let account = payload
+                .get("accountId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let row = context.row(&format!("Account/{account}")).await?;
+            let limit = row
+                .get("creditLimit")
+                .ok_or_else(|| Refusal::not_found(format!("no account {account}")))?;
+            Ok(Prepared {
+                payload: BTreeMap::from([(
+                    "note".to_string(),
+                    Value::from(format!("limit {limit}")),
+                )]),
+                target_id: target_id.map(ToString::to_string),
+                ..Prepared::default()
+            })
+        }
+    }
+
+    /// Accounts and boards, a board's note prepared by [`Linked`].
+    fn linked_plant(store: MemoryStore) -> Plant {
+        let store = Arc::new(store);
+        let notifier = Arc::new(MemoryNotifier::default());
+        let clock = Arc::new(FixedClock::at(1000));
+        let engine = Engine::new(store.clone(), notifier.clone(), clock.clone())
+            .with_aggregate(Aggregate::parse(ACCOUNT).expect("I"))
+            .with_aggregate(Aggregate::parse(BOARD).expect("I"))
+            .with_data_capability(DataCapability::parse(LIMIT).expect("F"))
+            .with_data_capability(board_capability("note", "note", ""))
+            .with_plugins(plugins(Plugin::new().prepare("board.note", Linked)));
+        Plant {
+            engine,
+            store,
+            notifier,
+            clock,
+        }
+    }
+
+    fn note_on(account: &str) -> Submission {
+        let mut note = on_board("note", "bob", "note", Value::from("x"), Value::Null);
+        note.payload
+            .insert("accountId".to_string(), Value::from(account));
+        note
+    }
+
+    #[tokio::test]
+    async fn a_prepare_reads_another_partition_s_row_as_the_queue_leaves_it() {
+        let plant = linked_plant(account(5000).with_row("Board/1", BTreeMap::new()));
+        plant.engine.load().await.expect("fits");
+        plant
+            .engine
+            .submit(limit("alice", 6000, 5000))
+            .await
+            .expect("queued, not applied");
+        let noted = plant.engine.submit(note_on("881")).await.expect("prepared");
+        assert_eq!(noted.partition, "Board/1");
+        plant.engine.run_once().await.expect("ran");
+        assert_eq!(
+            plant.store.row_now("Board/1")["note"],
+            Value::from("limit 6000"),
+            "alice's raise, read while it was still pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prepare_refuses_when_the_row_it_references_is_missing() {
+        let plant = linked_plant(account(5000).with_row("Board/1", BTreeMap::new()));
+        let refused = plant.engine.submit(note_on("999")).await;
+        assert_eq!(
+            refused.map(|s| s.command_id),
+            Err(Error::Refused(Refusal::not_found("no account 999")))
+        );
+        assert!(
+            plant.store.pending().await.expect("read").is_empty(),
+            "nothing queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_failing_under_a_prepare_s_read_is_the_engine_s_answer() {
+        const LOOSE: &str = r#"{"dataCapability":"board.note","owner":"board","version":1,"effect":"insert","target":{"aggregate":"Board"},"callableBy":["*"]}"#;
+        let engine = Engine::new(
+            Arc::new(crate::memory::BrokenStore),
+            Arc::new(MemoryNotifier::default()),
+            Arc::new(FixedClock::at(0)),
+        )
+        .with_data_capability(DataCapability::parse(LOOSE).expect("F"))
+        .with_plugins(plugins(Plugin::new().prepare("board.note", Linked)));
+        let failed = engine
+            .submit(Submission {
+                data_capability: "board.note".to_string(),
+                payload: BTreeMap::from([("accountId".to_string(), Value::from("881"))]),
+                caller: carol(),
+                ..Submission::default()
+            })
+            .await;
+        assert_eq!(
+            failed.map(|s| s.command_id),
+            Err(Error::Store("down".to_string())),
+            "the store's error, not the refusal the Prepare made of it"
+        );
+    }
+
+    /// One row to any query, keeping the queries asked.
+    #[derive(Default)]
+    struct Tables(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl Rows for Tables {
+        async fn rows(&self, sql: &str, _parameters: &[Value]) -> Result<Value> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(sql.to_string());
+            Ok(serde_json::json!([{ "n": 1 }]))
+        }
+    }
+
+    /// Warns of what it was lent: now, now in milliseconds, and the rows
+    /// its SQL answers when it has SQL.
+    struct Peek;
+
+    #[async_trait::async_trait]
+    impl Prepare for Peek {
+        async fn prepare(
+            &self,
+            context: &Context<'_>,
+            payload: &BTreeMap<String, Value>,
+            target_id: Option<&str>,
+        ) -> std::result::Result<Prepared, Refusal> {
+            let rows = match context.rows {
+                Some(rows) => rows
+                    .rows("select n from t", &[])
+                    .await
+                    .map_err(|e| Refusal::unprocessable(e.to_string()))?,
+                None => Value::Null,
+            };
+            Ok(Prepared {
+                payload: payload.clone(),
+                target_id: target_id.map(ToString::to_string),
+                warnings: vec![format!("{} {} {rows}", context.now, context.now_millis)],
+                ..Prepared::default()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_prepare_reads_sql_when_the_engine_has_some_and_stamps_milliseconds() {
+        let plant = board_plant(BTreeMap::new());
+        plant.clock.set_millis(1_000_250);
+        let engine = plant
+            .engine
+            .with_plugins(plugins(Plugin::new().prepare("board.note", Peek)));
+        let note = || on_board("note", "bob", "note", Value::from("n"), Value::Null);
+        let over_memory = engine.submit(note()).await.expect("queued");
+        assert_eq!(over_memory.warnings, ["1000 1000250 null"], "no SQL");
+        let tables = Arc::new(Tables::default());
+        let engine = engine.with_rows(tables.clone());
+        let over_sql = engine.submit(note()).await.expect("queued");
+        assert_eq!(over_sql.warnings, [r#"1000 1000250 [{"n":1}]"#]);
+        assert_eq!(
+            *tables
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["select n from t"]
+        );
+    }
+
+    /// Writes as it came, then asks for these follow-ups, attaching this.
+    struct Then(Vec<Submission>, Option<Value>);
+
+    #[async_trait::async_trait]
+    impl Prepare for Then {
+        async fn prepare(
+            &self,
+            _context: &Context<'_>,
+            payload: &BTreeMap<String, Value>,
+            target_id: Option<&str>,
+        ) -> std::result::Result<Prepared, Refusal> {
+            Ok(Prepared {
+                payload: payload.clone(),
+                target_id: target_id.map(ToString::to_string),
+                then: self.0.clone(),
+                attachment: self.1.clone(),
+                ..Prepared::default()
+            })
+        }
+    }
+
+    /// A board whose note is followed by `then`, and the accounts.
+    fn followed(then: Vec<Submission>) -> Plant {
+        let plant = linked_plant(account(5000).with_row("Board/1", BTreeMap::new()));
+        let engine = Engine::new(
+            plant.store.clone(),
+            plant.notifier.clone(),
+            plant.clock.clone(),
+        )
+        .with_aggregate(Aggregate::parse(ACCOUNT).expect("I"))
+        .with_aggregate(Aggregate::parse(BOARD).expect("I"))
+        .with_data_capability(DataCapability::parse(LIMIT).expect("F"))
+        .with_data_capability(board_capability("note", "note", ""))
+        .with_data_capability(board_capability("tag", "tags", ""))
+        .with_plugins(plugins(
+            Plugin::new().prepare("board.note", Then(then, None)),
+        ));
+        Plant { engine, ..plant }
+    }
+
+    #[tokio::test]
+    async fn follow_ups_are_submitted_in_order_by_the_same_caller_once_the_first_is_queued() {
+        let raise = Submission {
+            caller: Caller::default(),
+            ..limit("mallory", 6000, 5000)
+        };
+        let tag = on_board(
+            "tag",
+            "mallory",
+            "tags",
+            serde_json::json!(["z"]),
+            Value::Null,
+        );
+        let plant = followed(vec![raise, tag]);
+        plant.engine.load().await.expect("fits");
+        let submitted = plant
+            .engine
+            .submit(on_board(
+                "note",
+                "bob",
+                "note",
+                Value::from("n"),
+                Value::Null,
+            ))
+            .await
+            .expect("queued");
+        assert_eq!(submitted.command_id, "c_1");
+        let then: Vec<(String, String)> = submitted
+            .then
+            .iter()
+            .map(|follow| match follow {
+                FollowUp::Submitted(one) => (one.command_id.clone(), one.partition.clone()),
+                FollowUp::Refused { error, .. } => (String::new(), error.clone()),
+            })
+            .collect();
+        assert_eq!(
+            then,
+            [
+                ("c_2".to_string(), "Account/881".to_string()),
+                ("c_3".to_string(), "Board/1".to_string())
+            ],
+            "after the first, in order, each through the whole path"
+        );
+        let authors: Vec<String> = plant
+            .store
+            .pending()
+            .await
+            .expect("read")
+            .into_iter()
+            .map(|e| e.by)
+            .collect();
+        assert_eq!(authors, ["bob", "bob", "bob"], "the first's caller");
+        let applied = plant.engine.run_once().await.expect("ran");
+        assert!(
+            applied.iter().all(|r| r.status == State::Applied),
+            "{applied:?}"
+        );
+        assert_eq!(
+            plant.store.row_now("Account/881")["creditLimit"],
+            Value::from(6000)
+        );
+        assert_eq!(
+            plant.store.row_now("Board/1")["tags"],
+            serde_json::json!(["z"])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_follow_up_undoes_nothing_and_the_ones_after_it_are_not_submitted() {
+        let tag = || on_board("tag", "bob", "tags", serde_json::json!(["z"]), Value::Null);
+        let unknown = Submission {
+            data_capability: "board.nothing".to_string(),
+            ..Submission::default()
+        };
+        let plant = followed(vec![unknown, tag()]);
+        let submitted = plant
+            .engine
+            .submit(on_board(
+                "note",
+                "bob",
+                "note",
+                Value::from("n"),
+                Value::Null,
+            ))
+            .await
+            .expect("the first is queued");
+        assert_eq!(submitted.result.status, State::Queued);
+        assert_eq!(
+            submitted.then,
+            [FollowUp::Refused {
+                data_capability: "board.nothing".to_string(),
+                error: "no DataCapability named board.nothing".to_string(),
+            }]
+        );
+        assert_eq!(
+            plant.store.pending().await.expect("read").len(),
+            1,
+            "the first alone, the tag after the refusal never submitted"
+        );
+        // A follow-up is authorised as any submission: a board's caller may
+        // not raise a limit.
+        let plant = followed(vec![limit("bob", 6000, 5000), tag()]);
+        let boarded = Submission {
+            caller: Engine::caller("bob", "board.Form", &[], &[]),
+            ..on_board("note", "bob", "note", Value::from("n"), Value::Null)
+        };
+        let submitted = plant.engine.submit(boarded).await.expect("queued");
+        assert!(
+            matches!(
+                submitted.then.as_slice(),
+                [FollowUp::Refused { data_capability, .. }] if data_capability == "credit.requestLimitChange"
+            ),
+            "{:?}",
+            submitted.then
+        );
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_asking_for_follow_ups_is_refused_and_a_replay_submits_none() {
+        let tag = || on_board("tag", "bob", "tags", serde_json::json!(["z"]), Value::Null);
+        let plant = followed(vec![tag()]);
+        let engine = plant.engine.with_plugins(plugins(Plugin::new().prepare(
+            "board.tag",
+            Then(
+                vec![on_board(
+                    "note",
+                    "bob",
+                    "note",
+                    Value::from("m"),
+                    Value::Null,
+                )],
+                None,
+            ),
+        )));
+        let keyed = Submission {
+            idempotency_key: Some("k".to_string()),
+            ..on_board("note", "bob", "note", Value::from("n"), Value::Null)
+        };
+        let submitted = engine.submit(keyed.clone()).await.expect("queued");
+        assert_eq!(
+            submitted.then,
+            [FollowUp::Refused {
+                data_capability: "board.tag".to_string(),
+                error: "misconfigured: board.tag runs as a follow-up: its Prepare may not ask for follow-ups of its own (1 asked)".to_string(),
+            }]
+        );
+        assert_eq!(
+            plant.store.pending().await.expect("read").len(),
+            1,
+            "the tag was not queued"
+        );
+        let again = engine.submit(keyed).await.expect("replayed");
+        assert!(again.replayed);
+        assert!(again.then.is_empty(), "a replay submits no follow-up");
+        // A follow-up's own key replays it.
+        let keyed_tag = Submission {
+            idempotency_key: Some("t".to_string()),
+            ..tag()
+        };
+        let plant = followed(vec![keyed_tag]);
+        let note = || on_board("note", "bob", "note", Value::from("n"), Value::Null);
+        plant.engine.submit(note()).await.expect("queued");
+        let second = plant.engine.submit(note()).await.expect("queued");
+        assert!(
+            matches!(second.then.as_slice(), [FollowUp::Submitted(one)] if one.replayed),
+            "{:?}",
+            second.then
+        );
+    }
+
+    #[tokio::test]
+    async fn an_attachment_is_kept_with_the_command_and_answered_once_it_is_applied() {
+        let archive = serde_json::json!({ "archive": "881.zip" });
+        let plant = plant(account(5000));
+        let engine = plant.engine.with_plugins(plugins(Plugin::new().prepare(
+            "credit.requestLimitChange",
+            Then(Vec::new(), Some(archive.clone())),
+        )));
+        let queued = engine
+            .submit(limit("alice", 6000, 5000))
+            .await
+            .expect("queued");
+        assert_eq!(queued.result.attachment, None, "not before it is applied");
+        assert_eq!(
+            engine
+                .status(&queued.command_id)
+                .await
+                .expect("known")
+                .attachment,
+            None
+        );
+        let kept = plant.store.pending().await.expect("read");
+        assert_eq!(kept[0].attachment, Some(archive.clone()), "kept with it");
+        let applied = engine.run_once().await.expect("ran");
+        assert_eq!(applied[0].status, State::Applied);
+        assert_eq!(applied[0].attachment, Some(archive.clone()));
+        assert_eq!(
+            engine
+                .status(&queued.command_id)
+                .await
+                .expect("journaled")
+                .attachment,
+            Some(archive.clone())
+        );
+        assert_eq!(plant.store.journal()[0].attachment, Some(archive.clone()));
+        let over = engine
+            .submit(limit("bob", 20_000, 6000))
+            .await
+            .expect("queued, at risk");
+        let rejected = engine.run_once().await.expect("ran");
+        assert_eq!(rejected[0].status, State::Rejected);
+        assert_eq!(rejected[0].attachment, None, "a rejection attaches nothing");
+        assert_eq!(
+            engine
+                .status(&over.command_id)
+                .await
+                .expect("journaled")
+                .attachment,
+            None
+        );
     }
 }

@@ -46,18 +46,18 @@ about a product's data.
 | `manifest` | F | a `DataCapability` manifest: effect, target, `touches`, mode, permissions, `callableBy`, idempotency |
 | `aggregate` | I | an `aggregate.json`: fields, their kind (a derived one is never written) and criticality, how they merge (`set`, `last-writer`), invariants and what a violation does, relations and `onDelete` (`onUpdate` is deprecated, ignored), holds |
 | `registry` | C | the persisted queries served, by Capability and hash; the readers of a field |
-| `command` | G, H | an entry of the queue, its projection, its states; the command result (five fields) |
+| `command` | G, H | an entry of the queue, its projection, its states, the attachment its `Prepare` computed; the command result (five fields, and the attachment once applied) |
 | `queue` | G | **pure**: one FIFO per partition, fixed positions, projected view and `projected_row` (the row as the pending commands leave it), `ValueDeclaredAhead` (never for a merging field), confirmations, parked (24 h), holds (1 min), expiry |
 | `guard` | F, H, I | **pure**: authorisation, static then dynamic classification of the effect, the invariants on a projected and on the real state — a rule written `<field> <op> <value>` in `aggregate.json` is judged here (as the mock judges it), any other is the product's code behind `Invariants` (the engine's is its aggregates' `Judge`s), and the two add up |
 | `resolver` | J | **pure**: the impact plan — readers, holds, cascade by relation policy, the decision `auto / confirm / human_review / blocked / rejected` |
 | `reconcile` | K | **pure**: a review, the AI's proposal behind a trait, a human's decision by role |
 | `messages` | L | the twelve message kinds and the notifier port |
-| `store` | — | the store port: pending entries, holds, rows, collisions, incoming relations, `apply` in one transaction with the journal; the `Clock` and the `Ids` a fresh row id comes from (`RandomIds`, uuid v4, behind the `uuid` feature) |
-| `memory` | — | the store, notifier, clock and ids (`Counter`) in memory: what every test runs on |
-| `plugins` | F, I, C | what a unit plugs in: `Prepare` (a DataCapability), `Judge`, `Project` and, over PostgreSQL, `ProjectPg` (an aggregate), `Answer` (a Capability), `Shared` (what units read and do not own), `Plugin` and `Plugins` (whose `needs()` names what they read from `Shared`, for a server's inventory) |
+| `store` | — | the store port: pending entries, holds, rows, collisions, incoming relations, `apply` in one transaction with the journal; the `Clock` (seconds, and `now_millis`, by default `now() * 1000`) and the `Ids` a fresh row id comes from (`RandomIds`, uuid v4, behind the `uuid` feature) |
+| `memory` | — | the store, notifier, clock (`FixedClock`, set to the second or the millisecond) and ids (`Counter`) in memory: what every test runs on |
+| `plugins` | F, I, C | what a unit plugs in: `Prepare` (a DataCapability) and the `Context` it reads (`Partitions`, the rows the engine lends it), `Judge`, `Project` and, over PostgreSQL, `ProjectPg` (an aggregate, `hydrate` included), `Answer` (a Capability), `Shared` (what units read and do not own), `Plugin` and `Plugins` (whose `needs()` names what they read from `Shared`, for a server's inventory) |
 | `reads` | C | the Capabilities' `Answer`s, run: the query's rows over a read-only `Rows` connection — `[]` in memory — handed to the answer |
 | `postgres` (feature) | — | the store on PostgreSQL via `tokio-postgres`: its own tables (`migrations/0001_dataguard.sql`), the aggregates' `ProjectPg`s inside the apply transaction, `NOTIFY dataguard` on every application; `ReadOnly`, the `Rows` of the reads, in `READ ONLY` transactions; `values`, **pure**: a JSON variable typed for its parameter, a row as a JSON object |
-| `api` | H | the wire shapes the mock server already speaks: `Submission`, `Submitted`, `ReadRequest`, `HoldRequest`, `ReviewDecision` |
+| `api` | H | the wire shapes the mock server already speaks: `Submission` (its row named by `targetId` or `"target": {"id": …}`), `Submitted` (with `then`, a `FollowUp` per follow-up), `ReadRequest`, `HoldRequest`, `ReviewDecision` |
 | `engine` | all | the four together over the ports and the plugins: `submit`, `confirm`, `cancel`, `requeue`, `hold`/`renew`/`release`, `decide`, `status`, `run_once` |
 
 The pure modules decide; the engine sequences them and talks to the ports.
@@ -72,13 +72,43 @@ builds `Reads::from(&plugins)` for the reads.
 
 - **`Prepare`**, keyed by `DataCapability`: runs in `submit`, after the
   authorisation and the idempotency replay, before the entry is built. It
-  sees a `Context` — the manifest, the caller, the target row as the
-  pending commands leave it (`Queue::projected_row`, empty when no row is
-  named), now, the `Ids`, `Shared` — and returns the payload and target
-  the command writes, with warnings for the author, or a `Refusal`
-  (`NotFound`, `Unprocessable`), which is `Error::Refused` and queues
-  nothing. The rules that follow (derived fields, undeclared keys,
-  invariants) judge what the `Prepare` returned.
+  sees a `Context`:
+  - the manifest, the caller, now (`now`, seconds; `now_millis`), the
+    `Ids`, `Shared`;
+  - `base`, the target row as the pending commands leave it
+    (`Queue::projected_row`, empty when no row is named);
+  - `row(partition)`, any partition's row the same way, through
+    `Partitions`, which the engine implements over its store and queue.
+    The engine borrows itself into it (`Lent`): no queue lock is held
+    across an await (the lock is taken after the store answers and
+    released in the same expression), so `Context` stays `Sync` and the
+    `Prepare`'s future `Send`. A store failure under it is kept, and the
+    engine answers `Error::Store` whatever the `Prepare` made of it;
+  - `rows`, read-only SQL (`reads::Rows`), `None` unless the server gave
+    one (`Engine::with_rows`; the skeleton does over PostgreSQL).
+
+  It returns `Prepared`: the payload and target the command writes,
+  warnings for the author, follow-ups (`then`) and an `attachment`; or a
+  `Refusal` (`NotFound`, `Unprocessable`), which is `Error::Refused` and
+  queues nothing. The undeclared-key warning judges the payload the author
+  submitted, before the `Prepare` runs (its keys are the wire's, and a
+  `Prepare` may rename them into fields); derived fields and invariants
+  judge what the `Prepare` returned.
+- **Follow-ups (`Prepared::then`)**: submissions the engine makes once the
+  first command is queued, in order, each with the first's caller (the
+  caller a follow-up names is replaced) and through the whole `submit`
+  path — authorised, replayed on its own idempotency key, prepared. They
+  are not atomic with the first: the first refused one stops the rest and
+  undoes nothing. Each outcome is in `Submitted::then`, `{"submitted": …}`
+  or `{"refused": {"dataCapability", "error"}}`. One level only: a
+  follow-up whose `Prepare` asks for follow-ups is refused
+  (`Error::Misconfigured`), so a chain always ends and the answer stays
+  flat; a replay of the first submits none.
+- **Attachment (`Prepared::attachment`)**: kept with the entry (`Entry`,
+  serialised with it, so in the PostgreSQL queue's `entry` JSON) and copied
+  into the result when the head is applied; the journal keeps that result,
+  so `status` answers it once applied, never before, and never for a
+  rejected command.
 - **`Judge`**, keyed by aggregate: the engine's `Invariants` is the
   composite of the judges, and a judge is only asked about its own
   aggregate.
@@ -87,7 +117,9 @@ builds `Reads::from(&plugins)` for the reads.
 - **`ProjectPg`** (feature `postgres`), keyed by aggregate: the projection
   into the product's own tables, run by `PgStore` (see below), not by the
   engine. It is its own trait, not a `Project` with more: what it writes
-  commits with the write, so it has nothing left to observe after.
+  commits with the write, so it has nothing left to observe after. Its
+  `hydrate(partition, client)` (`Ok(None)` by default) answers a row its
+  tables hold but the engine never wrote.
 - **`Answer`**, keyed by Capability: its SQL, the variables it binds in
   order, and the function from rows to answer. `Reads::run` hands it `[]`
   when there is no connection, and over PostgreSQL the rows `ReadOnly`
@@ -108,8 +140,11 @@ The server gives the same `Plugins` to the store first, then to the engine:
 
 ```rust
 let store = PgStore::open(client).await?.with_projections(&plugins).await?;
-let reads = Reads::from(&plugins).with_connection(Arc::new(ReadOnly::new(read_client)));
-let engine = Engine::new(Arc::new(store), notifier, clock).with_plugins(plugins);
+let read_only: Arc<dyn Rows> = Arc::new(ReadOnly::new(read_client));
+let reads = Reads::from(&plugins).with_connection(read_only.clone());
+let engine = Engine::new(Arc::new(store), notifier, clock)
+    .with_rows(read_only)
+    .with_plugins(plugins);
 ```
 
 - **`PgStore::with_projections(&Plugins)`**: the store takes the
@@ -130,6 +165,12 @@ let engine = Engine::new(Arc::new(store), notifier, clock).with_plugins(plugins)
   none was), its author hears `CommandRejected` with the projection's reason,
   and the applier's step goes on. `ProjectionError::Failed` is `Error::Store`:
   the step fails, as any store failure does.
+- **`row`** answers the engine's row of the partition. When the engine has
+  none (it never wrote the partition), it asks the `ProjectPg`s of the
+  partition's aggregate to `hydrate` it, the first `Some` wins: fixtures
+  loaded by SQL reach the judges and a `Prepare`'s `base` and `row`. An
+  archived partition is never hydrated back. A failed hydration is
+  `Error::Store`. An insert's collision still reads the engine's rows only.
 - **`ReadOnly`** is the reads' `Rows`, on a connection of its own (a slow
   read never waits on the applier): each query runs in a `READ ONLY`
   transaction, so a Capability's SQL that writes is refused by PostgreSQL.
@@ -151,7 +192,7 @@ no registry yet:
 
 | installed at | from | what it is |
 | --- | --- | --- |
-| `crates/dataguard/server/` | `dataguard-server/` | a library, generic: `plant(url, Shared) -> Planted { engine, reads }`, `router`, `applier`, `migrate`; it re-exports the engine (`dataguard_server::engine`) and the registry. Its `Cargo.toml` holds the engine's one `tag =` line; its `submit` maps a refusal to 404 or 422, its read checks a hash when the request names one, then runs `Reads::run` |
+| `crates/dataguard/server/` | `dataguard-server/` | a library, generic: `plant(url, Shared) -> Planted { engine, reads }` (over PostgreSQL one `ReadOnly` serves the reads and the `Prepare`s' `rows`), `router`, `applier`, `migrate`; it re-exports the engine (`dataguard_server::engine`) and the registry. Its `Cargo.toml` holds the engine's one `tag =` line; its `submit` takes `targetId` or `target.id` and maps a refusal to 404 or 422, its read checks a hash when the request names one, then runs `Reads::run` |
 | `crates/dataguard/registry/` | `dataguard-registry/` | `build.rs` and `src/lib.rs`; its `Cargo.toml` is **not** an asset, `scripts/register.sh` writes it |
 | `scripts/register.sh` | `register.sh` | writes the registry's `Cargo.toml`: the header, the engine line copied from the server's, one sorted `path` line per unit crate (named after its package); copies the same engine line into the root `Cargo.toml`'s `[workspace.dependencies]`, whence a unit takes `harness-dataguard = { workspace = true }` (one engine, one `Plugin` type); `--check` exits 1 when either file differs or a unit takes the engine from a source of its own |
 | `crates/server/` | `server/` | the product's binary, installed once and expected to diverge: an empty `Shared`, `plant`, `/health`, the subcommands `migrate`, `serve` and `inventory` (each unit with what it needs, read through `Plugins::needs`) |
@@ -240,6 +281,17 @@ skeleton that needs a new API, or a fix a product waits for:
 A changed engine API is a contract change for every product: the release
 note says what a product must change to move.
 
+**`dataguard-v3`** (A6, `docs/DATAGUARD-CUT.md`), what a product changes:
+
+- `Prepared` gained `then` and `attachment`, `Context` gained
+  `now_millis`, `partitions` and `rows`, `Entry` and `CommandResult` gained
+  `attachment`, `Submitted` gained `then`: a struct literal of one of them
+  takes the new fields, or `..Prepared::default()` for `Prepared`.
+- The undeclared-key warning now reads the submitted payload: a test that
+  asserted a warning on a key only a `Prepare` wrote loses it.
+- `Error` is `Clone`; `Clock` has `now_millis` (a clock of the product's
+  own may keep the default); `ProjectPg` has `hydrate` (default `None`).
+
 ## Testing
 
 Every rule has a unit test in its module; `queue` has a property test (fixed,
@@ -250,7 +302,9 @@ stands for a projection that refuses). The PostgreSQL mappings are pure
 tests are `#[ignore]`d and need `DATAGUARD_PG_URL`, each in a scratch schema
 it drops: the contract's scenario, a projection writing a product table in
 the apply transaction, a refused one rolling both back, `ReadOnly` answering
-and refusing a write, `RandomIds` accepted as distinct uuids.
+and refusing a write, `RandomIds` accepted as distinct uuids, a row loaded
+by plain SQL hydrated into `row()` and a `Prepare`'s `base`, an attachment
+kept in the queue across a restart and in the journal.
 
     bash scripts/postgres.sh up
     DATAGUARD_PG_URL=postgres://postgres:postgres@localhost:5432/postgres \

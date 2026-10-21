@@ -155,6 +155,10 @@ pub struct Entry {
     /// The idempotency key, when the manifest requires one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    /// What the `DataCapability`'s `Prepare` computed with the command for
+    /// its author to read once it is applied (an export's archive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Value>,
 }
 
 impl Entry {
@@ -199,11 +203,15 @@ pub struct CommandResult {
     pub violations: Vec<String>,
     /// The review it waits on, when it does.
     pub review_id: Option<String>,
+    /// What its `Prepare` computed for its author: only once it is
+    /// applied, absent from the wire otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Value>,
 }
 
 impl CommandResult {
     /// The result of a command that waits, or just applied, with no
-    /// violation and no review.
+    /// violation and no review; its attachment only when it is applied.
     #[must_use]
     pub fn of(entry: &Entry, data_version: Option<u64>) -> Self {
         Self {
@@ -212,6 +220,11 @@ impl CommandResult {
             data_version,
             violations: Vec::new(),
             review_id: None,
+            attachment: if entry.state == State::Applied {
+                entry.attachment.clone()
+            } else {
+                None
+            },
         }
     }
 }
@@ -239,6 +252,7 @@ mod tests {
             at_head_since: None,
             requeued_from: None,
             idempotency_key: None,
+            attachment: None,
         }
     }
 
@@ -290,5 +304,45 @@ mod tests {
         assert_eq!(result["commandId"], "c_1");
         assert_eq!(result["dataVersion"], 7);
         assert_eq!(result["reviewId"], Value::Null);
+        assert!(
+            json.get("attachment").is_none() && result.get("attachment").is_none(),
+            "no attachment, not on the wire: the five fields of contract H"
+        );
+    }
+
+    #[test]
+    fn an_attachment_is_kept_with_the_entry_and_answered_once_applied() {
+        let archive = serde_json::json!({ "archive": "c.zip" });
+        let attached = Entry {
+            attachment: Some(archive.clone()),
+            ..entry()
+        };
+        let json = serde_json::to_value(&attached).expect("json");
+        assert_eq!(json["attachment"], archive);
+        let back: Entry = serde_json::from_value(json).expect("read back");
+        assert_eq!(back, attached);
+        let old: Entry = serde_json::from_value(serde_json::json!({
+            "command": "c_0", "data_capability": "x.y@1", "by": "a", "partition": "A/1",
+            "position": 0, "based_on": { "version": 0 }, "payload": {}, "effect": "update",
+            "touches": [], "mode": "overwrite", "projection": { "confirmed": {}, "pending_ahead": [] },
+            "state": "queued"
+        }))
+        .expect("an entry kept before attachments");
+        assert_eq!(old.attachment, None);
+        assert_eq!(
+            CommandResult::of(&attached, None).attachment,
+            None,
+            "queued"
+        );
+        let applied = Entry {
+            state: State::Applied,
+            ..attached
+        };
+        let result = CommandResult::of(&applied, Some(3));
+        assert_eq!(result.attachment, Some(archive.clone()));
+        assert_eq!(
+            serde_json::to_value(&result).expect("json")["attachment"],
+            archive
+        );
     }
 }

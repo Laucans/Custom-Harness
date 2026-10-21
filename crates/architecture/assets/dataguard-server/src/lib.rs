@@ -36,7 +36,7 @@ use harness_dataguard::memory::{MemoryNotifier, MemoryStore};
 use harness_dataguard::plugins::{RefusalKind, Shared};
 use harness_dataguard::postgres::{MIGRATION, PgStore, ReadOnly, SystemClock};
 use harness_dataguard::queue::Hold;
-use harness_dataguard::reads::Reads;
+use harness_dataguard::reads::{Reads, Rows};
 use harness_dataguard::registry::Registry;
 use harness_dataguard::store::{RandomIds, Store};
 use serde_json::{Value, json};
@@ -78,7 +78,9 @@ async fn connect(url: &str) -> Result<tokio_postgres::Client, Failure> {
 /// refuses units that do not fit: a plugin for a unit it does not
 /// register, a need nothing shares (`Error::Misconfigured`). Over
 /// PostgreSQL the store runs the aggregates' projections in the apply
-/// transaction, and the reads have a read-only connection of their own.
+/// transaction (and hydrates from them a row the engine never wrote), and
+/// the reads have a read-only connection of their own, which the
+/// `Prepare`s read through too (`Context::rows`).
 ///
 /// # Errors
 ///
@@ -87,10 +89,16 @@ async fn connect(url: &str) -> Result<tokio_postgres::Client, Failure> {
 pub async fn plant(url: &str, shared: Shared) -> Result<Planted, Failure> {
     let plugins = registry::plugins();
     let mut reads = Reads::from(&plugins);
+    // Over PostgreSQL, one read-only connection serves the Capabilities'
+    // reads and the `Prepare`s' SQL (`Context::rows`); over memory, neither
+    // has any.
+    let mut read_only: Option<Arc<dyn Rows>> = None;
     let store: Arc<dyn Store> = if url == MEMORY {
         Arc::new(MemoryStore::default())
     } else {
-        reads = reads.with_connection(Arc::new(ReadOnly::new(connect(url).await?)));
+        let rows: Arc<dyn Rows> = Arc::new(ReadOnly::new(connect(url).await?));
+        reads = reads.with_connection(rows.clone());
+        read_only = Some(rows);
         Arc::new(
             PgStore::open(connect(url).await?)
                 .await?
@@ -105,6 +113,9 @@ pub async fn plant(url: &str, shared: Shared) -> Result<Planted, Failure> {
     )
     .with_registry(Registry::parse(registry::QUERIES)?)
     .with_ids(Arc::new(RandomIds));
+    if let Some(rows) = read_only {
+        engine = engine.with_rows(rows);
+    }
     for text in registry::AGGREGATES.iter().filter_map(|unit| unit.manifest) {
         engine = engine.with_aggregate(Aggregate::parse(text)?);
     }
@@ -194,6 +205,9 @@ fn reply<T>(status: StatusCode, result: Result<T, Error>) -> Reply<T> {
         .map_err(|e| (status_of(&e), Json(json!({ "error": e.to_string() }))))
 }
 
+/// A submission, its row named by `targetId` or `"target": {"id": …}` (the
+/// engine's `Submission` reads both); the follow-ups its `Prepare` asked
+/// for come back in `then`, each submitted or refused.
 async fn submit(State(planted): State<Planted>, Json(body): Json<Submission>) -> Reply<Submitted> {
     reply(StatusCode::ACCEPTED, planted.engine.submit(body).await)
 }

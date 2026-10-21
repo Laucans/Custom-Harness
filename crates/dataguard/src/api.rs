@@ -14,8 +14,13 @@ use crate::command::{BasedOn, CommandResult};
 use crate::guard::Caller;
 
 /// What `POST /commands` carries.
+///
+/// The row's id is read from `targetId` or, as the mock and the rules
+/// suite send it, from `"target": {"id": …}` (a string or an integer),
+/// which wins when both are given, as in the mock; it is written back as
+/// `targetId`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "WireSubmission")]
 pub struct Submission {
     /// The `DataCapability`, with or without its `@version`.
     pub data_capability: String,
@@ -36,6 +41,76 @@ pub struct Submission {
     pub caller: Caller,
 }
 
+/// A submission as the wire spells it: the target's id in either form.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireSubmission {
+    data_capability: String,
+    #[serde(default)]
+    payload: BTreeMap<String, Value>,
+    #[serde(default)]
+    target_id: Option<String>,
+    #[serde(default)]
+    target: Option<WireTarget>,
+    #[serde(default)]
+    based_on: Option<BasedOn>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    caller: Caller,
+}
+
+/// `"target": {"id": …}`; the mock's `aggregate` beside it is ignored, the
+/// manifest names it.
+#[derive(Deserialize)]
+struct WireTarget {
+    #[serde(default)]
+    id: Option<Value>,
+}
+
+impl TryFrom<WireSubmission> for Submission {
+    type Error = String;
+
+    fn try_from(wire: WireSubmission) -> Result<Self, Self::Error> {
+        let nested = match wire.target.and_then(|target| target.id) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) => Some(id),
+            Some(Value::Number(id)) if id.is_i64() || id.is_u64() => Some(id.to_string()),
+            Some(other) => {
+                return Err(format!("target.id is a string or an integer, not {other}"));
+            }
+        };
+        Ok(Self {
+            data_capability: wire.data_capability,
+            payload: wire.payload,
+            target_id: nested.or(wire.target_id),
+            based_on: wire.based_on,
+            idempotency_key: wire.idempotency_key,
+            caller: wire.caller,
+        })
+    }
+}
+
+/// What became of one follow-up submission ([`crate::plugins::Prepared::then`]).
+///
+/// On the wire, `{"submitted": {…}}` for one that entered the queue, or
+/// `{"refused": {"dataCapability": …, "error": …}}` for one the engine
+/// refused, with the message the server would have answered it with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FollowUp {
+    /// It entered the queue, or replayed one that had.
+    Submitted(Box<Submitted>),
+    /// It was refused, and nothing of it queued.
+    Refused {
+        /// The `DataCapability` it named.
+        #[serde(rename = "dataCapability")]
+        data_capability: String,
+        /// Why.
+        error: String,
+    },
+}
+
 /// What `POST /commands` answers (202): the command's place, and its
 /// result so far.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +128,11 @@ pub struct Submitted {
     pub warnings: Vec<String>,
     /// Where it stands.
     pub result: CommandResult,
+    /// What became of the follow-ups its `Prepare` asked for, in order: one
+    /// per follow-up submitted, up to and including the first refused —
+    /// those after it are not submitted. Absent from the wire when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub then: Vec<FollowUp>,
 }
 
 /// What `POST /capabilities/<id>` carries: the variables, and the hash of
@@ -174,11 +254,85 @@ mod tests {
                 data_version: None,
                 violations: Vec::new(),
                 review_id: None,
+                attachment: None,
             },
+            then: Vec::new(),
         };
         let json = serde_json::to_value(&answer).expect("json");
         assert_eq!(json["commandId"], "c_1");
         assert_eq!(json["result"]["status"], "queued");
         assert_eq!(json["replayed"], false);
+        assert!(json.get("then").is_none(), "no follow-up, not on the wire");
+        let followed = Submitted {
+            then: vec![
+                FollowUp::Submitted(Box::new(Submitted {
+                    command_id: "c_2".to_string(),
+                    ..answer.clone()
+                })),
+                FollowUp::Refused {
+                    data_capability: "credit.stamp".to_string(),
+                    error: "no such account".to_string(),
+                },
+            ],
+            ..answer
+        };
+        let json = serde_json::to_value(&followed).expect("json");
+        assert_eq!(json["then"][0]["submitted"]["commandId"], "c_2");
+        assert_eq!(
+            json["then"][1],
+            serde_json::json!({ "refused": { "dataCapability": "credit.stamp", "error": "no such account" } })
+        );
+        let back: Submitted = serde_json::from_value(json).expect("read back");
+        assert_eq!(back, followed);
+    }
+
+    #[test]
+    fn a_submission_names_its_row_by_target_id_or_by_target_dot_id() {
+        let read = |json: serde_json::Value| serde_json::from_value::<Submission>(json);
+        let flat = read(serde_json::json!({ "dataCapability": "x.y", "targetId": "881" }))
+            .expect("targetId");
+        let nested =
+            read(serde_json::json!({ "dataCapability": "x.y", "target": { "id": "881" } }))
+                .expect("target.id, as the rules suite sends it");
+        assert_eq!(nested, flat);
+        let mocked = read(serde_json::json!({
+            "dataCapability": "x.y",
+            "target": { "aggregate": "Account", "id": 881 },
+            "targetId": "5"
+        }))
+        .expect("the mock's shape, an integer id");
+        assert_eq!(mocked.target_id.as_deref(), Some("881"), "target.id wins");
+        for absent in [
+            serde_json::json!({ "dataCapability": "x.y", "target": {} }),
+            serde_json::json!({ "dataCapability": "x.y", "target": { "id": null } }),
+        ] {
+            assert_eq!(read(absent).expect("no id").target_id, None);
+        }
+        let kept = read(serde_json::json!({ "dataCapability": "x.y", "target": { "id": null }, "targetId": "7" }))
+            .expect("targetId kept");
+        assert_eq!(kept.target_id.as_deref(), Some("7"));
+        for wrong in [
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+            serde_json::json!(["1"]),
+        ] {
+            let refused =
+                read(serde_json::json!({ "dataCapability": "x.y", "target": { "id": wrong } }));
+            assert!(
+                refused.as_ref().is_err_and(|e| e
+                    .to_string()
+                    .contains("target.id is a string or an integer")),
+                "{refused:?}"
+            );
+        }
+        let negative = read(serde_json::json!({ "dataCapability": "x.y", "target": { "id": -3 } }))
+            .expect("an integer");
+        assert_eq!(negative.target_id.as_deref(), Some("-3"));
+        assert_eq!(
+            serde_json::to_value(&nested).expect("json"),
+            serde_json::json!({ "dataCapability": "x.y", "payload": {}, "targetId": "881",
+                "caller": serde_json::to_value(Caller::default()).expect("json") }),
+            "written back as targetId"
+        );
     }
 }

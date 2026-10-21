@@ -637,6 +637,7 @@ mod tests {
             at_head_since: None,
             requeued_from: None,
             idempotency_key: None,
+            attachment: None,
         }
     }
 

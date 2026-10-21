@@ -163,10 +163,13 @@ and never registered.
 
 Its code: `pub fn plugin() -> Plugin` returning `Plugin::new().prepare(\"<id>\",
 YourPrepare)`. Its `Prepare` (harness_dataguard::plugins) turns the
-submission into the payload and row it writes (`Prepared`), or refuses it
-before anything is queued (`Refusal::not_found`, 404; `Refusal::unprocessable`,
-422). What it reads from the server's `Shared` it declares with
-`.needs::<T>()`: the server refuses to start while a need is unfilled.
+submission into what it writes (`Prepared { .., ..Prepared::default() }`)
+or refuses it before anything queues (`Refusal::not_found`, 404;
+`unprocessable`, 422). It reads any row as the queue leaves it
+(`cx.row(\"<Aggregate>/<id>\").await?`), SQL over PostgreSQL (`cx.rows`) and
+`cx.now_millis`; `Prepared.then` makes follow-ups (one level, not atomic),
+`.attachment` is answered once applied. It declares what it reads from
+`Shared` (`.needs::<T>()`): the server refuses to start while one is unfilled.
 Its dependencies: the engine from the workspace, `harness-dataguard = {
 workspace = true }` (never a git line or tag of its own: one engine, one
 `Plugin` type), and the aggregate crate its `target.aggregate` names. No
@@ -282,7 +285,9 @@ Its code: `pub fn plugin() -> Plugin` returning
 `ProjectPg`, its PostgreSQL tables written inside the transaction that
 applies the write; the engine's `postgres` feature). `Judge::violated`
 answers the ids of the invariants the row after the command breaks;
-`ProjectionError::Refused` rejects the command and rolls all of it back.
+`ProjectionError::Refused` rejects the command and rolls all of it back;
+`ProjectPg::hydrate` answers a row the tables hold but the engine never
+wrote (fixtures loaded by SQL), so judges and `Prepare`s see it.
 The engine comes from the workspace: `harness-dataguard = { workspace =
 true }`, never a source of its own.
 

@@ -105,6 +105,13 @@ pub trait Store: Send + Sync {
 pub trait Clock: Send + Sync {
     /// Now.
     fn now(&self) -> u64;
+
+    /// Now, in milliseconds since the epoch: what a product stamps when two
+    /// writes in one second must be told apart. A clock that only knows
+    /// seconds answers `now() * 1000`.
+    fn now_millis(&self) -> u64 {
+        self.now().saturating_mul(1000)
+    }
 }
 
 /// Where a fresh row id comes from, when a submission names no row.
@@ -128,6 +135,22 @@ impl Ids for RandomIds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A clock that knows seconds only.
+    struct Seconds(u64);
+
+    impl Clock for Seconds {
+        fn now(&self) -> u64 {
+            self.0
+        }
+    }
+
+    #[test]
+    fn a_clock_of_seconds_answers_its_milliseconds_by_default() {
+        assert_eq!(Seconds(1_700_000_123).now_millis(), 1_700_000_123_000);
+        assert_eq!(Seconds(7).now_millis(), 7000);
+        assert_eq!(Seconds(u64::MAX).now_millis(), u64::MAX, "saturated");
+    }
 
     #[test]
     fn a_write_names_the_aggregate_of_its_partition() {

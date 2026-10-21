@@ -36,6 +36,9 @@
         "string",
         "null"
       ]
+    },
+    "attachment": {
+      "description": "What the DataCapability's Prepare computed for its author (an export's archive): present only once the command is applied, absent otherwise."
     }
   },
   "required": [

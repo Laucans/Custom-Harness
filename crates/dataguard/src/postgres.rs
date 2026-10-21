@@ -217,20 +217,38 @@ impl Store for PgStore {
         Ok(unsigned(row.get::<_, i64>(0)))
     }
 
+    /// The engine's row; when the engine never wrote the partition, the
+    /// row its aggregate's projections hydrate from the product's tables
+    /// (the first that knows it), else none. An archived row is never
+    /// hydrated back.
     async fn row(&self, partition: &str) -> Result<BTreeMap<String, Value>> {
-        let found = self
-            .client
-            .lock()
-            .await
+        let client = self.client.lock().await;
+        let found = client
             .query_opt(
-                "SELECT fields FROM dataguard_rows WHERE partition = $1 AND NOT tombstoned",
+                "SELECT fields, tombstoned FROM dataguard_rows WHERE partition = $1",
                 &[&partition],
             )
             .await?;
-        found.map_or_else(
-            || Ok(BTreeMap::new()),
-            |row| from_json(row.get::<_, Value>(0)),
-        )
+        if let Some(row) = found {
+            return if row.get::<_, bool>(1) {
+                Ok(BTreeMap::new())
+            } else {
+                from_json(row.get::<_, Value>(0))
+            };
+        }
+        let aggregate = partition.split('/').next().unwrap_or(partition);
+        for (_, projection) in self.projections.iter().filter(|(a, _)| a == aggregate) {
+            let hydrated = projection.hydrate(partition, &client).await.map_err(|e| {
+                Error::Store(format!(
+                    "the projection of {aggregate} did not hydrate {partition}: {e}"
+                ))
+            })?;
+            if let Some(row) = hydrated {
+                return Ok(row);
+            }
+        }
+        drop(client);
+        Ok(BTreeMap::new())
     }
 
     async fn collision(&self, entry: &Entry) -> Result<Collision> {
@@ -423,14 +441,24 @@ impl Rows for ReadOnly {
     }
 }
 
-/// A clock on the system time, in seconds since the epoch.
+/// A clock on the system time, since the epoch.
 pub struct SystemClock;
+
+impl SystemClock {
+    fn since_epoch() -> std::time::Duration {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+    }
+}
 
 impl crate::store::Clock for SystemClock {
     fn now(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
+        Self::since_epoch().as_secs()
+    }
+
+    fn now_millis(&self) -> u64 {
+        u64::try_from(Self::since_epoch().as_millis()).unwrap_or(u64::MAX)
     }
 }
 
@@ -457,7 +485,20 @@ mod tests {
         }
         assert_eq!(signed(u64::MAX), i64::MAX);
         assert_eq!(unsigned(-1), 0);
-        assert!(crate::store::Clock::now(&SystemClock) > 1_700_000_000);
+        let seconds = crate::store::Clock::now(&SystemClock);
+        let millis = crate::store::Clock::now_millis(&SystemClock);
+        assert!(seconds > 1_700_000_000);
+        assert!(
+            millis / 1000 >= seconds && millis / 1000 <= seconds + 1,
+            "{millis} ms against {seconds} s"
+        );
+        assert!(
+            (0..50).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(3));
+                !crate::store::Clock::now_millis(&SystemClock).is_multiple_of(1000)
+            }),
+            "real milliseconds, not seconds times a thousand"
+        );
     }
 
     /// Against a real PostgreSQL: `DATAGUARD_PG_URL=postgres://… cargo test
@@ -476,6 +517,7 @@ mod tests {
             data_version: None,
             violations: Vec::new(),
             review_id: None,
+            attachment: None,
         };
         let version = store
             .apply(
@@ -521,6 +563,7 @@ mod tests {
                     at_head_since: None,
                     requeued_from: None,
                     idempotency_key: None,
+                    attachment: None,
                 })
                 .await
                 .expect("read")
@@ -896,6 +939,211 @@ mod tests {
                 .await,
             200,
             "distinct, all version 4"
+        );
+        scratch.drop().await;
+    }
+
+    /// The product's accounts, loaded by SQL and never written by the
+    /// engine: the projection hydrates the rows it holds.
+    struct Fixtures;
+
+    #[async_trait]
+    impl ProjectPg for Fixtures {
+        async fn project(
+            &self,
+            _write: &Write,
+            _tx: &tokio_postgres::Transaction<'_>,
+        ) -> std::result::Result<(), ProjectionError> {
+            Ok(())
+        }
+
+        async fn warm(&self, client: &Client) -> std::result::Result<(), ProjectionError> {
+            client
+                .batch_execute(
+                    "CREATE TABLE IF NOT EXISTS accounts (id text PRIMARY KEY, credit_limit bigint NOT NULL)",
+                )
+                .await?;
+            Ok(())
+        }
+
+        async fn hydrate(
+            &self,
+            partition: &str,
+            client: &Client,
+        ) -> std::result::Result<Option<BTreeMap<String, Value>>, ProjectionError> {
+            let id = partition.split_once('/').map_or("", |(_, id)| id);
+            let found = client
+                .query_opt("SELECT credit_limit FROM accounts WHERE id = $1", &[&id])
+                .await?;
+            Ok(found.map(|row| {
+                BTreeMap::from([("creditLimit".to_string(), Value::from(row.get::<_, i64>(0)))])
+            }))
+        }
+    }
+
+    /// A `Prepare` that keeps the base it was given, and attaches it.
+    #[derive(Default)]
+    struct Based(std::sync::Mutex<Vec<BTreeMap<String, Value>>>);
+
+    #[async_trait]
+    impl crate::plugins::Prepare for Arc<Based> {
+        async fn prepare(
+            &self,
+            context: &crate::plugins::Context<'_>,
+            payload: &BTreeMap<String, Value>,
+            target_id: Option<&str>,
+        ) -> std::result::Result<crate::plugins::Prepared, crate::plugins::Refusal> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(context.base.clone());
+            Ok(crate::plugins::Prepared {
+                payload: payload.clone(),
+                target_id: target_id.map(ToString::to_string),
+                attachment: Some(serde_json::json!({ "base": context.base })),
+                ..crate::plugins::Prepared::default()
+            })
+        }
+    }
+
+    /// An engine over the scratch schema: the fixtures' projection, and
+    /// `credit.setLimit` prepared by `based`.
+    async fn fixture_engine(scratch: &mut Scratch, based: &Arc<Based>) -> crate::engine::Engine {
+        let plugins: Plugins = std::iter::once(
+            Plugin::new()
+                .project_pg("Account", Fixtures)
+                .prepare("credit.setLimit", based.clone()),
+        )
+        .collect();
+        let store = PgStore::open(scratch.client().await)
+            .await
+            .expect("opened")
+            .with_projections(&plugins)
+            .await
+            .expect("warmed");
+        let engine = crate::engine::Engine::new(
+            Arc::new(store),
+            Arc::new(crate::memory::MemoryNotifier::default()),
+            Arc::new(crate::memory::FixedClock::at(1000)),
+        )
+        .with_aggregate(crate::aggregate::Aggregate::parse(ACCOUNT).expect("I"))
+        .with_data_capability(crate::manifest::DataCapability::parse(SET_LIMIT).expect("F"))
+        .with_plugins(plugins);
+        engine.load().await.expect("fits");
+        engine
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
+    async fn a_row_only_the_product_s_tables_hold_is_hydrated_into_the_base() {
+        let Some(mut scratch) = Scratch::new("hydrate").await else {
+            return;
+        };
+        let based = Arc::new(Based::default());
+        let engine = fixture_engine(&mut scratch, &based).await;
+        let sql = scratch.client().await;
+        sql.batch_execute("INSERT INTO accounts VALUES ('881', 4000), ('882', 3000)")
+            .await
+            .expect("fixtures loaded by plain SQL");
+        let store = PgStore::open(scratch.client().await)
+            .await
+            .expect("opened")
+            .with_projections(
+                &std::iter::once(Plugin::new().project_pg("Account", Fixtures)).collect(),
+            )
+            .await
+            .expect("warmed");
+        assert_eq!(
+            store.row("Account/881").await.expect("read"),
+            BTreeMap::from([("creditLimit".to_string(), Value::from(4000))]),
+            "hydrated"
+        );
+        assert!(store.row("Account/999").await.expect("read").is_empty());
+        assert!(
+            store.row("Board/881").await.expect("read").is_empty(),
+            "no projection of Board"
+        );
+        engine.submit(set_limit(4500)).await.expect("queued");
+        assert_eq!(
+            *based
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [BTreeMap::from([(
+                "creditLimit".to_string(),
+                Value::from(4000)
+            )])],
+            "the Prepare's base, from the table"
+        );
+        let applied = engine.run_once().await.expect("ran");
+        assert_eq!(applied[0].status, State::Applied, "{applied:?}");
+        assert_eq!(
+            store.row("Account/881").await.expect("read")["creditLimit"],
+            Value::from(4500),
+            "the engine's row now"
+        );
+        store
+            .apply(
+                &Write {
+                    partition: "Account/882".to_string(),
+                    values: BTreeMap::new(),
+                    tombstone: true,
+                },
+                &CommandResult {
+                    command_id: "c_9".to_string(),
+                    status: State::Applied,
+                    data_version: None,
+                    violations: Vec::new(),
+                    review_id: None,
+                    attachment: None,
+                },
+            )
+            .await
+            .expect("archived");
+        assert!(
+            store.row("Account/882").await.expect("read").is_empty(),
+            "an archived row is never hydrated back"
+        );
+        scratch.drop().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
+    async fn an_attachment_is_kept_in_the_queue_and_the_journal_and_answered_once_applied() {
+        let Some(mut scratch) = Scratch::new("attached").await else {
+            return;
+        };
+        let based = Arc::new(Based::default());
+        let engine = fixture_engine(&mut scratch, &based).await;
+        let queued = engine.submit(set_limit(5000)).await.expect("queued");
+        assert_eq!(queued.result.attachment, None);
+        let attachment = serde_json::json!({ "base": {} });
+        assert_eq!(
+            scratch
+                .one::<Value>("SELECT entry->'attachment' FROM {schema}.dataguard_queue")
+                .await,
+            attachment,
+            "kept with the entry"
+        );
+        // Another start reloads the entry, its attachment with it.
+        let restarted = fixture_engine(&mut scratch, &based).await;
+        let applied = restarted.run_once().await.expect("ran");
+        assert_eq!(applied[0].status, State::Applied, "{applied:?}");
+        assert_eq!(applied[0].attachment, Some(attachment.clone()));
+        assert_eq!(
+            restarted
+                .status(&queued.command_id)
+                .await
+                .expect("journaled")
+                .attachment,
+            Some(attachment.clone())
+        );
+        assert_eq!(
+            scratch
+                .one::<Value>("SELECT result->'attachment' FROM {schema}.dataguard_journal")
+                .await,
+            attachment,
+            "in the journal"
         );
         scratch.drop().await;
     }

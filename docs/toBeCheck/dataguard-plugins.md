@@ -118,3 +118,46 @@ catch-up regeneration) add their own points below.
       alone writes `plugin()`, takes the engine with `{ workspace = true }`,
       and its PR touches only its folder, `Cargo.lock` and the registry's
       `Cargo.toml` (M5's proof).
+
+## What shipped (A6)
+
+- The A6 commit (see `docs/DATAGUARD-CUT.md`, row A6), the engine the
+  skeleton names as `tag = "dataguard-v3"` (not cut yet):
+  - B1: the undeclared-key warning reads the submitted payload;
+  - B2: `api::Submission` reads `"target": {"id": …}` beside `targetId`;
+  - D1: `Context::row` (any partition, as the queue leaves it) and
+    `Context.rows` (read-only SQL, `Engine::with_rows`, wired by the
+    skeleton's `plant` over PostgreSQL);
+  - D2: `Prepared.then`, follow-ups in `Submitted.then`, one level only;
+  - D3: `Prepared.attachment`, kept in `Entry`, answered in
+    `CommandResult.attachment` once applied;
+  - D5: `ProjectPg::hydrate`, asked by `PgStore::row`;
+  - D6: `Clock::now_millis`, `Context.now_millis`.
+- Green is the engine's tests over memory, its `#[ignore]`d tests on the
+  Docker PostgreSQL (hydration, attachment across a restart), and the
+  throwaway product (`target.id`, `cx.row`, `now_millis` in its unit). No
+  real product has run any of it.
+
+## To verify (A6)
+
+- [ ] The tag `dataguard-v3` is cut on the A6 commit once its CI is green,
+      and pushed on the owner's word: the skeleton names it already.
+- [ ] ForgeDesMondes on `dataguard-v3` (M1): no `payload key(s) … not
+      declared` warning on the ten DataCapabilities whose wire keys the
+      legacy `submit()` renames; `note_import_invariants.rs:268` passes
+      with its exact warnings.
+- [ ] The rules suite (`tests/rules/business`, `target.id`) runs green
+      against the real server, not only the mock.
+- [ ] `ai.extractFromNotes` as a `Prepare` with `then` (N proposals, then
+      the note): the answer's `then` lists N+1 `submitted`, the note's
+      idempotency key replays the whole without resubmitting a proposal.
+      `campaign.createEntitiesFromNote` needs the outcome of its Entity
+      commands to choose its stamps: check whether a static `then` covers
+      it or the product keeps a route (D2's fallback).
+- [ ] `campaign.exportCampaign`: the archive comes back in
+      `GET /commands/<id>` once applied (`result.attachment`), never before.
+- [ ] A fixture campaign and media loaded by `data::insert_missing` are
+      seen through `hydrate` by `grid-only-for-battlemap` and by export.
+      Expected: the M2 PRs' Postgres tests on the real tables.
+- [ ] The AI DataCapabilities stamp `cx.now_millis`: two in one second are
+      told apart.

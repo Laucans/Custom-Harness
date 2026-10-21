@@ -296,25 +296,40 @@ impl Notifier for MemoryNotifier {
     }
 }
 
-/// A clock a test sets.
+/// A clock a test sets, to the second or to the millisecond.
 #[derive(Default)]
 pub struct FixedClock(AtomicU64);
 
 impl FixedClock {
-    /// A clock at this instant.
+    /// A clock at this instant, in seconds.
     #[must_use]
     pub const fn at(now: u64) -> Self {
+        Self(AtomicU64::new(now.saturating_mul(1000)))
+    }
+
+    /// A clock at this instant, in milliseconds.
+    #[must_use]
+    pub const fn at_millis(now: u64) -> Self {
         Self(AtomicU64::new(now))
     }
 
-    /// Moves the clock.
+    /// Moves the clock, in seconds.
     pub fn set(&self, now: u64) {
+        self.set_millis(now.saturating_mul(1000));
+    }
+
+    /// Moves the clock, in milliseconds.
+    pub fn set_millis(&self, now: u64) {
         self.0.store(now, Ordering::SeqCst);
     }
 }
 
 impl Clock for FixedClock {
     fn now(&self) -> u64 {
+        self.now_millis() / 1000
+    }
+
+    fn now_millis(&self) -> u64 {
         self.0.load(Ordering::SeqCst)
     }
 }
@@ -350,6 +365,7 @@ mod tests {
             data_version: None,
             violations: Vec::new(),
             review_id: None,
+            attachment: None,
         };
         let version = store
             .apply(
@@ -391,8 +407,13 @@ mod tests {
     async fn the_clock_the_notifier_and_the_broken_store_behave() {
         let clock = FixedClock::at(5);
         assert_eq!(clock.now(), 5);
+        assert_eq!(clock.now_millis(), 5000);
         clock.set(9);
         assert_eq!(clock.now(), 9);
+        clock.set_millis(9_250);
+        assert_eq!((clock.now(), clock.now_millis()), (9, 9_250));
+        let precise = FixedClock::at_millis(1_999);
+        assert_eq!((precise.now(), precise.now_millis()), (1, 1_999));
         let ids = Counter::default();
         assert_eq!([ids.fresh(), ids.fresh()], ["new_1", "new_2"]);
         let notifier = MemoryNotifier::default();

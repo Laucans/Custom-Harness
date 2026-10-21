@@ -2,7 +2,11 @@
 //! gathered into [`Plugins`].
 //!
 //! A `DataCapability` crate brings a [`Prepare`]: the code that turns a
-//! submission into the payload and the row it writes, or refuses it. An
+//! submission into the payload and the row it writes, or refuses it. It
+//! reads any row as the queue leaves it ([`Context::row`]) and, over
+//! PostgreSQL, the product's tables ([`Context::rows`]); it may ask for
+//! follow-up submissions and attach what its author reads once the command
+//! is applied ([`Prepared`]). An
 //! aggregate crate brings a [`Judge`] (its invariants written as code) and
 //! a [`Project`] (what follows an applied write). A Capability brings an
 //! [`Answer`]: its query and how its rows become the answer. What units
@@ -24,9 +28,11 @@ use serde_json::Value;
 
 #[cfg(feature = "postgres")]
 use crate::Error;
+use crate::api::Submission;
 use crate::command::Entry;
 use crate::guard::Caller;
 use crate::manifest::DataCapability;
+use crate::reads::Rows;
 use crate::store::{Ids, Write};
 
 /// What units share without owning: one value per type.
@@ -61,6 +67,20 @@ impl Shared {
     }
 }
 
+/// The rows of every partition as the commands still pending leave them:
+/// what the engine lends a [`Prepare`] through [`Context::row`].
+#[async_trait]
+pub trait Partitions: Send + Sync {
+    /// The row of `partition` (`<Aggregate>/<id>`) as the confirmed state
+    /// and the commands pending ahead leave it; empty for a row that does
+    /// not exist.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    async fn row(&self, partition: &str) -> crate::Result<BTreeMap<String, Value>>;
+}
+
 /// What a [`Prepare`] sees beside the submission.
 pub struct Context<'a> {
     /// The `DataCapability` submitted.
@@ -72,10 +92,34 @@ pub struct Context<'a> {
     pub base: &'a BTreeMap<String, Value>,
     /// Now, in seconds since the epoch.
     pub now: u64,
+    /// Now, in milliseconds since the epoch.
+    pub now_millis: u64,
     /// Where a fresh row id comes from.
     pub ids: &'a dyn Ids,
     /// What the units share.
     pub shared: &'a Shared,
+    /// Any partition's row as the queue leaves it; read through
+    /// [`Context::row`].
+    pub partitions: &'a dyn Partitions,
+    /// Read-only SQL over the product's tables: `None` over memory.
+    pub rows: Option<&'a dyn Rows>,
+}
+
+impl Context<'_> {
+    /// The row of any partition (`<Aggregate>/<id>`) as the commands still
+    /// pending leave it — the engine's projected row, the same a `base`
+    /// is — empty when it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`] when the store fails; the engine answers the store's
+    /// error in its place, whatever the `Prepare` returns.
+    pub async fn row(&self, partition: &str) -> Result<BTreeMap<String, Value>, Refusal> {
+        self.partitions
+            .row(partition)
+            .await
+            .map_err(|e| Refusal::unprocessable(e.to_string()))
+    }
 }
 
 /// What a [`Prepare`] turns a submission into.
@@ -88,6 +132,14 @@ pub struct Prepared {
     pub target_id: Option<String>,
     /// What the author should know, beside the engine's own warnings.
     pub warnings: Vec<String>,
+    /// Submissions the engine makes once this command is queued, in
+    /// order, each by the same caller and through the whole submit path;
+    /// not atomic with it. A follow-up's own `Prepare` may not return
+    /// follow-ups.
+    pub then: Vec<Submission>,
+    /// What the author reads in the command's result once it is applied
+    /// (an export's archive), kept with the command until then.
+    pub attachment: Option<Value>,
 }
 
 /// Why a [`Prepare`] refuses: what the server answers with.
@@ -216,6 +268,22 @@ pub trait ProjectPg: Send + Sync {
     /// A [`ProjectionError`]: the store does not start.
     async fn warm(&self, _client: &tokio_postgres::Client) -> Result<(), ProjectionError> {
         Ok(())
+    }
+
+    /// The row of `partition` as the product's tables hold it, for a row
+    /// the engine never wrote (fixtures loaded by SQL): the store asks
+    /// when it has no row of its own for the partition. `None` by
+    /// default: the row does not exist.
+    ///
+    /// # Errors
+    ///
+    /// A [`ProjectionError`]: the store's read fails.
+    async fn hydrate(
+        &self,
+        _partition: &str,
+        _client: &tokio_postgres::Client,
+    ) -> Result<Option<BTreeMap<String, Value>>, ProjectionError> {
+        Ok(None)
     }
 }
 
@@ -455,6 +523,40 @@ mod tests {
             matches!(&failed, ProjectionError::Failed(why) if why.contains("invalid connection string")),
             "{failed:?}"
         );
+    }
+
+    /// A client over an in-memory stream whose server only says it is
+    /// ready: enough for a call that never queries.
+    #[cfg(feature = "postgres")]
+    async fn idle_client() -> (tokio_postgres::Client, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (ours, mut theirs) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut startup = [0_u8; 512];
+            let _ = theirs.read(&mut startup).await;
+            // AuthenticationOk, then ReadyForQuery, idle.
+            theirs
+                .write_all(b"R\0\0\0\x08\0\0\0\0Z\0\0\0\x05I")
+                .await
+                .expect("the handshake written");
+            while theirs.read(&mut startup).await.is_ok_and(|n| n > 0) {}
+        });
+        let config: tokio_postgres::Config = "user=test".parse().expect("a config");
+        let (client, _connection) = config
+            .connect_raw(ours, tokio_postgres::NoTls)
+            .await
+            .expect("the handshake");
+        (client, server)
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn a_projection_hydrates_nothing_unless_it_says_so() {
+        let (client, server) = idle_client().await;
+        assert_eq!(Nothing.hydrate("Account/881", &client).await, Ok(None));
+        assert_eq!(Nothing.warm(&client).await, Ok(()));
+        drop(client);
+        server.abort();
     }
 
     #[cfg(feature = "postgres")]

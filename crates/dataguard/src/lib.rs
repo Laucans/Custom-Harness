@@ -44,7 +44,7 @@ pub mod store;
 pub mod postgres;
 
 /// What the engine refuses, and why.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
     /// A command names a `DataCapability` the server does not register.
     #[error("no DataCapability named {0}")]

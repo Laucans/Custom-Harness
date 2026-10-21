@@ -77,10 +77,15 @@ impl Prepare for Limit {
         if asked > ceiling {
             return Err(Refusal::unprocessable("over the policy"));
         }
+        // Any partition's row, as the queue leaves it.
+        let account = context
+            .row(&format!("Account/{}", target_id.unwrap_or_default()))
+            .await?;
         Ok(Prepared {
             payload: payload.clone(),
             target_id: target_id.map(str::to_string),
-            warnings: Vec::new(),
+            warnings: vec![format!("{} field(s) at {} ms", account.len(), context.now_millis)],
+            ..Prepared::default()
         })
     }
 }
@@ -123,7 +128,7 @@ use serde_json::json;
 fn submission(limit: u64) -> Submission {
     serde_json::from_value(json!({
         "dataCapability": "credit.requestLimitChange",
-        "targetId": "881",
+        "target": { "id": "881" },
         "payload": { "creditLimit": limit },
         "caller": {
             "by": "ana", "from": "credit.LimitForm",
@@ -141,7 +146,9 @@ async fn the_registry_s_units_are_planted_over_memory() {
     let variables = BTreeMap::from([("accountId".to_string(), json!("881"))]);
     let answer = planted.reads.run("credit.calculateRisk", &variables).await.expect("read");
     assert_eq!(answer, json!({ "rows": 0, "accountId": "881" }));
-    planted.engine.submit(submission(4_000)).await.expect("prepared and queued");
+    let queued = planted.engine.submit(submission(4_000)).await.expect("prepared and queued");
+    assert_eq!(queued.partition, "Account/881", "the row named by target.id");
+    assert!(queued.warnings[0].starts_with("0 field(s) at "), "{:?}", queued.warnings);
     match planted.engine.submit(submission(9_000)).await {
         Err(Error::Refused(refusal)) => assert_eq!(refusal.kind, RefusalKind::Unprocessable),
         other => panic!("refused by the Prepare: {other:?}"),
