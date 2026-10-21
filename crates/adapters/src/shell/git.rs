@@ -263,6 +263,14 @@ impl Repo for GitCli {
             .ok())
     }
 
+    async fn merge(&self, reference: &str) -> Outcome<Ran> {
+        self.git(&["merge", "--no-edit", reference]).await
+    }
+
+    async fn take_theirs(&self, path: &str) -> Outcome<Ran> {
+        self.git(&["checkout", "--theirs", "--", path]).await
+    }
+
     async fn abort_merge(&self) -> Outcome<Ran> {
         self.git(&["merge", "--abort"]).await
     }
@@ -517,11 +525,8 @@ mod tests {
         sh(&repo, &["checkout", "-q", "feat"]).await;
         let git = GitCli::new(&repo);
         assert!(!git.merge_in_progress().await.expect("asked"));
-        // The merge conflicts: `git merge` exits non-zero, which `sh` would
-        // refuse — asked through the port's own process runner instead.
-        let merged = process::run("git", &git.argv(&["merge", "main"]), &repo)
-            .await
-            .expect("ran");
+        // The merge conflicts: a non-zero exit, the merge left in progress.
+        let merged = git.merge("main").await.expect("ran");
         assert!(!merged.ok(), "the merge conflicts");
         assert!(git.merge_in_progress().await.expect("asked"));
         assert!(
@@ -537,6 +542,20 @@ mod tests {
         assert!(
             git.dirty_files().await.expect("read").is_empty(),
             "the abort leaves a clean tree"
+        );
+        // Again, resolved with the side merged in, and committed.
+        assert!(!git.merge("main").await.expect("ran").ok());
+        assert!(git.take_theirs("a").await.expect("ran").ok());
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a")).expect("read"),
+            "main"
+        );
+        assert!(git.stage_all().await.expect("ran").ok());
+        assert!(git.commit("merge main").await.expect("ran").ok());
+        assert!(!git.merge_in_progress().await.expect("asked"));
+        assert!(
+            git.merge("main").await.expect("ran").ok(),
+            "nothing left to bring in"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -8,10 +8,13 @@ publish = false
 # The engine is the harness's, taken by git at a release tag (`dataguard-vN`,
 # never moved): a product moves to a newer engine on purpose, in a change of
 # its own. This line is the one place the tag is written: `scripts/register.sh`
-# copies it into the registry's `Cargo.toml`, and `crates/server` reaches the
-# engine through this crate (`dataguard_server::engine`). The product's units
-# are not listed here: they are the registry's dependencies, which
-# `scripts/register.sh` writes.
+# copies it into the registry's `Cargo.toml` and into the root `Cargo.toml`'s
+# `[workspace.dependencies]`, whence a unit takes the engine with
+# `harness-dataguard = { workspace = true }` — one source, so Cargo builds one
+# engine and one `Plugin` type. `crates/server` reaches the engine through
+# this crate (`dataguard_server::engine`). The product's units are not listed
+# here: they are the registry's dependencies, which `scripts/register.sh`
+# writes.
 [dependencies]
 harness-dataguard = { git = "https://github.com/laucans/custom-harness", tag = "dataguard-v2", features = ["postgres", "uuid"] }
 dataguard-registry = { path = "../registry" }

@@ -7,6 +7,7 @@
 use std::rc::Rc;
 
 use async_trait::async_trait;
+use harness_architecture::tree::REGISTRY;
 use harness_core::domain::prompts::splice;
 use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
@@ -77,7 +78,9 @@ fn failing_block(failing: &[String]) -> String {
         .join("\n")
 }
 
-/// The conflict with the base, rendered for the prompt — or nothing.
+/// The conflict with the base, rendered for the prompt — or nothing. The
+/// generated files are regenerated, never resolved, as `branching`
+/// regenerates them when it catches a milestone up.
 fn conflict_block(conflicting: bool, base: &str) -> String {
     if !conflicting {
         return String::new();
@@ -87,7 +90,12 @@ fn conflict_block(conflicting: bool, base: &str) -> String {
          landed there since. Bring the base in and resolve it:\n  git fetch origin && \
          git merge origin/{base}\nResolve every conflict keeping both sides' intent \
          (the other PR's change is not yours to undo), run the gates, commit the \
-         merge and push. A merge, never a rebase, never a force-push.\n"
+         merge and push. A merge, never a rebase, never a force-push.\nTwo files are \
+         generated, never resolved by hand: `Cargo.lock` and `{REGISTRY}`. When they \
+         conflict, take the base's lock (`git checkout --theirs Cargo.lock`), run \
+         `bash scripts/register.sh` (it rewrites the registry from the unit folders the \
+         merge holds), then `cargo metadata --format-version 1 >/dev/null`, and stage \
+         both.\n"
     )
 }
 
@@ -195,6 +203,14 @@ mod tests {
         let said = conflict_block(true, "milestone/53-data");
         assert!(said.contains("git merge origin/milestone/53-data"));
         assert!(said.contains("never a rebase"));
+        for step in [
+            "git checkout --theirs Cargo.lock",
+            "bash scripts/register.sh",
+            "cargo metadata --format-version 1 >/dev/null",
+            "crates/dataguard/registry/Cargo.toml",
+        ] {
+            assert!(said.contains(step), "{step}: {said}");
+        }
         assert_eq!(conflict_block(false, "x"), "");
     }
 

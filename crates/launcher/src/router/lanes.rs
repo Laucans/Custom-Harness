@@ -274,7 +274,17 @@ async fn start_task(
         // (ForgeDesMondes, 2026-10-20: five sessions in one tick, $3.40).
         // The task is held, said once a tick, until a hand catches the
         // branch up — the merge is tried again at every tick.
-        if !branching::catch_up(gh, &branch, &args.branch, log).await {
+        if !crate::dispatch::catch_up::run(
+            here,
+            &args.target_repo_url,
+            &branch,
+            &args.branch,
+            args.dry_run,
+            gh,
+            log,
+        )
+        .await
+        {
             log.say(&format!(
                 "watch: lanes -> #{number} held: {branch} cannot take {} — merge it by hand, the task starts then",
                 args.branch

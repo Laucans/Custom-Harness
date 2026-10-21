@@ -31,9 +31,9 @@ pub const MARKER_OPEN: &str = "<!-- harness:architecture v2 -->";
 /// The version of the rules block in `CLAUDE.md`, counted apart from the
 /// documents: shortening the rules every session pays for must not rewrite
 /// a product's documents.
-pub const CLAUDE_VERSION: u32 = 4;
+pub const CLAUDE_VERSION: u32 = 5;
 /// The opening marker of the rules block in `CLAUDE.md`, with its version.
-pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v4 -->";
+pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v5 -->";
 /// What every version of the opening marker starts with.
 pub const MARKER_PREFIX: &str = "<!-- harness:architecture v";
 /// The closing marker.

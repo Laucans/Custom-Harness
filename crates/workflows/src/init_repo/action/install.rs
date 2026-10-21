@@ -413,7 +413,7 @@ mod tests {
         assert!(
             claude
                 .1
-                .starts_with("# r\n\nmine.\n\n<!-- harness:architecture v4 -->")
+                .starts_with("# r\n\nmine.\n\n<!-- harness:architecture v5 -->")
         );
         assert!(
             lines

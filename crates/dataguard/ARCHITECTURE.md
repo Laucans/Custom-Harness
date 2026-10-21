@@ -153,7 +153,7 @@ no registry yet:
 | --- | --- | --- |
 | `crates/dataguard/server/` | `dataguard-server/` | a library, generic: `plant(url, Shared) -> Planted { engine, reads }`, `router`, `applier`, `migrate`; it re-exports the engine (`dataguard_server::engine`) and the registry. Its `Cargo.toml` holds the engine's one `tag =` line; its `submit` maps a refusal to 404 or 422, its read checks a hash when the request names one, then runs `Reads::run` |
 | `crates/dataguard/registry/` | `dataguard-registry/` | `build.rs` and `src/lib.rs`; its `Cargo.toml` is **not** an asset, `scripts/register.sh` writes it |
-| `scripts/register.sh` | `register.sh` | writes the registry's `Cargo.toml`: the header, the engine line copied from the server's, one sorted `path` line per unit crate (named after its package); `--check` exits 1 when the file differs |
+| `scripts/register.sh` | `register.sh` | writes the registry's `Cargo.toml`: the header, the engine line copied from the server's, one sorted `path` line per unit crate (named after its package); copies the same engine line into the root `Cargo.toml`'s `[workspace.dependencies]`, whence a unit takes `harness-dataguard = { workspace = true }` (one engine, one `Plugin` type); `--check` exits 1 when either file differs or a unit takes the engine from a source of its own |
 | `crates/server/` | `server/` | the product's binary, installed once and expected to diverge: an empty `Shared`, `plant`, `/health`, the subcommands `migrate`, `serve` and `inventory` (each unit with what it needs, read through `Plugins::needs`) |
 
 The registry's build script walks
@@ -180,8 +180,12 @@ fails when two unit crates would be the same library. It watches the whole
 `crates/architecture/tests/dataguard_server.rs` (`--ignored`) builds a
 throwaway product from these assets, the engine by `path`: one unit of each
 kind, the script, `cargo check` and `clippy`, the glue, `server inventory`
-over `DATABASE_URL=memory`, `plant` over memory, then a second
-DataCapability added by its folder and the script alone.
+over `DATABASE_URL=memory`, `plant` over memory, then two DataCapabilities
+added on two branches, each by its folder and the script alone, and merged
+into one base: the merge conflicts on `Cargo.lock` and the registry's
+`Cargo.toml` only, and the base's lock, the script and `cargo metadata`
+resolve it (the harness's `branching::catch_up_locally` does the same when
+it catches a milestone up).
 
 ## The applier's step (`Engine::run_once`)
 
@@ -216,7 +220,8 @@ runs the contract's scenario against both.
 ## Releases: a tag when a product must move
 
 A product takes the engine at a release tag, `dataguard-vN`
-(`assets/dataguard-server/Cargo.toml`, the one line `register.sh` copies),
+(`assets/dataguard-server/Cargo.toml`, the one line `register.sh` copies
+into the registry and the root's `[workspace.dependencies]`),
 never at `main`: a branch would move
 under every product at its next `cargo update`. A tag is not cut per
 change. It is cut when a product has to move to a newer engine, such as a

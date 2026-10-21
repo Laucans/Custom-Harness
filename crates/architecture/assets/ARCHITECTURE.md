@@ -70,8 +70,8 @@ can run a Rust unit, it is compiled to WebAssembly and the host loads it; the
 build and the loading step are part of the unit's task, and its manifest sits
 at the same place as on a server. Such a task says so in its `## Architecture`
 section (`host: hostless`) and its DataCapability manifest carries
-`"host": "hostless"`: the server's dependency line is not asked of it, and
-its closure holds no server. What stays: the reads, the Concepts, the
+`"host": "hostless"`: it is never registered, and its closure holds no
+server. What stays: the reads, the Concepts, the
 mock-up, every gate but the server's. What does not: the DataQueue, the
 holds, the credentials — a hostless program writes through its host's own
 store, behind the same manifests.
@@ -312,11 +312,32 @@ crates/server/                                the product's binary: what it shar
 
 A unit is registered by running `bash scripts/register.sh`, which rewrites
 `crates/dataguard/registry/Cargo.toml` from the folders; nobody edits that
-file by hand, and two units added in parallel are merged by running the
-script again. A unit folder the registry does not name stops the build. A
+file by hand. A unit folder the registry does not name stops the build. A
 hostless unit (`"host": "hostless"`) is never registered.
 `crates/server` is installed once and is the product's from then on;
 `crates/dataguard/server` and the registry's code are the harness's.
+
+**One engine.** The engine, `harness-dataguard`, is taken by git at a
+release tag, written once, in `crates/dataguard/server/Cargo.toml`. The
+script copies that line into the registry and into the root `Cargo.toml`'s
+`[workspace.dependencies]`; a unit that needs the engine (an aggregate's
+`Judge`, a DataCapability's `Prepare`) takes it from there:
+
+```toml
+[dependencies]
+harness-dataguard = { workspace = true }
+```
+
+Never a git line or a tag of its own: two sources build two engines, and
+the server's `Plugin` is not the unit's. `--check` refuses it.
+
+**Generated files are never merged by hand.** Two units added in parallel
+meet in two files only: the registry's `Cargo.toml` and `Cargo.lock`. A
+merge that conflicts on nothing else is resolved by regenerating them: take
+the base's `Cargo.lock`, run `bash scripts/register.sh`, then
+`cargo metadata --format-version 1 >/dev/null`, stage both and commit the
+merge. The harness does it itself when it catches a milestone's branch up
+with its base; a conflict on any other file is a real conflict.
 
 ## Resolver, DataQueue and concurrency
 
@@ -465,6 +486,12 @@ layout:
 
 ### F. DataCapability
 
+A folder, `crates/<system>/data-capabilities/<name>/`: `data-capability.json`
+and a crate whose package and library are named after the folder. The
+crate exposes `pub fn plugin() -> Plugin`, its `Prepare` keyed by the id
+(`docs/DATA-INTEGRITY.md` has the code), and depends on the engine from
+the workspace and on its target aggregate's crate, on no other unit.
+
 ```yaml
 dataCapability: credit.requestLimitChange
 owner: dataguard
@@ -486,6 +513,14 @@ In `docs/DATA-INTEGRITY.md`. H is what every caller sees: five fields —
 `commandId`, `status`, `dataVersion`, `violations`, `reviewId`.
 
 ### I. Aggregate: criticality, invariants, relations
+
+A folder named after the aggregate, `crates/<system>/aggregates/<Aggregate>/`,
+in the system its DataCapabilities share: `aggregate.json` and a crate,
+package `aggregate-<snake>`, library `aggregate_<snake>` (`AiSettings`:
+`aggregate_ai_settings`). The crate exposes `pub fn plugin() -> Plugin`
+with its `Judge` (the invariants as code) and its `Project` or `ProjectPg`
+(what follows a write: a read table, the product's own tables), and keeps
+its tests in its `tests/`, one per invariant id.
 
 ```yaml
 aggregate: Account
@@ -705,6 +740,8 @@ cannot keep yet is a task like any other, never a gate turned off.
 | Effect classification | An `insert` DataCapability without `touches` contains no update, upsert or trigger | F |
 | Ownership | An `update`, `delete`, `upsert` DataCapability, or one with `touches`, requires a DataGuard and the agent review of the write side | F, I |
 | Invariants | Every declared invariant has tests; every DataCapability lists the ones it may affect | F, I |
+| Units placed | A DataCapability sits under the system its id names, an aggregate under its system in a folder named after it, never under `crates/dataguard/` (`data-capability-placed`, `aggregate-placed`) | F, I |
+| Units registered | The registry's `Cargo.toml` and the workspace's engine line are what `scripts/register.sh` writes; every unit is a workspace member by glob, its library named as the registry's glue calls it, the engine taken from the workspace (`units-registered`) | B, F, I |
 | Relations | Every foreign key has a declared `onDelete` and `onUpdate` policy | I |
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
 | Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page; every Micro-UI has a micro-frontend whose listing says its needs and actions; the bundles are rebuilt from the Micro-UIs' code | D, E, N |

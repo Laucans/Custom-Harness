@@ -758,10 +758,59 @@ fn registered(manifest: &str) -> Vec<String> {
         .collect()
 }
 
+/// True when a `Cargo.toml` takes `harness-dataguard` from a source of its
+/// own instead of the workspace, as `scripts/register.sh --check` reads it:
+/// an inline line or a `[…dependencies.harness-dataguard]` table without
+/// `workspace = true`, or a dotted key naming a source.
+fn engine_elsewhere(toml: &str) -> bool {
+    let inherits = |line: &str| {
+        line.split_once("workspace").is_some_and(|(_, rest)| {
+            rest.trim_start()
+                .strip_prefix('=')
+                .is_some_and(|v| v.trim_start().starts_with("true"))
+        })
+    };
+    let mut table = false;
+    let mut inherited = false;
+    for line in toml.lines().map(str::trim) {
+        if line.starts_with('[') {
+            if table && !inherited {
+                return true;
+            }
+            table = line.ends_with("dependencies.harness-dataguard]");
+            inherited = false;
+            continue;
+        }
+        if table && line.starts_with("workspace") && inherits(line) {
+            inherited = true;
+        }
+        if let Some(rest) = line.strip_prefix("harness-dataguard") {
+            let rest = rest.trim_start();
+            if rest.starts_with('=') && !inherits(rest) {
+                return true;
+            }
+            let source = rest.strip_prefix('.').and_then(|key| {
+                ["git", "path", "version", "tag", "branch", "rev"]
+                    .into_iter()
+                    .find(|name| {
+                        key.strip_prefix(name)
+                            .is_some_and(|after| after.trim_start().starts_with('='))
+                    })
+            });
+            if source.is_some() {
+                return true;
+            }
+        }
+    }
+    table && !inherited
+}
+
 /// Every unit crate is named in the registry, and the registry names no
 /// other (`scripts/register.sh --check`, the gate `units-registered`); a
 /// `DataCapability`'s library is named after its folder, an aggregate's
-/// `aggregate_<snake>`: the registry's glue calls them by that name.
+/// `aggregate_<snake>`: the registry's glue calls them by that name; a unit
+/// that needs the engine takes it from the workspace, so the registry
+/// plants one engine.
 fn units_registered(tree: &Tree) -> Vec<String> {
     let mut found = Vec::new();
     let served: Vec<&str> = tree
@@ -793,6 +842,17 @@ fn units_registered(tree: &Tree) -> Vec<String> {
                 ));
             }
         }
+    }
+    for unit in tree
+        .unit_crates
+        .iter()
+        .filter(|unit| engine_elsewhere(&unit.cargo_toml))
+    {
+        found.push(format!(
+            "{}/Cargo.toml takes harness-dataguard from its own source — write \
+             harness-dataguard = {{ workspace = true }}: the registry plants one engine",
+            unit.dir
+        ));
     }
     for unit in &tree.unit_crates {
         let mut parts = unit.dir.split('/').skip(2);
@@ -2628,6 +2688,61 @@ mod tests {
         assert!(
             with("crates/ai", "[package]\nname = \"ai\"\n").is_empty(),
             "not a unit folder"
+        );
+    }
+
+    #[test]
+    fn a_unit_takes_the_engine_from_the_workspace_only() {
+        for inherited in [
+            "[dependencies]\nharness-dataguard = { workspace = true }\n",
+            "[dependencies]\nharness-dataguard = { workspace = true, features = [\"postgres\"] }\n",
+            "[dependencies]\nharness-dataguard.workspace = true\n",
+            "[dependencies.harness-dataguard]\nworkspace = true\n[lib]\nname = \"x\"\n",
+            "[dependencies.harness-dataguard]\nworkspace = true\n",
+            "[dependencies]\nserde_json = \"1\"\n",
+            "[package]\nname = \"harness-dataguard-like\"\n",
+        ] {
+            assert!(!engine_elsewhere(inherited), "{inherited}");
+        }
+        for own in [
+            "[dependencies]\nharness-dataguard = { git = \"x\", tag = \"dataguard-v2\" }\n",
+            "[dependencies]\nharness-dataguard = { path = \"../dataguard\" }\n",
+            "[dependencies]\nharness-dataguard = { workspace = false }\n",
+            "[dependencies]\nharness-dataguard.git = \"x\"\n",
+            "[dependencies]\nharness-dataguard.path = \"x\"\n",
+            "[dependencies]\nharness-dataguard.version = \"2\"\n",
+            "[dependencies]\nharness-dataguard.tag = \"x\"\n",
+            "[dependencies]\nharness-dataguard.branch = \"x\"\n",
+            "[dependencies]\nharness-dataguard.rev = \"x\"\n",
+            "[dev-dependencies.harness-dataguard]\ngit = \"x\"\n",
+            // A source that merely spells it is no inheritance.
+            "[dependencies.harness-dataguard]\ngit = \"https://x/workspace=true\"\n",
+            "[dependencies.harness-dataguard]\ngit = \"x\"\n[lib]\nname = \"x\"\n",
+        ] {
+            assert!(engine_elsewhere(own), "{own}");
+        }
+        assert!(
+            !engine_elsewhere("[dependencies]\nharness-dataguard.features = [\"uuid\"]\n"),
+            "a dotted key that names no source"
+        );
+        let found = units_registered(&Tree {
+            unit_crates: vec![unit(
+                "crates/credit/aggregates/Account",
+                "[package]\nname = \"aggregate-account\"\n\n[dependencies]\nharness-dataguard = { git = \"x\" }\n",
+                false,
+            )],
+            registry: Some(
+                "aggregate-account = { path = \"../../credit/aggregates/Account\" }\n".to_string(),
+            ),
+            ..Tree::default()
+        });
+        assert_eq!(
+            found,
+            [
+                "crates/credit/aggregates/Account/Cargo.toml takes harness-dataguard from its own \
+                 source — write harness-dataguard = { workspace = true }: the registry plants one \
+                 engine"
+            ]
         );
     }
 

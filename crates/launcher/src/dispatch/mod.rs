@@ -19,6 +19,9 @@
 //!   integration branch.
 //! - [`init_repo`] and [`main_agent_merge`] mount nothing: both are
 //!   deterministic commands that only talk to GitHub.
+//! - [`catch_up`] mounts a writable checkout of its own only when GitHub
+//!   refuses to bring the integration branch into a milestone's: there it
+//!   regenerates `Cargo.lock` and the registry, and pushes the merge.
 //!
 //! [`tooling`] holds the gates [`dev_loop`] mounts around its run — the
 //! launcher's own `checks` layer, the only one in this crate.
@@ -33,6 +36,7 @@
 //! it) or `router` (a poll found the conditions met).
 
 pub mod arbiter;
+pub mod catch_up;
 pub mod contract_manager;
 pub mod costs;
 pub mod data_diagnosis;

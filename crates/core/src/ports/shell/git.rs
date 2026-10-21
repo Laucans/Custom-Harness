@@ -256,6 +256,38 @@ pub trait Repo {
         Ok(false)
     }
 
+    /// `merge --no-edit <reference>`: brings `reference` into the current
+    /// branch. A conflict is a non-zero exit, the merge left in progress
+    /// for its conflicts to be read ([`Self::dirty_files`]) and resolved.
+    ///
+    /// Refused by default, like [`Self::abort_merge`]: only a real `git`
+    /// and the fakes that test a catch-up know how.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn merge(&self, reference: &str) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: format!("this git cannot merge {reference}"),
+        })
+    }
+
+    /// `checkout --theirs -- <path>`: during a merge, the conflicted `path`
+    /// as the branch being merged in has it.
+    ///
+    /// Refused by default, like [`Self::merge`].
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn take_theirs(&self, path: &str) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: format!("this git cannot take theirs of {path}"),
+        })
+    }
+
     /// `merge --abort`: put the tree back as it was before the merge began.
     ///
     /// Refused by default, like [`Self::create_orphan_branch`]: only a real

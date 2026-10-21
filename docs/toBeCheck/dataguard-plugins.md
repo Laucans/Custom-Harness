@@ -32,9 +32,11 @@ catch-up regeneration) add their own points below.
       `crates/server/` is overwritten.
 - [ ] A unit crate that takes the engine itself (an aggregate's `Judge`, a
       DataCapability's `Prepare`) resolves to the same `harness-dataguard`
-      as the server: same `git` URL and tag, or `workspace = true` from a
-      root `[workspace.dependencies]`. Two tags compile two engines whose
-      `Plugin` types do not match. A5c's cards say which form.
+      as the server. Decided in A5c: `harness-dataguard = { workspace = true }`,
+      the root's `[workspace.dependencies]` line written by `register.sh`
+      from the server's. Proved on the throwaway product (engine by `path`);
+      on ForgeDesMondes after M1, `cargo tree -i harness-dataguard` shows one
+      package, at the tag.
 - [ ] The root `Cargo.toml` lists `crates/dataguard/registry`,
       `crates/server` and the three unit globs (`workspace-members-by-glob`,
       A5b).
@@ -75,3 +77,44 @@ catch-up regeneration) add their own points below.
 - [ ] Narrowing, if it comes back: a unit's closure carries
       `crates/dataguard/registry/`, which reaches every unit crate by path,
       so the graph pass brings every unit folder back (cargo needs them).
+
+## What shipped (A5c)
+
+- The A5c commit (see `docs/DATAGUARD-CUT.md`, row A5c): the rule cards
+  (`rules.rs`: Capability's four items, DataCapability's `plugin()` and
+  `Prepare`, Aggregate's crate with `Judge` and `Project`/`ProjectPg`, the
+  engine from the workspace), `CLAUDE-rules.md` v5 (rule 18, a unit is its
+  folder), `ARCHITECTURE.md` (§F, §I, *One engine*, *Generated files*, two
+  gate rows), `DATA-INTEGRITY.md` (*The units' code*), `register.sh` (the
+  root's engine line, `--check` refusing a unit's own engine source),
+  `branching::catch_up_locally` wired by the launcher's
+  `dispatch/catch_up.rs`, `pr_fix`'s conflict prompt, the view's paths.
+- Green is the fakes (`branching` tests) and the throwaway product's two
+  branches, whose merge conflicted on `Cargo.lock` and the registry's
+  `Cargo.toml` and was resolved by the regeneration alone. No live watch
+  has met such a conflict yet.
+
+## To verify (A5c)
+
+- [ ] `harness init-repo` (or the watch's upgrade) on ForgeDesMondes writes
+      `harness-dataguard` under the root's `[workspace.dependencies]`, below
+      its own entries, and appends the CLAUDE rules v5 block in place of v4.
+- [ ] A live watch whose milestone branch GitHub refuses to catch up on
+      `Cargo.lock` and the registry's `Cargo.toml` only: the journal says
+      `… holds main_agent: Cargo.lock and crates/dataguard/registry/Cargo.toml
+      regenerated, never merged by hand`, the merge commit is on the
+      milestone's branch, and the held task starts at the next tick.
+      Expected cost: one clone (`catch-up`, under the workspaces) the first
+      time, then a fetch.
+- [ ] Same, with a source file conflicting too: the watch still says
+      `held: … cannot take main_agent`, the `catch-up` checkout is left
+      clean (merge aborted, released), nothing pushed.
+- [ ] `cargo metadata` in the `catch-up` checkout fetches the engine by git
+      within its 10-minute limit on a cold cargo cache.
+- [ ] A `pr_fix` session on a PR conflicting on the generated pair follows
+      the prompt: `git checkout --theirs Cargo.lock`, `register.sh`,
+      `cargo metadata`, no hand-edited registry line in its merge commit.
+- [ ] A session building a DataCapability or an aggregate from its card
+      alone writes `plugin()`, takes the engine with `{ workspace = true }`,
+      and its PR touches only its folder, `Cargo.lock` and the registry's
+      `Cargo.toml` (M5's proof).

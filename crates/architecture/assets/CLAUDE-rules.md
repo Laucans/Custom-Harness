@@ -1,4 +1,4 @@
-<!-- harness:architecture v4 -->
+<!-- harness:architecture v5 -->
 ## Agent-native architecture — the rules every change is checked against
 
 This repository follows the agent-native architecture of
@@ -36,8 +36,9 @@ crates/<system>/capabilities/<name>/    a Capability + capability.json (B)
 crates/<system>/queries/<name>.graphql  persisted queries, queries/registry.json (C)
 crates/<system>/<name>/                 a system's plumbing (adapter, source, read crate)
 crates/<system>/data-capabilities/<name>/  a DataCapability + data-capability.json (F), under its id's system
-crates/<system>/aggregates/<Aggregate>/aggregate.json  invariants, relations (I)
-crates/data/  crates/dataguard/         the Data layer; the DataQueue, DataGuard, Resolver
+crates/<system>/aggregates/<Aggregate>/  an aggregate's crate + aggregate.json (I): Judge, projection, plugin()
+crates/data/                            the Data layer
+crates/dataguard/server/  registry/     the engine planted with every unit; the registry register.sh writes
 crates/server/                          the one binary: the shell's wire protocol, GET /health
 crates/ports/<port>/[<provider>/]       a port (trait, fake, contract tests) and its adapters
 crates/platform/conformance/            the Concepts' conformance runner
@@ -47,7 +48,7 @@ mock/                                   the mock-up: pages.json (N), pages/, com
 rules.json  tests/rules/                the product's rules and their tests (P)
 ports.json  .sops.yaml  secrets/        the ports (Q) and their encrypted secrets
 contracts/*.schema.json                 the seventeen contracts
-scripts/                                queries.sh, isolation.sh, dump-schema.sh, rules-runtime.sh
+scripts/                                register.sh, queries.sh, isolation.sh, dump-schema.sh, rules-runtime.sh
 ```
 
 ### Rules
@@ -60,7 +61,7 @@ scripts/                                queries.sh, isolation.sh, dump-schema.sh
    the DataGuard); it reaches no other
    Capability, DataCapability or system, and no slice is listed by name in
    the workspace. Gates: `capability-isolation`, `read-only`,
-   `workspace-members-by-glob`, `data-capability-registered`.
+   `workspace-members-by-glob`, `units-registered`.
 3. **A Capability's logic is local**: shared meaning is a Concept with
    fixtures, never a shared library. Gates: `concepts-documented`,
    `semantic-conformance`.
@@ -110,6 +111,16 @@ scripts/                                queries.sh, isolation.sh, dump-schema.sh
     changed: stop with `AGENT_LOOP_STOP: contract <id> — <what you need>`;
     the contract manager evolves it for every consumer. Gate:
     `contracts-untouched`.
+18. **A unit is its folder.** Adding an aggregate, a DataCapability or a
+    Capability edits no shared file: write its folder, then run
+    `bash scripts/register.sh`. `crates/dataguard/registry/Cargo.toml` and
+    `Cargo.lock` are generated, never edited or merge-resolved by hand: on
+    a conflict there, take the base's `Cargo.lock`
+    (`git checkout --theirs Cargo.lock` while merging the base in), rerun
+    the script and `cargo metadata --format-version 1 >/dev/null`, stage
+    both. A unit that needs the engine takes it from the workspace:
+    `harness-dataguard = { workspace = true }`. Gates: `units-registered`,
+    `aggregate-placed`, `data-capability-placed`.
 
 ### What a session does before writing code
 

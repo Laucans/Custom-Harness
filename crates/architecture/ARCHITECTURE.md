@@ -73,8 +73,11 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   to one is a change to the other, and `tests/gates_parity.rs` runs both on
   the same fixtures. `units-registered` is mirrored by its outcome, not its
   text: the loop checks that the registry's `Cargo.toml` names every unit
-  crate and no other, and the libraries' names; the gate runs
-  `scripts/register.sh --check`, which also compares the engine's line.
+  crate and no other, the libraries' names, and that a unit takes the
+  engine from the workspace (`harness-dataguard = { workspace = true }`);
+  the gate runs `scripts/register.sh --check`, which also compares the
+  engine's line in the registry and in the root's `[workspace.dependencies]`
+  with the server's.
 - **Units live under their system.** Aggregates, `DataCapabilities` and
   Capabilities are read under `crates/<system>/{aggregates,
   data-capabilities,capabilities}/`, the DataGuard's folder included, so
@@ -84,3 +87,18 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   `crates/dataguard/registry/` (and the server's `Cargo.toml`, which
   `scripts/register.sh` copies the engine's line from); `closure::describe`
   marks it "regenerated, never edited".
+- **One engine per product, by the workspace.** The engine's line is
+  written once, in the server's `Cargo.toml` (its release tag);
+  `scripts/register.sh` copies it into the registry and into the root
+  `Cargo.toml`'s `[workspace.dependencies]` (added under that header, or in
+  a new section, when missing; replaced when it differs). A unit takes
+  `harness-dataguard = { workspace = true }`, so Cargo builds one engine and
+  the server's `Plugin` is the unit's. A unit with a source of its own fails
+  `--check` (a warning when the script writes, so `init-repo` still installs
+  on a product not migrated yet). The script edits the root only on install
+  or a tag move, never when a unit is added.
+- **The cards are the units' contract with a session.** `rules.rs` tells a
+  session building an aggregate, a `DataCapability` or a Capability the
+  conventional items the glue calls (`plugin()`, or the four items), the
+  one script it runs, and the engine's line; the parity tests keep every
+  gate of `gates.yml` cited by a card.

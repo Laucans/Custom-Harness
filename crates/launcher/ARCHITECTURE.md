@@ -37,6 +37,9 @@ src/dispatch/     one module per thing that can be run, plus what they share
                      the shared read-only checkout, the writes on the integration branch
   pr_review.rs      an advisory review on a PR
   pr_fix.rs         one repair attempt on a red PR — a writable checkout of its own
+  catch_up.rs       a milestone's branch brought up to the integration branch: GitHub's
+                     merge, else a writable `catch-up` checkout where the generated
+                     files are regenerated (`branching::catch_up_locally`)
   test_debt.rs      the tests one file owes, from its test-debt issue — writable too,
                      on the integration branch
   rules.rs          the rules and their tests, or a contest settled, from a rules'

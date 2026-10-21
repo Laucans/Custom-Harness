@@ -43,6 +43,13 @@ exclude_re = [
   "router/lanes\\.rs:.*(replace (run_schedule|start_task|start_route)| in (run_schedule|start_task|start_route)$)",
   "router/mod\\.rs:.* in building_boards$",
   "router/routes\\.rs:.*replace run_dev_loop ",
+  # `run_dev_loop` holds its milestone on a refused catch-up and runs the
+  # loop: both wired to real adapters (`dispatch::catch_up`, `dev_loop::run`).
+  "router/routes\\.rs:.* in run_dev_loop$",
+  # A catch-up's wiring: GitHub's merge, then a mounted checkout with a
+  # `GitCli` and `Processes` handed to `branching::catch_up_locally`, whose
+  # decisions are tested in `workflows` against the fakes.
+  "dispatch/catch_up\\.rs:",
   # The arms that run a paid workflow, here or on a lane: the workflow is
   # tested in `workflows`, the arm only wires the real adapters to it.
   "router/routes\\.rs:.*replace (fix_here|rules_here|contract_here|run_on_lane|run_main_agent_merge) ",

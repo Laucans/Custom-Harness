@@ -221,7 +221,9 @@ Current contents:
 | `sections` | the canonical sections of an issue body. `split` writes `Scope` and `Architecture`, which no refinement phase ever rewrites; the refinement writes the five after them. |
 | `explore` | the repo map: `Ground` (free — glues `CLAUDE.md`, `docs/ARCHITECTURE.md`, `docs/PROJECT.md` and the tracked-file list verbatim) then one paid session that condenses it. A workflow wires both by implementing `Explored` on its state. |
 | `sentinel` | the integration branch's own CI, read by `harness watch` on every full read, before the snapshot (`GitHub::branch_checks`): red opens one `harness:human` issue — found again by its title, never twice — and the router holds every task start and merge (`routing::base_red`) until the branch is green again, runs still in progress after a red included; green closes it. The reviews, repairs, rules, test debt and decisions go on. |
+| `branching` | a milestone's branch name, and what keeps it up to the integration branch: `catch_up` (GitHub's merge) and `catch_up_locally` (the same merge in a checkout through `Repo` and `Process`; a conflict on `Cargo.lock` and the registry's `Cargo.toml` alone is regenerated — the base's lock, `scripts/register.sh`, `cargo metadata` — committed and pushed; any other conflict aborts the merge and stays a refusal). `pr_fix`'s prompt tells its session the same steps. |
 | `fake_github` | `#[cfg(test)]` — an in-memory `GitHub` shared by the workflows' tests. A fake adapter, not a mock. |
+| `fake_git` | `#[cfg(test)]` — an in-memory `Repos`: every verb recorded, the ones named failing fail, a merge conflicting on the files a test names (`FakeRepos::conflicting`). |
 | `fake_disk` | `#[cfg(test)]` — an in-memory `Disk`: what it holds reads back, what was written to it can be re-read. |
 | `fake_locks` | `#[cfg(test)]` — `Grants`, a lock nobody else holds. It exists so mounting a table creates no `.lock-*` directory anywhere. |
 

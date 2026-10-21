@@ -433,6 +433,13 @@ fn breaks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
             "units-registered",
         ),
         (
+            // An engine of its own: two engines, two `Plugin` types.
+            "engine-elsewhere",
+            "crates/credit/aggregates/Account/Cargo.toml",
+            "[package]\nname = \"aggregate-account\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nharness-dataguard = { git = \"https://example.invalid/harness.git\", tag = \"dataguard-v1\" }\n",
+            "units-registered",
+        ),
+        (
             // A unit whose folder the script never saw: its crate is there,
             // the registry does not name it.
             "unregistered",
@@ -575,5 +582,59 @@ fn a_hostless_unit_waits_on_no_registry_on_both_sides() {
             .any(|v| v.contains("is missing and 1 unit crate(s) wait on the registry")),
         "{:?}",
         loop_violations(&repo)
+    );
+}
+
+#[test]
+fn the_workspace_takes_the_engine_as_the_server_does() {
+    // The script wrote the server's line under [workspace.dependencies],
+    // whence a unit takes `harness-dataguard = { workspace = true }`.
+    let repo = repo("workspace-engine");
+    let root = fs::read_to_string(repo.root.join("Cargo.toml")).expect("read");
+    let line = "harness-dataguard = { git = \"https://example.invalid/harness.git\", tag = \"dataguard-v2\" }";
+    assert!(
+        root.ends_with(&format!("\n[workspace.dependencies]\n{line}\n")),
+        "{root}"
+    );
+    let (ok, said) = gate(&repo, "units-registered");
+    assert!(ok, "{said}");
+    // The workspace's line edited by hand: refused, then put back by the
+    // script where it stands.
+    let edited = root.replace("dataguard-v2", "dataguard-v1");
+    write(&repo.root, "Cargo.toml", &edited);
+    let (ok, said) = gate(&repo, "units-registered");
+    assert!(!ok, "{said}");
+    assert!(
+        said.contains("::error file=Cargo.toml::[workspace.dependencies]"),
+        "{said}"
+    );
+    register(&repo.root);
+    assert_eq!(
+        fs::read_to_string(repo.root.join("Cargo.toml")).expect("read"),
+        root
+    );
+    // A tag moved on the server: the script moves the workspace's with it.
+    let server = repo.root.join("crates/dataguard/server/Cargo.toml");
+    let moved = fs::read_to_string(&server)
+        .expect("read")
+        .replace("dataguard-v2", "dataguard-v3");
+    write(&repo.root, "crates/dataguard/server/Cargo.toml", &moved);
+    register(&repo.root);
+    let root = fs::read_to_string(repo.root.join("Cargo.toml")).expect("read");
+    assert_eq!(root.matches("harness-dataguard =").count(), 1, "{root}");
+    assert!(root.contains("tag = \"dataguard-v3\""), "{root}");
+    let (ok, said) = gate(&repo, "units-registered");
+    assert!(ok, "{said}");
+    // A section of the product's own: the line goes under its header.
+    write(
+        &repo.root,
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*/capabilities/*\", \"crates/*/data-capabilities/*\", \"crates/*/aggregates/*\", \"crates/dataguard/server\", \"crates/dataguard/registry\"]\n\n[workspace.dependencies]\nserde = \"1\"\n\n[profile.release]\nlto = true\n",
+    );
+    register(&repo.root);
+    let root = fs::read_to_string(repo.root.join("Cargo.toml")).expect("read");
+    assert!(
+        root.contains("[workspace.dependencies]\nharness-dataguard = { git = \"https://example.invalid/harness.git\", tag = \"dataguard-v3\" }\nserde = \"1\"\n\n[profile.release]\nlto = true"),
+        "{root}"
     );
 }

@@ -2139,7 +2139,8 @@ pub const DATA_MODEL: &str = "data/model.json";
 /// Where the aggregates' integrity rules drafted at creation lie, one
 /// `<Aggregate>.aggregate.json` each, as contract I has it: the task that
 /// builds an aggregate installs its own at
-/// `crates/dataguard/aggregates/<Aggregate>/aggregate.json`.
+/// `crates/<system>/aggregates/<Aggregate>/aggregate.json`, in the system
+/// its `DataCapabilities` share.
 pub const DATA_AGGREGATES_DIR: &str = "data/aggregates";
 
 /// The draft of one aggregate, under [`DATA_AGGREGATES_DIR`].
@@ -2502,8 +2503,9 @@ fn data_section(c: &Creation) -> String {
          (contract M, {} tables) and one `mock/{DATA_AGGREGATES_DIR}/<Aggregate>.aggregate.json` \
          per aggregate (contract I, {} aggregates, {invariants} invariants). The task that \
          builds an aggregate installs its draft at \
-         `crates/dataguard/aggregates/<Aggregate>/aggregate.json` and moves its tables into \
-         `data/model.json` with its migration.\n\n",
+         `crates/<system>/aggregates/<Aggregate>/aggregate.json` (the system its \
+         DataCapabilities share, never `crates/dataguard/`), beside its crate, and moves its \
+         tables into `data/model.json` with its migration.\n\n",
         d.tables.len(),
         d.aggregates.len()
     );

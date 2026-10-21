@@ -53,9 +53,8 @@ pub const SHARED: [&str; 7] = [
 
 /// True when `path` is one a round may touch whatever its unit.
 ///
-/// A lockfile, a registry, the server's manifest (a `DataCapability`
-/// registers itself on its dependency line), a bundle the build script
-/// rewrites.
+/// A lockfile, a registry, the server's manifest (the engine's line
+/// `scripts/register.sh` copies), a bundle the build script rewrites.
 #[must_use]
 pub fn shared(path: &str) -> bool {
     SHARED.contains(&path)

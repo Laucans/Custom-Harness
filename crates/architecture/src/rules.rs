@@ -19,60 +19,59 @@ const CAPABILITY: &str = "\
 UNIT: Capability — a read-only unit that collects, transforms or enriches
 data for one system (bounded context).
 
-Where it lives: crates/<system>/capabilities/<name>/, one Cargo crate, with
-capability.json beside Cargo.toml (contract B, contracts/b-capability-manifest
-.schema.json). The workspace lists it by glob; the crate's name is its
-folder's.
+Where it lives: crates/<system>/capabilities/<name>/, one Cargo crate named
+after its folder, with capability.json beside Cargo.toml (contract B,
+contracts/b-capability-manifest.schema.json). The workspace lists it by
+glob. Adding one edits no shared file: write the folder, then run
+`bash scripts/register.sh`, which rewrites crates/dataguard/registry/
+Cargo.toml (never edited by hand); commit it and Cargo.lock with the unit.
 
 Its manifest (capability.json): `capability` (`<system>.<name>`, the id a
-Micro-UI's `needs` cites), `system` (the folder it sits under), `version`,
-`description` (what the composer reads), `implements` (`Risk@3`, when it
-implements a Concept), `input`, `output`, `reads` (its persisted queries,
-contract C: files under crates/<system>/queries/, registered in
-queries/registry.json), `cache`.
+Micro-UI's `needs` cites), `system` (its folder), `version`, `description`
+(what the composer reads), `implements` (`Risk@3`), `input`, `output`,
+`reads` (its persisted queries, contract C, under crates/<system>/queries/),
+`cache`.
 
-What it may know: the data it reads, through its persisted queries and
-read-only credentials (DATABASE_URL_READONLY), and the Concepts it
-implements. Its logic is local: duplicate a computation rather than share a
-library, and declare the Concept it implements.
+Its crate exposes four items, which the registry's glue turns into the
+server's read: `pub const CAPABILITY: &str` (its id), `pub const SQL: &str`
+(its query, run in a READ ONLY transaction), `pub const VARIABLES: &[&str]`
+(the request's variables, bound to $1, $2, … in order) and `pub fn
+answer(rows: &Value, variables: &BTreeMap<String, Value>) -> Value`. No
+engine dependency: it never names harness-dataguard.
 
-What it must not know: any other Capability, any DataCapability, the
-DataQueue, the DataGuard, the Resolver — no import, no call, no `invokes`
-field, no dependency on their crates. It depends only on crates of its own
-system that are plumbing (they reach no slice and no other system), and
-reads through its system's read crate (`<system>-read`), itself on the
-Data layer (`crates/data`, the one read-only connection): never a database
-driver of its own (sqlx, tokio-postgres, postgres, diesel, sea-orm,
-rusqlite, mysql are not in its `[dependencies]`). No write statement, no
-DATABASE_URL. No `#[path]`, `include!` or symlink that leaves its folder.
+What it may know: the data it reads, and the Concepts it implements. Its
+logic is local: duplicate a computation rather than share a library. What
+it must not know: any other Capability, any DataCapability, the DataQueue,
+the DataGuard, the Resolver — no import, no call, no `invokes` field, no
+dependency on their crates. It depends only on its own system's plumbing,
+reads through its system's read crate (`<system>-read`, on crates/data),
+never a database driver of its own (sqlx, tokio-postgres, postgres, diesel,
+sea-orm, rusqlite, mysql), no write statement, no DATABASE_URL, no `#[path]`,
+`include!` or symlink that leaves its folder.
 
-Its reads are registered: after adding or changing a query file, run
-`bash scripts/queries.sh` and commit queries/registry.json (contract C);
-each query file opens with a `# fields: <entity>.<field>, …` line. Teach
-the mock server its answer: a read in mock/src/reads.js.
-
-A Concept it implements must be documented and proved: concepts/<Concept>/
-v<n>/concept.json naming it (contract A), fixtures.json beside it, and a
-test of this crate calling `platform_conformance::check(\"<Concept>@<n>\",
-|input| …)` (crates/platform/conformance, a dev-dependency).
+Its reads are registered: after adding or changing a query file (first line
+`# fields: <entity>.<field>, …`), run `bash scripts/queries.sh` and commit
+queries/registry.json. Teach the mock server its answer (mock/src/reads.js).
+A Concept it implements is documented (concepts/<Concept>/v<n>/concept.json,
+fixtures.json beside it) and proved by a test calling
+`platform_conformance::check(\"<Concept>@<n>\", |input| …)`.
 
 Gates that judge it: manifests-conform-to-contracts (B), capability-isolation
 (scripts/isolation.sh on the cargo metadata graph, and no `invokes`),
+units-registered (named in the registry the script writes),
 concepts-documented, semantic-conformance, queries-registered, read-only,
 contracts-untouched (its manifest is its milestone's to change: a consumer
 that needs it changed stops with `AGENT_LOOP_STOP: contract <id> — <what it
-needs>`, the contract manager evolves it).
+needs>`).
 The loop checks the same after the round, and that the round touched
 nothing outside the unit's closure.
 Run them before the PR: `npx --yes ajv-cli@5 validate --spec=draft2020 -s
 contracts/b-capability-manifest.schema.json -d <manifest>`,
-`bash scripts/isolation.sh` and `bash scripts/queries.sh --check`.
-Outside the product, through a port only: ports-declared (it names the
-ports it uses, never a stateful one, and they list it back) and externals-behind-ports (no HTTP
-client, provider SDK or database client but in a port's adapter). The
-rules (contract P): rule-tests-untouched (rules.json and tests/rules/ are
-the rules' task's, a development conforms or writes CONTEST.md) and
-rules-hold (a rule's test passes once every unit it needs is built).";
+`bash scripts/isolation.sh`, `bash scripts/register.sh --check` and
+`bash scripts/queries.sh --check`.
+Outside the product, through a port only: ports-declared (never a stateful
+port) and externals-behind-ports. The rules (contract P): rule-tests-untouched
+(a development conforms or writes CONTEST.md) and rules-hold.";
 
 const MICRO_UI: &str = "\
 UNIT: Micro-UI — a screen fragment (TypeScript) that declares what it reads
@@ -149,57 +148,60 @@ const DATA_CAPABILITY: &str = "\
 UNIT: DataCapability — a typed command, the only thing that writes, always
 behind the DataGuard and through the DataQueue.
 
-Where it lives: crates/<system>/data-capabilities/<name>/ — a folder, one
-Cargo crate named after its folder, with data-capability.json beside
-Cargo.toml (contract F, contracts/f-data-capability.schema.json). Its
-system is its id's namespace (campaign.saveEntity is `campaign`, in
+Where it lives: crates/<system>/data-capabilities/<name>/ — one Cargo crate
+whose package and library are named after its folder (`save-entity`,
+`save_entity`), with data-capability.json beside Cargo.toml (contract F).
+Its system is its id's namespace (campaign.saveEntity sits in
 crates/campaign/data-capabilities/save-entity/); its `owner` is always
-`dataguard` — it runs behind the DataGuard, it does not belong to a system
-called dataguard. Adding one edits no shared file but the server's
-`[dependencies]` line (crates/dataguard/server/Cargo.toml, installed by
-the harness: its build script registers every manifest, and the engine it
-binds — harness-dataguard, taken by git — is never yours to read or edit).
-When no server runs it (`host: hostless` in the task, `\"host\":
+`dataguard`, which runs it and houses it nowhere. Adding one edits no
+shared file: write the folder, then run `bash scripts/register.sh`, which
+rewrites crates/dataguard/registry/Cargo.toml (never edited by hand: a
+folder it does not name stops the build); commit it and Cargo.lock with
+the unit. When no server runs it (`host: hostless`, `\"host\":
 \"hostless\"` in the manifest), it is compiled to WebAssembly for its host
-and no dependency line is asked of it.
+and never registered.
+
+Its code: `pub fn plugin() -> Plugin` returning `Plugin::new().prepare(\"<id>\",
+YourPrepare)`. Its `Prepare` (harness_dataguard::plugins) turns the
+submission into the payload and row it writes (`Prepared`), or refuses it
+before anything is queued (`Refusal::not_found`, 404; `Refusal::unprocessable`,
+422). What it reads from the server's `Shared` it declares with
+`.needs::<T>()`: the server refuses to start while a need is unfilled.
+Its dependencies: the engine from the workspace, `harness-dataguard = {
+workspace = true }` (never a git line or tag of its own: one engine, one
+`Plugin` type), and the aggregate crate its `target.aggregate` names. No
+other unit.
 
 Its manifest: `dataCapability` (`<system>.<name>`), `owner: dataguard`,
 `version`, `effect` (insert | update | delete | upsert), `target` (the
 aggregate and its id), `touches` (the existing fields it changes — empty
-with `insert` is the fast path), `payload`, `mode` (confirm_on_stale |
-overwrite | relative), `invariants` (ids the target aggregate declares),
-`permissions`, `callableBy` (Micro-UI ids, a system, or `*`),
+with `insert` is the fast path; never a derived field), `payload`, `mode`
+(confirm_on_stale | overwrite | relative), `invariants` (ids its aggregate
+declares), `permissions`, `callableBy` (Micro-UI ids, a system, or `*`),
 `idempotencyKey`.
 
-Fast path or not: an `insert` touching nothing is a pure addition — read
-side, proposed by a read agent, merged on green gates — and its code
-contains no UPDATE, ON CONFLICT, UPSERT, DELETE or CREATE TRIGGER. Anything
-else is the write side: its PR is reviewed by an agent, and milestone_merge
-merges it once the review is clean and every check green. Teach the mock
-server its judgement: an entry in mock/src/commands.js. A port that keeps
-state (a customer, a file, a user) is written through a DataCapability only.
-
-What it may know: its target aggregate (aggregate.json: fields, invariants,
-relations) and the DataGuard's plumbing. What it must not know: any
-Capability, any other DataCapability, any other system's crates.
+Fast path or not: an `insert` touching nothing is a pure addition, merged on
+green gates, and its code holds no UPDATE, ON CONFLICT, UPSERT, DELETE or
+CREATE TRIGGER. Anything else is the write side: its PR is reviewed by an
+agent, and milestone_merge merges it once the review is clean and every
+check green. Teach the mock server its judgement (mock/src/commands.js). A
+port that keeps state is written through a DataCapability only. What it
+must not know: any Capability, any other DataCapability, any other system's
+crates.
 
 Gates that judge it: manifests-conform-to-contracts (F),
 data-capability-placed (its folder is its id's namespace, never
-crates/dataguard/), capability-isolation (scripts/isolation.sh),
-units-registered
-(named in the registry by scripts/register.sh, its library named after its folder),
-effect-classification (a pure insert stays one), ownership (its target
-aggregate declares every field it touches), invariants-tested (every
-invariant it lists exists on the aggregate), write-actions (the Micro-UIs
-that cite it are admitted by callableBy), contracts-untouched (its manifest
-is its milestone's to change: a consumer that needs it changed stops with
+crates/dataguard/), capability-isolation (its target aggregate's crate only),
+units-registered (named in the registry, its library named after its folder,
+the engine from the workspace), effect-classification, ownership (its
+aggregate declares every field it touches, none derived), invariants-tested,
+write-actions (the Micro-UIs that cite it are admitted by callableBy),
+contracts-untouched (a consumer that needs its manifest changed stops with
 `AGENT_LOOP_STOP: contract <id> — <what it needs>`).
-Outside the product, through a port only: ports-declared (it names the
-ports it uses, and they list it back) and externals-behind-ports (no HTTP
-client, provider SDK or database client but in a port's adapter). The
-rules (contract P): rule-tests-untouched (rules.json and tests/rules/ are
-the rules' task's, a development conforms or writes CONTEST.md) and
-rules-hold (a rule's test passes once every unit it needs is built).";
+Run `bash scripts/register.sh --check` and `bash scripts/isolation.sh` before
+the PR. Outside the product, through a port only: ports-declared and
+externals-behind-ports. The rules (contract P): rule-tests-untouched and
+rules-hold.";
 
 const PERSISTED_QUERY: &str = "\
 UNIT: Persisted query — a declared, hashed read a Capability goes through.
@@ -258,48 +260,68 @@ compositions-resolve (every Micro-UI it lays out exists), pages-mocked
 (a page names it in mock/pages.json), design-system-single-writer.";
 
 const AGGREGATE: &str = "\
-UNIT: Aggregate — one aggregate's structure: its aggregate.json, its
-invariants with their tests, and the migration that shapes its tables.
-Write side: its PR is reviewed before it merges.
+UNIT: Aggregate — one aggregate's structure and code: its aggregate.json,
+its invariants as code with their tests, its projection, and the migration
+that shapes its tables. Write side: its PR is reviewed before it merges.
 
-Where it lives: crates/<system>/aggregates/<Aggregate>/aggregate.json
-(contract I, contracts/i-aggregate.schema.json), the migration under the
-DataGuard's migrations, the tests in the aggregate's crate, and
-data/model.json updated in the same PR (contract M: every table and field
-with its type, nullability, purpose, rules and references).
+Where it lives: crates/<system>/aggregates/<Aggregate>/, a folder named
+after it and one Cargo crate: package `aggregate-<snake>`, library
+`aggregate_<snake>` (AiSettings: `aggregate-ai-settings`,
+`aggregate_ai_settings`). It holds aggregate.json (contract I,
+contracts/i-aggregate.schema.json), its code in src/, its tests in the
+crate's tests/. Its system is the one the DataCapabilities that target it
+share, never crates/dataguard/. Adding one edits no shared file: write the
+folder, then run `bash scripts/register.sh` (it rewrites
+crates/dataguard/registry/Cargo.toml, never edited by hand); commit it and
+Cargo.lock with the unit. The migration goes under the DataGuard's
+migrations, and data/model.json is updated in the same PR (contract M).
+
+Its code: `pub fn plugin() -> Plugin` returning
+`Plugin::new().judge(\"<Aggregate>\", YourJudge)`, plus `.project(…)` (a
+`Project`, what follows a write in memory) or `.project_pg(…)` (a
+`ProjectPg`, its PostgreSQL tables written inside the transaction that
+applies the write; the engine's `postgres` feature). `Judge::violated`
+answers the ids of the invariants the row after the command breaks;
+`ProjectionError::Refused` rejects the command and rolls all of it back.
+The engine comes from the workspace: `harness-dataguard = { workspace =
+true }`, never a source of its own.
 
 Its document: `aggregate`, `fields` (each `kind` derived | authoritative,
 `criticality` critical | normal | low with the review role for a critical
-one, `merge` for a set), `invariants` (each an `id`, a `rule`, an
+one, `merge` set | last-writer), `invariants` (each an `id`, a `rule`, an
 `onViolation` reject | human_review), `relations` (each `from`, `onDelete`
-restrict | cascade | nullify | archive, `onUpdate`, `semantic` when the
-link is outside a foreign key), `holds` (maxTtl, renewable).
+restrict | cascade | nullify | archive, `semantic` when the link is outside
+a foreign key), `holds` (maxTtl, renewable).
 
-Rules: every invariant has a test naming its id, in a crate of the
-aggregate's own system; every relation declares
-onDelete and onUpdate; deletion is a soft delete with a tombstone unless a
-human approves otherwise; prefer a derived value to a stored authoritative
-one that other rows could recompute. Two tasks on one aggregate run one
-after the other: the loop holds it while you build.
+Rules: every invariant has a test naming its id, in the crate's tests/;
+every relation declares onDelete; deletion is a soft delete with a
+tombstone unless a human approves otherwise; prefer a derived value to a
+stored authoritative one that other rows could recompute. Two tasks on one
+aggregate run one after the other: the loop holds it while you build.
 
-What it must not do: compute a business value (that is a Concept), or be
-read by a Micro-UI (that is a Capability's job).
+What it must not do: compute a business value (that is a Concept), be read
+by a Micro-UI (that is a Capability's job), or depend on another unit.
 
 Gates that judge it: manifests-conform-to-contracts (I, M),
-aggregate-placed, invariants-tested, ownership (the DataCapabilities that mutate it name
-fields it declares). schema-impact is declared and switched on with the
-engine. After the merge the harness dumps the real schema and compares it
-with data/model.json: a divergence opens a diagnosis.";
+aggregate-placed (its system's folder, named after it), units-registered
+(named in the registry, its library `aggregate_<snake>`), invariants-tested,
+ownership (the DataCapabilities that mutate it name fields it declares, none
+derived), capability-isolation. schema-impact is declared and switched on
+with the engine. After the merge the harness dumps the real schema and
+compares it with data/model.json: a divergence opens a diagnosis.";
 
 const INFRASTRUCTURE: &str = "\
 UNIT: Infrastructure — the plumbing itself: the DataQueue, the DataGuard,
 the Resolver, the Data layer, a system's shared crate. Write side: its PR is
 reviewed before it merges.
 
-Where it lives: crates/dataguard/ for the write side's engine and server
-(crates/dataguard/server/, whose build script registers every
-data-capabilities/* folder), crates/<system>/<name>/ for one system's own
-plumbing (an adapter, a source, the Data layer's reading of its tables).
+Where it lives: crates/dataguard/ for the write side's server
+(crates/dataguard/server/, the engine planted with every unit of
+crates/dataguard/registry/, whose Cargo.toml scripts/register.sh writes),
+crates/server/ for the product's binary, crates/<system>/<name>/ for one
+system's own plumbing (an adapter, a source, the Data layer's reading of its
+tables). The engine itself, harness-dataguard, is the harness's: taken at a
+release tag, never read or edited here.
 
 What it holds: authorisation and permissions, validation, the business
 invariants' execution, concurrency (one FIFO partition per aggregate, a

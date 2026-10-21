@@ -655,7 +655,17 @@ pub(super) async fn run_dev_loop(
         }
     };
     let branch = branching::milestone_branch(milestone, &title);
-    if !branching::catch_up(gh, &branch, &args.branch, log).await {
+    if !crate::dispatch::catch_up::run(
+        here,
+        &args.target_repo_url,
+        &branch,
+        &args.branch,
+        args.dry_run,
+        gh,
+        log,
+    )
+    .await
+    {
         log.say(&format!(
             "watch: dev_loop -> milestone #{milestone} held: {branch} cannot take {} — merge it by hand",
             args.branch

@@ -26,6 +26,9 @@ pub struct FakeRepos {
     failing: Rc<Vec<&'static str>>,
     /// What `changed_between` answers, whatever the references.
     changed: Rc<Vec<String>>,
+    /// The files a `merge` leaves conflicted: when there are some, the merge
+    /// fails and `dirty_files` answers them as `UU <path>`.
+    conflicts: Rc<Vec<String>>,
 }
 
 impl FakeRepos {
@@ -35,6 +38,7 @@ impl FakeRepos {
             calls: Rc::default(),
             failing: Rc::new(prefixes.to_vec()),
             changed: Rc::default(),
+            conflicts: Rc::default(),
         }
     }
 
@@ -44,6 +48,18 @@ impl FakeRepos {
             calls: Rc::default(),
             failing: Rc::default(),
             changed: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
+            conflicts: Rc::default(),
+        }
+    }
+
+    /// A `git` whose merge conflicts on these files, and whose verbs
+    /// starting with one of `failing` fail.
+    pub fn conflicting(files: &[&str], failing: &[&'static str]) -> Self {
+        Self {
+            calls: Rc::default(),
+            failing: Rc::new(failing.to_vec()),
+            changed: Rc::default(),
+            conflicts: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
         }
     }
 
@@ -104,7 +120,12 @@ impl Repo for FakeRepo {
         Ok("abc1234".to_string())
     }
     async fn dirty_files(&self) -> Outcome<Vec<String>> {
-        Ok(Vec::new())
+        Ok(self
+            .repos
+            .conflicts
+            .iter()
+            .map(|path| format!("UU {path}"))
+            .collect())
     }
     async fn has_branch(&self, _name: &str) -> Outcome<bool> {
         Ok(true)
@@ -178,6 +199,20 @@ impl Repo for FakeRepo {
     }
     async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
         Ok(self.note(&format!("create_orphan_branch {name}")))
+    }
+    async fn merge(&self, reference: &str) -> Outcome<Ran> {
+        let mut ran = self.note(&format!("merge {reference}"));
+        if !self.repos.conflicts.is_empty() {
+            ran.code = Some(1);
+            ran.stdout = "CONFLICT (content): Merge conflict".to_string();
+        }
+        Ok(ran)
+    }
+    async fn take_theirs(&self, path: &str) -> Outcome<Ran> {
+        Ok(self.note(&format!("take_theirs {path}")))
+    }
+    async fn merge_in_progress(&self) -> Outcome<bool> {
+        Ok(!self.repos.conflicts.is_empty())
     }
     async fn abort_merge(&self) -> Outcome<Ran> {
         Ok(self.note("abort_merge"))

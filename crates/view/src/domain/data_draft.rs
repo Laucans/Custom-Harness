@@ -286,7 +286,7 @@ impl DataDraft {
     /// where the draft left them open —, its invariants with a `kebab-case`
     /// id, each relation from `<Aggregate>.<field>`, and holds of a quarter
     /// of an hour, renewable. What the task building the aggregate installs
-    /// at `crates/dataguard/aggregates/<Aggregate>/aggregate.json`.
+    /// at `crates/<system>/aggregates/<Aggregate>/aggregate.json`.
     #[must_use]
     pub fn aggregate_manifests(&self) -> Vec<(String, serde_json::Value)> {
         self.aggregates

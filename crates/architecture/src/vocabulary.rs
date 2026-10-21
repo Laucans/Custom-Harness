@@ -427,8 +427,8 @@ impl Declaration {
         })
     }
 
-    /// True when no server runs the unit: it is compiled for its host, and
-    /// no server dependency line or server folder is asked of it.
+    /// True when no server runs the unit: it is compiled for its host, never
+    /// registered, and no server folder is asked of it.
     #[must_use]
     pub fn is_hostless(&self) -> bool {
         self.host.as_deref() == Some("hostless")

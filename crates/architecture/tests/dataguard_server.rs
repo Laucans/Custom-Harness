@@ -2,10 +2,12 @@
 //! of the installed assets (`crates/dataguard/server`, the registry,
 //! `crates/server`, `scripts/register.sh`), the engine taken by `path`
 //! instead of `git`, one unit of each kind, `register.sh` run, `cargo check`
-//! on the whole, the glue and the server's `inventory` read back, then one
-//! more unit registered by its folder and the script alone. Ignored by
-//! default — it fetches axum and tokio from crates.io and builds them — and
-//! run on demand:
+//! on the whole, the glue and the server's `inventory` read back, then two
+//! units added on two branches, each by its folder and the script alone,
+//! merged into one base with nothing but the regeneration of `Cargo.lock`
+//! and the registry's `Cargo.toml` (`docs/DATAGUARD-CUT.md`, adjustment 2).
+//! Ignored by default — it fetches axum and tokio from crates.io and builds
+//! them — and run on demand:
 //! `cargo test -p harness-architecture --test dataguard_server -- --ignored`.
 
 use std::fs;
@@ -19,6 +21,13 @@ const ENGINE_LINE: &str = "harness-dataguard = { git = ";
 const ACCOUNT: &str = r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative","criticality":"normal"}},"invariants":[{"id":"limit-under-ceiling","rule":"creditLimit <= 10000","onViolation":"reject"}],"relations":[]}"#;
 const LIMIT: &str = r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","version":2,"effect":"update","target":{"aggregate":"Account","id":"$accountId"},"touches":["Account.creditLimit"],"mode":"confirm_on_stale","permissions":["credit.limit.write"],"callableBy":["credit.*"]}"#;
 const CLOSE: &str = r#"{"dataCapability":"credit.closeAccount","owner":"dataguard","version":1,"effect":"update","target":{"aggregate":"Account","id":"$accountId"},"touches":["Account.creditLimit"],"mode":"confirm_on_stale","permissions":["credit.limit.write"],"callableBy":["credit.*"]}"#;
+const CARD: &str = r#"{"dataCapability":"credit.closeCard","owner":"dataguard","version":1,"effect":"update","target":{"aggregate":"Account","id":"$accountId"},"touches":["Account.creditLimit"],"mode":"confirm_on_stale","permissions":["credit.limit.write"],"callableBy":["credit.*"]}"#;
+
+/// A `DataCapability` crate that plugs nothing in yet.
+const EMPTY_PLUGIN: &str = "pub fn plugin() -> harness_dataguard::plugins::Plugin {\n    harness_dataguard::plugins::Plugin::new()\n}\n";
+
+/// The files the two branches' merge may conflict on: both generated.
+const GENERATED: [&str; 2] = ["Cargo.lock", "crates/dataguard/registry/Cargo.toml"];
 
 /// The aggregate's crate: a `Judge` and its `plugin()`.
 const ACCOUNT_LIB: &str = r#"use std::collections::BTreeMap;
@@ -251,17 +260,46 @@ fn glue() -> String {
         .expect("the generated glue")
 }
 
-/// A unit crate's manifest: its package, the engine when it needs it.
+/// A unit crate's manifest: its package, the engine from the workspace
+/// when it needs it, as the rule cards say.
 fn unit_manifest(package: &str, engine: bool) -> String {
     let mut text = format!(
         "[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\nserde_json = \"1\"\n"
     );
     if engine {
         text.push_str("async-trait = \"0.1\"\n");
-        text.push_str(&local_engine());
-        text.push('\n');
+        text.push_str("harness-dataguard = { workspace = true }\n");
     }
     text
+}
+
+/// A `DataCapability` folder added by its files alone.
+fn add_data_capability(root: &Path, folder: &str, package: &str, manifest: &str) {
+    write(root, &format!("{folder}/data-capability.json"), manifest);
+    write(
+        root,
+        &format!("{folder}/Cargo.toml"),
+        &unit_manifest(package, true),
+    );
+    write(root, &format!("{folder}/src/lib.rs"), EMPTY_PLUGIN);
+}
+
+/// `git` in the product, as a committer.
+fn git(root: &Path, args: &[&str]) -> Output {
+    let mut all = vec!["-c", "user.name=t", "-c", "user.email=t@t"];
+    all.extend_from_slice(args);
+    run(root, "git", &all)
+}
+
+fn git_ok(root: &Path, args: &[&str]) -> String {
+    let output = git(root, args);
+    assert!(
+        output.status.success(),
+        "git {args:?} failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 #[test]
@@ -366,6 +404,13 @@ fn the_installed_write_side_registers_every_unit_by_its_folder_and_the_script() 
         "{registry}"
     );
     ok(root, "bash", &["scripts/register.sh", "--check"]);
+    // The workspace takes the engine as the server does: the units'
+    // `{ workspace = true }` resolves to the one engine.
+    let workspace = fs::read_to_string(root.join("Cargo.toml")).expect("read");
+    assert!(
+        workspace.ends_with(&format!("\n[workspace.dependencies]\n{}\n", local_engine())),
+        "{workspace}"
+    );
 
     ok(root, "cargo", &["check", "--all-targets"]);
     // What the product's CI runs on the installed code, glue included.
@@ -419,59 +464,81 @@ fn the_installed_write_side_registers_every_unit_by_its_folder_and_the_script() 
 
     ok(root, "cargo", &["test", "-q", "-p", "dataguard-server"]);
 
-    // One more DataCapability: its folder and one rerun of the script, no
+    // Two branches from one base, each adding one DataCapability: its
+    // folder, one rerun of the script, the lock brought up by cargo — no
     // other file of the product touched.
-    ok(root, "git", &["init", "-q"]);
-    ok(root, "git", &["add", "-A"]);
-    ok(
-        root,
-        "git",
-        &[
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-qm",
-            "base",
-        ],
-    );
+    ok(root, "git", &["init", "-q", "-b", "base"]);
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-qm", "base"]);
     let close = "crates/credit/data-capabilities/close-account";
-    write(root, &format!("{close}/data-capability.json"), CLOSE);
-    write(
-        root,
-        &format!("{close}/Cargo.toml"),
-        &unit_manifest("close-account", true),
-    );
-    write(
-        root,
-        &format!("{close}/src/lib.rs"),
-        "pub fn plugin() -> harness_dataguard::plugins::Plugin {\n    harness_dataguard::plugins::Plugin::new()\n}\n",
-    );
+    let card = "crates/credit/data-capabilities/close-card";
+    for (branch, folder, package, manifest) in [
+        ("close", close, "close-account", CLOSE),
+        ("card", card, "close-card", CARD),
+    ] {
+        git_ok(root, &["checkout", "-q", "-b", branch, "base"]);
+        add_data_capability(root, folder, package, manifest);
+        assert!(
+            !run(root, "bash", &["scripts/register.sh", "--check"])
+                .status
+                .success(),
+            "a unit the registry does not name fails the check"
+        );
+        ok(root, "bash", &["scripts/register.sh"]);
+        ok(root, "cargo", &["metadata", "--format-version", "1"]);
+        let status = git_ok(root, &["status", "--porcelain", "--untracked-files=normal"]);
+        let mut changed: Vec<String> = status.lines().map(String::from).collect();
+        changed.sort_unstable();
+        assert_eq!(
+            changed,
+            [
+                " M Cargo.lock".to_string(),
+                " M crates/dataguard/registry/Cargo.toml".to_string(),
+                format!("?? {folder}/"),
+            ],
+            "{status}"
+        );
+        git_ok(root, &["add", "-A"]);
+        git_ok(root, &["commit", "-qm", branch]);
+    }
+
+    // Both merged into the base: the second meets the first in the two
+    // generated files at most, and regenerating them is the whole merge.
+    git_ok(root, &["checkout", "-q", "base"]);
+    git_ok(root, &["merge", "-q", "--no-edit", "close"]);
+    let merged = git(root, &["merge", "--no-edit", "card"]);
+    let conflicted = git_ok(root, &["diff", "--name-only", "--diff-filter=U"]);
+    let conflicted: Vec<&str> = conflicted.lines().collect();
     assert!(
-        !run(root, "bash", &["scripts/register.sh", "--check"])
-            .status
-            .success(),
-        "a unit the registry does not name fails the check"
+        conflicted.iter().all(|path| GENERATED.contains(path)),
+        "the merge conflicts beyond the generated files: {conflicted:?}"
     );
-    ok(root, "bash", &["scripts/register.sh"]);
-    let status = ok(
-        root,
-        "git",
-        &["status", "--porcelain", "--untracked-files=normal"],
-    );
-    let mut changed: Vec<&str> = status.lines().collect();
-    changed.sort_unstable();
     assert_eq!(
-        changed,
-        [
-            " M crates/dataguard/registry/Cargo.toml",
-            "?? crates/credit/data-capabilities/close-account/",
-        ],
-        "{status}"
+        merged.status.success(),
+        conflicted.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&merged.stdout)
     );
+    if !conflicted.is_empty() {
+        // The base's lock, the script, cargo: what
+        // `branching::catch_up_locally` runs on the same conflict.
+        if conflicted.contains(&"Cargo.lock") {
+            git_ok(root, &["checkout", "--ours", "Cargo.lock"]);
+        }
+        ok(root, "bash", &["scripts/register.sh"]);
+        ok(root, "cargo", &["metadata", "--format-version", "1"]);
+        git_ok(root, &["add", "--", GENERATED[0], GENERATED[1]]);
+        git_ok(root, &["commit", "-q", "--no-edit"]);
+    }
+    println!("the two branches conflicted on {conflicted:?}");
+    ok(root, "bash", &["scripts/register.sh", "--check"]);
+    let left = git_ok(root, &["status", "--porcelain"]);
+    assert!(left.is_empty(), "nothing left to resolve: {left}");
     ok(root, "cargo", &["check", "--all-targets"]);
-    assert!(glue().contains("close_account::plugin"));
+    let generated = glue();
+    for plugin in ["close_account::plugin", "close_card::plugin"] {
+        assert!(generated.contains(plugin), "{plugin}:\n{generated}");
+    }
 
     // A folder the script was not run for stops the build, named.
     let forgotten = "crates/credit/data-capabilities/forgotten";

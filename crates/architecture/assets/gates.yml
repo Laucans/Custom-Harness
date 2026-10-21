@@ -484,7 +484,10 @@ jobs:
   # turns them into the plugins the server plants. A DataCapability's library
   # is named after its folder, an aggregate's `aggregate_<snake>`: the glue
   # calls them by that name. Two units added in parallel meet nowhere but in
-  # that generated file, which merges by running the script again.
+  # that generated file, which merges by running the script again. One
+  # engine: a unit takes harness-dataguard from the workspace
+  # (`{ workspace = true }`), whose [workspace.dependencies] line the script
+  # copies from the server's — two sources would build two engines.
   units-registered:
     runs-on: ubuntu-latest
     steps:

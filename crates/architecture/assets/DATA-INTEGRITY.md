@@ -169,6 +169,97 @@ reject at the head if an invariant or a cascade forbids it, and the
 Messages travel over **server-sent events** from the Integrity DataGuard, one
 subscription per author; infrastructure components subscribe the same way.
 
+## The units' code
+
+Every unit is a crate in its folder, registered by
+`bash scripts/register.sh`; the registry's glue calls one item per crate.
+An aggregate and a DataCapability take the engine from the workspace
+(`harness-dataguard = { workspace = true }`), and their `plugin()` says what
+they plug in. A Capability never names the engine. Short forms, from
+`harness_dataguard::plugins`:
+
+**`Prepare`** — a DataCapability's code
+(`crates/credit/data-capabilities/request-limit/src/lib.rs`): the
+submission turned into what it writes, or refused before anything queues.
+
+```rust
+pub struct Policy(pub f64); // filled by crates/server's `Shared`
+
+struct RequestLimit;
+
+#[async_trait]
+impl Prepare for RequestLimit {
+    async fn prepare(&self, cx: &Context<'_>, payload: &BTreeMap<String, Value>,
+                     target_id: Option<&str>) -> Result<Prepared, Refusal> {
+        let ceiling = cx.shared.get::<Policy>().map_or(0.0, |p| p.0);
+        let asked = payload.get("creditLimit").and_then(Value::as_f64).unwrap_or(0.0);
+        if asked > ceiling {
+            return Err(Refusal::unprocessable("over the policy")); // 422
+        }
+        Ok(Prepared { payload: payload.clone(),
+                      target_id: target_id.map(str::to_string), warnings: Vec::new() })
+    }
+}
+
+pub fn plugin() -> Plugin {
+    Plugin::new().prepare("credit.requestLimitChange", RequestLimit).needs::<Policy>()
+}
+```
+
+**`Judge`** — an aggregate's invariants as code
+(`crates/credit/aggregates/Account/src/lib.rs`, library
+`aggregate_account`): the ids the row after the command violates. Only
+the real state, at application, decides.
+
+```rust
+struct Ceiling;
+
+impl Judge for Ceiling {
+    fn violated(&self, state: &BTreeMap<String, Value>, _entry: &Entry) -> Vec<String> {
+        let limit = state.get("creditLimit").and_then(Value::as_f64).unwrap_or(0.0);
+        if limit > 10_000.0 { vec!["limit-under-ceiling".into()] } else { Vec::new() }
+    }
+}
+```
+
+**`Project` / `ProjectPg`** — what follows an applied write of the
+aggregate. `Project` sees it in memory; `ProjectPg` writes the product's
+tables inside the transaction that applies it (the engine's `postgres`
+feature), and refusing rolls the whole command back.
+
+```rust
+struct Ledger;
+
+#[async_trait]
+impl ProjectPg for Ledger {
+    async fn project(&self, write: &Write, tx: &Transaction<'_>) -> Result<(), ProjectionError> {
+        let limit = write.values.get("creditLimit").and_then(Value::as_f64);
+        tx.execute("insert into limit_history (account, credit_limit) values ($1, $2)",
+                   &[&write.partition, &limit]).await?;
+        Ok(())
+    }
+}
+
+pub fn plugin() -> Plugin {
+    Plugin::new().judge("Account", Ceiling).project_pg("Account", Ledger)
+}
+```
+
+**`Answer`** — a Capability's read, written as four items the glue wraps
+into an `Answer` (`crates/credit/capabilities/calculate-risk/src/lib.rs`);
+the server runs `SQL` in a `READ ONLY` transaction, the variables bound in
+order, and hands the rows (a JSON array) to `answer`.
+
+```rust
+pub const CAPABILITY: &str = "credit.calculateRisk";
+pub const SQL: &str = "select score from risk where account = $1";
+pub const VARIABLES: &[&str] = &["accountId"];
+
+pub fn answer(rows: &Value, _variables: &BTreeMap<String, Value>) -> Value {
+    json!({ "score": rows.get(0).and_then(|r| r.get("score")).cloned() })
+}
+```
+
 ## Interface contracts of the engine
 
 Contracts G, H, J, K and L, in the same shape as the others: JSON Schema in
