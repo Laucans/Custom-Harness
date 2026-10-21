@@ -16,7 +16,7 @@ publish = false
 # here: they are the registry's dependencies, which `scripts/register.sh`
 # writes.
 [dependencies]
-harness-dataguard = { git = "https://github.com/laucans/custom-harness", tag = "dataguard-v4", features = ["postgres", "uuid"] }
+harness-dataguard = { git = "https://github.com/laucans/custom-harness", tag = "dataguard-v5", features = ["postgres", "uuid"] }
 dataguard-registry = { path = "../registry" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 serde = { version = "1", default-features = false, features = ["derive"] }

@@ -649,9 +649,20 @@ impl Engine {
             .map(|id| id.trim_start_matches('$'));
         payload
             .keys()
-            .filter(|key| !manifest.payload.contains_key(*key) && Some(key.as_str()) != target)
+            .filter(|key| !Self::declares(manifest, key) && Some(key.as_str()) != target)
             .cloned()
             .collect()
+    }
+
+    /// Whether the manifest's `payload` declares the wire key `key`: by name,
+    /// or through a dotted path under it (`entity.id` declares `entity`).
+    fn declares(manifest: &DataCapability, key: &str) -> bool {
+        manifest.payload.contains_key(key)
+            || manifest.payload.keys().any(|declared| {
+                declared
+                    .strip_prefix(key)
+                    .is_some_and(|rest| rest.starts_with('.'))
+            })
     }
 
     /// The row's id named by the payload, when the manifest says which
@@ -3072,6 +3083,28 @@ mod tests {
             .load()
             .await;
         assert_eq!(by_a_plugin, Ok(()), "another plugin shares it");
+    }
+
+    #[test]
+    fn a_dotted_payload_path_declares_its_top_key_and_no_other() {
+        let manifest = board_capability(
+            "save",
+            "note",
+            r#","payload":{"campaign":"string","entity.id":"string","entity.name":"string"}"#,
+        );
+        assert!(Engine::declares(&manifest, "entity"));
+        assert!(Engine::declares(&manifest, "campaign"));
+        assert!(
+            !Engine::declares(&manifest, "ent"),
+            "a prefix is not a path"
+        );
+        assert!(!Engine::declares(&manifest, "entity.id.x"));
+        let payload = BTreeMap::from([
+            ("entity".to_string(), serde_json::json!({"id": "e1"})),
+            ("campaign".to_string(), Value::from("c")),
+            ("colour".to_string(), Value::from("red")),
+        ]);
+        assert_eq!(Engine::undeclared_keys(&manifest, &payload), ["colour"]);
     }
 
     #[tokio::test]

@@ -63,6 +63,7 @@ layout.
 | A5c | Rule cards, docs, CLAUDE.md, catch-up regeneration — **done** f13f38b | A5b | — | medium |
 | A6 | What the first real product needs (B1, B2, D1–D3, D5, D6) — **done** 02dc509 | A5c | dataguard-v3 | medium |
 | A7 | Three gaps the M1 migration found — **done** 6c2f72e | A6 | dataguard-v4 | small |
+| B3 | A dotted payload path (`entity.id`) declares its top key; found by M2-entity | A7 | dataguard-v5 | small |
 | M0–M5 | ForgeDesMondes migration (M0 map done 2026-10-21: 11 PRs) | A6, A7 | — | ~11 PRs |
 
 A2, A3 and A4 all edit `engine.rs`. They run one after the other, each with

@@ -310,6 +310,14 @@ to move from `dataguard-v3` (no API break):
   tag and writes the registry's `cargo machete` ignore list. Commit both
   with `Cargo.lock`.
 
+
+### `dataguard-v5`
+
+A manifest's dotted payload path (`"entity.id"`) now declares its top key
+(`entity`), so a submission sending `{"entity": {…}}` no longer gets a
+spurious undeclared-key warning. No API change: a product moves by bumping
+the tag and rerunning `scripts/register.sh`.
+
 ## Testing
 
 Every rule has a unit test in its module; `queue` has a property test (fixed,
