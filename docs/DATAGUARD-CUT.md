@@ -61,7 +61,8 @@ layout.
 | A5a | Registry crate, `register.sh`, server skeleton as a lib, `crates/server` — **done** 1be415c | A4 | dataguard-v2 | large |
 | A5b | Gates, `tree.rs`, `closure.rs`, isolation — **done** 6b0213c | A5a | — | medium |
 | A5c | Rule cards, docs, CLAUDE.md, catch-up regeneration — **done** f13f38b | A5b | — | medium |
-| M0–M5 | ForgeDesMondes migration | A5c | — | ~15 tasks |
+| A6 | What the first real product needs (B1, B2, D1–D3, D5, D6) | A5c | dataguard-v3 | medium |
+| M0–M5 | ForgeDesMondes migration (M0 map done 2026-10-21: 11 PRs) | A6 | — | ~11 PRs |
 
 A2, A3 and A4 all edit `engine.rs`. They run one after the other, each with
 its own mutants budget.
@@ -187,6 +188,28 @@ its own mutants budget.
     `assets/CLAUDE-rules.md`;
   - the crates' `ARCHITECTURE.md`, and `ARCHITECTURE_OVERVIEW.md`;
   - `docs/toBeCheck/dataguard-plugins.md`.
+
+### A6 — What the first real product needs (from M0)
+
+M0, the ForgeDesMondes migration map, found two bugs and seven gaps between
+the plugin model and a real product. These are the decisions taken on
+2026-10-21, under the owner's delegation (log: harness-dnd2-run/DECISIONS.md).
+The harness takes a gap when every product will meet it. A gap that is one
+product's own stays in that product. Tag `dataguard-v3` once CI is green.
+
+| # | Gap | Decision |
+|---|---|---|
+| B1 | The undeclared-key warning is computed on the prepared payload. | Compute it on the submitted payload, before `Prepare`. |
+| B2 | The skeleton's `submit` drops the wire form `"target": {"id": …}`. | Accept both `target_id` and `target.id`, as the mock and the rules suite send them. |
+| D1 | A `Prepare` reads only its target row. | `Context` gains `row(partition)`, the engine's projected row of any partition, through an async lookup the engine provides. It also gains `rows: Option<&dyn reads::Rows>`, read-only SQL, `None` over memory. |
+| D2 | One submission makes one command. | `Prepared.then: Vec<Submission>`: follow-up submissions the engine submits in order once the first is queued, each with the same caller. This is non-atomic, as products do today. Each follow-up's result is returned in `Submitted.then`. |
+| D3 | An answer is computed with the command but read only once it is applied. | `Prepared.attachment: Option<Value>`. It is kept with the entry, in memory and in the Postgres journal, and returned in `CommandResult.attachment` once the command is applied. |
+| D4 | A value is settled against the real row at apply time. | Product only: the aggregate's `ProjectPg` settles it inside the transaction, and `Project::observe` does it over memory. No harness change. |
+| D5 | Rows the tables hold but the engine never wrote, such as fixtures loaded by SQL. | `ProjectPg::hydrate(partition, client) -> Result<Option<row>>`, defaulting to `None`. `PgStore::row` consults it when the engine has no row for the partition. |
+| D6 | Products stamp milliseconds. | `Clock::now_millis()`, defaulting to `now() * 1000`; `FixedClock` and the system clock implement it. `Context.now_millis`. |
+| D7 | A Capability with no SQL, reading a port. | Product only: a route of `crates/server`. A Capability never depends on the engine, so `Answer` stays a `fn` over rows. |
+| D8 | Ids renamed on reads (fixture slug and uuid). | Product only: middleware in `crates/server`. |
+| D9 | The system of an aggregate no DataCapability targets. | The product's plan graph decides. The M0 map lists them. |
 
 ### A5 verification (on the throwaway product, `--ignored`)
 
