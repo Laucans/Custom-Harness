@@ -57,7 +57,7 @@ layout.
 | A1 | Pin the engine by tag — **done** 08991cc, tag pushed 2026-10-20 | — | dataguard-v1 | small |
 | A2 | The engine honours its contracts — **done** fc2db57 | A1 | — | medium |
 | A3 | Plugins in the engine, in memory — **done** 06511d6 | A2 | — | large |
-| A4 | Plugins over PostgreSQL | A3 | — | medium |
+| A4 | Plugins over PostgreSQL — **done** cb32b38 | A3 | — | medium |
 | A5a | Registry crate, `register.sh`, server skeleton as a lib, `crates/server` | A4 | dataguard-v2 | large |
 | A5b | Gates, `tree.rs`, `closure.rs`, isolation | A5a | — | medium |
 | A5c | Rule cards, docs, CLAUDE.md, catch-up regeneration | A5b | — | medium |
