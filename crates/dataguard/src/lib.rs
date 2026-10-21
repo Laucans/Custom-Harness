@@ -17,7 +17,9 @@
 //! ([`memory`]) and a PostgreSQL one behind the `postgres` feature, and the
 //! wire protocol is the one the mock server of every product already
 //! speaks ([`api`]). A product's `crates/dataguard/server` wires it to its
-//! aggregates and `DataCapabilities`; a Capability never sees it.
+//! aggregates and `DataCapabilities`, and each unit's code plugs in
+//! ([`plugins`]); a Capability's read is an answer the server runs
+//! ([`reads`]).
 
 #![deny(unsafe_code)]
 #![warn(clippy::pedantic, clippy::nursery, missing_docs, rust_2018_idioms)]
@@ -30,7 +32,9 @@ pub mod guard;
 pub mod manifest;
 pub mod memory;
 pub mod messages;
+pub mod plugins;
 pub mod queue;
+pub mod reads;
 pub mod reconcile;
 pub mod registry;
 pub mod resolver;
@@ -58,10 +62,16 @@ pub enum Error {
     #[error("the store failed: {0}")]
     Store(String),
     /// The engine was given units that do not fit together: a
-    /// `DataCapability` listing an invariant its aggregate does not declare.
+    /// `DataCapability` listing an invariant its aggregate does not declare,
+    /// a plugin for a unit it does not register, a need nothing shares.
     #[error("misconfigured: {0}")]
     Misconfigured(String),
-    /// A read names a query the registry does not serve.
+    /// A `DataCapability`'s `Prepare` refused the submission: nothing was
+    /// queued.
+    #[error("{0}")]
+    Refused(plugins::Refusal),
+    /// A read names a query the registry does not serve, or a Capability
+    /// no plugin answers.
     #[error("{0} is not a registered persisted query")]
     UnregisteredQuery(String),
 }

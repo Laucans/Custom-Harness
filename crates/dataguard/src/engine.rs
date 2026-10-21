@@ -10,6 +10,11 @@
 //! decides — and applied, taking the next `dataVersion`. The authors hear
 //! each step (contract L).
 //!
+//! The product's units plug in ([`crate::plugins`]): a `DataCapability`'s
+//! [`Prepare`] runs on a submission before its entry is built, an
+//! aggregate's [`Judge`]s add to its declared rules, its [`Project`]s see
+//! every write applied.
+//!
 //! The queue and the reviews live behind `std::sync::Mutex`: every lock is
 //! taken and released between two awaits, never across one.
 
@@ -23,26 +28,53 @@ use serde_json::Value;
 use crate::aggregate::Aggregate;
 use crate::api::{Submission, Submitted};
 use crate::command::{BasedOn, CommandResult, Effect, Entry, Projection, State};
-use crate::guard::{self, Caller, Classification, Invariants, NoInvariants, Verdict};
+use crate::guard::{self, Caller, Classification, Invariants, Verdict};
 use crate::manifest::{DataCapability, Idempotency};
+use crate::memory::Counter;
 use crate::messages::{Action, Kind, Message, Notifier};
+use crate::plugins::{Context, Judge, Plugins, Prepare, Prepared, Project, Shared};
 use crate::queue::{Hold, Queue, Step};
 use crate::reconcile::{Base, Candidate, NoProposer, Proposer, Review, Status};
 use crate::registry::Registry;
 use crate::resolver::{self, Decision, ImpactPlan, Situation};
-use crate::store::{Clock, Store, Write};
+use crate::store::{Clock, Ids, Store, Write};
 use crate::{Error, Result};
 
 /// How many heads one partition may go through in one run: a parked head
 /// is set aside and the next looked at, up to this many times.
 const HEADS_PER_RUN: usize = 64;
 
+/// The aggregates' judges, each asked about its own aggregate only.
+#[derive(Default)]
+struct Judges(BTreeMap<String, Vec<Arc<dyn Judge>>>);
+
+impl Invariants for Judges {
+    fn violated(
+        &self,
+        aggregate: &str,
+        state: &BTreeMap<String, Value>,
+        entry: &Entry,
+    ) -> Vec<String> {
+        self.0
+            .get(aggregate)
+            .into_iter()
+            .flatten()
+            .flat_map(|judge| judge.violated(state, entry))
+            .collect()
+    }
+}
+
 /// The engine.
 pub struct Engine {
     store: Arc<dyn Store>,
     notifier: Arc<dyn Notifier>,
     clock: Arc<dyn Clock>,
-    invariants: Arc<dyn Invariants>,
+    row_ids: Arc<dyn Ids>,
+    judges: Judges,
+    prepares: Vec<(String, Arc<dyn Prepare>)>,
+    projects: BTreeMap<String, Vec<Arc<dyn Project>>>,
+    shared: Shared,
+    needs: Vec<crate::plugins::Need>,
     proposer: Arc<dyn Proposer>,
     aggregates: BTreeMap<String, Aggregate>,
     manifests: BTreeMap<String, DataCapability>,
@@ -69,7 +101,12 @@ impl Engine {
             store,
             notifier,
             clock,
-            invariants: Arc::new(NoInvariants),
+            row_ids: Arc::new(Counter::default()),
+            judges: Judges::default(),
+            prepares: Vec::new(),
+            projects: BTreeMap::new(),
+            shared: Shared::default(),
+            needs: Vec::new(),
             proposer: Arc::new(NoProposer),
             aggregates: BTreeMap::new(),
             manifests: BTreeMap::new(),
@@ -104,10 +141,36 @@ impl Engine {
         self
     }
 
-    /// The product's invariants, executed.
+    /// The units' plugins: their `Prepare`s, `Judge`s and `Project`s, and
+    /// what they share. Their `Answer`s are for [`crate::reads::Reads`],
+    /// not the engine.
     #[must_use]
-    pub fn with_invariants(mut self, invariants: Arc<dyn Invariants>) -> Self {
-        self.invariants = invariants;
+    pub fn with_plugins(mut self, plugins: Plugins) -> Self {
+        let plugin = plugins.0;
+        self.prepares.extend(plugin.prepares);
+        for (aggregate, judge) in plugin.judges {
+            self.judges.0.entry(aggregate).or_default().push(judge);
+        }
+        for (aggregate, project) in plugin.projects {
+            self.projects.entry(aggregate).or_default().push(project);
+        }
+        self.shared.absorb(plugin.shared);
+        self.needs.extend(plugin.needs);
+        self
+    }
+
+    /// What the server shares with the units, beside what the plugins
+    /// bring; it wins on a type both give.
+    #[must_use]
+    pub fn with_shared(mut self, shared: Shared) -> Self {
+        self.shared.absorb(shared);
+        self
+    }
+
+    /// Where a fresh row id comes from: a [`Counter`] by default.
+    #[must_use]
+    pub fn with_ids(mut self, ids: Arc<dyn Ids>) -> Self {
+        self.row_ids = ids;
         self
     }
 
@@ -134,8 +197,10 @@ impl Engine {
 
     /// Whether the units fit together: every invariant a `DataCapability`
     /// lists is one its target aggregate declares — a manifest naming
-    /// another is a typo the `DataGuard` would never judge.
+    /// another is a typo the `DataGuard` would never judge — and every
+    /// plugin names a unit the engine knows and finds what it needs.
     fn fits(&self) -> Result<()> {
+        self.plugged()?;
         for manifest in self.manifests.values() {
             let aggregate = self.aggregates.get(&manifest.target.aggregate);
             let unknown: Vec<&str> = manifest
@@ -154,6 +219,52 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// Whether every plugin fits: a `Prepare` for a `DataCapability` the
+    /// engine registers, once; a `Judge` or a `Project` for an aggregate
+    /// it registers; every need found in [`Shared`].
+    fn plugged(&self) -> Result<()> {
+        for (index, (name, _)) in self.prepares.iter().enumerate() {
+            if !self.manifests.contains_key(name) {
+                return Err(Error::Misconfigured(format!(
+                    "a Prepare for {name}, a DataCapability the engine does not register"
+                )));
+            }
+            if self.prepares[..index]
+                .iter()
+                .any(|(other, _)| other == name)
+            {
+                return Err(Error::Misconfigured(format!("two Prepares for {name}")));
+            }
+        }
+        let aggregates = self
+            .judges
+            .0
+            .keys()
+            .map(|a| ("Judge", a))
+            .chain(self.projects.keys().map(|a| ("Project", a)));
+        for (kind, aggregate) in aggregates {
+            if !self.aggregates.contains_key(aggregate) {
+                return Err(Error::Misconfigured(format!(
+                    "a {kind} for {aggregate}, an aggregate the engine does not register"
+                )));
+            }
+        }
+        let missing: Vec<&str> = self
+            .needs
+            .iter()
+            .filter(|need| !self.shared.holds(need.id))
+            .map(|need| need.name)
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Misconfigured(format!(
+                "a plugin needs {}, which nothing shares",
+                missing.join(", ")
+            )))
+        }
     }
 
     /// The fields of `partition`'s aggregate that merge instead of asking.
@@ -264,11 +375,18 @@ impl Engine {
         {
             return self.replayed(&existing).await;
         }
-        let target_id = submission
+        let named = submission
             .target_id
             .clone()
-            .or_else(|| Self::target_from_payload(&manifest, &submission.payload))
-            .unwrap_or_else(|| self.next_id("new"));
+            .or_else(|| Self::target_from_payload(&manifest, &submission.payload));
+        let Prepared {
+            payload,
+            target_id,
+            warnings: prepared,
+        } = self.prepared(&manifest, &submission, named).await?;
+        let target_id = target_id
+            .or_else(|| Self::target_from_payload(&manifest, &payload))
+            .unwrap_or_else(|| self.row_ids.fresh());
         let partition = format!("{}/{target_id}", manifest.target.aggregate);
         let row = self.store.row(&partition).await?;
         let command = self.next_id("c");
@@ -279,7 +397,7 @@ impl Engine {
             partition: partition.clone(),
             position: 0,
             based_on: submission.based_on.clone().unwrap_or_default(),
-            payload: submission.payload.clone(),
+            payload,
             effect: manifest.effect,
             touches: manifest.touches.clone(),
             mode: manifest.mode,
@@ -302,12 +420,13 @@ impl Engine {
                 )));
             }
         }
-        let undeclared = Self::undeclared_keys(&manifest, &submission.payload);
+        let undeclared = Self::undeclared_keys(&manifest, &entry.payload);
         let Judged {
             mut warnings,
             mut messages,
             needs_review,
         } = self.judge(&manifest, &entry, &row, &submission.caller);
+        warnings.splice(0..0, prepared);
         if !undeclared.is_empty() {
             warnings.push(format!(
                 "payload key(s) {} not declared by {}",
@@ -332,6 +451,53 @@ impl Engine {
             warnings,
             result: self.result_of(&entry),
         })
+    }
+
+    /// The submission as the `DataCapability`'s [`Prepare`] turns it — on
+    /// the row it names as the commands pending leave it — or as it came
+    /// when it has none.
+    async fn prepared(
+        &self,
+        manifest: &DataCapability,
+        submission: &Submission,
+        target_id: Option<String>,
+    ) -> Result<Prepared> {
+        let Some((_, prepare)) = self
+            .prepares
+            .iter()
+            .find(|(name, _)| *name == manifest.data_capability)
+        else {
+            return Ok(Prepared {
+                payload: submission.payload.clone(),
+                target_id,
+                warnings: Vec::new(),
+            });
+        };
+        let base = match &target_id {
+            Some(id) => {
+                let partition = format!("{}/{id}", manifest.target.aggregate);
+                let row = self.store.row(&partition).await?;
+                let sets = self
+                    .aggregates
+                    .get(&manifest.target.aggregate)
+                    .map(Aggregate::sets)
+                    .unwrap_or_default();
+                self.lock_queue().projected_row(&partition, &row, &sets)
+            }
+            None => BTreeMap::new(),
+        };
+        let context = Context {
+            manifest,
+            caller: &submission.caller,
+            base: &base,
+            now: self.clock.now(),
+            ids: self.row_ids.as_ref(),
+            shared: &self.shared,
+        };
+        prepare
+            .prepare(&context, &submission.payload, target_id.as_deref())
+            .await
+            .map_err(Error::Refused)
     }
 
     /// The payload's keys the manifest does not declare: nothing when it
@@ -404,7 +570,7 @@ impl Engine {
             return judged;
         };
         let projected = guard::projected(row, entry, &aggregate.sets());
-        let verdict = guard::check(aggregate, self.invariants.as_ref(), &projected, entry);
+        let verdict = guard::check(aggregate, &self.judges, &projected, entry);
         if !verdict.holds() {
             let at_risk: Vec<String> = verdict
                 .rejecting
@@ -762,7 +928,7 @@ impl Engine {
         let sets = aggregate.map(Aggregate::sets).unwrap_or_default();
         let projected = guard::projected(&row, &entry, &sets);
         let verdict = aggregate.map_or_else(Verdict::default, |aggregate| {
-            guard::check(aggregate, self.invariants.as_ref(), &projected, &entry)
+            guard::check(aggregate, &self.judges, &projected, &entry)
         });
         let collision = self.store.collision(&entry).await?;
         let classification = guard::classify(&manifest, &collision);
@@ -872,6 +1038,9 @@ impl Engine {
             ..CommandResult::of(entry, None)
         };
         let version = self.store.apply(&write, &result).await?;
+        for project in self.projects.get(entry.aggregate()).into_iter().flatten() {
+            project.observe(&write);
+        }
         result.data_version = Some(version);
         let messages = self.lock_queue().applied(&entry.command, version)?;
         let applied = self.entry(&entry.command)?;
@@ -933,6 +1102,7 @@ mod tests {
     use super::*;
     use crate::memory::{FixedClock, MemoryNotifier, MemoryStore};
     use crate::messages::Kind;
+    use crate::plugins::{Plugin, Refusal, RefusalKind};
     use crate::store::Collision;
 
     const ACCOUNT: &str = r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative","criticality":"normal"},"tags":{"kind":"authoritative","criticality":"low"},"status":{"kind":"authoritative","criticality":"critical","review":"role:credit-manager"}},
@@ -949,13 +1119,8 @@ mod tests {
     /// here, a raise past 7000 wants a fresh risk score.
     struct RiskFresh;
 
-    impl Invariants for RiskFresh {
-        fn violated(
-            &self,
-            _aggregate: &str,
-            state: &BTreeMap<String, Value>,
-            _entry: &Entry,
-        ) -> Vec<String> {
+    impl Judge for RiskFresh {
+        fn violated(&self, state: &BTreeMap<String, Value>, _entry: &Entry) -> Vec<String> {
             if state
                 .get("creditLimit")
                 .and_then(Value::as_i64)
@@ -2127,7 +2292,7 @@ mod tests {
             .expect("I"),
         )
         .with_data_capability(DataCapability::parse(LIMIT).expect("F"))
-        .with_invariants(Arc::new(RiskFresh));
+        .with_plugins(plugins(Plugin::new().judge("Account", RiskFresh)));
         let modest = engine
             .submit(limit("alice", 6000, 5000))
             .await
@@ -2162,5 +2327,501 @@ mod tests {
             engine.submit(limit("alice", 1, 1)).await,
             Err(Error::Store(_))
         ));
+    }
+
+    /// A `Prepare` written as a closure.
+    struct By<F>(F);
+
+    #[async_trait::async_trait]
+    impl<F> Prepare for By<F>
+    where
+        F: Fn(
+                &Context<'_>,
+                &BTreeMap<String, Value>,
+                Option<&str>,
+            ) -> std::result::Result<Prepared, Refusal>
+            + Send
+            + Sync,
+    {
+        async fn prepare(
+            &self,
+            context: &Context<'_>,
+            payload: &BTreeMap<String, Value>,
+            target_id: Option<&str>,
+        ) -> std::result::Result<Prepared, Refusal> {
+            (self.0)(context, payload, target_id)
+        }
+    }
+
+    /// What every judge or projection of a test saw: a partition each time.
+    #[derive(Clone, Default)]
+    struct Seen(Arc<Mutex<Vec<String>>>);
+
+    impl Seen {
+        fn push(&self, what: String) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(what);
+        }
+
+        fn all(&self) -> Vec<String> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl Judge for Seen {
+        fn violated(&self, _state: &BTreeMap<String, Value>, entry: &Entry) -> Vec<String> {
+            self.push(entry.partition.clone());
+            Vec::new()
+        }
+    }
+
+    impl Project for Seen {
+        fn observe(&self, write: &Write) {
+            self.push(write.partition.clone());
+        }
+    }
+
+    /// A value the units share.
+    struct Model(&'static str);
+
+    /// Ids that are always the same one.
+    struct Fixed;
+
+    impl Ids for Fixed {
+        fn fresh(&self) -> String {
+            "p-42".to_string()
+        }
+    }
+
+    fn plugins(plugin: Plugin) -> Plugins {
+        std::iter::once(plugin).collect()
+    }
+
+    fn board_with(row: BTreeMap<String, Value>, plugin: Plugin) -> Plant {
+        let plant = board_plant(row);
+        Plant {
+            engine: plant.engine.with_plugins(plugins(plugin)),
+            ..plant
+        }
+    }
+
+    #[tokio::test]
+    // One scenario: what the Prepare sees, then what it changes.
+    #[allow(clippy::too_many_lines)]
+    async fn a_prepare_rewrites_the_payload_and_the_target_on_the_projected_base() {
+        let seen = Seen::default();
+        let saw = seen.clone();
+        let rename = By(
+            move |context: &Context<'_>,
+                  payload: &BTreeMap<String, Value>,
+                  target: Option<&str>| {
+                saw.push(format!(
+                    "{} {} {} {:?} {}",
+                    context.manifest.data_capability,
+                    context.caller.by,
+                    context.now,
+                    target,
+                    Value::from(
+                        context
+                            .base
+                            .clone()
+                            .into_iter()
+                            .collect::<serde_json::Map<_, _>>()
+                    )
+                ));
+                let model = context.shared.get::<Model>().map_or("none", |m| m.0);
+                let note = payload.get("note").and_then(Value::as_str).unwrap_or("");
+                Ok(Prepared {
+                    payload: BTreeMap::from([
+                        ("boardId".to_string(), Value::from("2")),
+                        ("note".to_string(), Value::from(format!("{model}:{note}"))),
+                        ("colour".to_string(), Value::from("red")),
+                    ]),
+                    target_id: Some("2".to_string()),
+                    warnings: vec!["renamed".to_string()],
+                })
+            },
+        );
+        let plant = board_with(
+            BTreeMap::from([("tags".to_string(), serde_json::json!(["a"]))]),
+            Plugin::new()
+                .prepare("board.rename", rename)
+                .needs::<Model>(),
+        );
+        let mut shared = Shared::default();
+        shared.insert(Arc::new(Model("m1")));
+        let plant = Plant {
+            engine: plant.engine.with_shared(shared),
+            ..plant
+        };
+        plant.engine.load().await.expect("its need is shared");
+        plant
+            .engine
+            .submit(on_board(
+                "tag",
+                "alice",
+                "tags",
+                serde_json::json!(["b"]),
+                Value::Null,
+            ))
+            .await
+            .expect("queued ahead");
+        let submitted = plant
+            .engine
+            .submit(on_board(
+                "rename",
+                "bob",
+                "note",
+                Value::from("n"),
+                Value::Null,
+            ))
+            .await
+            .expect("prepared and queued");
+        assert_eq!(
+            seen.all(),
+            [r#"board.rename bob 1000 Some("1") {"boardId":"1","tags":["a","b"]}"#],
+            "the row as alice's pending tag leaves it, sets unioned"
+        );
+        assert_eq!(submitted.partition, "Board/2", "the target rewritten");
+        assert_eq!(
+            submitted.warnings,
+            [
+                "renamed",
+                "payload key(s) colour not declared by board.rename"
+            ],
+            "the Prepare's warnings first, then the engine's on the payload it wrote"
+        );
+        plant.engine.run_once().await.expect("ran");
+        let row = plant.store.row_now("Board/2");
+        assert_eq!(row["note"], Value::from("m1:n"), "the payload rewritten");
+        assert_eq!(row["colour"], Value::from("red"));
+        assert!(
+            !plant.store.row_now("Board/1").contains_key("note"),
+            "nothing written where the submission pointed"
+        );
+        // A command with no Prepare goes as it came.
+        let tagged = plant
+            .engine
+            .submit(on_board(
+                "note",
+                "carol",
+                "note",
+                Value::from("plain"),
+                Value::Null,
+            ))
+            .await
+            .expect("queued");
+        assert_eq!(tagged.partition, "Board/1");
+        assert_eq!(seen.all().len(), 1, "the rename's Prepare alone ran once");
+    }
+
+    #[tokio::test]
+    async fn a_prepare_refuses_with_its_kind_and_nothing_is_queued() {
+        let refuse = By(
+            |_: &Context<'_>, payload: &BTreeMap<String, Value>, _: Option<&str>| {
+                if payload.get("note") == Some(&Value::from("ghost")) {
+                    Err(Refusal::not_found("no such board"))
+                } else {
+                    Err(Refusal::unprocessable("the board is archived"))
+                }
+            },
+        );
+        let plant = board_with(BTreeMap::new(), Plugin::new().prepare("board.note", refuse));
+        let ghost = plant
+            .engine
+            .submit(on_board(
+                "note",
+                "alice",
+                "note",
+                Value::from("ghost"),
+                Value::Null,
+            ))
+            .await;
+        assert_eq!(
+            ghost,
+            Err(Error::Refused(Refusal::not_found("no such board")))
+        );
+        let archived = plant
+            .engine
+            .submit(on_board(
+                "note",
+                "alice",
+                "note",
+                Value::from("x"),
+                Value::Null,
+            ))
+            .await;
+        assert!(
+            matches!(&archived, Err(Error::Refused(r)) if r.kind == RefusalKind::Unprocessable),
+            "{archived:?}"
+        );
+        assert_eq!(
+            archived.map(|_| ()).unwrap_err().to_string(),
+            "the board is archived"
+        );
+        assert!(
+            plant.engine.run_once().await.expect("ran").is_empty(),
+            "nothing ran"
+        );
+        assert!(
+            plant.store.pending().await.expect("read").is_empty(),
+            "nothing queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_prepare_runs_after_authorisation_and_never_on_a_replay() {
+        let calls = Seen::default();
+        let counted = calls.clone();
+        let count = By(
+            move |_: &Context<'_>, payload: &BTreeMap<String, Value>, target: Option<&str>| {
+                counted.push(String::new());
+                Ok(Prepared {
+                    payload: payload.clone(),
+                    target_id: target.map(ToString::to_string),
+                    warnings: Vec::new(),
+                })
+            },
+        );
+        let plant = plant(account(5000));
+        let engine = plant.engine.with_plugins(plugins(
+            Plugin::new().prepare("credit.requestLimitChange", count),
+        ));
+        let elsewhere = Submission {
+            caller: Engine::caller("x", "orders.Form", &["credit.limit.write"], &[]),
+            ..limit("x", 1, 5000)
+        };
+        assert!(matches!(
+            engine.submit(elsewhere).await,
+            Err(Error::Forbidden(_))
+        ));
+        assert!(calls.all().is_empty(), "refused before the Prepare");
+        let keyed = Submission {
+            idempotency_key: Some("k".to_string()),
+            ..limit("alice", 6000, 5000)
+        };
+        let first = engine.submit(keyed.clone()).await.expect("queued");
+        let again = engine.submit(keyed).await.expect("replayed");
+        assert!(again.replayed);
+        assert_eq!(again.command_id, first.command_id);
+        assert_eq!(calls.all().len(), 1, "a replay prepares nothing");
+    }
+
+    #[tokio::test]
+    async fn a_row_named_by_nobody_takes_a_fresh_id_and_its_prepare_sees_no_base() {
+        let bases = Seen::default();
+        let saw = bases.clone();
+        let add = By(
+            move |context: &Context<'_>,
+                  payload: &BTreeMap<String, Value>,
+                  target: Option<&str>| {
+                saw.push(format!("{target:?} {}", context.base.len()));
+                Ok(Prepared {
+                    payload: payload.clone(),
+                    target_id: None,
+                    warnings: Vec::new(),
+                })
+            },
+        );
+        let plant = plant(MemoryStore::default());
+        let engine = plant
+            .engine
+            .with_ids(Arc::new(Fixed))
+            .with_plugins(plugins(Plugin::new().prepare("credit.addPayment", add)));
+        let submitted = engine
+            .submit(Submission {
+                data_capability: "credit.addPayment".to_string(),
+                payload: BTreeMap::from([("amount".to_string(), Value::from(12))]),
+                target_id: None,
+                based_on: None,
+                idempotency_key: Some("k".to_string()),
+                caller: Engine::caller("alice", "credit.Form", &[], &[]),
+            })
+            .await
+            .expect("queued");
+        assert_eq!(submitted.partition, "Payment/p-42", "the engine's ids");
+        assert_eq!(bases.all(), ["None 0"]);
+        // A Prepare that names no target leaves it to the payload.
+        let keep = By(
+            |_: &Context<'_>, payload: &BTreeMap<String, Value>, _: Option<&str>| {
+                Ok(Prepared {
+                    payload: payload.clone(),
+                    target_id: None,
+                    warnings: Vec::new(),
+                })
+            },
+        );
+        let engine = Engine::new(plant.store.clone(), plant.notifier.clone(), plant.clock)
+            .with_aggregate(Aggregate::parse(ACCOUNT).expect("I"))
+            .with_data_capability(DataCapability::parse(LIMIT).expect("F"))
+            .with_plugins(plugins(
+                Plugin::new().prepare("credit.requestLimitChange", keep),
+            ));
+        let named = engine
+            .submit(limit("alice", 6000, 5000))
+            .await
+            .expect("queued");
+        assert_eq!(named.partition, "Account/881");
+    }
+
+    #[tokio::test]
+    async fn each_judge_sees_its_own_aggregate_only() {
+        let accounts = Seen::default();
+        let boards = Seen::default();
+        let plant = board_plant(BTreeMap::new());
+        let engine = plant
+            .engine
+            .with_aggregate(Aggregate::parse(ACCOUNT).expect("I"))
+            .with_data_capability(DataCapability::parse(LIMIT).expect("F"))
+            .with_plugins(
+                [
+                    Plugin::new().judge("Account", accounts.clone()),
+                    Plugin::new().judge("Board", boards.clone()),
+                ]
+                .into_iter()
+                .collect(),
+            );
+        engine.load().await.expect("both aggregates are known");
+        engine
+            .submit(limit("alice", 6000, 5000))
+            .await
+            .expect("queued");
+        assert_eq!(accounts.all(), ["Account/881"]);
+        assert!(boards.all().is_empty(), "blind to Account");
+        engine
+            .submit(on_board(
+                "note",
+                "bob",
+                "note",
+                Value::from("n"),
+                Value::Null,
+            ))
+            .await
+            .expect("queued");
+        assert_eq!(boards.all(), ["Board/1"]);
+        assert_eq!(accounts.all().len(), 1, "blind to Board");
+    }
+
+    #[tokio::test]
+    async fn a_projection_observes_each_applied_write_once_and_no_rejected_one() {
+        let accounts = Seen::default();
+        let boards = Seen::default();
+        let plant = plant(account(5000));
+        let engine = plant
+            .engine
+            .with_aggregate(Aggregate::parse(BOARD).expect("I"))
+            .with_plugins(
+                [
+                    Plugin::new().project("Account", accounts.clone()),
+                    Plugin::new().project("Board", boards.clone()),
+                ]
+                .into_iter()
+                .collect(),
+            );
+        engine
+            .submit(limit("alice", 8000, 5000))
+            .await
+            .expect("queued");
+        assert!(accounts.all().is_empty(), "nothing applied yet");
+        engine.run_once().await.expect("applied");
+        assert_eq!(accounts.all(), ["Account/881"]);
+        engine
+            .submit(limit("bob", 20_000, 8000))
+            .await
+            .expect("queued, warned");
+        let results = engine.run_once().await.expect("ran");
+        assert_eq!(results[0].status, State::Rejected);
+        assert_eq!(
+            accounts.all(),
+            ["Account/881"],
+            "a rejection writes nothing"
+        );
+        assert!(boards.all().is_empty(), "blind to Account");
+    }
+
+    #[tokio::test]
+    async fn load_refuses_a_plugin_for_a_unit_it_does_not_register() {
+        let noop = || {
+            By(
+                |_: &Context<'_>, payload: &BTreeMap<String, Value>, _: Option<&str>| {
+                    Ok(Prepared {
+                        payload: payload.clone(),
+                        ..Prepared::default()
+                    })
+                },
+            )
+        };
+        let loaded =
+            |plugin: Plugin| async { board_with(BTreeMap::new(), plugin).engine.load().await };
+        assert_eq!(
+            loaded(
+                Plugin::new()
+                    .prepare("board.note", noop())
+                    .judge("Board", Seen::default())
+                    .project("Board", Seen::default())
+            )
+            .await,
+            Ok(()),
+            "every unit known"
+        );
+        for (plugin, why) in [
+            (
+                Plugin::new().prepare("board.nothing", noop()),
+                "a Prepare for board.nothing",
+            ),
+            (
+                Plugin::new()
+                    .prepare("board.note", noop())
+                    .prepare("board.note", noop()),
+                "two Prepares for board.note",
+            ),
+            (
+                Plugin::new().judge("Ghost", Seen::default()),
+                "a Judge for Ghost",
+            ),
+            (
+                Plugin::new().project("Ghost", Seen::default()),
+                "a Project for Ghost",
+            ),
+        ] {
+            let refused = loaded(plugin).await;
+            assert!(
+                matches!(&refused, Err(Error::Misconfigured(m)) if m.starts_with(why)),
+                "{why}: {refused:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn load_refuses_a_need_nothing_shares_and_accepts_it_shared() {
+        let needing = || Plugin::new().needs::<Model>();
+        let missing = board_with(BTreeMap::new(), needing()).engine.load().await;
+        assert!(
+            matches!(&missing, Err(Error::Misconfigured(m)) if m.contains("Model") && m.contains("nothing shares")),
+            "{missing:?}"
+        );
+        let mut shared = Shared::default();
+        shared.insert(Arc::new(Model("m")));
+        let by_the_server = board_with(BTreeMap::new(), needing())
+            .engine
+            .with_shared(shared)
+            .load()
+            .await;
+        assert_eq!(by_the_server, Ok(()));
+        let by_a_plugin = board_plant(BTreeMap::new())
+            .engine
+            .with_plugins(
+                [needing(), Plugin::new().share(Arc::new(Model("p")))]
+                    .into_iter()
+                    .collect(),
+            )
+            .load()
+            .await;
+        assert_eq!(by_a_plugin, Ok(()), "another plugin shares it");
     }
 }

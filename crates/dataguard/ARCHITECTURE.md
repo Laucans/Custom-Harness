@@ -30,9 +30,10 @@ throughout (`docs/MIGRATION.md`, decision 3). This crate runs in a product's
 multi-threaded server, so its traits are `Send + Sync` and its async methods
 hold no lock across an `.await` (`engine.rs` says so, and clippy's
 `await_holding_lock` checks it). It declares its own ports — [`store::Store`],
-[`messages::Notifier`], [`store::Clock`], [`guard::Invariants`],
-[`reconcile::Proposer`] — because the harness's ports are about driving
-sessions, not about a product's data.
+[`messages::Notifier`], [`store::Clock`], [`store::Ids`],
+[`reconcile::Proposer`], [`reads::Rows`], and the units' traits in
+[`plugins`] — because the harness's ports are about driving sessions, not
+about a product's data.
 
 ## The modules, each a contract
 
@@ -43,19 +44,54 @@ sessions, not about a product's data.
 | `registry` | C | the persisted queries served, by Capability and hash; the readers of a field |
 | `command` | G, H | an entry of the queue, its projection, its states; the command result (five fields) |
 | `queue` | G | **pure**: one FIFO per partition, fixed positions, projected view and `projected_row` (the row as the pending commands leave it), `ValueDeclaredAhead` (never for a merging field), confirmations, parked (24 h), holds (1 min), expiry |
-| `guard` | F, H, I | **pure**: authorisation, static then dynamic classification of the effect, the invariants on a projected and on the real state — a rule written `<field> <op> <value>` in `aggregate.json` is judged here (as the mock judges it), any other is the product's code behind `Invariants`, and the two add up |
+| `guard` | F, H, I | **pure**: authorisation, static then dynamic classification of the effect, the invariants on a projected and on the real state — a rule written `<field> <op> <value>` in `aggregate.json` is judged here (as the mock judges it), any other is the product's code behind `Invariants` (the engine's is its aggregates' `Judge`s), and the two add up |
 | `resolver` | J | **pure**: the impact plan — readers, holds, cascade by relation policy, the decision `auto / confirm / human_review / blocked / rejected` |
 | `reconcile` | K | **pure**: a review, the AI's proposal behind a trait, a human's decision by role |
 | `messages` | L | the twelve message kinds and the notifier port |
-| `store` | — | the store port: pending entries, holds, rows, collisions, incoming relations, `apply` in one transaction with the journal |
-| `memory` | — | the store, notifier and clock in memory: what every test runs on |
+| `store` | — | the store port: pending entries, holds, rows, collisions, incoming relations, `apply` in one transaction with the journal; the `Clock` and the `Ids` a fresh row id comes from |
+| `memory` | — | the store, notifier, clock and ids (`Counter`) in memory: what every test runs on |
+| `plugins` | F, I, C | what a unit plugs in: `Prepare` (a DataCapability), `Judge` and `Project` (an aggregate), `Answer` (a Capability), `Shared` (what units read and do not own), `Plugin` and `Plugins` |
+| `reads` | C | the Capabilities' `Answer`s, run: the query's rows over a read-only `Rows` connection — `[]` in memory — handed to the answer |
 | `postgres` (feature) | — | the store on PostgreSQL via `tokio-postgres`: its own tables (`migrations/0001_dataguard.sql`), `NOTIFY dataguard` on every application |
 | `api` | H | the wire shapes the mock server already speaks: `Submission`, `Submitted`, `ReadRequest`, `HoldRequest`, `ReviewDecision` |
-| `engine` | all | the four together over the ports: `submit`, `confirm`, `cancel`, `requeue`, `hold`/`renew`/`release`, `decide`, `status`, `run_once` |
+| `engine` | all | the four together over the ports and the plugins: `submit`, `confirm`, `cancel`, `requeue`, `hold`/`renew`/`release`, `decide`, `status`, `run_once` |
 
 The pure modules decide; the engine sequences them and talks to the ports.
 A new policy is a change in a pure module and its tests, never in the
 engine; a new store is an implementation of `Store`, never a branch in it.
+
+## Plugins: a unit's code, in the engine
+
+Each unit of a product brings a `Plugin`; the server gathers them into
+`Plugins` (`FromIterator`) and hands them to `Engine::with_plugins`, and
+builds `Reads::from(&plugins)` for the reads.
+
+- **`Prepare`**, keyed by `DataCapability`: runs in `submit`, after the
+  authorisation and the idempotency replay, before the entry is built. It
+  sees a `Context` — the manifest, the caller, the target row as the
+  pending commands leave it (`Queue::projected_row`, empty when no row is
+  named), now, the `Ids`, `Shared` — and returns the payload and target
+  the command writes, with warnings for the author, or a `Refusal`
+  (`NotFound`, `Unprocessable`), which is `Error::Refused` and queues
+  nothing. The rules that follow (derived fields, undeclared keys,
+  invariants) judge what the `Prepare` returned.
+- **`Judge`**, keyed by aggregate: the engine's `Invariants` is the
+  composite of the judges, and a judge is only asked about its own
+  aggregate.
+- **`Project`**, keyed by aggregate: `observe` sees each write the store
+  applied, once, after `apply` succeeded; a rejected command is never seen.
+- **`Answer`**, keyed by Capability: its SQL, the variables it binds in
+  order, and the function from rows to answer. `Reads::run` hands it `[]`
+  when there is no connection (A4 brings PostgreSQL).
+- **`Shared`**, keyed by type: what the server (`with_shared`) and the
+  plugins (`.share`) give. A plugin declares what it reads (`.needs::<T>()`).
+
+`load()` refuses (`Error::Misconfigured`) a `Prepare` for a DataCapability
+the engine does not register, two for the same one, a `Judge` or `Project`
+for an aggregate it does not register, and a need nothing shares. The
+check sits in `load()`, not in the builders: a need can be filled by the
+server or by any plugin, which is known only once everything is given, and
+`load()` already refuses units that do not fit before the server serves.
 
 ## The applier's step (`Engine::run_once`)
 

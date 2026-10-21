@@ -97,6 +97,12 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> u64;
 }
 
+/// Where a fresh row id comes from, when a submission names no row.
+pub trait Ids: Send + Sync {
+    /// An id no row was given yet.
+    fn fresh(&self) -> String;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

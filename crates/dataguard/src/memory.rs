@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::command::{CommandResult, Entry};
 use crate::messages::{Message, Notifier};
 use crate::queue::Hold;
-use crate::store::{Clock, Collision, Store, Write};
+use crate::store::{Clock, Collision, Ids, Store, Write};
 use crate::{Error, Result};
 
 #[derive(Default)]
@@ -303,6 +303,20 @@ impl Clock for FixedClock {
     }
 }
 
+/// Fresh row ids from a counter, `new_1`, `new_2`…: the engine's default,
+/// which starts again at every start.
+#[derive(Default)]
+pub struct Counter(AtomicU64);
+
+impl Ids for Counter {
+    fn fresh(&self) -> String {
+        format!(
+            "new_{}",
+            self.0.fetch_add(1, Ordering::SeqCst).saturating_add(1)
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +377,8 @@ mod tests {
         assert_eq!(clock.now(), 5);
         clock.set(9);
         assert_eq!(clock.now(), 9);
+        let ids = Counter::default();
+        assert_eq!([ids.fresh(), ids.fresh()], ["new_1", "new_2"]);
         let notifier = MemoryNotifier::default();
         notifier.notify(&Message::new(
             crate::messages::Kind::CommandQueued,

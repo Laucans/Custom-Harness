@@ -26,9 +26,8 @@ exclude_globs = [
 # and hand them to a workflow — wiring, like `main.rs`, that no unit test
 # runs (it would spawn `gh` and `claude`). What it decides is `routing::decide`,
 # which is mutated and tested.
-# The null objects of `harness-dataguard` (`NoInvariants` violates
-# nothing, `NoProposer` proposes nothing): their body is what a mutant
-# writes, so no test can tell them apart.
+# The null object of `harness-dataguard` (`NoProposer` proposes nothing):
+# its body is what a mutant writes, so no test can tell the two apart.
 exclude_re = [
   # Composition-root wiring with the real adapters (gh, git, the disk): the
   # logic they call is tested in `workflows`, the wiring itself has no fake.
@@ -62,7 +61,6 @@ exclude_re = [
   "architecture/src/graph\\.rs:.*replace > with >= in Graph::reads_ahead$",
   "architecture/src/graph\\.rs:.*replace \\+ with \\* in Graph::critical_path$",
   "router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) ",
-  "dataguard/src/guard\\.rs:.*NoInvariants",
   "dataguard/src/reconcile\\.rs:.*NoProposer",
 ]
 

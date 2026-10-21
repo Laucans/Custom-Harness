@@ -76,6 +76,13 @@ fn status_of(error: &Error) -> axum::http::StatusCode {
         Error::Forbidden(_) => StatusCode::FORBIDDEN,
         Error::NotNow(_) => StatusCode::CONFLICT,
         Error::Store(_) => StatusCode::SERVICE_UNAVAILABLE,
+        Error::Misconfigured(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Error::Refused(refusal) => match refusal.kind {
+            harness_dataguard::plugins::RefusalKind::NotFound => StatusCode::NOT_FOUND,
+            harness_dataguard::plugins::RefusalKind::Unprocessable => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+        },
     }
 }
 
@@ -202,7 +209,7 @@ async fn capability(
     Path(id): Path<String>,
     Json(body): Json<ReadRequest>,
 ) -> Reply<ReadResponse> {
-    let served = engine.served(&id, &body.sha256);
+    let served = engine.served(&id, body.sha256.as_deref().unwrap_or_default());
     let answer = match served {
         Ok(()) => engine.data_version().await.map(|as_of| ReadResponse {
             as_of,

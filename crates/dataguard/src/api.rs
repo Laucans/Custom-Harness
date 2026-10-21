@@ -55,12 +55,14 @@ pub struct Submitted {
     pub result: CommandResult,
 }
 
-/// What `POST /capabilities/<id>` carries: the hash of the persisted query
-/// the Capability reads through, and its variables.
+/// What `POST /capabilities/<id>` carries: the variables, and the hash of
+/// the persisted query the Capability reads through when it names one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadRequest {
-    /// The query's hash, as the registry has it.
-    pub sha256: String,
+    /// The query's hash, as the registry has it; absent for a Capability
+    /// whose plugin brings its own query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
     /// The variables.
     #[serde(default)]
     pub variables: BTreeMap<String, Value>,
@@ -127,10 +129,18 @@ mod tests {
         let request: ReadRequest =
             serde_json::from_str(r#"{"sha256":"ab12","variables":{"accountId":"881"}}"#)
                 .expect("the wire shape");
-        assert_eq!(request.sha256, "ab12");
+        assert_eq!(request.sha256.as_deref(), Some("ab12"));
         assert_eq!(request.variables["accountId"], "881");
         let bare: ReadRequest = serde_json::from_str(r#"{"sha256":"ab12"}"#).expect("no variables");
         assert!(bare.variables.is_empty(), "expected nothing");
+        let unhashed: ReadRequest =
+            serde_json::from_str(r#"{"variables":{"accountId":"881"}}"#).expect("no hash");
+        assert_eq!(unhashed.sha256, None);
+        assert_eq!(
+            serde_json::to_value(&unhashed).expect("json"),
+            serde_json::json!({ "variables": { "accountId": "881" } }),
+            "an absent hash is not sent"
+        );
         let answer = ReadResponse {
             as_of: 7,
             data: serde_json::json!({ "creditLimit": 5000 }),

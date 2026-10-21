@@ -17,7 +17,8 @@ use crate::store::Collision;
 use crate::{Error, Result};
 
 /// The product's invariants, executed: the rules an `aggregate.json`
-/// declares in words are code here, one implementation per product.
+/// declares in words are code here. The engine's is the aggregates'
+/// [`crate::plugins::Judge`]s together, each asked about its own aggregate.
 pub trait Invariants: Send + Sync {
     /// The ids of the invariants of `aggregate` that `state` — the row's
     /// fields after the command — violates. Only the ids the aggregate
@@ -28,20 +29,6 @@ pub trait Invariants: Send + Sync {
         state: &BTreeMap<String, Value>,
         entry: &Entry,
     ) -> Vec<String>;
-}
-
-/// Invariants that always hold: what a product runs before it writes any.
-pub struct NoInvariants;
-
-impl Invariants for NoInvariants {
-    fn violated(
-        &self,
-        _aggregate: &str,
-        _state: &BTreeMap<String, Value>,
-        _entry: &Entry,
-    ) -> Vec<String> {
-        Vec::new()
-    }
 }
 
 /// Who triggers a command, and with what rights.
@@ -500,12 +487,6 @@ mod tests {
         assert_eq!(verdict.rejecting, ["limit-under-ceiling"]);
         assert_eq!(verdict.reviewing, ["limit-change-requires-risk"]);
         assert!(!verdict.holds());
-        assert!(
-            NoInvariants
-                .violated("X", &state, &entry(Mode::Overwrite, "x", 1))
-                .is_empty(),
-            "expected nothing"
-        );
     }
 
     #[test]
@@ -605,6 +586,20 @@ mod tests {
         assert_eq!(holds(""), None);
     }
 
+    /// No coded rule: the declared ones alone.
+    struct Nothing;
+
+    impl Invariants for Nothing {
+        fn violated(
+            &self,
+            _aggregate: &str,
+            _state: &BTreeMap<String, Value>,
+            _entry: &Entry,
+        ) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
     /// A product's own rule, beside the aggregate's.
     struct Coded;
 
@@ -666,7 +661,7 @@ mod tests {
         assert_eq!(over.reviewing, ["risk-fresh"]);
         let negative = check(
             &aggregate,
-            &NoInvariants,
+            &Nothing,
             &state(-1),
             &entry(Mode::Overwrite, "creditLimit", -1),
         );
