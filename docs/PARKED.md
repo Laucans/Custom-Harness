@@ -130,3 +130,33 @@ What is already known:
   next to `foundry`), since `gh` is the only thing that speaks to GitHub.
 
 Auto amelioration des formulaires de l'usine. Quand je clique sur valider si il y a une erreur statique je peux demander a en faire une regle de formulaire sur un bouton qui apparait avec l'erreur, dans ce cas une IA verifie que ca fait sens et emet une alerte si elle conclu que non, dans ce cas il faut une deuxieme validation. si ca fait du sens ca modifie directement le code de la vue.
+
+## Three gaps the factory restart after the migration found
+
+*Parked 2026-10-21, by the human, while the factory rebuilt the frozen
+milestones on the DataGuard plugin model.*
+
+Each one was patched by hand, so the factory runs. Each still needs a
+durable fix in code. The detail is in `docs/toBeCheck/dataguard-plugins.md`.
+
+- **A PR merged into a branch's erased history still delivers its task.**
+  `delivery::first_closing` counts any PR merged into the milestone branch
+  whose body says `Closes #N`, even one merged before a branch reset.
+  - Patched: 58 archived PR bodies neutralised, and `tools/unfreeze.py`
+    does it for a future reset.
+  - Fix: count a PR only if its merge commit is reachable from the branch
+    head, or if it was merged after the task's latest reopening.
+- **A `pr_fix` stop on a landed contract raises no contract change.** The
+  dev loop's stop handler opens a `harness:contract-change` issue, and
+  `pr_fix` only halts.
+  - Patched: #361 opened by hand.
+  - Fix: share the dev loop's contract path.
+- **The contract manager's task has no SPEC.** It writes `## Scope` and
+  `## Architecture`, but no `## Business Goal` or `## Acceptance
+  Criteria`, so `TaskHasASpec` halts it.
+  - Patched: #362's sections written by hand.
+  - Fix: the contract manager derives both from the need and the
+    evolution.
+
+Pick it up when a branch reset, a `pr_fix` contract stop or a contract
+evolution comes back, or before shipping the harness to a second product.
