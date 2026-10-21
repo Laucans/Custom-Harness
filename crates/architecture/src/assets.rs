@@ -690,6 +690,12 @@ mod tests {
         );
         let mutants = content_of(".cargo/mutants.toml").unwrap_or_default();
         assert!(mutants.contains("exclude_globs"), "{mutants}");
+        for owned in ["crates/dataguard/server/**", "crates/dataguard/registry/**"] {
+            assert!(
+                mutants.contains(owned),
+                "the harness-owned write side is judged in the harness: {owned}"
+            );
+        }
         let step = ci
             .split("- name: Mutants\n")
             .nth(1)

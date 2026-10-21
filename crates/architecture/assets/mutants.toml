@@ -9,9 +9,18 @@
 # workspace is large.
 #
 # Not mutated: the entry points — `main.rs` wires, and nothing tests wiring.
+# Nor the write side's server and registry: the harness owns them, the
+# product's copy is identical to the asset, and their tests run in the
+# harness (`crates/architecture/tests/dataguard_server.rs`), not here —
+# judged in a product, `migrate` and `router` look untested (ForgeDesMondes'
+# M4, PR #335).
 # A crate whose functions are seen rather than asserted (a renderer, a
 # page) is added here, with the reason, in a task of its own.
-exclude_globs = ["**/main.rs"]
+exclude_globs = [
+  "**/main.rs",
+  "crates/dataguard/server/**",
+  "crates/dataguard/registry/**",
+]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI
 # tests with.
