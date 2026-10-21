@@ -44,8 +44,10 @@ layout.
    subcommand lists the needs.
 4. **`load()` checks every plugin.** It refuses a `Prepare` for an unknown
    DataCapability, and a `Judge` or `Project` for an unknown aggregate.
-5. **Release step.** A `dataguard-vN` tag is cut on harness `main` only after
-   its CI is green, and pushed only on the owner's word. A tag is never moved.
+5. **Release step.** A tag is cut only when a product must move to a newer
+   engine, never per phase (the owner's call, 2026-10-20). It is cut on a
+   commit whose CI is green and pushed on the owner's word, and the skeleton
+   names it in the same change. A tag is never moved.
 6. **A5 is three PRs** (A5a, A5b, A5c below), each mergeable alone.
 
 ## Phases
@@ -53,10 +55,10 @@ layout.
 | Phase | What | Depends on | Tag | Size |
 |---|---|---|---|---|
 | A1 | Pin the engine by tag — **done** 08991cc, tag pushed 2026-10-20 | — | dataguard-v1 | small |
-| A2 | The engine honours its contracts | A1 | dataguard-v2 | medium |
-| A3 | Plugins in the engine, in memory | A2 | dataguard-v3 | large |
-| A4 | Plugins over PostgreSQL | A3 | dataguard-v4 | medium |
-| A5a | Registry crate, `register.sh`, server skeleton as a lib, `crates/server` | A4 | — | large |
+| A2 | The engine honours its contracts — **done** fc2db57 | A1 | — | medium |
+| A3 | Plugins in the engine, in memory | A2 | — | large |
+| A4 | Plugins over PostgreSQL | A3 | — | medium |
+| A5a | Registry crate, `register.sh`, server skeleton as a lib, `crates/server` | A4 | dataguard-v2 | large |
 | A5b | Gates, `tree.rs`, `closure.rs`, isolation | A5a | — | medium |
 | A5c | Rule cards, docs, CLAUDE.md, catch-up regeneration | A5b | — | medium |
 | M0–M5 | ForgeDesMondes migration | A5c | — | ~15 tasks |
@@ -210,7 +212,7 @@ one starts.
   projection and read table to its target unit, in a checked-in file
   `docs/migration-dataguard.md`.
 - **M1, strangler root.**
-  - Bump the engine to `dataguard-v4`.
+  - Bump the engine to `dataguard-v2`, the tag A5a cuts.
   - Install the A5 assets.
   - `crates/server` composes the registry's plugins with the legacy server,
     which handles any unit not migrated yet.
