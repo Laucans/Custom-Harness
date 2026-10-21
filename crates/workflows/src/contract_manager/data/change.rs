@@ -116,6 +116,27 @@ pub fn parse(text: &str, id: &str, current: u32) -> Result<Answer, String> {
     }
 }
 
+/// A manifest's version number: an integer (contract F), or the major of
+/// an `x.y.z` (contract B).
+fn version_of(value: &Value) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .or_else(|| value.as_str().and_then(semver))
+}
+
+/// The major of an `x.y.z` version, when the text is one.
+fn semver(text: &str) -> Option<u32> {
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let rest: Vec<&str> = parts.collect();
+    (rest.len() == 2
+        && rest
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())))
+    .then_some(major)
+}
+
 /// The manifest the session wrote, checked against the request: the same
 /// id one version up, or — a duplicate — a new id of the same kind, in
 /// another system than the original's, at version 1.
@@ -126,7 +147,8 @@ fn change(answered: Answered, id: &str, current: u32, duplicate: bool) -> Result
             "`{path}` is no manifest's path: a capability.json or a data-capability.json"
         ));
     }
-    let Some(object) = answered.manifest.as_object() else {
+    let mut manifest = answered.manifest;
+    let Some(object) = manifest.as_object_mut() else {
         return Err("the manifest is not a JSON object".to_string());
     };
     let named = object
@@ -137,9 +159,23 @@ fn change(answered: Answered, id: &str, current: u32, duplicate: bool) -> Result
         .to_string();
     let version = object
         .get("version")
-        .and_then(Value::as_u64)
-        .and_then(|v| u32::try_from(v).ok())
-        .ok_or_else(|| "the manifest has no integer `version`".to_string())?;
+        .and_then(version_of)
+        .ok_or_else(|| "the manifest has no `version`: an integer, or `x.y.z`".to_string())?;
+    // Contract B (a Capability) spells its version `x.y.z`, contract F (a
+    // DataCapability) an integer: whatever the session wrote, the manifest
+    // carries its contract's own spelling (ForgeDesMondes' `media.listMedia`
+    // v2 was written `2`, and `manifests-conform-to-contracts` went red on
+    // `main_agent`, 2026-10-21).
+    let data_capability = path.ends_with("data-capability.json");
+    let already_semver = object
+        .get("version")
+        .and_then(Value::as_str)
+        .is_some_and(|text| semver(text).is_some());
+    if data_capability {
+        object.insert("version".to_string(), Value::from(version));
+    } else if !already_semver {
+        object.insert("version".to_string(), Value::from(format!("{version}.0.0")));
+    }
     if duplicate {
         if named == id || named.is_empty() {
             return Err(format!(
@@ -180,7 +216,7 @@ fn change(answered: Answered, id: &str, current: u32, duplicate: bool) -> Result
     Ok(Change {
         id: named.clone(),
         path,
-        manifest: answered.manifest,
+        manifest,
         version,
         fixture,
         task: TaskDraft {
@@ -213,6 +249,49 @@ mod tests {
             Answer::Evolve(change) => Ok(change),
             other => Err(format!("not an evolution: {other:?}")),
         }
+    }
+
+    #[test]
+    fn each_contract_keeps_its_own_spelling_of_the_version() {
+        let spelled = |version: &str| {
+            evolved(
+                &REPLY.replace(r#""version": 2"#, &format!(r#""version": {version}"#)),
+                "session.listScenes",
+                1,
+            )
+            .map(|change| (change.version, change.manifest["version"].clone()))
+        };
+        assert_eq!(
+            spelled("2"),
+            Ok((2, Value::from("2.0.0"))),
+            "contract B is x.y.z"
+        );
+        assert_eq!(
+            spelled(r#""2.1.0""#),
+            Ok((2, Value::from("2.1.0"))),
+            "kept as written"
+        );
+        assert!(spelled(r#""1.4.0""#).is_err(), "the major must go up");
+        assert!(spelled(r#""2.x""#).is_err(), "not a version");
+        assert!(spelled(r#""2.0""#).is_err(), "two parts are not x.y.z");
+        assert!(spelled(r#""2.0.x""#).is_err(), "every part is a number");
+        assert!(spelled(r#""2..0""#).is_err(), "no part is empty");
+        let data_capability = REPLY
+            .replace(
+                "capabilities/list-scenes/capability.json",
+                "data-capabilities/add-scene/data-capability.json",
+            )
+            .replace(
+                r#""capability": "session.listScenes""#,
+                r#""dataCapability": "session.listScenes""#,
+            )
+            .replace(r#""version": 2"#, r#""version": "3.0.0""#);
+        let change = evolved(&data_capability, "session.listScenes", 1).expect("a change");
+        assert_eq!(
+            (change.version, change.manifest["version"].clone()),
+            (3, Value::from(3)),
+            "contract F is an integer"
+        );
     }
 
     #[test]
@@ -262,7 +341,7 @@ mod tests {
         assert!(
             evolved(&no_version, "session.listScenes", 1)
                 .expect_err("no version")
-                .contains("no integer `version`")
+                .contains("no `version`")
         );
         assert!(
             parse(
