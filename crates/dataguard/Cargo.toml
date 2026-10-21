@@ -23,10 +23,16 @@ thiserror.workspace = true
 # collides with the one `rusqlite` links in `harness-adapters`.
 tokio-postgres = { version = "0.7", optional = true, default-features = false, features = ["runtime", "with-serde_json-1"] }
 tokio = { workspace = true, optional = true, features = ["sync"] }
+# The buffer a bound parameter encodes into (`postgres::values`).
+bytes = { version = "1", optional = true, default-features = false }
+# Fresh row ids as uuid v4 (`store::RandomIds`), when a product wants
+# them in place of the in-memory counter.
+uuid = { version = "1", optional = true, default-features = false, features = ["v4"] }
 
 [features]
 default = []
-postgres = ["dep:tokio-postgres", "dep:tokio"]
+postgres = ["dep:tokio-postgres", "dep:tokio", "dep:bytes"]
+uuid = ["dep:uuid"]
 
 [dev-dependencies]
 proptest.workspace = true

@@ -13,7 +13,9 @@
 //! The product's units plug in ([`crate::plugins`]): a `DataCapability`'s
 //! [`Prepare`] runs on a submission before its entry is built, an
 //! aggregate's [`Judge`]s add to its declared rules, its [`Project`]s see
-//! every write applied.
+//! every write applied. A projection the store runs inside the apply
+//! transaction (`ProjectPg`) may refuse the write: the store answers
+//! [`Error::Refused`], and the head is rejected as an invariant rejects it.
 //!
 //! The queue and the reviews live behind `std::sync::Mutex`: every lock is
 //! taken and released between two awaits, never across one.
@@ -73,6 +75,9 @@ pub struct Engine {
     judges: Judges,
     prepares: Vec<(String, Arc<dyn Prepare>)>,
     projects: BTreeMap<String, Vec<Arc<dyn Project>>>,
+    /// The aggregates whose projections the store runs (`ProjectPg`):
+    /// the engine only checks that it registers them.
+    stored_projections: Vec<String>,
     shared: Shared,
     needs: Vec<crate::plugins::Need>,
     proposer: Arc<dyn Proposer>,
@@ -105,6 +110,7 @@ impl Engine {
             judges: Judges::default(),
             prepares: Vec::new(),
             projects: BTreeMap::new(),
+            stored_projections: Vec::new(),
             shared: Shared::default(),
             needs: Vec::new(),
             proposer: Arc::new(NoProposer),
@@ -143,7 +149,8 @@ impl Engine {
 
     /// The units' plugins: their `Prepare`s, `Judge`s and `Project`s, and
     /// what they share. Their `Answer`s are for [`crate::reads::Reads`],
-    /// not the engine.
+    /// and their `ProjectPg`s for the PostgreSQL store, not the engine,
+    /// which only checks their aggregates on [`Self::load`].
     #[must_use]
     pub fn with_plugins(mut self, plugins: Plugins) -> Self {
         let plugin = plugins.0;
@@ -154,6 +161,13 @@ impl Engine {
         for (aggregate, project) in plugin.projects {
             self.projects.entry(aggregate).or_default().push(project);
         }
+        #[cfg(feature = "postgres")]
+        self.stored_projections.extend(
+            plugin
+                .project_pgs
+                .into_iter()
+                .map(|(aggregate, _)| aggregate),
+        );
         self.shared.absorb(plugin.shared);
         self.needs.extend(plugin.needs);
         self
@@ -222,8 +236,8 @@ impl Engine {
     }
 
     /// Whether every plugin fits: a `Prepare` for a `DataCapability` the
-    /// engine registers, once; a `Judge` or a `Project` for an aggregate
-    /// it registers; every need found in [`Shared`].
+    /// engine registers, once; a `Judge`, a `Project` or a `ProjectPg` for
+    /// an aggregate it registers; every need found in [`Shared`].
     fn plugged(&self) -> Result<()> {
         for (index, (name, _)) in self.prepares.iter().enumerate() {
             if !self.manifests.contains_key(name) {
@@ -243,7 +257,8 @@ impl Engine {
             .0
             .keys()
             .map(|a| ("Judge", a))
-            .chain(self.projects.keys().map(|a| ("Project", a)));
+            .chain(self.projects.keys().map(|a| ("Project", a)))
+            .chain(self.stored_projections.iter().map(|a| ("ProjectPg", a)));
         for (kind, aggregate) in aggregates {
             if !self.aggregates.contains_key(aggregate) {
                 return Err(Error::Misconfigured(format!(
@@ -964,7 +979,10 @@ impl Engine {
         };
         match decision {
             Decision::Auto | Decision::Confirm => self.applied(&entry, projected).await,
-            Decision::Rejected => self.rejected(&entry, &verdict).await,
+            Decision::Rejected => {
+                self.rejected(&entry, &verdict.rejecting, &rejection(&verdict))
+                    .await
+            }
             Decision::HumanReview => {
                 let review_id = aggregate.map_or_else(String::new, |aggregate| {
                     self.open_review(aggregate, &entry, &row, &[])
@@ -1018,7 +1036,9 @@ impl Engine {
         )
     }
 
-    /// Applies the head: the write, the version, the journal, the word.
+    /// Applies the head: the write, the version, the journal, the word. A
+    /// store that refuses the write (a projection in its transaction) has
+    /// rolled it back: the head is rejected, with the refusal's reason.
     async fn applied(
         &self,
         entry: &Entry,
@@ -1037,7 +1057,12 @@ impl Engine {
             status: State::Applied,
             ..CommandResult::of(entry, None)
         };
-        let version = self.store.apply(&write, &result).await?;
+        let version = match self.store.apply(&write, &result).await {
+            Err(Error::Refused(refusal)) => {
+                return self.rejected(entry, &[], &refusal.message).await;
+            }
+            applied => applied?,
+        };
         for project in self.projects.get(entry.aggregate()).into_iter().flatten() {
             project.observe(&write);
         }
@@ -1049,23 +1074,20 @@ impl Engine {
         Ok(result)
     }
 
-    /// Rejects the head on the real state.
-    async fn rejected(&self, entry: &Entry, verdict: &Verdict) -> Result<CommandResult> {
-        let reason = if verdict.rejecting.is_empty() {
-            "the Resolver rejected it".to_string()
-        } else {
-            format!(
-                "invariant(s) violated on the real state: {}",
-                verdict.rejecting.join(", ")
-            )
-        };
+    /// Rejects the head: these invariants violated, the author told why.
+    async fn rejected(
+        &self,
+        entry: &Entry,
+        violations: &[String],
+        reason: &str,
+    ) -> Result<CommandResult> {
         let messages = self
             .lock_queue()
-            .rejected(&entry.command, &verdict.rejecting, &reason)?;
+            .rejected(&entry.command, violations, reason)?;
         let rejected = self.entry(&entry.command)?;
         self.store.save(&rejected).await?;
         let result = CommandResult {
-            violations: verdict.rejecting.clone(),
+            violations: violations.to_vec(),
             ..CommandResult::of(&rejected, None)
         };
         self.store.journal(&result).await?;
@@ -1082,6 +1104,18 @@ impl Engine {
             permissions: permissions.iter().map(|p| (*p).to_string()).collect(),
             roles: roles.iter().map(|r| (*r).to_string()).collect(),
         }
+    }
+}
+
+/// Why the real state rejects a head: its invariants, or the Resolver.
+fn rejection(verdict: &Verdict) -> String {
+    if verdict.rejecting.is_empty() {
+        "the Resolver rejected it".to_string()
+    } else {
+        format!(
+            "invariant(s) violated on the real state: {}",
+            verdict.rejecting.join(", ")
+        )
     }
 }
 
@@ -2795,6 +2829,99 @@ mod tests {
                 "{why}: {refused:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_rejection_on_the_real_state_names_its_invariants_or_the_resolver() {
+        assert_eq!(rejection(&Verdict::default()), "the Resolver rejected it");
+        assert_eq!(
+            rejection(&Verdict {
+                rejecting: vec!["limit-under-ceiling".to_string(), "risk-fresh".to_string()],
+                reviewing: Vec::new(),
+            }),
+            "invariant(s) violated on the real state: limit-under-ceiling, risk-fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_the_store_refuses_is_rejected_with_its_reason_and_the_step_goes_on() {
+        let seen = Seen::default();
+        let plant = plant(account(5000).refusing("Account/881", "the ledger is closed"));
+        let engine = plant
+            .engine
+            .with_plugins(plugins(Plugin::new().project("Account", seen.clone())));
+        let queued = engine
+            .submit(limit("alice", 8000, 5000))
+            .await
+            .expect("queued");
+        let results = engine.run_once().await.expect("the step goes on");
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert_eq!(result.command_id, queued.command_id);
+        assert_eq!(result.status, State::Rejected);
+        assert_eq!(result.data_version, None);
+        assert!(result.violations.is_empty(), "no invariant was violated");
+        assert_eq!(
+            engine
+                .status(&queued.command_id)
+                .await
+                .expect("known")
+                .status,
+            State::Rejected
+        );
+        assert_eq!(
+            plant.store.row_now("Account/881")["creditLimit"],
+            Value::from(5000),
+            "nothing written"
+        );
+        assert_eq!(engine.data_version().await.expect("read"), 0);
+        assert!(seen.all().is_empty(), "a refused write is never observed");
+        let journal = plant.store.journal();
+        assert_eq!(journal.len(), 1);
+        assert_eq!(journal[0].status, State::Rejected);
+        let told = plant.notifier.to("alice");
+        let rejected: Vec<&Message> = told
+            .iter()
+            .filter(|m| m.message == Kind::CommandRejected)
+            .collect();
+        assert_eq!(rejected.len(), 1, "{told:?}");
+        assert_eq!(rejected[0].reason.as_deref(), Some("the ledger is closed"));
+        assert!(
+            engine.run_once().await.expect("ran").is_empty(),
+            "a rejected head leaves the partition"
+        );
+    }
+
+    /// A projection in the store's transaction that projects nothing.
+    #[cfg(feature = "postgres")]
+    struct Quiet;
+
+    #[cfg(feature = "postgres")]
+    #[async_trait::async_trait]
+    impl crate::plugins::ProjectPg for Quiet {
+        async fn project(
+            &self,
+            _write: &Write,
+            _tx: &tokio_postgres::Transaction<'_>,
+        ) -> std::result::Result<(), crate::plugins::ProjectionError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn load_refuses_a_stored_projection_for_an_aggregate_it_does_not_register() {
+        let loaded =
+            |plugin: Plugin| async { board_with(BTreeMap::new(), plugin).engine.load().await };
+        assert_eq!(
+            loaded(Plugin::new().project_pg("Board", Quiet)).await,
+            Ok(())
+        );
+        let refused = loaded(Plugin::new().project_pg("Ghost", Quiet)).await;
+        assert!(
+            matches!(&refused, Err(Error::Misconfigured(m)) if m.starts_with("a ProjectPg for Ghost")),
+            "{refused:?}"
+        );
     }
 
     #[tokio::test]

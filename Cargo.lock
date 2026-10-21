@@ -2878,12 +2878,14 @@ name = "harness-dataguard"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-postgres",
+ "uuid",
 ]
 
 [[package]]

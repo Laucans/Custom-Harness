@@ -66,8 +66,9 @@ pub enum Error {
     /// a plugin for a unit it does not register, a need nothing shares.
     #[error("misconfigured: {0}")]
     Misconfigured(String),
-    /// A `DataCapability`'s `Prepare` refused the submission: nothing was
-    /// queued.
+    /// The product's code refused a command: a `DataCapability`'s `Prepare`
+    /// before anything is queued, or, from a store's `apply`, a projection
+    /// in its transaction, rolled back — the engine rejects that head.
     #[error("{0}")]
     Refused(plugins::Refusal),
     /// A read names a query the registry does not serve, or a Capability

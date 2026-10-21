@@ -48,11 +48,11 @@ about a product's data.
 | `resolver` | J | **pure**: the impact plan — readers, holds, cascade by relation policy, the decision `auto / confirm / human_review / blocked / rejected` |
 | `reconcile` | K | **pure**: a review, the AI's proposal behind a trait, a human's decision by role |
 | `messages` | L | the twelve message kinds and the notifier port |
-| `store` | — | the store port: pending entries, holds, rows, collisions, incoming relations, `apply` in one transaction with the journal; the `Clock` and the `Ids` a fresh row id comes from |
+| `store` | — | the store port: pending entries, holds, rows, collisions, incoming relations, `apply` in one transaction with the journal; the `Clock` and the `Ids` a fresh row id comes from (`RandomIds`, uuid v4, behind the `uuid` feature) |
 | `memory` | — | the store, notifier, clock and ids (`Counter`) in memory: what every test runs on |
-| `plugins` | F, I, C | what a unit plugs in: `Prepare` (a DataCapability), `Judge` and `Project` (an aggregate), `Answer` (a Capability), `Shared` (what units read and do not own), `Plugin` and `Plugins` |
+| `plugins` | F, I, C | what a unit plugs in: `Prepare` (a DataCapability), `Judge`, `Project` and, over PostgreSQL, `ProjectPg` (an aggregate), `Answer` (a Capability), `Shared` (what units read and do not own), `Plugin` and `Plugins` |
 | `reads` | C | the Capabilities' `Answer`s, run: the query's rows over a read-only `Rows` connection — `[]` in memory — handed to the answer |
-| `postgres` (feature) | — | the store on PostgreSQL via `tokio-postgres`: its own tables (`migrations/0001_dataguard.sql`), `NOTIFY dataguard` on every application |
+| `postgres` (feature) | — | the store on PostgreSQL via `tokio-postgres`: its own tables (`migrations/0001_dataguard.sql`), the aggregates' `ProjectPg`s inside the apply transaction, `NOTIFY dataguard` on every application; `ReadOnly`, the `Rows` of the reads, in `READ ONLY` transactions; `values`, **pure**: a JSON variable typed for its parameter, a row as a JSON object |
 | `api` | H | the wire shapes the mock server already speaks: `Submission`, `Submitted`, `ReadRequest`, `HoldRequest`, `ReviewDecision` |
 | `engine` | all | the four together over the ports and the plugins: `submit`, `confirm`, `cancel`, `requeue`, `hold`/`renew`/`release`, `decide`, `status`, `run_once` |
 
@@ -80,18 +80,63 @@ builds `Reads::from(&plugins)` for the reads.
   aggregate.
 - **`Project`**, keyed by aggregate: `observe` sees each write the store
   applied, once, after `apply` succeeded; a rejected command is never seen.
+- **`ProjectPg`** (feature `postgres`), keyed by aggregate: the projection
+  into the product's own tables, run by `PgStore` (see below), not by the
+  engine. It is its own trait, not a `Project` with more: what it writes
+  commits with the write, so it has nothing left to observe after.
 - **`Answer`**, keyed by Capability: its SQL, the variables it binds in
   order, and the function from rows to answer. `Reads::run` hands it `[]`
-  when there is no connection (A4 brings PostgreSQL).
+  when there is no connection, and over PostgreSQL the rows `ReadOnly`
+  returns (see below).
 - **`Shared`**, keyed by type: what the server (`with_shared`) and the
   plugins (`.share`) give. A plugin declares what it reads (`.needs::<T>()`).
 
 `load()` refuses (`Error::Misconfigured`) a `Prepare` for a DataCapability
-the engine does not register, two for the same one, a `Judge` or `Project`
-for an aggregate it does not register, and a need nothing shares. The
+the engine does not register, two for the same one, a `Judge`, `Project` or
+`ProjectPg` for an aggregate it does not register, and a need nothing shares. The
 check sits in `load()`, not in the builders: a need can be filled by the
 server or by any plugin, which is known only once everything is given, and
 `load()` already refuses units that do not fit before the server serves.
+
+## Over PostgreSQL: projections in the transaction, reads that only read
+
+The server gives the same `Plugins` to the store first, then to the engine:
+
+```rust
+let store = PgStore::open(client).await?.with_projections(&plugins).await?;
+let reads = Reads::from(&plugins).with_connection(Arc::new(ReadOnly::new(read_client)));
+let engine = Engine::new(Arc::new(store), notifier, clock).with_plugins(plugins);
+```
+
+- **`PgStore::with_projections(&Plugins)`**: the store takes the
+  `ProjectPg`s from the plugins rather than from a list of its own, so a
+  unit registers once, in its `plugin()`, and the engine's `load()` checks
+  the same aggregates the store runs. Each one is `warm`ed there, once, when
+  the store starts (its tables, a cache); one that does not warm stops the
+  start (`Error::Store`).
+- **`apply`** runs, in one transaction: the next `dataVersion`, the engine's
+  row, then every `ProjectPg` of the write's aggregate (`Write::aggregate`),
+  then the journal and the `NOTIFY`, then the commit. A projection's
+  `ProjectionError::Refused` rolls the transaction back and the store
+  answers `Error::Refused` (an `Unprocessable` refusal, the projection's
+  message): the product's code refused the command, as a `Prepare` refuses
+  one, and the server already maps that variant. No store-level variant was
+  added, because the engine is the only one to see it: `applied` takes the
+  `rejected()` path on it, so the entry is Rejected (no violation listed,
+  none was), its author hears `CommandRejected` with the projection's reason,
+  and the applier's step goes on. `ProjectionError::Failed` is `Error::Store`:
+  the step fails, as any store failure does.
+- **`ReadOnly`** is the reads' `Rows`, on a connection of its own (a slow
+  read never waits on the applier): each query runs in a `READ ONLY`
+  transaction, so a Capability's SQL that writes is refused by PostgreSQL.
+  The variables are bound in the order `Answer.variables` lists them, each
+  typed by the parameter it fills (integers, floats, bool, text, json, uuid;
+  another type is cast in the SQL from text, `$1::text::numeric`). A row comes
+  back as an object, column name to value: integers, floats (a non-finite one
+  as `"NaN"`, `"Infinity"`), bool, text, `json`/`jsonb`, `uuid` hyphenated,
+  `timestamptz` in RFC 3339 UTC, `numeric` as a decimal string (no lossless
+  JSON number), `NULL` as `null`. Any other type is `Error::Store` naming the
+  column.
 
 ## The applier's step (`Engine::run_once`)
 
@@ -106,9 +151,11 @@ server or by any plugin, which is known only once everything is given, and
    addition applies when the invariants hold on the real state; a mutation
    goes through `resolver::plan`, whose decision applies it, rejects it,
    blocks it in its place, or opens a review.
-4. An application is one store transaction: the row, the next `dataVersion`,
-   the journal; then the author, the infrastructure and whoever saw the
-   command ahead are told.
+4. An application is one store transaction: the row, the aggregate's
+   projections over PostgreSQL, the next `dataVersion`, the journal; then
+   the author, the infrastructure and whoever saw the command ahead are
+   told. A store that refuses the write (`Error::Refused`) has rolled it
+   back: the head is rejected, as on a violated invariant.
 
 Only the invariants on the **real** state decide (`ARCHITECTURE.md`,
 principle 10): what the enqueue computed on the projected state is a warning
@@ -146,6 +193,14 @@ note says what a product must change to move.
 
 Every rule has a unit test in its module; `queue` has a property test (fixed,
 strictly increasing positions whatever happens). The engine's tests run the
-contract's scenario end to end on the in-memory store. The PostgreSQL store's
-test is `#[ignore]`d and needs `DATAGUARD_PG_URL`; `scripts/postgres.sh`
-serves one.
+contract's scenario end to end on the in-memory store (`MemoryStore::refusing`
+stands for a projection that refuses). The PostgreSQL mappings are pure
+(`postgres/values.rs`) and tested without a database. The PostgreSQL store's
+tests are `#[ignore]`d and need `DATAGUARD_PG_URL`, each in a scratch schema
+it drops: the contract's scenario, a projection writing a product table in
+the apply transaction, a refused one rolling both back, `ReadOnly` answering
+and refusing a write, `RandomIds` accepted as distinct uuids.
+
+    bash scripts/postgres.sh up
+    DATAGUARD_PG_URL=postgres://postgres:postgres@localhost:5432/postgres \
+      cargo test -p harness-dataguard --features postgres,uuid -- --ignored

@@ -9,6 +9,11 @@
 //! read but do not own — a model client, a price list — sits in [`Shared`],
 //! keyed by type; a plugin declares what it reads with [`Plugin::needs`],
 //! and the engine refuses to start when a need has nobody to fill it.
+//!
+//! Over PostgreSQL (the `postgres` feature), an aggregate's projection may
+//! write the product's tables inside the very transaction that applies the
+//! write: a [`ProjectPg`], which the store runs, and whose refusal rejects
+//! the command as an invariant would.
 
 use std::any::{Any, TypeId, type_name};
 use std::collections::{BTreeMap, HashMap};
@@ -17,6 +22,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
+#[cfg(feature = "postgres")]
+use crate::Error;
 use crate::command::Entry;
 use crate::guard::Caller;
 use crate::manifest::DataCapability;
@@ -151,6 +158,67 @@ pub trait Project: Send + Sync {
     fn observe(&self, write: &Write);
 }
 
+/// Why a [`ProjectPg`] did not project a write.
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProjectionError {
+    /// The write breaks what the product's tables hold: the transaction
+    /// rolls back, the command is rejected and its author told why.
+    #[error("{0}")]
+    Refused(String),
+    /// The projection could not run: the store failed, the step fails.
+    #[error("the projection failed: {0}")]
+    Failed(String),
+}
+
+#[cfg(feature = "postgres")]
+impl From<tokio_postgres::Error> for ProjectionError {
+    fn from(error: tokio_postgres::Error) -> Self {
+        Self::Failed(crate::postgres::described(&error))
+    }
+}
+
+/// A refused projection is the product's code refusing the command, as a
+/// `Prepare` would (`Unprocessable`); a failed one is the store's error.
+#[cfg(feature = "postgres")]
+impl From<ProjectionError> for Error {
+    fn from(error: ProjectionError) -> Self {
+        match error {
+            ProjectionError::Refused(message) => Self::Refused(Refusal::unprocessable(message)),
+            ProjectionError::Failed(message) => Self::Store(message),
+        }
+    }
+}
+
+/// What follows an applied write of an aggregate, in the product's
+/// PostgreSQL tables, inside the transaction that applies it.
+#[cfg(feature = "postgres")]
+#[async_trait]
+pub trait ProjectPg: Send + Sync {
+    /// Writes what follows `write`, after the engine's own row and before
+    /// the commit: the write and its projection commit or roll back
+    /// together.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectionError::Refused`] rejects the command,
+    /// [`ProjectionError::Failed`] fails the step; both roll back.
+    async fn project(
+        &self,
+        write: &Write,
+        tx: &tokio_postgres::Transaction<'_>,
+    ) -> Result<(), ProjectionError>;
+
+    /// Makes ready what the projection needs, once, when the store starts.
+    ///
+    /// # Errors
+    ///
+    /// A [`ProjectionError`]: the store does not start.
+    async fn warm(&self, _client: &tokio_postgres::Client) -> Result<(), ProjectionError> {
+        Ok(())
+    }
+}
+
 /// A Capability's read: its query, and how its rows become the answer.
 #[derive(Debug, Clone)]
 pub struct Answer {
@@ -177,6 +245,8 @@ pub struct Plugin {
     pub(crate) prepares: Vec<(String, Arc<dyn Prepare>)>,
     pub(crate) judges: Vec<(String, Arc<dyn Judge>)>,
     pub(crate) projects: Vec<(String, Arc<dyn Project>)>,
+    #[cfg(feature = "postgres")]
+    pub(crate) project_pgs: Vec<(String, Arc<dyn ProjectPg>)>,
     pub(crate) answers: Vec<Answer>,
     pub(crate) shared: Shared,
     pub(crate) needs: Vec<Need>,
@@ -212,6 +282,16 @@ impl Plugin {
         self
     }
 
+    /// What follows a write of the aggregate named `aggregate`, in the
+    /// transaction that applies it: the PostgreSQL store runs it.
+    #[cfg(feature = "postgres")]
+    #[must_use]
+    pub fn project_pg(mut self, aggregate: &str, project: impl ProjectPg + 'static) -> Self {
+        self.project_pgs
+            .push((aggregate.to_string(), Arc::new(project)));
+        self
+    }
+
     /// A Capability's read.
     #[must_use]
     pub fn answer(mut self, answer: Answer) -> Self {
@@ -242,6 +322,8 @@ impl Plugin {
         self.prepares.extend(other.prepares);
         self.judges.extend(other.judges);
         self.projects.extend(other.projects);
+        #[cfg(feature = "postgres")]
+        self.project_pgs.extend(other.project_pgs);
         self.answers.extend(other.answers);
         self.shared.absorb(other.shared);
         self.needs.extend(other.needs);
@@ -308,6 +390,65 @@ mod tests {
             Refusal::unprocessable("closed").kind,
             RefusalKind::Unprocessable
         );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[async_trait]
+    impl ProjectPg for Nothing {
+        async fn project(
+            &self,
+            _write: &Write,
+            _tx: &tokio_postgres::Transaction<'_>,
+        ) -> Result<(), ProjectionError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn a_refused_projection_is_a_refusal_and_a_failed_one_the_store_s_error() {
+        let refused = Error::from(ProjectionError::Refused("the ledger is closed".to_string()));
+        assert_eq!(
+            refused,
+            Error::Refused(Refusal::unprocessable("the ledger is closed"))
+        );
+        assert_eq!(
+            Error::from(ProjectionError::Failed("disk full".to_string())),
+            Error::Store("disk full".to_string())
+        );
+        assert_eq!(
+            ProjectionError::Refused("closed".to_string()).to_string(),
+            "closed"
+        );
+        let unparsable = "host=a port=nope"
+            .parse::<tokio_postgres::Config>()
+            .expect_err("not a port");
+        let failed = ProjectionError::from(unparsable);
+        assert!(
+            matches!(&failed, ProjectionError::Failed(why) if why.contains("invalid connection string")),
+            "{failed:?}"
+        );
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn plugins_gather_the_projections_the_store_runs() {
+        let plugins: Plugins = [
+            Plugin::new().project_pg("Account", Nothing),
+            Plugin::new()
+                .project_pg("Board", Nothing)
+                .project_pg("Account", Nothing),
+        ]
+        .into_iter()
+        .collect();
+        let aggregates: Vec<&str> = plugins
+            .0
+            .project_pgs
+            .iter()
+            .map(|(aggregate, _)| aggregate.as_str())
+            .collect();
+        assert_eq!(aggregates, ["Account", "Board", "Account"]);
+        assert!(plugins.0.projects.is_empty(), "not an in-memory Project");
     }
 
     #[test]

@@ -21,6 +21,14 @@ pub struct Write {
     pub tombstone: bool,
 }
 
+impl Write {
+    /// The aggregate of its partition: `Account` of `Account/881`.
+    #[must_use]
+    pub fn aggregate(&self) -> &str {
+        self.partition.split('/').next().unwrap_or(&self.partition)
+    }
+}
+
 /// What the dynamic classification of an effect found at execution: a
 /// pure addition that is not one goes to the Resolver instead of failing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,7 +81,9 @@ pub trait Store: Send + Sync {
     async fn incoming(&self, partition: &str) -> crate::Result<Vec<(String, u64)>>;
 
     /// Applies `write` and takes the next `dataVersion`, in one transaction
-    /// with the journal row of `result`: the single applier's step.
+    /// with the journal row of `result`: the single applier's step. A store
+    /// whose projections refuse the write rolls it back and answers
+    /// [`crate::Error::Refused`].
     async fn apply(&self, write: &Write, result: &CommandResult) -> crate::Result<u64>;
 
     /// Journals a result that applied nothing (a rejection, an expiry).
@@ -103,9 +113,48 @@ pub trait Ids: Send + Sync {
     fn fresh(&self) -> String;
 }
 
+/// Fresh row ids as random uuids (v4), behind the `uuid` feature.
+#[cfg(feature = "uuid")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RandomIds;
+
+#[cfg(feature = "uuid")]
+impl Ids for RandomIds {
+    fn fresh(&self) -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_write_names_the_aggregate_of_its_partition() {
+        let write = |partition: &str| Write {
+            partition: partition.to_string(),
+            values: BTreeMap::new(),
+            tombstone: false,
+        };
+        assert_eq!(write("Account/881").aggregate(), "Account");
+        assert_eq!(write("Account/a/b").aggregate(), "Account");
+        assert_eq!(write("Account").aggregate(), "Account");
+    }
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn random_ids_are_distinct_uuids_v4() {
+        let ids: Vec<String> = (0..64).map(|_| RandomIds.fresh()).collect();
+        for id in &ids {
+            let parsed = uuid::Uuid::parse_str(id).expect("a uuid");
+            assert_eq!(parsed.get_version_num(), 4, "{id}");
+            assert_eq!(parsed.to_string(), *id, "hyphenated, lower case");
+        }
+        let mut distinct = ids.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), ids.len());
+    }
 
     #[test]
     fn a_collision_is_clean_when_nothing_was_found() {

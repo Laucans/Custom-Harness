@@ -88,6 +88,12 @@ partitions advance in parallel.
 8. **Double check of the invariants.** At enqueue, on the projected state, to
    warn early; at application, on the real state, which alone decides.
 
+An application is **one transaction**: the aggregate's row, its projections
+into the product's own tables (an aggregate's `ProjectPg`, run after the row
+and before the commit), the next `dataVersion` and the journal. A projection
+that refuses rolls all of it back, and the command is rejected at the head as
+an invariant would reject it (`CommandRejected`, with the projection's reason).
+
 A confirmed command advances in its place up to the head. Only a command that
 reaches the head unconfirmed leaves the queue, and comes back only at the end,
 after a recompute. The author may also cancel at any time before application.

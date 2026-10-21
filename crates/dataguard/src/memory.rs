@@ -24,6 +24,7 @@ struct Inner {
     data_version: u64,
     collisions: BTreeMap<String, Collision>,
     incoming: BTreeMap<String, Vec<(String, u64)>>,
+    refusals: BTreeMap<String, String>,
 }
 
 /// A store in memory.
@@ -54,6 +55,16 @@ impl MemoryStore {
     #[must_use]
     pub fn pointed_at(self, partition: &str, incoming: Vec<(String, u64)>) -> Self {
         self.lock().incoming.insert(partition.to_string(), incoming);
+        self
+    }
+
+    /// A store whose apply transaction refuses every write of `partition`,
+    /// as a projection in it would: nothing is written.
+    #[must_use]
+    pub fn refusing(self, partition: &str, reason: &str) -> Self {
+        self.lock()
+            .refusals
+            .insert(partition.to_string(), reason.to_string());
         self
     }
 
@@ -152,6 +163,11 @@ impl Store for MemoryStore {
 
     async fn apply(&self, write: &Write, result: &CommandResult) -> Result<u64> {
         let mut inner = self.lock();
+        if let Some(reason) = inner.refusals.get(&write.partition) {
+            return Err(Error::Refused(crate::plugins::Refusal::unprocessable(
+                reason.clone(),
+            )));
+        }
         inner.data_version = inner.data_version.saturating_add(1);
         let version = inner.data_version;
         if write.tombstone {
