@@ -60,7 +60,7 @@ layout.
 | A4 | Plugins over PostgreSQL — **done** cb32b38 | A3 | — | medium |
 | A5a | Registry crate, `register.sh`, server skeleton as a lib, `crates/server` — **done** 1be415c | A4 | dataguard-v2 | large |
 | A5b | Gates, `tree.rs`, `closure.rs`, isolation — **done** 6b0213c | A5a | — | medium |
-| A5c | Rule cards, docs, CLAUDE.md, catch-up regeneration | A5b | — | medium |
+| A5c | Rule cards, docs, CLAUDE.md, catch-up regeneration — **done** f13f38b | A5b | — | medium |
 | M0–M5 | ForgeDesMondes migration | A5c | — | ~15 tasks |
 
 A2, A3 and A4 all edit `engine.rs`. They run one after the other, each with
