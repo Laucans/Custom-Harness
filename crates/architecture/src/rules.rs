@@ -186,8 +186,8 @@ Capability, any other DataCapability, any other system's crates.
 Gates that judge it: manifests-conform-to-contracts (F),
 data-capability-placed (its folder is its id's namespace, never
 crates/dataguard/), capability-isolation (scripts/isolation.sh),
-data-capability-registered
-(a workspace member, named after its folder, a dependency of the server),
+units-registered
+(named in the registry by scripts/register.sh, its library named after its folder),
 effect-classification (a pure insert stays one), ownership (its target
 aggregate declares every field it touches), invariants-tested (every
 invariant it lists exists on the aggregate), write-actions (the Micro-UIs
@@ -286,7 +286,7 @@ What it must not do: compute a business value (that is a Concept), or be
 read by a Micro-UI (that is a Capability's job).
 
 Gates that judge it: manifests-conform-to-contracts (I, M),
-invariants-tested, ownership (the DataCapabilities that mutate it name
+aggregate-placed, invariants-tested, ownership (the DataCapabilities that mutate it name
 fields it declares). schema-impact is declared and switched on with the
 engine. After the merge the harness dumps the real schema and compares it
 with data/model.json: a divergence opens a diagnosis.";
@@ -317,7 +317,7 @@ are filtered here.
 
 Gates that judge it: capability-isolation (scripts/isolation.sh: a shared
 crate reaches no slice and stays in its system), read-only (a Capability
-reaches no application role's connection), data-capability-registered.
+reaches no application role's connection), units-registered.
 Keep scripts/dump-schema.sh printing the schema the migrations build.
 A port is infrastructure: ports-declared (every port has its fake and its
 contract tests, and lists the units that use it), externals-behind-ports

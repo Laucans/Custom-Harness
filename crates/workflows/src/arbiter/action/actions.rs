@@ -218,7 +218,7 @@ mod tests {
     async fn resolve_reads_the_board_and_the_repository_before_anything_is_paid() {
         let disk = FakeDisk {
             existing: std::iter::once((
-                PathBuf::from("/repo/crates/dataguard/aggregates/risk/aggregate.json"),
+                PathBuf::from("/repo/crates/c/aggregates/risk/aggregate.json"),
                 r#"{"aggregate":"Risk@3"}"#.to_string(),
             ))
             .collect(),

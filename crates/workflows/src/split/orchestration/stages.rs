@@ -127,8 +127,9 @@ after every table it references) — and copies those tables into
 the architecture gate refuses a build that touches it. Then one slice per
 aggregate, each `depends_on` the schema slice and on no other aggregate:
 it installs its draft `mock/data/aggregates/<Aggregate>.aggregate.json` as
-`crates/dataguard/aggregates/<Aggregate>/aggregate.json` with its invariants
-and their tests, on tables already there, and writes no migration. The
+`crates/<system>/aggregates/<Aggregate>/aggregate.json` — its system's
+folder, never `crates/dataguard/` (gate `aggregate-placed`) — with its
+invariants and their tests, on tables already there, and writes no migration. The
 aggregates then build side by side (ForgeDesMondes' first Data layer
 chained them on one another's migration and five lanes held three). A slice whose unit uses a port the milestone has not built yet
 builds it first, or a slice before it does: `crates/ports/<port>/` with its

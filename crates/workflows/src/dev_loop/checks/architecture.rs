@@ -422,6 +422,11 @@ mod tests {
                 "/ws/crates/credit/capabilities/calculate-risk/q.graphql",
                 "# fields: a.b\nquery Q { a }",
             ),
+            // The registry names every unit crate (scripts/register.sh).
+            (
+                "/ws/crates/dataguard/registry/Cargo.toml",
+                "[dependencies]\ncalculate-risk = { path = \"../../credit/capabilities/calculate-risk\" }\n",
+            ),
             (
                 "/ws/apps/credit/risk-badge/micro-ui.json",
                 r#"{"microUi":"RiskBadge","system":"credit","needs":["credit.calculateRisk"]}"#,

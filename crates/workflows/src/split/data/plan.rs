@@ -450,7 +450,7 @@ mod tests {
         for fine in [
             "crates/campaign/data-capabilities/save-entity/ with its data-capability.json",
             "crates/<system>/data-capabilities/<name>/, crates/*/data-capabilities/*",
-            "crates/dataguard/aggregates/Entity/aggregate.json, crates/dataguard/server/Cargo.toml",
+            "crates/campaign/aggregates/Entity/aggregate.json, crates/dataguard/registry/Cargo.toml",
             "",
         ] {
             assert!(spec_gaps(&[save(fine)]).is_empty(), "{fine}");
@@ -496,8 +496,10 @@ mod tests {
     }
 
     fn aggregate(name: &str, technical: &str) -> String {
+        // Its system's own folder, as the gate `aggregate-placed` has it.
+        let system = name.to_lowercase();
         format!(
-            r#"{{"title":"{name}","brief":"b","branch":"feat/{name}","unit":"aggregate","system":"dataguard","aggregate":"{name}","produces":["{name}"],"technical":"{technical}",{WHOLE}}}"#
+            r#"{{"title":"{name}","brief":"b","branch":"feat/{name}","unit":"aggregate","system":"{system}","aggregate":"{name}","produces":["{name}"],"technical":"{technical}",{WHOLE}}}"#
         )
     }
 
@@ -505,8 +507,8 @@ mod tests {
 
     #[test]
     fn several_aggregates_need_a_schema_slice_first_and_write_no_migration() {
-        let media = aggregate("Media", "crates/dataguard/aggregates/Media/");
-        let session = aggregate("Session", "crates/dataguard/aggregates/Session/");
+        let media = aggregate("Media", "crates/media/aggregates/Media/");
+        let session = aggregate("Session", "crates/session/aggregates/Session/");
         let chained = parse(&format!("[{media},{session}]")).expect("parse");
         let gaps = spec_gaps(&chained);
         assert_eq!(gaps.len(), 1, "{gaps:?}");

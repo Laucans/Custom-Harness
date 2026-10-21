@@ -9,18 +9,21 @@
 # another. So, on the graph `cargo metadata` answers — not on the text of a
 # Cargo.toml, which misses a workspace-level dependency and a transitive one:
 #
-# 1. A Capability (crates/<system>/capabilities/<name>/) or a DataCapability
-#    (crates/<system>/data-capabilities/<name>/) depends on no other
-#    Capability or DataCapability, directly or transitively.
+# 1. A Capability (crates/<system>/capabilities/<name>/), a DataCapability
+#    (crates/<system>/data-capabilities/<name>/) or an aggregate
+#    (crates/<system>/aggregates/<Aggregate>/) depends on no other unit,
+#    directly or transitively — with one exception: a DataCapability depends
+#    on the aggregate crate its manifest's `target.aggregate` names, and on
+#    no other. That aggregate is judged as a unit of its own, so what it
+#    reaches is not held against the DataCapability.
 # 2. It depends only on crates of its own system (crates/<system>/…),
 #    never on another system's. A DataCapability's system is its id's
 #    namespace, the folder it sits under (campaign.saveEntity under
 #    crates/campaign/): the DataGuard owns it, it does not house it.
 #    A port (crates/ports/<port>/, contract Q) belongs to no system: every
 #    system reaches the outside through it.
-# 3. A crate shared inside a system — one that a Capability or a
-#    DataCapability depends on — depends on no Capability, no DataCapability
-#    and no crate of another system: plumbing, never a bridge.
+# 3. A crate shared inside a system — one that a unit depends on — depends
+#    on no unit and no crate of another system: plumbing, never a bridge.
 #
 # 4. A Capability reads through its system's read crate (`<system>-read`,
 #    no write API), which itself reads through the Data layer (`crates/data`,
@@ -30,6 +33,11 @@
 #    `sea-orm`, `rusqlite`, `mysql` are not among its dependencies. The
 #    read-only rule is then a fact of the types, and the read-only role is
 #    defence in depth.
+#
+# 5. The registry (crates/dataguard/registry, written by scripts/register.sh)
+#    depends on every unit: it is the one bridge, and only the server
+#    (crates/dataguard/server) and the product's binary (crates/server)
+#    depend on it.
 #
 # A dev-dependency counts for none of this: a test-only crate (the
 # conformance runner under crates/platform/) is not a bridge at run time.
@@ -47,7 +55,7 @@ command -v cargo >/dev/null || { echo "::error::isolation.sh needs cargo"; exit 
 # No Rust workspace yet: no slice to isolate — unless one is already there.
 if [ ! -f Cargo.toml ]; then
   shopt -s nullglob
-  slices=(crates/*/capabilities/*/Cargo.toml crates/*/data-capabilities/*/Cargo.toml)
+  slices=(crates/*/capabilities/*/Cargo.toml crates/*/data-capabilities/*/Cargo.toml crates/*/aggregates/*/Cargo.toml)
   for toml in "${slices[@]}"; do
     echo "::error file=$toml::there is no root Cargo.toml — the slices are members of a workspace"
   done
@@ -80,10 +88,23 @@ while IFS=$'\t' read -r name rel; do
   case "$rel" in
     crates/*/capabilities/*/Cargo.toml) kind["$name"]="capability" ;;
     crates/*/data-capabilities/*/Cargo.toml) kind["$name"]="data-capability" ;;
+    crates/*/aggregates/*/Cargo.toml) kind["$name"]="aggregate" ;;
     *) kind["$name"]="other" ;;
   esac
   if [[ "$rel" =~ ^crates/([^/]+)/ ]]; then system["$name"]="${BASH_REMATCH[1]}"; else system["$name"]=""; fi
 done <<< "$crates"
+
+# An aggregate crate by the aggregate it holds: its aggregate.json's
+# `aggregate`, else its folder's name.
+declare -A aggregate_crate
+for name in "${!kind[@]}"; do
+  [ "${kind[$name]}" = "aggregate" ] || continue
+  dir=$(dirname "${manifest[$name]}")
+  held=""
+  [ -f "$dir/aggregate.json" ] && held=$(jq -r '.aggregate // empty' "$dir/aggregate.json" 2>/dev/null || true)
+  [ -n "$held" ] || held=$(basename "$dir")
+  aggregate_crate["$held"]="$name"
+done
 
 declare -A direct
 while IFS=$'\t' read -r from to; do
@@ -91,12 +112,15 @@ while IFS=$'\t' read -r from to; do
   direct["$from"]+="$to "
 done <<< "$edges"
 
-# Every workspace crate reachable from a crate, transitively, space separated.
+# Every workspace crate reachable from a crate, transitively, space
+# separated. A crate named second is reached but not walked through.
 reach() {
   local -A seen=()
   local queue=("$1") current dep
+  local stop="${2:-}"
   while [ ${#queue[@]} -gt 0 ]; do
     current="${queue[0]}"; queue=("${queue[@]:1}")
+    [ -n "$stop" ] && [ "$current" = "$stop" ] && continue
     for dep in ${direct[$current]:-}; do
       [ -n "${seen[$dep]:-}" ] && continue
       seen["$dep"]=1
@@ -112,12 +136,30 @@ fail() { echo "::error file=$1::$2"; failed=1; }
 for name in "${!kind[@]}"; do
   k="${kind[$name]}"
   [ "$k" = "other" ] && continue
-  what="a Capability"; [ "$k" = "data-capability" ] && what="a DataCapability"
+  case "$k" in
+    capability) what="a Capability" ;;
+    data-capability) what="a DataCapability" ;;
+    *) what="an aggregate" ;;
+  esac
   own="${system[$name]}"
-  for dep in $(reach "$name"); do
+  # The one unit a DataCapability may reach: its target aggregate's crate.
+  allowed=""
+  if [ "$k" = "data-capability" ]; then
+    dc_manifest="$(dirname "${manifest[$name]}")/data-capability.json"
+    aggregate=""
+    [ -f "$dc_manifest" ] && aggregate=$(jq -r '.target.aggregate // empty' "$dc_manifest" 2>/dev/null || true)
+    [ -n "$aggregate" ] && allowed="${aggregate_crate[$aggregate]:-}"
+  fi
+  for dep in $(reach "$name" "$allowed"); do
+    # Its target aggregate is a unit of its own, judged on its own.
+    [ -n "$allowed" ] && [ "$dep" = "$allowed" ] && continue
     case "${kind[$dep]:-other}" in
-      capability|data-capability)
-        fail "${manifest[$name]}" "$what depends on no other slice: $name reaches $dep (${manifest[$dep]})" ;;
+      capability|data-capability|aggregate)
+        if [ "$k" = "data-capability" ] && [ "${kind[$dep]}" = "aggregate" ]; then
+          fail "${manifest[$name]}" "a DataCapability depends on its target aggregate's crate and on no other unit: $name reaches the aggregate $dep (${manifest[$dep]})"
+        else
+          fail "${manifest[$name]}" "$what depends on no other unit: $name reaches $dep (${manifest[$dep]})"
+        fi ;;
     esac
     if [ -n "${system[$dep]:-}" ] && [ "${system[$dep]}" != "$own" ] && [ "${system[$dep]}" != "ports" ]; then
       fail "${manifest[$name]}" "$what depends only on its own system's crates: $name ($own) reaches $dep (${system[$dep]})"
@@ -125,14 +167,15 @@ for name in "${!kind[@]}"; do
     if [ -z "${system[$dep]:-}" ]; then
       fail "${manifest[$name]}" "$what depends only on crates under crates/<system>/: $name reaches $dep (${manifest[$dep]})"
     fi
-    # A crate shared inside the system is plumbing: it reaches no slice and no other system.
+    # A crate shared inside the system is plumbing: it reaches no unit and no other system.
+    case "${kind[$dep]:-other}" in capability|data-capability|aggregate) continue ;; esac
     for far in $(reach "$dep"); do
       case "${kind[$far]:-other}" in
-        capability|data-capability)
-          fail "${manifest[$dep]}" "a crate a slice depends on is plumbing, never a bridge: $dep reaches the slice $far" ;;
+        capability|data-capability|aggregate)
+          fail "${manifest[$dep]}" "a crate a unit depends on is plumbing, never a bridge: $dep reaches the unit $far" ;;
       esac
       if [ -n "${system[$far]:-}" ] && [ "${system[$far]}" != "${system[$dep]:-}" ] && [ "${system[$far]}" != "ports" ]; then
-        fail "${manifest[$dep]}" "a crate a slice depends on stays in its system: $dep (${system[$dep]:-}) reaches $far (${system[$far]})"
+        fail "${manifest[$dep]}" "a crate a unit depends on stays in its system: $dep (${system[$dep]:-}) reaches $far (${system[$far]})"
       fi
     done
   done
@@ -167,5 +210,20 @@ for name in "${!kind[@]}"; do
     fail "$link" "$what shares code through a crate or not at all: a symlink inside $dir"
   done < <(find "$dir" -type l 2>/dev/null)
 done
+
+# Rule 5: the registry is the one bridge, and only the servers cross it.
+registry_crate=""
+for name in "${!manifest[@]}"; do
+  [ "${manifest[$name]}" = "crates/dataguard/registry/Cargo.toml" ] && registry_crate="$name"
+done
+if [ -n "$registry_crate" ]; then
+  while IFS=$'\t' read -r from to; do
+    [ -n "$from" ] && [ "$to" = "$registry_crate" ] || continue
+    case "${manifest[$from]:-}" in
+      crates/dataguard/server/Cargo.toml|crates/server/Cargo.toml) ;;
+      *) fail "${manifest[$from]:-$from}" "only crates/dataguard/server and crates/server depend on the registry, the one crate that reaches every unit: $from depends on $registry_crate" ;;
+    esac
+  done <<< "$edges"
+fi
 
 exit $failed

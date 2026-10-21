@@ -15,7 +15,7 @@ to one of them is its own task, and lists the units it touches.
 | `f-data-capability.schema.json` | F. DataCapability | `crates/<system>/data-capabilities/<name>/data-capability.json` |
 | `g-queue-entry.schema.json` | G. DataQueue entry | what the queue stores and shows an author |
 | `h-command-result.schema.json` | H. Command result | what the DataGuard answers a caller |
-| `i-aggregate.schema.json` | I. Aggregate | `crates/dataguard/aggregates/<Aggregate>/aggregate.json` |
+| `i-aggregate.schema.json` | I. Aggregate | `crates/<system>/aggregates/<Aggregate>/aggregate.json` |
 | `j-impact-plan.schema.json` | J. Impact plan | what the Resolver hands the DataGuard |
 | `k-reconciliation.schema.json` | K. Reconciliation proposal | what the reconciliation AI hands an approver |
 | `l-message.schema.json` | L. Message | what the Integrity DataGuard sends |

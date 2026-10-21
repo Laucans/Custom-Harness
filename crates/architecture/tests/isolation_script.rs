@@ -53,7 +53,7 @@ fn rel(dir: &str, name: &str) -> String {
 }
 
 /// Every crate a case may name: its name and its folder.
-const DIRS: [(&str, &str); 8] = [
+const DIRS: [(&str, &str); 14] = [
     ("risk", "crates/credit/capabilities/risk"),
     ("score", "crates/credit/capabilities/score"),
     ("credit-query", "crates/credit/query"),
@@ -62,10 +62,18 @@ const DIRS: [(&str, &str); 8] = [
     ("limit", "crates/credit/data-capabilities/limit"),
     ("orders-query", "crates/orders/query"),
     ("llm", "crates/ports/llm"),
+    ("aggregate-account", "crates/credit/aggregates/Account"),
+    ("aggregate-ledger", "crates/credit/aggregates/Ledger"),
+    ("aggregate-order", "crates/orders/aggregates/Order"),
+    ("dataguard-registry", "crates/dataguard/registry"),
+    ("dataguard-server", "crates/dataguard/server"),
+    ("server", "crates/server"),
 ];
 
 /// The healthy shape: two Capabilities and one `DataCapability` on their
-/// system's plumbing, the DataGuard's and another system's crates beside.
+/// system's plumbing, the `DataCapability` on its target aggregate's crate,
+/// the registry reaching every unit and the two servers on the registry,
+/// the DataGuard's and another system's crates beside.
 fn repo(case: &str) -> Repo {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -105,10 +113,68 @@ fn repo(case: &str) -> Repo {
         &root,
         "crates/credit/data-capabilities/limit",
         "limit",
-        &["credit-query"],
+        &["credit-query", "aggregate-account"],
+    );
+    write(
+        &root,
+        "crates/credit/data-capabilities/limit/data-capability.json",
+        r#"{"dataCapability":"credit.limit","target":{"aggregate":"Account"}}"#,
     );
     krate(&root, "crates/orders/query", "orders-query", &[]);
     krate(&root, "crates/ports/llm", "llm", &[]);
+    krate(
+        &root,
+        "crates/credit/aggregates/Account",
+        "aggregate-account",
+        &["credit-query"],
+    );
+    write(
+        &root,
+        "crates/credit/aggregates/Account/aggregate.json",
+        r#"{"aggregate":"Account"}"#,
+    );
+    krate(
+        &root,
+        "crates/credit/aggregates/Ledger",
+        "aggregate-ledger",
+        &[],
+    );
+    krate(
+        &root,
+        "crates/orders/aggregates/Order",
+        "aggregate-order",
+        &["orders-query"],
+    );
+    write(
+        &root,
+        "crates/orders/aggregates/Order/aggregate.json",
+        r#"{"aggregate":"Order"}"#,
+    );
+    krate(
+        &root,
+        "crates/dataguard/registry",
+        "dataguard-registry",
+        &[
+            "risk",
+            "score",
+            "limit",
+            "aggregate-account",
+            "aggregate-ledger",
+            "aggregate-order",
+        ],
+    );
+    krate(
+        &root,
+        "crates/dataguard/server",
+        "dataguard-server",
+        &["dataguard-registry"],
+    );
+    krate(
+        &root,
+        "crates/server",
+        "server",
+        &["dataguard-server", "dataguard-registry"],
+    );
     write(&root, "scripts/isolation.sh", SCRIPT);
     Repo { root }
 }
@@ -169,7 +235,7 @@ fn a_plumbing_crate_that_reaches_a_slice_is_a_bridge_and_fails() {
     assert!(!ok);
     assert!(said.contains("score reaches risk"), "{said}");
     assert!(
-        said.contains("credit-utils reaches the slice risk"),
+        said.contains("credit-utils reaches the unit risk"),
         "{said}"
     );
 }
@@ -229,7 +295,7 @@ fn a_data_capability_reaching_a_capability_fails() {
     let (ok, said) = check(&repo);
     assert!(!ok);
     assert!(
-        said.contains("a DataCapability depends on no other slice: limit reaches risk"),
+        said.contains("a DataCapability depends on no other unit: limit reaches risk"),
         "{said}"
     );
 }
@@ -313,4 +379,139 @@ fn a_driver_or_a_slice_as_a_dev_dependency_is_not_a_dependency() {
     );
     let (ok, said) = check(&repo);
     assert!(ok, "{said}");
+}
+
+#[test]
+fn a_data_capability_reaches_its_target_aggregate_and_no_other() {
+    let repo = repo("other-aggregate");
+    krate(
+        &repo.root,
+        "crates/credit/data-capabilities/limit",
+        "limit",
+        &["credit-query", "aggregate-account", "aggregate-ledger"],
+    );
+    let (ok, said) = check(&repo);
+    assert!(!ok, "{said}");
+    assert!(
+        said.contains(
+            "a DataCapability depends on its target aggregate's crate and on no other unit: \
+             limit reaches the aggregate aggregate-ledger"
+        ),
+        "{said}"
+    );
+    assert!(
+        !said.contains("reaches the aggregate aggregate-account"),
+        "its target is allowed: {said}"
+    );
+    // A manifest that names no target leaves no aggregate allowed.
+    write(
+        &repo.root,
+        "crates/credit/data-capabilities/limit/data-capability.json",
+        r#"{"dataCapability":"credit.limit"}"#,
+    );
+    krate(
+        &repo.root,
+        "crates/credit/data-capabilities/limit",
+        "limit",
+        &["aggregate-account"],
+    );
+    let (ok, said) = check(&repo);
+    assert!(!ok, "{said}");
+    assert!(
+        said.contains("limit reaches the aggregate aggregate-account"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_target_aggregate_of_another_system_is_judged_on_its_own() {
+    // The DataCapability may cross to its target; the aggregate's own
+    // plumbing is the aggregate's to keep, not the DataCapability's.
+    let repo = repo("cross-target");
+    write(
+        &repo.root,
+        "crates/credit/data-capabilities/limit/data-capability.json",
+        r#"{"dataCapability":"credit.limit","target":{"aggregate":"Order"}}"#,
+    );
+    krate(
+        &repo.root,
+        "crates/credit/data-capabilities/limit",
+        "limit",
+        &["credit-query", "aggregate-order"],
+    );
+    let (ok, said) = check(&repo);
+    assert!(ok, "not walked through the target: {said}");
+    // The aggregate itself leaving its system is its own violation.
+    krate(
+        &repo.root,
+        "crates/orders/aggregates/Order",
+        "aggregate-order",
+        &["credit-query"],
+    );
+    let (ok, said) = check(&repo);
+    assert!(!ok, "{said}");
+    assert!(
+        said.contains(
+            "an aggregate depends only on its own system's crates: aggregate-order (orders) \
+             reaches credit-query (credit)"
+        ),
+        "{said}"
+    );
+    assert!(
+        !said.contains("file=crates/credit/data-capabilities/limit"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_capability_or_an_aggregate_reaching_a_unit_fails() {
+    let repo = repo("aggregate-unit");
+    krate(
+        &repo.root,
+        "crates/credit/capabilities/score",
+        "score",
+        &["credit-query", "aggregate-account"],
+    );
+    krate(
+        &repo.root,
+        "crates/credit/aggregates/Ledger",
+        "aggregate-ledger",
+        &["limit"],
+    );
+    let (ok, said) = check(&repo);
+    assert!(!ok);
+    assert!(
+        said.contains("a Capability depends on no other unit: score reaches aggregate-account"),
+        "{said}"
+    );
+    assert!(
+        said.contains("an aggregate depends on no other unit: aggregate-ledger reaches limit"),
+        "{said}"
+    );
+}
+
+#[test]
+fn only_the_two_servers_depend_on_the_registry() {
+    let repo = repo("registry");
+    let (ok, said) = check(&repo);
+    assert!(ok, "the servers may: {said}");
+    krate(
+        &repo.root,
+        "crates/credit/utils",
+        "credit-utils",
+        &["dataguard-registry"],
+    );
+    let (ok, said) = check(&repo);
+    assert!(!ok);
+    assert!(
+        said.contains(
+            "only crates/dataguard/server and crates/server depend on the registry, the one \
+             crate that reaches every unit: credit-utils depends on dataguard-registry"
+        ),
+        "{said}"
+    );
+    assert!(
+        said.contains("file=crates/credit/utils/Cargo.toml"),
+        "{said}"
+    );
 }

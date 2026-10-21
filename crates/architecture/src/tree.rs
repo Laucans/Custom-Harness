@@ -3,16 +3,20 @@
 //! [`Tree::read`] walks the folders the architecture asks for — Capability
 //! crates under `crates/<system>/capabilities/`, Micro-UIs under `apps/`,
 //! `DataCapabilities` under `crates/<system>/data-capabilities/`, aggregates
-//! under `crates/dataguard/`, Concepts under `concepts/` — through the `Disk`
-//! port, and fails on nothing: an absent or unreadable manifest is one the
-//! rules report.
+//! under `crates/<system>/aggregates/`, the registry's `Cargo.toml`,
+//! Concepts under `concepts/` — through the `Disk` port, and fails on
+//! nothing: an absent or unreadable manifest is one the rules report.
 //!
 //! [`violations`] checks what a diff is reviewed against: a Capability depends
 //! on no Capability and on nothing of the write side; its manifest names its
 //! system and invokes nothing; a Micro-UI needs Capabilities that exist, in
 //! any system, and triggers `DataCapabilities` that exist; a `DataCapability`
 //! belongs to the `DataGuard`, sits under the system its id names (never
-//! under `crates/dataguard/`) and declares its effect; and the unit a task
+//! under `crates/dataguard/`), declares its effect and touches no derived
+//! field; an aggregate sits under its system, in a folder named after it
+//! (never under `crates/dataguard/`); every unit crate is named in the
+//! registry and its library is named as the registry's glue calls it; and
+//! the unit a task
 //! declared under `## Architecture` is actually there, on the side it said;
 //! and the mock-up keeps up with the screens and the Micro-UIs — every page
 //! `mock/pages.json` lists is there, every frozen screen under `apps/screens/`
@@ -55,6 +59,28 @@ pub struct CapabilityCrate {
     pub cargo_toml: Option<String>,
 }
 
+/// A unit folder that is a crate: what the registry names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitCrate {
+    /// `crates/<system>/<kind>/<folder>`, the kind one of [`UNIT_KINDS`].
+    pub dir: String,
+    /// Its `Cargo.toml`.
+    pub cargo_toml: String,
+    /// Its manifest says `"host": "hostless"`: no server runs it, and the
+    /// registry leaves it out.
+    pub hostless: bool,
+}
+
+/// The three kinds of unit folder under a system, with their manifest.
+pub const UNIT_KINDS: [(&str, &str); 3] = [
+    ("aggregates", "aggregate.json"),
+    ("data-capabilities", "data-capability.json"),
+    ("capabilities", "capability.json"),
+];
+
+/// The registry's manifest, which `scripts/register.sh` writes.
+pub const REGISTRY: &str = "crates/dataguard/registry/Cargo.toml";
+
 /// What the gates read of the checkout.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tree {
@@ -66,8 +92,12 @@ pub struct Tree {
     pub micro_uis: Vec<(String, Manifest)>,
     /// Every `data-capability.json`.
     pub data_capabilities: Vec<Manifest>,
-    /// Every `aggregate.json`.
+    /// Every `aggregate.json` under `crates/<system>/aggregates/`.
     pub aggregates: Vec<Manifest>,
+    /// Every unit folder holding a `Cargo.toml`, of the three kinds.
+    pub unit_crates: Vec<UnitCrate>,
+    /// The registry's `Cargo.toml` ([`REGISTRY`]), when there is one.
+    pub registry: Option<String>,
     /// Every documented Concept, as `(name, version)`.
     pub concepts: Vec<(String, u64)>,
     /// `queries/registry.json` exists.
@@ -227,6 +257,7 @@ impl Tree {
             under_architecture: disk.exists(&root.join("contracts")),
             has_query_registry: disk.exists(&root.join("queries/registry.json")),
             root_manifest: text("Cargo.toml"),
+            registry: text(REGISTRY),
             graph: text(crate::graph::PATH).and_then(|t| crate::graph::Graph::parse(&t).ok()),
             ..Self::default()
         };
@@ -262,13 +293,20 @@ impl Tree {
                 }
             }
         }
-        for name in disk.dir_names(&root.join("crates/dataguard/aggregates")) {
-            if let Some(found) = manifest(&format!(
-                "crates/dataguard/aggregates/{name}/aggregate.json"
-            )) {
-                tree.aggregates.push(found);
+        // Under every system too (`crates/<system>/aggregates/<Aggregate>/`);
+        // the DataGuard's folder is read with the others, so that
+        // `violations` can name the one an aggregate belongs in.
+        for system in disk.dir_names(&root.join("crates")) {
+            let folder = root.join("crates").join(&system).join("aggregates");
+            for name in disk.dir_names(&folder) {
+                if let Some(found) =
+                    manifest(&format!("crates/{system}/aggregates/{name}/aggregate.json"))
+                {
+                    tree.aggregates.push(found);
+                }
             }
         }
+        tree.unit_crates = unit_crates(disk, root);
         read_queries(disk, root, &mut tree);
         read_mockup(disk, root, &mut tree);
         for concept in disk.dir_names(&root.join("concepts")) {
@@ -293,6 +331,38 @@ impl Tree {
         }
         tree
     }
+}
+
+/// Every unit folder holding a `Cargo.toml`, as `scripts/register.sh` walks
+/// them: by system, then by kind, then by folder.
+fn unit_crates(disk: &dyn Disk, root: &Path) -> Vec<UnitCrate> {
+    let text = |rel: &str| disk.read_to_string(&root.join(rel));
+    let mut found = Vec::new();
+    for system in disk.dir_names(&root.join("crates")) {
+        for (kind, _) in UNIT_KINDS {
+            for name in disk.dir_names(&root.join("crates").join(&system).join(kind)) {
+                let dir = format!("crates/{system}/{kind}/{name}");
+                let Some(cargo_toml) = text(&format!("{dir}/Cargo.toml")) else {
+                    continue;
+                };
+                // Any of the three manifests, read as the script reads it:
+                // whitespace aside, `"host":"hostless"`.
+                let hostless = UNIT_KINDS.iter().any(|(_, manifest)| {
+                    text(&format!("{dir}/{manifest}")).is_some_and(|content| {
+                        let packed: String =
+                            content.chars().filter(|c| !c.is_whitespace()).collect();
+                        packed.contains("\"host\":\"hostless\"")
+                    })
+                });
+                found.push(UnitCrate {
+                    dir,
+                    cargo_toml,
+                    hostless,
+                });
+            }
+        }
+    }
+    found
 }
 
 /// The SHA-256 of `text`, as `scripts/queries.sh` records it.
@@ -573,6 +643,180 @@ fn misplaced(path: &str, id: Option<&str>) -> Option<String> {
     }
 }
 
+/// Why an aggregate manifest read at `path` does not sit where it belongs,
+/// in one line — `None` when it does. The path is the one [`Tree::read`]
+/// writes, `crates/<system>/aggregates/<Folder>/aggregate.json`: the folder
+/// is the aggregate's name, and the system is never `dataguard`, which
+/// judges every aggregate and houses none. The system it belongs in is the
+/// one the `DataCapabilities` targeting it share, `<system>` otherwise.
+fn aggregate_misplaced(path: &str, name: Option<&str>, tree: &Tree) -> Option<String> {
+    let mut parts = path.split('/');
+    let system = parts.nth(1).unwrap_or_default();
+    let folder = parts.nth(1).unwrap_or_default();
+    let Some(name) = name else {
+        return Some(format!("{path} names no `aggregate`"));
+    };
+    if system == "dataguard" {
+        let home = targeting_system(tree, name).unwrap_or_else(|| "<system>".to_string());
+        return Some(format!(
+            "{path}: `{name}` belongs under crates/{home}/aggregates/{name}/, an aggregate's \
+             folder in its system — the DataGuard judges every aggregate, it houses none"
+        ));
+    }
+    (folder != name).then(|| {
+        format!(
+            "{path}: `{name}` belongs under crates/{system}/aggregates/{name}/, an aggregate's \
+             folder named after it"
+        )
+    })
+}
+
+/// The one system the `DataCapabilities` targeting `aggregate` share,
+/// their ids' namespace; `None` when none targets it, or several systems do.
+fn targeting_system(tree: &Tree, aggregate: &str) -> Option<String> {
+    let mut systems: Vec<&str> = tree
+        .data_capabilities
+        .iter()
+        .filter_map(|m| m.json.as_ref())
+        .filter(|json| json.get("target").and_then(|t| str_of(t, "aggregate")) == Some(aggregate))
+        .filter_map(|json| str_of(json, "dataCapability").and_then(system_of_id))
+        .filter(|system| *system != "dataguard")
+        .collect();
+    systems.sort_unstable();
+    systems.dedup();
+    match systems.as_slice() {
+        [one] => Some((*one).to_string()),
+        _ => None,
+    }
+}
+
+/// `AiSettings` as `ai_settings`, as the registry's build script spells an
+/// aggregate's library: an underscore before an uppercase letter that
+/// follows a lowercase one or a digit, `-` as `_`, all lowercase.
+fn snake(name: &str) -> String {
+    let mut out = String::new();
+    let mut previous: Option<char> = None;
+    for c in name.chars() {
+        if c == '-' {
+            out.push('_');
+        } else {
+            if c.is_ascii_uppercase()
+                && previous.is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit())
+            {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        }
+        previous = Some(c);
+    }
+    out
+}
+
+/// The library a `Cargo.toml` builds: `[lib] name`, else the package's
+/// name with `-` as `_`; `None` when it names neither.
+fn lib_name(toml: &str) -> Option<String> {
+    let mut section = "";
+    let mut package = None;
+    let mut lib = None;
+    for line in toml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            section = trimmed;
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').to_string();
+        match section {
+            "[package]" if package.is_none() => package = Some(value.replace('-', "_")),
+            "[lib]" if lib.is_none() => lib = Some(value),
+            _ => {}
+        }
+    }
+    lib.or(package)
+}
+
+/// The unit folders a registry's `Cargo.toml` names, as its build script
+/// reads them: every `path = "../../<system>/<kind>/<folder>"` of a unit
+/// kind, as `crates/<system>/<kind>/<folder>`.
+fn registered(manifest: &str) -> Vec<String> {
+    manifest
+        .lines()
+        .filter_map(|line| {
+            let (_, rest) = line.split_once("path = \"")?;
+            let (path, _) = rest.split_once('"')?;
+            let unit = path.strip_prefix("../../")?.trim_end_matches('/');
+            let parts: Vec<&str> = unit.split('/').collect();
+            let kind = parts.get(1)?;
+            (parts.len() == 3 && UNIT_KINDS.iter().any(|(k, _)| k == kind))
+                .then(|| format!("crates/{unit}"))
+        })
+        .collect()
+}
+
+/// Every unit crate is named in the registry, and the registry names no
+/// other (`scripts/register.sh --check`, the gate `units-registered`); a
+/// `DataCapability`'s library is named after its folder, an aggregate's
+/// `aggregate_<snake>`: the registry's glue calls them by that name.
+fn units_registered(tree: &Tree) -> Vec<String> {
+    let mut found = Vec::new();
+    let served: Vec<&str> = tree
+        .unit_crates
+        .iter()
+        .filter(|unit| !unit.hostless)
+        .map(|unit| unit.dir.as_str())
+        .collect();
+    // The script writes the registry as soon as there is a unit crate, a
+    // hostless one included: it then names none.
+    match &tree.registry {
+        None if !tree.unit_crates.is_empty() => found.push(format!(
+            "{REGISTRY} is missing and {} unit crate(s) wait on the registry — run \
+             scripts/register.sh",
+            tree.unit_crates.len()
+        )),
+        None => {}
+        Some(manifest) => {
+            let named = registered(manifest);
+            for dir in served.iter().filter(|dir| !named.iter().any(|n| n == *dir)) {
+                found.push(format!(
+                    "{dir}: a unit crate the registry does not name — run scripts/register.sh"
+                ));
+            }
+            for dir in named.iter().filter(|dir| !served.contains(&dir.as_str())) {
+                found.push(format!(
+                    "{REGISTRY} names {dir}, where the registry finds no unit crate — run \
+                     scripts/register.sh"
+                ));
+            }
+        }
+    }
+    for unit in &tree.unit_crates {
+        let mut parts = unit.dir.split('/').skip(2);
+        let (Some(kind), Some(folder)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let (what, expected) = match kind {
+            "aggregates" => ("aggregate", format!("aggregate_{}", snake(folder))),
+            "data-capabilities" => ("DataCapability", folder.replace('-', "_")),
+            _ => continue,
+        };
+        let lib = lib_name(&unit.cargo_toml);
+        if lib.as_deref() != Some(expected.as_str()) {
+            found.push(format!(
+                "{}/Cargo.toml: the library of the {what} {folder} is named {} — name it \
+                 {expected}: the registry's glue calls it by that name",
+                unit.dir,
+                lib.as_deref().unwrap_or("nothing")
+            ));
+        }
+    }
+    found
+}
+
 /// The side a `DataCapability` manifest declares.
 fn manifest_side(json: &Value) -> Side {
     let effect = str_of(json, "effect").and_then(Effect::parse);
@@ -602,10 +846,13 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
         let parts: Vec<&str> = member.split('/').collect();
         if parts.len() == 4
             && parts[0] == "crates"
-            && matches!(parts[2], "capabilities" | "data-capabilities")
+            && matches!(
+                parts[2],
+                "capabilities" | "data-capabilities" | "aggregates"
+            )
         {
             found.push(format!(
-                "Cargo.toml: {member} is a slice listed as a member by name — list slices by \
+                "Cargo.toml: {member} is a unit listed as a member by name — list units by \
                  glob, so a narrowed checkout resolves and adding one edits no shared file"
             ));
         }
@@ -781,15 +1028,21 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
                 Some(declared) => {
                     for field in &touches {
                         let key = field.rsplit('.').next().unwrap_or(field);
-                        let known = declared
-                            .get("fields")
-                            .and_then(Value::as_object)
-                            .is_some_and(|fields| fields.contains_key(key));
-                        if !known {
-                            found.push(format!(
+                        let fields = declared.get("fields").and_then(Value::as_object);
+                        match fields.and_then(|fields| fields.get(key)) {
+                            None => found.push(format!(
                                 "{}: touches `{field}`, which the aggregate `{target}` does not declare (contract I)",
                                 manifest.path
-                            ));
+                            )),
+                            // A derived field is recomputed: the engine
+                            // refuses a command that writes it (Forbidden).
+                            Some(spec) if str_of(spec, "kind") == Some("derived") => {
+                                found.push(format!(
+                                    "{}: touches `{field}`, which the aggregate `{target}` declares derived — recomputed, never written (contract I)",
+                                    manifest.path
+                                ));
+                            }
+                            Some(_) => {}
                         }
                     }
                 }
@@ -797,6 +1050,19 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
         }
     }
 
+    // Contract I: an aggregate sits under its system, in a folder named
+    // after it — the gate `aggregate-placed`.
+    for manifest in &tree.aggregates {
+        let Some(json) = &manifest.json else {
+            found.push(format!("{} is not JSON", manifest.path));
+            continue;
+        };
+        if let Some(why) = aggregate_misplaced(&manifest.path, str_of(json, "aggregate"), tree) {
+            found.push(why);
+        }
+    }
+
+    found.extend(units_registered(tree));
     found.extend(mockup_kept(tree));
     found.extend(queries_registered(tree));
 
@@ -1219,9 +1485,11 @@ mod tests {
                 r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.creditLimit"]}"#,
             )],
             aggregates: vec![manifest(
-                "crates/dataguard/aggregates/Account/aggregate.json",
+                "crates/credit/aggregates/Account/aggregate.json",
                 r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative"}},"invariants":[],"relations":[]}"#,
             )],
+            unit_crates: Vec::new(),
+            registry: None,
             concepts: vec![("Risk".to_string(), 3)],
             has_query_registry: true,
             screens: vec!["credit-review".to_string()],
@@ -1251,7 +1519,7 @@ mod tests {
             tree.aggregates = aggregate
                 .map(|a| {
                     vec![manifest(
-                        "crates/dataguard/aggregates/Account/aggregate.json",
+                        "crates/credit/aggregates/Account/aggregate.json",
                         a,
                     )]
                 })
@@ -2050,8 +2318,359 @@ mod tests {
         assert_eq!(tree.concepts, [("Risk".to_string(), 3)]);
         assert!(tree.has_query_registry);
         let found = violations(&tree, None);
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("pages/gone.html"));
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].contains("registry"), "a unit crate, no registry");
+        assert!(found[1].contains("pages/gone.html"));
         assert!(!Tree::read(&FakeDisk::default(), &root).under_architecture);
+    }
+
+    #[test]
+    fn the_unit_crates_are_read_with_their_host() {
+        let mut disk = FakeDisk::default();
+        for (path, text) in [
+            (
+                "/r/crates/credit/capabilities/risk/Cargo.toml",
+                "[package]\nname = \"risk\"\n",
+            ),
+            (
+                "/r/crates/credit/data-capabilities/export/Cargo.toml",
+                "[package]\nname = \"export\"\n",
+            ),
+            (
+                "/r/crates/credit/data-capabilities/export/data-capability.json",
+                r#"{ "dataCapability": "credit.export", "host" : "hostless" }"#,
+            ),
+            (
+                "/r/crates/credit/aggregates/Account/aggregate.json",
+                r#"{"aggregate":"Account"}"#,
+            ),
+        ] {
+            disk.existing.insert(PathBuf::from(path), text.to_string());
+        }
+        let tree = Tree::read(&disk, Path::new("/r"));
+        assert_eq!(
+            tree.unit_crates
+                .iter()
+                .map(|u| (u.dir.as_str(), u.hostless))
+                .collect::<Vec<_>>(),
+            [
+                ("crates/credit/data-capabilities/export", true),
+                ("crates/credit/capabilities/risk", false)
+            ],
+            "by kind, aggregates first; a folder without a Cargo.toml is no crate"
+        );
+        assert_eq!(tree.registry, None);
+        assert_eq!(tree.aggregates.len(), 1);
+    }
+
+    #[test]
+    fn an_aggregate_is_read_under_any_system_and_placed_under_its_own() {
+        let mut disk = FakeDisk::default();
+        for (path, text) in [
+            (
+                "/r/crates/credit/aggregates/Account/aggregate.json",
+                r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative"}}}"#,
+            ),
+            (
+                "/r/crates/dataguard/aggregates/Ledger/aggregate.json",
+                r#"{"aggregate":"Ledger","fields":{}}"#,
+            ),
+            (
+                "/r/crates/credit/data-capabilities/post/data-capability.json",
+                r#"{"dataCapability":"credit.post","owner":"dataguard","effect":"insert","target":{"aggregate":"Ledger"},"touches":[]}"#,
+            ),
+        ] {
+            disk.existing.insert(PathBuf::from(path), text.to_string());
+        }
+        let tree = Tree::read(&disk, Path::new("/r"));
+        assert_eq!(tree.aggregates.len(), 2, "{:?}", tree.aggregates);
+        let found = violations(&tree, None);
+        assert_eq!(
+            found,
+            [
+                "crates/dataguard/aggregates/Ledger/aggregate.json: `Ledger` belongs under \
+                 crates/credit/aggregates/Ledger/, an aggregate's folder in its system — the \
+                 DataGuard judges every aggregate, it houses none"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_aggregate_s_folder_is_its_name_and_its_system_is_its_targeters() {
+        let with = |path: &str, json: &str, targeting: &[&str]| {
+            let mut tree = sound();
+            tree.aggregates = vec![manifest(path, json)];
+            tree.data_capabilities = targeting
+                .iter()
+                .map(|id| {
+                    manifest(
+                        "crates/x/data-capabilities/y/data-capability.json",
+                        &format!(
+                            r#"{{"dataCapability":"{id}","target":{{"aggregate":"Ledger"}}}}"#
+                        ),
+                    )
+                })
+                .collect();
+            aggregate_misplaced(
+                path,
+                tree.aggregates[0]
+                    .json
+                    .as_ref()
+                    .and_then(|j| str_of(j, "aggregate")),
+                &tree,
+            )
+        };
+        let ledger = r#"{"aggregate":"Ledger"}"#;
+        assert_eq!(
+            with(
+                "crates/credit/aggregates/Ledger/aggregate.json",
+                ledger,
+                &[]
+            ),
+            None
+        );
+        let renamed = with(
+            "crates/credit/aggregates/Ledgers/aggregate.json",
+            ledger,
+            &[],
+        );
+        assert!(
+            renamed.as_deref().is_some_and(|why| why.contains(
+                "`Ledger` belongs under crates/credit/aggregates/Ledger/, an aggregate's folder named after it"
+            )),
+            "{renamed:?}"
+        );
+        for (targeting, home) in [
+            (&[][..], "<system>"),
+            (&["credit.post", "credit.void"][..], "credit"),
+            (&["credit.post", "orders.post"][..], "<system>"),
+            (&["dataguard.post", "post"][..], "<system>"),
+        ] {
+            let why = with(
+                "crates/dataguard/aggregates/Ledger/aggregate.json",
+                ledger,
+                targeting,
+            )
+            .unwrap_or_default();
+            assert!(
+                why.contains(&format!("belongs under crates/{home}/aggregates/Ledger/")),
+                "{targeting:?}: {why}"
+            );
+        }
+        assert_eq!(
+            with("crates/credit/aggregates/Ledger/aggregate.json", "{}", &[]).as_deref(),
+            Some("crates/credit/aggregates/Ledger/aggregate.json names no `aggregate`")
+        );
+        let mut broken = sound();
+        broken.aggregates = vec![manifest(
+            "crates/credit/aggregates/Ledger/aggregate.json",
+            "{",
+        )];
+        assert!(
+            violations(&broken, None)
+                .iter()
+                .any(|v| v == "crates/credit/aggregates/Ledger/aggregate.json is not JSON"),
+            "{:?}",
+            violations(&broken, None)
+        );
+    }
+
+    #[test]
+    fn a_data_capability_touches_no_derived_field() {
+        let mut tree = sound();
+        tree.aggregates = vec![manifest(
+            "crates/credit/aggregates/Account/aggregate.json",
+            r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"derived"},"tags":{"kind":"authoritative"}}}"#,
+        )];
+        let found = violations(&tree, None);
+        assert_eq!(
+            found,
+            [
+                "crates/credit/data-capabilities/request-limit-change/data-capability.json: touches \
+                 `Account.creditLimit`, which the aggregate `Account` declares derived — recomputed, \
+                 never written (contract I)"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_aggregate_listed_as_a_member_by_name_is_a_violation() {
+        let tree = Tree {
+            root_manifest: Some(
+                "[workspace]\nmembers = [\"crates/credit/aggregates/Account\"]\n".to_string(),
+            ),
+            ..sound()
+        };
+        let found = violations(&tree, None);
+        assert!(
+            found.iter().any(|v| v
+                .contains("crates/credit/aggregates/Account is a unit listed as a member by name")),
+            "{found:?}"
+        );
+    }
+
+    fn unit(dir: &str, toml: &str, hostless: bool) -> UnitCrate {
+        UnitCrate {
+            dir: dir.to_string(),
+            cargo_toml: toml.to_string(),
+            hostless,
+        }
+    }
+
+    #[test]
+    fn every_unit_crate_is_named_in_the_registry_and_no_other() {
+        let account = unit(
+            "crates/credit/aggregates/Account",
+            "[package]\nname = \"aggregate-account\"\n",
+            false,
+        );
+        let export = unit(
+            "crates/credit/data-capabilities/export",
+            "[package]\nname = \"export\"\n",
+            true,
+        );
+        let with = |units: Vec<UnitCrate>, registry: Option<&str>| {
+            units_registered(&Tree {
+                unit_crates: units,
+                registry: registry.map(ToString::to_string),
+                ..Tree::default()
+            })
+        };
+        assert!(with(Vec::new(), None).is_empty(), "nothing to register");
+        assert_eq!(
+            with(vec![export.clone()], None),
+            [
+                "crates/dataguard/registry/Cargo.toml is missing and 1 unit crate(s) wait on the \
+                 registry — run scripts/register.sh"
+            ],
+            "a hostless unit too: the script writes the registry, naming none"
+        );
+        assert_eq!(
+            with(vec![account.clone(), export.clone()], None).len(),
+            1,
+            "one line for the missing registry"
+        );
+        let named = "[dependencies]\nharness-dataguard = { git = \"x\" }\n\
+                     aggregate-account = { path = \"../../credit/aggregates/Account\" }\n";
+        assert_eq!(
+            with(vec![account.clone(), export], Some(named)),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            with(vec![account], Some("[dependencies]\n")),
+            [
+                "crates/credit/aggregates/Account: a unit crate the registry does not name — run \
+                 scripts/register.sh"
+            ]
+        );
+        assert_eq!(
+            with(Vec::new(), Some(named)),
+            [
+                "crates/dataguard/registry/Cargo.toml names crates/credit/aggregates/Account, \
+                 where the registry finds no unit crate — run scripts/register.sh"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_unit_s_library_is_named_as_the_registry_s_glue_calls_it() {
+        let with = |dir: &str, toml: &str| {
+            units_registered(&Tree {
+                unit_crates: vec![unit(dir, toml, true)],
+                registry: Some(String::new()),
+                ..Tree::default()
+            })
+        };
+        assert_eq!(
+            with(
+                "crates/ai/aggregates/AiSettings",
+                "[package]\nname = \"aggregate-ai-settings\"\n"
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            with(
+                "crates/ai/data-capabilities/save-settings",
+                "[package]\nname = \"save-settings\"\n"
+            ),
+            Vec::<String>::new()
+        );
+        assert!(
+            with(
+                "crates/ai/capabilities/anything",
+                "[package]\nname = \"else\"\n"
+            )
+            .is_empty(),
+            "a Capability's library is not judged here"
+        );
+        assert_eq!(
+            with(
+                "crates/ai/aggregates/AiSettings",
+                "[package]\nname = \"aggregate-ai-settings\"\n\n[lib]\nname = \"settings\"\n"
+            ),
+            [
+                "crates/ai/aggregates/AiSettings/Cargo.toml: the library of the aggregate \
+                 AiSettings is named settings — name it aggregate_ai_settings: the registry's \
+                 glue calls it by that name"
+            ]
+        );
+        assert_eq!(
+            with(
+                "crates/ai/data-capabilities/save-settings",
+                "[dependencies]\n"
+            ),
+            [
+                "crates/ai/data-capabilities/save-settings/Cargo.toml: the library of the \
+                 DataCapability save-settings is named nothing — name it save_settings: the \
+                 registry's glue calls it by that name"
+            ]
+        );
+        assert!(
+            with("crates/ai", "[package]\nname = \"ai\"\n").is_empty(),
+            "not a unit folder"
+        );
+    }
+
+    #[test]
+    fn names_are_spelled_as_the_registry_s_build_script_spells_them() {
+        assert_eq!(snake("AiSettings"), "ai_settings");
+        assert_eq!(snake("Account"), "account");
+        assert_eq!(snake("HTTPCache"), "httpcache");
+        assert_eq!(snake("Level2Map"), "level2_map");
+        assert_eq!(snake("my-Thing"), "my_thing");
+        assert_eq!(
+            lib_name("[package]\nname = \"a-b\"\n[lib]\nname = \"c\"\n").as_deref(),
+            Some("c")
+        );
+        assert_eq!(
+            lib_name("[dependencies]\nname = \"x\"\n[package]\nname = \"a-b\"\nversion = \"1\"\n")
+                .as_deref(),
+            Some("a_b")
+        );
+        assert_eq!(
+            lib_name("[package]\nname = \"a\"\n[package]\nname = \"b\"\n").as_deref(),
+            Some("a"),
+            "the first name holds"
+        );
+        assert_eq!(
+            lib_name("[lib]\nname = \"a\"\n[lib]\nname = \"b\"\n").as_deref(),
+            Some("a"),
+            "the first library name holds too"
+        );
+        assert_eq!(lib_name("[lib]\nnames = \"x\"\n"), None);
+        assert_eq!(
+            registered(
+                "a = { path = \"../../credit/aggregates/A/\" }\n\
+                 b = { path = \"../../credit/read\" }\n\
+                 c = { path = \"../server\" }\n\
+                 d = { path = \"../../credit/capabilities/risk\" }\n\
+                 e = { path = \"../../credit/nothing/x\" }\n\
+                 f = { path = \"../../credit/capabilities/risk/deeper\" }\n"
+            ),
+            [
+                "crates/credit/aggregates/A",
+                "crates/credit/capabilities/risk"
+            ]
+        );
     }
 }

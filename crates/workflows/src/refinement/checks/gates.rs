@@ -190,6 +190,25 @@ pub fn layout_violation(key: &str, architecture: &str, text: &str) -> Option<Str
                 }),
             )
         }
+        Unit::Aggregate => {
+            // Its system's folder, named after it: the DataGuard judges
+            // every aggregate and houses none (gate `aggregate-placed`).
+            let system = Some(declaration.system.clone())
+                .filter(|system| !system.is_empty() && system != "dataguard");
+            (
+                format!(
+                    "crates/{}/aggregates/<Aggregate>/",
+                    system.as_deref().unwrap_or("<system>")
+                ),
+                crate_paths(text).any(|segments| {
+                    segments.len() >= 3
+                        && segments[0] != "dataguard"
+                        && system.as_deref().is_none_or(|s| segments[0] == s)
+                        && segments[1] == "aggregates"
+                        && is_name(segments[2])
+                }),
+            )
+        }
         _ => return None,
     };
     if placed {
@@ -345,6 +364,35 @@ mod tests {
         assert!(why.contains("reclassification"), "{why}");
         let plumbing = "unit: infrastructure\nsystem: bestiary\nside: harness:write-side";
         assert_eq!(layout_violation("technical", plumbing, beside), None);
+    }
+
+    #[test]
+    fn an_aggregate_sits_under_its_system_never_the_dataguard() {
+        let ledger = "unit: aggregate\nsystem: credit\naggregate: Ledger\nside: harness:write-side";
+        let placed = "Crate: `crates/credit/aggregates/Ledger/`, with its aggregate.json.";
+        assert_eq!(layout_violation("technical", ledger, placed), None);
+        let under_the_dataguard = "Crate: `crates/dataguard/aggregates/Ledger/`.";
+        let why = layout_violation("technical", ledger, under_the_dataguard).expect("misplaced");
+        assert!(
+            why.contains("crates/credit/aggregates/<Aggregate>/"),
+            "{why}"
+        );
+        let elsewhere = "Crate: `crates/orders/aggregates/Ledger/`.";
+        assert!(layout_violation("technical", ledger, elsewhere).is_some());
+        let beside = "Crate: `crates/credit/ledger/`.";
+        assert!(layout_violation("technical", ledger, beside).is_some());
+        let unnamed = "Crate: `crates/credit/aggregates/<Aggregate>/`.";
+        assert!(layout_violation("technical", ledger, unnamed).is_some());
+        // `dataguard` is never an aggregate's system: any system's folder,
+        // never the DataGuard's.
+        let owner_as_system = "unit: aggregate\nsystem: dataguard\nside: harness:write-side";
+        let why = layout_violation("technical", owner_as_system, under_the_dataguard)
+            .expect("the DataGuard houses none");
+        assert!(
+            why.contains("crates/<system>/aggregates/<Aggregate>/"),
+            "{why}"
+        );
+        assert_eq!(layout_violation("technical", owner_as_system, placed), None);
     }
 
     #[test]

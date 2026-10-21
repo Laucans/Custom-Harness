@@ -4,10 +4,12 @@
 //! verdict — healthy passes both, each break fails both — so a change to
 //! one cannot drift from the other unnoticed.
 //!
-//! Only the jobs that are pure shell over the files are run here (no
-//! `cargo metadata`, no `npx`): members by glob, the system frontier of a
-//! Micro-UI's `needs`, its `actions`, the ownership of a mutating
-//! DataCapability, its folder, and the Concepts a Capability implements.
+//! The jobs run here are shell over the files (no `npx`): members by glob,
+//! the system frontier of a Micro-UI's `needs`, its `actions`, the
+//! ownership of a mutating DataCapability, its folder, an aggregate's
+//! folder, the Concepts a Capability implements — and `units-registered`,
+//! which runs `scripts/register.sh --check` and `cargo metadata --no-deps`
+//! (no network) on a fixture that is a real workspace.
 
 use std::collections::HashMap;
 use std::fs;
@@ -20,6 +22,7 @@ use harness_core::domain::Outcome;
 use harness_core::ports::shell::disk::Disk;
 
 const GATES: &str = include_str!("../assets/gates.yml");
+const REGISTER: &str = include_str!("../assets/register.sh");
 
 /// The real disk, read-only, for the loop's reading of the fixture.
 struct RealDisk;
@@ -84,9 +87,37 @@ fn write(root: &Path, path: &str, text: &str) {
     fs::write(path, text).expect("write");
 }
 
+/// A unit crate: its `Cargo.toml` and an empty library.
+fn krate(root: &Path, dir: &str, package: &str) {
+    write(
+        root,
+        &format!("{dir}/Cargo.toml"),
+        &format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+    );
+    write(root, &format!("{dir}/src/lib.rs"), "");
+}
+
+/// Runs the installed `scripts/register.sh` in the fixture: the registry
+/// as the unit folders say.
+fn register(root: &Path) {
+    let out = Command::new("bash")
+        .arg("scripts/register.sh")
+        .current_dir(root)
+        .output()
+        .expect("bash runs");
+    assert!(
+        out.status.success(),
+        "register.sh: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// The healthy shape: one system, a Capability with its Concept, a
 /// Micro-UI that needs it and triggers one DataCapability of an aggregate
-/// that declares what it touches.
+/// that declares what it touches — the three units crates, named in the
+/// registry the script writes, beside the server whose engine line it
+/// copies.
 fn repo(case: &str) -> Repo {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -101,7 +132,20 @@ fn repo(case: &str) -> Repo {
     write(
         &root,
         "Cargo.toml",
-        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*/capabilities/*\", \"crates/dataguard/server\"]\n",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*/capabilities/*\", \"crates/*/data-capabilities/*\", \"crates/*/aggregates/*\", \"crates/dataguard/server\", \"crates/dataguard/registry\"]\n",
+    );
+    write(&root, "scripts/register.sh", REGISTER);
+    write(
+        &root,
+        "crates/dataguard/server/Cargo.toml",
+        "[package]\nname = \"dataguard-server\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nharness-dataguard = { git = \"https://example.invalid/harness.git\", tag = \"dataguard-v2\" }\ndataguard-registry = { path = \"../registry\" }\n",
+    );
+    write(&root, "crates/dataguard/server/src/lib.rs", "");
+    write(&root, "crates/dataguard/registry/src/lib.rs", "");
+    write(
+        &root,
+        "crates/dataguard/registry/build.rs",
+        "fn main() {}\n",
     );
     write(&root, "contracts/README.md", "contracts");
     write(
@@ -109,11 +153,7 @@ fn repo(case: &str) -> Repo {
         "crates/credit/capabilities/risk/capability.json",
         r#"{"capability":"credit.calculateRisk","system":"credit","implements":"Risk@3","reads":["q.graphql"]}"#,
     );
-    write(
-        &root,
-        "crates/credit/capabilities/risk/Cargo.toml",
-        "[package]\nname = \"risk\"\n",
-    );
+    krate(&root, "crates/credit/capabilities/risk", "risk");
     write(
         &root,
         "crates/credit/capabilities/risk/q.graphql",
@@ -142,10 +182,20 @@ fn repo(case: &str) -> Repo {
         "crates/credit/data-capabilities/request-limit/data-capability.json",
         r#"{"dataCapability":"credit.requestLimitChange","owner":"dataguard","effect":"update","target":{"aggregate":"Account"},"touches":["Account.creditLimit"],"callableBy":["credit.*","RiskBadge"],"invariants":[]}"#,
     );
+    krate(
+        &root,
+        "crates/credit/data-capabilities/request-limit",
+        "request-limit",
+    );
     write(
         &root,
-        "crates/dataguard/aggregates/Account/aggregate.json",
-        r#"{"aggregate":"Account","fields":{"creditLimit":{}},"invariants":[],"relations":[]}"#,
+        "crates/credit/aggregates/Account/aggregate.json",
+        r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative"}},"invariants":[],"relations":[]}"#,
+    );
+    krate(
+        &root,
+        "crates/credit/aggregates/Account",
+        "aggregate-account",
     );
     write(
         &root,
@@ -157,6 +207,7 @@ fn repo(case: &str) -> Repo {
         "mock/components/RiskBadge.html",
         r#"<div data-reads="credit.calculateRisk"><button data-writes="credit.requestLimitChange"></button></div>"#,
     );
+    register(&root);
     Repo { root }
 }
 
@@ -219,6 +270,8 @@ fn mirrored() -> HashMap<&'static str, &'static str> {
         ("write-actions", "triggers"),
         ("ownership", "touches"),
         ("data-capability-placed", "its id's namespace"),
+        ("aggregate-placed", "an aggregate's folder"),
+        ("units-registered", "registry"),
         ("concepts-documented", "implements"),
         ("queries-registered", "contract C"),
     ])
@@ -342,6 +395,58 @@ fn breaks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
             "data-capability-placed",
         ),
         (
+            "aggregate-by-name",
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/credit/aggregates/Account\", \"crates/dataguard/server\"]\n",
+            "workspace-members-by-glob",
+        ),
+        (
+            // ForgeDesMondes' twelve aggregates, under the DataGuard's
+            // folder until the migration moves them.
+            "aggregate-under-the-dataguard",
+            "crates/dataguard/aggregates/Ledger/aggregate.json",
+            r#"{"aggregate":"Ledger","fields":{"total":{"kind":"derived","criticality":"low"}},"invariants":[],"relations":[]}"#,
+            "aggregate-placed",
+        ),
+        (
+            "aggregate-renamed",
+            "crates/credit/aggregates/Ledgers/aggregate.json",
+            r#"{"aggregate":"Ledger","fields":{"total":{"kind":"derived","criticality":"low"}},"invariants":[],"relations":[]}"#,
+            "aggregate-placed",
+        ),
+        (
+            "derived",
+            "crates/credit/aggregates/Account/aggregate.json",
+            r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"derived"}},"invariants":[],"relations":[]}"#,
+            "ownership",
+        ),
+        (
+            "aggregate-lib",
+            "crates/credit/aggregates/Account/Cargo.toml",
+            "[package]\nname = \"aggregate-account\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"account\"\n",
+            "units-registered",
+        ),
+        (
+            "data-capability-lib",
+            "crates/credit/data-capabilities/request-limit/Cargo.toml",
+            "[package]\nname = \"request-limit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"limit\"\n",
+            "units-registered",
+        ),
+        (
+            // A unit whose folder the script never saw: its crate is there,
+            // the registry does not name it.
+            "unregistered",
+            "crates/credit/capabilities/score/src/lib.rs",
+            "",
+            "units-registered",
+        ),
+        (
+            "stale-registry",
+            "crates/dataguard/registry/Cargo.toml",
+            "[package]\nname = \"dataguard-registry\"\nversion = \"0.1.0\"\nedition = \"2024\"\nbuild = \"build.rs\"\n\n[dependencies]\ngone = { path = \"../../credit/capabilities/gone\" }\n",
+            "units-registered",
+        ),
+        (
             "concept",
             "crates/credit/capabilities/risk/capability.json",
             r#"{"capability":"credit.calculateRisk","system":"credit","implements":"Risk@4","reads":["q.graphql"]}"#,
@@ -355,8 +460,13 @@ fn each_break_fails_the_gate_and_the_loop_alike() {
     for (case, path, text, job) in breaks() {
         let repo = repo(case);
         write(&repo.root, path, text);
+        if case == "unregistered" {
+            krate(&repo.root, "crates/credit/capabilities/score", "score");
+        }
         let (ok, said) = gate(&repo, job);
         assert!(!ok, "{case}: the gate {job} let it through: {said}");
+        // Refused by its rule, never by a script that broke on the way.
+        assert!(said.contains("::error"), "{case}: {said}");
         let found = loop_violations(&repo);
         let words = mirrored()[job];
         assert!(
@@ -375,5 +485,95 @@ fn the_ownership_rule_reads_the_touched_field_on_both_sides() {
     assert!(
         !loop_violations(&repo).iter().any(|v| v.contains("touches")),
         "expected nothing about touches"
+    );
+}
+
+#[test]
+fn a_derived_field_touched_is_named_derived_on_both_sides() {
+    let repo = repo("derived-words");
+    write(
+        &repo.root,
+        "crates/credit/aggregates/Account/aggregate.json",
+        r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"derived"}},"invariants":[],"relations":[]}"#,
+    );
+    let (ok, said) = gate(&repo, "ownership");
+    assert!(!ok);
+    assert!(said.contains("declares derived"), "{said}");
+    assert!(
+        loop_violations(&repo)
+            .iter()
+            .any(|v| v.contains("declares derived")),
+        "{:?}",
+        loop_violations(&repo)
+    );
+}
+
+#[test]
+fn an_aggregate_under_the_dataguard_is_sent_to_the_system_that_targets_it_on_both_sides() {
+    let repo = repo("home");
+    write(
+        &repo.root,
+        "crates/dataguard/aggregates/Account/aggregate.json",
+        r#"{"aggregate":"Account","fields":{"creditLimit":{"kind":"authoritative"}},"invariants":[],"relations":[]}"#,
+    );
+    let (ok, said) = gate(&repo, "aggregate-placed");
+    assert!(!ok);
+    assert!(
+        said.contains("Account belongs under crates/credit/aggregates/Account/"),
+        "{said}"
+    );
+    assert!(
+        loop_violations(&repo)
+            .iter()
+            .any(|v| v.contains("belongs under crates/credit/aggregates/Account/")),
+        "{:?}",
+        loop_violations(&repo)
+    );
+}
+
+#[test]
+fn a_hostless_unit_waits_on_no_registry_on_both_sides() {
+    let repo = repo("hostless");
+    krate(
+        &repo.root,
+        "crates/credit/data-capabilities/export",
+        "export",
+    );
+    write(
+        &repo.root,
+        "crates/credit/data-capabilities/export/data-capability.json",
+        r#"{"dataCapability":"credit.export","owner":"dataguard","effect":"insert","touches":[],"callableBy":["*"],"invariants":[],"host": "hostless"}"#,
+    );
+    let (ok, said) = gate(&repo, "units-registered");
+    assert!(ok, "{said}");
+    assert!(
+        loop_violations(&repo).is_empty(),
+        "{:?}",
+        loop_violations(&repo)
+    );
+    // Without the registry, both refuse: the script writes one as soon as a
+    // unit crate is there, hostless or not.
+    fs::remove_file(repo.root.join("crates/dataguard/registry/Cargo.toml")).expect("remove");
+    for dir in [
+        "crates/credit/capabilities/risk",
+        "crates/credit/data-capabilities/request-limit",
+        "crates/credit/aggregates/Account",
+    ] {
+        fs::remove_file(repo.root.join(dir).join("Cargo.toml")).expect("remove");
+    }
+    write(
+        &repo.root,
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/credit/data-capabilities/export\"]\n",
+    );
+    let (ok, said) = gate(&repo, "units-registered");
+    assert!(!ok, "{said}");
+    assert!(said.contains("::error"), "{said}");
+    assert!(
+        loop_violations(&repo)
+            .iter()
+            .any(|v| v.contains("is missing and 1 unit crate(s) wait on the registry")),
+        "{:?}",
+        loop_violations(&repo)
     );
 }

@@ -365,16 +365,16 @@ jobs:
           git fetch --no-tags origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
           node scripts/contracts-gate.mjs untouched "origin/${GITHUB_BASE_REF}"
 
-  # Rule 2 — the slices are workspace members by glob, never by name. A
-  # glob matches what is on the disk: a sparse checkout that leaves a slice
-  # out still resolves, and adding one edits no shared file. A slice named
+  # Rule 2 — the units are workspace members by glob, never by name. A
+  # glob matches what is on the disk: a sparse checkout that leaves a unit
+  # out still resolves, and adding one edits no shared file. A unit named
   # in `members` would break both; a member named by name must be plumbing
-  # (the server, the engine), which every checkout carries.
+  # (the server, the registry), which every checkout carries.
   workspace-members-by-glob:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: No Capability or DataCapability is a workspace member by name
+      - name: No Capability, DataCapability or aggregate is a workspace member by name
         shell: bash
         run: |
           set -euo pipefail
@@ -385,8 +385,8 @@ jobs:
             [ -n "$member" ] || continue
             case "$member" in
               *\**) ;;
-              crates/*/capabilities/*|crates/*/data-capabilities/*)
-                echo "::error file=Cargo.toml::$member is a slice listed by name — list slices by glob (crates/*/capabilities/*), so a narrowed checkout resolves and adding one edits no shared file"
+              crates/*/capabilities/*|crates/*/data-capabilities/*|crates/*/aggregates/*)
+                echo "::error file=Cargo.toml::$member is a unit listed as a member by name — list units by glob (crates/*/capabilities/*, crates/*/data-capabilities/*, crates/*/aggregates/*), so a narrowed checkout resolves and adding one edits no shared file"
                 failed=1 ;;
             esac
           done <<< "$members"
@@ -428,55 +428,111 @@ jobs:
           done
           exit $failed
 
-  # Contract F, rule 2 — a DataCapability is a folder, never an edit of a
-  # shared file: every crates/<system>/data-capabilities/<name>/ is a workspace
-  # member, its library is named after its folder (what the server's build
-  # script registers it by), and the server depends on it. Two added in
-  # parallel then meet nowhere but on a dependency line that merges on its own.
-  data-capability-registered:
+  # Contract I — an aggregate's folder is in its system: `Account` sits
+  # under crates/<system>/aggregates/Account/, the folder named after it. The
+  # DataGuard judges every aggregate and houses none:
+  # crates/dataguard/aggregates/ is nobody's folder. The system an aggregate
+  # belongs in is the one the DataCapabilities that target it share.
+  aggregate-placed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every aggregate sits under its system, in a folder named after it
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          failed=0
+          # The one system the DataCapabilities targeting $1 share, else <system>.
+          system_of() {
+            local found="" dc id namespace
+            for dc in crates/*/data-capabilities/*/data-capability.json; do
+              [ "$(jq -r '.target.aggregate // empty' "$dc")" = "$1" ] || continue
+              id=$(jq -r '.dataCapability // empty' "$dc")
+              namespace=${id%%.*}
+              { [ -n "$id" ] && [ "$namespace" != "$id" ] && [ "$namespace" != "dataguard" ]; } || continue
+              found="$found$namespace"$'\n'
+            done
+            found=$(printf '%s' "$found" | LC_ALL=C sort -u)
+            if [ -n "$found" ] && [[ "$found" != *$'\n'* ]]; then echo "$found"; else echo "<system>"; fi
+          }
+          for manifest in crates/*/aggregates/*/aggregate.json; do
+            folder=$(cut -d/ -f2 <<< "$manifest")
+            name=$(cut -d/ -f4 <<< "$manifest")
+            aggregate=$(jq -r '.aggregate // empty' "$manifest")
+            if [ -z "$aggregate" ]; then
+              echo "::error file=$manifest::names no aggregate"
+              failed=1
+              continue
+            fi
+            if [ "$folder" = "dataguard" ]; then
+              echo "::error file=$manifest::$aggregate belongs under crates/$(system_of "$aggregate")/aggregates/$aggregate/, an aggregate's folder in its system — the DataGuard judges every aggregate, it houses none"
+              failed=1
+              continue
+            fi
+            if [ "$name" != "$aggregate" ]; then
+              echo "::error file=$manifest::$aggregate belongs under crates/$folder/aggregates/$aggregate/, an aggregate's folder named after it"
+              failed=1
+            fi
+          done
+          exit $failed
+
+  # Contract F, rule 2 — a unit is a folder, never an edit of a shared file.
+  # Every crate under crates/<system>/{aggregates,data-capabilities,
+  # capabilities}/ is named in the registry's Cargo.toml, which
+  # scripts/register.sh writes and nobody edits: the registry's build script
+  # turns them into the plugins the server plants. A DataCapability's library
+  # is named after its folder, an aggregate's `aggregate_<snake>`: the glue
+  # calls them by that name. Two units added in parallel meet nowhere but in
+  # that generated file, which merges by running the script again.
+  units-registered:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Every DataCapability folder is a member, named after its folder, and a dependency of its server
+      - name: Every unit crate is registered, a member, and named as the registry calls it
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob globstar
+          shopt -s nullglob
           failed=0
-          slices=(crates/*/data-capabilities/*/Cargo.toml)
-          # No Rust workspace yet: nothing to register, unless a slice waits on one.
+          units=(crates/*/aggregates/*/Cargo.toml crates/*/data-capabilities/*/Cargo.toml crates/*/capabilities/*/Cargo.toml)
+          # No Rust workspace yet: nothing to register, unless a unit waits on one.
           if [ ! -f Cargo.toml ]; then
-            for toml in "${slices[@]}"; do
-              echo "::error file=$toml::there is no root Cargo.toml — list crates/*/data-capabilities/* by glob in one"
+            for toml in "${units[@]}"; do
+              echo "::error file=$toml::there is no root Cargo.toml — list the unit folders by glob in one"
               failed=1
             done
             exit $failed
           fi
+          # The registry is the script's, line for line.
+          if [ ${#units[@]} -gt 0 ] || [ -f crates/dataguard/registry/Cargo.toml ]; then
+            if [ ! -f scripts/register.sh ]; then
+              echo "::error file=scripts/register.sh::missing — the registry is what it writes: run bash scripts/register.sh"
+              failed=1
+            elif ! bash scripts/register.sh --check; then
+              failed=1
+            fi
+          fi
+          # `AiSettings` as `ai_settings`, as the registry's build script spells it.
+          snake() { LC_ALL=C sed -E 's/([a-z0-9])([A-Z])/\1_\2/g; s/-/_/g' <<< "$1" | tr '[:upper:]' '[:lower:]'; }
           metadata=$(cargo metadata --format-version 1 --no-deps)
           root=$(jq -r '.workspace_root' <<< "$metadata")
-          for toml in "${slices[@]}"; do
+          for toml in crates/*/aggregates/*/Cargo.toml crates/*/data-capabilities/*/Cargo.toml; do
             dir=$(dirname "$toml")
             folder=$(basename "$dir")
-            expected=${folder//-/_}
+            case "$toml" in
+              crates/*/aggregates/*) expected="aggregate_$(snake "$folder")"; what=aggregate ;;
+              *) expected=${folder//-/_}; what=DataCapability ;;
+            esac
             if ! jq -e --arg m "$root/$toml" '.packages[] | select(.manifest_path == $m)' <<< "$metadata" > /dev/null; then
-              echo "::error file=$toml::$dir is not a workspace member — list crates/*/data-capabilities/* by glob in the root Cargo.toml"
+              echo "::error file=$toml::$dir is not a workspace member — list the unit folders by glob in the root Cargo.toml"
               failed=1
               continue
             fi
             lib=$(jq -r --arg m "$root/$toml" '.packages[] | select(.manifest_path == $m) | .targets[] | select(.kind[] == "lib") | .name' <<< "$metadata")
             if [ "$lib" != "$expected" ]; then
-              echo "::error file=$toml::the library of $folder is named $lib — name it $expected, as its folder: the server registers it by that name"
-              failed=1
-            fi
-            pkg=$(jq -r --arg m "$root/$toml" '.packages[] | select(.manifest_path == $m) | .name' <<< "$metadata")
-            # A hostless DataCapability (compiled to WebAssembly, loaded by a
-            # plugin or a static app) is nobody's dependency.
-            if [ -f "$dir/data-capability.json" ] && [ "$(jq -r '.host // "server"' "$dir/data-capability.json")" = "hostless" ]; then
-              continue
-            fi
-            if ! jq -e --arg d "$pkg" '[.packages[] | select(.manifest_path | test("/serveur/Cargo.toml$|/server/Cargo.toml$")) | .dependencies[] | select(.name == $d)] | length > 0' <<< "$metadata" > /dev/null; then
-              echo "::error file=$toml::no server depends on $pkg — add it to the server's [dependencies]; its registration is the build script's"
+              echo "::error file=$toml::the library of the $what $folder is named $lib — name it $expected: the registry's glue calls it by that name"
               failed=1
             fi
           done
@@ -512,12 +568,14 @@ jobs:
   # Contracts F, I — a DataCapability that mutates (`update`, `delete`,
   # `upsert`, or any `touches`) is owned by an aggregate: its target names an
   # aggregate.json, and every field it touches is one that aggregate
-  # declares. The human review of such a change is the harness's, on the PR.
+  # declares, and never one it declares `kind: derived` — a derived field is
+  # recomputed, and the engine refuses a command that writes it. The human
+  # review of such a change is the harness's, on the PR.
   ownership:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Every mutating DataCapability targets an aggregate that declares what it touches
+      - name: Every mutating DataCapability targets an aggregate that declares what it touches, and touches nothing derived
         shell: bash
         run: |
           set -euo pipefail
@@ -543,6 +601,9 @@ jobs:
               key=${field#*.}
               if ! jq -e --arg f "$key" '.fields | has($f)' "$aggregate" >/dev/null; then
                 echo "::error file=$manifest::touches $field, which $aggregate does not declare"
+                failed=1
+              elif jq -e --arg f "$key" '.fields[$f].kind == "derived"' "$aggregate" >/dev/null; then
+                echo "::error file=$manifest::touches $field, which $aggregate declares derived — recomputed, never written (the engine refuses it)"
                 failed=1
               fi
             done

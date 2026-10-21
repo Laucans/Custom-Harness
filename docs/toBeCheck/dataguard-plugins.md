@@ -40,3 +40,38 @@ catch-up regeneration) add their own points below.
       A5b).
 - [ ] `cargo run -p server -- inventory` on the real product lists every
       unit and its needs; `serve` refuses to start while a need is unshared.
+
+## What shipped (A5b)
+
+- The A5b commit (see `docs/DATAGUARD-CUT.md`, row A5b): `gates.yml`
+  (`units-registered` replaces `data-capability-registered`,
+  `aggregate-placed`, `ownership` refuses a derived field touched,
+  `workspace-members-by-glob` covers `crates/*/aggregates/*`),
+  `isolation.sh` (kind `aggregate`, a DataCapability on its target
+  aggregate's crate only, the registry depended on by the two servers only),
+  `tree.rs` (aggregates under `crates/*/aggregates/*` and the mirrors),
+  `closure.rs` (the registry in a unit's closure, an aggregate's own
+  folder), the refinement's layout check and the split prompt.
+- Green is `gates_parity.rs` and `isolation_script.rs` on fixture
+  workspaces: no real product has run the new gates.
+
+## To verify (A5b)
+
+- [ ] ForgeDesMondes is red on purpose until M2: its twelve aggregates sit
+      under `crates/dataguard/aggregates/`, so `aggregate-placed` fails on
+      each (naming the system its DataCapabilities share), and
+      `units-registered` fails while it has no registry. No compatibility
+      path was added. Expected after M2: both green on `main_agent`, and
+      `tree::violations` (the dev loop's reading) empty of either rule.
+- [ ] The gate's `cargo metadata --no-deps` on the real product resolves
+      without the network (the engine is a `git` dependency) and in under
+      a minute on the CI runner.
+- [ ] `isolation.sh` on the migrated product: every DataCapability depends
+      on its target aggregate's crate and on no other, and nothing but
+      `crates/dataguard/server` and `crates/server` depends on the registry.
+- [ ] A DataCapability whose target aggregate is another system's: the
+      gate lets it depend on that crate (a decision of A5b, not of the
+      plan) — confirm the owner wants writes across systems allowed this way.
+- [ ] Narrowing, if it comes back: a unit's closure carries
+      `crates/dataguard/registry/`, which reaches every unit crate by path,
+      so the graph pass brings every unit folder back (cargo needs them).
