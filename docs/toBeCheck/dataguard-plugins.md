@@ -187,3 +187,16 @@ catch-up regeneration) add their own points below.
       CI) reports none of the registry's units.
 - [ ] A hostless Capability manifest (`"host": "hostless"`) passes
       `manifests-conform-to-contracts` in a real product's CI.
+
+## Found by the ForgeDesMondes migration (M2-noteimport, PR #334)
+
+- [ ] **D2 follow-ups come back through the same `Prepare`.** M2-noteimport
+      had to "announce and take back" each follow-up: it records it in a
+      shared `Announced`, and submits it with an empty payload that the
+      `Prepare` recognises by its target. The engine should let a `Prepared`
+      follow-up carry an already-prepared payload that skips `Prepare`, or
+      tell a follow-up from an author's submission.
+- [ ] **A `Prepare` cannot read its follow-ups' verdicts.** The legacy
+      validation filtered "at risk" elements, and the plugin version cannot.
+      Decide whether `then` should run before the first command's own
+      queueing, or whether "at risk" stays per element.
