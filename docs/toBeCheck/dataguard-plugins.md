@@ -212,3 +212,9 @@ catch-up regeneration) add their own points below.
       neutralised, and `tools/unfreeze.py` now does it. Durable fix: count a
       PR only if its merge commit is reachable from the branch head, or was
       merged after the task's latest reopening.
+- [ ] **A `pr_fix` stop on a landed contract raises no contract change.**
+      The dev loop's stop handler turns "contract X must change" into a
+      `harness:contract-change` issue. `pr_fix` only halts. PR #343 (task
+      #156) stopped on `media.listMedia` (input `campaign` and not
+      `campaignId`), and the issue was opened by hand (2026-10-21). `pr_fix`'s
+      stop should share the dev loop's contract path.
