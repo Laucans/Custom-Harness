@@ -58,7 +58,7 @@ layout.
 | A2 | The engine honours its contracts — **done** fc2db57 | A1 | — | medium |
 | A3 | Plugins in the engine, in memory — **done** 06511d6 | A2 | — | large |
 | A4 | Plugins over PostgreSQL — **done** cb32b38 | A3 | — | medium |
-| A5a | Registry crate, `register.sh`, server skeleton as a lib, `crates/server` | A4 | dataguard-v2 | large |
+| A5a | Registry crate, `register.sh`, server skeleton as a lib, `crates/server` — **done** 1be415c | A4 | dataguard-v2 | large |
 | A5b | Gates, `tree.rs`, `closure.rs`, isolation | A5a | — | medium |
 | A5c | Rule cards, docs, CLAUDE.md, catch-up regeneration | A5b | — | medium |
 | M0–M5 | ForgeDesMondes migration | A5c | — | ~15 tasks |
