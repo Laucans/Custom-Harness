@@ -1,5 +1,9 @@
 # Build outputs: a round's own `cargo build` or `npm install` is never part of its diff.
 target/
 node_modules/
+# cargo-mutants' reports: a session that runs the mutants locally leaves them,
+# and they are never part of a unit's change.
+mutants.out/
+mutants.out.old/
 # Per-clone secrets and settings.
 .env.local

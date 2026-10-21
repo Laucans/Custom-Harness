@@ -158,5 +158,13 @@ durable fix in code. The detail is in `docs/toBeCheck/dataguard-plugins.md`.
   - Fix: the contract manager derives both from the need and the
     evolution.
 
+- **The contract manager's task declares no `produces:`.** It writes `id:`
+  only, and the closure starts from `produces:`, so it falls back to "the
+  system minus its Capabilities" and forbids the very folder the task
+  builds.
+  - Patched: `produces: media.listMedia` added to #362 by hand.
+  - Fix: the contract manager writes `produces: <id>`, or the closure falls
+    back to `id:`.
+
 Pick it up when a branch reset, a `pr_fix` contract stop or a contract
 evolution comes back, or before shipping the harness to a second product.
