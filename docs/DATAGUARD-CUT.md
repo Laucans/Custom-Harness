@@ -286,6 +286,15 @@ parallel lanes, no hub conflict, and generated files regenerated.
        sha, and the task's merged PR with its files. The session ports
        that code into its unit's folder instead of inventing it again.
   3. Delete the tasks' old `feat/…` branches, whose code is in the archive.
+  4. No re-split. The split is already one task per unit, chained by what
+     each produces and needs, which is the new model's grain. Each reopened
+     spec is rewritten instead:
+     - drop the `## Decision` sections that steer repairs in the legacy
+       server;
+     - turn "Registered with the DataGuard and crates/server" into "run
+       `bash scripts/register.sh`";
+     - do not reopen a task whose unit already exists on `main_agent`, such
+       as #21's Sound and SoundPlayback aggregates, moved by M2-0.
 - **Then** the watch rebuilds the five milestones, and goes on with #22,
   #24, #27, #29 and #30 as split on the new model.
 
