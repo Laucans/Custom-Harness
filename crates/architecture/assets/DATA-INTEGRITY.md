@@ -6,7 +6,9 @@ layout and the contracts are `docs/ARCHITECTURE.md`
 <!-- harness:architecture v2 -->
 
 This document is read by whoever builds the write side — the engine
-(`harness-dataguard`, taken by git), the product's `crates/dataguard/server`,
+(`harness-dataguard`, taken by git), the product's `crates/dataguard/server`
+(the engine planted with every unit of `crates/dataguard/registry`, which
+`scripts/register.sh` writes) and `crates/server` (the product's binary),
 an aggregate — and by nobody else: a Capability or a Micro-UI learns what it
 needs from principle 10 and contracts F, H and I of `docs/ARCHITECTURE.md`.
 

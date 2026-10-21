@@ -17,6 +17,7 @@ use harness_core::domain::{Outcome, Slug};
 use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::git::Repos;
 use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::shell::process::Process;
 
 use crate::init_repo::action::apply;
 use crate::init_repo::config::Config;
@@ -39,6 +40,7 @@ pub fn build(ports: &Ports, config: &Config, _request: Request) -> InitRepoRun {
         gh: Rc::clone(&ports.gh),
         disk: Rc::clone(&ports.disk),
         repos: Rc::clone(&ports.repos),
+        process: Rc::clone(&ports.process),
         slug: config.slug.clone(),
         branch: config.branch.clone(),
         env_file: config.env_file.clone(),
@@ -57,6 +59,7 @@ pub struct InitRepoRun {
     gh: Rc<dyn GitHub>,
     disk: Rc<dyn Disk>,
     repos: Rc<dyn Repos>,
+    process: Rc<dyn Process>,
     slug: Slug,
     branch: String,
     env_file: PathBuf,
@@ -81,6 +84,7 @@ impl InitRepoRun {
             gh: Rc::clone(&self.gh),
             disk: Rc::clone(&self.disk),
             repos: Rc::clone(&self.repos),
+            process: Rc::clone(&self.process),
         };
         let config = Config {
             slug: self.slug.clone(),

@@ -344,6 +344,15 @@ impl FromIterator<Plugin> for Plugins {
     }
 }
 
+impl Plugins {
+    /// The types the plugins read from [`Shared`], as their names, in the
+    /// order they declared them: what a server's inventory lists.
+    #[must_use]
+    pub fn needs(&self) -> Vec<&'static str> {
+        self.0.needs.iter().map(|need| need.name).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,6 +388,24 @@ mod tests {
         shared.absorb(other);
         assert!(shared.get::<Prices>().is_some());
         assert_eq!(shared.get::<Model>().map(|m| m.0), Some("third"));
+    }
+
+    #[test]
+    fn plugins_list_every_need_in_the_order_declared() {
+        let plugins: Plugins = [
+            Plugin::new().needs::<Prices>().needs::<Model>(),
+            Plugin::new(),
+            Plugin::new().needs::<Model>(),
+        ]
+        .into_iter()
+        .collect();
+        let short: Vec<&str> = plugins
+            .needs()
+            .into_iter()
+            .map(|name| name.rsplit("::").next().unwrap_or(name))
+            .collect();
+        assert_eq!(short, ["Prices", "Model", "Model"]);
+        assert_eq!(Plugins::default().needs(), [] as [&str; 0]);
     }
 
     #[test]

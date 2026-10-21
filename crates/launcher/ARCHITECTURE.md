@@ -239,7 +239,8 @@ then `TARGET_REPO_URL`, and empty still means "this checkout's own `origin`" —
 ## `dispatch/init_repo.rs` — the second entry point
 
 Builds `GhCli::for_slug(&slug)` (no checkout — `init-repo` has a URL, not a
-clone) and `RealDisk`, calls `harness_workflows::init_repo::run::build(...)`,
+clone), `RealDisk`, `GitRepos` and `Processes` (the install runs the
+clone's `scripts/register.sh` through it), calls `harness_workflows::init_repo::run::build(...)`,
 prints the report with `println!` (the one place in library-adjacent code
 where that's correct — library code keeps `tracing`), and maps the result to
 an exit code: `Ok((report, Verdict::Ready))` → 0, `Ok((report,

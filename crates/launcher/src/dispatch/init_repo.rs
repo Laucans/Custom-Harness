@@ -1,5 +1,6 @@
 //! The wiring of `harness init-repo`: the only place that builds
-//! `GhCli::for_slug`, and a `GitRepos` for the install clone.
+//! `GhCli::for_slug`, and a `GitRepos` and `Processes` for the install
+//! clone.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -8,6 +9,7 @@ use std::rc::Rc;
 use harness_adapters::shell::disk::RealDisk;
 use harness_adapters::shell::git::GitRepos;
 use harness_adapters::shell::github::GhCli;
+use harness_adapters::shell::process::Processes;
 use harness_core::domain::Slug;
 use harness_workflows::init_repo::config::Config;
 use harness_workflows::init_repo::data::report::Verdict;
@@ -32,6 +34,7 @@ pub async fn upgrade(target_url: &str, branch: &str, here: &Path, log: &Logbook)
         gh: Rc::new(GhCli::for_slug(&slug)),
         disk: Rc::new(RealDisk),
         repos: Rc::new(GitRepos),
+        process: Rc::new(Processes),
     };
     let config = Config {
         slug,
@@ -75,6 +78,7 @@ pub async fn run(args: &InitRepoArgs, here: &Path) -> ExitCode {
         gh: Rc::new(GhCli::for_slug(&slug)),
         disk: Rc::new(RealDisk),
         repos: Rc::new(GitRepos),
+        process: Rc::new(Processes),
     };
     let config = Config {
         slug,
@@ -102,5 +106,24 @@ pub async fn run(args: &InitRepoArgs, here: &Path) -> ExitCode {
             eprintln!("{}: {}", halt.prefix(), halt.reason());
             ExitCode::from(u8::try_from(halt.exit_code()).unwrap_or(2))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_url_that_names_no_repository_fails_before_any_adapter_is_built() {
+        let args = InitRepoArgs {
+            url: "not a repository".to_string(),
+            branch: None,
+            dry_run: true,
+            env_file: None,
+            no_env: true,
+            force: false,
+            no_install: true,
+        };
+        assert_eq!(run(&args, Path::new("/nowhere")).await, ExitCode::from(1));
     }
 }

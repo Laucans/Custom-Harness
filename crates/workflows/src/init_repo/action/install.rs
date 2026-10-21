@@ -1,5 +1,6 @@
 //! The install: a throwaway clone of the target, the architecture's files
-//! written where they are missing, one commit, one push.
+//! written where they are missing, the registry of the units written by its
+//! script when there is none yet, one commit, one push.
 //!
 //! The only write `init-repo` makes into the repository's own tree. It goes
 //! through `git` rather than the contents API so its twenty-one files land as
@@ -8,12 +9,13 @@
 //! downloaded again.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use harness_core::domain::{Halt, Outcome};
 use harness_core::ports::shell::process::Ran;
 
 use crate::init_repo::config::Config;
-use crate::init_repo::data::install::InstallPlan;
+use crate::init_repo::data::install::{InstallPlan, REGISTER, REGISTRY_MANIFEST};
 use crate::init_repo::ports::Ports;
 
 /// Installs the rules, and says what it did — one line per fact, as the
@@ -74,6 +76,9 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<Vec<String>> {
         }
         ports.disk.write_to_string(&target, content)?;
     }
+    if plan.register {
+        register(ports, &clone).await?;
+    }
     let repo = ports.repos.at(&clone);
     said("stage", &repo.stage_all().await?)?;
     said("commit", &repo.commit(&plan.commit_message()).await?)?;
@@ -84,6 +89,11 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<Vec<String>> {
         config.branch,
         summary(&plan.writes)
     ));
+    if plan.register {
+        lines.push(format!(
+            "registered the units: {REGISTRY_MANIFEST} written by {REGISTER}"
+        ));
+    }
     if !plan.upgraded.is_empty() {
         lines.push(format!(
             "upgraded, untouched since the harness wrote them: {}",
@@ -108,6 +118,26 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<Vec<String>> {
         ));
     }
     Ok(lines)
+}
+
+/// How long the registry's script may run: it reads a few folders.
+const REGISTER_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Writes the registry's manifest in the clone, by its script: what the
+/// product's units are, read from its folders, never an asset.
+async fn register(ports: &Ports, clone: &Path) -> Outcome<()> {
+    let ran = ports
+        .process
+        .run("bash", &[REGISTER.to_string()], clone, REGISTER_TIMEOUT)
+        .await?;
+    if ran.ok() {
+        Ok(())
+    } else {
+        Err(Halt::Failed(format!(
+            "{REGISTER} failed in the install clone: {}",
+            ran.why()
+        )))
+    }
 }
 
 /// Where the target is cloned: one folder per repository, reused.
@@ -202,17 +232,106 @@ mod tests {
     use crate::common::fake_disk::FakeDisk;
     use crate::common::fake_git::FakeRepos;
     use crate::common::fake_github::FakeGitHub;
+    use crate::common::fake_process::FakeProcess;
     use crate::init_repo::config::fake as config_fake;
     use crate::init_repo::data::install::CLAUDE_MD;
     use harness_architecture::assets::{FILES, MARKER_OPEN};
     use std::rc::Rc;
 
     fn ports(disk: Rc<FakeDisk>, repos: FakeRepos) -> Ports {
+        with_process(disk, repos, Rc::new(FakeProcess::default()))
+    }
+
+    fn with_process(disk: Rc<FakeDisk>, repos: FakeRepos, process: Rc<FakeProcess>) -> Ports {
         Ports {
             gh: Rc::new(FakeGitHub::default()),
             disk,
             repos: Rc::new(repos),
+            process,
         }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_target_gets_its_registry_from_the_script_before_the_commit() {
+        let process = Rc::new(FakeProcess::default());
+        let repos = FakeRepos::default();
+        let lines = run(
+            &with_process(
+                Rc::new(FakeDisk::default()),
+                repos.clone(),
+                Rc::clone(&process),
+            ),
+            &config_fake::config(),
+        )
+        .await
+        .expect("installed");
+        assert_eq!(
+            *process.ran.borrow(),
+            [(
+                "bash".to_string(),
+                vec!["scripts/register.sh".to_string()],
+                PathBuf::from("/tmp/init/o-r")
+            )]
+        );
+        assert!(repos.asked("commit"), "{:?}", repos.calls());
+        assert_eq!(
+            lines.get(1).map(String::as_str),
+            Some(
+                "registered the units: crates/dataguard/registry/Cargo.toml written by scripts/register.sh"
+            ),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_script_that_fails_stops_the_install_before_the_commit() {
+        let process = Rc::new(FakeProcess::answering(vec![FakeProcess::ran(
+            "",
+            "register: no harness-dataguard line\n",
+            1,
+        )]));
+        let repos = FakeRepos::default();
+        let err = run(
+            &with_process(Rc::new(FakeDisk::default()), repos.clone(), process),
+            &config_fake::config(),
+        )
+        .await
+        .expect_err("the script failed");
+        assert!(
+            matches!(&err, Halt::Failed(why) if why == "scripts/register.sh failed in the install clone: register: no harness-dataguard line"),
+            "{err:?}"
+        );
+        assert!(!repos.asked("stage_all") && !repos.asked("commit"));
+    }
+
+    #[tokio::test]
+    async fn a_product_whose_units_are_registered_runs_no_script() {
+        let clone = PathBuf::from("/tmp/init/o-r");
+        let mut existing = std::collections::HashMap::new();
+        existing.insert(clone.clone(), String::new());
+        existing.insert(
+            clone.join(crate::init_repo::data::install::REGISTRY_MANIFEST),
+            "[package]\n".to_string(),
+        );
+        let process = Rc::new(FakeProcess::default());
+        let lines = run(
+            &with_process(
+                Rc::new(FakeDisk {
+                    existing,
+                    ..FakeDisk::default()
+                }),
+                FakeRepos::default(),
+                Rc::clone(&process),
+            ),
+            &config_fake::config(),
+        )
+        .await
+        .expect("installed");
+        assert!(process.ran.borrow().is_empty());
+        assert!(
+            !lines.iter().any(|l| l.starts_with("registered")),
+            "{lines:?}"
+        );
     }
 
     #[tokio::test]

@@ -39,6 +39,12 @@ pub const MANIFEST: &str = ".harness/installed.json";
 /// The path of the file the rules are appended to.
 pub const CLAUDE_MD: &str = "CLAUDE.md";
 
+/// The registry's manifest: not an asset, the script below writes it.
+pub const REGISTRY_MANIFEST: &str = "crates/dataguard/registry/Cargo.toml";
+
+/// The script that writes [`REGISTRY_MANIFEST`] from the unit folders.
+pub const REGISTER: &str = "scripts/register.sh";
+
 /// The commit that carries the install.
 pub const COMMIT_MESSAGE: &str = "chore(harness): install the agent-native architecture rules";
 
@@ -57,6 +63,9 @@ pub struct InstallPlan {
     /// Files that differ from both the harness's version and what it last
     /// wrote: the product's own now, kept.
     pub diverged: Vec<String>,
+    /// The registry's manifest is missing: [`REGISTER`] is run once the
+    /// files are written, and what it writes is part of the commit.
+    pub register: bool,
 }
 
 impl InstallPlan {
@@ -99,6 +108,7 @@ impl InstallPlan {
             Some(text) => plan.writes.push((CLAUDE_MD.to_string(), text)),
             None => plan.kept.push(CLAUDE_MD.to_string()),
         }
+        plan.register = existing(REGISTRY_MANIFEST).is_none();
         let after = render_manifest(&manifest);
         if before.as_deref() != Some(after.as_str()) {
             plan.writes.push((MANIFEST.to_string(), after));
@@ -417,5 +427,102 @@ mod tests {
         assert_eq!(fingerprint(""), "cbf29ce484222325");
         assert_eq!(fingerprint("a"), "af63dc4c8601ec8c", "FNV-1a's own vector");
         assert_ne!(fingerprint("a"), fingerprint("b"));
+    }
+
+    #[test]
+    fn the_registry_is_written_by_its_script_only_while_it_is_missing() {
+        assert!(InstallPlan::new(&|_| None, false).register);
+        let plan = InstallPlan::new(
+            &|p| (p == REGISTRY_MANIFEST).then(|| "[package]\n".to_string()),
+            false,
+        );
+        assert!(!plan.register, "the product's units are registered already");
+        assert!(
+            !plan.writes.iter().any(|(p, _)| p == REGISTRY_MANIFEST),
+            "never an asset"
+        );
+        assert!(plan.writes.iter().any(|(p, _)| p == REGISTER));
+    }
+
+    #[test]
+    fn the_server_s_files_stay_the_harness_s_until_the_product_edits_them() {
+        let server = [
+            "crates/dataguard/server/Cargo.toml",
+            "crates/dataguard/server/src/lib.rs",
+            "crates/dataguard/registry/build.rs",
+            "crates/dataguard/registry/src/lib.rs",
+            REGISTER,
+            "crates/server/Cargo.toml",
+            "crates/server/src/main.rs",
+        ];
+        for path in server {
+            assert!(FILES.iter().any(|a| a.path == path), "{path} is installed");
+        }
+        let installed = InstallPlan::new(&|_| None, false);
+        let manifest = installed
+            .writes
+            .iter()
+            .find(|(p, _)| p == MANIFEST)
+            .map(|(_, text)| text.clone())
+            .expect("the manifest");
+        let as_installed = |path: &str| {
+            installed
+                .writes
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, text)| text.clone())
+        };
+        // A second install over the product as the first left it.
+        let again = InstallPlan::new(
+            &|p| {
+                if p == MANIFEST {
+                    Some(manifest.clone())
+                } else {
+                    as_installed(p)
+                }
+            },
+            false,
+        );
+        for path in server {
+            assert!(again.kept.contains(&path.to_string()), "{path} kept");
+        }
+        assert!(again.diverged.is_empty(), "{:?}", again.diverged);
+        // The product grows its binary: it is its own from then on.
+        let edited = InstallPlan::new(
+            &|p| match p {
+                MANIFEST => Some(manifest.clone()),
+                "crates/server/src/main.rs" => Some("fn main() {}\n".to_string()),
+                p => as_installed(p),
+            },
+            false,
+        );
+        assert_eq!(edited.diverged, ["crates/server/src/main.rs"]);
+        assert!(
+            !edited
+                .writes
+                .iter()
+                .any(|(p, _)| p == "crates/server/src/main.rs"),
+            "the product's binary is never overwritten"
+        );
+        // A product that had its own crates/server before (ForgeDesMondes).
+        let theirs = InstallPlan::new(
+            &|p| {
+                (p == "crates/server/Cargo.toml")
+                    .then(|| "[package]\nname = \"server\"\n".to_string())
+            },
+            false,
+        );
+        assert_eq!(theirs.diverged, ["crates/server/Cargo.toml"]);
+        assert!(
+            theirs
+                .kept
+                .contains(&"crates/server/Cargo.toml".to_string())
+        );
+        assert!(
+            !theirs
+                .writes
+                .iter()
+                .any(|(p, _)| p == "crates/server/Cargo.toml")
+        );
     }
 }

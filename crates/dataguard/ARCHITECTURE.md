@@ -10,18 +10,22 @@ goes to a human with the AI's proposal beside it (K). This crate is that
 engine, written once here and never by an agent of a product.
 
 ```
-product's crates/dataguard/server (bin, axum)  ──git──▶  harness-dataguard (lib)
-          ▲                                                       │
-          │ installed by `harness init-repo`                      │ depends on no crate of this workspace
-  crates/<system>/data-capabilities/*  (manifests, dependency lines the gate requires)
+product's crates/server (bin) ──▶ crates/dataguard/server (lib, axum) ──git──▶ harness-dataguard (lib)
+                                          │                                          │
+                                          ▼                                          │ depends on no crate
+                                 crates/dataguard/registry (lib, build.rs)            │ of this workspace
+                                          │  one `path` line per unit, written by scripts/register.sh
+                                          ▼
+  crates/<system>/{aggregates,data-capabilities,capabilities}/*  (one crate per unit)
 ```
 
 It sits beside `harness-view-render`, outside the harness's own graph: none of
 the eight other crates names it, and it names none of them. The harness
-installs its **server skeleton** (`crates/architecture/assets/dataguard-server/`)
-into every product; the product's `Cargo.toml` takes the engine by `git`. An
-agent's closure never contains the engine: a DataCapability sees its
-manifest, its aggregate's `aggregate.json`, and the server's dependency line.
+installs the product's **write side** into every product (see *The product's
+server, as installed* below); the engine is taken by `git`, at a tag written
+once, in `crates/dataguard/server/Cargo.toml`. An agent's closure never
+contains the engine: a unit sees its own folder, its manifest, and the
+registry it is registered in by a script.
 
 ## Why `Send`, and why no port of core
 
@@ -50,7 +54,7 @@ about a product's data.
 | `messages` | L | the twelve message kinds and the notifier port |
 | `store` | — | the store port: pending entries, holds, rows, collisions, incoming relations, `apply` in one transaction with the journal; the `Clock` and the `Ids` a fresh row id comes from (`RandomIds`, uuid v4, behind the `uuid` feature) |
 | `memory` | — | the store, notifier, clock and ids (`Counter`) in memory: what every test runs on |
-| `plugins` | F, I, C | what a unit plugs in: `Prepare` (a DataCapability), `Judge`, `Project` and, over PostgreSQL, `ProjectPg` (an aggregate), `Answer` (a Capability), `Shared` (what units read and do not own), `Plugin` and `Plugins` |
+| `plugins` | F, I, C | what a unit plugs in: `Prepare` (a DataCapability), `Judge`, `Project` and, over PostgreSQL, `ProjectPg` (an aggregate), `Answer` (a Capability), `Shared` (what units read and do not own), `Plugin` and `Plugins` (whose `needs()` names what they read from `Shared`, for a server's inventory) |
 | `reads` | C | the Capabilities' `Answer`s, run: the query's rows over a read-only `Rows` connection — `[]` in memory — handed to the answer |
 | `postgres` (feature) | — | the store on PostgreSQL via `tokio-postgres`: its own tables (`migrations/0001_dataguard.sql`), the aggregates' `ProjectPg`s inside the apply transaction, `NOTIFY dataguard` on every application; `ReadOnly`, the `Rows` of the reads, in `READ ONLY` transactions; `values`, **pure**: a JSON variable typed for its parameter, a row as a JSON object |
 | `api` | H | the wire shapes the mock server already speaks: `Submission`, `Submitted`, `ReadRequest`, `HoldRequest`, `ReviewDecision` |
@@ -138,6 +142,47 @@ let engine = Engine::new(Arc::new(store), notifier, clock).with_plugins(plugins)
   JSON number), `NULL` as `null`. Any other type is `Error::Store` naming the
   column.
 
+## The product's server, as installed
+
+`harness init-repo` installs the write side from
+`crates/architecture/assets/` (`assets.rs` lists the paths), and runs
+`scripts/register.sh` once, through the `Process` port, when the product has
+no registry yet:
+
+| installed at | from | what it is |
+| --- | --- | --- |
+| `crates/dataguard/server/` | `dataguard-server/` | a library, generic: `plant(url, Shared) -> Planted { engine, reads }`, `router`, `applier`, `migrate`; it re-exports the engine (`dataguard_server::engine`) and the registry. Its `Cargo.toml` holds the engine's one `tag =` line; its `submit` maps a refusal to 404 or 422, its read checks a hash when the request names one, then runs `Reads::run` |
+| `crates/dataguard/registry/` | `dataguard-registry/` | `build.rs` and `src/lib.rs`; its `Cargo.toml` is **not** an asset, `scripts/register.sh` writes it |
+| `scripts/register.sh` | `register.sh` | writes the registry's `Cargo.toml`: the header, the engine line copied from the server's, one sorted `path` line per unit crate (named after its package); `--check` exits 1 when the file differs |
+| `crates/server/` | `server/` | the product's binary, installed once and expected to diverge: an empty `Shared`, `plant`, `/health`, the subcommands `migrate`, `serve` and `inventory` (each unit with what it needs, read through `Plugins::needs`) |
+
+The registry's build script walks
+`crates/*/{aggregates,data-capabilities,capabilities}/*` from the root, skips
+a unit whose manifest says `"host": "hostless"`, and writes
+`OUT_DIR/glue.rs`: the consts `AGGREGATES`, `DATA_CAPABILITIES` and
+`CAPABILITIES` (each a list of `Unit { folder, manifest, plugin }`) and
+`QUERIES` (contract C). The glue calls one conventional item per unit:
+
+- an aggregate's crate (library `aggregate_<snake>`, `AiSettings` as
+  `aggregate_ai_settings`) and a DataCapability's (library named after its
+  folder, `-` as `_`) expose `pub fn plugin() -> Plugin`;
+- a Capability's crate (library named after its folder) exposes
+  `CAPABILITY`, `SQL`, `VARIABLES` and `fn answer`, which the glue wraps
+  into an `Answer`: a Capability never depends on the engine.
+
+A folder holding only its manifest is registered by its manifest alone (an
+aggregate not yet moved into a crate). The build fails, naming the units
+and telling to run `scripts/register.sh`, when a unit crate is missing from
+the registry's `Cargo.toml` or a line there names no unit crate; it also
+fails when two unit crates would be the same library. It watches the whole
+`crates/` tree, so a new folder reruns it.
+
+`crates/architecture/tests/dataguard_server.rs` (`--ignored`) builds a
+throwaway product from these assets, the engine by `path`: one unit of each
+kind, the script, `cargo check` and `clippy`, the glue, `server inventory`
+over `DATABASE_URL=memory`, `plant` over memory, then a second
+DataCapability added by its folder and the script alone.
+
 ## The applier's step (`Engine::run_once`)
 
 1. Time passes: parked commands past their `ttl` expire, holds past theirs
@@ -171,7 +216,8 @@ runs the contract's scenario against both.
 ## Releases: a tag when a product must move
 
 A product takes the engine at a release tag, `dataguard-vN`
-(`assets/dataguard-server/Cargo.toml`), never at `main`: a branch would move
+(`assets/dataguard-server/Cargo.toml`, the one line `register.sh` copies),
+never at `main`: a branch would move
 under every product at its next `cargo update`. A tag is not cut per
 change. It is cut when a product has to move to a newer engine, such as a
 skeleton that needs a new API, or a fix a product waits for:

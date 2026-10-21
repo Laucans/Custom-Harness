@@ -297,6 +297,27 @@ Authorisation and permissions, validation, business invariants, concurrency,
 classification of the effect, orchestration of the Resolver and the DataQueue,
 audit. **No write bypasses it.**
 
+### Where the write side lives
+
+Each write-side unit is a folder, and a folder is all a task adds:
+
+```
+crates/<system>/aggregates/<Aggregate>/       aggregate.json (I) + a crate `aggregate-<snake>`: its Judge, its projection, `plugin()`
+crates/<system>/data-capabilities/<name>/     data-capability.json (F) + a crate named after the folder: its Prepare, `plugin()`
+crates/<system>/capabilities/<name>/          a Capability's crate: CAPABILITY, SQL, VARIABLES, `answer`
+crates/dataguard/registry/                    every unit, gathered; its Cargo.toml is written by scripts/register.sh
+crates/dataguard/server/                      the engine planted with the registry: routes, applier, migration
+crates/server/                                the product's binary: what it shares with its units, /health, its subcommands
+```
+
+A unit is registered by running `bash scripts/register.sh`, which rewrites
+`crates/dataguard/registry/Cargo.toml` from the folders; nobody edits that
+file by hand, and two units added in parallel are merged by running the
+script again. A unit folder the registry does not name stops the build. A
+hostless unit (`"host": "hostless"`) is never registered.
+`crates/server` is installed once and is the product's from then on;
+`crates/dataguard/server` and the registry's code are the harness's.
+
 ## Resolver, DataQueue and concurrency
 
 How a mutation of existing data is planned, queued, confirmed, parked,

@@ -62,10 +62,12 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// session runs its checks through, the isolation check, the dead-code
 /// script, the mutants configuration, rotation and test-debt filing, the
 /// schema dump, the data model, the mock-up's files, the conformance
-/// runner, the `DataGuard` server's skeleton, the contracts A–R, the ports
+/// runner, the `DataGuard` server (its generic library, the registry of the
+/// units and the script that writes it, the product's binary, installed
+/// once and the product's from then on), the contracts A–R, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites, and
 /// the root `.gitignore` that keeps build outputs out of a round's changes.
-pub const FILES: [Asset; 63] = [
+pub const FILES: [Asset; 67] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -131,12 +133,28 @@ pub const FILES: [Asset; 63] = [
         content: include_str!("../assets/dataguard-server/Cargo.toml"),
     },
     Asset {
-        path: "crates/dataguard/server/build.rs",
-        content: include_str!("../assets/dataguard-server/build.rs"),
+        path: "crates/dataguard/server/src/lib.rs",
+        content: include_str!("../assets/dataguard-server/src/lib.rs"),
     },
     Asset {
-        path: "crates/dataguard/server/src/main.rs",
-        content: include_str!("../assets/dataguard-server/src/main.rs"),
+        path: "crates/dataguard/registry/build.rs",
+        content: include_str!("../assets/dataguard-registry/build.rs"),
+    },
+    Asset {
+        path: "crates/dataguard/registry/src/lib.rs",
+        content: include_str!("../assets/dataguard-registry/src/lib.rs"),
+    },
+    Asset {
+        path: "scripts/register.sh",
+        content: include_str!("../assets/register.sh"),
+    },
+    Asset {
+        path: "crates/server/Cargo.toml",
+        content: include_str!("../assets/server/Cargo.toml"),
+    },
+    Asset {
+        path: "crates/server/src/main.rs",
+        content: include_str!("../assets/server/src/main.rs"),
     },
     Asset {
         path: "data/model.json",

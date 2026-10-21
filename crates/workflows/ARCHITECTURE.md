@@ -425,7 +425,9 @@ tolerance — every column above would read "n/a". `init_repo` creates the
 `harness:*` labels and the integration branch, installs the architecture's
 files in the repository through a throwaway clone (`docs/ARCHITECTURE.md`,
 the rules block of `CLAUDE.md`, `contracts/`, the CI gates and the project's
-`ci.yml` for its stack — one commit,
+`ci.yml` for its stack, the write side's server, registry and
+`scripts/register.sh`, which it runs through the `Process` port to write the
+registry's `Cargo.toml` when the product has none yet — one commit,
 nothing already there overwritten without `--force`; an older marked block
 is replaced in place, the `CLAUDE.md` rules block and the two documents
 each against its own version, so the short rules every session pays for

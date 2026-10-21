@@ -1,0 +1,17 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2024"
+description = "The product's one binary: the shell's wire protocol through the DataGuard engine (crates/dataguard/server), GET /health, the engine's migration, the inventory of the units. Installed once by `harness init-repo`; the product grows it from here."
+publish = false
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+# The engine is reached through `dataguard_server::engine`: its tag is
+# written once, in crates/dataguard/server/Cargo.toml.
+[dependencies]
+dataguard-server = { path = "../dataguard/server" }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal"] }
