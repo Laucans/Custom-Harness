@@ -254,6 +254,29 @@ one starts.
   - The first new write-side task proves the goal: its PR touches only its
     unit's folder, `Cargo.lock` and the registry's `Cargo.toml`.
 
+### The building milestones are frozen, then rebuilt by the factory
+
+The owner's decision, 2026-10-21: the migration covers `main_agent` only.
+Five milestones were building on legacy-style branches: #20, #21, #25, #26
+and #28. Together they hold 32 DataCapabilities and about 29k lines of
+legacy server code. They are frozen, and the factory rebuilds them on the
+new model. That is the factory's real test of the cut: units by folder,
+parallel lanes, no hub conflict, and generated files regenerated.
+
+- **Done (2026-10-21).** Each branch's head is kept as
+  `archive/milestone/<n>-…`, with its sha listed in the run folder.
+- **At M5, before the watch starts**, for each frozen milestone:
+  1. Reset `milestone/<n>-…` to the migrated `main_agent`.
+  2. Reopen every task: the delivered ones and the open ones.
+     - Clear the delivery labels, and keep `harness:agent` and
+       `harness:ready`.
+     - Add a `## Reference` section to the body: the archive branch and
+       sha, and the task's merged PR with its files. The session ports
+       that code into its unit's folder instead of inventing it again.
+  3. Delete the tasks' old `feat/…` branches, whose code is in the archive.
+- **Then** the watch rebuilds the five milestones, and goes on with #22,
+  #24, #27, #29 and #30 as split on the new model.
+
 ## Risks
 
 - **Projection drift during M2.** It is the most delicate code. The Postgres
