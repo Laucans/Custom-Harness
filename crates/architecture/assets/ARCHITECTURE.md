@@ -69,9 +69,9 @@ the Data layer and infrastructure, TypeScript for Micro-UIs. When no server
 can run a Rust unit, it is compiled to WebAssembly and the host loads it; the
 build and the loading step are part of the unit's task, and its manifest sits
 at the same place as on a server. Such a task says so in its `## Architecture`
-section (`host: hostless`) and its DataCapability manifest carries
-`"host": "hostless"`: it is never registered, and its closure holds no
-server. What stays: the reads, the Concepts, the
+section (`host: hostless`) and its manifest, a DataCapability's (F) or a
+Capability's (B), carries `"host": "hostless"`: it is never registered,
+and its closure holds no server. What stays: the reads, the Concepts, the
 mock-up, every gate but the server's. What does not: the DataQueue, the
 holds, the credentials — a hostless program writes through its host's own
 store, behind the same manifests.
@@ -441,7 +441,15 @@ input:  { customerId: ID }
 output: Risk@3 & { asOf: DataVersion }
 reads:  [queries/customerPayments.graphql]
 cache:  { ttl: 5m }
+host:   server                # server (the default) | hostless
 ```
+
+`host` says where the Capability runs, as a DataCapability's does (F): on
+the product's server, the default when it is absent, or `hostless`, inside
+a host without one, compiled to WebAssembly (*Existing code and hosts
+without a server*). A hostless Capability is never registered:
+`scripts/register.sh` and the registry's build script leave it out, and
+no server answers it.
 
 ### C. Persisted query
 

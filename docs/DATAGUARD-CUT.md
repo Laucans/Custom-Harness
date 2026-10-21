@@ -62,7 +62,8 @@ layout.
 | A5b | Gates, `tree.rs`, `closure.rs`, isolation — **done** 6b0213c | A5a | — | medium |
 | A5c | Rule cards, docs, CLAUDE.md, catch-up regeneration — **done** f13f38b | A5b | — | medium |
 | A6 | What the first real product needs (B1, B2, D1–D3, D5, D6) — **done** 02dc509 | A5c | dataguard-v3 | medium |
-| M0–M5 | ForgeDesMondes migration (M0 map done 2026-10-21: 11 PRs) | A6 | — | ~11 PRs |
+| A7 | Three gaps the M1 migration found | A6 | dataguard-v4 | small |
+| M0–M5 | ForgeDesMondes migration (M0 map done 2026-10-21: 11 PRs) | A6, A7 | — | ~11 PRs |
 
 A2, A3 and A4 all edit `engine.rs`. They run one after the other, each with
 its own mutants budget.
@@ -210,6 +211,17 @@ product's own stays in that product. Tag `dataguard-v3` once CI is green.
 | D7 | A Capability with no SQL, reading a port. | Product only: a route of `crates/server`. A Capability never depends on the engine, so `Answer` stays a `fn` over rows. |
 | D8 | Ids renamed on reads (fixture slug and uuid). | Product only: middleware in `crates/server`. |
 | D9 | The system of an aggregate no DataCapability targets. | The product's plan graph decides. The M0 map lists them. |
+
+### A7 — Three gaps the M1 migration found
+
+M1 moved ForgeDesMondes onto `dataguard-v3` and met three gaps every product
+meets. No API breaks. Tag `dataguard-v4` once CI is green.
+
+| # | Gap | Decision |
+|---|---|---|
+| 1 | An aggregate's `ProjectPg` needs `tokio-postgres`, which `externals-behind-ports` refuses outside `crates/data` and `crates/dataguard`. | The engine re-exports it (`harness_dataguard::tokio_postgres`, feature `postgres`): one version, one `Transaction` type, no driver in the unit. The gate reads `Cargo.toml` dependency names, so the re-exported path is not flagged; it is unchanged. |
+| 2 | `cargo machete` flags every unit dependency of the registry: the glue that uses them is in `OUT_DIR`, which it does not read. | `register.sh` writes `[package.metadata.cargo-machete] ignored`, every unit package, sorted; `--check` covers it, and `tree.rs` mirrors it. |
+| 3 | A hostless Capability has no `host` in contract B, so its manifest fails `manifests-conform-to-contracts`. | Contract B gains the optional `"host": "server" \| "hostless"`, as contract F spells it and the walkers read it. |
 
 ### A5 verification (on the throwaway product, `--ignored`)
 

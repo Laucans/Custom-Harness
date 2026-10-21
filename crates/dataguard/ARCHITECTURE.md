@@ -56,7 +56,7 @@ about a product's data.
 | `memory` | — | the store, notifier, clock (`FixedClock`, set to the second or the millisecond) and ids (`Counter`) in memory: what every test runs on |
 | `plugins` | F, I, C | what a unit plugs in: `Prepare` (a DataCapability) and the `Context` it reads (`Partitions`, the rows the engine lends it), `Judge`, `Project` and, over PostgreSQL, `ProjectPg` (an aggregate, `hydrate` included), `Answer` (a Capability), `Shared` (what units read and do not own), `Plugin` and `Plugins` (whose `needs()` names what they read from `Shared`, for a server's inventory) |
 | `reads` | C | the Capabilities' `Answer`s, run: the query's rows over a read-only `Rows` connection — `[]` in memory — handed to the answer |
-| `postgres` (feature) | — | the store on PostgreSQL via `tokio-postgres`: its own tables (`migrations/0001_dataguard.sql`), the aggregates' `ProjectPg`s inside the apply transaction, `NOTIFY dataguard` on every application; `ReadOnly`, the `Rows` of the reads, in `READ ONLY` transactions; `values`, **pure**: a JSON variable typed for its parameter, a row as a JSON object |
+| `postgres` (feature) | — | the store on PostgreSQL via `tokio-postgres`, which the crate root re-exports (`harness_dataguard::tokio_postgres`: a unit's `ProjectPg` names its `Transaction` and `Client` there, never a driver of its own): its own tables (`migrations/0001_dataguard.sql`), the aggregates' `ProjectPg`s inside the apply transaction, `NOTIFY dataguard` on every application; `ReadOnly`, the `Rows` of the reads, in `READ ONLY` transactions; `values`, **pure**: a JSON variable typed for its parameter, a row as a JSON object |
 | `api` | H | the wire shapes the mock server already speaks: `Submission` (its row named by `targetId` or `"target": {"id": …}`), `Submitted` (with `then`, a `FollowUp` per follow-up), `ReadRequest`, `HoldRequest`, `ReviewDecision` |
 | `engine` | all | the four together over the ports and the plugins: `submit`, `confirm`, `cancel`, `requeue`, `hold`/`renew`/`release`, `decide`, `status`, `run_once` |
 
@@ -119,7 +119,12 @@ builds `Reads::from(&plugins)` for the reads.
   engine. It is its own trait, not a `Project` with more: what it writes
   commits with the write, so it has nothing left to observe after. Its
   `hydrate(partition, client)` (`Ok(None)` by default) answers a row its
-  tables hold but the engine never wrote.
+  tables hold but the engine never wrote. The unit takes the PostgreSQL
+  types from the engine, `harness_dataguard::tokio_postgres` (the crate
+  root re-exports the client the store runs on): one version, one
+  `Transaction` type, and no `tokio-postgres` in the unit's `Cargo.toml`
+  for the gate `externals-behind-ports`, which allows a database client in
+  `crates/data` and `crates/dataguard` only, to refuse.
 - **`Answer`**, keyed by Capability: its SQL, the variables it binds in
   order, and the function from rows to answer. `Reads::run` hands it `[]`
   when there is no connection, and over PostgreSQL the rows `ReadOnly`
@@ -194,7 +199,7 @@ no registry yet:
 | --- | --- | --- |
 | `crates/dataguard/server/` | `dataguard-server/` | a library, generic: `plant(url, Shared) -> Planted { engine, reads }` (over PostgreSQL one `ReadOnly` serves the reads and the `Prepare`s' `rows`), `router`, `applier`, `migrate`; it re-exports the engine (`dataguard_server::engine`) and the registry. Its `Cargo.toml` holds the engine's one `tag =` line; its `submit` takes `targetId` or `target.id` and maps a refusal to 404 or 422, its read checks a hash when the request names one, then runs `Reads::run` |
 | `crates/dataguard/registry/` | `dataguard-registry/` | `build.rs` and `src/lib.rs`; its `Cargo.toml` is **not** an asset, `scripts/register.sh` writes it |
-| `scripts/register.sh` | `register.sh` | writes the registry's `Cargo.toml`: the header, the engine line copied from the server's, one sorted `path` line per unit crate (named after its package); copies the same engine line into the root `Cargo.toml`'s `[workspace.dependencies]`, whence a unit takes `harness-dataguard = { workspace = true }` (one engine, one `Plugin` type); `--check` exits 1 when either file differs or a unit takes the engine from a source of its own |
+| `scripts/register.sh` | `register.sh` | writes the registry's `Cargo.toml`: the header, the engine line copied from the server's, one sorted `path` line per unit crate (named after its package); copies the same engine line into the root `Cargo.toml`'s `[workspace.dependencies]`, whence a unit takes `harness-dataguard = { workspace = true }` (one engine, one `Plugin` type); lists the same unit packages, sorted, as `[package.metadata.cargo-machete] ignored` (the registry uses them only in its `OUT_DIR` glue, which `cargo machete` does not read); `--check` exits 1 when either file differs or a unit takes the engine from a source of its own |
 | `crates/server/` | `server/` | the product's binary, installed once and expected to diverge: an empty `Shared`, `plant`, `/health`, the subcommands `migrate`, `serve` and `inventory` (each unit with what it needs, read through `Plugins::needs`) |
 
 The registry's build script walks
@@ -291,6 +296,19 @@ note says what a product must change to move.
   asserted a warning on a key only a `Prepare` wrote loses it.
 - `Error` is `Clone`; `Clock` has `now_millis` (a clock of the product's
   own may keep the default); `ProjectPg` has `hydrate` (default `None`).
+
+**`dataguard-v4`** (A7, `docs/DATAGUARD-CUT.md`), what a product changes
+to move from `dataguard-v3` (no API break):
+
+- Bump the `tag =` line of `crates/dataguard/server/Cargo.toml` to
+  `dataguard-v4`.
+- An aggregate crate that declares `tokio-postgres` for its `ProjectPg`
+  drops that line and imports `harness_dataguard::tokio_postgres::…`
+  instead (the engine line of `[workspace.dependencies]` carries the
+  `postgres` feature).
+- Rerun `bash scripts/register.sh`: it moves the root's engine line to the
+  tag and writes the registry's `cargo machete` ignore list. Commit both
+  with `Cargo.lock`.
 
 ## Testing
 

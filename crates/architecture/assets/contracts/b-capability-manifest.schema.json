@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.agent-native.dev/b-capability-manifest.schema.json",
   "title": "B. Capability manifest",
-  "description": "A read-only unit: what it computes, the Concept it implements, the persisted queries it reads through. It names no other Capability and nothing of the write side.",
+  "description": "A read-only unit: what it computes, the Concept it implements, the persisted queries it reads through, and where it runs (`host`). It names no other Capability and nothing of the write side.",
   "type": "object",
   "properties": {
     "capability": {
@@ -29,6 +29,13 @@
       "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
       "uniqueItems": true,
       "description": "The ports of `ports.json` (contract Q) it reaches the outside through, by id."
+    },
+    "host": {
+      "enum": [
+        "server",
+        "hostless"
+      ],
+      "description": "Where it runs: on the product's server (the default) or inside a host without one — a plugin, a static app — compiled to WebAssembly and loaded by the host. A hostless Capability is never registered: `scripts/register.sh` and the registry's build script leave it out, and no server answers it."
     },
     "implements": {
       "type": "string",

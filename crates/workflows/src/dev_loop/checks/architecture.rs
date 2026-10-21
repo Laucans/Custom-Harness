@@ -424,7 +424,7 @@ mod tests {
             // The registry names every unit crate (scripts/register.sh).
             (
                 "/ws/crates/dataguard/registry/Cargo.toml",
-                "[dependencies]\ncalculate-risk = { path = \"../../credit/capabilities/calculate-risk\" }\n",
+                "[package.metadata.cargo-machete]\nignored = [\"calculate-risk\"]\n\n[dependencies]\ncalculate-risk = { path = \"../../credit/capabilities/calculate-risk\" }\n",
             ),
             (
                 "/ws/apps/credit/risk-badge/micro-ui.json",

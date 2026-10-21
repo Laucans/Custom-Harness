@@ -30,7 +30,8 @@ Its manifest (capability.json): `capability` (`<system>.<name>`, the id a
 Micro-UI's `needs` cites), `system` (its folder), `version`, `description`
 (what the composer reads), `implements` (`Risk@3`), `input`, `output`,
 `reads` (its persisted queries, contract C, under crates/<system>/queries/),
-`cache`.
+`cache`, `host` (`server` by default; `hostless` when no server runs it:
+compiled to WebAssembly for its host, never registered).
 
 Its crate exposes four items, which the registry's glue turns into the
 server's read: `pub const CAPABILITY: &str` (its id), `pub const SQL: &str`
@@ -289,7 +290,10 @@ answers the ids of the invariants the row after the command breaks;
 `ProjectPg::hydrate` answers a row the tables hold but the engine never
 wrote (fixtures loaded by SQL), so judges and `Prepare`s see it.
 The engine comes from the workspace: `harness-dataguard = { workspace =
-true }`, never a source of its own.
+true }` (its line carries the `postgres` feature), never a source of its
+own. Its PostgreSQL types are the engine's re-export, `use
+harness_dataguard::tokio_postgres::{Client, Transaction};`: never a
+tokio-postgres dependency of its own, which externals-behind-ports refuses.
 
 Its document: `aggregate`, `fields` (each `kind` derived | authoritative,
 `criticality` critical | normal | low with the review role for a critical
@@ -311,7 +315,8 @@ Gates that judge it: manifests-conform-to-contracts (I, M),
 aggregate-placed (its system's folder, named after it), units-registered
 (named in the registry, its library `aggregate_<snake>`), invariants-tested,
 ownership (the DataCapabilities that mutate it name fields it declares, none
-derived), capability-isolation. schema-impact is declared and switched on
+derived), capability-isolation, externals-behind-ports (no database client
+of its own). schema-impact is declared and switched on
 with the engine. After the merge the harness dumps the real schema and
 compares it with data/model.json: a divergence opens a diagnosis.";
 

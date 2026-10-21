@@ -551,6 +551,51 @@ mod tests {
     }
 
     #[test]
+    fn a_hostless_capability_conforms_to_contract_b_in_the_walkers_spelling() {
+        let schema = |path: &str| -> serde_json::Value {
+            serde_json::from_str(content_of(path).unwrap_or_default()).expect("json")
+        };
+        let b = schema("contracts/b-capability-manifest.schema.json");
+        let f = schema("contracts/f-data-capability.schema.json");
+        // One spelling for both kinds of unit, and the one the walkers read.
+        let hosts = serde_json::json!(["server", "hostless"]);
+        assert_eq!(b["properties"]["host"]["enum"], hosts);
+        assert_eq!(f["properties"]["host"]["enum"], hosts);
+        assert!(
+            content_of("scripts/register.sh").is_some_and(|s| s.contains(r#"'"host":"hostless"'"#))
+        );
+        assert!(
+            content_of("crates/dataguard/registry/build.rs")
+                .is_some_and(|s| s.contains(r#""\"host\":\"hostless\"""#))
+        );
+        // A hostless Capability: B's required keys, nothing B does not
+        // declare (`additionalProperties` is false), a host of its enum.
+        // `npx ajv-cli@5 validate` accepts it, as the gate runs it.
+        let manifest = serde_json::json!({
+            "capability": "credit.calculateRisk",
+            "system": "credit",
+            "version": "1.0.0",
+            "description": "Computes the customer risk",
+            "reads": ["queries/customerPayments.graphql"],
+            "host": "hostless"
+        });
+        let fields = manifest.as_object().expect("an object");
+        assert_eq!(b["additionalProperties"], false);
+        for key in fields.keys() {
+            assert!(b["properties"].get(key).is_some(), "B declares {key}");
+        }
+        for required in b["required"].as_array().expect("required") {
+            let key = required.as_str().expect("a key");
+            assert!(fields.contains_key(key), "B requires {key}");
+        }
+        assert!(
+            hosts
+                .as_array()
+                .is_some_and(|all| all.contains(&manifest["host"]))
+        );
+    }
+
+    #[test]
     fn the_design_system_gate_is_installed_and_the_gates_run_it() {
         let gate = content_of("scripts/design-system-gate.mjs").unwrap_or_default();
         assert!(

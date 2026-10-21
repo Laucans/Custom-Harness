@@ -740,22 +740,49 @@ fn lib_name(toml: &str) -> Option<String> {
     lib.or(package)
 }
 
-/// The unit folders a registry's `Cargo.toml` names, as its build script
-/// reads them: every `path = "../../<system>/<kind>/<folder>"` of a unit
-/// kind, as `crates/<system>/<kind>/<folder>`.
-fn registered(manifest: &str) -> Vec<String> {
+/// The unit dependencies a registry's `Cargo.toml` names, as its build
+/// script reads them: every `path = "../../<system>/<kind>/<folder>"` of a
+/// unit kind, as its package and `crates/<system>/<kind>/<folder>`.
+fn registered(manifest: &str) -> Vec<(String, String)> {
     manifest
         .lines()
         .filter_map(|line| {
-            let (_, rest) = line.split_once("path = \"")?;
+            let (key, rest) = line.split_once("path = \"")?;
             let (path, _) = rest.split_once('"')?;
             let unit = path.strip_prefix("../../")?.trim_end_matches('/');
             let parts: Vec<&str> = unit.split('/').collect();
             let kind = parts.get(1)?;
+            let package = key.split('=').next().unwrap_or_default().trim();
             (parts.len() == 3 && UNIT_KINDS.iter().any(|(k, _)| k == kind))
-                .then(|| format!("crates/{unit}"))
+                .then(|| (package.to_string(), format!("crates/{unit}")))
         })
         .collect()
+}
+
+/// The packages a registry's `[package.metadata.cargo-machete]` ignores,
+/// in the order written; `None` when it has no `ignored` list.
+fn machete_ignored(manifest: &str) -> Option<Vec<String>> {
+    let mut section = manifest
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| *line != "[package.metadata.cargo-machete]")
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .filter(|line| !line.starts_with('#'));
+    let first = section.find(|line| {
+        line.strip_prefix("ignored")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    })?;
+    let text: String = std::iter::once(first).chain(section).collect();
+    let (_, list) = text.split_once('[')?;
+    let (list, _) = list.split_once(']')?;
+    Some(
+        list.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(ToString::to_string)
+            .collect(),
+    )
 }
 
 /// True when a `Cargo.toml` takes `harness-dataguard` from a source of its
@@ -829,7 +856,17 @@ fn units_registered(tree: &Tree) -> Vec<String> {
         )),
         None => {}
         Some(manifest) => {
-            let named = registered(manifest);
+            let (mut packages, named): (Vec<String>, Vec<String>) =
+                registered(manifest).into_iter().unzip();
+            packages.sort_unstable();
+            // The units are used by glue in OUT_DIR, which cargo machete
+            // does not read: the script lists them all as ignored.
+            if machete_ignored(manifest).is_none_or(|ignored| ignored != packages) {
+                found.push(format!(
+                    "{REGISTRY}: [package.metadata.cargo-machete] does not ignore exactly the \
+                     registry's unit packages, sorted — run scripts/register.sh"
+                ));
+            }
             for dir in served.iter().filter(|dir| !named.iter().any(|n| n == *dir)) {
                 found.push(format!(
                     "{dir}: a unit crate the registry does not name — run scripts/register.sh"
@@ -2569,6 +2606,9 @@ mod tests {
         );
     }
 
+    /// A registry that names no unit: cargo machete ignores nothing.
+    const NOTHING_IGNORED: &str = "[package.metadata.cargo-machete]\nignored = []\n\n";
+
     fn unit(dir: &str, toml: &str, hostless: bool) -> UnitCrate {
         UnitCrate {
             dir: dir.to_string(),
@@ -2610,14 +2650,18 @@ mod tests {
             1,
             "one line for the missing registry"
         );
-        let named = "[dependencies]\nharness-dataguard = { git = \"x\" }\n\
+        let named = "[package.metadata.cargo-machete]\nignored = [\n    \"aggregate-account\",\n]\n\n\
+                     [dependencies]\nharness-dataguard = { git = \"x\" }\n\
                      aggregate-account = { path = \"../../credit/aggregates/Account\" }\n";
         assert_eq!(
             with(vec![account.clone(), export], Some(named)),
             Vec::<String>::new()
         );
         assert_eq!(
-            with(vec![account], Some("[dependencies]\n")),
+            with(
+                vec![account],
+                Some(&format!("{NOTHING_IGNORED}[dependencies]\n"))
+            ),
             [
                 "crates/credit/aggregates/Account: a unit crate the registry does not name — run \
                  scripts/register.sh"
@@ -2637,7 +2681,7 @@ mod tests {
         let with = |dir: &str, toml: &str| {
             units_registered(&Tree {
                 unit_crates: vec![unit(dir, toml, true)],
-                registry: Some(String::new()),
+                registry: Some(NOTHING_IGNORED.to_string()),
                 ..Tree::default()
             })
         };
@@ -2732,7 +2776,9 @@ mod tests {
                 false,
             )],
             registry: Some(
-                "aggregate-account = { path = \"../../credit/aggregates/Account\" }\n".to_string(),
+                "[package.metadata.cargo-machete]\nignored = [\"aggregate-account\"]\n\
+                 aggregate-account = { path = \"../../credit/aggregates/Account\" }\n"
+                    .to_string(),
             ),
             ..Tree::default()
         });
@@ -2783,9 +2829,65 @@ mod tests {
                  f = { path = \"../../credit/capabilities/risk/deeper\" }\n"
             ),
             [
-                "crates/credit/aggregates/A",
-                "crates/credit/capabilities/risk"
+                ("a".to_string(), "crates/credit/aggregates/A".to_string()),
+                (
+                    "d".to_string(),
+                    "crates/credit/capabilities/risk".to_string()
+                )
             ]
         );
+    }
+
+    #[test]
+    fn the_registry_s_machete_list_is_read_as_the_script_writes_it() {
+        assert_eq!(machete_ignored("[dependencies]\na = \"1\"\n"), None);
+        assert_eq!(
+            machete_ignored("[package.metadata.cargo-machete]\n\n[dependencies]\n"),
+            None,
+            "a section without its list"
+        );
+        assert_eq!(machete_ignored(NOTHING_IGNORED), Some(Vec::new()));
+        assert_eq!(
+            machete_ignored(
+                "[package]\nname = \"r\"\n\n[package.metadata.cargo-machete]\n# a comment, \"x\"\n\
+                 ignored_too = [\"y\"]\nignored = [\n    \"a\",\n    \"b\",\n]\n\n\
+                 [dependencies]\nc = { path = \"../../s/aggregates/C\" }\n"
+            ),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(
+            machete_ignored("[package.metadata.cargo-machete]\nignored=[\"a\"]\n"),
+            Some(vec!["a".to_string()])
+        );
+        assert_eq!(
+            machete_ignored(
+                "[package.metadata.cargo-machete]\n[dependencies]\nignored = [\"a\"]\n"
+            ),
+            None,
+            "a list under another table is not machete's"
+        );
+
+        let check = |registry: &str| {
+            units_registered(&Tree {
+                unit_crates: Vec::new(),
+                registry: Some(registry.to_string()),
+                ..Tree::default()
+            })
+            .into_iter()
+            .filter(|v| v.contains("cargo-machete"))
+            .count()
+        };
+        let units =
+            "b = { path = \"../../s/aggregates/B\" }\na = { path = \"../../s/capabilities/a\" }\n";
+        let missing = format!("[package]\n[dependencies]\n{units}");
+        let listed = |list: &str| {
+            format!("[package.metadata.cargo-machete]\nignored = [{list}]\n[dependencies]\n{units}")
+        };
+        assert_eq!(check(&missing), 1, "no list");
+        assert_eq!(check(&listed("\"a\", \"b\"")), 0, "sorted, every unit");
+        assert_eq!(check(&listed("\"b\", \"a\"")), 1, "unsorted");
+        assert_eq!(check(&listed("\"a\"")), 1, "one unit left out");
+        assert_eq!(check(&listed("\"a\", \"b\", \"c\"")), 1, "one no unit");
+        assert_eq!(check(NOTHING_IGNORED), 0, "no unit, nothing ignored");
     }
 }

@@ -6,6 +6,10 @@
 //! units added on two branches, each by its folder and the script alone,
 //! merged into one base with nothing but the regeneration of `Cargo.lock`
 //! and the registry's `Cargo.toml` (`docs/DATAGUARD-CUT.md`, adjustment 2).
+//! The aggregate projects into PostgreSQL through the engine's
+//! `tokio_postgres` re-export, with no driver of its own, and `cargo
+//! machete` (when installed) finds no unused dependency: the registry's
+//! units are its ignore list.
 //! Ignored by default — it fetches axum and tokio from crates.io and builds
 //! them — and run on demand:
 //! `cargo test -p harness-architecture --test dataguard_server -- --ignored`.
@@ -29,11 +33,15 @@ const EMPTY_PLUGIN: &str = "pub fn plugin() -> harness_dataguard::plugins::Plugi
 /// The files the two branches' merge may conflict on: both generated.
 const GENERATED: [&str; 2] = ["Cargo.lock", "crates/dataguard/registry/Cargo.toml"];
 
-/// The aggregate's crate: a `Judge` and its `plugin()`.
+/// The aggregate's crate: a `Judge`, a `ProjectPg` written over the
+/// engine's `tokio_postgres` re-export, and its `plugin()`.
 const ACCOUNT_LIB: &str = r#"use std::collections::BTreeMap;
 
+use async_trait::async_trait;
 use harness_dataguard::command::Entry;
-use harness_dataguard::plugins::{Judge, Plugin};
+use harness_dataguard::plugins::{Judge, Plugin, ProjectPg, ProjectionError};
+use harness_dataguard::store::Write;
+use harness_dataguard::tokio_postgres::Transaction;
 use serde_json::Value;
 
 struct Ceiling;
@@ -45,8 +53,23 @@ impl Judge for Ceiling {
     }
 }
 
+struct Ledger;
+
+#[async_trait]
+impl ProjectPg for Ledger {
+    async fn project(&self, write: &Write, tx: &Transaction<'_>) -> Result<(), ProjectionError> {
+        let limit = write.values.get("creditLimit").and_then(Value::as_f64);
+        tx.execute(
+            "insert into limit_history (account, credit_limit) values ($1, $2)",
+            &[&write.partition, &limit],
+        )
+        .await?;
+        Ok(())
+    }
+}
+
 pub fn plugin() -> Plugin {
-    Plugin::new().judge("Account", Ceiling)
+    Plugin::new().judge("Account", Ceiling).project_pg("Account", Ledger)
 }
 "#;
 
@@ -319,6 +342,7 @@ fn the_installed_write_side_registers_every_unit_by_its_folder_and_the_script() 
         a.path.starts_with("crates/dataguard/")
             || a.path.starts_with("crates/server/")
             || a.path == "scripts/register.sh"
+            || a.path == "scripts/ports-gate.mjs"
             || a.path == ".gitignore"
     }) {
         let content = if asset.path == "crates/dataguard/server/Cargo.toml" {
@@ -388,13 +412,23 @@ fn the_installed_write_side_registers_every_unit_by_its_folder_and_the_script() 
         &format!("{plugin}/Cargo.toml"),
         &unit_manifest("in-the-plugin", false),
     );
-    write(root, &format!("{plugin}/src/lib.rs"), "");
+    write(
+        root,
+        &format!("{plugin}/src/lib.rs"),
+        "pub fn exported() -> serde_json::Value {\n    serde_json::Value::Null\n}\n",
+    );
 
     // The script writes the registry: one line per unit crate, sorted, and
     // the engine's line as the server has it.
     ok(root, "bash", &["scripts/register.sh"]);
     let registry =
         fs::read_to_string(root.join("crates/dataguard/registry/Cargo.toml")).expect("written");
+    assert!(
+        registry.contains(
+            "[package.metadata.cargo-machete]\nignored = [\n    \"aggregate-account\",\n    \"calculate-risk\",\n    \"request-limit\",\n]\n"
+        ),
+        "every registered unit, and only those, is machete's to ignore:\n{registry}"
+    );
     let lines: Vec<&str> = registry
         .lines()
         .skip_while(|l| *l != "[dependencies]")
@@ -426,6 +460,28 @@ fn the_installed_write_side_registers_every_unit_by_its_folder_and_the_script() 
         "cargo",
         &["clippy", "--all-targets", "--", "-D", "warnings"],
     );
+    // No unit takes a PostgreSQL driver of its own: the aggregate's
+    // `ProjectPg` names the engine's re-export (`externals-behind-ports`).
+    for unit in [account, limit, risk, plugin] {
+        let manifest = fs::read_to_string(root.join(unit).join("Cargo.toml")).expect("read");
+        assert!(!manifest.contains("postgres"), "{unit}:\n{manifest}");
+    }
+    if run(root, "node", &["--version"]).status.success() {
+        let behind = ok(root, "node", &["scripts/ports-gate.mjs", "behind"]);
+        assert!(behind.contains("nothing reaches outside"), "{behind}");
+    } else {
+        println!("node is not installed: externals-behind-ports is not run");
+    }
+    // The registry's units are used by glue cargo machete does not read:
+    // its ignore list keeps it quiet, and every other dependency is used.
+    // `cargo-machete` itself: through `cargo`, under `cargo test`, it reads
+    // its own name and flags as paths.
+    let machete = Command::new("cargo-machete").arg("--version").output();
+    if machete.is_ok_and(|out| out.status.success()) {
+        ok(root, "cargo-machete", &[]);
+    } else {
+        println!("cargo-machete is not installed: the unused dependencies are not checked");
+    }
     let generated = glue();
     for item in [
         "aggregate_account::plugin",

@@ -161,3 +161,29 @@ catch-up regeneration) add their own points below.
       Expected: the M2 PRs' Postgres tests on the real tables.
 - [ ] The AI DataCapabilities stamp `cx.now_millis`: two in one second are
       told apart.
+
+## What shipped (A7)
+
+- The A7 commit (see `docs/DATAGUARD-CUT.md`, row A7), the engine the
+  skeleton names as `tag = "dataguard-v4"` (not cut yet):
+  - `harness_dataguard::tokio_postgres`, the engine's client re-exported
+    (feature `postgres`), for an aggregate's `ProjectPg`;
+  - `register.sh` writes the registry's
+    `[package.metadata.cargo-machete] ignored`, every unit package, sorted;
+    `tree.rs` mirrors it;
+  - contract B's optional `host` (`server` | `hostless`).
+- Green is the engine's tests, the gate parity tests, and the throwaway
+  product (a `ProjectPg` over the re-export, `ports-gate.mjs behind`,
+  `cargo machete`). No real product has run any of it.
+
+## To verify (A7)
+
+- [ ] The tag `dataguard-v4` is cut on the A7 commit once its CI is green,
+      and pushed on the owner's word: the skeleton names it already.
+- [ ] ForgeDesMondes on `dataguard-v4`: each aggregate crate with a
+      `ProjectPg` drops its `tokio-postgres` line, `externals-behind-ports`
+      is green on `main_agent`, and `Cargo.lock` holds one `tokio-postgres`.
+- [ ] After `bash scripts/register.sh`, the product's `cargo machete` (its
+      CI) reports none of the registry's units.
+- [ ] A hostless Capability manifest (`"host": "hostless"`) passes
+      `manifests-conform-to-contracts` in a real product's CI.

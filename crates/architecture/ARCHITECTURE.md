@@ -73,9 +73,11 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   to one is a change to the other, and `tests/gates_parity.rs` runs both on
   the same fixtures. `units-registered` is mirrored by its outcome, not its
   text: the loop checks that the registry's `Cargo.toml` names every unit
-  crate and no other, the libraries' names, and that a unit takes the
-  engine from the workspace (`harness-dataguard = { workspace = true }`);
-  the gate runs `scripts/register.sh --check`, which also compares the
+  crate and no other, the libraries' names, that a unit takes the
+  engine from the workspace (`harness-dataguard = { workspace = true }`),
+  and that `[package.metadata.cargo-machete] ignored` lists the registry's
+  unit packages, sorted (the glue that uses them sits in `OUT_DIR`, which
+  `cargo machete` does not read); the gate runs `scripts/register.sh --check`, which also compares the
   engine's line in the registry and in the root's `[workspace.dependencies]`
   with the server's.
 - **Units live under their system.** Aggregates, `DataCapabilities` and

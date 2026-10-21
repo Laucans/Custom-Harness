@@ -43,6 +43,17 @@ pub mod store;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
+/// The PostgreSQL client the store runs on, re-exported for the units.
+///
+/// An aggregate's [`plugins::ProjectPg`] takes a
+/// `tokio_postgres::Transaction` and a `tokio_postgres::Client`; its crate
+/// names them `harness_dataguard::tokio_postgres::…` and never declares
+/// `tokio-postgres` itself: one version, the engine's, so one `Transaction`
+/// type, and no database client outside the `DataGuard` for the gate
+/// `externals-behind-ports` to refuse.
+#[cfg(feature = "postgres")]
+pub use tokio_postgres;
+
 /// What the engine refuses, and why.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum Error {

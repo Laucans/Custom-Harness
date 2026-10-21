@@ -586,6 +586,62 @@ fn a_hostless_unit_waits_on_no_registry_on_both_sides() {
 }
 
 #[test]
+fn the_registry_s_units_are_cargo_machete_s_ignored_list_on_both_sides() {
+    // The script lists every unit it registers, sorted, and only those.
+    let repo = repo("machete");
+    let registry = fs::read_to_string(repo.root.join("crates/dataguard/registry/Cargo.toml"))
+        .expect("written");
+    assert!(
+        registry.contains(
+            "[package.metadata.cargo-machete]\nignored = [\n    \"aggregate-account\",\n    \"request-limit\",\n    \"risk\",\n]\n\n[dependencies]\n"
+        ),
+        "{registry}"
+    );
+    // The list edited by hand: refused by the gate and the loop alike.
+    let edited = registry.replace("    \"risk\",\n", "");
+    write(&repo.root, "crates/dataguard/registry/Cargo.toml", &edited);
+    let (ok, said) = gate(&repo, "units-registered");
+    assert!(!ok, "{said}");
+    assert!(said.contains("::error"), "{said}");
+    assert!(
+        loop_violations(&repo)
+            .iter()
+            .any(|v| v.contains("[package.metadata.cargo-machete]")),
+        "{:?}",
+        loop_violations(&repo)
+    );
+    // No unit at all: the list is written, empty.
+    for dir in [
+        "crates/credit/capabilities/risk",
+        "crates/credit/data-capabilities/request-limit",
+        "crates/credit/aggregates/Account",
+    ] {
+        fs::remove_file(repo.root.join(dir).join("Cargo.toml")).expect("remove");
+    }
+    write(
+        &repo.root,
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/dataguard/server\", \"crates/dataguard/registry\"]\n",
+    );
+    register(&repo.root);
+    let registry = fs::read_to_string(repo.root.join("crates/dataguard/registry/Cargo.toml"))
+        .expect("written");
+    assert!(
+        registry.contains("[package.metadata.cargo-machete]\nignored = []\n\n[dependencies]\n"),
+        "{registry}"
+    );
+    let (ok, said) = gate(&repo, "units-registered");
+    assert!(ok, "{said}");
+    assert!(
+        !loop_violations(&repo)
+            .iter()
+            .any(|v| v.contains("cargo-machete")),
+        "{:?}",
+        loop_violations(&repo)
+    );
+}
+
+#[test]
 fn the_workspace_takes_the_engine_as_the_server_does() {
     // The script wrote the server's line under [workspace.dependencies],
     // whence a unit takes `harness-dataguard = { workspace = true }`.

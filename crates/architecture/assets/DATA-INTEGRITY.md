@@ -246,8 +246,19 @@ tables inside the transaction that applies it (the engine's `postgres`
 feature), and refusing rolls the whole command back. Its `hydrate` (none by
 default) answers a row its tables hold but the engine never wrote, such as
 fixtures loaded by SQL: the store asks it when it has no row of its own.
+Its PostgreSQL types are the engine's: `harness_dataguard::tokio_postgres`
+re-exports the client the store runs on, so the crate never declares
+`tokio-postgres` (one version, one `Transaction` type, and no database
+client outside the DataGuard for `externals-behind-ports` to refuse). The
+engine line of `[workspace.dependencies]` carries the `postgres` feature.
 
 ```rust
+use async_trait::async_trait;
+use harness_dataguard::plugins::{Plugin, ProjectPg, ProjectionError};
+use harness_dataguard::store::Write;
+use harness_dataguard::tokio_postgres::Transaction;
+use serde_json::Value;
+
 struct Ledger;
 
 #[async_trait]
