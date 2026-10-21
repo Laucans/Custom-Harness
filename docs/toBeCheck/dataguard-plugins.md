@@ -218,3 +218,9 @@ catch-up regeneration) add their own points below.
       #156) stopped on `media.listMedia` (input `campaign` and not
       `campaignId`), and the issue was opened by hand (2026-10-21). `pr_fix`'s
       stop should share the dev loop's contract path.
+- [ ] **The contract manager's task has no SPEC.** The task the contract
+      manager opens on the producer's milestone (#362 for `media.listMedia`
+      v2) has `## Scope` but no `## Business Goal` or `## Acceptance
+      Criteria`. The dev loop's gate `TaskHasASpec` halts it. The sections
+      were added by hand on 2026-10-21. The contract manager should write
+      them, derived from the need and the evolution.
