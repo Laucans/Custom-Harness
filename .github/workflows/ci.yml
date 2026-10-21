@@ -42,11 +42,22 @@ jobs:
   # The tests are judged too: a function cargo-mutants can rewrite without a
   # test failing was never tested. Only the functions the change touches —
   # the whole workspace is seven thousand mutants (`.cargo/mutants.toml`).
+  # Two shards judge disjoint halves of the same diff, built without debug
+  # info (a mutant is judged by its tests, never debugged) and tested with
+  # nextest, which stops at the first failing test.
   mutants:
-    name: mutants
+    name: mutants (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     # A push that creates the branch has no "before" to diff against.
     if: github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000'
+    strategy:
+      # Each shard reports every mutant it missed, whatever the other found.
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
         with:
@@ -55,7 +66,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants
+          tool: cargo-mutants,cargo-nextest
       - name: The lines this change touches
         env:
           # A pull request against its target, a push against what it replaced.
@@ -65,9 +76,13 @@ jobs:
           git diff "$BASE" HEAD > change.diff || git diff HEAD~1 HEAD > change.diff
           wc -l change.diff
       - name: Mutants
+        env:
+          # Both shards read the same diff and split its mutants by `/2`.
+          SHARD: ${{ matrix.shard }}
         run: |
           code=0
-          cargo mutants --workspace --in-place --no-shuffle --in-diff change.diff || code=$?
+          cargo mutants --workspace --in-place --no-shuffle --in-diff change.diff \
+            --test-tool nextest --shard "$SHARD/2" || code=$?
           # A mutant that hangs changed what the code does: caught by the
           # clock (exit 3) — a failure only if another one was missed too.
           case "$code" in
@@ -78,7 +93,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: mutants.out
+          name: mutants-${{ matrix.shard }}.out
           path: mutants.out
 
   # The code no change touches is judged too, a bucket of files per run
@@ -91,14 +106,22 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # The same light build as `mutants`.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants
-      - run: bash scripts/mutants-rotation.sh ${{ github.run_number }} -- --in-place --output rotation
+          tool: cargo-mutants,cargo-nextest
+      # Bounded: a bucket whose mutant runs away is cut here rather than
+      # holding a runner (docs/toBeCheck/rotation-bucket-7-cancelled.md).
+      - name: Mutants rotation
+        timeout-minutes: 90
+        run: bash scripts/mutants-rotation.sh ${{ github.run_number }} -- --in-place --output rotation --test-tool nextest
       - name: File what no test caught
         env:
           GH_TOKEN: ${{ github.token }}

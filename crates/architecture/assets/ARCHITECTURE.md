@@ -735,6 +735,17 @@ any agent contribution that violates them. They live in
 `.github/workflows/gates.yml`, and every one of them runs: a rule the product
 cannot keep yet is a task like any other, never a gate turned off.
 
+Each gate is a step whose `id` and `name` are the gate's id
+(`capability-isolation`, `queries-valid`, …; a gate in several parts names
+each further part `<gate>--<part>`). The steps are grouped in four jobs by what they need
+installed — `shell-gates` (bash, jq, git, and Postgres for `queries-valid`),
+`node-gates`, `rust-gates` (cargo), and `rules-hold`, the rules' runtime on
+its own. A job is a runner, and an account runs twenty at once: one job per
+gate made a single pull request take thirty. Within a job every gate runs
+whatever the others said, the job fails if any of them failed, and its last
+step names the failed gates (`::error title=<gate>::`); the step that went
+red carries the same name in the run's log.
+
 | Gate | Checks | Contracts |
 |---|---|---|
 | Semantic conformance | `implements: Risk@3` ⇒ the Concept's fixtures pass | A, B |
@@ -767,7 +778,10 @@ through — a dependency no crate uses (`cargo machete`), a `pub` item no
 crate of the workspace calls (`scripts/dead-code.sh`); and the tests
 themselves, by mutation — every function the change touches is rewritten
 wrong by `cargo mutants`, and a rewrite no test catches fails the build
-(`.cargo/mutants.toml` says what is never mutated). A session runs the
+(`.cargo/mutants.toml` says what is never mutated). The mutants are a job
+of their own (`mutants`), on a task's pull request only, split in two shards
+that judge disjoint halves of the same diff, built without debug info and
+tested with nextest. A session runs the
 same checks through `scripts/quiet.sh`: one line when a check passes, every
 line of its errors when it fails, the full log kept — the CI keeps its whole
 logs. The code no change

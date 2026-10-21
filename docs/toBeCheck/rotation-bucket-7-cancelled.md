@@ -32,3 +32,6 @@ Every 64th run lands on this bucket again.
 - [ ] Bound it: give the step `timeout-minutes`, and make sure a runner
       that is killed files a test-debt issue instead of turning the run red.
       Or add a test that catches the mutant before it runs away.
+      The step now has `timeout-minutes: 90` (the CI-speed commit, which
+      also gave the rotation nextest and no debug info); a step cut by it
+      still turns the run red and files nothing — that part stays open.

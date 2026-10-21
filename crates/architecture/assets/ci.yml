@@ -82,6 +82,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: hashFiles('Cargo.toml') != ''
         with:
+          # cargo-mutants for the rotation; the in-diff mutants have a job
+          # of their own.
           tool: cargo-machete,cargo-mutants
       # The dead code the compiler lets through: a dependency no crate uses,
       # a `pub` item no crate of the workspace calls (scripts/dead-code.sh).
@@ -107,26 +109,82 @@ jobs:
           name: mutants-rotation.out
           path: rotation/mutants.out
           if-no-files-found: ignore
-      # The tests are judged too: a function cargo-mutants can rewrite
-      # without a test failing was never tested. Only the functions the
-      # change touches (.cargo/mutants.toml says what is never mutated).
-      # On a task's pull request only. A milestone's own pull request diffs
-      # the whole milestone, every task of which already passed this step on
-      # its own change (ForgeDesMondes' #18 ran it for hours on the critical
-      # path). A push to `milestone/**` or `main_agent` only lands code
-      # already judged — a task's squash, a milestone's merge, or a catch-up
-      # bringing `main_agent` in — and judged again it turned a milestone's
-      # PR red on another milestone's mutants (#321 on #19's list-media,
-      # 2026-10-20).
+      - name: No Rust workspace yet
+        if: hashFiles('Cargo.toml') == ''
+        run: echo "no Cargo.toml — nothing to check yet"
+
+  # The tests are judged too: a function cargo-mutants can rewrite without a
+  # test failing was never tested. Only the functions the change touches
+  # (.cargo/mutants.toml says what is never mutated).
+  # On a task's pull request only. A milestone's own pull request diffs the
+  # whole milestone, every task of which already passed this job on its own
+  # change (ForgeDesMondes' #18 ran it for hours on the critical path). A
+  # push to `milestone/**` or `main_agent` only lands code already judged —
+  # a task's squash, a milestone's merge, or a catch-up bringing
+  # `main_agent` in — and judged again it turned a milestone's PR red on
+  # another milestone's mutants (#321 on #19's list-media, 2026-10-20).
+  #
+  # A job of its own, split in two shards that judge disjoint halves of the
+  # same diff: it was two thirds of the `rust` job's time. Built without
+  # debug info (a mutant is judged by its tests passing, never debugged),
+  # and tested with nextest, which stops at the first failing test.
+  mutants:
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'milestone/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      # Each shard reports every mutant it missed, whatever the other found.
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    # The store the tests run against, as in the `rust` job.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CARGO_TERM_COLOR: always
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app
+      DATABASE_URL_READONLY: postgres://postgres:postgres@localhost:5432/app
+      # A lighter build: no debug info, which the root Cargo.toml's profiles
+      # cannot be asked for here (it is the product's).
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The history the diff is measured against.
+          fetch-depth: 0
+      - name: Toolchain (rust-toolchain.toml)
+        if: hashFiles('Cargo.toml') != ''
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        if: hashFiles('Cargo.toml') != ''
+      - uses: taiki-e/install-action@v2
+        if: hashFiles('Cargo.toml') != ''
+        with:
+          tool: cargo-mutants,cargo-nextest
       - name: Mutants
-        if: hashFiles('Cargo.toml') != '' && github.event_name == 'pull_request' && !startsWith(github.head_ref, 'milestone/')
+        if: hashFiles('Cargo.toml') != ''
         env:
           BASE: origin/${{ github.base_ref }}
+          # Both shards read the same diff and split its mutants by `/2`.
+          SHARD: ${{ matrix.shard }}
         run: |
           # A base rewritten away (a force push) leaves only the last commit.
           git diff "$BASE" HEAD > change.diff || git diff HEAD~1 HEAD > change.diff
           code=0
-          cargo mutants --workspace --in-place --no-shuffle --in-diff change.diff || code=$?
+          cargo mutants --workspace --in-place --no-shuffle --in-diff change.diff \
+            --test-tool nextest --shard "$SHARD/2" || code=$?
           # A mutant that hangs changed what the code does: caught by the
           # clock (exit 3) — a failure only if another one was missed too.
           case "$code" in
@@ -137,7 +195,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && hashFiles('Cargo.toml') != ''
         with:
-          name: mutants.out
+          name: mutants-${{ matrix.shard }}.out
           path: mutants.out
           if-no-files-found: ignore
       - name: No Rust workspace yet

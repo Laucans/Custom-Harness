@@ -6,7 +6,7 @@
 //! that reads it pays for it on every turn — or skips it, and the gates
 //! tell it afterwards. A card is the forty lines that apply: where the unit
 //! lives, what its manifest says, what it may know and must not, and the
-//! gate that judges it (`assets/gates.yml`, by job name). The loop injects
+//! gate that judges it (`assets/gates.yml`, by step id). The loop injects
 //! the card of the declared unit into the prompt of the stages that plan
 //! and build it (`--- ARCHITECTURE RULES ---`).
 //!
@@ -428,16 +428,9 @@ mod tests {
     }
 
     #[test]
-    fn every_gate_a_card_names_is_a_job_of_the_installed_gates() {
-        let gates = include_str!("../assets/gates.yml");
-        let jobs: Vec<&str> = gates
-            .lines()
-            .filter(|line| {
-                line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':')
-            })
-            .map(|line| line.trim().trim_end_matches(':'))
-            .collect();
-        assert!(jobs.contains(&"capability-isolation"), "{jobs:?}");
+    fn every_gate_a_card_names_is_a_gate_of_the_installed_workflow() {
+        let gates = crate::assets::gate_ids(include_str!("../assets/gates.yml"));
+        assert!(gates.contains(&"capability-isolation"), "{gates:?}");
         for unit in Unit::ALL {
             let text = card(unit);
             let after = text
@@ -445,7 +438,7 @@ mod tests {
                 .nth(1)
                 .expect("the gates paragraph");
             // The first sentence names the gates; what follows is how to run
-            // them, with flags and file names that look like job names.
+            // them, with flags and file names that look like gate ids.
             let end = [after.find(". "), after.find(".\n")]
                 .into_iter()
                 .flatten()
@@ -460,7 +453,7 @@ mod tests {
                 .collect();
             assert!(!named.is_empty(), "{unit:?} names no gate");
             for gate in named {
-                let known = jobs.contains(&gate)
+                let known = gates.contains(&gate)
                     || matches!(
                         gate,
                         "test-scope"
@@ -471,7 +464,7 @@ mod tests {
                     );
                 assert!(
                     known,
-                    "{unit:?} names `{gate}`, which is not a job of gates.yml"
+                    "{unit:?} names `{gate}`, which is not a gate of gates.yml"
                 );
             }
         }

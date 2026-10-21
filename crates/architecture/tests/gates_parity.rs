@@ -4,7 +4,7 @@
 //! verdict — healthy passes both, each break fails both — so a change to
 //! one cannot drift from the other unnoticed.
 //!
-//! The jobs run here are shell over the files (no `npx`): members by glob,
+//! The gates run here are shell over the files (no `npx`): members by glob,
 //! the system frontier of a Micro-UI's `needs`, its `actions`, the
 //! ownership of a mutating DataCapability, its folder, an aggregate's
 //! folder, the Concepts a Capability implements — and `units-registered`,
@@ -211,14 +211,14 @@ fn repo(case: &str) -> Repo {
     Repo { root }
 }
 
-/// The `run: |` block of job `name` in gates.yml — the first step's script.
-fn job_script(name: &str) -> String {
+/// The `run: |` block of gate `name` in gates.yml — the script of the step
+/// whose `id` is the gate's.
+fn gate_script(name: &str) -> String {
     let mut lines = GATES.lines();
-    for line in lines.by_ref() {
-        if line.trim_end() == format!("  {name}:") {
-            break;
-        }
-    }
+    let found = lines
+        .by_ref()
+        .any(|line| line.trim_end() == format!("      - id: {name}"));
+    assert!(found, "no step of gates.yml is the gate {name}");
     let mut script = Vec::new();
     let mut inside = false;
     for line in lines {
@@ -229,19 +229,23 @@ fn job_script(name: &str) -> String {
             }
             break;
         }
+        assert!(
+            !line.starts_with("      - "),
+            "the step of gate {name} has no `run: |` block"
+        );
         if line.trim() == "run: |" {
             inside = true;
         }
     }
-    assert!(!script.is_empty(), "no `run: |` block under job {name}");
+    assert!(!script.is_empty(), "no `run: |` block in gate {name}");
     script.join("\n")
 }
 
-/// Runs job `name`'s script at the root: its verdict and what it printed.
+/// Runs gate `name`'s script at the root: its verdict and what it printed.
 fn gate(repo: &Repo, name: &str) -> (bool, String) {
     let out = Command::new("bash")
         .arg("-c")
-        .arg(job_script(name))
+        .arg(gate_script(name))
         .current_dir(&repo.root)
         .output()
         .expect("bash runs");
@@ -261,7 +265,7 @@ fn loop_violations(repo: &Repo) -> Vec<String> {
     found
 }
 
-/// The jobs mirrored here, each with the words its violation carries on
+/// The gates mirrored here, each with the words its violation carries on
 /// the loop's side, so the same break is recognised in both readings.
 fn mirrored() -> HashMap<&'static str, &'static str> {
     HashMap::from([
@@ -328,15 +332,15 @@ fn a_need_and_an_action_the_plan_s_graph_produces_pass_both_readings() {
 #[test]
 fn the_healthy_shape_passes_both_readings() {
     let repo = repo("healthy");
-    for job in mirrored().keys() {
-        if *job == "queries-registered" {
+    for name in mirrored().keys() {
+        if *name == "queries-registered" {
             // Needs sha256sum and jq to compare files; the loop's side is
             // tested on the same fixture below, the script's own cases in
             // the Rust tree tests.
             continue;
         }
-        let (ok, said) = gate(&repo, job);
-        assert!(ok, "{job}: {said}");
+        let (ok, said) = gate(&repo, name);
+        assert!(ok, "{name}: {said}");
     }
     let found = loop_violations(&repo);
     assert!(found.is_empty(), "{found:?}");
@@ -359,7 +363,7 @@ fn a_micro_ui_reading_another_system_s_capability_passes_both_readings() {
     );
 }
 
-/// One break per mirrored rule: what to write, and the job it must fail.
+/// One break per mirrored rule: what to write, and the gate it must fail.
 fn breaks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
     vec![
         (
@@ -464,18 +468,18 @@ fn breaks() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
 
 #[test]
 fn each_break_fails_the_gate_and_the_loop_alike() {
-    for (case, path, text, job) in breaks() {
+    for (case, path, text, name) in breaks() {
         let repo = repo(case);
         write(&repo.root, path, text);
         if case == "unregistered" {
             krate(&repo.root, "crates/credit/capabilities/score", "score");
         }
-        let (ok, said) = gate(&repo, job);
-        assert!(!ok, "{case}: the gate {job} let it through: {said}");
+        let (ok, said) = gate(&repo, name);
+        assert!(!ok, "{case}: the gate {name} let it through: {said}");
         // Refused by its rule, never by a script that broke on the way.
         assert!(said.contains("::error"), "{case}: {said}");
         let found = loop_violations(&repo);
-        let words = mirrored()[job];
+        let words = mirrored()[name];
         assert!(
             found.iter().any(|v| v.contains(words)),
             "{case}: the loop found nothing about `{words}`: {found:?}"

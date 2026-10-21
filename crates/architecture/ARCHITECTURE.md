@@ -41,7 +41,7 @@ src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules,
 assets/             those files, compiled in with include_str! — the harness's own scripts/{dead-code,mutants-rotation,test-debt}.sh are links to them, one script for both
 tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_script.rs: the installed scripts, run on a real folder
                     isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, each way a unit could reach another, a DataCapability on its target aggregate only, the registry crossed by the two servers only
-                    gates_parity.rs: gates.yml's jobs and tree::violations on the same fixture workspaces, one verdict for both
+                    gates_parity.rs: gates.yml's gates (each a step, found by its id) and tree::violations on the same fixture workspaces, one verdict for both
 ```
 
 ## Decisions

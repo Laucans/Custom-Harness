@@ -344,6 +344,18 @@ pub fn content_of(path: &str) -> Option<&'static str> {
     FILES.iter().find(|a| a.path == path).map(|a| a.content)
 }
 
+/// The gate ids of a gates workflow: the `id` of each gate's step, its
+/// parts (`<gate>--<part>`) left out.
+#[cfg(test)]
+pub(crate) fn gate_ids(workflow: &str) -> Vec<&str> {
+    workflow
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("- id: "))
+        .map(str::trim)
+        .filter(|id| !id.contains("--"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,30 +442,52 @@ mod tests {
 
     #[test]
     fn every_gate_of_the_workflow_is_cited_by_a_rule_card() {
-        let gates = include_str!("../assets/gates.yml");
-        let mut in_jobs = false;
+        let gates = gate_ids(include_str!("../assets/gates.yml"));
+        assert_eq!(gates.len(), 28, "{gates:?}");
         let cards: String = crate::vocabulary::Unit::ALL
             .iter()
             .map(|unit| crate::rules::card(*unit))
             .collect();
-        for line in gates.lines() {
-            if line == "jobs:" {
-                in_jobs = true;
-                continue;
-            }
-            if !in_jobs
-                || !line.starts_with("  ")
-                || line.starts_with("   ")
-                || !line.ends_with(':')
-            {
-                continue;
-            }
-            let job = line.trim().trim_end_matches(':');
-            if job.starts_with('#') {
-                continue;
-            }
-            assert!(cards.contains(job), "no rule card names the gate `{job}`");
+        for gate in gates {
+            assert!(cards.contains(gate), "no rule card names the gate `{gate}`");
         }
+    }
+
+    #[test]
+    fn a_gate_is_a_step_named_after_it_and_no_gate_hides_another() {
+        let gates = include_str!("../assets/gates.yml");
+        let lines: Vec<&str> = gates.lines().collect();
+        let mut ids = std::collections::HashSet::new();
+        for (n, line) in lines.iter().enumerate() {
+            let Some(id) = line.trim_start().strip_prefix("- id: ") else {
+                continue;
+            };
+            assert!(ids.insert(id), "two steps are {id}");
+            let gate = id.split("--").next().unwrap_or(id);
+            assert!(gate_ids(gates).contains(&gate), "{id} is a part of no gate");
+            let name = lines.get(n + 1).copied().unwrap_or_default().trim();
+            assert_eq!(name, format!("name: {id}"), "a red step names its gate");
+            // Every gate runs whatever a gate before it in the job said.
+            let condition = lines.get(n + 2).copied().unwrap_or_default().trim();
+            let runs_anyway =
+                condition.starts_with("if: ${{ !cancelled()") || condition == "if: always()";
+            // The rules' runtime is the exception: its tests need it served.
+            assert!(
+                runs_anyway || id == "rules-hold--serve" || id == "rules-hold",
+                "{id}: {condition}"
+            );
+        }
+        // Each job ends by naming the gates that failed.
+        let jobs = gates.matches("\n    steps:\n").count();
+        assert_eq!(jobs, 4, "the gates are grouped in four jobs");
+        assert_eq!(
+            gates
+                .matches("- name: Failing gates\n        if: failure()")
+                .count(),
+            jobs
+        );
+        assert!(gates.contains(r#"echo "::error title=$gate::"#));
+        assert!(gates.contains("STEPS: ${{ toJSON(steps) }}"));
     }
 
     #[test]
@@ -609,7 +643,7 @@ mod tests {
         let gates = content_of(".github/workflows/gates.yml").unwrap_or_default();
         for step in [
             "node scripts/design-system-gate.mjs",
-            "design-system-single-writer:",
+            "- id: design-system-single-writer",
             "fetch-depth: 0",
             "mock/design/ and mock/kit/ are read-only outside the design-system branch",
         ] {
@@ -696,16 +730,46 @@ mod tests {
                 "the harness-owned write side is judged in the harness: {owned}"
             );
         }
-        let step = ci
-            .split("- name: Mutants\n")
+        let job = ci
+            .split("\n  mutants:\n")
             .nth(1)
-            .and_then(|rest| rest.lines().next())
+            .and_then(|rest| rest.split("\n  typescript:").next())
             .unwrap_or_default();
+        let condition = job.lines().next().unwrap_or_default();
         assert!(
-            step.contains("github.event_name == 'pull_request'")
-                && step.contains("!startsWith(github.head_ref, 'milestone/')"),
-            "mutants judge a task's pull request only, never a push: {step}"
+            condition.contains("github.event_name == 'pull_request'")
+                && condition.contains("!startsWith(github.head_ref, 'milestone/')"),
+            "mutants judge a task's pull request only, never a push: {condition}"
         );
+        // Two shards of the same diff, each reporting all it missed.
+        for part in [
+            "shard: [0, 1]",
+            "fail-fast: false",
+            "SHARD: ${{ matrix.shard }}",
+            "--shard \"$SHARD/2\"",
+            "--workspace --in-place --no-shuffle --in-diff change.diff",
+            "git diff \"$BASE\" HEAD > change.diff",
+            "3) test ! -s mutants.out/missed.txt ;;",
+            "name: mutants-${{ matrix.shard }}.out",
+            // The light build, tested by nextest, against the tests' store.
+            "CARGO_PROFILE_DEV_DEBUG: 0",
+            "CARGO_PROFILE_TEST_DEBUG: 0",
+            "tool: cargo-mutants,cargo-nextest",
+            "--test-tool nextest",
+            "image: postgres:16",
+            "DATABASE_URL: postgres://postgres:postgres@localhost:5432/app",
+        ] {
+            assert!(job.contains(part), "the mutants job: {part}");
+        }
+        assert!(
+            !ci.split("\n  mutants:\n")
+                .next()
+                .unwrap_or_default()
+                .contains("--in-diff"),
+            "the rust job no longer runs the in-diff mutants"
+        );
+        assert!(mutants.contains("all_features = true"), "{mutants}");
+        assert!(mutants.contains("minimum_test_timeout = 20"), "{mutants}");
     }
 
     #[test]

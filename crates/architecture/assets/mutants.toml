@@ -3,8 +3,8 @@
 #
 # Each mutant is one function whose body is replaced by a plausible wrong
 # one; a test suite that still passes never tested that function. The CI
-# (.github/workflows/ci.yml, "Mutants") runs the mutants of the lines a
-# change touches, and fails on the first one no test catches. The whole
+# (.github/workflows/ci.yml, job `mutants`, two shards) runs the mutants of
+# the lines a change touches, and fails on any one no test catches. The whole
 # workspace is `cargo mutants --workspace`, which takes as long as the
 # workspace is large.
 #
@@ -23,13 +23,19 @@ exclude_globs = [
 ]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI
-# tests with.
-additional_cargo_test_args = ["--all-features"]
+# tests with. Set for the build and the test alike (`all_features`, not
+# `additional_cargo_test_args`, which reaches the test phase only: the build
+# phase compiled without the features, and the test phase compiled them
+# again inside its timeout). The CI tests with `--test-tool nextest`, and
+# cargo-mutants hands the flag to `cargo nextest run` as to `cargo test`.
+all_features = true
 
-# A mutant that loops is caught by the clock: five times the baseline, and
-# never under a minute, so a cold cache is not read as a hang.
+# A mutant that loops is caught by the clock: five times the baseline's
+# test time, and never under 20 seconds. Each hung mutant costs at least that
+# minimum, so it is kept low: the build is timed apart (cargo-mutants' build
+# phase has no timeout of its own), so a cold cache is never read as a hang.
 timeout_multiplier = 5
-minimum_test_timeout = 60
+minimum_test_timeout = 20
 
 # A test may read the repository it runs in: the copy a mutant is tested
 # in keeps `.git`, as the CI's `--in-place` run does.
