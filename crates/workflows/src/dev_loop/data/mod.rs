@@ -7,6 +7,7 @@
 pub mod board;
 pub mod brief;
 pub mod dependencies;
+pub mod missing;
 pub mod signatures;
 pub mod stack;
 pub mod state;

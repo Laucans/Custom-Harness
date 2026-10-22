@@ -368,7 +368,22 @@ path the plan's graph attributes to a milestone (`crates/session/`,
 blocker on it, keeps the stop as `kind: wait` (the round kept, so the third
 stop still counts) and records `TaskWaits` — no label, no session, until the
 producer lands; the task itself, its milestone and a roadmap item are never
-waited for. Routed right after the rules' task,
+waited for. A stop on a task the plan lacks is never decided nor a person's
+either: `AGENT_LOOP_STOP: task <slice JSON>` carries one slice in `split`'s
+own shape (`split::data::plan::TaskItem`), read by
+`dev_loop::data::missing` and judged by split's `spec_gaps` plus a unit, a
+system, a `produces` and a `<type>/<slug>` branch. `stop` opens it with
+split's renderer (`split::action::publish::body_and_labels`) — `## Scope`
+with its `branch:` and a line back to the stopped task, `## Architecture`
+with `id:` (its first `produces`), `## Business Goal`, `## Acceptance
+Criteria`, `harness:agent` + `harness:ready` + its side (write side with
+`harness:data-layer`) — as a sub-issue of the task's milestone, or reuses the
+open `harness:agent` sub-issue of that milestone with the same title or id,
+then parks the task on it as on any wait (`kind: wait`, `TaskWaits`), with
+or without a human gate. No session writes the SPEC: the stop carries it.
+A slice that is not whole, or a task with no milestone, opens a
+`harness:human` "Missing task for #N" blocking the task and saying why — a
+decision asked instead without a human gate. Routed right after the rules' task,
 before any work it unblocks; a task carrying the label is not runnable.
 State `DecideState`; `remaining` 1; core's `Round<S>`; stages `context`
 (reads the issue, its `## Decision`, its comments, the task's PR and review,

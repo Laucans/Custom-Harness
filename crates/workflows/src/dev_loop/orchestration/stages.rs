@@ -182,7 +182,15 @@ of kind `contract` means it did: read the manifest anew.
 No human is reachable while you work: every answer you had to assume goes
 in the PR body under `## Assumptions (autonomous run)`. Anything a human
 must do first becomes its own `{human}` issue, a sub-issue of
-milestone #{milestone}, declared as a dependency of #{num}. If an assumption would make
+milestone #{milestone}, declared as a dependency of #{num}. A task the plan lacks is
+not a human's: when this task cannot be finished without another unit's
+work that no task of milestone #{milestone} builds (a projection, a
+DataCapability, a migration outside your unit), never build it here nor
+open an issue for it: stop with `AGENT_LOOP_STOP: task ` followed, on that
+same line, by one JSON object, the slice as /split writes it: title, branch
+(`feat/<slug>`), brief, unit, system, aggregate, produces (its ids), needs,
+goal, acceptance (given/when/then criteria). The harness opens it under the
+milestone and parks this task until it lands. If an assumption would make
 the task useless or harmful when wrong — a paid service, a schema decision
 later tasks depend on, a credential only the human holds — that is
 ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
@@ -274,7 +282,15 @@ of kind `contract` means it did: read the manifest anew.
 No human is reachable while you work: every answer you had to assume goes
 in the PR body under `## Assumptions (autonomous run)`. Anything a human
 must do first becomes its own `{human}` issue, a sub-issue of
-milestone #{milestone}, declared as a dependency of #{num}. If an assumption would make
+milestone #{milestone}, declared as a dependency of #{num}. A task the plan lacks is
+not a human's: when this task cannot be finished without another unit's
+work that no task of milestone #{milestone} builds (a projection, a
+DataCapability, a migration outside your unit), never build it here nor
+open an issue for it: stop with `AGENT_LOOP_STOP: task ` followed, on that
+same line, by one JSON object, the slice as /split writes it: title, branch
+(`feat/<slug>`), brief, unit, system, aggregate, produces (its ids), needs,
+goal, acceptance (given/when/then criteria). The harness opens it under the
+milestone and parks this task until it lands. If an assumption would make
 the task useless or harmful when wrong — a paid service, a schema decision
 later tasks depend on, a credential only the human holds — that is
 ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
@@ -594,6 +610,22 @@ mod tests {
             assert!(said.contains("#{num}"), "the number remains to fill");
             assert!(said.contains("{title}"));
             assert!(said.contains("milestone #{milestone}"));
+        }
+    }
+
+    #[test]
+    fn a_missing_task_is_a_stop_the_harness_opens_not_a_human_issue() {
+        // ForgeDesMondes' #405: #191's session opened a `harness:human`
+        // issue for a task it had fully described.
+        for text in [CODE, CODE_WRITE_SIDE] {
+            let said = flat(&with_labels(text));
+            assert!(
+                said.contains("A task the plan lacks is not a human's"),
+                "{said}"
+            );
+            assert!(said.contains("`AGENT_LOOP_STOP: task `"));
+            assert!(said.contains("the slice as /split writes it"));
+            assert!(said.contains("no task of milestone #{milestone} builds"));
         }
     }
 

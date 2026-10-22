@@ -29,13 +29,22 @@
 //! #214 and #215 paid 23 code sessions and 23 decide sessions each, every
 //! decision saying "keep waiting" — the blocker says it for free.
 //!
+//! **A stop on a task the plan lacks is no decision either**
+//! (`AGENT_LOOP_STOP: task <slice JSON>`, [`missing`]): the session said
+//! what to build, in which unit, and why. The harness opens it — split's
+//! renderer, a full SPEC, `harness:agent` and `harness:ready` — as a
+//! sub-issue of the milestone, or finds it among the milestone's open
+//! agent tasks when a stop named it already, and parks the task on it as on
+//! any wait. A slice the harness cannot write safely goes to a person
+//! (`harness:human`, blocking), or, without a human gate, asks a decision.
+//!
 //! A halt of any other kind — a gate that refused, an unreadable input — is
 //! not a decision to take, and goes on as it was.
 
 use std::rc::Rc;
 
 use harness_architecture::graph::{self, Graph};
-use harness_core::domain::{Halt, Outcome, Verdict};
+use harness_core::domain::{Halt, Issue, Outcome, Verdict};
 use harness_core::execution::Context;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
@@ -43,8 +52,10 @@ use harness_core::traces::Event;
 use crate::common::decision::Question;
 use crate::common::{labels, sections};
 use crate::contract_manager::data::request::{self as contract, Request};
+use crate::dev_loop::data::missing::{self, Asked};
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::data::{tasks, waits};
+use crate::split::action::publish::body_and_labels;
 
 /// Whether a stop's reason asks for a decision in so many words.
 #[must_use]
@@ -134,6 +145,8 @@ impl RaiseDecision {
             return Err(halt);
         };
         let reason = one_line(halt.reason());
+        // Whole, not cut: a missing task's slice is longer than a question.
+        let task_asked = missing::asked(halt.reason());
         let issue = self.gh.issue(number).await?;
         let asked = sections::parse(&issue.body)
             .get(sections::DECISION)
@@ -163,6 +176,11 @@ impl RaiseDecision {
                 self.contract_to_evolve(ctx, number, &issue.body, &id, &need)
                     .await?;
             }
+        } else if let Some(asked) = task_asked {
+            // A missing task is the harness's own work, with or without a
+            // human gate: it opens it, and the task waits on it.
+            self.missing_task(ctx, &issue, asked, round, &reason)
+                .await?;
         } else if let Some(port) = port {
             self.port_to_approve(ctx, number, &issue.title, &issue.body, port)
                 .await?;
@@ -452,6 +470,139 @@ impl RaiseDecision {
             task: human,
             blocks: number,
             why: format!("approve the port {port}"),
+        });
+        Ok(())
+    }
+
+    /// A missing task named: opened under the milestone — or found there,
+    /// named by an earlier stop — and the task parked on it. One the
+    /// harness cannot write goes to a person, or, without a human gate, is
+    /// asked as a decision.
+    async fn missing_task(
+        &self,
+        ctx: &Context<Loop>,
+        issue: &Issue,
+        asked: Asked,
+        round: u32,
+        reason: &str,
+    ) -> Outcome<()> {
+        let number = issue.number;
+        let milestone = ctx.state.milestone.number.parse::<u64>().ok();
+        let (item, milestone) = match (asked, milestone) {
+            (Asked::Task(item), Some(milestone)) => (item, milestone),
+            (Asked::Task(item), None) => {
+                let said = item.title.clone();
+                return self
+                    .unwritable(
+                        ctx,
+                        issue,
+                        &said,
+                        "the task's milestone is not known, so the missing task would belong to none",
+                        round,
+                        reason,
+                    )
+                    .await;
+            }
+            (Asked::Unwritable { said, why }, _) => {
+                return self
+                    .unwritable(ctx, issue, &said, &why, round, reason)
+                    .await;
+            }
+        };
+        let found = self
+            .gh
+            .sub_issues(milestone)
+            .await?
+            .into_iter()
+            .find(|sibling| sibling.number != number && missing::is_the_same(sibling, &item));
+        let on = if let Some(found) = found {
+            ctx.traces.say(&format!(
+                "#{number}: the missing task is #{} already — parked on it",
+                found.number
+            ));
+            found.number
+        } else {
+            let opened = self.open_missing(number, milestone, &item).await?;
+            ctx.traces.say(&format!(
+                "#{number}: opened #{opened} for the missing task ({}) under milestone #{milestone}",
+                item.title
+            ));
+            opened
+        };
+        self.wait_for(ctx, number, &issue.body, on, round, reason)
+            .await
+    }
+
+    /// Opens the missing task: split's body and labels, its `id:`, and a
+    /// line back to the task that stopped on it.
+    async fn open_missing(
+        &self,
+        number: u64,
+        milestone: u64,
+        item: &crate::split::data::plan::TaskItem,
+    ) -> Outcome<u64> {
+        let mut item = item.clone();
+        item.brief = format!(
+            "{}\n\nOpened by the harness for #{number}, whose session stopped on it: #{number} \
+             waits on this task.",
+            item.brief.trim()
+        );
+        let declaration = item.declaration();
+        let (body, labels) =
+            body_and_labels(&item, &declaration, labels::AGENT, declaration.side());
+        let rendered = declaration.render();
+        let body = missing::id(&item).map_or_else(
+            || body.clone(),
+            |id| body.replacen(&rendered, &missing::with_id(&rendered, id), 1),
+        );
+        let opened = self.gh.create_issue(&item.title, &body, &labels).await?;
+        self.gh.create_sub_issue_link(milestone, opened).await?;
+        Ok(opened)
+    }
+
+    /// A missing task with no SPEC to write: a person's to open, blocking
+    /// the task — or, without a human gate, a decision asked.
+    async fn unwritable(
+        &self,
+        ctx: &Context<Loop>,
+        issue: &Issue,
+        said: &str,
+        why: &str,
+        round: u32,
+        reason: &str,
+    ) -> Outcome<()> {
+        let number = issue.number;
+        if self.autonomous {
+            return self
+                .ask(ctx, number, &issue.body, "stop", round, reason)
+                .await;
+        }
+        let body = format!(
+            "## What a human must decide or schedule\n\nThe session building #{number} stopped \
+             on a task the plan lacks, and the harness could not open it itself: {why}.\n\n\
+             > {said}\n\n## Missing task\n\nOpen it as a `{agent}` sub-issue of the milestone \
+             with its SPEC (`## Scope` with a `branch:`, `## Architecture`, `## Business Goal`, \
+             `## Acceptance Criteria`) and declare it a dependency of #{number}, or answer under \
+             #{number}'s `## Decision`; then close this issue — #{number} waits on it.",
+            agent = labels::AGENT
+        );
+        let title: String = said.chars().take(80).collect();
+        let human = self
+            .gh
+            .create_issue(
+                &format!("Missing task for #{number}: {title}"),
+                &body,
+                &[labels::HUMAN],
+            )
+            .await?;
+        if let Ok(milestone) = ctx.state.milestone.number.parse::<u64>() {
+            self.gh.create_sub_issue_link(milestone, human).await?;
+        }
+        self.gh.add_blocked_by(number, human).await?;
+        ctx.traces.event(&Event::HumanTaskOpened {
+            task: human,
+            blocks: number,
+            why: format!("a missing task the harness cannot write: {why}"),
         });
         Ok(())
     }
@@ -1408,5 +1559,253 @@ mod tests {
             "itself, its milestone, a roadmap, an unknown issue: {writes:?}"
         );
         assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+    }
+
+    // --- a stop on a task the plan lacks opens it -------------------------
+
+    fn missing_stop() -> Halt {
+        Halt::Halted(missing::BATTLEMAP.to_string())
+    }
+
+    fn raise(gh: &Rc<FakeGitHub>, autonomous: bool) -> RaiseDecision {
+        RaiseDecision {
+            gh: Rc::clone(gh) as Rc<dyn GitHub>,
+            autonomous,
+            integration_branch: "main_agent".to_string(),
+        }
+    }
+
+    fn created(writes: &[Wrote]) -> Vec<(String, String, Vec<String>)> {
+        writes
+            .iter()
+            .filter_map(|w| match w {
+                Wrote::CreatedIssue(title, body, labels) => {
+                    Some((title.clone(), body.clone(), labels.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn decision_of(writes: &[Wrote]) -> Question {
+        let body = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Body(11, body) => Some(body.clone()),
+                _ => None,
+            })
+            .expect("the task's body rewritten");
+        Question::parse(
+            sections::parse(&body)
+                .get(sections::DECISION)
+                .map_or("", String::as_str),
+        )
+        .expect("a question")
+    }
+
+    #[tokio::test]
+    async fn a_missing_task_is_opened_under_the_milestone_and_the_stopper_parked_on_it() {
+        // ForgeDesMondes' #405: #191 needed the BattlemapInstance ProjectPg,
+        // and a person was asked to open a task the session had described.
+        assert_eq!(kind_of(&missing_stop()), Some("stop"));
+        for autonomous in [false, true] {
+            let gh = gh("## Scope\n\nbranch: feat/table-get-battlemap-instance\n\nread");
+            let mut context = ctx(false);
+            let verdict = raise(&gh, autonomous)
+                .on_halt(&mut context, missing_stop())
+                .await
+                .expect("handed over");
+            assert_eq!(verdict, Verdict::Continue);
+            assert!(context.state.handed_over);
+            let writes = gh.writes();
+            let opened = created(&writes);
+            assert_eq!(opened.len(), 1, "{writes:?}");
+            let (title, body, labels) = &opened[0];
+            assert!(title.starts_with("BattlemapInstance ProjectPg"), "{title}");
+            assert_eq!(
+                labels,
+                &[
+                    labels::AGENT.to_string(),
+                    labels::WRITE_SIDE.to_string(),
+                    labels::DATA_LAYER.to_string(),
+                    labels::READY.to_string()
+                ]
+            );
+            let found = sections::parse(body);
+            assert!(
+                found.get(sections::SCOPE).is_some_and(|scope| scope
+                    .contains("branch: feat/table-battlemap-instance-projection")
+                    && scope.contains("Opened by the harness for #11")
+                    && scope.contains("#11 waits on this task")),
+                "{body}"
+            );
+            let architecture = found.get(sections::ARCHITECTURE).expect("its architecture");
+            assert!(
+                architecture.starts_with("unit: aggregate\nid: BattlemapInstance\nsystem: table"),
+                "{architecture}"
+            );
+            for line in [
+                "aggregate: BattlemapInstance",
+                "produces: BattlemapInstance",
+                "side: harness:write-side",
+            ] {
+                assert!(architecture.contains(line), "{line}: {architecture}");
+            }
+            let task = Issue {
+                body: body.clone(),
+                labels: labels.clone(),
+                ..Issue::default()
+            };
+            assert!(tasks::spec_written(&task), "TaskHasASpec passes: {body}");
+            assert!(
+                found
+                    .get("acceptance-criteria")
+                    .is_some_and(|criteria| criteria.lines().count() == 2)
+            );
+            assert!(writes.contains(&Wrote::SubIssueLink(4, 1)), "{writes:?}");
+            assert!(writes.contains(&Wrote::BlockedByLink(11, 1)), "{writes:?}");
+            let kept = decision_of(&writes);
+            assert_eq!(kept.kind.as_deref(), Some("wait"));
+            assert_eq!(kept.verdict.as_deref(), Some("wait — until #1 lands"));
+            assert!(
+                !writes.iter().any(|w| matches!(w, Wrote::Label(..))),
+                "no decision asked: {writes:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_stop_on_the_same_missing_task_reuses_it() {
+        let title = "BattlemapInstance ProjectPg: project the aggregate's rows into \
+                     battlemap_instance, token, combat and initiative_entry";
+        let sibling = |number: u64, labels: &[&str], state: &str| Issue {
+            number,
+            title: title.to_string(),
+            state: state.to_string(),
+            labels: labels.iter().map(ToString::to_string).collect(),
+            ..Issue::default()
+        };
+        let gh = Rc::new(FakeGitHub {
+            issues: gh("pay").issues.clone(),
+            subs: vec![(
+                4,
+                vec![
+                    sibling(405, &[labels::HUMAN], "open"),
+                    sibling(300, &[labels::AGENT], "closed"),
+                    sibling(30, &[labels::AGENT, labels::READY], "open"),
+                ],
+            )],
+            ..FakeGitHub::default()
+        });
+        raise(&gh, false)
+            .on_halt(&mut ctx(false), missing_stop())
+            .await
+            .expect("handed over");
+        let writes = gh.writes();
+        assert!(created(&writes).is_empty(), "no second task: {writes:?}");
+        assert!(!writes.iter().any(|w| matches!(w, Wrote::SubIssueLink(..))));
+        assert_eq!(writes[0], Wrote::BlockedByLink(11, 30));
+        assert_eq!(
+            decision_of(&writes).verdict.as_deref(),
+            Some("wait — until #30 lands")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_task_with_no_spec_to_write_goes_to_a_person() {
+        let vague = || {
+            Halt::Halted(
+                "AGENT_LOOP_STOP: task the BattlemapInstance projection (/code)".to_string(),
+            )
+        };
+        let first = gh("## Scope\n\nbranch: feat/pay\n\npay");
+        let mut context = ctx(false);
+        raise(&first, false)
+            .on_halt(&mut context, vague())
+            .await
+            .expect("handed over");
+        assert!(context.state.handed_over);
+        let writes = first.writes();
+        let opened = created(&writes);
+        assert_eq!(opened.len(), 1, "{writes:?}");
+        let (title, body, labels) = &opened[0];
+        assert_eq!(
+            title,
+            "Missing task for #11: the BattlemapInstance projection (/code)"
+        );
+        assert_eq!(labels, &[labels::HUMAN.to_string()]);
+        assert!(body.contains("## Missing task"), "{body}");
+        assert!(
+            body.contains("could not open it itself: the stop carries no slice that reads"),
+            "says why: {body}"
+        );
+        assert!(
+            body.contains("> the BattlemapInstance projection"),
+            "{body}"
+        );
+        assert!(writes.contains(&Wrote::SubIssueLink(4, 1)));
+        assert!(writes.contains(&Wrote::BlockedByLink(11, 1)));
+        assert!(!writes.iter().any(|w| matches!(w, Wrote::Body(..))));
+
+        // Without a human gate, nobody would come: a decision is asked.
+        let free = gh("pay");
+        raise(&free, true)
+            .on_halt(&mut ctx(false), vague())
+            .await
+            .expect("handed over");
+        let writes = free.writes();
+        assert!(created(&writes).is_empty(), "{writes:?}");
+        assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+        assert_eq!(decision_of(&writes).kind.as_deref(), Some("stop"));
+
+        // A whole slice with no milestone to belong to is no task either.
+        let lone = gh("pay");
+        let mut orphan = ctx(false);
+        orphan.state.milestone.number = String::new();
+        raise(&lone, false)
+            .on_halt(&mut orphan, missing_stop())
+            .await
+            .expect("handed over");
+        let writes = lone.writes();
+        let opened = created(&writes);
+        assert_eq!(opened.len(), 1, "{writes:?}");
+        assert_eq!(opened[0].2, [labels::HUMAN.to_string()]);
+        assert!(
+            opened[0].1.contains("milestone is not known"),
+            "{}",
+            opened[0].1
+        );
+        assert!(!writes.iter().any(|w| matches!(w, Wrote::SubIssueLink(..))));
+        assert!(writes.contains(&Wrote::BlockedByLink(11, 1)));
+    }
+
+    #[tokio::test]
+    async fn a_missing_read_side_task_is_labelled_read_side() {
+        let stop = missing::BATTLEMAP
+            .replace(r#""unit": "aggregate""#, r#""unit": "capability""#)
+            .replace(
+                r#""produces": ["BattlemapInstance"]"#,
+                r#""produces": ["table.listTokens"]"#,
+            );
+        let gh = gh("pay");
+        raise(&gh, false)
+            .on_halt(&mut ctx(false), Halt::Halted(stop))
+            .await
+            .expect("handed over");
+        let writes = gh.writes();
+        let opened = created(&writes);
+        assert_eq!(
+            opened[0].2,
+            [
+                labels::AGENT.to_string(),
+                labels::READ_SIDE.to_string(),
+                labels::READY.to_string()
+            ]
+        );
+        assert!(
+            opened[0].1.contains("id: table.listTokens"),
+            "{}",
+            opened[0].1
+        );
     }
 }

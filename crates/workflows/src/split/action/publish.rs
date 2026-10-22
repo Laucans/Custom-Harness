@@ -46,7 +46,7 @@ use harness_architecture::vocabulary::{Declaration, Side};
 /// human may rework. A write-side slice is the data layer, and labelled as
 /// such; an agent task is `harness:ready` at once, the harness opening the
 /// tap a human closes.
-fn body_and_labels(
+pub(crate) fn body_and_labels(
     item: &plan::TaskItem,
     declaration: &Declaration,
     kind: &'static str,
