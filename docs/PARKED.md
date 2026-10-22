@@ -166,5 +166,13 @@ durable fix in code. The detail is in `docs/toBeCheck/dataguard-plugins.md`.
   - Fix: the contract manager writes `produces: <id>`, or the closure falls
     back to `id:`.
 
+- **A task whose session merged its own PR stays open.** #362's session
+  merged PR #370 itself, then halted on a gate. The task kept
+  `harness:review-pending`, and the merge train, which only reads open PRs,
+  never closed it.
+  - Patched: closed by hand with the delivery note.
+  - Fix: the delivery check also reads merged PRs that close the task (as
+    `CodeAlreadyDelivered` does), or a session never merges its own PR.
+
 Pick it up when a branch reset, a `pr_fix` contract stop or a contract
 evolution comes back, or before shipping the harness to a second product.
