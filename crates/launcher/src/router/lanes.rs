@@ -262,8 +262,9 @@ async fn start_task(
     };
     let version = issue_version(task);
     if lanes.is_parked(number, &version) {
-        log.debug(&format!(
-            "watch: lanes -> #{number} parked until its issue changes"
+        // Said, not debugged: a parked top task is why lanes sit idle.
+        log.say(&format!(
+            "watch: lanes -> #{number} parked until its issue changes or an hour passes"
         ));
         return false;
     }

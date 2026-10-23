@@ -23,7 +23,10 @@
 //! prompt that already failed twice. Taking the task again next tick buys the
 //! same stop, every tick, forever. So the task waits, parked, until its issue
 //! changes (body or labels): the gesture that answers the stop is the one that
-//! frees it.
+//! frees it. Or until [`PARKED_FOR`] has passed: a stop can come from outside
+//! the issue (its milestone closed for a while, `ForgeDesMondes` 2026-10-22),
+//! and a park that only the issue could lift held the factory idle for a
+//! day while the cause was long gone. A stale retry costs one preflight.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -31,9 +34,13 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use harness_core::traces::{Event, Logbook};
 use tokio::process::{Child, Command};
+
+/// How long a stopped task stays parked when its issue does not move.
+const PARKED_FOR: Duration = Duration::from_hours(1);
 
 /// A lane's process ended, as an event.
 fn ended(slot: usize, task: u64, status: std::process::ExitStatus) -> Event {
@@ -59,8 +66,9 @@ pub struct Lanes {
     slots: Vec<Option<Lane>>,
     /// The issue version each dispatched task was taken at.
     taken_at: HashMap<u64, String>,
-    /// Tasks whose lane stopped, with the issue version it stopped on.
-    parked: HashMap<u64, String>,
+    /// Tasks whose lane stopped, with the issue version it stopped on and
+    /// when.
+    parked: HashMap<u64, (String, Instant)>,
     /// Set once a soft stop is asked: no slot is free from then on.
     closed: Arc<AtomicBool>,
     /// Lanes that ended on exit 3 (`QUOTA`) since the watch last asked.
@@ -113,7 +121,7 @@ impl Lanes {
                             && let Some(version) = version
                         {
                             log.event(&Event::TaskParked { task: running.task });
-                            self.parked.insert(running.task, version);
+                            self.parked.insert(running.task, (version, Instant::now()));
                         }
                         if status.code() == Some(3) {
                             self.quota_hits = self.quota_hits.saturating_add(1);
@@ -175,10 +183,20 @@ impl Lanes {
     }
 
     /// Whether `task` is parked on this very `version`. A task whose issue
-    /// moved since its stop is unparked here, and runs again.
+    /// moved since its stop, or parked for [`PARKED_FOR`], is unparked here,
+    /// and runs again.
     pub fn is_parked(&mut self, task: u64, version: &str) -> bool {
+        self.is_parked_at(task, version, Instant::now())
+    }
+
+    /// [`Self::is_parked`], at `now`.
+    fn is_parked_at(&mut self, task: u64, version: &str, now: Instant) -> bool {
         match self.parked.get(&task) {
-            Some(stopped_on) if stopped_on == version => true,
+            Some((stopped_on, at))
+                if stopped_on == version && now.saturating_duration_since(*at) < PARKED_FOR =>
+            {
+                true
+            }
             Some(_) => {
                 self.parked.remove(&task);
                 false
@@ -290,11 +308,28 @@ mod tests {
     #[test]
     fn a_parked_task_waits_until_its_issue_moves() {
         let mut lanes = Lanes::new(1);
-        lanes.parked.insert(15, "v1".to_string());
+        lanes.parked.insert(15, ("v1".to_string(), Instant::now()));
         assert!(lanes.is_parked(15, "v1"));
         assert!(!lanes.is_parked(16, "v1"));
         assert!(!lanes.is_parked(15, "v2"), "a changed issue is free again");
         assert!(!lanes.is_parked(15, "v1"), "and stays free");
+    }
+
+    #[test]
+    fn a_parked_task_runs_again_once_the_park_is_over() {
+        let mut lanes = Lanes::new(1);
+        let at = Instant::now();
+        lanes.parked.insert(15, ("v1".to_string(), at));
+        let almost = at + PARKED_FOR.saturating_sub(Duration::from_secs(1));
+        assert!(
+            lanes.is_parked_at(15, "v1", almost),
+            "still within the park"
+        );
+        assert!(
+            !lanes.is_parked_at(15, "v1", at + PARKED_FOR),
+            "an hour on, the unchanged issue is tried again"
+        );
+        assert!(!lanes.is_parked_at(15, "v1", almost), "and stays free");
     }
 
     #[tokio::test]
