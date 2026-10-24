@@ -34,18 +34,23 @@ has stopped this way yet.
       task, or turns it into the agent task by hand. The test fixture
       `missing::BATTLEMAP` is the stop #191's session would have written;
       the body it renders is the shape to expect.
-- [ ] On the next real stop of this kind (grep the watch journal for
+- [x] On the next real stop of this kind (grep the watch journal for
       `opened #… for the missing task`): the stop line is one line, the JSON
       reads, and the new issue carries `## Scope` with `branch: feat/…` and
       the line `Opened by the harness for #N`, `## Architecture` with
       `unit:`, `id:`, `system:`, `produces:`, `side:`, then `## Business
       Goal` and `## Acceptance Criteria`.
-- [ ] Its labels: `harness:agent`, `harness:ready`, and
+- [x] Its labels: `harness:agent`, `harness:ready`, and
       `harness:write-side` + `harness:data-layer` for a data-layer unit
       (an aggregate's projection), `harness:read-side` otherwise.
-- [ ] It is a sub-issue of the stopped task's milestone, and the stopped
+- [x] It is a sub-issue of the stopped task's milestone, and the stopped
       task is `blocked_by` it, with `## Decision` `kind: wait`,
       `verdict: wait — until #M lands`; no `harness:needs-decision`.
+      Checked 2026-10-24: #452 (milestone #22) opened #473 (Entity
+      hydrate) — Scope/branch/"Opened by the harness", Architecture with
+      unit/id/system/produces/side, Goal and Criteria; agent + ready +
+      write-side + data-layer; sub-issue of #22; #452 blocked_by #473,
+      `kind: wait`, no needs-decision.
 - [ ] The loop takes the new task (its SPEC passes `TaskHasASpec`, its
       closure starts from `produces:`), and once it lands
       (`waiting-merge` or closed) the stopped task is taken again.
