@@ -142,11 +142,13 @@ pub fn rules_candidates<'a>(rules: &'a [Issue], open: &'a [Pr]) -> Vec<(&'a Issu
 
 /// The rules' task whose PR the train merges into the integration branch.
 ///
-/// The first of [`rules_candidates`] whose PR the harness decided to merge
+/// The first of [`rules_candidates`] whose PR its fidelity reader judged
+/// faithful ([`review::judged_faithful`]) or the harness decided to merge
 /// as it is ([`review::decided_to_merge`]), which merges and is green now.
-/// A rules' PR is never agent-reviewed: its own reader judges it and
-/// merges it, so a clean review alone is not enough — the decision is. One
-/// whose checks still run, or whose branch conflicts since, waits.
+/// A rules' PR is never agent-reviewed: its own reader judges it, and the
+/// harness merges it — a session merges no PR — so a clean review alone is
+/// not enough: the verdict or the decision is. One whose checks still run,
+/// or whose branch conflicts since, waits.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from any read of a PR's comments, checks
@@ -157,7 +159,8 @@ pub async fn rules_ready_to_merge<'a>(
     open: &'a [Pr],
 ) -> Outcome<Option<(&'a Issue, &'a Pr)>> {
     for (task, pr) in rules_candidates(rules, open) {
-        if !review::decided_to_merge(&gh.pr_comments(&pr.num).await?) {
+        let comments = gh.pr_comments(&pr.num).await?;
+        if !(review::judged_faithful(&comments) || review::decided_to_merge(&comments)) {
             continue;
         }
         if gh.pr_mergeable(&pr.num).await? == Some(false) {
@@ -660,6 +663,52 @@ mod tests {
             "rules_candidates(&rules, &[rules_pr('7', 11)]) should be empty"
         );
         assert_eq!(rules_branch(9), "rules/9");
+    }
+
+    #[tokio::test]
+    async fn a_rules_pr_its_reader_judged_faithful_is_taken_once_green() {
+        // ForgeDesMondes #501: the reader judged the test faithful but could
+        // no longer merge it (a session's `gh pr merge` is denied); the
+        // train takes it on the verdict.
+        let rules = vec![rules_task(9, "open")];
+        let open = [rules_pr("501", 9)];
+        let verdict = |word: &str| format!("Every test faithful.\n{}{word} -->", review::FIDELITY);
+        let faithful = FakeGitHub {
+            pr_comment_bodies: vec![("501".to_string(), verdict("faithful"))],
+            pr_checks: HashMap::from([("501".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
+        assert_eq!(
+            rules_ready_to_merge(&faithful, &rules, &open)
+                .await
+                .expect("read")
+                .map(|(t, p)| (t.number, p.num.as_str())),
+            Some((9, "501"))
+        );
+        let unfaithful = FakeGitHub {
+            pr_comment_bodies: vec![("501".to_string(), verdict("unfaithful"))],
+            pr_checks: HashMap::from([("501".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
+        assert!(
+            rules_ready_to_merge(&unfaithful, &rules, &open)
+                .await
+                .expect("read")
+                .is_none(),
+            "an unfaithful verdict merges nothing"
+        );
+        let pending = FakeGitHub {
+            pr_comment_bodies: vec![("501".to_string(), verdict("faithful"))],
+            pr_checks: HashMap::from([("501".to_string(), false)]),
+            ..FakeGitHub::default()
+        };
+        assert!(
+            rules_ready_to_merge(&pending, &rules, &open)
+                .await
+                .expect("read")
+                .is_none(),
+            "faithful but its checks still run"
+        );
     }
 
     #[tokio::test]
