@@ -1,17 +1,25 @@
-//! The wiring of a milestone branch's catch-up with the integration branch:
-//! GitHub's merge first; on a refusal, the same merge in a checkout of the
-//! harness's own (`catch-up`), where a conflict limited to `Cargo.lock` and
-//! the registry's `Cargo.toml` is regenerated (`branching::catch_up_locally`).
-//! What it decides is in `harness-workflows`, tested there; this builds a
-//! `GitCli` and `Processes` on the mounted checkout and gives it back.
+//! The wiring of a milestone branch's catch-up with the integration branch
+//! (`Route::CatchUp`, run in the tick): GitHub's merge of the head the watch
+//! read first; on a refusal, the same merge in a checkout of the harness's
+//! own (`catch-up`), its generated files regenerated
+//! (`branching::catch_up_locally`) with the cargo the **merged** tree pins
+//! (`crate::toolchain::by_the_tree`: rustup's proxies ahead, so the merge's
+//! `rust-toolchain.toml` decides, never the branch's older pin nor
+//! Homebrew's cargo). What it decides — when, how often, what a refusal or a
+//! residual conflict becomes — is `common::catch_up` in
+//! `harness-workflows`, tested there; this builds a `GitCli`, `Processes`
+//! and `RealDisk` on the mounted checkout and hands them over, and reports
+//! the outcome under the watch's `catch_up` tag.
 
 use std::path::Path;
 use std::rc::Rc;
 
+use harness_adapters::shell::disk::RealDisk;
 use harness_adapters::shell::git::GitCli;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Logbook;
-use harness_workflows::common::branching::{self, Checkout};
+use harness_workflows::common::branching::{self, CaughtUp, Checkout};
+use harness_workflows::common::catch_up::{self, Busy, CatchUps, Target};
 
 use crate::adapters::spending;
 use crate::dispatch::shared;
@@ -20,24 +28,62 @@ use crate::dispatch::shared;
 /// works in it.
 const WORKSPACE_ID: &str = "catch-up";
 
-/// Whether `branch` holds `integration` now: merged on GitHub, or locally
-/// once the generated files are regenerated. Nothing local under a dry run.
-pub async fn run(
+/// Brings `milestone`'s branch up to `integration`'s head, remembered in
+/// `catch_ups`: `common::catch_up::catch_up`, with the harness's checkout
+/// as its local merge, told as `watch: catch_up -> …`. `busy`: what lanes
+/// work on, whose PRs are left alone.
+#[allow(clippy::too_many_arguments)] // the tick's state, handed as it is
+pub async fn milestone(
     here: &Path,
     target_repo_url: &str,
-    branch: &str,
     integration: &str,
     dry_run: bool,
     gh: &dyn GitHub,
+    (milestone, branch): (u64, &str),
+    catch_ups: &mut CatchUps,
+    busy: &Busy,
     log: &Logbook,
-) -> bool {
-    if branching::catch_up(gh, branch, integration, log).await {
-        return true;
+) -> CaughtUp {
+    let target = Target {
+        milestone,
+        branch,
+        integration,
+    };
+    let caught = catch_up::catch_up(
+        gh,
+        target,
+        catch_ups,
+        busy,
+        dry_run,
+        crate::dispatch::dev_loop::now_seconds(),
+        async |head: String| locally(here, target_repo_url, target, &head, log).await,
+        log,
+    )
+    .await;
+    let (line, warned) = catch_up::told(milestone, &caught);
+    if warned {
+        log.warn(&format!("watch: catch_up -> {line}"));
+    } else {
+        log.say(&format!("watch: catch_up -> {line}"));
     }
-    if dry_run {
-        return false;
-    }
-    let mount = match shared::mount_named(
+    caught
+}
+
+/// The merge of `head` in the harness's own checkout, mounted for it and
+/// released.
+async fn locally(
+    here: &Path,
+    target_repo_url: &str,
+    target: Target<'_>,
+    head: &str,
+    log: &Logbook,
+) -> CaughtUp {
+    let Target {
+        branch,
+        integration,
+        ..
+    } = target;
+    let mount = match shared::mount_bare(
         here,
         target_repo_url,
         branch,
@@ -51,20 +97,20 @@ pub async fn run(
     {
         Ok(mount) => mount,
         Err(halt) => {
-            log.warn(&format!(
+            return CaughtUp::Failed(format!(
                 "{branch} cannot be checked out to catch up: {}",
                 halt.reason()
             ));
-            return false;
         }
     };
     let root = mount.workspace.root().to_path_buf();
     let checkout = Checkout {
         repo: Rc::new(GitCli::new(&root)),
-        process: Rc::new(crate::toolchain::processes()),
+        process: Rc::new(crate::toolchain::by_the_tree(here).await),
+        disk: Rc::new(RealDisk),
         root,
     };
-    let caught_up = branching::catch_up_locally(&checkout, branch, integration, log).await;
+    let caught = branching::catch_up_locally(&checkout, branch, integration, head, log).await;
     shared::release_checkout(&mount, log).await;
-    caught_up
+    caught
 }

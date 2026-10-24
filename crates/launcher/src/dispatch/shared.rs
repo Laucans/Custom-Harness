@@ -130,6 +130,40 @@ pub async fn mount_named(
     dry_run: bool,
     log: &Logbook,
 ) -> Outcome<Mount> {
+    let mount = mount_bare(
+        here,
+        target_repo_url,
+        branch,
+        id,
+        force_reset,
+        run_id,
+        dry_run,
+        log,
+    )
+    .await?;
+    // The run's start: its journal says the tools its processes and its
+    // sessions get, the cargo the checkout's own pin names.
+    crate::toolchain::at_run_start(here, mount.workspace.root(), log).await;
+    Ok(mount)
+}
+
+/// [`mount_named`] without the run's start: the toolchain the watch took
+/// stays the one every adapter gets — a catch-up's mount, inside the
+/// watch's own tick, resolves the cargo its merged tree pins itself.
+///
+/// # Errors
+/// Whatever [`Provisioner::mount`] propagates.
+#[allow(clippy::too_many_arguments)] // the same facts as `mount_named`'s
+pub async fn mount_bare(
+    here: &Path,
+    target_repo_url: &str,
+    branch: &str,
+    id: &str,
+    force_reset: bool,
+    run_id: &str,
+    dry_run: bool,
+    log: &Logbook,
+) -> Outcome<Mount> {
     let source = Workspace::new(here);
     let lender: Rc<dyn Disk> = Rc::new(RealDisk);
     let repos: Rc<dyn Repos> = Rc::new(GitRepos);
@@ -155,9 +189,6 @@ pub async fn mount_named(
     if mount.mounted() {
         crate::dispatch::skills::lend(here, mount.workspace.root(), lender.as_ref(), log)?;
     }
-    // The run's start: its journal says the tools its processes and its
-    // sessions get, the cargo the checkout's own pin names.
-    crate::toolchain::at_run_start(here, mount.workspace.root(), log).await;
     Ok(mount)
 }
 

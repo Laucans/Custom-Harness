@@ -447,6 +447,23 @@ fn branch_checks_from(rows: &[Value]) -> Option<bool> {
 /// answers: a call that failed is an error, never a quiet `None` — a base
 /// whose runs cannot be listed stops the tick, it does not lift the hold.
 fn branch_checks_of(ran: &Ran, branch: &str) -> Outcome<Option<bool>> {
+    Ok(branch_checks_from(&run_rows(ran, branch)?))
+}
+
+/// What one `gh run list --commit <sha>` call answered, read as
+/// [`GitHub::commit_checks`] answers: the runs of `sha` alone, whatever
+/// else the listing holds — a run of another head never speaks for it.
+fn commit_checks_of(ran: &Ran, branch: &str, sha: &str) -> Outcome<Option<bool>> {
+    let rows: Vec<Value> = run_rows(ran, branch)?
+        .into_iter()
+        .filter(|row| row.get("headSha").and_then(Value::as_str) == Some(sha))
+        .collect();
+    Ok(branch_checks_from(&rows))
+}
+
+/// The rows of a `gh run list` call on `branch`: a call that failed, or an
+/// answer that is no list, is an error.
+fn run_rows(ran: &Ran, branch: &str) -> Outcome<Vec<Value>> {
     if !ran.ok() {
         return Err(Halt::Failed(format!(
             "the workflow runs of {branch} cannot be listed — {}",
@@ -455,10 +472,7 @@ fn branch_checks_of(ran: &Ran, branch: &str) -> Outcome<Option<bool>> {
     }
     let payload: Value = serde_json::from_str(ran.out())
         .map_err(|e| Halt::Failed(format!("unreadable workflow runs of {branch}: {e}")))?;
-    Ok(branch_checks_from(rows_of(
-        &payload,
-        &format!("the workflow runs of {branch}"),
-    )?))
+    Ok(rows_of(&payload, &format!("the workflow runs of {branch}"))?.to_vec())
 }
 
 /// The array from a response. `null` counts as empty, anything else is unreadable.
@@ -1787,6 +1801,25 @@ impl GitHub for GhCli {
         branch_checks_of(&ran, branch)
     }
 
+    async fn commit_checks(&self, branch: &str, sha: &str) -> Outcome<Option<bool>> {
+        // The runs of that commit alone: every workflow of one push fits.
+        let ran = self
+            .gh(&[
+                "run".to_string(),
+                "list".to_string(),
+                "--branch".to_string(),
+                branch.to_string(),
+                "--commit".to_string(),
+                sha.to_string(),
+                "--limit".to_string(),
+                "20".to_string(),
+                "--json".to_string(),
+                "headSha,status,conclusion,name".to_string(),
+            ])
+            .await?;
+        commit_checks_of(&ran, branch, sha)
+    }
+
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
         if let Some(number) = pr_number(pr_ref)
             && let Some(failing) = self.open_pr(number, |pr| failing_checks(&pr.checks)).await
@@ -2253,6 +2286,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_commit_s_runs_github_cannot_list_are_an_error_not_a_verdict() {
+        use harness_core::ports::shell::github::GitHub as _;
+        // A folder that is there and is no repository: `gh` runs, and fails.
+        let gh = super::GhCli::new(&std::env::temp_dir());
+        assert!(gh.commit_checks("main_agent", "abc1234").await.is_err());
+    }
+
+    #[tokio::test]
     async fn a_branch_merge_github_cannot_make_is_an_error_not_a_success() {
         use harness_core::ports::shell::github::GitHub as _;
         let gh = super::GhCli::new(std::path::Path::new("/nonexistent"));
@@ -2706,6 +2747,43 @@ mod tests {
         );
         assert!(branch_checks_of(&listed("not json"), "main_agent").is_err());
         assert!(branch_checks_of(&listed(r#"{"runs": []}"#), "main_agent").is_err());
+    }
+
+    #[test]
+    fn a_commit_is_judged_by_its_own_runs_only() {
+        let listed = |rows: &str| Ran {
+            code: Some(0),
+            stdout: rows.to_string(),
+            stderr: String::new(),
+        };
+        let two = r#"[{"headSha":"old","status":"completed","conclusion":"success","name":"ci"},
+                     {"headSha":"new","status":"in_progress","conclusion":"","name":"ci"}]"#;
+        assert_eq!(
+            commit_checks_of(&listed(two), "main_agent", "new").expect("read"),
+            None,
+            "the older head's green never speaks for the new one"
+        );
+        assert_eq!(
+            commit_checks_of(&listed(two), "main_agent", "old").expect("read"),
+            Some(true)
+        );
+        assert_eq!(
+            commit_checks_of(&listed(two), "main_agent", "absent").expect("read"),
+            None,
+            "no run of it yet"
+        );
+        let red = r#"[{"headSha":"new","status":"completed","conclusion":"failure","name":"ci"}]"#;
+        assert_eq!(
+            commit_checks_of(&listed(red), "main_agent", "new").expect("read"),
+            Some(false)
+        );
+        let refused = Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: "gh: HTTP 403".to_string(),
+        };
+        assert!(commit_checks_of(&refused, "main_agent", "new").is_err());
+        assert!(commit_checks_of(&listed("{}"), "main_agent", "new").is_err());
     }
 
     // --- failing_checks ------------------------------------------------------

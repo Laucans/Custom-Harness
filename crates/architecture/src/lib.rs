@@ -22,7 +22,8 @@
 //!   components, the harness's base fragments the kit is styled from, and the
 //!   static check a fragment is reused on;
 //! - [`assets`] — the files `init-repo` installs to bring a repository under
-//!   the architecture.
+//!   the architecture; [`generated`] — those of its files a script writes,
+//!   which a merge regenerates instead of resolving.
 //!
 //! It names no workflow and decides nothing about a run: `harness-workflows`
 //! reads it to cut, build and check tasks, `harness-view` to draw the product.
@@ -33,6 +34,7 @@
 pub mod assets;
 pub mod closure;
 pub mod compare;
+pub mod generated;
 pub mod graph;
 pub mod kit;
 pub mod model;

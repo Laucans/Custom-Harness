@@ -288,6 +288,22 @@ pub trait Repo {
         })
     }
 
+    /// `rm --quiet -- <path>`: during a merge, the conflicted `path`
+    /// removed — what taking the side merged in means when that side
+    /// deleted it.
+    ///
+    /// Refused by default, like [`Self::take_theirs`].
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn remove(&self, path: &str) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: format!("this git cannot remove {path}"),
+        })
+    }
+
     /// `merge --abort`: put the tree back as it was before the merge began.
     ///
     /// Refused by default, like [`Self::create_orphan_branch`]: only a real

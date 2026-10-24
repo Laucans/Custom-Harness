@@ -43,12 +43,13 @@ exclude_re = [
   "router/lanes\\.rs:.*(replace (run_schedule|start_task|start_route)| in (run_schedule|start_task|start_route)$)",
   "router/mod\\.rs:.* in building_boards$",
   "router/routes\\.rs:.*replace run_dev_loop ",
-  # `run_dev_loop` holds its milestone on a refused catch-up and runs the
-  # loop: both wired to real adapters (`dispatch::catch_up`, `dev_loop::run`).
+  # `run_dev_loop` runs the loop on the milestone's branch, wired to real
+  # adapters (`dev_loop::run`); the router holds a branch behind the base.
   "router/routes\\.rs:.* in run_dev_loop$",
-  # A catch-up's wiring: GitHub's merge, then a mounted checkout with a
-  # `GitCli` and `Processes` handed to `branching::catch_up_locally`, whose
-  # decisions are tested in `workflows` against the fakes.
+  # A catch-up's wiring: a mounted checkout with a `GitCli`, the `Processes`
+  # of the merged tree's own pin and `RealDisk` handed to `common::catch_up`
+  # and `branching::catch_up_locally`, whose decisions are tested in
+  # `workflows` against the fakes.
   "dispatch/catch_up\\.rs:",
   # The arms that run a paid workflow, here or on a lane: the workflow is
   # tested in `workflows`, the arm only wires the real adapters to it.
@@ -58,7 +59,8 @@ exclude_re = [
   # The toolchain's wiring to `gh` (the product's pin read on GitHub) and
   # `harness toolchain`'s printing: what they hand over is `resolve` and
   # `channel_of`, tested against folders a test builds.
-  "toolchain\\.rs:.*(replace (at_watch_start|product_file|by_hand) | in (at_watch_start|product_file|by_hand)$)",
+  # `by_the_tree` hands `resolve` this process's own environment, unpinned.
+  "toolchain\\.rs:.*(replace (at_watch_start|product_file|by_hand|by_the_tree) | in (at_watch_start|product_file|by_hand|by_the_tree)$)",
   # The snapshot's debug line, read by a human looking at a tick.
   "router/mod\\.rs:.*replace say_saw with \\(\\)",
   # Equivalent mutants: base64's bit groups never overlap, so `|` and `^`

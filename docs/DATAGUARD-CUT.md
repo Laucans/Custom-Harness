@@ -31,10 +31,12 @@ layout.
 
 1. **Generated files are never merged by hand.** Every new unit still
    changes two shared files: the registry `Cargo.toml` and `Cargo.lock`.
-   Both are regenerated. The harness's catch-up step (`branching::catch_up`)
-   and the `pr_fix` conflict path rerun `scripts/register.sh`, then
-   `cargo metadata`, on a conflict limited to these two files, and commit the
-   result. A conflict anywhere else stays a real conflict.
+   Both are regenerated. The harness's catch-up (`common::catch_up`, its
+   local merge `branching::catch_up_locally`) and the `pr_fix` conflict path
+   rerun `scripts/register.sh`, then `cargo metadata`, on a conflict limited
+   to generated files (since H1: also `queries/registry.json` and the
+   mock-up's bundles, one table in `harness_architecture::generated`), and
+   commit the result. A conflict anywhere else stays a real conflict.
 2. **The proof is parallel.** A5's verification creates two branches, each
    adding one DataCapability, and merges them into one base. The merge must
    need nothing but the regeneration of point 1.

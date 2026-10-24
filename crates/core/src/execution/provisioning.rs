@@ -1107,6 +1107,15 @@ mod tests {
         Workspace::new(Path::new("/depot"))
     }
 
+    #[tokio::test]
+    async fn a_git_that_does_not_say_how_it_removes_a_path_refuses_to() {
+        // The port's default: only a real `git` and the fakes that test a
+        // catch-up remove a conflicted path.
+        let refused = FakeRepo::default().remove("gen.js").await.expect("ran");
+        assert!(!refused.ok());
+        assert_eq!(refused.stderr, "this git cannot remove gen.js");
+    }
+
     fn repo(fake: FakeRepo) -> Rc<FakeRepo> {
         Rc::new(fake)
     }

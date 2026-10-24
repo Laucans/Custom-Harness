@@ -11,7 +11,8 @@ use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Issue, Outcome, Pr, Verdict};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
-use harness_workflows::common::routing::Route;
+use harness_workflows::common::catch_up::Busy;
+use harness_workflows::common::routing::{Pulse, Route};
 use harness_workflows::common::{branching, hierarchy, labels};
 use harness_workflows::main_agent_merge::data::report::Outcome as MergeReport;
 use harness_workflows::milestone_merge::Attempt;
@@ -31,13 +32,14 @@ pub(super) async fn dispatch(
     here: &Path,
     gh: &dyn GitHub,
     route: Route,
+    pulse: &mut Pulse,
     log: &Logbook,
 ) -> Dispatched {
     // The route with its parameters, before anything runs: it is the one line
     // that says what this tick decided and on what.
     log.say(&format!("tick: {route:?}"));
     let went = !matches!(route, Route::Nothing);
-    let failed = dispatched(args, here, gh, route, log).await;
+    let failed = dispatched(args, here, gh, route, pulse, &Busy::default(), log).await;
     after(args, here, failed, went, log).await
 }
 
@@ -76,16 +78,38 @@ pub(super) async fn after(
     came_to
 }
 
-/// Runs the route, and says which workflow failed, if one did.
+/// Runs the route, and says which workflow failed, if one did. `pulse` is
+/// what a catch-up remembers; `busy`, what lanes work on, which a
+/// catch-up leaves alone (a landing PR under repair, a task PR whose
+/// session still runs).
 pub(super) async fn dispatched(
     args: &WatchArgs,
     here: &Path,
     gh: &dyn GitHub,
     route: Route,
+    pulse: &mut Pulse,
+    busy: &Busy,
     log: &Logbook,
 ) -> Option<(&'static str, Halt)> {
     match route {
         Route::Nothing => None,
+        // Told in the journal, never a halt: a branch that cannot take the
+        // base is parked or routed by the catch-up itself.
+        Route::CatchUp { milestone, branch } => {
+            crate::dispatch::catch_up::milestone(
+                here,
+                &args.target_repo_url,
+                &args.branch,
+                args.dry_run,
+                gh,
+                (milestone, &branch),
+                &mut pulse.catch_ups,
+                busy,
+                log,
+            )
+            .await;
+            None
+        }
         Route::DevLoop { milestone } | Route::DevTask { milestone, .. } => {
             run_dev_loop(here, gh, milestone, args, log)
                 .await
@@ -362,7 +386,9 @@ pub(super) fn lane_route(kind: RouteKind, number: u64, base: &str) -> Route {
     }
 }
 
-/// What `harness route` runs on its lane: the tick's own arm.
+/// What `harness route` runs on its lane: the tick's own arm. A lane runs
+/// a paid route only, which remembers nothing between ticks: its pulse is
+/// its own.
 pub(super) async fn run_on_lane(
     args: &WatchArgs,
     here: &Path,
@@ -370,7 +396,16 @@ pub(super) async fn run_on_lane(
     route: Route,
     log: &Logbook,
 ) -> Option<(&'static str, Halt)> {
-    dispatched(args, here, gh, route, log).await
+    dispatched(
+        args,
+        here,
+        gh,
+        route,
+        &mut Pulse::default(),
+        &Busy::default(),
+        log,
+    )
+    .await
 }
 
 /// The paid route a lane takes, with what names it there: its kind, the
@@ -394,7 +429,8 @@ pub(super) fn lane_work(route: &Route) -> Option<(RouteKind, u64, String)> {
         Route::Planner { roadmap } => plain(RouteKind::Planner, *roadmap),
         Route::Arbiter { issue } => plain(RouteKind::Arbiter, *issue),
         Route::TestDebt { issue } => plain(RouteKind::TestDebt, *issue),
-        Route::MergeIntoMilestone { .. }
+        Route::CatchUp { .. }
+        | Route::MergeIntoMilestone { .. }
         | Route::MergeMainAgent { .. }
         | Route::DevLoop { .. }
         | Route::DevTask { .. }
@@ -582,12 +618,7 @@ pub(super) async fn run_main_agent_merge(
                 MergeReport::OpenedPr(url) => Some(format!(
                     "milestone #{milestone}: every task merged — opened {url} to the integration branch"
                 )),
-                MergeReport::Merged {
-                    pr,
-                    roadmap,
-                    built,
-                    caught_up,
-                } => {
+                MergeReport::Merged { pr, roadmap, built } => {
                     log.event(&Event::MilestoneLanded {
                         milestone,
                         pr: pr.clone(),
@@ -597,17 +628,9 @@ pub(super) async fn run_main_agent_merge(
                     }
                     Some(format!(
                         "milestone #{milestone}: CI green — merged into the integration branch, its tasks \
-                         closed; {} id(s) marked built, brought into {}",
-                        built.len(),
-                        if caught_up.is_empty() {
-                            "no other branch".to_string()
-                        } else {
-                            caught_up
-                                .iter()
-                                .map(|n| format!("#{n}"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        }
+                         closed; {} id(s) marked built — the branches still building take it at the \
+                         next tick its checks are green",
+                        built.len()
                     ))
                 }
                 // Red is told every tick it holds: a milestone PR that
@@ -621,8 +644,9 @@ pub(super) async fn run_main_agent_merge(
                     ));
                     None
                 }
-                // Neither stops the watch: a conflict waits for a catch-up,
-                // a refusal for a later tick — told every tick it holds.
+                // Neither stops the watch: a conflict waits for a catch-up
+                // (`Route::CatchUp`, the same key, heavier), a refusal for a
+                // later tick — told every tick it holds.
                 MergeReport::Conflicting { pr, why } => {
                     log.warn(&format!(
                         "watch: main_agent_merge -> PR {pr} of #{milestone} conflicts with the \
@@ -677,24 +701,10 @@ pub(super) async fn run_dev_loop(
             return Some(halt);
         }
     };
+    // A branch behind the base, or one that could not take it, is held by
+    // the router (`routing::Snapshot::catch_up`): the loop runs on a branch
+    // the catch-up already brought up.
     let branch = branching::milestone_branch(milestone, &title);
-    if !crate::dispatch::catch_up::run(
-        here,
-        &args.target_repo_url,
-        &branch,
-        &args.branch,
-        args.dry_run,
-        gh,
-        log,
-    )
-    .await
-    {
-        log.say(&format!(
-            "watch: dev_loop -> milestone #{milestone} held: {branch} cannot take {} — merge it by hand",
-            args.branch
-        ));
-        return None;
-    }
     let mut cli = match crate::cli::Cli::try_parse_from(["harness"]) {
         Ok(cli) => cli,
         Err(e) => {

@@ -394,6 +394,10 @@ mod tests {
         async fn branch_checks(&self, _branch: &str) -> Outcome<Option<bool>> {
             Ok(None)
         }
+
+        async fn commit_checks(&self, _branch: &str, _sha: &str) -> Outcome<Option<bool>> {
+            Ok(None)
+        }
     }
 
     fn refused() -> Halt {

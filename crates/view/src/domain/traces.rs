@@ -104,7 +104,9 @@ pub fn workflow_of_route(route: &str) -> Option<&'static str> {
         "Arbiter" => Some("arbiter"),
         "ContractChange" => Some("contract-manager"),
         "MergeMainAgent" => Some("main-agent-merge"),
-        "MergeIntoMilestone" => Some("milestone-merge"),
+        // A catch-up merges into a milestone branch, as a task's merge does:
+        // the same station, its lines in the watch's own journal.
+        "MergeIntoMilestone" | "CatchUp" => Some("milestone-merge"),
         _ => None,
     }
 }
@@ -1160,6 +1162,10 @@ mod tests {
         assert_eq!(
             workflow_of_route("ContractChange { issue: 70 }"),
             Some("contract-manager")
+        );
+        assert_eq!(
+            workflow_of_route("CatchUp { milestone: 6, branch: \"milestone/6-media\" }"),
+            Some("milestone-merge")
         );
         assert_eq!(workflow_of_route("Nothing"), None);
         assert_eq!(
