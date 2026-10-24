@@ -974,9 +974,11 @@ pub fn violations(tree: &Tree, task: Option<&Declaration>) -> Vec<String> {
                 crate_.dir
             )),
             Some(toml) => {
-                let offending: Vec<&str> = toml
-                    .lines()
-                    .filter(|line| !line.trim_start().starts_with('#'))
+                // Runtime dependencies only, as rule 4 below: a test reaching
+                // the engine's client re-export links nothing at run time
+                // (`ForgeDesMondes`' `live.getDiffusion`, 2026-10-24).
+                let offending: Vec<&str> = runtime_dependencies(toml)
+                    .into_iter()
                     .filter(|line| {
                         ["capabilities/", "dataguard", "dataqueue", "resolver"]
                             .iter()
@@ -2177,6 +2179,15 @@ mod tests {
         let found = violations(&tree, None);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("depends on another Capability"));
+    }
+
+    #[test]
+    fn a_capability_whose_test_reaches_the_engine_breaks_no_rule() {
+        let mut tree = sound();
+        tree.capabilities[0].cargo_toml = Some(
+            "[dependencies]\nserde_json = \"1\"\n\n[dev-dependencies]\nharness-dataguard = { workspace = true }\nother = { path = \"../../capabilities/x\" }\n".to_string(),
+        );
+        assert_eq!(violations(&tree, None), Vec::<String>::new());
     }
 
     #[test]
