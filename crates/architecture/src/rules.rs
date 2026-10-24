@@ -52,13 +52,16 @@ sea-orm, rusqlite, mysql), no write statement, no DATABASE_URL, no `#[path]`,
 
 Its reads are registered: after adding or changing a query file (first line
 `# fields: <entity>.<field>, …`), run `bash scripts/queries.sh` and commit
-queries/registry.json. Teach the mock server its answer (mock/src/reads.js).
+queries/registry.json. Teach the mock server its answer in
+mock/handlers/<capability id>.js (`export const reads = { '<id>': async
+(server, variables) => … }`), never another unit's handler file nor mock/src/.
 A Concept it implements is documented (concepts/<Concept>/v<n>/concept.json,
 fixtures.json beside it) and proved by a test calling
 `platform_conformance::check(\"<Concept>@<n>\", |input| …)`.
 
 Gates that judge it: manifests-conform-to-contracts (B), capability-isolation
 (scripts/isolation.sh on the cargo metadata graph, and no `invokes`),
+mock-handlers (its handler file, its id only),
 units-registered (named in the registry the script writes),
 concepts-documented, semantic-conformance, queries-registered, read-only,
 contracts-untouched (its manifest is its milestone's to change: a consumer
@@ -99,7 +102,9 @@ before it is built, then its real code mounted on the mock server
 (mock/src/<MicroUi>.js, bundled by mock/build.sh into
 mock/components/<MicroUi>.js, committed with its builtFrom digest). Open the
 mock page under mock/pages/ first: it is the screen as the human wants it (a
-`mockup/*` branch may carry a newer one).
+`mockup/*` branch may carry a newer one). The mock server's handlers,
+mock/handlers/<id>.js, are their Capability's and DataCapability's tasks':
+never edit one here — an answer it lacks is a fixture, mock/fixtures/<id>.json.
 
 It styles itself through the design system only: mock/design/tokens.css
 (one CSS variable per token, never a literal colour, font, spacing, radius
@@ -189,12 +194,12 @@ Fast path or not: an `insert` touching nothing is a pure addition, merged on
 green gates, and its code holds no UPDATE, ON CONFLICT, UPSERT, DELETE or
 CREATE TRIGGER. Anything else is the write side: its PR is reviewed by an
 agent, and milestone_merge merges it once the review is clean and every
-check green. Teach the mock server its judgement (mock/src/commands.js). A
-port that keeps state is written through a DataCapability only. What it
-must not know: any Capability, any other DataCapability, any other system's
-crates.
+check green. Its mock judgement goes in mock/handlers/<dataCapability id>.js
+(`export const commands = { '<id>': … }`), never another unit's handler file.
+A port that keeps state is written through a DataCapability only. What it must
+not know: any Capability, any other DataCapability, any other system's crates.
 
-Gates that judge it: manifests-conform-to-contracts (F),
+Gates that judge it: manifests-conform-to-contracts (F), mock-handlers,
 data-capability-placed (its folder is its id's namespace, never
 crates/dataguard/), capability-isolation (its target aggregate's crate only),
 units-registered (named in the registry, its library named after its folder,
@@ -483,5 +488,37 @@ mod tests {
             );
         }
         assert!(card(Unit::DataCapability).contains("milestone_merge"));
+    }
+
+    #[test]
+    fn a_unit_teaches_the_mock_server_in_its_own_handler_file_only() {
+        let flat = |unit| card(unit).split_whitespace().collect::<Vec<_>>().join(" ");
+        for (unit, file, export) in [
+            (
+                Unit::Capability,
+                "mock/handlers/<capability id>.js",
+                "export const reads = { '<id>'",
+            ),
+            (
+                Unit::DataCapability,
+                "mock/handlers/<dataCapability id>.js",
+                "export const commands = { '<id>'",
+            ),
+        ] {
+            let said = flat(unit);
+            for part in [
+                file,
+                export,
+                "never another unit's handler file",
+                "mock-handlers",
+            ] {
+                assert!(said.contains(part), "{unit:?}: {part}");
+            }
+            assert!(
+                !said.contains("(mock/src/"),
+                "{unit:?}: the legacy file as the place"
+            );
+        }
+        assert!(flat(Unit::MicroUi).contains("never edit one here"));
     }
 }

@@ -802,7 +802,8 @@ injects: a micro-frontend is a Micro-UI as the mock shows it — once built,
 **its real code** bundled (`mock/src/<Name>.js`, `mock/build.sh`) on the
 product's shell client over the mock server `harness init-repo` installs
 (`mock/src/server.js`: the shell's protocol answered from `mock/fixtures/`,
-taught by the product's `reads.js` and `commands.js`) with the installed
+taught one file per unit, `mock/handlers/<id>.js`, imported at run time —
+the legacy `reads.js` and `commands.js` still read until they are split) with the installed
 screen host (`mock/src/screen.js`: the `$ctx.<name>` context a frozen
 screen composes with); before, a hand-written fragment —
 `mock/components/<Name>.html`, listed under `components` of

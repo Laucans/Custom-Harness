@@ -8,7 +8,8 @@
 //! its rotation with the script that files what it misses, the script that
 //! dumps its schema, the guard that gives each test a scratch database and
 //! drops it even when the test panics, an empty data model to grow, an empty
-//! list of mock pages and the mock-up's loader, screen host, mock server and build, and the
+//! list of mock pages and the mock-up's loader, screen host, mock server and build, the
+//! script that splits its legacy handler files and the gate that keeps one per unit, and the
 //! rules' kit: their gate, their runtime's stub, the business and journey
 //! suites the rules' task writes their tests in. The kit's base
 //! fragments are not installed: the harness keeps them and writes the styled
@@ -32,9 +33,9 @@ pub const MARKER_OPEN: &str = "<!-- harness:architecture v2 -->";
 /// The version of the rules block in `CLAUDE.md`, counted apart from the
 /// documents: shortening the rules every session pays for must not rewrite
 /// a product's documents.
-pub const CLAUDE_VERSION: u32 = 6;
+pub const CLAUDE_VERSION: u32 = 7;
 /// The opening marker of the rules block in `CLAUDE.md`, with its version.
-pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v6 -->";
+pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v7 -->";
 /// What every version of the opening marker starts with.
 pub const MARKER_PREFIX: &str = "<!-- harness:architecture v";
 /// The closing marker.
@@ -68,7 +69,7 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// once and the product's from then on), the contracts A–R, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites, and
 /// the root `.gitignore` that keeps build outputs out of a round's changes.
-pub const FILES: [Asset; 69] = [
+pub const FILES: [Asset; 70] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -198,12 +199,8 @@ pub const FILES: [Asset; 69] = [
         content: include_str!("../assets/mock/src/screen.js"),
     },
     Asset {
-        path: "mock/src/reads.js",
-        content: include_str!("../assets/mock/src/reads.js"),
-    },
-    Asset {
-        path: "mock/src/commands.js",
-        content: include_str!("../assets/mock/src/commands.js"),
+        path: "mock/handlers/README.md",
+        content: include_str!("../assets/mock/handlers/README.md"),
     },
     Asset {
         path: "contracts/README.md",
@@ -296,6 +293,14 @@ pub const FILES: [Asset; 69] = [
     Asset {
         path: "scripts/design-system-gate.mjs",
         content: include_str!("../assets/design-system-gate.mjs"),
+    },
+    Asset {
+        path: "scripts/split-handlers.mjs",
+        content: include_str!("../assets/split-handlers.mjs"),
+    },
+    Asset {
+        path: "scripts/mock-handlers-gate.mjs",
+        content: include_str!("../assets/mock-handlers-gate.mjs"),
     },
     Asset {
         path: ".sops.yaml",
@@ -470,7 +475,7 @@ mod tests {
     #[test]
     fn every_gate_of_the_workflow_is_cited_by_a_rule_card() {
         let gates = gate_ids(include_str!("../assets/gates.yml"));
-        assert_eq!(gates.len(), 29, "{gates:?}");
+        assert_eq!(gates.len(), 30, "{gates:?}");
         let cards: String = crate::vocabulary::Unit::ALL
             .iter()
             .map(|unit| crate::rules::card(*unit))
@@ -837,6 +842,56 @@ mod tests {
         for panics in ["unwrap(", "expect(", "panic!"] {
             assert!(!drop.contains(panics), "a drop never panics: {panics}");
         }
+    }
+
+    #[test]
+    fn the_handlers_are_one_file_per_unit_from_the_rules_to_the_gate() {
+        let rules = CLAUDE_RULES
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for part in [
+            "`mock/handlers/<id>.js`",
+            "Never edit another unit's handler file",
+            "never add a handler to `mock/src/reads.js` or `mock/src/commands.js`",
+            "Gate: `mock-handlers`",
+            "src/, handlers/, design/",
+        ] {
+            assert!(rules.contains(part), "the rules say {part}");
+        }
+        for path in [
+            "scripts/split-handlers.mjs",
+            "scripts/mock-handlers-gate.mjs",
+            "mock/handlers/README.md",
+        ] {
+            assert!(content_of(path).is_some(), "{path} is installed");
+        }
+        for legacy in ["mock/src/reads.js", "mock/src/commands.js"] {
+            assert!(content_of(legacy).is_none(), "{legacy} is seeded no more");
+        }
+        let gate = content_of(".github/workflows/gates.yml")
+            .unwrap_or_default()
+            .split("- id: mock-handlers")
+            .nth(1)
+            .and_then(|rest| rest.split("\n      - id: ").next())
+            .map(str::to_string)
+            .expect("the gate");
+        assert!(gate.contains("BASE: ${{ github.event.pull_request.base.sha }}"));
+        assert!(gate.contains(r#"node scripts/mock-handlers-gate.mjs ${BASE:+"$BASE"}"#));
+        let gates = include_str!("../assets/gates.yml");
+        let node = gates.find("  node-gates:").expect("the node job");
+        let rust = gates.find("  rust-gates:").expect("the rust job");
+        let at = gates.find("- id: mock-handlers").expect("the step");
+        assert!(node < at && at < rust, "it runs on node 22");
+        assert!(
+            at < gates.find("- id: pages-mocked\n").expect("pages-mocked"),
+            "before the bundles are rebuilt in the checkout"
+        );
+        let build = content_of("mock/build.mjs").unwrap_or_default();
+        assert!(
+            build.contains("const SHARED = ['server.js', 'screen.js', 'reads.js', 'commands.js'];"),
+            "the digest the harness checks, an absent legacy file no input"
+        );
     }
 
     #[test]

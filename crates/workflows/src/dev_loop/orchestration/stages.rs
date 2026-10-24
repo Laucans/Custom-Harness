@@ -131,7 +131,14 @@ entry of its actions and needs), and after any change under apps/ or
 mock/src/ run mock/build.sh and commit the bundles — the gates refuse a
 screen no page mocks, a Micro-UI with no micro-frontend, a listing out of
 sync with the manifest, a micro-frontend that names no part for one of its
-actions or needs, and a stale bundle. A frontend task reads the
+actions or needs, and a stale bundle. A unit's mock handlers live in its own
+file, mock/handlers/<id>.js (its Capability or DataCapability id): `export
+const reads = { '<id>': async (server, variables) => … }` or `export const
+commands = { '<id>': async (server, { payload, targetId, version, basedOn })
+=> … }`, a helper several files share in mock/handlers/_lib/; the mock server
+imports it at run time, so it needs no rebuild. Never edit another unit's
+handler file, and never add a handler to mock/src/reads.js or
+mock/src/commands.js (gate mock-handlers). A frontend task reads the
 product's design system first: mock/design/tokens.css (one CSS variable per
 token — every colour, font, spacing, radius and shadow of a screen comes
 from them, never a literal) and the kit, mock/kit/<Name>.html listed in
@@ -696,6 +703,17 @@ mod tests {
 
     /// The skill the prompt carries out, as the harness lends it.
     const CODE_SKILL: &str = include_str!("../../../../../.claude/skills/code/SKILL.md");
+
+    #[test]
+    fn the_code_prompt_and_skill_keep_each_unit_s_mock_handlers_in_its_own_file() {
+        assert!(
+            flat(CODE).contains(&flat(harness_architecture::mock_handlers::RULE)),
+            "the code prompt states the rule as the architecture writes it"
+        );
+        let skill = flat(CODE_SKILL);
+        assert!(skill.contains("mock/handlers/<id>.js"), "{skill}");
+        assert!(skill.contains("never another unit's handler file"));
+    }
 
     #[test]
     fn the_code_skill_says_the_same_the_harness_watches_ci() {

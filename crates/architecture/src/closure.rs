@@ -242,6 +242,18 @@ fn file(path: &str) -> String {
     format!("/{}", path.trim_start_matches('/'))
 }
 
+/// Whether a unit id can name a handler file, `mock/handlers/<id>.js`: a
+/// plain name, never a path.
+fn names_a_file(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && !id.ends_with('.')
+        && !id.contains("..")
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// The folder a manifest sits in.
 fn dir_of(path: &str) -> String {
     path.rsplit_once('/')
@@ -462,6 +474,12 @@ pub fn closure(
             }
             add(&mut patterns, folder("mock/src"));
             add(&mut patterns, folder("mock/fixtures"));
+            // Its own handler files, and the helpers they share: another
+            // unit's handler file is not this task's to edit.
+            for id in task.produces.iter().filter(|id| names_a_file(id)) {
+                add(&mut patterns, file(&format!("mock/handlers/{id}.js")));
+            }
+            add(&mut patterns, folder("mock/handlers/_lib"));
         }
         Unit::Infrastructure => {
             add(&mut patterns, ENGINE_MANUAL.to_string());
@@ -471,6 +489,7 @@ pub fn closure(
                 add(&mut patterns, folder(&format!("crates/{system}")));
             }
             add(&mut patterns, folder("mock/src"));
+            add(&mut patterns, folder("mock/handlers"));
             add(&mut patterns, folder("mock/fixtures"));
         }
         Unit::MicroUi | Unit::Composition => {
@@ -759,6 +778,52 @@ mod tests {
             CargoGraph::parse(r#"{"packages": []}"#).is_none(),
             "no root, no graph"
         );
+    }
+
+    #[test]
+    fn a_unit_sees_its_own_handler_files_and_the_shared_helpers_only() {
+        let task = declared(
+            Unit::DataCapability,
+            "credit",
+            &[
+                "credit.requestLimitChange",
+                "../escape",
+                ".hidden",
+                "",
+                "a/b",
+            ],
+            &[],
+        );
+        let found = closure(&tree(), &task, Some(&graph()), None);
+        let handlers: Vec<&String> = found
+            .patterns
+            .iter()
+            .filter(|p| p.contains("mock/handlers"))
+            .collect();
+        assert_eq!(
+            handlers,
+            [
+                "/mock/handlers/credit.requestLimitChange.js",
+                "/mock/handlers/_lib/"
+            ],
+            "{:?}",
+            found.patterns
+        );
+        let infrastructure = closure(
+            &tree(),
+            &declared(Unit::Infrastructure, "", &[], &[]),
+            None,
+            None,
+        );
+        assert!(
+            infrastructure
+                .patterns
+                .contains(&"/mock/handlers/".to_string())
+        );
+        assert!(names_a_file("table.move-token_2"));
+        assert!(!names_a_file("table move"));
+        assert!(!names_a_file("table..up"), "never a parent folder");
+        assert!(!names_a_file("table."), "never `..js`");
     }
 
     #[test]

@@ -765,6 +765,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/rules-gate.mjs contest "${{ github.event.pull_request.number }}"
 
+      # Contract N — the mock server's handlers are one file per unit,
+      # mock/handlers/<id>.js, keyed by its own id only, and no id is defined
+      # twice: not twice in one literal (the later key silently wins — it hid a
+      # payload mismatch once), not in its file and in the legacy
+      # mock/src/reads.js / commands.js. Once mock/handlers/ holds a handler
+      # file (not its README, not _lib/), a pull request adds no handler to
+      # the legacy files, whose handlers stay
+      # editable until scripts/split-handlers.mjs splits them; two branches
+      # adding handlers then touch no common file (scripts/mock-handlers-gate.mjs).
+      # No handler is defined twice, and a new one gets its own file.
+      - id: mock-handlers
+        name: mock-handlers
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/mock-handlers-gate.mjs ${BASE:+"$BASE"}
+
       # Contracts E, N — the mock-up keeps up with the screens: every page
       # `mock/pages.json` lists is there, and every frozen screen under
       # `apps/screens/` has a page that names it. The mock-up is where a screen

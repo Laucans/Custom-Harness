@@ -81,6 +81,10 @@ branch out and answer its review; otherwise branch off:
 Hard rules, and they are the point of this run:
 - **rules.json and tests/rules/ only.** Never write the product's code,
   never touch the CI, the gates, `scripts/`, or a `harness:*` label.
+  The mock server's handlers are their units' own files
+  (`mock/handlers/<id>.js`): a given starts from the fixtures, never from
+  a handler you write or edit there, nor in mock/src/reads.js or
+  mock/src/commands.js.
 - **The criterion, nothing weaker and nothing more.** A test does its given,
   then its when, and asserts its then — never an assertion that cannot
   fail, never one the criterion does not make.
@@ -296,6 +300,18 @@ mod tests {
                 assert!(prompt.contains(need), "{need}");
             }
         }
+    }
+
+    #[test]
+    fn the_rules_task_leaves_every_unit_s_mock_handlers_to_its_unit() {
+        let flat = WRITE_PROMPT
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(flat.contains(
+            "The mock server's handlers are their units' own files (`mock/handlers/<id>.js`)"
+        ));
+        assert!(flat.contains("nor in mock/src/reads.js or mock/src/commands.js"));
     }
 
     #[test]

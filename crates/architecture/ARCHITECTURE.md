@@ -38,12 +38,16 @@ src/graph.rs        the plan's graph (contract R): what every milestone produces
 src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
 src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the showcase page (assets/showcase.html), the static check a fragment is reused on
 src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep)
+src/mock_handlers.rs the mock server's handlers, one file per unit (mock/handlers/<id>.js): the rule every prompt states (RULE) and the parent-first migration a merge follows when the legacy files conflict as deleted (on_conflict: the split commit checked first — one parent, the split's paths only, or stop — and the add/add rule for a handler the base added before it split itself)
 src/generated.rs    the files of a product a script writes (GENERATED: Cargo.lock, the registry's Cargo.toml, queries/registry.json, mock/components/*.js, mock/pages.json's builtFrom digests), how a conflict in each is taken, their generators in run order (Regenerator), the digest-only resolution of mock/pages.json (digests_only, both marker styles), the repair prompt's lines (instructions)
 assets/             those files, compiled in with include_str! — the harness's own scripts/{dead-code,mutants-rotation,test-debt}.sh are links to them, one script for both
 tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_script.rs: the installed scripts, run on a real folder
                     isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, each way a unit could reach another, a DataCapability on its target aggregate only, the registry crossed by the two servers only
                     gates_parity.rs: gates.yml's gates (each a step, found by its id) and tree::violations on the same fixture workspaces, one verdict for both
                     queries_script.rs: the installed queries.sh against a golden registry (tests/golden/) written by the GNU path — and on macOS, under PATH=/usr/bin:/bin with /bin/bash 3.2 and BSD sed, byte for byte
+                    mock_server.rs: the installed server.js on node — the engine's behaviour, handlers from their own file imported once, an id defined twice an error naming both files (at startup for a declared id, breaking every call; on first use otherwise)
+                    split_handlers.rs: the installed split-handlers.mjs on a throwaway product — byte-for-byte split, idempotent, deterministic, every refusal with nothing written (guarded destructuring and for-of assignments, `this`), a file without semicolons, a handler file a merge already brought, the self-check catching a helper reached through eval
+                    mock_handlers_gate.rs: the gate `mock-handlers` from gates.yml on a throwaway repository — ids twice, another id's key, a new legacy key on a pull request once mock/handlers/ holds a handler file (its README and _lib/ do not count)
                     assets_rustfmt.rs: every installed .rs asset passes `rustfmt --check --edition 2024` under default settings — a product's CI runs `cargo fmt --check`, and the assets are no member of this workspace, so `cargo fmt --all` here never sees them
 ```
 
@@ -67,6 +71,33 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   a conflict there is generated only when its `builtFrom` digests are all
   that differ (`digests_only`; `mock/build.sh` rewrites them). The bundles'
   HTML fragments are hand-written and out of it. Pure, like the rest.
+- **A unit's mock handlers are its own file.** The mock server
+  (`assets/mock/src/server.js`) imports `mock/handlers/<id>.js` the first
+  time `<id>` is read or commanded — never bundled, so a handler file is no
+  bundle's input and adding one touches no shared file. A file defines its
+  own id only (`export const reads` / `export const commands`); the legacy
+  `mock/src/reads.js` and `commands.js`, which every branch appended to,
+  are still loaded while they exist. An id defined twice is an error naming
+  both files, never an override: at startup for every id the legacy files
+  or `mock/pages.json` (`needs`, `actions`) name — the server then answers
+  every call 500 with `server.problems` — and on first use for any other
+  (a browser cannot list a folder). `tree::SHARED_SOURCES` and
+  `build.mjs`'s `SHARED` are one list, `server.js`, `screen.js` and the
+  legacy `reads.js` / `commands.js`, so a product on an older `build.mjs`
+  writes the digest the harness checks; an absent legacy file is no input,
+  so a split tree digests the server and the screen host only. Rewriting a
+  file every bundle embeds stales them all (`tree::stales_every_bundle`):
+  the install rebuilds them in its own commit. `assets/split-handlers.mjs` (installed
+  as `scripts/split-handlers.mjs`, run once per tree by the migration,
+  never by the harness yet) splits them byte for byte, refuses what it
+  cannot carry faithfully (a computed key, a handler assigning a top-level
+  `let`, node older than 22), and self-checks by running the server on both
+  layouts; `assets/mock-handlers-gate.mjs` is the gate `mock-handlers`,
+  which reads the files as text with the splitter's tokenizer. New products
+  are seeded `mock/handlers/README.md`, no legacy file. The rule a session
+  reads is `mock_handlers::RULE`, the same in the cards, the code prompt,
+  `CLAUDE-rules.md` (block v7) and `pr_fix`'s conflict block; a unit's
+  narrowed checkout carries its own handler files and `_lib/` only.
 - **What to install is here; whether to write it is not.** `assets` lists the
   files and their content; `init_repo::data::install` decides what a run
   writes of them (nothing already there is overwritten, `CLAUDE.md` is

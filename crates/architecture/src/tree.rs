@@ -161,8 +161,29 @@ pub struct Bundle {
     pub digest: String,
 }
 
-/// The files of `mock/src/` every bundle embeds.
+/// The files of `mock/src/` every bundle's digest reads, the same list as
+/// `mock/build.mjs`'s `SHARED` — a product on an older `build.mjs` must
+/// compute the digest the harness checks. The legacy `reads.js` and
+/// `commands.js` stay in it: the server imports them at run time now, but
+/// an absent file is no input, so once `scripts/split-handlers.mjs` removed
+/// them the digest is the server's and the screen host's alone, and
+/// `mock/handlers/` is never read.
 const SHARED_SOURCES: [&str; 4] = ["server.js", "screen.js", "reads.js", "commands.js"];
+
+/// Whether rewriting `path` (from the repository's root) stales every bundle.
+///
+/// A file each one embeds (`mock/src/server.js`, `mock/src/screen.js`) or
+/// the build that bundles and digests them (`mock/build.mjs`,
+/// `mock/build.sh`). Whatever rewrites one rebuilds the
+/// bundles in the same commit (`sh mock/build.sh`), or every branch built
+/// on it fails `pages-mocked--bundles`.
+#[must_use]
+pub fn stales_every_bundle(path: &str) -> bool {
+    matches!(path, "mock/build.mjs" | "mock/build.sh")
+        || path
+            .strip_prefix("mock/src/")
+            .is_some_and(|name| SHARED_SOURCES.contains(&name))
+}
 
 /// Folders a digest never walks into.
 const SKIPPED_FOLDERS: [&str; 2] = ["node_modules", "dist"];
@@ -2430,6 +2451,77 @@ mod tests {
         assert!(found[0].contains("registry"), "a unit crate, no registry");
         assert!(found[1].contains("pages/gone.html"));
         assert!(!Tree::read(&FakeDisk::default(), &root).under_architecture);
+    }
+
+    #[test]
+    fn a_handler_never_enters_a_bundle_digest_and_the_shared_server_does() {
+        let root = PathBuf::from("/ws");
+        let mut existing = HashMap::new();
+        existing.insert(root.join("mock/src/RiskBadge.js"), "mount();".to_string());
+        existing.insert(
+            root.join("apps/credit/risk-badge/src/index.ts"),
+            "export {}".to_string(),
+        );
+        let digest_of = |existing: &HashMap<PathBuf, String>| {
+            let disk = FakeDisk {
+                existing: existing.clone(),
+            };
+            digest(&bundle_inputs(
+                &disk,
+                &root,
+                "RiskBadge",
+                "apps/credit/risk-badge",
+            ))
+        };
+        assert_eq!(digest_of(&existing), "c14e3564be9bd6b2");
+        for handler in [
+            "mock/handlers/credit.tag.js",
+            "mock/handlers/_lib/credit.js",
+        ] {
+            existing.insert(root.join(handler), "export const x = 1;".to_string());
+        }
+        assert_eq!(
+            digest_of(&existing),
+            "c14e3564be9bd6b2",
+            "a handler file is imported at run time, never digested"
+        );
+        // The legacy files count while they are there, as an older build.mjs
+        // counts them; once split away, the digest is back to the bare one.
+        let mut legacy = existing.clone();
+        legacy.insert(root.join("mock/src/commands.js"), "c".to_string());
+        let with_commands = digest_of(&legacy);
+        assert_ne!(with_commands, "c14e3564be9bd6b2", "commands.js counts");
+        legacy.insert(root.join("mock/src/reads.js"), "r".to_string());
+        assert_ne!(digest_of(&legacy), with_commands, "and reads.js");
+        existing.insert(root.join("mock/src/server.js"), "server".to_string());
+        let with_server = digest_of(&existing);
+        assert_ne!(with_server, "c14e3564be9bd6b2", "every bundle embeds it");
+        existing.insert(root.join("mock/src/screen.js"), "screen".to_string());
+        assert_ne!(digest_of(&existing), with_server, "and the screen host");
+    }
+
+    #[test]
+    fn what_every_bundle_embeds_or_builds_with_stales_them_all() {
+        for path in [
+            "mock/src/server.js",
+            "mock/src/screen.js",
+            "mock/src/commands.js",
+            "mock/src/reads.js",
+            "mock/build.mjs",
+            "mock/build.sh",
+        ] {
+            assert!(stales_every_bundle(path), "{path}");
+        }
+        for path in [
+            "mock/src/RiskBadge.js",
+            "mock/handlers/credit.tag.js",
+            "mock/pages.json",
+            "src/server.js",
+            "mock/src/server.json",
+            "scripts/split-handlers.mjs",
+        ] {
+            assert!(!stales_every_bundle(path), "{path}");
+        }
     }
 
     #[test]

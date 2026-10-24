@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_architecture::generated;
+use harness_architecture::{generated, mock_handlers};
 use harness_core::domain::prompts::splice;
 use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
@@ -91,8 +91,10 @@ fn conflict_block(conflicting: bool, base: &str) -> String {
          landed there since. Bring the base in and resolve it:\n  git fetch origin && \
          git merge origin/{base}\nResolve every conflict keeping both sides' intent \
          (the other PR's change is not yours to undo), run the gates, commit the \
-         merge and push. A merge, never a rebase, never a force-push.\n{}\n",
-        generated::instructions()
+         merge and push. A merge, never a rebase, never a force-push.\n{}\n{}\n{}\n",
+        generated::instructions(),
+        mock_handlers::on_conflict(base),
+        mock_handlers::RULE
     )
 }
 
@@ -215,6 +217,13 @@ mod tests {
         ] {
             assert!(said.contains(step), "{step}: {said}");
         }
+        assert!(
+            said.contains(&harness_architecture::mock_handlers::on_conflict(
+                "milestone/53-data"
+            )),
+            "the legacy handler files migrate parent-first: {said}"
+        );
+        assert!(said.contains(harness_architecture::mock_handlers::RULE));
         assert_eq!(conflict_block(false, "x"), "");
     }
 

@@ -115,6 +115,13 @@ earlier one landed.
   fact about this task, not a bug to close.
 - **Write the failing test first** when fixing a bug, where practical
   (`CLAUDE.md`, Workflow).
+- **A unit's mock handlers are its own file.** In a product, what the mock
+  server answers for your Capability or judges for your DataCapability goes
+  in `mock/handlers/<id>.js` (`export const reads` / `export const
+  commands`, keyed by that id only; shared helpers in
+  `mock/handlers/_lib/`) — never another unit's handler file, never a new
+  handler in `mock/src/reads.js` or `mock/src/commands.js` (gate
+  `mock-handlers`). No rebuild: the server imports it at run time.
 - **Track background processes.** Anything still alive after a tool call
   returns — dev server, watcher, tunnel — gets an entry in
   `.llocal/running_process/PROCESSES.md` in that file's documented format,

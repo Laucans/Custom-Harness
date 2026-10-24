@@ -23,7 +23,8 @@
 //!   static check a fragment is reused on;
 //! - [`assets`] — the files `init-repo` installs to bring a repository under
 //!   the architecture; [`generated`] — those of its files a script writes,
-//!   which a merge regenerates instead of resolving.
+//!   which a merge regenerates instead of resolving; [`mock_handlers`] — the
+//!   mock server's handlers, one file per unit, as every prompt states it.
 //!
 //! It names no workflow and decides nothing about a run: `harness-workflows`
 //! reads it to cut, build and check tasks, `harness-view` to draw the product.
@@ -37,6 +38,7 @@ pub mod compare;
 pub mod generated;
 pub mod graph;
 pub mod kit;
+pub mod mock_handlers;
 pub mod model;
 pub mod rules;
 pub mod schema_sql;

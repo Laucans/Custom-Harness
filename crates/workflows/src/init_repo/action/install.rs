@@ -15,8 +15,9 @@ use harness_core::domain::{Halt, Outcome};
 use harness_core::ports::shell::process::Ran;
 
 use crate::init_repo::config::Config;
-use crate::init_repo::data::install::{InstallPlan, REGISTER, REGISTRY_MANIFEST};
+use crate::init_repo::data::install::{InstallPlan, MOCK_BUILD, REGISTER, REGISTRY_MANIFEST};
 use crate::init_repo::ports::Ports;
+use harness_architecture::generated::Regenerator;
 
 /// Installs the rules, and says what it did — one line per fact, as the
 /// report prints them.
@@ -79,6 +80,9 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<Vec<String>> {
     if plan.register {
         register(ports, &clone).await?;
     }
+    if plan.rebuild {
+        rebuild(ports, &clone).await?;
+    }
     let repo = ports.repos.at(&clone);
     said("stage", &repo.stage_all().await?)?;
     said("commit", &repo.commit(&plan.commit_message()).await?)?;
@@ -92,6 +96,11 @@ pub async fn run(ports: &Ports, config: &Config) -> Outcome<Vec<String>> {
     if plan.register {
         lines.push(format!(
             "registered the units: {REGISTRY_MANIFEST} written by {REGISTER}"
+        ));
+    }
+    if plan.rebuild {
+        lines.push(format!(
+            "rebuilt the mock-up's bundles and their digests: {MOCK_BUILD}, in the same commit"
         ));
     }
     if !plan.upgraded.is_empty() {
@@ -135,6 +144,31 @@ async fn register(ports: &Ports, clone: &Path) -> Outcome<()> {
     } else {
         Err(Halt::Failed(format!(
             "{REGISTER} failed in the install clone: {}",
+            ran.why()
+        )))
+    }
+}
+
+/// How long the mock-up's build may run: one esbuild per bundle, the same
+/// bound the catch-up gives it.
+const MOCK_BUILD_TIMEOUT: Duration = Duration::from_mins(15);
+
+/// Rebuilds the mock-up's bundles in the clone, by its script: a rewritten
+/// mock server is embedded in every bundle, so their `builtFrom` digests
+/// move with it and go in the same commit.
+async fn rebuild(ports: &Ports, clone: &Path) -> Outcome<()> {
+    let build = Regenerator::MockBuild;
+    let args: Vec<String> = build.args().iter().map(|arg| (*arg).to_string()).collect();
+    let ran = ports
+        .process
+        .run(build.program(), &args, clone, MOCK_BUILD_TIMEOUT)
+        .await?;
+    if ran.ok() {
+        Ok(())
+    } else {
+        Err(Halt::Failed(format!(
+            "{} failed in the install clone: {}",
+            build.command(),
             ran.why()
         )))
     }
@@ -466,6 +500,87 @@ mod tests {
             "{:?}",
             repos.calls()
         );
+    }
+
+    /// A product that built its bundles on a mock server the harness wrote
+    /// before, its units registered.
+    fn built_on_an_older_server() -> FakeDisk {
+        let clone = PathBuf::from("/tmp/init/o-r");
+        let server = "mock/src/server.js";
+        let old = "// the server the harness wrote before\n";
+        let mut existing = std::collections::HashMap::new();
+        existing.insert(clone.clone(), String::new());
+        existing.insert(
+            clone.join(crate::init_repo::data::install::REGISTRY_MANIFEST),
+            "[package]\n".to_string(),
+        );
+        existing.insert(clone.join(server), old.to_string());
+        existing.insert(
+            clone.join("mock/pages.json"),
+            r#"{"components": [{"name": "A", "builtFrom": "0123456789abcdef"}]}"#.to_string(),
+        );
+        existing.insert(
+            clone.join(crate::init_repo::data::install::MANIFEST),
+            format!(
+                "{{\"files\": {{\"{server}\": \"{}\"}}}}",
+                crate::init_repo::data::install::fingerprint(old)
+            ),
+        );
+        FakeDisk {
+            existing,
+            ..FakeDisk::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rewritten_mock_server_commits_the_bundles_rebuilt_on_it() {
+        let process = Rc::new(FakeProcess::default());
+        let repos = FakeRepos::default();
+        let lines = run(
+            &with_process(
+                Rc::new(built_on_an_older_server()),
+                repos.clone(),
+                Rc::clone(&process),
+            ),
+            &config_fake::config(),
+        )
+        .await
+        .expect("upgraded");
+        assert_eq!(
+            *process.ran.borrow(),
+            [(
+                "sh".to_string(),
+                vec!["mock/build.sh".to_string()],
+                PathBuf::from("/tmp/init/o-r")
+            )]
+        );
+        assert!(repos.asked("stage_all") && repos.asked("commit chore(harness): upgrade"));
+        assert!(
+            lines.iter().any(|l| l
+                == "rebuilt the mock-up's bundles and their digests: mock/build.sh, in the same commit"),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_build_that_fails_stops_the_upgrade_before_the_commit() {
+        let process = Rc::new(FakeProcess::answering(vec![FakeProcess::ran(
+            "",
+            "esbuild: not found\n",
+            127,
+        )]));
+        let repos = FakeRepos::default();
+        let err = run(
+            &with_process(Rc::new(built_on_an_older_server()), repos.clone(), process),
+            &config_fake::config(),
+        )
+        .await
+        .expect_err("the build failed");
+        assert!(
+            matches!(&err, Halt::Failed(why) if why == "sh mock/build.sh failed in the install clone: esbuild: not found"),
+            "{err:?}"
+        );
+        assert!(!repos.asked("stage_all") && !repos.asked("commit"));
     }
 
     #[tokio::test]

@@ -6,18 +6,17 @@
 // DataGuard engine does (contracts G and H), so a Micro-UI built on it
 // meets no surprise on the real server:
 //
-// - a read of `<identifier>` is `READS[identifier](server, variables)` from
-//   `reads.js` when the product wrote one, else the fixture
-//   `fixtures/<identifier>.json` as it is — a plain value, or
-//   `{ "$match": [{ "variables": {…}, "data": … }], "data": <default> }` to
-//   answer by variables (`not-found` when a `$match` list has no match and
-//   no default);
-// - a command of `<dataCapability>` is `COMMANDS[dataCapability](server,
-//   { payload, targetId, version, basedOn })` from `commands.js` — it
-//   changes the fixtures it loaded and answers the violation ids the
-//   DataGuard would, or `'not-found'`. A DataCapability absent from
-//   `commands.js` is **rejected** with `unhandled-data-capability`: the
-//   real server refuses what no manifest registers, so does the mock;
+// - a read of `<identifier>` is the product's handler for it when there is
+//   one (below), else the fixture `fixtures/<identifier>.json` as it is — a
+//   plain value, or `{ "$match": [{ "variables": {…}, "data": … }],
+//   "data": <default> }` to answer by variables (`not-found` when a
+//   `$match` list has no match and no default);
+// - a command of `<dataCapability>` is the product's handler for it, called
+//   `(server, { payload, targetId, version, basedOn })` — it changes the
+//   fixtures it loaded and answers the violation ids the DataGuard would,
+//   or `'not-found'`. A DataCapability with no handler is **rejected** with
+//   `unhandled-data-capability`: the real server refuses what no manifest
+//   registers, so does the mock;
 // - the aggregate's own invariants judge too, when the page ships
 //   `fixtures/aggregates/<Aggregate>.json` (an aggregate.json, contract I)
 //   and the command names its `target.aggregate`: every `rule` of the shape
@@ -32,11 +31,29 @@
 //   on the page refetches, as the product would. The messages (contract L)
 //   are kept in `server.messages`, oldest first.
 //
+// The handlers are the product's, one file per unit, never bundled: the
+// first read or command of `<id>` imports `mock/handlers/<id>.js`, which
+// exports `reads` and/or `commands`, each an object keyed by that id only —
+//
+//   export const reads = { '<Capability>': async (server, variables) => data };
+//   export const commands = { '<DataCapability>': async (server, { payload }) => violations };
+//
+// — the browser loads it as a module beside the page, so its imports are
+// relative: helpers several files share live in `mock/handlers/_lib/`. The
+// legacy `mock/src/reads.js` (`READS`) and `mock/src/commands.js`
+// (`COMMANDS`) are still loaded when they exist, until
+// `scripts/split-handlers.mjs` turns them into handler files. An id defined
+// twice — in its file and a legacy file, or in another id's file — is an
+// error naming both files, never one definition silently winning (the gate
+// `mock-handlers` refuses it before a merge). It is found at startup for
+// every id the server can know of without listing a folder — each legacy
+// key, each `needs` and `actions` of `mock/pages.json` — and then the
+// server is broken: every call answers 500 with the problems, kept in
+// `server.problems` (`await server.ready`) and logged. An id nobody
+// declared is checked on its first use, answered 500 alone.
+//
 // One server per page, shared by every bundle. Installed by `harness
-// init-repo`; a product teaches it through `reads.js` and `commands.js`.
-
-import { COMMANDS } from './commands.js';
-import { READS } from './reads.js';
+// init-repo`; a product teaches it through `mock/handlers/`.
 
 const LATENCY_MS = 120;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,6 +63,41 @@ const notFound = () => json({ error: 'not-found' }, 404);
 const refused = (why) => json({ error: why }, 409);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const FINAL = new Set(['applied', 'rejected', 'cancelled', 'expired']);
+/** The legacy files, by kind: where they sit relative to the page, and the object they export. */
+const LEGACY = { reads: ['../src/reads.js', 'READS'], commands: ['../src/commands.js', 'COMMANDS'] };
+
+/** A handler defined twice, or a handler file that breaks the convention: never a silent override. */
+class HandlerError extends Error {}
+
+/** A path relative to the page, as the repository names it. */
+const shown = (path) => `mock/${path.replace(/^\.\.\//, '')}`;
+
+/** The module at `path` (relative to the page), `null` when no such file is served. */
+async function moduleAt(path) {
+  const url = new URL(path, location.href).href;
+  const served = await fetch(url).then((r) => r.ok, () => false);
+  if (!served) return null;
+  try {
+    return await import(url);
+  } catch (e) {
+    throw new HandlerError(`${shown(path)} does not load: ${e && e.message ? e.message : e}`);
+  }
+}
+
+/** A handler file checked: it exports `reads` and/or `commands`, keyed by its own id only. */
+function ownFile(id, mod) {
+  if (!mod) return null;
+  const file = `mock/handlers/${id}.js`;
+  const kinds = Object.keys(LEGACY).filter((kind) => mod[kind] !== undefined);
+  if (!kinds.length) throw new HandlerError(`${file} exports neither reads nor commands`);
+  for (const kind of kinds) {
+    if (!mod[kind] || typeof mod[kind] !== 'object') throw new HandlerError(`${file}: ${kind} is not an object`);
+    for (const key of Object.keys(mod[kind])) {
+      if (key !== id) throw new HandlerError(`${file} defines ${key}: a handler file defines its own id only — ${key} belongs in mock/handlers/${key}.js`);
+    }
+  }
+  return mod;
+}
 
 /** `<field> <op> <value>` on a payload: true when the rule holds or does not apply (field absent). */
 export function ruleHolds(rule, payload) {
@@ -80,6 +132,55 @@ export function mockServer() {
     }
     return s.fixtures.get(name);
   };
+  /** The legacy files' handlers, by kind, loaded once: `{}` for a file that is not there. */
+  s.legacy = () => {
+    if (!s.legacyHandlers) {
+      s.legacyHandlers = Promise.all(Object.entries(LEGACY).map(async ([kind, [path, name]]) => [kind, ((await moduleAt(path)) || {})[name] || {}])).then(Object.fromEntries);
+    }
+    return s.legacyHandlers;
+  };
+  s.files = new Map();
+  /** The handler of `id` for `kind` (`reads` or `commands`), `undefined` when the product wrote none. */
+  s.handlerOf = async (kind, id) => {
+    if (!s.files.has(id)) s.files.set(id, moduleAt(`../handlers/${encodeURIComponent(id)}.js`).then((mod) => ownFile(id, mod)));
+    const [mod, legacy] = await Promise.all([s.files.get(id), s.legacy()]);
+    const own = mod && mod[kind] && Object.hasOwn(mod[kind], id) ? mod[kind][id] : undefined;
+    const kept = Object.hasOwn(legacy[kind], id) ? legacy[kind][id] : undefined;
+    if (own && kept) throw new HandlerError(`${id} is defined twice: mock/handlers/${id}.js and ${shown(LEGACY[kind][0])} — keep one`);
+    return own || kept;
+  };
+  /**
+   * The startup check: every id the legacy files define or `mock/pages.json`
+   * declares gets its handler looked up, so an id defined twice is found
+   * before any call. Its problems, each once, in `s.problems`.
+   */
+  s.problems = [];
+  s.check = async () => {
+    const said = new Set();
+    const fail = (e) => {
+      const message = e && e.message ? e.message : String(e);
+      if (said.has(message)) return;
+      said.add(message);
+      s.problems.push(message);
+      console.error(message);
+    };
+    const ids = new Set();
+    try {
+      const legacy = await s.legacy();
+      for (const kind of Object.keys(LEGACY)) for (const id of Object.keys(legacy[kind])) ids.add(id);
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    const pages = await fetch(new URL('../pages.json', location.href)).then((r) => (r.ok ? r.json() : undefined)).catch(() => undefined);
+    for (const component of (pages && pages.components) || []) {
+      for (const id of [].concat(component.needs || [], component.actions || [])) if (typeof id === 'string') ids.add(id);
+    }
+    for (const id of [...ids].sort()) {
+      for (const kind of Object.keys(LEGACY)) await s.handlerOf(kind, id).catch(fail);
+    }
+  };
+  s.ready = s.check();
   /** Tells every micro-frontend the data changed. */
   s.bump = () => {
     s.dataVersion += 1;
@@ -102,7 +203,7 @@ export function mockServer() {
   };
 
   const read = async (identifier, variables) => {
-    const handler = READS[identifier];
+    const handler = await s.handlerOf('reads', identifier);
     if (handler) return handler(s, variables);
     const fixture = await s.load(identifier);
     if (fixture === undefined) return undefined;
@@ -193,7 +294,7 @@ export function mockServer() {
     const target = body.target || {};
     const targetId = target.id || body.targetId;
     const by = (body.caller && body.caller.by) || body.by || 'anonymous';
-    const handler = COMMANDS[dataCapability];
+    const handler = await s.handlerOf('commands', dataCapability);
     if (body.idempotencyKey) {
       const seen = [...s.queue.values()].find((e) => e.idempotencyKey === body.idempotencyKey && e.dataCapability === dataCapability);
       if (seen) return answer(seen, true);
@@ -219,7 +320,7 @@ export function mockServer() {
     if (!handler) {
       entry.state = 'rejected';
       entry.violations = ['unhandled-data-capability'];
-      s.tell('CommandRejected', by, commandId, { violations: entry.violations, reason: `${dataCapability} is not in mock/src/commands.js` });
+      s.tell('CommandRejected', by, commandId, { violations: entry.violations, reason: `${dataCapability} has no handler: write mock/handlers/${dataCapability}.js` });
       return answer(entry);
     }
     const verdict = await invariants(aggregate, payload);
@@ -284,6 +385,17 @@ export function mockServer() {
   };
 
   s.fetch = async (input, init) => {
+    try {
+      await s.ready;
+      if (s.problems.length) return json({ error: `the mock server did not start: ${s.problems.join('; ')}` }, 500);
+      return await respond(input, init);
+    } catch (e) {
+      if (!(e instanceof HandlerError)) throw e;
+      console.error(e.message);
+      return json({ error: e.message }, 500);
+    }
+  };
+  const respond = async (input, init) => {
     await delay(LATENCY_MS);
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     const method = (init && init.method) || 'GET';

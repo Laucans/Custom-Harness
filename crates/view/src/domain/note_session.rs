@@ -418,7 +418,10 @@ pub fn mockup_rules(about: &About) -> String {
          mounts it on the product's real shell client over a mock server `mock/src/server.js` \
          (the shell's wire protocol answered in memory from the fixtures, commands applied and \
          `dataVersion` bumped), bundled by `mock/build.sh` (esbuild through `npx`) into \
-         `mock/components/<Name>.js`, which the fragment loads; the bundles are committed. Read \
+         `mock/components/<Name>.js`, which the fragment loads; the bundles are committed. The \
+         server is taught one file per Capability or DataCapability, `mock/handlers/<id>.js` \
+         (`mock/handlers/README.md`), imported at run time — never a new handler in \
+         `mock/src/reads.js` or `mock/src/commands.js`. Read \
          `mock/README.md` and the existing `mock/src/` first and follow them. A hand-written \
          fragment is only for a Micro-UI not built yet. Each is listed under \
          `components` of `mock/pages.json` (name, system, description, fragment, fixtures, needs, \
@@ -520,7 +523,7 @@ fn design_briefing(about: &About) -> String {
             "\nThe human designs the micro-frontend `{name}` from the micro-frontends view. Make it: \
              when the Micro-UI exists under `apps/`, an entry `mock/src/{name}.js` that mounts the \
              real code on the shell over the mock server, the mock server taught its Capabilities and \
-             DataCapabilities if it does not know them yet, and the bundle built with `mock/build.sh`; \
+             DataCapabilities in `mock/handlers/<id>.js` if it does not know them yet, and the bundle built with `mock/build.sh`; \
              otherwise `mock/components/{name}.html` with its script, drawn from the spec. Either way \
              a fixture shaped like what the Capabilities it needs would answer (read their manifests \
              and persisted queries under `crates/` when they exist, the data model under `data/` \
@@ -770,6 +773,33 @@ not json
         );
         assert!(!turns[1].text.contains("hmm"), "thinking is left out");
         assert_eq!(turns[2], turn("human", "Then keep it."));
+    }
+
+    #[test]
+    fn a_design_session_teaches_the_mock_server_one_file_per_unit() {
+        let about = About {
+            board: "mockup--main--home".into(),
+            target: "component RiskBadge".into(),
+            context: String::new(),
+            note: String::new(),
+            kind: "request".into(),
+            page: String::new(),
+            branch: "main".into(),
+            schema: String::new(),
+            milestone: String::new(),
+            component: "RiskBadge".into(),
+            source: String::new(),
+            rework: false,
+        };
+        let text = design_briefing(&about);
+        assert!(
+            text.contains(
+                "taught its Capabilities and DataCapabilities in `mock/handlers/<id>.js`"
+            )
+        );
+        assert!(
+            text.contains("never a new handler in `mock/src/reads.js` or `mock/src/commands.js`")
+        );
     }
 
     #[test]

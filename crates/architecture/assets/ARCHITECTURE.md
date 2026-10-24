@@ -116,8 +116,10 @@ A **micro-frontend** is a Micro-UI as the mock shows it, declared in
 client over the **mock server** `harness init-repo` installs
 (`mock/src/server.js`), which answers the shell's wire protocol in memory
 and behaves as the DataGuard engine does — reads from `mock/fixtures/` or the
-product's `mock/src/reads.js`; commands judged by the aggregate's invariants
-(`mock/fixtures/aggregates/<Aggregate>.json`) and by `mock/src/commands.js`,
+unit's own handler file, `mock/handlers/<id>.js`, which the server imports at
+run time (one file per Capability or DataCapability, keyed by its id only;
+see `mock/handlers/README.md`); commands judged by the aggregate's invariants
+(`mock/fixtures/aggregates/<Aggregate>.json`) and by that handler file,
 one queue per partition with the states of contract G (`queued`,
 `awaiting_confirmation`, `parked`, `awaiting_review`, …), the messages of
 contract L, a DataCapability nobody handles **rejected**; applied,

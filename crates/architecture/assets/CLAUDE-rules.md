@@ -1,4 +1,4 @@
-<!-- harness:architecture v6 -->
+<!-- harness:architecture v7 -->
 ## Agent-native architecture — the rules every change is checked against
 
 This repository follows the agent-native architecture of
@@ -45,7 +45,7 @@ crates/platform/conformance/            the Concepts' conformance runner
 crates/platform/scratch-db/             the tests' scratch databases (the harness's: never edited here)
 concepts/<Concept>/v<n>/                concept.json + fixtures.json (A)
 data/model.json                         the data model (M)
-mock/                                   the mock-up: pages.json (N), pages/, components/, src/, design/ and kit/ (O)
+mock/                                   the mock-up: pages.json (N), pages/, components/, src/, handlers/, design/ and kit/ (O)
 rules.json  tests/rules/                the product's rules and their tests (P)
 ports.json  .sops.yaml  secrets/        the ports (Q) and their encrypted secrets
 contracts/*.schema.json                 the seventeen contracts
@@ -129,6 +129,14 @@ scripts/                                register.sh, queries.sh, isolation.sh, d
     database even when the test panics. `crates/platform/scratch-db/` is the
     harness's: never edit it. Gate: `scratch-databases-shared` (a test file
     the change adds).
+20. **A unit's mock handlers are its own file**: `mock/handlers/<id>.js`
+    (its Capability or DataCapability id), `export const reads = { '<id>':
+    async (server, variables) => … }` or `export const commands = { '<id>':
+    async (server, { payload, targetId, version, basedOn }) => … }`, a helper
+    several files share in `mock/handlers/_lib/`; the mock server imports it
+    at run time, so it needs no rebuild. Never edit another unit's handler
+    file, and never add a handler to `mock/src/reads.js` or
+    `mock/src/commands.js`. Gate: `mock-handlers`.
 
 ### What a session does before writing code
 

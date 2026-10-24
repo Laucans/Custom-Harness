@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 use harness_architecture::assets::{
     CLAUDE_RULES, CLAUDE_VERSION, FILES, MARKER_CLOSE, MARKER_PREFIX, VERSION, installed_version,
 };
+use harness_architecture::tree::stales_every_bundle;
 
 /// Where the product keeps the fingerprints of what the harness wrote.
 pub const MANIFEST: &str = ".harness/installed.json";
@@ -44,6 +45,13 @@ pub const REGISTRY_MANIFEST: &str = "crates/dataguard/registry/Cargo.toml";
 
 /// The script that writes [`REGISTRY_MANIFEST`] from the unit folders.
 pub const REGISTER: &str = "scripts/register.sh";
+
+/// The mock-up's manifest: a product that built a bundle has a `builtFrom`
+/// digest in it.
+pub const MOCK_PAGES: &str = "mock/pages.json";
+
+/// The script that rebuilds the mock-up's bundles and their digests.
+pub const MOCK_BUILD: &str = "mock/build.sh";
 
 /// The commit that carries the install.
 pub const COMMIT_MESSAGE: &str = "chore(harness): install the agent-native architecture rules";
@@ -66,6 +74,12 @@ pub struct InstallPlan {
     /// The registry's manifest is missing: [`REGISTER`] is run once the
     /// files are written, and what it writes is part of the commit.
     pub register: bool,
+    /// A write stales every committed bundle (`tree::stales_every_bundle`:
+    /// the mock server, the screen host, the build) and the product has
+    /// built some: [`MOCK_BUILD`] runs once the files are written, and the
+    /// bundles and digests it rewrites are part of the commit — or the
+    /// upgrade alone turns `pages-mocked--bundles` red on every branch.
+    pub rebuild: bool,
 }
 
 impl InstallPlan {
@@ -109,6 +123,11 @@ impl InstallPlan {
             None => plan.kept.push(CLAUDE_MD.to_string()),
         }
         plan.register = existing(REGISTRY_MANIFEST).is_none();
+        plan.rebuild = plan
+            .writes
+            .iter()
+            .any(|(path, _)| stales_every_bundle(path))
+            && existing(MOCK_PAGES).is_some_and(|pages| pages.contains("\"builtFrom\""));
         let after = render_manifest(&manifest);
         if before.as_deref() != Some(after.as_str()) {
             plan.writes.push((MANIFEST.to_string(), after));
@@ -442,6 +461,54 @@ mod tests {
             "never an asset"
         );
         assert!(plan.writes.iter().any(|(p, _)| p == REGISTER));
+    }
+
+    #[test]
+    fn a_rewritten_mock_server_rebuilds_the_bundles_a_product_built() {
+        let path = "mock/src/server.js";
+        let old = "// the server the harness wrote before\n";
+        let manifest = manifest_of(path, old);
+        let built = r#"{"components": [{"name": "A", "builtFrom": "0123456789abcdef"}]}"#;
+        let tree = |pages: Option<&'static str>, server: &'static str| {
+            let manifest = manifest.clone();
+            InstallPlan::new(
+                &move |p| match p {
+                    MANIFEST => Some(manifest.clone()),
+                    MOCK_PAGES => pages.map(str::to_string),
+                    p if p == path => Some(server.to_string()),
+                    // The rest of the mock-up is current.
+                    p if p.starts_with("mock/") => {
+                        harness_architecture::assets::content_of(p).map(str::to_string)
+                    }
+                    _ => None,
+                },
+                false,
+            )
+        };
+        let plan = tree(Some(built), old);
+        assert_eq!(plan.upgraded, [path]);
+        assert!(plan.rebuild, "every bundle embeds the server");
+        let none = r#"{"components": [{"name": "A"}]}"#;
+        assert!(!tree(Some(none), old).rebuild, "no bundle built yet");
+        assert!(!tree(None, old).rebuild, "no mock-up");
+        assert!(
+            !tree(Some(built), "// the product's own\n").rebuild,
+            "a diverged server is kept: nothing stales"
+        );
+        let fresh = InstallPlan::new(
+            &|p| match p {
+                MOCK_PAGES => Some(built.to_string()),
+                _ => harness_architecture::assets::content_of(p)
+                    .map(str::to_string)
+                    .filter(|_| p.starts_with("mock/")),
+            },
+            false,
+        );
+        assert!(!fresh.writes.is_empty(), "the rest of the tree is written");
+        assert!(
+            !fresh.rebuild,
+            "the mock-up already current, other files written: nothing stales"
+        );
     }
 
     #[test]
