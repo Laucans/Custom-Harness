@@ -140,6 +140,13 @@ pub struct FakeGitHub {
     /// `commit_checks` answers, by sha. An absent key is `None` — no run of
     /// that commit yet.
     pub commit_checks: HashMap<String, Option<bool>>,
+    /// `changed_files` answers, by the compare asked (`base...head`, as
+    /// GitHub writes it). An absent key is no change at all: a test that
+    /// never mentions it merges on GitHub.
+    pub changed_files: HashMap<String, Option<Vec<String>>>,
+    /// The compares (`base...head`) `changed_files` fails on, as GitHub
+    /// does for a ref it does not know.
+    pub broken_compares: Vec<String>,
 }
 
 impl FakeGitHub {
@@ -371,6 +378,19 @@ impl GitHub for FakeGitHub {
             .borrow_mut()
             .push(Wrote::MergedBranch(base.to_string(), head.to_string()));
         Ok(())
+    }
+
+    async fn changed_files(&self, base: &str, head: &str) -> Outcome<Option<Vec<String>>> {
+        self.ok()?;
+        let compare = format!("{base}...{head}");
+        if self.broken_compares.contains(&compare) {
+            return Err(Halt::Unreadable(format!("compare {compare}: HTTP 404")));
+        }
+        Ok(self
+            .changed_files
+            .get(&compare)
+            .cloned()
+            .unwrap_or_else(|| Some(Vec::new())))
     }
 
     async fn default_branch(&self) -> Outcome<String> {

@@ -16,10 +16,21 @@
 //! One catch-up ([`catch_up`]): GitHub's merge first; on a refusal, the
 //! same merge in the harness's own checkout, its generated files
 //! regenerated (`branching::catch_up_locally`) — at most
-//! [`LOCAL_PER_TICK`] such a tick, the rest wait for the next. Then:
+//! [`LOCAL_PER_TICK`] such a tick, the rest wait for the next. Straight to
+//! that checkout when the merge stales the mock-up's bundles ([`staled`]):
+//! the head changed, since the branch's merge base, a file every bundle is
+//! built from — or the head brings bundles and the branch itself changed
+//! such a file. GitHub's clean merge would leave the components of one
+//! side with digests of the other side's file, the branch's
+//! `pages-mocked` gate red and every merge into it held — the checkout
+//! runs `mock/build.sh` even without a conflict. Then:
 //!
 //! - **held** — every open task PR into the branch takes it in turn
-//!   ([`refresh_task_prs`]), so its checks run against the new base;
+//!   ([`refresh_task_prs`]), so its checks run against the new base — by
+//!   GitHub's merge, except a PR the merge stales the same way: it is left
+//!   on its old base, and the merge train refreshes it in the harness's
+//!   checkout, rebuilt, before it lands (`milestone_merge::Attempt::Stale`)
+//!   — no repair session, and a PR skipped as busy is caught there too;
 //! - **residual** (a conflict no script solves) — the milestone's open
 //!   landing PR is asked for a repair (`harness:pr-fix`, the repair cap
 //!   applies, its prompt asks for a merge of the base); without one, it is
@@ -39,11 +50,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use harness_architecture::generated::{self, Regenerator};
 use harness_core::domain::{Halt, Issue, Outcome, Pr};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Logbook;
 
-use crate::common::branching::{self, CaughtUp};
+use crate::common::branching::{self, BaseHead, CaughtUp};
 use crate::common::labels;
 use crate::dev_loop::data::board::Board;
 use crate::dev_loop::data::tasks;
@@ -335,6 +347,8 @@ pub struct Target<'a> {
 /// branch's tip, which may have moved since. GitHub's merge first; on a
 /// refusal, `local` — the merge of that commit in the harness's checkout —
 /// when this tick still allows one; otherwise [`CaughtUp::Deferred`]. A
+/// merge that stales the mock-up's bundles ([`staled`], either side) goes
+/// to `local` without GitHub's merge, its rebuild named ([`BaseHead`]). A
 /// branch already met with a residual conflict at this head is tried on
 /// GitHub only, and said again while it has no landing PR. Held: the open
 /// task PRs into the branch take it ([`refresh_task_prs`]), but those a
@@ -349,7 +363,7 @@ pub async fn catch_up(
     busy: &Busy,
     dry_run: bool,
     now: u64,
-    local: impl AsyncFnOnce(String) -> CaughtUp,
+    local: impl AsyncFnOnce(BaseHead) -> CaughtUp,
     log: &Logbook,
 ) -> CaughtUp {
     let Target {
@@ -378,32 +392,47 @@ pub async fn catch_up(
         catch_ups.outstanding.remove(&milestone);
         return CaughtUp::Deferred;
     }
-    let caught = match gh.merge_branch(branch, &head).await {
-        Ok(()) => {
+    // At a head already met with a residual conflict, GitHub alone: a hand
+    // or the repair merges the base, rebuilding what it staled.
+    let rebuild = if catch_ups.residual_here(milestone) {
+        Vec::new()
+    } else {
+        rebuild_for(gh, target, &head, log).await
+    };
+    let local_because = if rebuild.is_empty() {
+        match gh.merge_branch(branch, &head).await {
+            Ok(()) => None,
+            Err(refused) if catch_ups.residual_here(milestone) => {
+                catch_ups.retry_later(milestone, now);
+                remind(target, landing.as_ref(), &refused, log);
+                return CaughtUp::Deferred;
+            }
+            Err(refused) => Some(format!("GitHub refused it: {}", refused.reason())),
+        }
+    } else {
+        Some(format!(
+            "the merge stales the mock-up's bundles: {} runs after it",
+            commands(&rebuild)
+        ))
+    };
+    let caught = match local_because {
+        None => {
             log.say(&format!("{branch} holds {integration}"));
             CaughtUp::OnGitHub
         }
-        Err(refused) if catch_ups.residual_here(milestone) => {
-            catch_ups.retry_later(milestone, now);
-            remind(target, landing.as_ref(), &refused, log);
-            return CaughtUp::Deferred;
-        }
-        Err(refused) if catch_ups.local_left == 0 => {
+        Some(why) if catch_ups.local_left == 0 => {
             log.say(&format!(
-                "{branch} cannot take {integration} on GitHub ({}) — its local catch-up waits \
-                 for the next tick",
-                refused.reason()
+                "{branch} cannot take {integration} on GitHub ({why}) — its local catch-up waits \
+                 for the next tick"
             ));
             return CaughtUp::Deferred;
         }
-        Err(refused) => {
+        Some(why) => {
             catch_ups.local_left -= 1;
             log.debug(&format!(
-                "{branch}: GitHub refused to merge {integration} ({}) — merged in the \
-                 harness's checkout",
-                refused.reason()
+                "{branch}: {integration} merged in the harness's checkout ({why})"
             ));
-            local(head).await
+            local(BaseHead { sha: head, rebuild }).await
         }
     };
     catch_ups.record(milestone, &caught, now);
@@ -418,6 +447,61 @@ pub async fn catch_up(
         CaughtUp::Deferred => {}
     }
     caught
+}
+
+/// The generators a merge of `incoming` into `receiving` runs even when it
+/// is clean.
+///
+/// `generated::staled_by`, read on GitHub both ways: what
+/// `incoming` changed since the merge base (one compare), then — only when
+/// those changes bring bundles (`generated::brings_bundles`) — what
+/// `receiving` changed (a second). Either side's change to a file every
+/// mock-up bundle is built from stales the bundles the other side has.
+///
+/// # Errors
+/// [`Halt::Unreadable`] when a compare cannot be read: each caller decides
+/// what an unknown answer is worth.
+pub async fn staled(gh: &dyn GitHub, receiving: &str, incoming: &str) -> Outcome<Vec<Regenerator>> {
+    let brought = gh.changed_files(receiving, incoming).await?;
+    let rebuild = generated::staled_by(brought.as_deref());
+    if !rebuild.is_empty() || !brought.as_deref().is_some_and(generated::brings_bundles) {
+        return Ok(rebuild);
+    }
+    let own = gh.changed_files(incoming, receiving).await?;
+    Ok(generated::staled_by(own.as_deref()))
+}
+
+/// [`staled`] for the merge of `head` into `target`'s branch. A read that
+/// fails counts as changes not all known: the merge is made in the
+/// harness's checkout, where the rebuild applies only to a product that
+/// builds bundles.
+async fn rebuild_for(
+    gh: &dyn GitHub,
+    target: Target<'_>,
+    head: &str,
+    log: &Logbook,
+) -> Vec<Regenerator> {
+    staled(gh, target.branch, head)
+        .await
+        .unwrap_or_else(|halt| {
+            log.debug(&format!(
+                "{}: what {} and it changed since they parted cannot be read ({}) — taken as a \
+             change to the mock-up's build",
+                target.branch,
+                target.integration,
+                halt.reason()
+            ));
+            generated::staled_by::<&str>(None)
+        })
+}
+
+/// The command lines of `regenerators`, as a sentence names them.
+fn commands(regenerators: &[Regenerator]) -> String {
+    regenerators
+        .iter()
+        .map(|regenerator| format!("`{}`", regenerator.command()))
+        .collect::<Vec<_>>()
+        .join(" then ")
 }
 
 /// A residual conflict GitHub's merge still refuses at the same head:
@@ -505,9 +589,16 @@ async fn landing(gh: &dyn GitHub, target: Target<'_>) -> Option<Pr> {
 /// GitHub's merge, never a force — so its checks run again against the new
 /// base; a PR a lane works on (`busy`: its own lane, or its task's
 /// session still running) is left alone, a refusal (a
-/// conflict) is the repair route's. The task PRs are the harness's: those
-/// carrying `harness:to-review` or `harness:pr-fix`. Says which took it;
-/// returns them (`#n`).
+/// conflict) is the repair route's. A PR the merge stales ([`staled`]: one
+/// side changed what every mock-up bundle is built from, the other brings
+/// bundles) is left on its old base too: GitHub's merge would turn it red
+/// on `pages-mocked` and cost a repair session for one `mock/build.sh` —
+/// the merge train refreshes it in the harness's checkout, rebuilt, before
+/// it lands (`milestone_merge::Attempt::Stale`). A compare that cannot be
+/// read keeps GitHub's merge: the PR's own gate tells. The task PRs are the
+/// harness's: those carrying `harness:to-review` or `harness:pr-fix`. Says
+/// which took it, and which wait for their landing; returns those that took
+/// it (`#n`).
 pub async fn refresh_task_prs(
     gh: &dyn GitHub,
     branch: &str,
@@ -527,6 +618,7 @@ pub async fn refresh_task_prs(
     prs.sort_by_key(|pr| pr.num.parse::<u64>().unwrap_or(u64::MAX));
     prs.dedup_by(|later, earlier| later.num == earlier.num);
     let mut refreshed = Vec::new();
+    let mut at_landing = Vec::new();
     for pr in prs.iter().filter(|pr| pr.is_open() && pr.base == branch) {
         if busy.works_on(pr) {
             log.debug(&format!(
@@ -534,6 +626,19 @@ pub async fn refresh_task_prs(
                 pr.reference()
             ));
             continue;
+        }
+        match staled(gh, &pr.head, branch).await {
+            Ok(rebuild) if !rebuild.is_empty() => {
+                at_landing.push(pr.reference());
+                continue;
+            }
+            Ok(_) => {}
+            Err(halt) => log.debug(&format!(
+                "{}: what it and {branch} changed since they parted cannot be read ({}) — \
+                 GitHub's merge, its own gate tells",
+                pr.reference(),
+                halt.reason()
+            )),
         }
         match gh.merge_branch(&pr.head, branch).await {
             Ok(()) => refreshed.push(pr.reference()),
@@ -548,6 +653,13 @@ pub async fn refresh_task_prs(
         log.say(&format!(
             "{branch}: task PR(s) {} hold it now — a push where it moved runs their checks again",
             refreshed.join(", ")
+        ));
+    }
+    if !at_landing.is_empty() {
+        log.say(&format!(
+            "{branch}: task PR(s) {} take it when they land — the merge stales their mock-up \
+             bundles, rebuilt in the harness's checkout then",
+            at_landing.join(", ")
         ));
     }
     refreshed
@@ -978,15 +1090,28 @@ mod tests {
         );
     }
 
-    /// Runs one catch-up of `#6 Media`, the local merge answering `local`.
+    /// Runs one catch-up of `#6 Media`, the local merge answering `local`:
+    /// what it came to, whether it went local, what it said.
     async fn run(
         gh: &FakeGitHub,
         catch_ups: &mut CatchUps,
         busy: &Busy,
         local: CaughtUp,
     ) -> (CaughtUp, bool, Vec<String>) {
+        let (caught, rebuild, said) = run_local(gh, catch_ups, busy, local).await;
+        (caught, rebuild.is_some(), said)
+    }
+
+    /// [`run`], with the generators the local merge was asked to run
+    /// whatever conflicts — `None` when it did not go local.
+    async fn run_local(
+        gh: &FakeGitHub,
+        catch_ups: &mut CatchUps,
+        busy: &Busy,
+        local: CaughtUp,
+    ) -> (CaughtUp, Option<Vec<Regenerator>>, Vec<String>) {
         let (said, log) = capture();
-        let went_local = RefCell::new(false);
+        let went_local = RefCell::new(None);
         let flag = &went_local;
         let catch_ups_head = catch_ups.head.clone();
         let caught = catch_up(
@@ -996,9 +1121,9 @@ mod tests {
             busy,
             false,
             10,
-            async move |head: String| {
-                assert_eq!(Some(head), catch_ups_head, "the commit read is merged");
-                *flag.borrow_mut() = true;
+            async move |base: BaseHead| {
+                assert_eq!(Some(base.sha), catch_ups_head, "the commit read is merged");
+                *flag.borrow_mut() = Some(base.rebuild);
                 local
             },
             &log,
@@ -1086,6 +1211,274 @@ mod tests {
             said[0].starts_with("milestone/6-media cannot take main_agent on GitHub (")
                 && said[0].ends_with("its local catch-up waits for the next tick"),
             "{said:?}"
+        );
+    }
+
+    /// A GitHub whose compares (`base...head`) answer `answers` (`None`:
+    /// not all listed).
+    fn comparing(answers: &[(&str, Option<&[&str]>)]) -> FakeGitHub {
+        FakeGitHub {
+            changed_files: answers
+                .iter()
+                .map(|(compare, changed)| {
+                    (
+                        (*compare).to_string(),
+                        changed.map(|paths| paths.iter().map(|p| (*p).to_string()).collect()),
+                    )
+                })
+                .collect(),
+            ..FakeGitHub::default()
+        }
+    }
+
+    /// A GitHub whose `main_agent` changed `changed` since
+    /// `milestone/6-media` left it (`None`: not all listed).
+    fn base_changed(changed: Option<&[&str]>) -> FakeGitHub {
+        comparing(&[("milestone/6-media...h1", changed)])
+    }
+
+    #[tokio::test]
+    async fn a_base_change_to_the_mock_server_takes_the_local_path_and_rebuilds() {
+        let gh = base_changed(Some(&["mock/src/server.js", "README.md"]));
+        let mut catch_ups = at("h1");
+        let regenerated = CaughtUp::Locally(vec!["mock/components/Dice.js".to_string()]);
+        let (caught, rebuild, said) =
+            run_local(&gh, &mut catch_ups, &Busy::default(), regenerated.clone()).await;
+        assert_eq!(caught, regenerated);
+        assert_eq!(rebuild, Some(vec![Regenerator::MockBuild]));
+        assert!(
+            !gh.writes().contains(&Wrote::MergedBranch(
+                "milestone/6-media".to_string(),
+                "h1".to_string()
+            )),
+            "GitHub's clean merge would keep the old digests: {:?}",
+            gh.writes()
+        );
+        assert_eq!(catch_ups.local_left, 0, "the tick's local catch-up spent");
+        assert_eq!(catch_ups.held.get(&6).map(String::as_str), Some("h1"));
+        assert!(said.is_empty(), "the debug line only: {said:?}");
+        // This tick's local catch-up spent: the next one waits, GitHub untouched.
+        catch_ups.held.clear();
+        let (caught, rebuild, said) =
+            run_local(&gh, &mut catch_ups, &Busy::default(), CaughtUp::Deferred).await;
+        assert_eq!((caught, rebuild), (CaughtUp::Deferred, None));
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
+        assert_eq!(
+            said,
+            [
+                "milestone/6-media cannot take main_agent on GitHub (the merge stales the mock-up's \
+              bundles: `sh mock/build.sh` runs after it) — its local catch-up waits for the next \
+              tick"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_base_change_elsewhere_keeps_github_s_merge() {
+        let gh = base_changed(Some(&["mock/handlers/table.move.js", "mock/pages.json"]));
+        let mut catch_ups = at("h1");
+        let (caught, rebuild, _) =
+            run_local(&gh, &mut catch_ups, &Busy::default(), CaughtUp::Deferred).await;
+        assert_eq!((caught, rebuild), (CaughtUp::OnGitHub, None));
+        assert_eq!(
+            gh.writes(),
+            [Wrote::MergedBranch(
+                "milestone/6-media".to_string(),
+                "h1".to_string()
+            )]
+        );
+        assert_eq!(catch_ups.local_left, LOCAL_PER_TICK);
+        // GitHub refusing it: the local merge, nothing to rebuild.
+        let refusing = FakeGitHub {
+            refused_merges: vec!["milestone/6-media".to_string()],
+            ..base_changed(Some(&["Cargo.lock"]))
+        };
+        let (_, rebuild, _) = run_local(
+            &refusing,
+            &mut at("h1"),
+            &Busy::default(),
+            CaughtUp::Locally(Vec::new()),
+        )
+        .await;
+        assert_eq!(rebuild, Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn base_changes_not_all_known_take_the_local_path_too() {
+        let (_, rebuild, _) = run_local(
+            &base_changed(None),
+            &mut at("h1"),
+            &Busy::default(),
+            CaughtUp::Locally(Vec::new()),
+        )
+        .await;
+        assert_eq!(
+            rebuild,
+            Some(vec![Regenerator::MockBuild]),
+            "300 files or more"
+        );
+        let unreadable = FakeGitHub {
+            broken: Some(Halt::Unreadable("compare: HTTP 502".to_string())),
+            ..FakeGitHub::default()
+        };
+        let (caught, rebuild, _) = run_local(
+            &unreadable,
+            &mut at("h1"),
+            &Busy::default(),
+            CaughtUp::Locally(Vec::new()),
+        )
+        .await;
+        assert_eq!(caught, CaughtUp::Locally(Vec::new()));
+        assert_eq!(rebuild, Some(vec![Regenerator::MockBuild]), "a failed read");
+    }
+
+    #[tokio::test]
+    async fn a_residual_retry_reads_no_base_change_and_tries_github_alone() {
+        let gh = FakeGitHub {
+            refused_merges: vec!["milestone/6-media".to_string()],
+            ..base_changed(Some(&["mock/src/server.js"]))
+        };
+        let mut catch_ups = at("h1");
+        catch_ups.record(6, &CaughtUp::Residual(vec!["a.rs".to_string()]), 0);
+        let (caught, rebuild, _) = run_local(
+            &gh,
+            &mut catch_ups,
+            &Busy::default(),
+            CaughtUp::Locally(Vec::new()),
+        )
+        .await;
+        assert_eq!((caught, rebuild), (CaughtUp::Deferred, None));
+        assert_eq!(catch_ups.local_left, LOCAL_PER_TICK, "nothing spent");
+    }
+
+    #[tokio::test]
+    async fn bundles_the_base_brings_are_rebuilt_when_the_branch_changed_their_build() {
+        // main_agent brings another milestone's component; the branch
+        // itself changed the screen host: the arriving digests are stale.
+        let brought: &[&str] = &["mock/components/Map.js", "mock/pages.json"];
+        let gh = comparing(&[
+            ("milestone/6-media...h1", Some(brought)),
+            ("h1...milestone/6-media", Some(&["mock/src/screen.js"])),
+        ]);
+        let (caught, rebuild, _) = run_local(
+            &gh,
+            &mut at("h1"),
+            &Busy::default(),
+            CaughtUp::Locally(Vec::new()),
+        )
+        .await;
+        assert_eq!(caught, CaughtUp::Locally(Vec::new()));
+        assert_eq!(rebuild, Some(vec![Regenerator::MockBuild]));
+        assert!(gh.writes().is_empty(), "no GitHub merge: {:?}", gh.writes());
+        // The branch changed nothing the bundles are built from: GitHub's.
+        let gh = comparing(&[
+            ("milestone/6-media...h1", Some(brought)),
+            (
+                "h1...milestone/6-media",
+                Some(&["mock/handlers/dice.roll.js"]),
+            ),
+        ]);
+        let (caught, rebuild, _) =
+            run_local(&gh, &mut at("h1"), &Busy::default(), CaughtUp::Deferred).await;
+        assert_eq!((caught, rebuild), (CaughtUp::OnGitHub, None));
+        // The base brings no bundle: the branch's own build change stales
+        // nothing that arrives.
+        let gh = comparing(&[
+            ("milestone/6-media...h1", Some(&["Cargo.lock"])),
+            ("h1...milestone/6-media", Some(&["mock/src/screen.js"])),
+        ]);
+        let (caught, rebuild, _) =
+            run_local(&gh, &mut at("h1"), &Busy::default(), CaughtUp::Deferred).await;
+        assert_eq!((caught, rebuild), (CaughtUp::OnGitHub, None));
+    }
+
+    #[tokio::test]
+    async fn staled_reads_the_receiving_side_only_when_the_other_brings_bundles() {
+        let both = comparing(&[
+            ("task/31...milestone/6-media", Some(&["mock/pages.json"])),
+            ("milestone/6-media...task/31", None),
+        ]);
+        assert_eq!(
+            staled(&both, "task/31", "milestone/6-media")
+                .await
+                .expect("read"),
+            [Regenerator::MockBuild],
+            "the receiving side's changes not all known"
+        );
+        let incoming = comparing(&[("task/31...milestone/6-media", Some(&["mock/build.sh"]))]);
+        assert_eq!(
+            staled(&incoming, "task/31", "milestone/6-media")
+                .await
+                .expect("read"),
+            [Regenerator::MockBuild]
+        );
+        assert_eq!(
+            staled(&FakeGitHub::default(), "task/31", "milestone/6-media")
+                .await
+                .expect("read"),
+            []
+        );
+        let broken = FakeGitHub {
+            broken: Some(Halt::Unreadable("compare: HTTP 502".to_string())),
+            ..FakeGitHub::default()
+        };
+        assert!(
+            staled(&broken, "task/31", "milestone/6-media")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_pr_the_merge_stales_waits_for_its_landing_the_others_take_it() {
+        let open = vec![
+            pr("31", "task/31", "milestone/6-media", &[]),
+            pr("30", "task/30", "milestone/6-media", &[]),
+        ];
+        // The milestone took a new server.js; #31 has a component of its own.
+        let gh = FakeGitHub {
+            prs_labelled: std::collections::HashMap::from([(labels::TO_REVIEW.to_string(), open)]),
+            ..comparing(&[("task/31...milestone/6-media", Some(&["mock/src/server.js"]))])
+        };
+        let (said, log) = capture();
+        assert_eq!(
+            refresh_task_prs(&gh, "milestone/6-media", &Busy::default(), &log).await,
+            ["#30"]
+        );
+        assert_eq!(
+            gh.writes(),
+            [Wrote::MergedBranch(
+                "task/30".to_string(),
+                "milestone/6-media".to_string()
+            )],
+            "#31 left on its old base"
+        );
+        assert_eq!(
+            *said.0.borrow(),
+            [
+                "milestone/6-media: task PR(s) #30 hold it now — a push where it moved runs their \
+                 checks again",
+                "milestone/6-media: task PR(s) #31 take it when they land — the merge stales \
+                 their mock-up bundles, rebuilt in the harness's checkout then",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_pr_whose_compare_cannot_be_read_takes_github_s_merge() {
+        let gh = FakeGitHub {
+            prs_labelled: std::collections::HashMap::from([(
+                labels::TO_REVIEW.to_string(),
+                vec![pr("31", "task/31", "milestone/6-media", &[])],
+            )]),
+            broken_compares: vec!["task/31...milestone/6-media".to_string()],
+            ..FakeGitHub::default()
+        };
+        let (_, log) = capture();
+        assert_eq!(
+            refresh_task_prs(&gh, "milestone/6-media", &Busy::default(), &log).await,
+            ["#31"],
+            "its own gate tells"
         );
     }
 

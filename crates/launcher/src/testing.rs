@@ -97,6 +97,9 @@ impl GitHub for NoGitHub {
     async fn merge_branch(&self, _base: &str, _head: &str) -> Outcome<()> {
         Err(refused())
     }
+    async fn changed_files(&self, _base: &str, _head: &str) -> Outcome<Option<Vec<String>>> {
+        Err(refused())
+    }
     async fn default_branch(&self) -> Outcome<String> {
         Err(refused())
     }

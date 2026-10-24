@@ -461,6 +461,35 @@ fn commit_checks_of(ran: &Ran, branch: &str, sha: &str) -> Outcome<Option<bool>>
     Ok(branch_checks_from(&rows))
 }
 
+/// How many files GitHub's compare lists at most: a list that long may
+/// be cut.
+const COMPARE_FILES_MAX: usize = 300;
+
+/// The paths a compare's answer lists, a renamed file under both names;
+/// `None` when the list may be cut ([`COMPARE_FILES_MAX`]). An answer with
+/// no `files` list, or a file with no name, is unreadable.
+fn changed_files_of(value: &Value, what: &str) -> Outcome<Option<Vec<String>>> {
+    let files = value
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| unreadable(what, "no usable files field"))?;
+    if files.len() >= COMPARE_FILES_MAX {
+        return Ok(None);
+    }
+    let mut paths = Vec::new();
+    for file in files {
+        let name = file
+            .get("filename")
+            .and_then(Value::as_str)
+            .ok_or_else(|| unreadable(what, "a file with no filename"))?;
+        paths.push(name.to_string());
+        if let Some(before) = file.get("previous_filename").and_then(Value::as_str) {
+            paths.push(before.to_string());
+        }
+    }
+    Ok(Some(paths))
+}
+
 /// The rows of a `gh run list` call on `branch`: a call that failed, or an
 /// answer that is no list, is an error.
 fn run_rows(ran: &Ran, branch: &str) -> Outcome<Vec<Value>> {
@@ -1446,6 +1475,14 @@ impl GitHub for GhCli {
         .await
     }
 
+    async fn changed_files(&self, base: &str, head: &str) -> Outcome<Option<Vec<String>>> {
+        let what = format!("the files {head} changed since {base}");
+        let value = self
+            .read(&what, &format!("compare/{base}...{head}"), &[])
+            .await?;
+        changed_files_of(&value, &what)
+    }
+
     async fn default_branch(&self) -> Outcome<String> {
         let what = "the default branch";
         let value = self.repo_json(what).await?;
@@ -2291,6 +2328,56 @@ mod tests {
         // A folder that is there and is no repository: `gh` runs, and fails.
         let gh = super::GhCli::new(&std::env::temp_dir());
         assert!(gh.commit_checks("main_agent", "abc1234").await.is_err());
+    }
+
+    #[test]
+    fn a_compare_lists_its_files_a_rename_under_both_names_and_a_cut_list_as_unknown() {
+        let what = "the files h1 changed since milestone/6-media";
+        let answer = serde_json::json!({"files": [
+            {"filename": "mock/src/server.js", "status": "modified"},
+            {"filename": "mock/src/host.js", "previous_filename": "mock/src/screen.js"},
+        ]});
+        assert_eq!(
+            super::changed_files_of(&answer, what).expect("read"),
+            Some(vec![
+                "mock/src/server.js".to_string(),
+                "mock/src/host.js".to_string(),
+                "mock/src/screen.js".to_string(),
+            ])
+        );
+        let listing = |count: usize| {
+            let files: Vec<Value> = (0..count)
+                .map(|i| serde_json::json!({"filename": format!("f{i}")}))
+                .collect();
+            serde_json::json!({ "files": files })
+        };
+        let below = super::changed_files_of(&listing(super::COMPARE_FILES_MAX - 1), what);
+        assert_eq!(
+            below.expect("read").map(|paths| paths.len()),
+            Some(super::COMPARE_FILES_MAX - 1)
+        );
+        assert_eq!(
+            super::changed_files_of(&listing(super::COMPARE_FILES_MAX), what).expect("read"),
+            None,
+            "300 files: GitHub may have cut the list"
+        );
+        assert_eq!(super::COMPARE_FILES_MAX, 300);
+        assert_eq!(
+            super::changed_files_of(&serde_json::json!({"files": []}), what).expect("read"),
+            Some(Vec::new())
+        );
+        assert!(super::changed_files_of(&serde_json::json!({"commits": []}), what).is_err());
+        assert!(
+            super::changed_files_of(&serde_json::json!({"files": [{"status": "added"}]}), what)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_compare_github_cannot_make_is_an_error_not_an_empty_list() {
+        use harness_core::ports::shell::github::GitHub as _;
+        let gh = super::GhCli::new(std::path::Path::new("/nonexistent"));
+        assert!(gh.changed_files("milestone/1-x", "abc1234").await.is_err());
     }
 
     #[tokio::test]

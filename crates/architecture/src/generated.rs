@@ -17,7 +17,7 @@
 //!
 //! Pure: no I/O.
 
-use crate::tree::REGISTRY;
+use crate::tree::{REGISTRY, stales_every_bundle};
 
 /// What runs to rewrite a generated file, in the order [`Regenerator::ALL`]
 /// lists: the registry before the lock that reads it.
@@ -160,6 +160,38 @@ pub fn regenerators<S: AsRef<str>>(paths: &[S]) -> Vec<Regenerator> {
                 .any(|kind| kind.by.contains(regenerator))
         })
         .collect()
+}
+
+/// The generators a merge runs even when git merges it cleanly.
+///
+/// From the paths one side changed since the merge base (`changed`):
+/// `mock/build.sh` when one of them stales every bundle
+/// ([`stales_every_bundle`]: the mock server, the screen host, the build) —
+/// through a clean merge, a component only the other side has keeps a
+/// bundle and a `builtFrom` digest of the old file, and its `pages-mocked`
+/// gate turns red. `None`, changes not all known, counts as such a change.
+///
+/// Both ways: asked of the side merged in first, then — only when that
+/// side [`brings_bundles`] — of the receiving side, whose own change to
+/// such a file stales the bundles arriving with digests of the other
+/// side's file.
+#[must_use]
+pub fn staled_by<S: AsRef<str>>(changed: Option<&[S]>) -> Vec<Regenerator> {
+    let staled =
+        changed.is_none_or(|paths| paths.iter().any(|path| stales_every_bundle(path.as_ref())));
+    if staled {
+        vec![Regenerator::MockBuild]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether `changed` (one side's paths since the merge base) brings a
+/// bundle or a `builtFrom` digest — a file `mock/build.sh` writes: what the
+/// other side's change to the mock-up's build stales ([`staled_by`]).
+#[must_use]
+pub fn brings_bundles<S: AsRef<str>>(changed: &[S]) -> bool {
+    regenerators(changed).contains(&Regenerator::MockBuild)
 }
 
 /// The lines a repair session reads when its branch conflicts: which files
@@ -317,6 +349,39 @@ pub fn digests_only(conflicted: &str) -> Option<String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_base_change_to_what_every_bundle_is_built_from_rebuilds_them_whatever_merges() {
+        for path in ["mock/src/server.js", "mock/src/screen.js", "mock/build.mjs"] {
+            assert_eq!(
+                staled_by(Some(&["README.md", path])),
+                [Regenerator::MockBuild],
+                "{path}"
+            );
+        }
+        assert_eq!(
+            staled_by(Some(&["mock/handlers/table.move.js", "Cargo.lock"])),
+            []
+        );
+        assert_eq!(staled_by::<&str>(Some(&[])), []);
+        assert_eq!(
+            staled_by::<&str>(None),
+            [Regenerator::MockBuild],
+            "changes not all known"
+        );
+    }
+
+    #[test]
+    fn a_side_brings_bundles_with_a_component_or_the_digests_never_with_a_fragment() {
+        assert!(brings_bundles(&["README.md", "mock/components/Dice.js"]));
+        assert!(brings_bundles(&["mock/pages.json"]));
+        assert!(!brings_bundles(&[
+            "mock/components/Dice.html",
+            "mock/src/server.js",
+            "Cargo.lock"
+        ]));
+        assert!(!brings_bundles::<&str>(&[]));
+    }
 
     #[test]
     fn bundles_are_generated_fragments_are_not() {

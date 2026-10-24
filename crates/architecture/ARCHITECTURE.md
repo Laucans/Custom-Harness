@@ -70,7 +70,15 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   disagree on which file a script owns. `mock/pages.json` is half a hand's:
   a conflict there is generated only when its `builtFrom` digests are all
   that differ (`digests_only`; `mock/build.sh` rewrites them). The bundles'
-  HTML fragments are hand-written and out of it. Pure, like the rest.
+  HTML fragments are hand-written and out of it. `generated::staled_by`
+  names the generators a merge runs even when git merges it cleanly: the
+  mock-up's build when one side changed a file every bundle is built from
+  (`tree::stales_every_bundle`), or when its changes are not all known.
+  Both ways: asked of the side merged in, then — only when that side
+  `brings_bundles` (a bundle or `mock/pages.json`) — of the receiving
+  side, whose own build change stales the arriving digests. The catch-up
+  then skips GitHub's merge, and the merge train refreshes a task PR
+  before it lands. Pure, like the rest.
 - **A unit's mock handlers are its own file.** The mock server
   (`assets/mock/src/server.js`) imports `mock/handlers/<id>.js` the first
   time `<id>` is read or commanded — never bundled, so a handler file is no

@@ -161,9 +161,13 @@ impl Apply {
                 if self.gh.pr_mergeable(&pr.num).await? == Some(false) {
                     return self.repair(pr, decided).await;
                 }
-                match crate::milestone_merge::run(self.gh.as_ref(), issue, pr).await? {
+                match crate::milestone_merge::run(self.gh.as_ref(), issue, pr, &ctx.traces).await? {
                     crate::milestone_merge::Attempt::Merged => Ok(Act::Merge),
-                    crate::milestone_merge::Attempt::Pending => {
+                    // A base that stales its bundles: the watch's merge
+                    // train refreshes it, rebuilt, then merges it green.
+                    crate::milestone_merge::Attempt::Pending
+                    | crate::milestone_merge::Attempt::Stale(_)
+                    | crate::milestone_merge::Attempt::Repairing => {
                         self.merge_when_green(issue, pr, decided).await
                     }
                     crate::milestone_merge::Attempt::Red(_) => self.repair(pr, decided).await,

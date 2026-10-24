@@ -249,6 +249,16 @@ pub trait GitHub {
     /// conflict among the reasons.
     async fn merge_branch(&self, base: &str, head: &str) -> Outcome<()>;
 
+    /// The paths `head` changed since its merge base with `base` — what a
+    /// merge of `head` into `base` brings (GitHub's compare `base...head`),
+    /// a renamed file under both names; `None` when GitHub lists only part
+    /// of them (it stops at 300 files).
+    ///
+    /// # Errors
+    /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) if the read
+    /// fails — a branch or commit GitHub does not know among the reasons.
+    async fn changed_files(&self, base: &str, head: &str) -> Outcome<Option<Vec<String>>>;
+
     /// The repo's default branch.
     ///
     /// # Errors

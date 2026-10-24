@@ -1,7 +1,8 @@
 //! The wiring of a milestone branch's catch-up with the integration branch
 //! (`Route::CatchUp`, run in the tick): GitHub's merge of the head the watch
-//! read first; on a refusal, the same merge in a checkout of the harness's
-//! own (`catch-up`), its generated files regenerated
+//! read first — unless the merge stales the mock-up's bundles, then
+//! straight — and on a refusal, the same merge in a checkout of
+//! the harness's own (`catch-up`), its generated files regenerated
 //! (`branching::catch_up_locally`) with the cargo the **merged** tree pins
 //! (`crate::toolchain::by_the_tree`: rustup's proxies ahead, so the merge's
 //! `rust-toolchain.toml` decides, never the branch's older pin nor
@@ -18,7 +19,7 @@ use harness_adapters::shell::disk::RealDisk;
 use harness_adapters::shell::git::GitCli;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Logbook;
-use harness_workflows::common::branching::{self, CaughtUp, Checkout};
+use harness_workflows::common::branching::{self, BaseHead, CaughtUp, Checkout};
 use harness_workflows::common::catch_up::{self, Busy, CatchUps, Target};
 
 use crate::adapters::spending;
@@ -56,7 +57,9 @@ pub async fn milestone(
         busy,
         dry_run,
         crate::dispatch::dev_loop::now_seconds(),
-        async |head: String| locally(here, target_repo_url, target, &head, log).await,
+        async |base: BaseHead| {
+            locally(here, target_repo_url, (branch, integration), &base, log).await
+        },
         log,
     )
     .await;
@@ -69,20 +72,17 @@ pub async fn milestone(
     caught
 }
 
-/// The merge of `head` in the harness's own checkout, mounted for it and
-/// released.
-async fn locally(
+/// The merge of `base` (a commit of `integration`) into `branch` in the
+/// harness's own checkout, mounted for it and released: a milestone's
+/// catch-up, or a task PR the merge train refreshes before it lands
+/// (`milestone_merge::Attempt::Stale`).
+pub async fn locally(
     here: &Path,
     target_repo_url: &str,
-    target: Target<'_>,
-    head: &str,
+    (branch, integration): (&str, &str),
+    base: &BaseHead,
     log: &Logbook,
 ) -> CaughtUp {
-    let Target {
-        branch,
-        integration,
-        ..
-    } = target;
     let mount = match shared::mount_bare(
         here,
         target_repo_url,
@@ -110,7 +110,7 @@ async fn locally(
         disk: Rc::new(RealDisk),
         root,
     };
-    let caught = branching::catch_up_locally(&checkout, branch, integration, head, log).await;
+    let caught = branching::catch_up_locally(&checkout, branch, integration, base, log).await;
     shared::release_checkout(&mount, log).await;
     caught
 }

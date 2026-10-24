@@ -41,7 +41,8 @@ src/dispatch/     one module per thing that can be run, plus what they share
                      local merge — a writable `catch-up` checkout (`shared::mount_bare`:
                      the watch's toolchain untouched) with `GitCli`, the merged tree's
                      own pin (`toolchain::by_the_tree`, rustup's proxies ahead) and
-                     `RealDisk`, where the generated files are regenerated
+                     `RealDisk`, where the generated files are regenerated, and the
+                     bundles rebuilt when the head staled them
                      (`branching::catch_up_locally`); told as `watch: catch_up -> …`
   test_debt.rs      the tests one file owes, from its test-debt issue — writable too,
                      on the integration branch
@@ -59,7 +60,8 @@ src/dispatch/     one module per thing that can be run, plus what they share
                     every ten minutes; never under `--dry-run`, never a failed tick
   main_agent_merge.rs  a finished milestone's PR into main_agent, opened then merged
                        (a task's PR into its milestone — `milestone_merge` —
-                       needs no wiring of its own: the router calls it with its `gh`)
+                       is called by the router with its `gh`; a PR on a base that
+                       stales its bundles is refreshed through `catch_up::locally`)
   init_repo.rs      `harness init-repo`: a `GhCli::for_slug` (a URL, no clone), a
                     `GitRepos` and `Processes` for the install clone
   backfill.rs       `harness backfill-milestones`: the ledger's `milestone` column filled
@@ -186,9 +188,20 @@ it is a free `Route::CatchUp` (weight 1010, before the merges;
 `routing::read_catch_ups`) that merges that very sha: GitHub's merge first,
 else one local merge a tick in the `catch-up` checkout with the generated
 files regenerated — a file the base deleted removed — by the cargo the
-merged tree pins. Held: the open task PRs into the branch take it
-(`refresh_task_prs`, never a force; a PR a lane works on, or whose task's
-session still runs — `catch_up::Busy` — skipped), said by number. A
+merged tree pins. A merge that stales the mock-up's bundles
+(`catch_up::staled`, two compares at most through `GitHub::changed_files`:
+the head changed a file every bundle is built from since the branch's
+merge base, or brings bundles while the branch changed such a file) skips
+GitHub's merge: the local merge runs `mock/build.sh` even without a
+conflict, or one side's components keep digests of the other side's file.
+Held: the open task PRs into the branch take it (`refresh_task_prs`, never
+a force; a PR a lane works on, or whose task's session still runs —
+`catch_up::Busy` — skipped; a PR the merge stales left on its old base),
+said by number. The merge train never lands a PR on a base that stales its
+bundles (`milestone_merge::Attempt::Stale`): `router::routes` refreshes it
+in the same `catch-up` checkout (`dispatch::catch_up::locally`, rebuilt,
+pushed) and it lands once green again; one that cannot be refreshed is
+labelled `harness:pr-fix`, and waits for that repair (`Attempt::Repairing`). A
 residual conflict labels the landing PR `harness:pr-fix`, or is said once;
 GitHub's merge alone is tried again hourly at the same head, said again
 while there is no landing PR. A failure is parked an hour, said once; a

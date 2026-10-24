@@ -66,6 +66,17 @@ const fn timeout(regenerator: Regenerator) -> Duration {
     }
 }
 
+/// The integration branch's commit a catch-up merges, and what its changes
+/// stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseHead {
+    /// The commit the watch read.
+    pub sha: String,
+    /// The generators that run whatever conflicts: the base changed what
+    /// they read (`generated::staled_by`).
+    pub rebuild: Vec<Regenerator>,
+}
+
 /// A checkout of the product, the harness's own, where a refused catch-up
 /// is tried again.
 pub struct Checkout {
@@ -81,16 +92,22 @@ pub struct Checkout {
     pub root: PathBuf,
 }
 
-/// Brings `milestone_branch` up to `head` in `checkout`, as GitHub's merge
-/// would, regenerating the generated files that conflict.
+/// Brings `milestone_branch` up to `base` in `checkout`, as GitHub's merge
+/// would, regenerating the generated files that conflict — and those of
+/// its `rebuild` even when nothing conflicts.
 ///
-/// `head` is the integration branch's commit the watch read; the generated
-/// files are `harness_architecture::generated::GENERATED`. Each conflicted generated file is taken from the base — removed when the
-/// base deleted it, `mock/pages.json` only when its digests are all that
-/// differ — then its generators run on the merged tree, in their order
+/// `base.sha` is the integration branch's commit the watch read; the generated
+/// files are `harness_architecture::generated::GENERATED`. Each conflicted
+/// generated file is taken from the base — removed when the base deleted
+/// it, `mock/pages.json` only when its digests are all that differ — then
+/// its generators run on the merged tree, in their order
 /// (`scripts/register.sh`, `scripts/queries.sh`, `mock/build.sh`,
 /// `cargo metadata`), and the merge is committed and pushed:
-/// [`CaughtUp::Locally`]. A conflict on any other file is
+/// [`CaughtUp::Locally`]. `base.rebuild` names the generators the base's own
+/// changes stale (`generated::staled_by`): they run too, after a clean
+/// merge as well — `mock/build.sh` only in a product that builds bundles
+/// (a `builtFrom` in the merged `mock/pages.json`) — and what they rewrite
+/// is committed on top of git's merge. A conflict on any other file is
 /// [`CaughtUp::Residual`], and a step that fails [`CaughtUp::Failed`]:
 /// either aborts the merge, never hand-merges it. A push refused because
 /// the branch moved on the remote meanwhile is [`CaughtUp::Deferred`]: the
@@ -99,13 +116,14 @@ pub async fn catch_up_locally(
     checkout: &Checkout,
     milestone_branch: &str,
     integration: &str,
-    head: &str,
+    base: &BaseHead,
     log: &Logbook,
 ) -> CaughtUp {
     let merging = Merging {
         branch: milestone_branch,
         integration,
-        head,
+        head: &base.sha,
+        rebuild: &base.rebuild,
     };
     let stopped = match regenerate(checkout, merging).await {
         Ok(Merge::Held(regenerated)) => {
@@ -155,6 +173,9 @@ struct Merging<'a> {
     integration: &'a str,
     /// Its commit merged in.
     head: &'a str,
+    /// The generators that run whatever conflicts: the base changed what
+    /// they read.
+    rebuild: &'a [Regenerator],
 }
 
 /// A path `status --porcelain` reports unmerged.
@@ -174,6 +195,7 @@ async fn regenerate(checkout: &Checkout, merging: Merging<'_>) -> Result<Merge, 
         branch,
         integration,
         head,
+        rebuild,
     } = merging;
     let repo = &checkout.repo;
     done("fetch", repo.fetch().await)?;
@@ -183,8 +205,9 @@ async fn regenerate(checkout: &Checkout, merging: Merging<'_>) -> Result<Merge, 
         .merge(head)
         .await
         .map_err(|halt| halt.reason().to_string())?;
+    let rebuild = applicable(checkout, rebuild);
     if merged.ok() {
-        return pushed(repo.as_ref(), branch, Merge::Held(Vec::new())).await;
+        return rebuilt(checkout, merging, &rebuild).await;
     }
     let conflicted = unmerged(
         &repo
@@ -231,7 +254,87 @@ async fn regenerate(checkout: &Checkout, merging: Merging<'_>) -> Result<Merge, 
         }
     }
     let paths: Vec<String> = conflicted.into_iter().map(|file| file.path).collect();
-    for regenerator in generated::regenerators(&paths) {
+    let needed = generated::regenerators(&paths);
+    let regenerators: Vec<Regenerator> = Regenerator::ALL
+        .into_iter()
+        .filter(|regenerator| needed.contains(regenerator) || rebuild.contains(regenerator))
+        .collect();
+    run_all(checkout, &regenerators).await?;
+    done("stage", repo.stage_all().await)?;
+    done(
+        "commit",
+        repo.commit(&format!(
+            "chore: merge {integration} ({head}) into {branch}, {} regenerated",
+            paths.join(", ")
+        ))
+        .await,
+    )?;
+    pushed(repo.as_ref(), branch, Merge::Held(paths)).await
+}
+
+/// The generators of `rebuild` that apply to the merged tree:
+/// `mock/build.sh` only where the product builds bundles — its
+/// `mock/pages.json` records a `builtFrom` digest.
+fn applicable(checkout: &Checkout, rebuild: &[Regenerator]) -> Vec<Regenerator> {
+    let builds_bundles = checkout
+        .disk
+        .read_to_string(&checkout.root.join("mock/pages.json"))
+        .is_some_and(|pages| pages.contains("\"builtFrom\""));
+    rebuild
+        .iter()
+        .copied()
+        .filter(|regenerator| *regenerator != Regenerator::MockBuild || builds_bundles)
+        .collect()
+}
+
+/// A merge git made alone, pushed: after `rebuild` ran on the merged tree
+/// and what it rewrote was committed on top — nothing rewritten, git's
+/// merge as it is.
+async fn rebuilt(
+    checkout: &Checkout,
+    merging: Merging<'_>,
+    rebuild: &[Regenerator],
+) -> Result<Merge, String> {
+    let Merging {
+        branch,
+        integration,
+        head,
+        ..
+    } = merging;
+    let repo = checkout.repo.as_ref();
+    if rebuild.is_empty() {
+        return pushed(repo, branch, Merge::Held(Vec::new())).await;
+    }
+    run_all(checkout, rebuild).await?;
+    done("stage", repo.stage_all().await)?;
+    let rewritten: Vec<String> = repo
+        .dirty_files()
+        .await
+        .map_err(|halt| halt.reason().to_string())?
+        .iter()
+        .filter_map(|line| line.get(3..))
+        .map(|path| path.trim_matches('"').to_string())
+        .collect();
+    if rewritten.is_empty() {
+        return pushed(repo, branch, Merge::Held(Vec::new())).await;
+    }
+    let commands: Vec<String> = rebuild.iter().map(|r| r.command()).collect();
+    done(
+        "commit",
+        repo.commit(&format!(
+            "chore: {} after merging {integration} ({head}) into {branch}, {} regenerated",
+            commands.join(" then "),
+            rewritten.join(", ")
+        ))
+        .await,
+    )?;
+    pushed(repo, branch, Merge::Held(rewritten)).await
+}
+
+/// Runs `regenerators` in the checkout, in the order given: the first that
+/// fails stops the rest.
+async fn run_all(checkout: &Checkout, regenerators: &[Regenerator]) -> Result<(), String> {
+    for regenerator in regenerators {
         let args: Vec<String> = regenerator
             .args()
             .iter()
@@ -245,21 +348,12 @@ async fn regenerate(checkout: &Checkout, merging: Merging<'_>) -> Result<Merge, 
                     regenerator.program(),
                     &args,
                     &checkout.root,
-                    timeout(regenerator),
+                    timeout(*regenerator),
                 )
                 .await,
         )?;
     }
-    done("stage", repo.stage_all().await)?;
-    done(
-        "commit",
-        repo.commit(&format!(
-            "chore: merge {integration} ({head}) into {branch}, {} regenerated",
-            paths.join(", ")
-        ))
-        .await,
-    )?;
-    pushed(repo.as_ref(), branch, Merge::Held(paths)).await
+    Ok(())
 }
 
 /// Pushes `branch` — never forced: `held` once it went, [`Merge::Raced`]
@@ -366,6 +460,16 @@ mod tests {
         process: &Rc<FakeProcess>,
         disk: &Rc<FakeDisk>,
     ) -> (CaughtUp, Vec<String>) {
+        rebuilding(repos, process, disk, &[]).await
+    }
+
+    /// [`locally_on`], these generators run whatever conflicts.
+    async fn rebuilding(
+        repos: &FakeRepos,
+        process: &Rc<FakeProcess>,
+        disk: &Rc<FakeDisk>,
+        rebuild: &[Regenerator],
+    ) -> (CaughtUp, Vec<String>) {
         let root = Path::new(ROOT);
         let checkout = Checkout {
             repo: repos.at(root),
@@ -375,7 +479,17 @@ mod tests {
         };
         let capture = Rc::new(Capture::default());
         let log = Logbook::new(Rc::clone(&capture) as Rc<dyn Sink>, Verbosity::Normal);
-        let caught = catch_up_locally(&checkout, "milestone/17-ai", "main_agent", "h1", &log).await;
+        let caught = catch_up_locally(
+            &checkout,
+            "milestone/17-ai",
+            "main_agent",
+            &BaseHead {
+                sha: "h1".to_string(),
+                rebuild: rebuild.to_vec(),
+            },
+            &log,
+        )
+        .await;
         let said = capture.0.borrow().clone();
         (caught, said)
     }
@@ -644,6 +758,124 @@ mod tests {
         assert!(process.ran.borrow().is_empty(), "nothing expected");
         assert!(repos.asked("push milestone/17-ai") && !repos.asked("commit"));
         assert_eq!(said, ["milestone/17-ai holds main_agent"]);
+    }
+
+    /// A merged `mock/pages.json` with a digest: a product that builds
+    /// bundles.
+    const PAGES_BUILT: &str = "{\n  \"builtFrom\": \"bb\"\n}\n";
+
+    #[tokio::test]
+    async fn a_clean_merge_whose_base_staled_the_bundles_rebuilds_them_and_commits_on_top() {
+        let rewritten = ["mock/components/Dice.js", "mock/pages.json"];
+        let repos = FakeRepos::default().rewriting(&rewritten);
+        let process = Rc::new(FakeProcess::default());
+        let (caught, said) = rebuilding(
+            &repos,
+            &process,
+            &pages(PAGES_BUILT),
+            &[Regenerator::MockBuild],
+        )
+        .await;
+        assert_eq!(
+            caught,
+            CaughtUp::Locally(rewritten.iter().map(|p| (*p).to_string()).collect())
+        );
+        assert_eq!(programs(&process), ["sh mock/build.sh"]);
+        assert_eq!(
+            verbs(&repos),
+            [
+                "fetch",
+                "checkout milestone/17-ai --force",
+                "reset_hard origin/milestone/17-ai",
+                "merge h1",
+                "stage_all",
+                "commit chore: sh mock/build.sh after merging main_agent (h1) into \
+                 milestone/17-ai, mock/components/Dice.js, mock/pages.json regenerated",
+                "push milestone/17-ai",
+            ]
+        );
+        assert_eq!(
+            said,
+            [
+                "milestone/17-ai holds main_agent: mock/components/Dice.js and mock/pages.json \
+              regenerated, never merged by hand"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_that_rewrites_nothing_pushes_git_s_merge_as_it_is() {
+        let repos = FakeRepos::default();
+        let process = Rc::new(FakeProcess::default());
+        let (caught, said) = rebuilding(
+            &repos,
+            &process,
+            &pages(PAGES_BUILT),
+            &[Regenerator::MockBuild],
+        )
+        .await;
+        assert_eq!(caught, CaughtUp::Locally(Vec::new()));
+        assert_eq!(programs(&process), ["sh mock/build.sh"]);
+        assert!(repos.asked("stage_all") && !repos.asked("commit"));
+        assert!(repos.asked("push milestone/17-ai"));
+        assert_eq!(said, ["milestone/17-ai holds main_agent"]);
+    }
+
+    #[tokio::test]
+    async fn a_product_that_builds_no_bundle_is_not_rebuilt() {
+        for disk in [
+            Rc::new(FakeDisk::default()),
+            pages("{\n  \"pages\": []\n}\n"),
+        ] {
+            let repos = FakeRepos::default().rewriting(&["x"]);
+            let process = Rc::new(FakeProcess::default());
+            let (caught, _) = rebuilding(&repos, &process, &disk, &[Regenerator::MockBuild]).await;
+            assert_eq!(caught, CaughtUp::Locally(Vec::new()));
+            assert!(process.ran.borrow().is_empty(), "no mock/build.sh");
+            assert!(!repos.asked("stage_all") && !repos.asked("commit"));
+            assert!(repos.asked("push milestone/17-ai"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_joins_the_conflict_s_generators_in_their_order() {
+        let repos = FakeRepos::conflicting(&["Cargo.lock"], &[]);
+        let process = Rc::new(FakeProcess::default());
+        let (caught, _) = rebuilding(
+            &repos,
+            &process,
+            &pages(PAGES_BUILT),
+            &[Regenerator::MockBuild],
+        )
+        .await;
+        assert_eq!(caught, CaughtUp::Locally(vec!["Cargo.lock".to_string()]));
+        assert_eq!(
+            programs(&process),
+            ["sh mock/build.sh", "cargo metadata --format-version 1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_that_fails_after_a_clean_merge_pushes_nothing() {
+        let repos = FakeRepos::default().rewriting(&["mock/pages.json"]);
+        let process = Rc::new(FakeProcess::answering(vec![FakeProcess::ran(
+            "",
+            "npx: command not found",
+            127,
+        )]));
+        let (caught, _) = rebuilding(
+            &repos,
+            &process,
+            &pages(PAGES_BUILT),
+            &[Regenerator::MockBuild],
+        )
+        .await;
+        assert!(
+            matches!(&caught, CaughtUp::Failed(why) if why.starts_with("sh mock/build.sh failed")),
+            "{caught:?}"
+        );
+        assert!(!repos.asked("push") && !repos.asked("commit"));
+        assert!(!repos.asked("abort_merge"), "git's merge is committed");
     }
 
     #[tokio::test]

@@ -42,6 +42,15 @@ their old base (`tools/catchup-prs.sh` by hand).
   force; PRs a lane works on, or whose task's session still runs,
   skipped), said by number. Each outcome is a `watch: catch_up -> …` line
   the view closes its journal row with (station `milestone-merge`).
+- A merge that stales the mock-up's bundles (`catch_up::staled`: the head
+  changed a file of `tree::stales_every_bundle` since the branch's merge
+  base, or brings bundles while the branch changed such a file — one
+  compare, a second only when the head brings bundles) skips GitHub's
+  merge: the local catch-up runs `sh mock/build.sh` even without a
+  conflict (H1 round D, `docs/toBeCheck/mock-handlers.md`); it counts in
+  the one-local-a-tick budget. A task PR the merge stales is not refreshed
+  by GitHub: the merge train refreshes it rebuilt before it lands
+  (`milestone_merge::Attempt::Stale`).
 - Holds: a branch behind or unable to take the base holds its tasks; a
   catch-up waits while a `pr_fix` lane works on its landing PR, that repair
   while the catch-up is due. `start_task` / `run_dev_loop` merge nothing
@@ -97,6 +106,14 @@ their old base (`tools/catchup-prs.sh` by hand).
 - [ ] A push to `main_agent` that moves no issue (an upgrade, a rules
       contest settled) still reaches every building branch at the next green
       tick.
+- [ ] After a `main_agent` push touching `mock/src/server.js` (or
+      `screen.js`, `mock/build.mjs`, `mock/build.sh`): every building
+      branch catches up locally, one a tick, each with a `chore: sh
+      mock/build.sh after merging …` commit, and none through GitHub's
+      merge; its `pages-mocked--bundles` green after.
+- [ ] Cost: one compare call (`GitHub::changed_files`) per catch-up, two
+      when the head brings bundles; one or two more per task PR refreshed
+      and per merge attempt, on top of the reads below.
 - [ ] Cost: one extra `branch_sha` call per tick, plus one `gh run list
       --commit` per tick only while a branch is behind a head that is not
       green (running, red, a `[skip ci]` or cancelled head: that one call

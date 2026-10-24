@@ -19,8 +19,10 @@
 
 use harness_core::domain::{Issue, Outcome, Pr};
 use harness_core::ports::shell::github::GitHub;
+use harness_core::traces::Logbook;
 
-use crate::common::{delivery, labels, review};
+use crate::common::branching::BaseHead;
+use crate::common::{catch_up, delivery, labels, review};
 use crate::dev_loop::data::tasks;
 
 /// The first task waiting on its PR, with that PR: the task is open and
@@ -185,6 +187,16 @@ pub enum Attempt {
     /// A check concluded in failure: nothing was done. The repair route's,
     /// not a merge's — the lines are what the checks said.
     Red(Vec<String>),
+    /// Green, but on a base its merge stales the mock-up's bundles of
+    /// (`catch_up::staled`): nothing was merged. The PR takes its milestone
+    /// at this commit in the harness's checkout, the generators named run
+    /// (`branching::catch_up_locally`), and it lands once its checks are
+    /// green again — never with a digest of the old file.
+    Stale(BaseHead),
+    /// Stale the same way, but the PR is asked for a repair
+    /// (`harness:pr-fix`): nothing was done — the repair takes the base,
+    /// never a checkout every tick for a refresh that already failed.
+    Repairing,
 }
 
 /// Merges `pr` into its milestone branch and closes `task`:
@@ -194,12 +206,18 @@ pub enum Attempt {
 /// **Never on red or pending checks**, whoever calls it: the router reads
 /// the checks before routing here, but a decision to merge "as it is" and
 /// a check that turned red between the read and the merge both reach this
-/// one line, so the guard sits here, on the merge itself.
+/// one line, so the guard sits here, on the merge itself. **Never on a
+/// base that stales its bundles** either ([`Attempt::Stale`]): green
+/// checks ran on the base the PR last took, and a PR the catch-up left on
+/// it — or skipped, its session running — would land a `builtFrom` digest
+/// of the old file. A compare that cannot be read is said and merges: the
+/// checks are the guard then, as before.
 ///
 /// # Errors
-/// [`harness_core::domain::Halt`] from the checks read, the merge or any
-/// label write — GitHub refusing the merge is not retried.
-pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<Attempt> {
+/// [`harness_core::domain::Halt`] from the checks read, the base's head
+/// read, the merge or any label write — GitHub refusing the merge is not
+/// retried.
+pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr, log: &Logbook) -> Outcome<Attempt> {
     if !gh.pr_checks_green(&pr.num).await? {
         let failing = gh.pr_failing_checks(&pr.num).await?;
         return Ok(if failing.is_empty() {
@@ -207,6 +225,24 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<Attempt> {
         } else {
             Attempt::Red(failing)
         });
+    }
+    match catch_up::staled(gh, &pr.head, &pr.base).await {
+        Ok(rebuild) if !rebuild.is_empty() => {
+            if pr.has(labels::PR_FIX) {
+                return Ok(Attempt::Repairing);
+            }
+            if let Some(sha) = gh.branch_sha(&pr.base).await? {
+                return Ok(Attempt::Stale(BaseHead { sha, rebuild }));
+            }
+        }
+        Ok(_) => {}
+        Err(halt) => log.debug(&format!(
+            "{}: what it and {} changed since they parted cannot be read ({}) — merged on its \
+             checks",
+            pr.reference(),
+            pr.base,
+            halt.reason()
+        )),
     }
     gh.merge_pr(&pr.num).await?;
     if tasks::review_pending(task) {
@@ -567,7 +603,7 @@ mod tests {
             ..FakeGitHub::default()
         };
         let bare = task(39, &[labels::AGENT, labels::WRITE_SIDE], "feat/save");
-        run(&gh, &bare, &pr("77", "feat/save"))
+        run(&gh, &bare, &pr("77", "feat/save"), &Logbook::null())
             .await
             .expect("merged");
         let writes = gh.writes();
@@ -615,7 +651,7 @@ mod tests {
             pr_checks: HashMap::from([("68".to_string(), true)]),
             ..FakeGitHub::default()
         };
-        let came_to = run(&gh, &waiting(), &pr("68", "chore/rust"))
+        let came_to = run(&gh, &waiting(), &pr("68", "chore/rust"), &Logbook::null())
             .await
             .expect("merged");
         assert_eq!(came_to, Attempt::Merged);
@@ -624,6 +660,67 @@ mod tests {
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::REVIEW_PENDING.to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::NEEDS_DECISION.to_string())));
         assert!(writes.contains(&Wrote::Closed(64)));
+    }
+
+    #[tokio::test]
+    async fn a_green_pr_on_a_base_that_stales_its_bundles_is_refreshed_never_landed() {
+        // Its milestone took a new `server.js` since the PR last took it.
+        let stale = || FakeGitHub {
+            pr_checks: HashMap::from([("68".to_string(), true)]),
+            changed_files: HashMap::from([(
+                "chore/rust...milestone/52-socle".to_string(),
+                Some(vec!["mock/src/server.js".to_string()]),
+            )]),
+            branch_shas: HashMap::from([(
+                "milestone/52-socle".to_string(),
+                Some("m1".to_string()),
+            )]),
+            ..FakeGitHub::default()
+        };
+        let gh = stale();
+        let came_to = run(&gh, &waiting(), &pr("68", "chore/rust"), &Logbook::null())
+            .await
+            .expect("read");
+        assert_eq!(
+            came_to,
+            Attempt::Stale(BaseHead {
+                sha: "m1".to_string(),
+                rebuild: vec![harness_architecture::generated::Regenerator::MockBuild],
+            })
+        );
+        assert!(gh.writes().is_empty(), "nothing merged: {:?}", gh.writes());
+        // Under repair: the repair takes the base, the train waits.
+        let mut repairing = pr("68", "chore/rust");
+        repairing.labels = vec![labels::PR_FIX.to_string()];
+        let gh = stale();
+        let came_to = run(&gh, &waiting(), &repairing, &Logbook::null())
+            .await
+            .expect("read");
+        assert_eq!(came_to, Attempt::Repairing);
+        assert!(gh.writes().is_empty(), "nothing merged: {:?}", gh.writes());
+        // A base GitHub no longer knows: GitHub's merge answers for it.
+        let gone = FakeGitHub {
+            branch_shas: HashMap::from([("milestone/52-socle".to_string(), None)]),
+            ..stale()
+        };
+        let came_to = run(&gone, &waiting(), &pr("68", "chore/rust"), &Logbook::null())
+            .await
+            .expect("merged");
+        assert_eq!(came_to, Attempt::Merged);
+        // A compare that cannot be read merges on its checks.
+        let unread = FakeGitHub {
+            broken_compares: vec!["chore/rust...milestone/52-socle".to_string()],
+            ..stale()
+        };
+        let came_to = run(
+            &unread,
+            &waiting(),
+            &pr("68", "chore/rust"),
+            &Logbook::null(),
+        )
+        .await
+        .expect("merged");
+        assert_eq!(came_to, Attempt::Merged);
     }
 
     fn rules_task(number: u64, state: &str) -> Issue {
@@ -794,7 +891,7 @@ mod tests {
             )]),
             ..FakeGitHub::default()
         };
-        let came_to = run(&red, &waiting(), &pr("68", "chore/rust"))
+        let came_to = run(&red, &waiting(), &pr("68", "chore/rust"), &Logbook::null())
             .await
             .expect("refused, not failed");
         assert_eq!(
@@ -807,9 +904,14 @@ mod tests {
             failing_checks: HashMap::from([("68".to_string(), Vec::new())]),
             ..FakeGitHub::default()
         };
-        let came_to = run(&pending, &waiting(), &pr("68", "chore/rust"))
-            .await
-            .expect("waits, not failed");
+        let came_to = run(
+            &pending,
+            &waiting(),
+            &pr("68", "chore/rust"),
+            &Logbook::null(),
+        )
+        .await
+        .expect("waits, not failed");
         assert_eq!(came_to, Attempt::Pending);
         assert_eq!(
             pending.writes(),

@@ -33,6 +33,9 @@ pub struct FakeRepos {
     /// Whether `push` is refused as a non-fast-forward: the remote branch
     /// moved since the fetch.
     rejects_push: bool,
+    /// The files `dirty_files` answers as staged changes while nothing
+    /// conflicts: what a generator rewrote.
+    rewritten: Rc<Vec<String>>,
 }
 
 impl FakeRepos {
@@ -44,6 +47,7 @@ impl FakeRepos {
             changed: Rc::default(),
             conflicts: Rc::default(),
             rejects_push: false,
+            rewritten: Rc::default(),
         }
     }
 
@@ -55,6 +59,7 @@ impl FakeRepos {
             changed: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
             conflicts: Rc::default(),
             rejects_push: false,
+            rewritten: Rc::default(),
         }
     }
 
@@ -80,6 +85,7 @@ impl FakeRepos {
                     .collect(),
             ),
             rejects_push: false,
+            rewritten: Rc::default(),
         }
     }
 
@@ -88,6 +94,16 @@ impl FakeRepos {
     pub fn rejecting_push(self) -> Self {
         Self {
             rejects_push: true,
+            ..self
+        }
+    }
+
+    /// The same `git`, these files staged as rewritten while nothing
+    /// conflicts.
+    #[must_use]
+    pub fn rewriting(self, files: &[&str]) -> Self {
+        Self {
+            rewritten: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
             ..self
         }
     }
@@ -149,6 +165,14 @@ impl Repo for FakeRepo {
         Ok("abc1234".to_string())
     }
     async fn dirty_files(&self) -> Outcome<Vec<String>> {
+        if self.repos.conflicts.is_empty() {
+            return Ok(self
+                .repos
+                .rewritten
+                .iter()
+                .map(|path| format!("M  {path}"))
+                .collect());
+        }
         Ok(self
             .repos
             .conflicts

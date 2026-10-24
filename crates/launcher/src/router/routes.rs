@@ -8,9 +8,10 @@ use std::rc::Rc;
 use clap::Parser as _;
 use harness_core::domain::doctor::Repair;
 use harness_core::domain::workspace::Workspace;
-use harness_core::domain::{Halt, Issue, Outcome, Pr, Verdict};
+use harness_core::domain::{Halt, Issue, Outcome, Verdict};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
+use harness_workflows::common::branching::CaughtUp;
 use harness_workflows::common::catch_up::Busy;
 use harness_workflows::common::routing::{Pulse, Route};
 use harness_workflows::common::{branching, hierarchy, labels};
@@ -156,7 +157,7 @@ pub(super) async fn dispatched(
             log,
         ),
         Route::MergeIntoMilestone { task, pr, base } => {
-            run_milestone_merge(gh, here, task, pr, base, log).await
+            run_milestone_merge(gh, (here, &args.target_repo_url), task, pr, base, log).await
         }
         Route::MergeMainAgent { milestone } => {
             run_main_agent_merge(args, here, milestone, log).await
@@ -527,27 +528,46 @@ pub(super) fn record_run(here: &Path, line: &str, issue: u64, said: &str, log: &
     }
 }
 
-/// Merges one task's PR into its milestone, and says so.
+/// Merges one task's PR into its milestone, and says so. A PR on a base
+/// that stales its mock-up bundles takes it first in the harness's
+/// checkout (`here`'s, a clone of `target_repo_url`), rebuilt.
 pub(super) async fn run_milestone_merge(
     gh: &dyn GitHub,
-    here: &Path,
+    (here, target_repo_url): (&Path, &str),
     task: u64,
     pr: String,
     base: String,
     log: &Logbook,
 ) -> Option<(&'static str, Halt)> {
-    let told = (format!("#{pr}"), base.clone());
+    let told = (format!("#{pr}"), base);
     let merged = async {
         let issue = gh.issue(task).await?;
-        let pr = Pr {
-            num: pr,
-            base,
-            ..Pr::default()
-        };
-        harness_workflows::milestone_merge::run(gh, &issue, &pr).await
+        let pr = gh.pr(&pr).await?;
+        let attempt = harness_workflows::milestone_merge::run(gh, &issue, &pr, log).await?;
+        Ok::<_, Halt>((attempt, pr))
     };
     match merged.await {
-        Ok(Attempt::Merged) => {
+        Ok((Attempt::Repairing, _)) => {
+            log.say(&format!(
+                "watch: milestone_merge -> #{task} waits: its repair takes {} first",
+                told.1
+            ));
+            None
+        }
+        Ok((Attempt::Stale(base), held)) => {
+            let branch = told.1;
+            let caught = crate::dispatch::catch_up::locally(
+                here,
+                target_repo_url,
+                (&held.head, &branch),
+                &base,
+                log,
+            )
+            .await;
+            refreshed_before_landing(gh, task, &pr, &branch, &caught, log).await;
+            None
+        }
+        Ok((Attempt::Merged, _)) => {
             let (pr, branch) = told;
             log.say(&format!(
                 "watch: milestone_merge -> #{task} merged into {branch}"
@@ -571,14 +591,14 @@ pub(super) async fn run_milestone_merge(
         // the train reads the PR again next tick, and a red one stays where
         // it is — reviewed clean, it is no repair route's until a label or
         // a review asks for the repair.
-        Ok(Attempt::Pending) => {
+        Ok((Attempt::Pending, _)) => {
             log.say(&format!(
                 "watch: milestone_merge -> #{task} waits: a check of PR {} is still running",
                 told.0
             ));
             None
         }
-        Ok(Attempt::Red(checks)) => {
+        Ok((Attempt::Red(checks), _)) => {
             log.warn(&format!(
                 "watch: milestone_merge -> #{task} refused: {} failing check(s) on PR {} — {}",
                 checks.len(),
@@ -591,6 +611,50 @@ pub(super) async fn run_milestone_merge(
             log.error(&format!("watch: milestone_merge -> {}", halt.reason()));
             Some(("milestone_merge", halt))
         }
+    }
+}
+
+/// Says what the refresh of task `task`'s PR `pr` (its number) with its milestone
+/// `branch` came to, before it lands. One that could not be made — a
+/// conflict no script solves, a step that failed — is asked for a repair
+/// (`harness:pr-fix`): tried again every tick, it would mount a checkout
+/// for the same refusal.
+async fn refreshed_before_landing(
+    gh: &dyn GitHub,
+    task: u64,
+    pr: &str,
+    branch: &str,
+    caught: &CaughtUp,
+    log: &Logbook,
+) {
+    let why = match caught {
+        CaughtUp::Locally(_) | CaughtUp::OnGitHub => {
+            log.say(&format!(
+                "watch: milestone_merge -> #{task} waits: PR #{pr} took {branch} in the harness's \
+                 checkout, its mock-up bundles rebuilt — it lands once its checks are green again"
+            ));
+            return;
+        }
+        CaughtUp::Deferred => {
+            log.say(&format!(
+                "watch: milestone_merge -> #{task} waits: PR #{pr} moved while it took {branch} — \
+                 taken again at a later tick"
+            ));
+            return;
+        }
+        CaughtUp::Residual(files) => {
+            format!("a conflict no script solves, on {}", files.join(", "))
+        }
+        CaughtUp::Failed(why) => why.clone(),
+    };
+    log.warn(&format!(
+        "watch: milestone_merge -> #{task} cannot take {branch} before it lands: {why}"
+    ));
+    if let Err(halt) = ask_for_the_repair(gh, pr, false).await {
+        log.warn(&format!(
+            "watch: milestone_merge -> PR #{pr} could not be asked for a repair: {}",
+            halt.reason()
+        ));
     }
 }
 
@@ -893,8 +957,64 @@ mod lane_route_tests {
 
 #[cfg(test)]
 mod merge_route_tests {
+    use std::cell::RefCell;
+
     use super::*;
     use crate::testing::NoGitHub;
+
+    #[derive(Default)]
+    struct Lines(RefCell<Vec<String>>);
+
+    impl Sink for Lines {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
+    /// What `refreshed_before_landing` says of `caught`.
+    async fn said_of(caught: &CaughtUp) -> Vec<String> {
+        let lines = Rc::new(Lines::default());
+        let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
+        refreshed_before_landing(&NoGitHub, 64, "68", "milestone/6-media", caught, &log).await;
+        lines.0.borrow().clone()
+    }
+
+    #[tokio::test]
+    async fn a_refresh_before_landing_is_said_and_one_that_failed_asks_for_the_repair() {
+        let rebuilt = said_of(&CaughtUp::Locally(vec!["mock/pages.json".to_string()])).await;
+        assert_eq!(
+            rebuilt,
+            [
+                "watch: milestone_merge -> #64 waits: PR #68 took milestone/6-media in the \
+                 harness's checkout, its mock-up bundles rebuilt — it lands once its checks are \
+                 green again"
+            ]
+        );
+        let raced = said_of(&CaughtUp::Deferred).await;
+        assert_eq!(raced.len(), 1, "{raced:?}");
+        assert!(
+            raced[0].ends_with("taken again at a later tick"),
+            "{raced:?}"
+        );
+        // The repair is asked: here NoGitHub refuses the PR's read, said too.
+        let failed = said_of(&CaughtUp::Failed("sh mock/build.sh failed".to_string())).await;
+        assert_eq!(failed.len(), 2, "{failed:?}");
+        assert!(
+            failed[0].ends_with(
+                "#64 cannot take milestone/6-media before it lands: sh mock/build.sh failed"
+            ),
+            "{failed:?}"
+        );
+        assert!(
+            failed[1].contains("PR #68 could not be asked for a repair"),
+            "{failed:?}"
+        );
+        let residual = said_of(&CaughtUp::Residual(vec!["a.rs".to_string()])).await;
+        assert!(
+            residual[0].ends_with("a conflict no script solves, on a.rs"),
+            "{residual:?}"
+        );
+    }
 
     #[tokio::test]
     async fn a_merge_the_board_refuses_is_the_route_s_failure_not_a_quiet_tick() {
@@ -903,7 +1023,10 @@ mod merge_route_tests {
         // nothing and said nothing.
         let failed = run_milestone_merge(
             &NoGitHub,
-            Path::new("/nonexistent"),
+            (
+                Path::new("/nonexistent"),
+                "https://example.invalid/product.git",
+            ),
             64,
             "68".to_string(),
             "milestone/52-socle".to_string(),

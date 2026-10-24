@@ -58,6 +58,58 @@ digests stale.
   below. A unit's narrowed checkout carries only its own handler files and
   `_lib/`.
 
+- **Round D (uncommitted on `main`, after `a45a86b`): a merge rebuilds
+  what it stales, both ways.** `common::catch_up::staled(receiving,
+  incoming)` reads, through `GitHub::changed_files` (GitHub's compare),
+  what `incoming` changed since the merge base; only when that brings
+  bundles (`generated::brings_bundles`: a `mock/components/*.js` or
+  `mock/pages.json`) does it read, with a second compare, what `receiving`
+  changed. A file of `tree::stales_every_bundle` on either side (or a list
+  GitHub cut at 300 files) names `sh mock/build.sh`
+  (`generated::staled_by`). The reverse side covers a milestone whose own
+  task edited `mock/src/screen.js` (no rule forbids it) while `main_agent`
+  brings another milestone's components with digests of its own
+  `screen.js`.
+  - **Milestone catch-up**: a stale merge (or a compare that cannot be
+    read) skips GitHub's merge; the local catch-up merges in the
+    `catch-up` checkout and runs `sh mock/build.sh` even without a
+    conflict (`branching::BaseHead`), only where the merged
+    `mock/pages.json` has a `builtFrom`. What it rewrote is committed on
+    top of git's merge (`chore: sh mock/build.sh after merging main_agent
+    (<sha>) into <branch>, … regenerated`), then pushed. One such catch-up
+    a tick (`LOCAL_PER_TICK`): the other branches say `… its local
+    catch-up waits for the next tick`. A change elsewhere keeps GitHub's
+    merge.
+  - **Task PRs (decision)**: under "one task per Micro-UI" nearly every
+    open UI task PR has a component only it has, so a GitHub refresh after
+    a staling catch-up would turn each one red and cost one paid `pr_fix`
+    session per PR for one `sh mock/build.sh`. Instead `refresh_task_prs`
+    asks `staled(pr.head, milestone)` per PR and leaves a stale one on its
+    old base (said: `task PR(s) #n take it when they land — …`). The merge
+    train is the guard: `milestone_merge::run`, after the checks read
+    green, asks the same question and answers `Attempt::Stale` instead of
+    merging; the launcher refreshes the PR in the `catch-up` checkout
+    (`dispatch::catch_up::locally`, `sh mock/build.sh`, commit, push), and
+    the PR lands at a later tick once green again. A PR skipped as `Busy`
+    meets the same guard, so none lands an old digest — there is no
+    behind-base check in the merge route otherwise (green checks from the
+    older base are all it reads). A refresh that fails or meets a residual
+    conflict labels the PR `harness:pr-fix`; while it carries that label
+    the train answers `Attempt::Repairing` and mounts nothing (no retry
+    every tick). A
+    compare that cannot be read keeps the old behaviour (GitHub refresh;
+    a merge on its checks).
+  - **Cost**: no `pr_fix` session for stale digests. Per catch-up, 1
+    compare, 2 when `main_agent` brings bundles; per refreshed task PR, 1
+    or 2 more; per merge attempt, 1 or 2 more; per stale task PR, one
+    local refresh (a checkout mount, `sh mock/build.sh`, one push) and one
+    extra CI run before it lands. After a change to the mock-up's build
+    itself (an upgrade's `server.js`), every task PR counts as stale,
+    whether it has a component or not: the first side's build change is
+    taken as staling whatever the other side holds (one compare, no
+    second read) — rare, and a refresh that rewrites nothing pushes git's
+    merge alone.
+
 ## Rehearsal (scratch copy of the product, main_agent `e13063e`)
 
 - Upgrade alone (new `server.js`, `build.mjs` unchanged): 12/12 `builtFrom`
@@ -145,12 +197,38 @@ digests stale.
 - [ ] The install clone has the node the build needs (`npx esbuild`): if
       the upgrade fails there, the watch log says
       `sh mock/build.sh failed in the install clone` and nothing is pushed.
-- [ ] Each milestone's next catch-up after the upgrade: its bundles and
-      `pages.json` digests regenerate when they conflict. A component only
-      the milestone has (its entry merged without a conflict) keeps a digest
-      of the old `server.js`: if `pages-mocked--bundles` goes red there,
-      `sh mock/build.sh` on the branch (the catch-up rebuilds on a conflict
-      only — a gap older than this round, any `server.js` change has it).
+- [ ] Each milestone's next catch-up after the upgrade (round D): no
+      `Merge <sha> into milestone/N-…` from GitHub, but `milestone/N-…
+      holds main_agent: mock/components/X.js and … regenerated` and a
+      `chore: sh mock/build.sh after merging main_agent (<sha>) …` commit
+      on the branch, one milestone a tick. `pages-mocked--bundles` green on
+      the pushed branch, including a component only the milestone has.
+- [ ] GitHub's compare answers for a branch name with a slash
+      (`compare/milestone/N-…...<sha>`): the watch log shows no
+      `what main_agent changed since it cannot be read` debug line. If it
+      does, every catch-up goes local (still correct, one a tick).
+- [ ] A `main_agent` push that changes no file of the mock-up's build
+      (a handler file, a Rust source) still catches up on GitHub: `Merge
+      <sha> into milestone/N-…`, no `catch-up` checkout mounted.
+- [ ] A task PR whose component exists only on it, after such a
+      catch-up: the watch says `task PR(s) #n take it when they land`, the
+      PR keeps its old base and stays green; no `pr_fix` session starts.
+- [ ] Its landing: `watch: milestone_merge -> #<task> waits: PR #n took
+      milestone/N-… in the harness's checkout, its mock-up bundles
+      rebuilt`, a `chore: sh mock/build.sh after merging milestone/N-… (<sha>)
+      into <task branch>` commit on the PR, CI reruns green, the next
+      attempt merges it, and `pages-mocked--bundles` stays green on the
+      milestone after.
+- [ ] A task PR skipped as `Busy` during that catch-up (its session still
+      running), green on its old base: it never lands with the old digest —
+      the merge train refreshes it first, same lines as above.
+- [ ] Reverse side: a milestone whose own task changed `mock/src/screen.js`,
+      catching up after `main_agent` landed another milestone's components:
+      local catch-up with `sh mock/build.sh`, no GitHub merge, its
+      `pages-mocked--bundles` green after.
+- [ ] GitHub's compare with a sha as base and a branch as head
+      (`compare/<sha>...milestone/N-…`, the reverse read): no `cannot be
+      read` debug line in the watch log.
 - [ ] The conformance check (`ArchitectureHolds`) reports no stale bundle
       on a milestone branch the upgrade has not reached yet (old `server.js`,
       old digests).
