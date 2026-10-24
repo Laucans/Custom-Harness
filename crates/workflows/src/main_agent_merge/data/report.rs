@@ -65,7 +65,5 @@ pub enum Outcome {
         roadmap: Option<u64>,
         /// The ids the landing built, now marked so in the plan's graph.
         built: Vec<String>,
-        /// The milestones still building whose branch took the landing.
-        caught_up: Vec<u64>,
     },
 }

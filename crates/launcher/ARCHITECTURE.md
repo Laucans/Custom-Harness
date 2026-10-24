@@ -37,9 +37,12 @@ src/dispatch/     one module per thing that can be run, plus what they share
                      the shared read-only checkout, the writes on the integration branch
   pr_review.rs      an advisory review on a PR
   pr_fix.rs         one repair attempt on a red PR — a writable checkout of its own
-  catch_up.rs       a milestone's branch brought up to the integration branch: GitHub's
-                     merge, else a writable `catch-up` checkout where the generated
-                     files are regenerated (`branching::catch_up_locally`)
+  catch_up.rs       `Route::CatchUp`, in the tick: `common::catch_up::catch_up` handed a
+                     local merge — a writable `catch-up` checkout (`shared::mount_bare`:
+                     the watch's toolchain untouched) with `GitCli`, the merged tree's
+                     own pin (`toolchain::by_the_tree`, rustup's proxies ahead) and
+                     `RealDisk`, where the generated files are regenerated
+                     (`branching::catch_up_locally`); told as `watch: catch_up -> …`
   test_debt.rs      the tests one file owes, from its test-debt issue — writable too,
                      on the integration branch
   rules.rs          the rules and their tests, or a contest settled, from a rules'
@@ -127,12 +130,12 @@ seconds, repeat. `--once` does a single pass.
 `routing::plan`, both pure and tested without a fake adapter). Every piece of
 work the snapshot shows — every PR to repair or review, every decision,
 split, task, refinement, merge — is a weighted job: its route's base
-(`routing::base_weight`: the two merges first, then plan, rules, decisions,
+(`routing::base_weight`: the catch-ups, then the two merges, then plan, rules, decisions,
 contracts, repairs, reviews, splits, arbitration, tasks, business then
 technical refinement, test debt), a bonus for a milestone on the critical
 path, a point per tick it waited, capped. Under `--parallel` the tick
 (`router/lanes.rs::run_schedule`) runs every free job in the tick — the
-merges, a few GitHub calls — and starts the paid ones heaviest first, one
+catch-ups and the merges, a few GitHub calls — and starts the paid ones heaviest first, one
 per free lane: a task as the dev loop's `--task` child, anything else as
 `harness route <kind> <n>` in its own `router-lane-<k>` checkout. **Nothing
 paid runs in the watch's process**, so a long session never keeps the
@@ -155,12 +158,43 @@ running lanes are waited for, and the watch exits 0, writing
 sends `SIGTERM`, so it drains too. A hard stop is `SIGKILL` to the watch's
 tree and process group, sent from outside (the view's switch).
 
-**A quiet tick costs no quota.** Before the snapshot, one conditional read
+**A quiet tick costs one call.** Before the snapshot, one conditional read
 (`GitHub::activity`, the newest issue or PR with `If-None-Match`): a `304`
-is free, and when nothing moved — no PR waiting on its checks, no lane just
-freed — the tick ends there (`routing::may_skip`, `routing::Pulse`). The
-forty-odd reads of a snapshot are paid when something changed, or every
+is free; and one read of the integration branch's head
+(`GitHub::branch_sha`), since a push that updates no issue — an upgrade, a
+human's, the plan's graph written — moves it all the same. When nothing
+moved — no head moved, no PR waiting on its checks, no lane just freed —
+the tick ends there (`routing::may_skip`, `routing::Pulse`). The forty-odd
+reads of a snapshot are paid when something changed, or every
 `routing::FULL_READ_EVERY` ticks as a valve.
+
+**Every building milestone branch follows the integration branch.** Each
+tick reads the head (`common::catch_up::read_head`, one `branch_sha` call)
+and, while a branch is behind it and it is not green, that commit's
+own checks (`GitHub::commit_checks`, one more) — never the branch's newest
+run, which seconds after a push still belongs to the head before. Both are
+kept in the pulse (`CatchUps`), with what each milestone branch was brought
+to. Once that commit is green (never merely "not red"), every branch behind
+it is a free `Route::CatchUp` (weight 1010, before the merges;
+`routing::read_catch_ups`) that merges that very sha: GitHub's merge first,
+else one local merge a tick in the `catch-up` checkout with the generated
+files regenerated — a file the base deleted removed — by the cargo the
+merged tree pins. Held: the open task PRs into the branch take it
+(`refresh_task_prs`, never a force; a PR a lane works on, or whose task's
+session still runs — `catch_up::Busy` — skipped), said by number. A
+residual conflict labels the landing PR `harness:pr-fix`, or is said once;
+GitHub's merge alone is tried again hourly at the same head, said again
+while there is no landing PR. A failure is parked an hour, said once; a
+push the remote refuses as behind (a session pushed meanwhile) is merged
+again next tick. The tasks of a branch behind the head, or one that could
+not take it, wait (`Snapshot::catch_up`, `catch_up_held`) — `start_task`
+and `run_dev_loop` no longer merge anything themselves; a catch-up waits
+while a repair works on its landing PR, and that repair while the catch-up
+is due. The board is read in full when the head moved, when its verdict
+came in, or while a catch-up due is unsettled (one left for the next tick
+by the local budget, one whose push raced) — not while a head is merely
+pending. A landing no longer catches the others up itself: it moved the
+head, which the route follows.
 
 **A red integration branch holds the plant.** On every full read, before the
 snapshot, the sentinel (`workflows::common::sentinel::watch`) reads the
@@ -286,8 +320,11 @@ run touches.
 
 The owner asked to see easily what is on the `PATH` the harness uses. One
 resolver composes it, for the harness's own spawns on a product's behalf (a
-product's script, an inline catch-up's `cargo metadata`, the signature
-index's `npx tsc`) and for every Claude session alike:
+product's script, the signature index's `npx tsc`) and for every Claude
+session alike. One exception, a catch-up's local merge (`by_the_tree`): its
+tree's pin is the merge's, known only once merged, so its `Processes` are
+resolved unpinned — rustup's proxies ahead, which read the merged
+`rust-toolchain.toml` — and the watch's own toolchain is left as it was:
 
 1. `<factory>/.llocal/toolchain/bin`, the shims: `sed` → `gsed`, `grep` →
    `ggrep` when Homebrew installed them, `bash` → the first bash ≥ 5, `node`

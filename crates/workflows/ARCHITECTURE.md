@@ -221,7 +221,8 @@ Current contents:
 | `sections` | the canonical sections of an issue body. `split` writes `Scope` and `Architecture`, which no refinement phase ever rewrites; the refinement writes the five after them. |
 | `explore` | the repo map: `Ground` (free — glues `CLAUDE.md`, `docs/ARCHITECTURE.md`, `docs/PROJECT.md` and the tracked-file list verbatim) then one paid session that condenses it. A workflow wires both by implementing `Explored` on its state. |
 | `sentinel` | the integration branch's own CI, read by `harness watch` on every full read, before the snapshot (`GitHub::branch_checks`): red opens one `harness:human` issue — found again by its title, never twice — and the router holds every task start and merge (`routing::base_red`) until the branch is green again, runs still in progress after a red included; green closes it. The reviews, repairs, rules, test debt and decisions go on. |
-| `branching` | a milestone's branch name, and what keeps it up to the integration branch: `catch_up` (GitHub's merge) and `catch_up_locally` (the same merge in a checkout through `Repo` and `Process`; a conflict on `Cargo.lock` and the registry's `Cargo.toml` alone is regenerated — the base's lock, `scripts/register.sh`, `cargo metadata` — committed and pushed; any other conflict aborts the merge and stays a refusal). `pr_fix`'s prompt tells its session the same steps. |
+| `branching` | a milestone's branch name, and the local half of its catch-up: `catch_up_locally`, the merge of the integration branch's head — the sha the watch read — in the harness's checkout through `Repo`, `Process` and `Disk`. Every conflicted file the table of generated files names (`harness_architecture::generated::GENERATED`: `Cargo.lock`, the registry's `Cargo.toml`, `queries/registry.json`, `mock/components/*.js`, and `mock/pages.json` when only its `builtFrom` digests differ) is taken from the base — removed (`Repo::remove`) when the base deleted it (`UD`, `DD`, `AU`: `checkout --theirs` refuses those) — then its generators run once each, in order (`scripts/register.sh`, `scripts/queries.sh`, `mock/build.sh`, `cargo metadata` — the cargo the merged tree pins, the launcher's `toolchain::by_the_tree`), and the merge is committed and pushed: `CaughtUp::Locally`. A conflict anywhere else (`mock/src/commands.js`, a Rust source) is `CaughtUp::Residual`, a failed step `CaughtUp::Failed`: both abort the merge, never hand-merge it. A push refused as a non-fast-forward (`[rejected]`: a session pushed to the branch meanwhile) is `CaughtUp::Deferred`, merged again next tick, never parked. `pr_fix`'s conflict block reads the same table (`generated::instructions`), so the two never drift. |
+| `catch_up` | every building milestone branch kept up to the integration branch's head. `read_head`, every tick: the head (`branch_sha`) and, while a branch is behind it and it is not green (running, or red until a rerun), that commit's own checks (`GitHub::commit_checks` — never the branch's newest run, which a fresh push leaves to the head before); answers whether the board must be read in full (the head moved, its verdict came in, a catch-up due is unsettled). `CatchUps` (in the router's `Pulse`): the head and its verdict, what each branch was brought to, the residual conflicts (head, next retry) and the parked failures; `read` — at a full read, the branches `due` (behind the head, once its own checks are green — never merely "not red" — not parked, a residual only once its retry is due) and `holding` (those whose tasks wait). `catch_up` merges that very sha: GitHub's merge, else the local merge (`LOCAL_PER_TICK`, one a tick); held → `refresh_task_prs` merges the branch into every open task PR into it (never a force; a PR a lane works on, or whose task's session still runs — `Busy`, from the lanes' numbers and the boards — skipped) and says which; residual → `route_residual` labels the open landing PR `harness:pr-fix` (the repair cap applies), or says it and leaves it, never `harness:human`; then GitHub's merge alone is tried again every `PARK_SECONDS` at that head — a hand or the repair may have merged the base — quiet while the landing PR has the repair, said again without one; failed → parked `PARK_SECONDS` (an hour), said once. A lane working on the landing PR defers the catch-up (read from the PR, its label being gone once the repair started). `told` is the outcome line the watch reports under `catch_up`, which the view's journal closes its row with. The time is handed in: pure but for the `GitHub` port. |
 | `fake_github` | `#[cfg(test)]` — an in-memory `GitHub` shared by the workflows' tests. A fake adapter, not a mock. |
 | `fake_git` | `#[cfg(test)]` — an in-memory `Repos`: every verb recorded, the ones named failing fail, a merge conflicting on the files a test names (`FakeRepos::conflicting`). |
 | `fake_disk` | `#[cfg(test)]` — an in-memory `Disk`: what it holds reads back, what was written to it can be re-read. |
@@ -303,7 +304,12 @@ its precheck, its lock and its trigger.
   for a French-speaking human.
 - `pr_fix` is the only workflow whose **first** stage writes: it removes its own
   trigger label before paying for anything, so a PR nobody can repair does not
-  buy one session per poll. Its own `mod.rs` carries the reasoning.
+  buy one session per poll. Its own `mod.rs` carries the reasoning. Which
+  PRs it is due on is `pr_fix::data::candidates::due`, read by the router: a
+  label and a red check — or a branch that conflicts with its base, within
+  the repair cap (a milestone's landing PR the catch-up labelled for a
+  residual conflict, its checks green) — and a reviewed PR whose review
+  blocks, whose branch conflicts or whose check failed, within the cap.
 - All of them are wired into the binary — `dev_loop` directly (`harness`) and every
   one of them through the router's dispatch (`harness watch`). `pr_review` was
   the last to get a launcher entry point: its documented trigger used to be a
@@ -462,8 +468,9 @@ refuses is `MergeRefused`, both told as warnings and never a `Halt` that stops
 the watch — and is the **merge train** when the plan has a graph (`data/merge_train`):
 a consumer waits on the producers of what it reads (`WaitingOnProducers`,
 whatever its number); a landing marks `built` in `plan/graph.json` every id
-whose manifest its PR carried, and brings the integration branch into every
-other milestone still building, telling the one that cannot take it.
+whose manifest its PR carried; the landing moves the integration branch's
+head, and every other milestone still building takes it through the router's
+catch-up route (`common::catch_up`, `Route::CatchUp`), not the landing.
 `data_snapshot` dumps the data model of every branch whose head moved and
 archives it on the target's `harness/data-model` branch; `data_model_draft`
 asks one session for the first `model.json` of a branch that has none, from

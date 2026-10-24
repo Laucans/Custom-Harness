@@ -108,15 +108,15 @@ gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
 checks the same rules after you), then the mutants the CI will judge, in
 the foreground: `git diff origin/<your base> > .git/change.diff && cargo
 mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
-one before the PR (a mutant the CI finds costs a whole repair round), then branch -> PR -> `gh pr checks <n>
---watch --interval 60` in the foreground -> gh pr merge --squash (one call a
-minute: the product's GitHub quota is 5 000 calls an hour for every lane). The CI wait is the one
-wait you take, and only in the foreground: never a background watcher,
-never Monitor, never a sleep loop or a scheduled wake-up — a session silent
-for twenty minutes is killed, and its open PR then goes to the harness's
-own cycle (labelled `{to_review}`, reviewed, merged once green), not back
-to you; a foreground watch that runs out before the checks end is simply
-run again. A Micro-UI or a screen composition ships with its
+one before the PR (a mutant the CI finds costs a whole repair round), then branch -> PR, and
+STOP THERE: open the pull request against the milestone branch with
+`gh pr create --label {to_review}`, say its number in your reply and END
+YOUR TURN. The harness watches its CI from here and merges it once it is
+reviewed and every check is green: never wait on it — never poll `gh pr
+checks`, never a background watcher, never Monitor, never a sleep loop or a
+scheduled wake-up (a session silent for twenty minutes is killed) — and do
+NOT run `gh pr merge`: a session merges no pull request (the command is
+denied to it), and a red check is the repair route's. A Micro-UI or a screen composition ships with its
 mock-up: open the page under mock/pages/ and the micro-frontend under
 mock/components/ first (they are the screen as the human wants it; a
 `mockup/*` branch may carry a newer one). Build FROM their code, never
@@ -649,18 +649,19 @@ mod tests {
     }
 
     #[test]
-    fn the_write_side_code_prompt_opens_a_pr_and_never_merges() {
+    fn both_code_prompts_open_a_pr_and_never_merge() {
         let text = with_labels(CODE_WRITE_SIDE);
         assert!(text.contains("gh pr create --label harness:to-review"));
         assert!(text.contains("do NOT run `gh pr merge`"));
         assert!(text.contains("harness:review-pending"));
         assert!(text.contains("harness:write-side"));
         assert!(!text.contains("{to_review}") && !text.contains("{review_pending}"));
-        let read = with_labels(CODE);
-        assert!(
-            read.contains("gh pr merge --squash"),
-            "the read side still merges"
-        );
+        // The read side ends at its PR too (ForgeDesMondes #487, 2026-10-24:
+        // a read-side session merged its PR red and held milestone #22).
+        let read = flat(&with_labels(CODE));
+        assert!(read.contains("gh pr create --label harness:to-review"));
+        assert!(read.contains("do NOT run `gh pr merge`"));
+        assert!(!read.contains("gh pr merge --squash"));
     }
 
     #[test]
@@ -678,12 +679,13 @@ mod tests {
             "the sentence that killed three sessions"
         );
         let read = flat(&with_labels(CODE));
-        assert!(read.contains("in the foreground"), "{read}");
+        assert!(read.contains("END YOUR TURN"), "{read}");
+        assert!(read.contains("never poll `gh pr checks`"));
         assert!(read.contains("never a background watcher"));
         assert!(read.contains("never Monitor"));
         assert!(
-            read.contains(&format!("labelled `{}`", labels::TO_REVIEW)),
-            "where a killed session's PR goes"
+            read.contains(&format!("gh pr create --label {}", labels::TO_REVIEW)),
+            "the PR goes to the harness's own cycle"
         );
     }
 
@@ -702,6 +704,10 @@ mod tests {
         assert!(skill.contains("never `Monitor`"));
         assert!(skill.contains("end your turn"));
         assert!(skill.contains("in the foreground"));
+        assert!(
+            !skill.contains("gh pr merge --squash"),
+            "a session merges no PR"
+        );
         assert!(
             !skill.contains("Wait for `ci` with `gh pr checks`, then"),
             "the step that had every session wait"

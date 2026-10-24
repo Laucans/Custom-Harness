@@ -137,6 +137,9 @@ pub struct FakeGitHub {
     pub branch_checks: HashMap<String, Option<bool>>,
     /// `branch_checks` refused outright — a rate limit, Actions off.
     pub branch_checks_refused: bool,
+    /// `commit_checks` answers, by sha. An absent key is `None` — no run of
+    /// that commit yet.
+    pub commit_checks: HashMap<String, Option<bool>>,
 }
 
 impl FakeGitHub {
@@ -519,6 +522,16 @@ impl GitHub for FakeGitHub {
             ));
         }
         Ok(self.branch_checks.get(branch).copied().flatten())
+    }
+
+    async fn commit_checks(&self, _branch: &str, sha: &str) -> Outcome<Option<bool>> {
+        self.ok()?;
+        if self.branch_checks_refused {
+            return Err(Halt::Failed(
+                "failed to get runs: HTTP 403: API rate limit exceeded".to_string(),
+            ));
+        }
+        Ok(self.commit_checks.get(sha).copied().flatten())
     }
 
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {

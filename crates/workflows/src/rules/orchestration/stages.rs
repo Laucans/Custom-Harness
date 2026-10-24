@@ -158,9 +158,11 @@ For each rule of the pull request's `rules.json`, read its tests
    unit it uses.
 4. The pull request touches `rules.json` and `tests/rules/` only.
 
-Every test faithful: wait for its checks (`gh pr checks <n> --watch`), then
-`gh pr merge <n> --squash`, then `gh issue close {num}` if the merge did not
-close it. A rule marked `conform` may be red: its code comes after.
+Every test faithful: comment on the pull request one line saying so, and
+end that comment with the line `<!-- rules-fidelity: faithful -->`. Do not
+merge and do not wait for its checks: the harness merges it once they are
+green, and closes the issue. A rule marked `conform` may be red: its code
+comes after.
 Anything unfaithful: do not merge. Comment on the pull request each
 finding — the rule, the test, what is wrong, what would be faithful — and
 end that comment with the line `<!-- rules-fidelity: unfaithful -->`. Then
@@ -304,7 +306,8 @@ mod tests {
             assert!(prompt.contains("rules.json and tests/rules/ only"));
             assert!(prompt.contains("--label harness:rules"));
         }
-        assert!(FIDELITY_PROMPT.contains("gh pr merge <n> --squash"));
+        assert!(!FIDELITY_PROMPT.contains("gh pr merge"));
+        assert!(FIDELITY_PROMPT.contains("<!-- rules-fidelity: faithful -->"));
         assert!(FIDELITY_PROMPT.contains("do not merge"));
         assert!(FIDELITY_PROMPT.contains("--add-label harness:ready"));
         assert!(FIDELITY_PROMPT.contains("--add-label harness:needs-decision"));

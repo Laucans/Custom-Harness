@@ -12,6 +12,7 @@ use harness_core::domain::Issue;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Event, Logbook};
 use harness_workflows::common::branching;
+use harness_workflows::common::catch_up::Busy;
 use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
 use harness_workflows::dev_loop::data::tasks;
 use harness_workflows::main_agent_merge::data::merge_train;
@@ -64,17 +65,17 @@ pub(super) async fn run_schedule(
         mut left,
     } = routing::plan(jobs, &running, &lanes.groups(), lanes.free_slots(), paid);
     let mut failed = None;
+    let busy = Busy::of(&running, &found.boards);
     for job in free {
         if lanes.is_closed() {
             break;
         }
-        if let Some(halt) = dispatched(args, here, gh, job.route, log).await
+        if let Some(halt) = dispatched(args, here, gh, job.route, pulse, &busy, log).await
             && failed.is_none()
         {
             failed = Some(halt);
         }
     }
-    let mut caught_up: Vec<u64> = Vec::new();
     for job in to_start {
         let Some(slot) = lanes.free_slot() else {
             left.push(job.route);
@@ -82,18 +83,7 @@ pub(super) async fn run_schedule(
         };
         let started = match &job.route {
             Route::DevTask { milestone, task } => {
-                start_task(
-                    args,
-                    here,
-                    gh,
-                    found,
-                    (*milestone, *task),
-                    slot,
-                    &mut caught_up,
-                    lanes,
-                    log,
-                )
-                .await
+                start_task(args, here, found, (*milestone, *task), slot, lanes, log)
             }
             route => start_route(args, here, route, job.exclusive, slot, lanes, log),
         };
@@ -236,17 +226,16 @@ fn say_held(
 /// Starts `task` of `milestone` on lane `slot` — a `harness --task <n>`
 /// child on the milestone's own branch (`common::branching`), never the
 /// fixed `--branch`. A task parked on its issue's very version is not
-/// started; the milestone's branch takes the integration branch first,
-/// once a tick (`caught_up`). Whether it started.
-#[allow(clippy::too_many_arguments)] // the tick's state, handed as it is
-async fn start_task(
+/// started. The branch holds the integration branch's last green head: the
+/// router holds the tasks of a branch behind it, or one that could not take
+/// it, until a catch-up brought it up (`routing::Snapshot::catch_up`).
+/// Whether it started.
+fn start_task(
     args: &WatchArgs,
     here: &Path,
-    gh: &dyn GitHub,
     found: &Snapshot,
     (milestone, number): (u64, u64),
     slot: usize,
-    caught_up: &mut Vec<u64>,
     lanes: &mut Lanes,
     log: &Logbook,
 ) -> bool {
@@ -269,31 +258,6 @@ async fn start_task(
         return false;
     }
     let branch = branching::milestone_branch(milestone, &board.milestone.title);
-    if !args.dry_run && !caught_up.contains(&milestone) {
-        // A branch that cannot take the base is no base to build on: the
-        // session would stop at once on what the base has and it lacks
-        // (ForgeDesMondes, 2026-10-20: five sessions in one tick, $3.40).
-        // The task is held, said once a tick, until a hand catches the
-        // branch up — the merge is tried again at every tick.
-        if !crate::dispatch::catch_up::run(
-            here,
-            &args.target_repo_url,
-            &branch,
-            &args.branch,
-            args.dry_run,
-            gh,
-            log,
-        )
-        .await
-        {
-            log.say(&format!(
-                "watch: lanes -> #{number} held: {branch} cannot take {} — merge it by hand, the task starts then",
-                args.branch
-            ));
-            return false;
-        }
-        caught_up.push(milestone);
-    }
     let Ok(exe) = std::env::current_exe() else {
         log.error("watch: lanes -> cannot find this executable");
         return false;
@@ -412,6 +376,8 @@ mod tests {
             base_checks: None,
             database_down: false,
             review_backlog_full: false,
+            catch_up: Vec::new(),
+            catch_up_held: Vec::new(),
         }
     }
 

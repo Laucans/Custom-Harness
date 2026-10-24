@@ -411,6 +411,19 @@ pub trait GitHub {
     /// listed at all.
     async fn branch_checks(&self, branch: &str) -> Outcome<Option<bool>>;
 
+    /// Whether the workflow runs of `branch` on the commit `sha` are green,
+    /// judged as [`Self::branch_checks`] judges the newest head — for this
+    /// sha alone: `None` while none ran on it yet (GitHub creates them
+    /// seconds after a push, a `[skip ci]` push never) or one still runs.
+    ///
+    /// What ties a verdict to the head a caller read: the newest run of a
+    /// branch just pushed to still belongs to the head before.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`](crate::domain::Halt::Failed) if the runs cannot be
+    /// listed at all.
+    async fn commit_checks(&self, branch: &str, sha: &str) -> Outcome<Option<bool>>;
+
     /// The file `file` of the artifact `artifact` the latest finished run of
     /// the workflow `workflow` on `branch` kept — `None` when no finished run
     /// is there, or it kept no such file. A board with no CI keeps nothing.

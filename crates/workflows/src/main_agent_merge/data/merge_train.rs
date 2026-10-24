@@ -1,12 +1,13 @@
 //! The train's order and its bookkeeping, decided from the plan's graph
 //! (contract R) with no I/O: which milestone may land, which ids a landing
-//! builds, which branches it reaches.
+//! builds.
 //!
 //! Several milestones build at once, each against the contracts the others
 //! produce — mocked until built. The train keeps them honest: a consumer
 //! lands after its producers, every landing marks the ids it built in the
-//! graph (the mock server stops standing in for them) and is brought into
-//! every branch still building, so the next merge meets no surprise.
+//! graph (the mock server stops standing in for them), and every branch
+//! still building takes it through the catch-up route (`common::catch_up`),
+//! so the next merge meets no surprise.
 
 use harness_architecture::graph::{Graph, Kind, State};
 use harness_core::domain::Issue;
@@ -76,23 +77,6 @@ pub fn mark_built(graph: &mut Graph, manifests: &[(Kind, String)]) -> Vec<String
         }
     }
     marked
-}
-
-/// The milestones a landing reaches: every other one building —
-/// `harness:triggered`, open, not `harness:waiting-merge` — by number.
-#[must_use]
-pub fn building(milestones: &[Issue], landed: u64) -> Vec<&Issue> {
-    let mut found: Vec<&Issue> = milestones
-        .iter()
-        .filter(|m| {
-            m.number != landed
-                && m.is_open()
-                && m.has(labels::TRIGGERED)
-                && !m.has(labels::WAITING_MERGE)
-        })
-        .collect();
-    found.sort_by_key(|m| m.number);
-    found
 }
 
 #[cfg(test)]
@@ -215,23 +199,5 @@ mod tests {
         );
         assert_eq!(declared("{"), None);
         assert_eq!(declared(r#"{"other":1}"#), None);
-    }
-
-    #[test]
-    fn the_landing_reaches_every_other_milestone_building() {
-        let milestones = [
-            issue(21, &[labels::MILESTONE, labels::TRIGGERED], "open"),
-            issue(19, &[labels::MILESTONE, labels::TRIGGERED], "open"),
-            issue(20, &[labels::MILESTONE, labels::TRIGGERED], "open"),
-            issue(22, &[labels::MILESTONE, labels::READY], "open"),
-            issue(
-                18,
-                &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
-                "open",
-            ),
-            issue(17, &[labels::MILESTONE, labels::TRIGGERED], "closed"),
-        ];
-        let reached: Vec<u64> = building(&milestones, 20).iter().map(|m| m.number).collect();
-        assert_eq!(reached, [19, 21]);
     }
 }

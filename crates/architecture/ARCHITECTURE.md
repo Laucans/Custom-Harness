@@ -38,6 +38,7 @@ src/graph.rs        the plan's graph (contract R): what every milestone produces
 src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
 src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the showcase page (assets/showcase.html), the static check a fragment is reused on
 src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep)
+src/generated.rs    the files of a product a script writes (GENERATED: Cargo.lock, the registry's Cargo.toml, queries/registry.json, mock/components/*.js, mock/pages.json's builtFrom digests), how a conflict in each is taken, their generators in run order (Regenerator), the digest-only resolution of mock/pages.json (digests_only, both marker styles), the repair prompt's lines (instructions)
 assets/             those files, compiled in with include_str! — the harness's own scripts/{dead-code,mutants-rotation,test-debt}.sh are links to them, one script for both
 tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_script.rs: the installed scripts, run on a real folder
                     isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, each way a unit could reach another, a DataCapability on its target aggregate only, the registry crossed by the two servers only
@@ -57,6 +58,15 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   touches a checkout, and it does so through core's `Disk` port: the rules
   run on an in-memory `Tree`, a test hands them one. Its tests use a
   read-only `FakeDisk` of their own, which refuses any write.
+- **Which files are generated is here, once.** `generated::GENERATED` is
+  read by the harness's catch-up of a milestone branch
+  (`workflows::common::branching::catch_up_locally`: take the base's side,
+  run the generators) and by the repair session's prompt (`pr_fix`'s
+  conflict block, `generated::instructions`): one table, so the two never
+  disagree on which file a script owns. `mock/pages.json` is half a hand's:
+  a conflict there is generated only when its `builtFrom` digests are all
+  that differ (`digests_only`; `mock/build.sh` rewrites them). The bundles'
+  HTML fragments are hand-written and out of it. Pure, like the rest.
 - **What to install is here; whether to write it is not.** `assets` lists the
   files and their content; `init_repo::data::install` decides what a run
   writes of them (nothing already there is overwritten, `CLAUDE.md` is

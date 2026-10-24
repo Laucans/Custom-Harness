@@ -113,6 +113,7 @@ fn tag(route: &str) -> &'static str {
         "ContractChange" => "contract_manager",
         "MergeMainAgent" => "main_agent_merge",
         "MergeIntoMilestone" => "milestone_merge",
+        "CatchUp" => "catch_up",
         _ => "",
     }
 }
@@ -421,6 +422,10 @@ mod tests {
             ("TestDebt { issue: 80 }", "test_debt"),
             ("Arbiter { issue: 81 }", "arbiter"),
             ("ContractChange { issue: 70 }", "contract_manager"),
+            (
+                "CatchUp { milestone: 6, branch: \"milestone/6-media\" }",
+                "catch_up",
+            ),
             ("Nothing", ""),
         ] {
             assert_eq!(tag(route), said, "{route}");
@@ -564,6 +569,26 @@ mod tests {
         assert_eq!(row.what, "dev loop");
         assert_eq!(row.subject.as_deref(), Some("milestone 3"));
         assert_eq!(row.state, State::Ok);
+        assert_eq!(journal.empty_ticks, 0);
+    }
+
+    #[test]
+    fn a_catch_up_is_a_milestone_merge_closed_by_its_outcome() {
+        let text = "\
+[2026-10-24T20:07:00Z] saw: base=Some(true)
+[2026-10-24T20:07:00Z] tick: CatchUp { milestone: 6, branch: \"milestone/6-media\" }
+[2026-10-24T20:07:02Z] watch: catch_up -> milestone #6 holds the base
+[2026-10-24T20:07:03Z] warning: watch: catch_up -> milestone #7 cannot take the base: npx
+";
+        let journal = read(text);
+        assert_eq!(journal.triggers.len(), 2, "{:?}", journal.triggers);
+        let (seven, six) = (&journal.triggers[0], &journal.triggers[1]);
+        assert_eq!(six.what, "catch up");
+        assert_eq!(six.subject.as_deref(), Some("milestone 6"));
+        assert_eq!(six.workflow.as_deref(), Some("milestone-merge"));
+        assert_eq!(six.state, State::Ok);
+        assert_eq!(seven.what, "catch up");
+        assert_eq!(seven.state, State::Failed);
         assert_eq!(journal.empty_ticks, 0);
     }
 

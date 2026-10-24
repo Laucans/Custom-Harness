@@ -55,10 +55,11 @@ use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug};
 use harness_core::ports::shell::github::{Activity, GitHub};
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
-use harness_workflows::common::{branching, labels, review, sentinel};
+use harness_workflows::common::{branching, catch_up, labels, sentinel};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
 use harness_workflows::main_agent_merge::data::merge_train;
+use harness_workflows::pr_fix::data::candidates;
 use harness_workflows::pr_review::data::skip_rules;
 
 use crate::adapters::sink::Both;
@@ -230,7 +231,12 @@ async fn tick(
         return Ok(());
     }
     let activity = gh.activity(pulse.etag.as_deref()).await?;
-    if routing::may_skip(pulse, &activity, freed) {
+    // The integration branch's head, every tick (one call), and its own
+    // checks while a branch waits on them (one more): a push that moves no
+    // issue — an upgrade, a human's — and the green that follows it are
+    // what the catch-ups follow.
+    let catching_up = catch_up::read_head(gh.as_ref(), &mut pulse.catch_ups, &args.branch).await?;
+    if routing::may_skip(pulse, &activity, freed, catching_up) {
         pulse.stayed_quiet();
         log.debug("quiet: nothing moved on the board — no snapshot read");
         return Ok(());
@@ -258,8 +264,10 @@ async fn tick(
     .await?;
     found.database_down = database_down(log).await;
     // A red base is read in full every tick like a pull request waiting on
-    // its checks: the push that turns it green moves no issue.
+    // its checks: the push that turns it green moves no issue. The
+    // catch-ups due at the head just read, once its own checks are green.
     pulse.read_in_full(etag, watching_ci || routing::base_red(&found));
+    routing::read_catch_ups(&mut found, pulse, crate::dispatch::dev_loop::now_seconds());
     if args.no_human_gate {
         routing::open_taps(gh.as_ref(), &mut found, pulse, log).await?;
     }
@@ -304,7 +312,7 @@ async fn tick(
         // A soft stop arrived during the read: nothing new is dispatched.
         return Ok(());
     }
-    match dispatch(args, here, gh.as_ref(), route, log).await {
+    match dispatch(args, here, gh.as_ref(), route, pulse, log).await {
         Dispatched::Quota => rest(pulse, log),
         Dispatched::Went => pulse.rest.cleared(),
         Dispatched::Nothing | Dispatched::Failed => {}
@@ -336,7 +344,7 @@ fn say_saw(found: &Snapshot, log: &Logbook) {
     log.debug(&format!(
         "saw: base={:?}, {} roadmap, {} milestone(s), {} refining, {} tech-refining, \
          {} arbitrating, {} test-debt, {} rules, pr_fix={:?}, pr_review={:?}, to_merge={:?}, \
-         ready_to_merge={:?}, dev_loop={:?}",
+         ready_to_merge={:?}, dev_loop={:?}, catch_up={:?}, catch_up_held={:?}",
         found.base_checks,
         found.roadmap.len(),
         found.milestones.len(),
@@ -362,6 +370,12 @@ fn say_saw(found: &Snapshot, log: &Logbook) {
             .collect::<Vec<_>>(),
         found.ready_to_merge,
         found.dev_loop_milestones,
+        found
+            .catch_up
+            .iter()
+            .map(|(milestone, _)| *milestone)
+            .collect::<Vec<_>>(),
+        found.catch_up_held,
     ));
 }
 
@@ -532,13 +546,12 @@ async fn snapshot(
     // pick again: picked, it ended the tick on "already on a lane" while
     // the other PRs waited (`ForgeDesMondes`' four reviews ran one at a
     // time on five lanes, 19:44Z–20:10Z).
-    let prs_to_fix = red_prs(
-        gh,
-        &not_running(&to_fix, running),
-        &not_running(&to_review, running),
-    )
-    .await?;
-    let prs_to_review = prs_worth_reviewing(gh, &not_running(&to_review, running)).await?;
+    let (fixable, reviewable) = (
+        not_running(&to_fix, running),
+        not_running(&to_review, running),
+    );
+    let prs_to_fix = by_number(candidates::due(gh, &fixable, &reviewable).await?);
+    let prs_to_review = prs_worth_reviewing(gh, &reviewable).await?;
     // The plan's graph, when the plan wrote one: what orders the milestones
     // and says which may build side by side.
     let graph = routing::parse_graph(gh.file_text(routing::GRAPH_PATH, branch).await?.as_deref());
@@ -613,6 +626,8 @@ async fn snapshot(
         base_checks,
         database_down: false,
         review_backlog_full,
+        catch_up: Vec::new(),
+        catch_up_held: Vec::new(),
     };
     // The tests come first: a development that waits on them says so.
     let idle = routing::rules_first(&snapshot)
@@ -638,40 +653,6 @@ fn open_task_prs(to_fix: &[Pr], to_review: &[Pr]) -> usize {
     nums.sort_unstable();
     nums.dedup();
     nums.len()
-}
-
-/// The open PRs to repair, in number order: those that carry
-/// `harness:pr-fix` **and** have a check that concluded in failure — one CI
-/// read each — and those whose review blocks or whose branch conflicts.
-///
-/// The pairing is the point: the label alone would send a paid session at a
-/// PR that is merely still building.
-async fn red_prs(gh: &dyn GitHub, to_fix: &[Pr], to_review: &[Pr]) -> Outcome<Vec<Pr>> {
-    let mut found: Vec<Pr> = Vec::new();
-    for candidate in to_fix {
-        if !gh.pr_failing_checks(&candidate.num).await?.is_empty() {
-            found.push(candidate.clone());
-        }
-    }
-    // A blocking agent review, or a branch that no longer merges into its
-    // base, asks for a repair as a red check does — the label is posed for
-    // it at dispatch, the same request a human makes. Bounded like the
-    // rest: past `MAX_FIXES` repairs, the PR is a human's.
-    // A check that failed asks for a repair too, label or not: a task's PR
-    // ends its session at the push, and nobody else poses `harness:pr-fix`
-    // on it (ForgeDesMondes, 2026-10-20: five PRs reviewed clean and red on
-    // `rust` for up to nine hours, repaired by no one).
-    for candidate in to_review {
-        let comments = gh.pr_comments(&candidate.num).await?;
-        let repairs_left = review::repairs(&comments) < review::MAX_FIXES;
-        let blocked = review::status(&comments).wants_a_fix();
-        let conflicting = repairs_left && gh.pr_mergeable(&candidate.num).await? == Some(false);
-        let red = repairs_left && !gh.pr_failing_checks(&candidate.num).await?.is_empty();
-        if blocked || conflicting || red {
-            found.push(candidate.clone());
-        }
-    }
-    Ok(by_number(found))
 }
 
 /// The open PRs carrying `harness:to-review` that the review itself would

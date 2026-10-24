@@ -661,6 +661,18 @@ pub async fn take(here: &Path, pin: Pin, log: &Logbook) -> Toolchain {
     toolchain
 }
 
+/// The [`Process`](harness_core::ports::shell::process::Process) adapter
+/// for a checkout whose pin is the one its tree holds as a command runs —
+/// a merge just made — not the one a start read: rustup's proxies ahead of
+/// any other cargo (resolved as for an unpinned product), so the
+/// `rust-toolchain.toml` of the folder `cargo` runs in names the channel,
+/// never Homebrew's cargo. Takes nothing: the watch's own toolchain stays
+/// every other adapter's.
+pub async fn by_the_tree(here: &Path) -> Processes {
+    let toolchain = resolve(&Inputs::of_process(here, Pin::Unpinned)).await;
+    Processes::with_env(toolchain.environment())
+}
+
 /// [`take`] at a run's start, the product's pin read from the checkout the
 /// run mounted at `root` — its `run.log` says the tools it ran with.
 pub async fn at_run_start(here: &Path, root: &Path, log: &Logbook) {

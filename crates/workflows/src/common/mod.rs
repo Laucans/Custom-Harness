@@ -9,12 +9,14 @@
 //! its session, not derived); `delivery` reads the `Closes #n` convention
 //! for the loop (a task is done) and the milestone merge (every task's code
 //! is really on the branch); `routing` is the one pure decision the
-//! launcher's polling loop (`harness watch`) acts on; `dossier` reads what
+//! launcher's polling loop (`harness watch`) acts on, `catch_up` what keeps
+//! every building milestone branch up to the integration branch; `dossier` reads what
 //! the factory's creation decided, for the planner and split. The vocabulary of the
 //! agent-native architecture every target repo follows is not here: it is
 //! the `harness-architecture` crate.
 
 pub mod branching;
+pub mod catch_up;
 pub mod decision;
 pub mod delivery;
 pub mod dossier;

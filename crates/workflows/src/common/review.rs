@@ -88,6 +88,23 @@ pub fn status(comments: &str) -> Status {
     }
 }
 
+/// The line the rules' fidelity reader ends its verdict with, followed by
+/// `faithful` or `unfaithful`.
+pub const FIDELITY: &str = "<!-- rules-fidelity: ";
+
+/// Whether the rules' fidelity reader's last verdict on the PR is
+/// `faithful`: the merge train takes it once green.
+///
+/// The reader judges and never merges — a session merges no pull request
+/// (its `gh pr merge` is denied): the harness does, on green checks.
+#[must_use]
+pub fn judged_faithful(comments: &str) -> bool {
+    comments
+        .rfind(FIDELITY)
+        .and_then(|at| comments.get(at.saturating_add(FIDELITY.len())..))
+        .is_some_and(|verdict| verdict.starts_with("faithful"))
+}
+
 /// Whether the harness decided to merge the PR as it is: its last review is
 /// that decision ([`DECIDED_MERGE`]) and no repair came after it.
 ///
@@ -236,5 +253,19 @@ mod tests {
         assert!(!is_blocking("findings...\nVERDICT: clean"));
         assert!(!is_blocking("no verdict at all"));
         assert_eq!(verdict_marker("VERDICT: Blocking"), BLOCKING);
+    }
+
+    #[test]
+    fn only_the_last_fidelity_verdict_counts_and_it_must_say_faithful() {
+        let faithful = format!("{FIDELITY}faithful -->");
+        let unfaithful = format!("{FIDELITY}unfaithful -->");
+        assert!(judged_faithful(&faithful));
+        assert!(!judged_faithful(&unfaithful));
+        assert!(!judged_faithful(""));
+        assert!(!judged_faithful("faithful, no marker"));
+        assert!(judged_faithful(&format!("{unfaithful}\nfixed\n{faithful}")));
+        assert!(!judged_faithful(&format!(
+            "{faithful}\nnew finding\n{unfaithful}"
+        )));
     }
 }

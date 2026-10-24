@@ -1009,6 +1009,7 @@ mod tests {
             "TestDebt { issue: 80 }",
             "Arbiter { issue: 81 }",
             "MergeMainAgent { milestone: 16 }",
+            "CatchUp { milestone: 6, branch: \"milestone/6-media\" }",
         ] {
             let workflow = workflow_of_route(route).expect(route);
             assert!(ids.iter().any(|id| id == workflow), "{route} -> {workflow}");

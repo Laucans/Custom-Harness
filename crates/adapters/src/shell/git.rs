@@ -271,6 +271,10 @@ impl Repo for GitCli {
         self.git(&["checkout", "--theirs", "--", path]).await
     }
 
+    async fn remove(&self, path: &str) -> Outcome<Ran> {
+        self.git(&["rm", "--quiet", "--", path]).await
+    }
+
     async fn abort_merge(&self) -> Outcome<Ran> {
         self.git(&["merge", "--abort"]).await
     }
@@ -557,6 +561,45 @@ mod tests {
             git.merge("main").await.expect("ran").ok(),
             "nothing left to bring in"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_file_the_side_merged_in_deleted_is_removed_where_theirs_cannot_be_taken() {
+        // A component removed on the base while the branch rebuilt its
+        // bundle: `UD`, deleted by them.
+        let root = std::env::temp_dir().join(format!("harness-git-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let repo = root.join("repo");
+        sh(&root, &["init", "-q", "-b", "main", "repo"]).await;
+        sh(&repo, &["config", "user.name", "t"]).await;
+        sh(&repo, &["config", "user.email", "t@t"]).await;
+        std::fs::write(repo.join("gen.js"), "base").expect("write");
+        sh(&repo, &["add", "gen.js"]).await;
+        sh(&repo, &["commit", "-q", "-m", "base"]).await;
+        sh(&repo, &["checkout", "-q", "-b", "feat"]).await;
+        std::fs::write(repo.join("gen.js"), "feat").expect("write");
+        sh(&repo, &["commit", "-q", "-am", "feat"]).await;
+        sh(&repo, &["checkout", "-q", "main"]).await;
+        sh(&repo, &["rm", "-q", "gen.js"]).await;
+        sh(&repo, &["commit", "-q", "-m", "gone"]).await;
+        sh(&repo, &["checkout", "-q", "feat"]).await;
+        let git = GitCli::new(&repo);
+        assert!(!git.merge("main").await.expect("ran").ok());
+        assert_eq!(
+            git.dirty_files().await.expect("read"),
+            ["UD gen.js"],
+            "deleted by them"
+        );
+        assert!(
+            !git.take_theirs("gen.js").await.expect("ran").ok(),
+            "theirs has no such file"
+        );
+        assert!(git.remove("gen.js").await.expect("ran").ok());
+        assert!(!repo.join("gen.js").exists());
+        assert!(git.commit("merge main").await.expect("ran").ok());
+        assert!(!git.merge_in_progress().await.expect("asked"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

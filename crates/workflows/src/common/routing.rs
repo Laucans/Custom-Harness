@@ -8,15 +8,18 @@
 //!
 //! **One scheduler for every route** ([`schedule`]): every piece of work the
 //! snapshot shows becomes a [`Job`], weighted, and the watch starts them in
-//! weight order — the free ones (the two merges) in the tick, each paid one
+//! weight order — the free ones (the catch-ups and the two merges) in the
+//! tick, each paid one
 //! on a free lane, as many as there are lanes. Nothing paid runs in the
 //! tick under `--parallel`, so a long session never keeps the lanes from
 //! being refilled; nothing waits a tick because another job of its kind
 //! was picked first.
 //!
-//! The weight is the route's base ([`base_weight`]) — free merges first,
-//! a task's into its milestone before the milestone's into the integration
-//! branch, since they unblock work at no cost; then planning, the rules' tests and
+//! The weight is the route's base ([`base_weight`]) — free work first: a
+//! milestone branch's catch-up with the integration branch's green head
+//! (`common::catch_up`), then a task's merge into its milestone before the
+//! milestone's into the integration branch, since they unblock work at no
+//! cost; then planning, the rules' tests and
 //! the decisions, which unblock others; then repairing before reviewing a
 //! PR in flight; then cutting and arbitrating; then building; then
 //! preparing (business, then technical refinement); and last a file's test
@@ -52,6 +55,7 @@ use harness_core::traces::{Event, Logbook};
 
 pub use harness_architecture::graph::Graph;
 
+use crate::common::catch_up::CatchUps;
 use crate::common::labels;
 
 /// What the router decides to run next.
@@ -92,6 +96,15 @@ pub enum Route {
         /// The branch it targets — the milestone's, or the integration
         /// branch for the rules' task.
         base: String,
+    },
+    /// Bring this milestone's branch up to the integration branch's head —
+    /// `common::catch_up`: GitHub's merge, else the harness's own with the
+    /// generated files regenerated. Free, run in the tick.
+    CatchUp {
+        /// The milestone issue's number.
+        milestone: u64,
+        /// Its branch.
+        branch: String,
     },
     /// Open or merge this milestone's PR into the base branch —
     /// `main_agent_merge`.
@@ -235,6 +248,15 @@ pub struct Snapshot {
     /// before starting (`ForgeDesMondes`, 2026-10-20: the open PRs grew to
     /// ten while every lane took new work).
     pub review_backlog_full: bool,
+    /// The milestone branches behind the integration branch's green head,
+    /// with their branch — the catch-ups due ([`CatchUps::due`]). Their
+    /// tasks wait for the catch-up, and so does a repair of their landing
+    /// PR.
+    pub catch_up: Vec<(u64, String)>,
+    /// The milestones whose branch could not take the base — a conflict no
+    /// script solves, a failure parked ([`CatchUps::holding`]): their tasks
+    /// wait.
+    pub catch_up_held: Vec<u64>,
 }
 
 /// Whether the integration branch is red: its newest head has a failed
@@ -275,7 +297,7 @@ pub fn decide(snapshot: &Snapshot) -> Route {
 /// rest; a free one is a few GitHub calls, run in the tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cost {
-    /// No session: the two merges.
+    /// No session: the catch-ups and the two merges.
     Free,
     /// One session or more.
     Paid,
@@ -303,6 +325,7 @@ pub struct Job {
 #[must_use]
 pub const fn base_weight(route: &Route) -> u32 {
     match route {
+        Route::CatchUp { .. } => 1010,
         Route::MergeIntoMilestone { .. } => 1000,
         Route::MergeMainAgent { .. } => 990,
         Route::Planner { .. } => 900,
@@ -354,7 +377,9 @@ pub fn schedule(snapshot: &Snapshot, running: &[u64], waited: &dyn Fn(&Route) ->
         .map(|(route, key, milestone)| Job {
             cost: if matches!(
                 route,
-                Route::MergeMainAgent { .. } | Route::MergeIntoMilestone { .. }
+                Route::CatchUp { .. }
+                    | Route::MergeMainAgent { .. }
+                    | Route::MergeIntoMilestone { .. }
             ) {
                 Cost::Free
             } else {
@@ -409,13 +434,32 @@ fn of_issues(snapshot: &Snapshot, issues: &[Issue], route: fn(u64) -> Route) -> 
         .collect()
 }
 
-/// What is in flight: the merges, the plan, the rules' tests, the
-/// decisions and contracts asked, the PRs to repair or review.
+/// Whether `pr` is the landing PR of a milestone whose catch-up is due:
+/// its repair waits for the catch-up, which may resolve it.
+fn landing_caught_up(snapshot: &Snapshot, pr: &Pr) -> bool {
+    crate::common::branching::milestone_number(&pr.head)
+        .is_some_and(|m| snapshot.catch_up.iter().any(|(due, _)| *due == m))
+}
+
+/// What is in flight: the catch-ups, the merges, the plan, the rules'
+/// tests, the decisions and contracts asked, the PRs to repair or review.
 fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
     let mut found: Vec<Found> = Vec::new();
     // Nothing merges on a red base: a merge into a milestone would spread
-    // it, a merge into the base would bury it.
+    // it, a merge into the base would bury it. A catch-up whose landing PR
+    // a repair works on waits for it (`catch_up::catch_up`, which reads the
+    // PR): two writers on a branch.
     if !base_red(snapshot) {
+        found.extend(snapshot.catch_up.iter().map(|(m, branch)| {
+            (
+                Route::CatchUp {
+                    milestone: *m,
+                    branch: branch.clone(),
+                },
+                *m,
+                Some(*m),
+            )
+        }));
         found.extend(
             snapshot
                 .ready_to_merge
@@ -475,6 +519,7 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
             snapshot
                 .prs_to_fix
                 .iter()
+                .filter(|pr| !landing_caught_up(snapshot, pr))
                 .filter_map(|pr| of_pr(pr, Route::PrFix { pr: pr.num.clone() })),
         );
     }
@@ -508,6 +553,13 @@ fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
         && !snapshot.review_backlog_full
     {
         for milestone in &snapshot.dev_loop_milestones {
+            // A branch behind the base, or one that could not take it, is
+            // no base to build on: its tasks wait for the catch-up.
+            if snapshot.catch_up.iter().any(|(m, _)| m == milestone)
+                || snapshot.catch_up_held.contains(milestone)
+            {
+                continue;
+            }
             let Some(board) = snapshot
                 .boards
                 .iter()
@@ -690,6 +742,9 @@ pub struct Pulse {
     /// How many ticks each route has waited, the job a tick left behind —
     /// what keeps a low one from being starved ([`schedule`]).
     pub waiting: std::collections::BTreeMap<String, u32>,
+    /// The integration branch's head and what each milestone branch holds
+    /// of it ([`crate::common::catch_up`]).
+    pub catch_ups: CatchUps,
 }
 
 /// The first rest after a `QUOTA` stop, in ticks.
@@ -877,15 +932,36 @@ pub fn mark_ready(snapshot: &mut Snapshot, number: u64) {
     }
 }
 
+/// Fills `snapshot`'s catch-ups from what the pulse remembers, at `now`.
+///
+/// [`CatchUps::read`]: those due — behind the integration branch's head,
+/// once that very commit's checks are green — and the milestones whose
+/// branch could not take it. The verdict is the head's own
+/// (`catch_up::read_head`), never the branch's newest run, which a push
+/// just made still leaves to the head before.
+pub fn read_catch_ups(snapshot: &mut Snapshot, pulse: &mut Pulse, now: u64) {
+    (snapshot.catch_up, snapshot.catch_up_held) = pulse.catch_ups.read(&snapshot.milestones, now);
+}
+
 /// Whether this tick may skip the full read of the board.
 ///
-/// Only when the one conditional read said nothing moved, no pull request's
-/// checks or review are being waited on, no lane was just freed — a lane
-/// freed with the board unchanged is a crashed lane whose work is still
-/// due — and the valve has not run out.
+/// Only when the one conditional read said nothing moved, the catch-ups
+/// ask for no read either (`catching_up`, `catch_up::read_head`: the
+/// integration branch's head moved — a push that updates no issue, an
+/// upgrade, a human's, is what a catch-up follows — its verdict came in, or
+/// a catch-up due is unsettled), no pull request's checks or review are
+/// being waited on, no lane was just freed — a lane freed with the board
+/// unchanged is a crashed lane whose work is still due — and the valve has
+/// not run out.
 #[must_use]
-pub const fn may_skip(pulse: &Pulse, activity: &Activity, freed_lanes: usize) -> bool {
+pub const fn may_skip(
+    pulse: &Pulse,
+    activity: &Activity,
+    freed_lanes: usize,
+    catching_up: bool,
+) -> bool {
     matches!(activity, Activity::Unchanged)
+        && !catching_up
         && !pulse.watching_ci
         && freed_lanes == 0
         && pulse.quiet_ticks < FULL_READ_EVERY
@@ -1248,6 +1324,8 @@ mod tests {
             base_checks: None,
             database_down: false,
             review_backlog_full: false,
+            catch_up: Vec::new(),
+            catch_up_held: Vec::new(),
         }
     }
 
@@ -1304,6 +1382,8 @@ mod tests {
             base_checks: Some(true),
             database_down: false,
             review_backlog_full: false,
+            catch_up: Vec::new(),
+            catch_up_held: Vec::new(),
         };
         // The free merges go first, in the tick; then the plan.
         assert_eq!(
@@ -1852,6 +1932,7 @@ mod tests {
             rest: Rest::default(),
             taps: std::collections::BTreeMap::new(),
             waiting: std::collections::BTreeMap::new(),
+            catch_ups: CatchUps::default(),
         }
     }
 
@@ -1887,7 +1968,7 @@ mod tests {
 
     #[test]
     fn an_unchanged_board_skips_the_full_read() {
-        assert!(may_skip(&quiet(), &Activity::Unchanged, 0));
+        assert!(may_skip(&quiet(), &Activity::Unchanged, 0, false));
     }
 
     #[test]
@@ -1896,7 +1977,7 @@ mod tests {
             etag: None,
             moved_at: None,
         };
-        assert!(!may_skip(&quiet(), &changed, 0));
+        assert!(!may_skip(&quiet(), &changed, 0, false));
     }
 
     #[test]
@@ -1905,25 +1986,30 @@ mod tests {
             watching_ci: true,
             ..quiet()
         };
-        assert!(!may_skip(&pulse, &Activity::Unchanged, 0));
+        assert!(!may_skip(&pulse, &Activity::Unchanged, 0, false));
+    }
+
+    #[test]
+    fn a_moved_integration_head_reads_the_board_again() {
+        assert!(!may_skip(&quiet(), &Activity::Unchanged, 0, true));
     }
 
     #[test]
     fn a_freed_lane_reads_the_board_again() {
-        assert!(!may_skip(&quiet(), &Activity::Unchanged, 1));
+        assert!(!may_skip(&quiet(), &Activity::Unchanged, 1, false));
     }
 
     #[test]
     fn the_valve_forces_a_full_read_after_enough_quiet_ticks() {
         let mut pulse = quiet();
         for _ in 0..FULL_READ_EVERY {
-            assert!(may_skip(&pulse, &Activity::Unchanged, 0));
+            assert!(may_skip(&pulse, &Activity::Unchanged, 0, false));
             pulse.stayed_quiet();
         }
-        assert!(!may_skip(&pulse, &Activity::Unchanged, 0));
+        assert!(!may_skip(&pulse, &Activity::Unchanged, 0, false));
         pulse.read_in_full(Some("W/\"def\"".to_string()), false);
         assert_eq!(pulse.quiet_ticks, 0);
-        assert!(may_skip(&pulse, &Activity::Unchanged, 0));
+        assert!(may_skip(&pulse, &Activity::Unchanged, 0, false));
     }
 
     /// The routes of a snapshot's schedule, heaviest first.
@@ -2667,5 +2753,188 @@ mod tests {
             .expect("the plan");
         assert_eq!(planner.exclusive, Some("planner"));
         assert_eq!(planner.key, 4);
+    }
+
+    /// A PR from `head` into `base`.
+    fn pr_from(num: &str, head: &str, base: &str) -> Pr {
+        Pr {
+            head: head.to_string(),
+            ..pr(num, base)
+        }
+    }
+
+    #[test]
+    fn a_milestone_behind_the_base_is_caught_up_before_any_merge_and_free() {
+        let snapshot = Snapshot {
+            catch_up: vec![(4, "milestone/4-x".to_string())],
+            tasks_to_merge: vec![(31, pr("34", "milestone/4-x"))],
+            ready_to_merge: vec![4],
+            ..empty()
+        };
+        let jobs = schedule(&snapshot, &[], &|_| 0);
+        assert_eq!(
+            jobs[0].route,
+            Route::CatchUp {
+                milestone: 4,
+                branch: "milestone/4-x".to_string()
+            }
+        );
+        assert_eq!(
+            (jobs[0].cost, jobs[0].key, jobs[0].weight),
+            (Cost::Free, 4, 1010)
+        );
+        assert!(base_weight(&jobs[0].route) > base_weight(&jobs[1].route));
+        // The catch-up and the landing share the milestone: one a tick, the
+        // catch-up first; the task's merge goes on beside it.
+        let picked = plan(jobs, &[], &[], 0, true);
+        let free: Vec<&Route> = picked.free.iter().map(|job| &job.route).collect();
+        assert_eq!(free.len(), 2, "{free:?}");
+        assert!(matches!(
+            free[1],
+            Route::MergeIntoMilestone { task: 31, .. }
+        ));
+        assert_eq!(
+            decide(&snapshot),
+            Route::CatchUp {
+                milestone: 4,
+                branch: "milestone/4-x".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn nothing_is_caught_up_while_the_base_is_red() {
+        let snapshot = Snapshot {
+            catch_up: vec![(4, "milestone/4-x".to_string())],
+            base_checks: Some(false),
+            ..empty()
+        };
+        assert!(routes(&snapshot).is_empty(), "nothing expected");
+    }
+
+    #[test]
+    fn a_repair_of_a_landing_pr_waits_for_its_catch_up() {
+        let landing = pr_from("90", "milestone/4-x", "main_agent");
+        let task_pr = pr_from("91", "task/91", "milestone/4-x");
+        let snapshot = Snapshot {
+            catch_up: vec![(4, "milestone/4-x".to_string())],
+            prs_to_fix: vec![landing.clone(), task_pr.clone()],
+            task_prs: vec![landing.clone(), task_pr],
+            ..empty()
+        };
+        let found = routes(&snapshot);
+        assert!(
+            found.contains(&Route::CatchUp {
+                milestone: 4,
+                branch: "milestone/4-x".to_string()
+            }),
+            "{found:?}"
+        );
+        assert!(
+            !found.contains(&Route::PrFix {
+                pr: "90".to_string()
+            }),
+            "the landing PR's repair waits for the catch-up: {found:?}"
+        );
+        assert!(
+            found.contains(&Route::PrFix {
+                pr: "91".to_string()
+            }),
+            "a task PR's repair pushes elsewhere: {found:?}"
+        );
+        // No catch-up due: the landing PR's repair goes on.
+        let calm = Snapshot {
+            catch_up: Vec::new(),
+            prs_to_fix: vec![landing],
+            ..empty()
+        };
+        assert_eq!(
+            routes(&calm),
+            [Route::PrFix {
+                pr: "90".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_branch_behind_the_base_or_unable_to_take_it_holds_its_tasks() {
+        let plant = |catch_up: Vec<(u64, String)>, held: Vec<u64>| Snapshot {
+            milestones: vec![issue(19, &[labels::MILESTONE, labels::TRIGGERED])],
+            dev_loop_milestones: vec![19],
+            boards: vec![board(19, vec![task_needing(60, "micro-ui", "x.y")])],
+            catch_up,
+            catch_up_held: held,
+            ..empty()
+        };
+        let task = Route::DevTask {
+            milestone: 19,
+            task: 60,
+        };
+        assert!(routes(&plant(Vec::new(), Vec::new())).contains(&task));
+        assert!(
+            routes(&plant(Vec::new(), vec![7])).contains(&task),
+            "another's"
+        );
+        let behind = routes(&plant(vec![(19, "milestone/19-x".to_string())], Vec::new()));
+        assert!(!behind.contains(&task), "{behind:?}");
+        assert!(!routes(&plant(Vec::new(), vec![19])).contains(&task));
+        let no_board = Snapshot {
+            boards: Vec::new(),
+            ..plant(Vec::new(), vec![19])
+        };
+        assert!(
+            !routes(&no_board).contains(&Route::DevLoop { milestone: 19 }),
+            "the dev loop of a held milestone waits too"
+        );
+    }
+
+    #[test]
+    fn the_catch_ups_due_are_read_from_the_pulse_once_the_head_is_green() {
+        let milestones = vec![
+            Issue {
+                title: "Media".to_string(),
+                ..issue(6, &[labels::MILESTONE, labels::TRIGGERED])
+            },
+            Issue {
+                title: "Sound".to_string(),
+                ..issue(7, &[labels::MILESTONE, labels::TRIGGERED])
+            },
+        ];
+        let mut pulse = Pulse::default();
+        assert!(pulse.catch_ups.moved(Some("h1".to_string())));
+        pulse.catch_ups.record(
+            7,
+            &crate::common::branching::CaughtUp::Failed("x".to_string()),
+            100,
+        );
+        // The integration branch's newest run is green, but it is h1's own
+        // verdict that counts, and none is in yet.
+        let mut running = Snapshot {
+            milestones: milestones.clone(),
+            base_checks: Some(true),
+            ..empty()
+        };
+        read_catch_ups(&mut running, &mut pulse, 101);
+        assert!(running.catch_up.is_empty(), "never before its own green");
+        assert_eq!(running.catch_up_held, [7]);
+        assert!(pulse.catch_ups.behind_seen, "its checks are read next tick");
+        pulse.catch_ups.local_left = 0;
+        pulse.catch_ups.verdict = Some(true);
+        let mut green = Snapshot {
+            milestones: milestones.clone(),
+            ..empty()
+        };
+        read_catch_ups(&mut green, &mut pulse, 101);
+        assert_eq!(green.catch_up, [(6, "milestone/6-media".to_string())]);
+        assert_eq!(pulse.catch_ups.local_left, 1, "a new tick's local catch-up");
+        // h1 green, then h2 read: green for an older sha, nothing due.
+        assert!(pulse.catch_ups.moved(Some("h2".to_string())));
+        let mut moved = Snapshot {
+            milestones,
+            base_checks: Some(true),
+            ..empty()
+        };
+        read_catch_ups(&mut moved, &mut pulse, 101);
+        assert!(moved.catch_up.is_empty(), "{:?}", moved.catch_up);
     }
 }

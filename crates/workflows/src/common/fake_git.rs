@@ -26,9 +26,13 @@ pub struct FakeRepos {
     failing: Rc<Vec<&'static str>>,
     /// What `changed_between` answers, whatever the references.
     changed: Rc<Vec<String>>,
-    /// The files a `merge` leaves conflicted: when there are some, the merge
-    /// fails and `dirty_files` answers them as `UU <path>`.
-    conflicts: Rc<Vec<String>>,
+    /// The files a `merge` leaves conflicted, each with its status code:
+    /// when there are some, the merge fails and `dirty_files` answers them
+    /// as `<code> <path>`.
+    conflicts: Rc<Vec<(String, String)>>,
+    /// Whether `push` is refused as a non-fast-forward: the remote branch
+    /// moved since the fetch.
+    rejects_push: bool,
 }
 
 impl FakeRepos {
@@ -39,6 +43,7 @@ impl FakeRepos {
             failing: Rc::new(prefixes.to_vec()),
             changed: Rc::default(),
             conflicts: Rc::default(),
+            rejects_push: false,
         }
     }
 
@@ -49,17 +54,41 @@ impl FakeRepos {
             failing: Rc::default(),
             changed: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
             conflicts: Rc::default(),
+            rejects_push: false,
         }
     }
 
     /// A `git` whose merge conflicts on these files, and whose verbs
     /// starting with one of `failing` fail.
     pub fn conflicting(files: &[&str], failing: &[&'static str]) -> Self {
+        let both: Vec<(&str, &str)> = files.iter().map(|file| ("UU", *file)).collect();
+        Self::conflicting_as(&both, failing)
+    }
+
+    /// A `git` whose merge conflicts on these files, each with its status
+    /// code (`UD`: deleted by them), and whose verbs starting with one of
+    /// `failing` fail.
+    pub fn conflicting_as(files: &[(&str, &str)], failing: &[&'static str]) -> Self {
         Self {
             calls: Rc::default(),
             failing: Rc::new(failing.to_vec()),
             changed: Rc::default(),
-            conflicts: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
+            conflicts: Rc::new(
+                files
+                    .iter()
+                    .map(|(code, file)| ((*code).to_string(), (*file).to_string()))
+                    .collect(),
+            ),
+            rejects_push: false,
+        }
+    }
+
+    /// The same `git`, its `push` refused as a non-fast-forward.
+    #[must_use]
+    pub fn rejecting_push(self) -> Self {
+        Self {
+            rejects_push: true,
+            ..self
         }
     }
 
@@ -124,7 +153,7 @@ impl Repo for FakeRepo {
             .repos
             .conflicts
             .iter()
-            .map(|path| format!("UU {path}"))
+            .map(|(code, path)| format!("{code} {path}"))
             .collect())
     }
     async fn has_branch(&self, _name: &str) -> Outcome<bool> {
@@ -195,7 +224,16 @@ impl Repo for FakeRepo {
         Ok(self.note(&format!("commit {message}")))
     }
     async fn push(&self, branch: &str) -> Outcome<Ran> {
-        Ok(self.note(&format!("push {branch}")))
+        let mut ran = self.note(&format!("push {branch}"));
+        if self.repos.rejects_push {
+            ran.code = Some(1);
+            ran.stderr = format!(
+                " ! [rejected]        {branch} -> {branch} (fetch first)\n\
+                 error: failed to push some refs\n\
+                 hint: Updates were rejected because the remote contains work that you do not"
+            );
+        }
+        Ok(ran)
     }
     async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
         Ok(self.note(&format!("create_orphan_branch {name}")))
@@ -210,6 +248,9 @@ impl Repo for FakeRepo {
     }
     async fn take_theirs(&self, path: &str) -> Outcome<Ran> {
         Ok(self.note(&format!("take_theirs {path}")))
+    }
+    async fn remove(&self, path: &str) -> Outcome<Ran> {
+        Ok(self.note(&format!("remove {path}")))
     }
     async fn merge_in_progress(&self) -> Outcome<bool> {
         Ok(!self.repos.conflicts.is_empty())
