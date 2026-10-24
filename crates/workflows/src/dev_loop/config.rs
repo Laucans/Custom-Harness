@@ -51,6 +51,10 @@ pub struct Config {
     /// plan and build it (`--no-narrow` turns it off): the bound the
     /// architecture promises, made physical.
     pub narrow: bool,
+    /// Write the unit's skeleton before `code` when it has none
+    /// (`--no-scaffold` turns it off): a `DataCapability` or a Capability
+    /// started from the harness's templates rather than a neighbour's copy.
+    pub scaffold: bool,
     /// `--ignore-budget`: pay on past what tasks of the kind cost, and lift
     /// the turn caps with it.
     pub ignore_budget: bool,
@@ -124,6 +128,7 @@ pub(crate) mod fake {
             signatures: std::rc::Rc::default(),
             root: std::path::PathBuf::from("/ws"),
             narrow: false,
+            scaffold: false,
             ignore_budget: false,
             budget_floor: 0.0,
             autonomous: false,

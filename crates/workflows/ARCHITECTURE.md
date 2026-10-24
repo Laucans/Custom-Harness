@@ -295,6 +295,21 @@ its precheck, its lock and its trigger.
 - `dev_loop` has **preflight** gates (labels, milestone, skills, installed
   dependencies) because several opus sessions follow, and a `stat` costs less
   than a `/code`.
+- `dev_loop`'s `code` body is `Scaffold → Narrow → Ask → Widen`, then its
+  relay and `MarkDone`. `Scaffold` (`action::scaffold`, unpaid, off under
+  `--no-scaffold`) writes the skeleton of a `DataCapability` or a Capability
+  whose folder does not exist — `harness_architecture::skeleton`'s templates,
+  **uncommitted**, through `Disk`; `register.sh`, `queries.sh` and `cargo
+  check -p <unit> --all-targets` through `Process` — and takes it all back
+  (the folder, the query file, the generated files as they were) when one
+  step fails: a failed skeleton is a template to fix, the round goes on
+  without it. It never overwrites: an existing folder or query file, the
+  task's branch already made locally or on `origin`, a dirty checkout — each
+  a skip, said. Before `Narrow`, so the closure follows the skeleton's
+  `Cargo.toml` to its aggregate and the test kit. `Ask` tells the session to
+  start from the files `Loop::skeleton` lists and never copy a neighbour, and
+  `ArchitectureHolds` refuses a round that left a `SCAFFOLD:` hole in one of
+  them (`checks::architecture::holes_left`), as a blocking review on its PR.
 - `refinement` moves its seven templates into `prompts.rs`: same rule 5, just
   too much text to sit with the table.
 - `refinement` and `planner` prepend the two shared `explore` entries to their

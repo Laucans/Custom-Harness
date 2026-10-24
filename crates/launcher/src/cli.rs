@@ -627,6 +627,16 @@ pub struct RunArgs {
     #[arg(long, env = "NO_NARROW", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
     pub no_narrow: bool,
 
+    /// Write no skeleton before `code`.
+    ///
+    /// By default a task that builds a `DataCapability` or a Capability
+    /// whose folder does not exist yet starts from a skeleton of it — the
+    /// harness's templates, written uncommitted in the checkout, registered
+    /// and checked with `cargo check --all-targets` — instead of a
+    /// neighbour's copy. This turns it off, for a measurement without it.
+    #[arg(long, env = "NO_SCAFFOLD", num_args = 0..=1, default_missing_value = "true", default_value = "false", value_parser = truthy)]
+    pub no_scaffold: bool,
+
     /// Run this task and no other, as a lane of a parallel `watch` does.
     ///
     /// The board must offer it as runnable — open, `harness:ready`, nothing

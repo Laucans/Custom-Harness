@@ -16,6 +16,8 @@ pub struct FakeProcess {
     pub answers: RefCell<Vec<Ran>>,
     /// Every run: the program, its arguments, its folder.
     pub ran: RefCell<Vec<(String, Vec<String>, PathBuf)>>,
+    /// How long each run was given, in order.
+    pub timeouts: RefCell<Vec<Duration>>,
 }
 
 impl FakeProcess {
@@ -23,7 +25,7 @@ impl FakeProcess {
     pub fn answering(answers: Vec<Ran>) -> Self {
         Self {
             answers: RefCell::new(answers),
-            ran: RefCell::default(),
+            ..Self::default()
         }
     }
 
@@ -44,8 +46,9 @@ impl Process for FakeProcess {
         program: &str,
         args: &[String],
         cwd: &Path,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> Outcome<Ran> {
+        self.timeouts.borrow_mut().push(timeout);
         self.ran
             .borrow_mut()
             .push((program.to_string(), args.to_vec(), cwd.to_path_buf()));

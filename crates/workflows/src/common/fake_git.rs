@@ -36,30 +36,25 @@ pub struct FakeRepos {
     /// The files `dirty_files` answers as staged changes while nothing
     /// conflicts: what a generator rewrote.
     rewritten: Rc<Vec<String>>,
+    /// The branches that exist, local and on `origin`; `None`: every branch
+    /// asked about exists.
+    branches: Option<Rc<(Vec<String>, Vec<String>)>>,
 }
 
 impl FakeRepos {
     /// A `git` whose verbs starting with one of these prefixes fail.
     pub fn failing(prefixes: &[&'static str]) -> Self {
         Self {
-            calls: Rc::default(),
             failing: Rc::new(prefixes.to_vec()),
-            changed: Rc::default(),
-            conflicts: Rc::default(),
-            rejects_push: false,
-            rewritten: Rc::default(),
+            ..Self::default()
         }
     }
 
     /// A `git` whose diff between any two references is these files.
     pub fn changing(files: &[&str]) -> Self {
         Self {
-            calls: Rc::default(),
-            failing: Rc::default(),
             changed: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
-            conflicts: Rc::default(),
-            rejects_push: false,
-            rewritten: Rc::default(),
+            ..Self::default()
         }
     }
 
@@ -75,17 +70,14 @@ impl FakeRepos {
     /// `failing` fail.
     pub fn conflicting_as(files: &[(&str, &str)], failing: &[&'static str]) -> Self {
         Self {
-            calls: Rc::default(),
             failing: Rc::new(failing.to_vec()),
-            changed: Rc::default(),
             conflicts: Rc::new(
                 files
                     .iter()
                     .map(|(code, file)| ((*code).to_string(), (*file).to_string()))
                     .collect(),
             ),
-            rejects_push: false,
-            rewritten: Rc::default(),
+            ..Self::default()
         }
     }
 
@@ -104,6 +96,17 @@ impl FakeRepos {
     pub fn rewriting(self, files: &[&str]) -> Self {
         Self {
             rewritten: Rc::new(files.iter().map(|f| (*f).to_string()).collect()),
+            ..self
+        }
+    }
+
+    /// The same `git`, holding exactly these branches, local and on
+    /// `origin`.
+    #[must_use]
+    pub fn with_branches(self, local: &[&str], origin: &[&str]) -> Self {
+        let owned = |names: &[&str]| names.iter().map(|n| (*n).to_string()).collect();
+        Self {
+            branches: Some(Rc::new((owned(local), owned(origin)))),
             ..self
         }
     }
@@ -180,11 +183,19 @@ impl Repo for FakeRepo {
             .map(|(code, path)| format!("{code} {path}"))
             .collect())
     }
-    async fn has_branch(&self, _name: &str) -> Outcome<bool> {
-        Ok(true)
+    async fn has_branch(&self, name: &str) -> Outcome<bool> {
+        Ok(self
+            .repos
+            .branches
+            .as_ref()
+            .is_none_or(|known| known.0.iter().any(|b| b == name)))
     }
-    async fn origin_has_branch(&self, _name: &str) -> Outcome<bool> {
-        Ok(true)
+    async fn origin_has_branch(&self, name: &str) -> Outcome<bool> {
+        Ok(self
+            .repos
+            .branches
+            .as_ref()
+            .is_none_or(|known| known.1.iter().any(|b| b == name)))
     }
     async fn remote_url(&self, _remote: &str) -> Outcome<String> {
         Ok(String::new())

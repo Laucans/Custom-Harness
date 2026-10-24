@@ -128,10 +128,10 @@ pub struct Closure {
 /// contracts, the data model, the documents but the architecture's (the
 /// rule card stands for it), the query registry, the rules' tests a task
 /// makes pass (two tasks stopped without them), and the scratch-database
-/// guard every Postgres test takes by path (rule 19) — which no unit
-/// reaches in the cargo graph until its first test names it, and which the
-/// root manifest does not list.
-const ALWAYS: [&str; 13] = [
+/// guard every Postgres test takes by path (rule 19) and the test kit
+/// (rule 21) — which no unit reaches in the cargo graph until its first
+/// test names them, and which the root manifest does not list.
+const ALWAYS: [&str; 14] = [
     "/*",
     "!/*/",
     "/.github/",
@@ -145,6 +145,7 @@ const ALWAYS: [&str; 13] = [
     "/queries/",
     "/tests/rules/",
     "/crates/platform/scratch-db/",
+    "/crates/platform/test-kit/",
 ];
 
 /// The manifest of the product's `DataGuard` server, installed by the
@@ -1018,12 +1019,67 @@ mod tests {
         ] {
             let found = closure(&tree(), &task, Some(&graph()), None);
             assert!(found.narrowed, "{found:?}");
+            // And the test kit its skeleton's tests take (rule 21).
+            for kept in ["/crates/platform/scratch-db/", "/crates/platform/test-kit/"] {
+                assert!(
+                    found.patterns.contains(&kept.to_string()),
+                    "{:?}: {kept} in {:?}",
+                    task.unit,
+                    found.patterns
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_scaffolded_unit_reaches_its_aggregate_the_test_kit_and_the_data_layer_by_the_graph() {
+        // The skeleton is written before Narrow: its Cargo.toml decides what
+        // the session sees — the aggregate of another system, the kit, and
+        // through the kit the Data layer and the scratch guard.
+        let mut tree = tree();
+        tree.data_capabilities.push(manifest(
+            "crates/live/data-capabilities/set-microphone/data-capability.json",
+            r#"{"dataCapability":"live.setMicrophone"}"#,
+        ));
+        let crate_of = |name: &str, dir: &str, deps: &[&str]| Crate {
+            name: name.to_string(),
+            dir: dir.to_string(),
+            deps: deps.iter().map(|d| (*d).to_string()).collect(),
+        };
+        let graph = CargoGraph {
+            crates: vec![
+                crate_of(
+                    "set-microphone",
+                    "crates/live/data-capabilities/set-microphone",
+                    &["aggregate-session", "platform-test-kit"],
+                ),
+                crate_of(
+                    "aggregate-session",
+                    "crates/session/aggregates/Session",
+                    &[],
+                ),
+                crate_of(
+                    "platform-test-kit",
+                    "crates/platform/test-kit",
+                    &["data", "platform-scratch-db"],
+                ),
+                crate_of("data", "crates/data", &[]),
+                crate_of("platform-scratch-db", "crates/platform/scratch-db", &[]),
+            ],
+        };
+        let task = declared(Unit::DataCapability, "live", &["live.setMicrophone"], &[]);
+        let found = closure(&tree, &task, Some(&graph), None);
+        assert!(found.narrowed, "{found:?}");
+        for dir in [
+            "/crates/live/data-capabilities/set-microphone/",
+            "/crates/session/aggregates/Session/",
+            "/crates/platform/test-kit/",
+            "/crates/data/",
+            "/crates/platform/scratch-db/",
+        ] {
             assert!(
-                found
-                    .patterns
-                    .contains(&"/crates/platform/scratch-db/".to_string()),
-                "{:?}: {:?}",
-                task.unit,
+                found.patterns.contains(&dir.to_string()),
+                "{dir} in {:?}",
                 found.patterns
             );
         }

@@ -1,0 +1,7 @@
+# fields: SCAFFOLD: <entity>.<field>, … every field this query reads, in the form the other query files of crates/{{system}}/queries/ write it
+# SCAFFOLD: what this read is for, in two lines.
+query {{Pascal}}($scaffold: ID!) {
+  scaffold(id: $scaffold) {
+    id
+  }
+}

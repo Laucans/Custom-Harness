@@ -499,6 +499,13 @@ impl SessionAction<Loop> for Ask {
             (Some(text), true) => text.as_str(),
             _ => self.instructions.as_str(),
         };
+        let with_skeleton;
+        let instructions = if open.state.skeleton.is_empty() {
+            instructions
+        } else {
+            with_skeleton = format!("{instructions}\n\n{}", skeleton_block(&open.state.skeleton));
+            with_skeleton.as_str()
+        };
         let extra = prompts::extra_for(
             instructions,
             brief,
@@ -521,6 +528,29 @@ impl SessionAction<Loop> for Ask {
         .await?;
         Ok(Verdict::Continue)
     }
+}
+
+/// What the prompt says of the unit's skeleton the harness wrote before
+/// the session opened (`Scaffold`): where it is, and that it is the shape to
+/// keep — never a neighbour's.
+fn skeleton_block(files: &[String]) -> String {
+    let marker = harness_architecture::skeleton::MARKER;
+    format!(
+        "--- SKELETON ---\n\
+The harness wrote this unit's skeleton before you started, uncommitted in \
+this checkout (your `git checkout -b` carries it to your branch):\n- {}\n\
+Start from it. Its names, layout, registrations, manifest constants and \
+test frames are the product's canonical shape: keep them. Fill every \
+`{marker}` hole (`grep -rn \"{marker}\"` on these files) from this SPEC, the \
+unit's rule card, its aggregate's aggregate.json, data/model.json, \
+crates/data/migrations/ and mock/fixtures/<id>.json — none may be left when \
+you open the PR, the harness checks after you. Never open another unit's \
+folder or an archive branch to learn the structure: the skeleton is the \
+structure, and the test helpers are crates/platform/test-kit's \
+(platform_test_kit). Replace each `scaffold_*` test by the real tests of \
+the acceptance criteria.",
+        files.join("\n- ")
+    )
 }
 
 #[cfg(test)]
@@ -1302,6 +1332,40 @@ mod tests {
             run.prompts[0]
         );
         assert!(run.prompts[0].contains("- /crates/credit/"));
+    }
+
+    #[tokio::test]
+    async fn a_skeleton_is_said_in_the_prompt_only_when_one_was_written() {
+        let mut state = scoped_state();
+        state.skeleton = vec![
+            "crates/credit/capabilities/risk/src/lib.rs".to_string(),
+            "crates/credit/queries/risk.graphql".to_string(),
+        ];
+        let run = ask_about(
+            state,
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(prompt.contains("--- SKELETON ---"), "{prompt}");
+        assert!(
+            prompt.contains("- crates/credit/queries/risk.graphql"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("`SCAFFOLD:` hole"), "{prompt}");
+        assert!(prompt.contains("Never open another unit's"), "{prompt}");
+        let bare = ask_about(
+            scoped_state(),
+            Cut::Situated(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        assert!(!bare.prompts[0].contains("SKELETON"));
     }
 
     #[tokio::test]

@@ -85,7 +85,7 @@ traits exchange). **A port decides, an adapter calls.**
 agent         Session, SessionFactory (open, fork), SessionSpec, Reply, Base — a fork branches from a Base the round holds in `Context::base`
 shell/git     Repo, Repos — reads answer, setup verbs return `Ran`
 shell/github  GitHub — a failed read is never an empty list
-shell/disk    Disk — exists so deletion is testable
+shell/disk    Disk — exists so deletion is testable (remove_file refused by default: a disk that does not say how never pretends it removed)
 shell/process Ran, last_line — what a shell port hands back
 shell/database Databases, OwnedDatabase, Dropping, Dropped — the databases the factory's role owns, and drops that never take one in use, bounded by a deadline
 store/spending    Spending, Entry — implemented in the launcher, not here

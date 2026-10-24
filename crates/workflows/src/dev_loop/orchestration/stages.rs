@@ -44,6 +44,7 @@ use harness_core::execution::{
 use crate::common::labels;
 use crate::dev_loop::action::actions::Ask;
 use crate::dev_loop::action::narrow::{Narrow, Widen};
+use crate::dev_loop::action::scaffold::Scaffold;
 use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
 use crate::dev_loop::checks::gates;
 use crate::dev_loop::checks::preflight;
@@ -138,7 +139,11 @@ commands = { '<id>': async (server, { payload, targetId, version, basedOn })
 => … }`, a helper several files share in mock/handlers/_lib/; the mock server
 imports it at run time, so it needs no rebuild. Never edit another unit's
 handler file, and never add a handler to mock/src/reads.js or
-mock/src/commands.js (gate mock-handlers). A frontend task reads the
+mock/src/commands.js (gate mock-handlers). A new DataCapability or
+Capability starts from its skeleton when the harness wrote one: fill every
+`SCAFFOLD:` hole (rule 22), write new tests on platform-test-kit (rule 21),
+and run `node scripts/unit-conventions-gate.mjs data-capabilities|capabilities
+origin/<your base>` before the PR. A frontend task reads the
 product's design system first: mock/design/tokens.css (one CSS variable per
 token — every colour, font, spacing, radius and shadow of a screen comes
 from them, never a literal) and the kit, mock/kit/<Name>.html listed in
@@ -382,6 +387,9 @@ struct Paid<'a> {
     /// The working tree is narrowed to the unit's closure around the
     /// session, when the run asks for it (`Config::narrow`).
     narrow: bool,
+    /// The unit's skeleton is written before the session, when the run asks
+    /// for it (`Config::scaffold`) and the unit has none.
+    scaffold: bool,
     then: Vec<Box<dyn SessionAction<Loop>>>,
 }
 
@@ -389,6 +397,16 @@ impl Paid<'_> {
     fn body(self, ports: &Ports, config: &Config, turn: u32) -> StageBody<Loop> {
         let narrowed = self.narrow && config.narrow;
         let mut actions: Vec<Box<dyn SessionAction<Loop>>> = Vec::new();
+        // Before narrowing: the closure then follows the skeleton's
+        // `Cargo.toml` to its aggregate and the test kit.
+        if self.scaffold && config.scaffold {
+            actions.push(Box::new(Unpaid(Scaffold {
+                repo: Rc::clone(&ports.repo),
+                disk: Rc::clone(&ports.disk),
+                process: Rc::clone(&ports.process),
+                root: config.root.clone(),
+            })));
+        }
         if narrowed {
             actions.push(Box::new(Unpaid(Narrow {
                 repo: Rc::clone(&ports.repo),
@@ -496,6 +514,7 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             cut: Cut::Executing(CODE_SKIPS),
             rules: true,
             narrow: true,
+            scaffold: true,
             then: vec![Box::new(Unpaid(
                 crate::dev_loop::action::chain::LeaveRelay {
                     handoffs: Rc::clone(&ports.handoffs),
@@ -553,6 +572,29 @@ mod tests {
             dry_run: false,
             stages: stages.to_string(),
         }
+    }
+
+    #[test]
+    fn code_starts_from_a_skeleton_only_when_the_run_asks_for_one() {
+        let ports = ports_fake::ports();
+        let actions = |config: &Config| match code(&ports, config, 1).body {
+            StageBody::Session { actions, .. } => actions.len(),
+            StageBody::Local { .. } => 0,
+        };
+        let mut config = config_fake::config();
+        let without = actions(&config);
+        config.scaffold = true;
+        assert_eq!(
+            actions(&config),
+            without + 1,
+            "the skeleton, before the session"
+        );
+        config.narrow = true;
+        assert_eq!(
+            actions(&config),
+            without + 3,
+            "then narrowed, and widened back"
+        );
     }
 
     #[test]
@@ -713,6 +755,17 @@ mod tests {
         let skill = flat(CODE_SKILL);
         assert!(skill.contains("mock/handlers/<id>.js"), "{skill}");
         assert!(skill.contains("never another unit's handler file"));
+    }
+
+    #[test]
+    fn the_code_prompt_and_skill_send_a_unit_to_its_skeleton_and_the_kit() {
+        // A task on an existing unit, or one run with --no-scaffold, gets no
+        // SKELETON block: the static prompt and the skill say it instead.
+        for text in [flat(CODE), flat(CODE_SKILL)] {
+            assert!(text.contains("`SCAFFOLD:` hole"), "{text}");
+            assert!(text.contains("platform-test-kit"), "{text}");
+            assert!(text.contains("unit-conventions-gate.mjs"), "{text}");
+        }
     }
 
     #[test]

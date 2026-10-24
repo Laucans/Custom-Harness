@@ -19,6 +19,8 @@ pub struct FakeDisk {
     pub existing: HashMap<PathBuf, String>,
     /// Every write, in order.
     pub written: RefCell<Vec<(PathBuf, String)>>,
+    /// Every removal, a folder's or a file's, in order.
+    pub removed: RefCell<Vec<PathBuf>>,
 }
 
 impl FakeDisk {
@@ -43,7 +45,12 @@ impl Disk for FakeDisk {
     fn create_dir_all(&self, _path: &Path) -> Outcome<()> {
         Ok(())
     }
-    fn remove_dir_all(&self, _path: &Path) -> Outcome<()> {
+    fn remove_dir_all(&self, path: &Path) -> Outcome<()> {
+        self.removed.borrow_mut().push(path.to_path_buf());
+        Ok(())
+    }
+    fn remove_file(&self, path: &Path) -> Outcome<()> {
+        self.removed.borrow_mut().push(path.to_path_buf());
         Ok(())
     }
     fn dir_names(&self, path: &Path) -> Vec<String> {

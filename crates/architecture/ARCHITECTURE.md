@@ -37,8 +37,9 @@ src/compare.rs      two data models side by side: tables, fields, links and view
 src/graph.rs        the plan's graph (contract R): what every milestone produces and consumes, derived from the dossier; the read-ahead errors; the critical path
 src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
 src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the showcase page (assets/showcase.html), the static check a fragment is reused on
-src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep)
+src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep), the units' test kit (assets/test-kit, `platform-test-kit`: Bench plants a unit's real manifest beside its aggregate over memory or a Scratch database migrated by the product's `data::migrate`; submit/applied/plant/refused, planter, uuid, writes_only_touches, a Capability's guard checks in `read` — what 80%+ of the first product's units retyped), the unit-conventions gate (assets/unit-conventions-gate.mjs)
 src/mock_handlers.rs the mock server's handlers, one file per unit (mock/handlers/<id>.js): the rule every prompt states (RULE) and the parent-first migration a merge follows when the legacy files conflict as deleted (on_conflict: the split commit checked first — one parent, the split's paths only, or stop — and the add/add rule for a handler the base added before it split itself)
+src/skeleton.rs     the skeleton of the unit a task is about to build (a DataCapability or a Capability, hostless aside): target (the id's folder, package, library, query file), render (assets/skeleton/<kind>/ filled with what needs no judgement — Cargo.toml, the manifest's constants and what the declaration states, the lib.rs and test frames on the test kit, the query frame named after the folder — every judged part a `SCAFFOLD:` hole), the commands that register and check it (register.sh, queries.sh, cargo check --all-targets); the dev loop's Scaffold writes it
 src/generated.rs    the files of a product a script writes (GENERATED: Cargo.lock, the registry's Cargo.toml, queries/registry.json, mock/components/*.js, mock/pages.json's builtFrom digests), how a conflict in each is taken, their generators in run order (Regenerator), the digest-only resolution of mock/pages.json (digests_only, both marker styles), the repair prompt's lines (instructions)
 assets/             those files, compiled in with include_str! — the harness's own scripts/{dead-code,mutants-rotation,test-debt}.sh are links to them, one script for both
 tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_script.rs: the installed scripts, run on a real folder
@@ -48,6 +49,9 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
                     mock_server.rs: the installed server.js on node — the engine's behaviour, handlers from their own file imported once, an id defined twice an error naming both files (at startup for a declared id, breaking every call; on first use otherwise)
                     split_handlers.rs: the installed split-handlers.mjs on a throwaway product — byte-for-byte split, idempotent, deterministic, every refusal with nothing written (guarded destructuring and for-of assignments, `this`), a file without semicolons, a handler file a merge already brought, the self-check catching a helper reached through eval
                     mock_handlers_gate.rs: the gate `mock-handlers` from gates.yml on a throwaway repository — ids twice, another id's key, a new legacy key on a pull request once mock/handlers/ holds a handler file (its README and _lib/ do not count)
+                    skeleton_product.rs (ignored, on demand): the test kit and both skeletons rendered in a throwaway product — rustfmt-clean, `cargo check --all-targets`, the kit's clippy and tests (its Scratch with SCRATCH_DB_URL), the frames green, the holes red, the filled manifest planted through Bench
+                    unit_conventions_gate.rs: the gates `data-capability-conventions` and `capability-conventions` on a throwaway repository — each rule on an added unit, the changed-unit rules on an edited old one, an old unit's past never judged
+                    capability_sql_gate.rs: the part `queries-valid--capabilities` on a real PostgreSQL (GATES_PGPASSWORD) — a changed Capability's SQL prepared against the migrated schema, an untouched one unjudged
                     assets_rustfmt.rs: every installed .rs asset passes `rustfmt --check --edition 2024` under default settings — a product's CI runs `cargo fmt --check`, and the assets are no member of this workspace, so `cargo fmt --all` here never sees them
 ```
 
@@ -171,3 +175,18 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   conventional items the glue calls (`plugin()`, or the four items), the
   one script it runs, and the engine's line; the parity tests keep every
   gate of `gates.yml` cited by a card.
+- **A unit starts from the harness's skeleton, not a neighbour.** Sessions
+  that copied the first unit of their lane copied its drift (`names()`,
+  `MANIFEST`, a second filter in Rust). `skeleton.rs` renders the canonical
+  shape from `assets/skeleton/`, which no product installs: the templates
+  are rendered, not copied, so they are not `FILES`, and
+  `tests/skeleton_product.rs` compiles what they render against the engine
+  of this checkout and the installed kit. Only the data layer's two kinds
+  are covered; an Aggregate or a Micro-UI has too little left to scaffold in
+  the first product, or no compile check to keep a template honest.
+- **Conventions are gated on what a change adds or changes.** The
+  convention gates judge the units a pull request adds against every rule,
+  and the units it edits only against the rules every existing unit already
+  keeps: an older unit's past deviation never turns an edit of it red. The
+  deviations a static check cannot judge without false positives are review
+  hints in `pr_review`'s brief, never gates.

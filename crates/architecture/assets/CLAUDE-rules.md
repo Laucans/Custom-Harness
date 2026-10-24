@@ -1,4 +1,4 @@
-<!-- harness:architecture v7 -->
+<!-- harness:architecture v8 -->
 ## Agent-native architecture — the rules every change is checked against
 
 This repository follows the agent-native architecture of
@@ -43,6 +43,7 @@ crates/server/                          the one binary: the shell's wire protoco
 crates/ports/<port>/[<provider>/]       a port (trait, fake, contract tests) and its adapters
 crates/platform/conformance/            the Concepts' conformance runner
 crates/platform/scratch-db/             the tests' scratch databases (the harness's: never edited here)
+crates/platform/test-kit/               the units' test helpers (the harness's: never edited here)
 concepts/<Concept>/v<n>/                concept.json + fixtures.json (A)
 data/model.json                         the data model (M)
 mock/                                   the mock-up: pages.json (N), pages/, components/, src/, handlers/, design/ and kit/ (O)
@@ -137,6 +138,25 @@ scripts/                                register.sh, queries.sh, isolation.sh, d
     at run time, so it needs no rebuild. Never edit another unit's handler
     file, and never add a handler to `mock/src/reads.js` or
     `mock/src/commands.js`. Gate: `mock-handlers`.
+21. **New tests take the test kit**: `platform-test-kit = { path = "<to
+    the root>/crates/platform/test-kit" }` (dev-dependency) — `Bench`
+    plants the unit's real manifest beside its aggregate over memory or a
+    `Scratch` database (migrated by the Data layer, seeded, dropped even
+    on a panic), `submit`/`applied`/`plant`/`refused`, `planter(..)`, the
+    Capability guard checks of `read`. Never retype them in a unit; an
+    older unit keeps its own helpers until a task of its own moves it.
+    `crates/platform/test-kit/` is the harness's: never edit it. Gate:
+    `scratch-databases-shared`.
+22. **A new unit keeps the house conventions**, whatever its neighbours
+    do: a DataCapability reads time from `context.now_millis` only,
+    declares `pub const DATA_CAPABILITY` and runs any SQL it reads on
+    PostgreSQL in a test; a Capability filters once, in its SQL (each
+    variable bound and compared as text, never re-read by `answer`), reads
+    one query file named after its folder that says what the SQL selects.
+    A unit the harness scaffolded starts from its skeleton: fill every
+    `SCAFFOLD:` hole (none may be left in the unit's folder or its query
+    file), never copy a neighbour's structure. Gates:
+    `data-capability-conventions`, `capability-conventions`.
 
 ### What a session does before writing code
 

@@ -16,7 +16,7 @@
 //! at the next pull request's checks. A checkout without `contracts/` is not
 //! under the architecture: both gates say so and let the round through.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use async_trait::async_trait;
@@ -132,6 +132,26 @@ fn said_before(before: &[String]) -> Option<String> {
             before.join("\n  - ")
         )
     })
+}
+
+/// The files of the unit's skeleton (`Scaffold`) that still hold a hole:
+/// the session fills every one. A file the round removed holds none.
+#[must_use]
+pub fn holes_left(disk: &dyn Disk, root: &Path, skeleton: &[String]) -> Vec<String> {
+    let marker = harness_architecture::skeleton::MARKER;
+    skeleton
+        .iter()
+        .filter(|path| {
+            disk.read_to_string(&root.join(path))
+                .is_some_and(|text| text.contains(marker))
+        })
+        .map(|path| {
+            format!(
+                "{path}: a `{marker}` hole of the unit's skeleton is left — the session fills \
+                 every one before the pull request"
+            )
+        })
+        .collect()
 }
 
 /// The round kept the architecture: see the module.
@@ -337,6 +357,11 @@ impl Verification<Loop> for ArchitectureHolds {
                 ));
             }
         }
+        found.extend(holes_left(
+            self.disk.as_ref(),
+            &self.root,
+            &ctx.state.skeleton,
+        ));
         if found.is_empty() {
             ctx.traces.say(&format!(
                 "architecture holds: {} Capability crate(s), {} Micro-UI(s), {} DataCapabilit(ies)",
@@ -595,6 +620,51 @@ mod tests {
             .expect("its own changes hold");
         assert!(matches!(verdict, Verdict::Continue));
         assert!(!repos.asked("diff"), "the PR says it: {:?}", repos.calls());
+    }
+
+    #[tokio::test]
+    async fn a_hole_the_session_left_in_the_skeleton_stops_the_round() {
+        let repos = FakeRepos::default();
+        let mut held = disk();
+        for (path, text) in [
+            (
+                "/ws/apps/credit/risk-badge/index.ts",
+                "// SCAFFOLD: the view",
+            ),
+            (
+                "/ws/apps/credit/risk-badge/model.ts",
+                "export const done = 1;",
+            ),
+        ] {
+            held.existing.insert(PathBuf::from(path), text.to_string());
+        }
+        let gate = ArchitectureHolds {
+            disk: Rc::new(held),
+            ..holds(&repos)
+        };
+        let mut context = ctx("");
+        context.state.skeleton = files(&[
+            "apps/credit/risk-badge/index.ts",
+            "apps/credit/risk-badge/model.ts",
+            "apps/credit/risk-badge/removed.ts",
+        ]);
+        let err = gate.verify(&context).await.expect_err("a hole is left");
+        let said = err.reason();
+        assert!(
+            said.contains("apps/credit/risk-badge/index.ts: a `SCAFFOLD:` hole"),
+            "{said}"
+        );
+        assert!(
+            !said.contains("model.ts") && !said.contains("removed.ts"),
+            "{said}"
+        );
+        context.state.skeleton.clear();
+        assert!(matches!(
+            gate.verify(&context)
+                .await
+                .expect("no skeleton, nothing to fill"),
+            Verdict::Continue
+        ));
     }
 
     #[test]

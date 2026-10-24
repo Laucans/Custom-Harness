@@ -714,7 +714,7 @@ fn targeting_system(tree: &Tree, aggregate: &str) -> Option<String> {
 /// `AiSettings` as `ai_settings`, as the registry's build script spells an
 /// aggregate's library: an underscore before an uppercase letter that
 /// follows a lowercase one or a digit, `-` as `_`, all lowercase.
-fn snake(name: &str) -> String {
+pub(crate) fn snake(name: &str) -> String {
     let mut out = String::new();
     let mut previous: Option<char> = None;
     for c in name.chars() {

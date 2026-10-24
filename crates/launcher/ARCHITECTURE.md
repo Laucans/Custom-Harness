@@ -12,6 +12,11 @@ library crates, which carry typed `thiserror` enums — see `../../CLAUDE.md`.
 
 ## The modules
 
+`tests/skeleton_rehearsal.rs` (ignored, on demand) wires the dev loop's
+`Scaffold` with `RealDisk`, `Processes` and `GitRepos` on a scratch clone a
+human names (`SKELETON_PRODUCT`, `SKELETON_BODY`): the rehearsal of a
+skeleton on a real product, before a night relies on it.
+
 Three roots and two folders, and the split between them is **who decides to
 run something** versus **what running it takes**:
 
@@ -25,7 +30,7 @@ src/router/       what decides on its own: `harness watch`
 src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`; a lane that stops (exit 1) parks its task until the issue's body or labels change, or a blocker holding it lands
 
 src/dispatch/     one module per thing that can be run, plus what they share
-  dev_loop.rs       the first workflow: an exclusive workspace, several sessions deep
+  dev_loop.rs       the first workflow: an exclusive workspace, several sessions deep (`--no-scaffold`: no unit skeleton before `code`)
   planner.rs        a roadmap item into milestones
   split.rs          a milestone into tasks
   refinement.rs     an issue body into its five canonical sections

@@ -1,0 +1,22 @@
+[package]
+name = "{{pkg}}"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "DataCapability {{id}}: SCAFFOLD: what it writes, for whom, in one sentence (the SPEC's goal)."
+publish = false
+
+[dependencies]
+# The engine is the workspace's: one engine, one `Plugin` type (scripts/register.sh).
+harness-dataguard = { workspace = true }
+async-trait = "0.1"
+serde_json = "1"
+uuid = { version = "1", default-features = false }
+
+[dev-dependencies]
+# Its target aggregate, which its tests plant beside it. A normal
+# dependency instead when src/ calls one of its helpers.
+{{agg_pkg}} = { path = "{{agg_dir}}" }
+# The harness's test kit: the engine planted, the scratch database, planters.
+platform-test-kit = { path = "../../../platform/test-kit" }
+tokio = { version = "1", default-features = false, features = ["macros", "rt"] }

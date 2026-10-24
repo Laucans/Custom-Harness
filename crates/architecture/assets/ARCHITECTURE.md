@@ -754,7 +754,7 @@ red carries the same name in the run's log.
 | Contracts untouched | A pull request changes the manifests of the ids its milestone produces, and no other's | B, F, R |
 | Read-only | No Capability has write access: lint and read-only credentials | B |
 | Capability isolation | No Capability imports, invokes or references another Capability or any mutation infrastructure | B |
-| Queries | Every persisted query is valid against the current schema and the next | C |
+| Queries | Every persisted query is valid against the current schema and the next; the SQL of a Capability a change adds or changes prepares against the migrated schema (`queries-valid--capabilities`) | C |
 | Schema impact | A schema change lists the Capabilities touched and blocks until each is migrated | C, I |
 | System frontier | `needs:` — a Micro-UI references only Capabilities that exist or the plan declares, in any system; a behaviour change of a shared one is a duplicate, never an edit | B |
 | Write actions | `actions:` references existing DataCapabilities, with compatible `callableBy` and `permissions`; no Capability has an `invokes` field | D, F |
@@ -763,6 +763,7 @@ red carries the same name in the run's log.
 | Invariants | Every declared invariant has tests; every DataCapability lists the ones it may affect | F, I |
 | Units placed | A DataCapability sits under the system its id names, an aggregate under its system in a folder named after it, never under `crates/dataguard/` (`data-capability-placed`, `aggregate-placed`) | F, I |
 | Units registered | The registry's `Cargo.toml` and the workspace's engine line are what `scripts/register.sh` writes; every unit is a workspace member by glob, its library named as the registry's glue calls it, the engine taken from the workspace (`units-registered`) | B, F, I |
+| Unit conventions | A unit a change adds or changes keeps the house conventions its neighbours drift from: a DataCapability reads no clock, declares its id constant, lists its ports-* crates as its `ports`, plants its real manifest in a test and runs the SQL it reads on PostgreSQL; a Capability is one SELECT binding its variables in order, compared as text, filtered once (never again by `answer`), its query file named after its folder and declaring what the SQL selects. What older units break is judged on added units only (`data-capability-conventions`, `capability-conventions`, `scripts/unit-conventions-gate.mjs`) | B, C, F |
 | Relations | Every foreign key has a declared `onDelete` and `onUpdate` policy | I |
 | Compositions | Every Micro-UI of a frozen screen exists in the referenced version | D, E |
 | Pages mocked | `mock/pages.json` validates; every page and every micro-frontend it lists exists; every frozen screen has a page; every Micro-UI has a micro-frontend whose listing says its needs and actions; the bundles are rebuilt from the Micro-UIs' code | D, E, N |

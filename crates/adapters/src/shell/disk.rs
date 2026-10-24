@@ -34,6 +34,17 @@ impl Disk for RealDisk {
         }
     }
 
+    fn remove_file(&self, path: &Path) -> Outcome<()> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Halt::Failed(format!(
+                "couldn't delete {}: {e}",
+                path.display()
+            ))),
+        }
+    }
+
     fn dir_names(&self, path: &Path) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(path) else {
             return Vec::new();
@@ -82,6 +93,26 @@ mod tests {
             RealDisk
                 .remove_dir_all(Path::new("/tmp/nonexistent-directory"))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_file_is_removed_and_one_already_gone_is_not_a_failure() {
+        let path = std::env::temp_dir().join(format!(
+            "harness-remove-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::write(&path, "x").expect("written");
+        assert!(RealDisk.remove_file(&path).is_ok());
+        assert!(!path.exists(), "removed");
+        assert!(RealDisk.remove_file(&path).is_ok(), "already gone");
+        let folder = std::env::temp_dir();
+        assert!(
+            RealDisk.remove_file(&folder).is_err(),
+            "a folder is no file"
         );
     }
 

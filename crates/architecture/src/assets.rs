@@ -7,7 +7,8 @@
 //! dead code the compiler cannot see, the mutation gate's configuration and
 //! its rotation with the script that files what it misses, the script that
 //! dumps its schema, the guard that gives each test a scratch database and
-//! drops it even when the test panics, an empty data model to grow, an empty
+//! drops it even when the test panics, the kit a unit's tests are written
+//! on, the gate of the units' conventions, an empty data model to grow, an empty
 //! list of mock pages and the mock-up's loader, screen host, mock server and build, the
 //! script that splits its legacy handler files and the gate that keeps one per unit, and the
 //! rules' kit: their gate, their runtime's stub, the business and journey
@@ -33,9 +34,9 @@ pub const MARKER_OPEN: &str = "<!-- harness:architecture v2 -->";
 /// The version of the rules block in `CLAUDE.md`, counted apart from the
 /// documents: shortening the rules every session pays for must not rewrite
 /// a product's documents.
-pub const CLAUDE_VERSION: u32 = 7;
+pub const CLAUDE_VERSION: u32 = 8;
 /// The opening marker of the rules block in `CLAUDE.md`, with its version.
-pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v7 -->";
+pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v8 -->";
 /// What every version of the opening marker starts with.
 pub const MARKER_PREFIX: &str = "<!-- harness:architecture v";
 /// The closing marker.
@@ -64,12 +65,13 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// session runs its checks through, the isolation check, the dead-code
 /// script, the mutants configuration, rotation and test-debt filing, the
 /// schema dump, the data model, the mock-up's files, the conformance
-/// runner, the tests' scratch-database guard, the `DataGuard` server (its generic library, the registry of the
+/// runner, the tests' scratch-database guard and the units' test kit, the
+/// unit-conventions gate, the `DataGuard` server (its generic library, the registry of the
 /// units and the script that writes it, the product's binary, installed
 /// once and the product's from then on), the contracts A–R, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites, and
 /// the root `.gitignore` that keeps build outputs out of a round's changes.
-pub const FILES: [Asset; 70] = [
+pub const FILES: [Asset; 73] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -137,6 +139,14 @@ pub const FILES: [Asset; 70] = [
     Asset {
         path: "crates/platform/scratch-db/src/lib.rs",
         content: include_str!("../assets/scratch-db/src/lib.rs"),
+    },
+    Asset {
+        path: "crates/platform/test-kit/Cargo.toml",
+        content: include_str!("../assets/test-kit/Cargo.toml"),
+    },
+    Asset {
+        path: "crates/platform/test-kit/src/lib.rs",
+        content: include_str!("../assets/test-kit/src/lib.rs"),
     },
     Asset {
         path: "crates/dataguard/server/Cargo.toml",
@@ -301,6 +311,10 @@ pub const FILES: [Asset; 70] = [
     Asset {
         path: "scripts/mock-handlers-gate.mjs",
         content: include_str!("../assets/mock-handlers-gate.mjs"),
+    },
+    Asset {
+        path: "scripts/unit-conventions-gate.mjs",
+        content: include_str!("../assets/unit-conventions-gate.mjs"),
     },
     Asset {
         path: ".sops.yaml",
@@ -475,7 +489,7 @@ mod tests {
     #[test]
     fn every_gate_of_the_workflow_is_cited_by_a_rule_card() {
         let gates = gate_ids(include_str!("../assets/gates.yml"));
-        assert_eq!(gates.len(), 30, "{gates:?}");
+        assert_eq!(gates.len(), 32, "{gates:?}");
         let cards: String = crate::vocabulary::Unit::ALL
             .iter()
             .map(|unit| crate::rules::card(*unit))
@@ -760,6 +774,7 @@ mod tests {
             "crates/dataguard/server/**",
             "crates/dataguard/registry/**",
             "crates/platform/scratch-db/**",
+            "crates/platform/test-kit/**",
         ] {
             assert!(
                 mutants.contains(&format!("  \"{owned}\",")),
@@ -913,8 +928,11 @@ mod tests {
         for part in [
             "git diff --name-only --diff-filter=A \"$BASE\"...HEAD",
             "milestone/*) echo",
-            "crates/platform/scratch-db/*) continue ;;",
+            "crates/platform/scratch-db/*|crates/platform/test-kit/*) continue ;;",
             "CREATE[[:space:]]+DATABASE",
+            "env::var(_os)?\\([[:space:]]*\"DATABASE_URL\"|tokio_postgres::connect\\(",
+            "platform_test_kit::(?:\\{[^}]*\\b)?Scratch\\b|platform_scratch_db::|ScratchDb::create",
+            "sed -E 's#(^|[[:space:]])//.*$#\\1#'",
         ] {
             assert!(gate.contains(part), "the gate: {part}");
         }

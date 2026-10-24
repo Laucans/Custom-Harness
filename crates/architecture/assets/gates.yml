@@ -156,6 +156,11 @@ jobs:
       # in-diff mutants: a milestone's own pull request adds every file its
       # tasks added — each judged on its own, some before this gate existed —
       # and a push only lands what a pull request already judged.
+      # A file under `tests/` whose code (comments aside) reaches PostgreSQL
+      # by `env::var("DATABASE_URL")` or `tokio_postgres::connect(`, and names
+      # neither the test kit's Scratch nor the guard by path
+      # (`platform_test_kit::…Scratch`, `platform_scratch_db::`,
+      # `ScratchDb::create`), is the same leak one rename away: refused alike.
       # A test file this change adds creates no database by hand.
       - id: scratch-databases-shared
         name: scratch-databases-shared
@@ -173,7 +178,7 @@ jobs:
           failed=0
           while IFS= read -r file; do
             case "$file" in
-              crates/platform/scratch-db/*) continue ;;
+              crates/platform/scratch-db/*|crates/platform/test-kit/*) continue ;;
               crates/*.rs) ;;
               *) continue ;;
             esac
@@ -184,6 +189,13 @@ jobs:
             esac
             if grep -nEi 'CREATE[[:space:]]+DATABASE' "$file"; then
               echo "::error file=$file::a test takes its database from platform_scratch_db::ScratchDb::create(\"<label>\"), never CREATE DATABASE by hand: the guard drops it even when the test panics"
+              failed=1
+            fi
+            case "$file" in */tests/*) ;; *) continue ;; esac
+            code=$(sed -E 's#(^|[[:space:]])//.*$#\1#' "$file")
+            if grep -nE 'env::var(_os)?\([[:space:]]*"DATABASE_URL"|tokio_postgres::connect\(' <<< "$code" \
+              && ! perl -0777 -ne 'exit(/platform_test_kit::(?:\{[^}]*\b)?Scratch\b|platform_scratch_db::|ScratchDb::create/ ? 0 : 1)' <<< "$code"; then
+              echo "::error file=$file::a test that reaches PostgreSQL takes its database from platform_test_kit::Scratch (or platform_scratch_db::ScratchDb), never a connection of its own to DATABASE_URL"
               failed=1
             fi
           done < <(git diff --name-only --diff-filter=A "$BASE"...HEAD)
@@ -610,6 +622,61 @@ jobs:
           done < <(jq -r '.queries[] | [.capability, .file] | @tsv' queries/registry.json)
           exit $failed
 
+      # The SQL a Capability runs is its `pub const SQL`, never a registry file:
+      # prepared against the schema this checkout's migrations build, in a
+      # database of its own, every parameter typed as text (the Capabilities
+      # compare their variables as text). The Capabilities the change adds or
+      # changes, on a task's pull request; one reading the engine's own
+      # tables (`dataguard_*`, built by its store, not by a migration) is
+      # said and left.
+      # Every Capability the change adds or changes runs SQL the migrated schema accepts.
+      - id: queries-valid--capabilities
+        name: queries-valid--capabilities
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          PGPASSWORD: gates
+          PGOPTIONS: "-c client_min_messages=warning"
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "${HEAD_REF:-}" in
+            milestone/*) echo "a milestone's pull request: each of its tasks was judged on its own"; exit 0 ;;
+          esac
+          [ -n "${BASE:-}" ] && git cat-file -e "$BASE" 2>/dev/null || { echo "no base to compare with"; exit 0; }
+          units=$(git diff --name-only --diff-filter=AMR "$BASE"...HEAD | sed -nE 's#^(crates/[^/]+/capabilities/[^/]+)/.*#\1#p' | sort -u)
+          [ -n "$units" ] || { echo "no Capability added or changed"; exit 0; }
+          psql="psql -v ON_ERROR_STOP=1 -h localhost -U postgres -q"
+          $psql -d postgres -c "DROP DATABASE IF EXISTS gate_capabilities WITH (FORCE)" -c "CREATE DATABASE gate_capabilities" > /dev/null
+          while IFS= read -r migration; do
+            [ -n "$migration" ] || continue
+            $psql -d gate_capabilities -f "$migration" > /dev/null || { echo "::error file=$migration::the migration does not apply"; exit 1; }
+          done < <(git ls-files -- '*migrations/*.sql' | LC_ALL=C sort)
+          failed=0
+          n=0
+          for unit in $units; do
+            lib="$unit/src/lib.rs"
+            [ -f "$lib" ] && [ -f "$unit/capability.json" ] || continue
+            [ "$(jq -r '.host // "server"' "$unit/capability.json")" != hostless ] || continue
+            sql=$(perl -0777 -ne 'if (/pub const SQL: &str =\s*r(#*)"(.*?)"\1\s*;/s) { print $2 } elsif (/pub const SQL: &str =\s*"((?:[^"\\]|\\.)*)"\s*;/s) { print $1 }' "$lib")
+            [ -n "$sql" ] || { echo "::error file=$lib::no \`pub const SQL\` to prepare"; failed=1; continue; }
+            if grep -qwE 'dataguard_[a-z_]+' <<< "$sql"; then
+              echo "$lib reads the engine's own tables, which no migration of the product builds: not prepared"
+              continue
+            fi
+            last=$( (grep -oE '\$[0-9]+' <<< "$sql" || true) | tr -d '$' | sort -n | tail -n 1)
+            types=""
+            [ -z "$last" ] || types="($(for _ in $(seq 1 "$last"); do printf 'text,'; done | sed 's/,$//'))"
+            n=$((n + 1))
+            if ! $psql -d gate_capabilities -c "PREPARE gate_c_$n$types AS $sql" > /dev/null 2> err.txt; then
+              echo "::error file=$lib::its SQL does not prepare against the migrated schema: $(grep -m 1 'ERROR' err.txt || tail -n 1 err.txt)"
+              failed=1
+            fi
+          done
+          echo "$n Capability SQL prepared"
+          exit $failed
+
       # Every gate above ran, whatever the others said; a red job names here
       # the gates that failed (a step's id is its gate's, `--` a part of it).
       - name: Failing gates
@@ -784,6 +851,42 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/mock-handlers-gate.mjs ${BASE:+"$BASE"}
+
+      # The conventions a unit drifts from when it copies a neighbour
+      # (scripts/unit-conventions-gate.mjs, rule 22): judged on the units the
+      # change adds or changes, never on the ones it leaves alone — the rules
+      # some older units break judge the added units only. A task's pull
+      # request, from the merge base; a milestone's adds every unit its tasks
+      # added, each judged on its own already.
+      # A DataCapability the change adds or changes keeps the house conventions.
+      - id: data-capability-conventions
+        name: data-capability-conventions
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "${HEAD_REF:-}" in
+            milestone/*) echo "a milestone's pull request: each of its tasks was judged on its own"; exit 0 ;;
+          esac
+          node scripts/unit-conventions-gate.mjs data-capabilities "${BASE:-}"
+
+      # A Capability the change adds or changes filters once, in its SQL, and its query file says what it reads.
+      - id: capability-conventions
+        name: capability-conventions
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "${HEAD_REF:-}" in
+            milestone/*) echo "a milestone's pull request: each of its tasks was judged on its own"; exit 0 ;;
+          esac
+          node scripts/unit-conventions-gate.mjs capabilities "${BASE:-}"
 
       # Contracts E, N — the mock-up keeps up with the screens: every page
       # `mock/pages.json` lists is there, and every frozen screen under

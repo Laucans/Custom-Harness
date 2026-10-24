@@ -1,0 +1,18 @@
+[package]
+name = "platform-test-kit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "What a unit's tests would otherwise retype — the scratch database migrated and seeded, the engine planted with the unit beside its aggregate, submissions, settling, refusals, planters, a Capability's guard checks — a dev-dependency installed by `harness init-repo` and owned by the harness."
+
+[dependencies]
+# The engine from the workspace, its PostgreSQL store and read-only rows.
+harness-dataguard = { workspace = true, features = ["postgres"] }
+# A test's database, dropped even when the test panics (rule 19).
+platform-scratch-db = { path = "../scratch-db" }
+# The product's Data layer: the migrations the server runs, applied as it applies them.
+data = { path = "../../data" }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt"] }

@@ -122,6 +122,14 @@ earlier one landed.
   `mock/handlers/_lib/`) — never another unit's handler file, never a new
   handler in `mock/src/reads.js` or `mock/src/commands.js` (gate
   `mock-handlers`). No rebuild: the server imports it at run time.
+- **A unit the harness scaffolded starts from its skeleton.** In a product,
+  a new `DataCapability` or Capability may already sit uncommitted in its
+  folder: build there, never copy a neighbour's structure, and fill every
+  `SCAFFOLD:` hole — none may reach the PR (rule 22). New tests take
+  `platform-test-kit` (rule 21: `Bench`, `Scratch`, `read`), never helpers
+  retyped in the unit. Before the PR run `node
+  scripts/unit-conventions-gate.mjs data-capabilities origin/<base>` and
+  `node scripts/unit-conventions-gate.mjs capabilities origin/<base>`.
 - **Track background processes.** Anything still alive after a tool call
   returns — dev server, watcher, tunnel — gets an entry in
   `.llocal/running_process/PROCESSES.md` in that file's documented format,

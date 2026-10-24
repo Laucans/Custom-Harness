@@ -1,0 +1,14 @@
+[package]
+name = "{{pkg}}"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Capability {{id}}: SCAFFOLD: what it answers, for which screen, in one sentence."
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+# The harness's test kit: the guard checks of the SQL and the query file, the mock-up's fixture.
+platform-test-kit = { path = "../../../platform/test-kit" }{{conformance_dependency}}

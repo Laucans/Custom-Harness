@@ -510,6 +510,11 @@ const fn narrowing(args: &RunArgs) -> bool {
     !args.no_narrow
 }
 
+/// Whether `code` starts from a skeleton of its unit: the default.
+const fn scaffolding(args: &RunArgs) -> bool {
+    !args.no_scaffold
+}
+
 /// The workflow, wired against the mounted workspace, then executed.
 async fn turns(
     args: &RunArgs,
@@ -586,6 +591,7 @@ async fn turns(
         signatures,
         root: workspace.root().to_path_buf(),
         narrow: narrowing(args),
+        scaffold: scaffolding(args),
         ignore_budget: args.ignore_budget,
         budget_floor: args.budget_floor,
         autonomous: args.no_human_gate,
@@ -674,6 +680,15 @@ mod tests {
         assert!(narrowing(&on.run));
         let off = crate::cli::Cli::parse_from(["harness", "--no-narrow"]);
         assert!(!narrowing(&off.run));
+    }
+
+    #[test]
+    fn a_skeleton_is_the_default_and_the_flag_turns_it_off() {
+        use clap::Parser as _;
+        let on = crate::cli::Cli::parse_from(["harness"]);
+        assert!(scaffolding(&on.run));
+        let off = crate::cli::Cli::parse_from(["harness", "--no-scaffold"]);
+        assert!(!scaffolding(&off.run));
     }
 
     #[test]

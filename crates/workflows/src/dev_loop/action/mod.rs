@@ -6,4 +6,5 @@
 pub mod actions;
 pub mod chain;
 pub mod narrow;
+pub mod scaffold;
 pub mod stop;

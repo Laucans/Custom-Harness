@@ -21,34 +21,36 @@ data for one system (bounded context).
 
 Where it lives: crates/<system>/capabilities/<name>/, one Cargo crate named
 after its folder, with capability.json beside Cargo.toml (contract B,
-contracts/b-capability-manifest.schema.json). The workspace lists it by
-glob. Adding one edits no shared file: write the folder, then run
-`bash scripts/register.sh`, which rewrites crates/dataguard/registry/
-Cargo.toml (never edited by hand); commit it and Cargo.lock with the unit.
+contracts/b-capability-manifest.schema.json), listed by glob. Adding one
+edits no shared file: write the folder, run `bash scripts/register.sh`
+(it rewrites crates/dataguard/registry/Cargo.toml, never edited by hand)
+and commit it and Cargo.lock with the unit.
 
 Its manifest (capability.json): `capability` (`<system>.<name>`, the id a
 Micro-UI's `needs` cites), `system` (its folder), `version`, `description`
 (what the composer reads), `implements` (`Risk@3`), `input`, `output`,
-`reads` (its persisted queries, contract C, under crates/<system>/queries/),
+`reads` — exactly [\"queries/<folder>.graphql\"], its one persisted query
+(contract C) under crates/<system>/queries/, named after the folder —
 `cache`, `host` (`server` by default; `hostless` when no server runs it:
 compiled to WebAssembly for its host, never registered).
 
 Its crate exposes four items, which the registry's glue turns into the
 server's read: `pub const CAPABILITY: &str` (its id), `pub const SQL: &str`
-(its query, run in a READ ONLY transaction), `pub const VARIABLES: &[&str]`
-(the request's variables, bound to $1, $2, … in order) and `pub fn
-answer(rows: &Value, variables: &BTreeMap<String, Value>) -> Value`. No
-engine dependency: it never names harness-dataguard.
+(one SELECT, run in a READ ONLY transaction), `pub const VARIABLES: &[&str]`
+(the request's variables, bound to $1, $2, … in order, each compared as
+text: `<column>::text = $1`) and `pub fn answer(rows: &Value, variables:
+&BTreeMap<String, Value>) -> Value`. Filter once, in the SQL: `answer`
+maps the rows and never reads a variable the SQL binds, and VARIABLES is
+empty only when `input` is. Every field its query file selects is a column
+its SQL reads. No engine dependency outside its tests.
 
 What it may know: the data it reads, and the Concepts it implements. Its
 logic is local: duplicate a computation rather than share a library. What
 it must not know: any other Capability, any DataCapability, the DataQueue,
 the DataGuard, the Resolver — no import, no call, no `invokes` field, no
-dependency on their crates. It depends only on its own system's plumbing,
-reads through its system's read crate (`<system>-read`, on crates/data),
-never a database driver of its own (sqlx, tokio-postgres, postgres, diesel,
-sea-orm, rusqlite, mysql), no write statement, no DATABASE_URL, no `#[path]`,
-`include!` or symlink that leaves its folder.
+dependency on their crates, no database driver of its own, no write
+statement, no DATABASE_URL, no `#[path]`, `include!` or symlink that leaves
+its folder. Its tests: the guard checks of platform_test_kit::read (rule 21).
 
 Its reads are registered: after adding or changing a query file (first line
 `# fields: <entity>.<field>, …`), run `bash scripts/queries.sh` and commit
@@ -60,22 +62,20 @@ fixtures.json beside it) and proved by a test calling
 `platform_conformance::check(\"<Concept>@<n>\", |input| …)`.
 
 Gates that judge it: manifests-conform-to-contracts (B), capability-isolation
-(scripts/isolation.sh on the cargo metadata graph, and no `invokes`),
-mock-handlers (its handler file, its id only),
-units-registered (named in the registry the script writes),
-concepts-documented, semantic-conformance, queries-registered, read-only,
-contracts-untouched (its manifest is its milestone's to change: a consumer
-that needs it changed stops with `AGENT_LOOP_STOP: contract <id> — <what it
-needs>`).
-The loop checks the same after the round, and that the round touched
-nothing outside the unit's closure.
-Run them before the PR: `npx --yes ajv-cli@5 validate --spec=draft2020 -s
+(no `invokes`), capability-conventions (one SELECT, binds, parity, text
+compare, no Rust refilter, its query file, no `SCAFFOLD:`), mock-handlers,
+units-registered, concepts-documented, semantic-conformance,
+queries-registered, queries-valid (its SQL prepared), read-only,
+contracts-untouched (a consumer that needs its manifest changed stops with
+`AGENT_LOOP_STOP: contract <id> — <what it needs>`).
+The loop checks the same after the round, and nothing outside its closure.
+Run before the PR: `npx --yes ajv-cli@5 validate --spec=draft2020 -s
 contracts/b-capability-manifest.schema.json -d <manifest>`,
-`bash scripts/isolation.sh`, `bash scripts/register.sh --check` and
-`bash scripts/queries.sh --check`.
-Outside the product, through a port only: ports-declared (never a stateful
-port) and externals-behind-ports. The rules (contract P): rule-tests-untouched
-(a development conforms or writes CONTEST.md) and rules-hold.";
+`bash scripts/isolation.sh`, `bash scripts/register.sh --check`,
+`bash scripts/queries.sh --check`, `node scripts/unit-conventions-gate.mjs
+capabilities origin/<base>`. Outside the product, through a port only:
+ports-declared and externals-behind-ports. Rules (contract P):
+rule-tests-untouched and rules-hold.";
 
 const MICRO_UI: &str = "\
 UNIT: Micro-UI — a screen fragment (TypeScript) that declares what it reads
@@ -160,56 +160,52 @@ whose package and library are named after its folder (`save-entity`,
 Its system is its id's namespace (campaign.saveEntity sits in
 crates/campaign/data-capabilities/save-entity/); its `owner` is always
 `dataguard`, which runs it and houses it nowhere. Adding one edits no
-shared file: write the folder, then run `bash scripts/register.sh`, which
-rewrites crates/dataguard/registry/Cargo.toml (never edited by hand: a
-folder it does not name stops the build); commit it and Cargo.lock with
-the unit. When no server runs it (`host: hostless`, `\"host\":
-\"hostless\"` in the manifest), it is compiled to WebAssembly for its host
-and never registered.
+shared file: write the folder, run `bash scripts/register.sh` (it rewrites
+crates/dataguard/registry/Cargo.toml, never by hand: a folder it does not
+name stops the build), commit it and Cargo.lock with the unit. With no
+server to run it (`\"host\": \"hostless\"`), it is compiled to WebAssembly
+for its host and never registered.
 
-Its code: `pub fn plugin() -> Plugin` returning `Plugin::new().prepare(\"<id>\",
-YourPrepare)`. Its `Prepare` (harness_dataguard::plugins) turns the
-submission into what it writes (`Prepared { .., ..Prepared::default() }`)
-or refuses it before anything queues (`Refusal::not_found`, 404;
-`unprocessable`, 422). It reads any row as the queue leaves it
-(`cx.row(\"<Aggregate>/<id>\").await?`), SQL over PostgreSQL (`cx.rows`) and
-`cx.now_millis`; `Prepared.then` makes follow-ups (one level, not atomic),
-`.attachment` is answered once applied. It declares what it reads from
-`Shared` (`.needs::<T>()`): the server refuses to start while one is unfilled.
-Its dependencies: the engine from the workspace, `harness-dataguard = {
-workspace = true }` (never a git line or tag of its own: one engine, one
-`Plugin` type), the aggregate crate its `target.aggregate` names, no other
-unit. Its tests' database: `ScratchDb::create` (platform-scratch-db, gate
-scratch-databases-shared), never one created by hand.
+Its code: `pub const DATA_CAPABILITY: &str` (the manifest's id) and `pub fn
+plugin() -> Plugin` returning `Plugin::new().prepare(DATA_CAPABILITY,
+YourPrepare)`. Its `Prepare` turns the submission into what it writes
+(`Prepared { .., ..Prepared::default() }`) or refuses it before anything
+queues (`Refusal::not_found`, 404; `unprocessable`, 422). It reads any row
+as the queue leaves it (`cx.row(\"<Aggregate>/<id>\").await?`), SQL through
+`cx.rows` (a `const` with bound `$n`), the time from `cx.now_millis` only —
+never the system clock; `Prepared.then` makes follow-ups, `.attachment` is
+answered once applied; `.needs::<T>()` declares what it reads from
+`Shared`. Its dependencies: `harness-dataguard = { workspace = true }`, the
+aggregate crate its `target.aggregate` names, no other unit; no
+`pub fn names(` nor `pub const MANIFEST` (pre-plugin leftovers). Its tests
+take platform-test-kit (rule 21): `Bench` plants its real manifest
+(`include_str!(\"../data-capability.json\")`) beside its aggregate, and a
+unit that reads SQL runs it on a `Scratch` database.
 
 Its manifest: `dataCapability` (`<system>.<name>`), `owner: dataguard`,
 `version`, `effect` (insert | update | delete | upsert), `target` (the
 aggregate and its id), `touches` (the existing fields it changes — empty
 with `insert` is the fast path; never a derived field), `payload`, `mode`
 (confirm_on_stale | overwrite | relative), `invariants` (ids its aggregate
-declares), `permissions`, `callableBy` (Micro-UI ids, a system, or `*`),
-`idempotencyKey`.
-
-Fast path or not: an `insert` touching nothing is a pure addition, merged on
-green gates, and its code holds no UPDATE, ON CONFLICT, UPSERT, DELETE or
-CREATE TRIGGER. Anything else is the write side: its PR is reviewed by an
-agent, and milestone_merge merges it once the review is clean and every
-check green. Its mock judgement goes in mock/handlers/<dataCapability id>.js
-(`export const commands = { '<id>': … }`), never another unit's handler file.
-A port that keeps state is written through a DataCapability only. What it must
-not know: any Capability, any other DataCapability, any other system's crates.
+declares), `permissions`, `callableBy`, `ports` (its ports-* crates),
+`idempotencyKey`. An `insert` touching nothing is a pure addition, merged
+on green gates, holding no UPDATE, ON CONFLICT, UPSERT, DELETE or CREATE
+TRIGGER; anything else is the write side, reviewed by an agent, merged by
+milestone_merge once the review is clean and every check green. Its mock
+judgement goes in mock/handlers/<dataCapability id>.js (`export const
+commands = { '<id>': … }`), never another unit's handler file. It knows no
+Capability, no other DataCapability, no other system's crates.
 
 Gates that judge it: manifests-conform-to-contracts (F), mock-handlers,
-data-capability-placed (its folder is its id's namespace, never
-crates/dataguard/), capability-isolation (its target aggregate's crate only),
-units-registered (named in the registry, its library named after its folder,
-the engine from the workspace), effect-classification, ownership (its
-aggregate declares every field it touches, none derived), invariants-tested,
-write-actions (the Micro-UIs that cite it are admitted by callableBy),
+data-capability-placed (never crates/dataguard/), capability-isolation,
+data-capability-conventions (clock, id constant, ports, manifest planted,
+SQL tested, no leftovers, no `SCAFFOLD:` hole left), units-registered, effect-classification,
+ownership, invariants-tested, write-actions, scratch-databases-shared,
 contracts-untouched (a consumer that needs its manifest changed stops with
 `AGENT_LOOP_STOP: contract <id> — <what it needs>`).
-Run `bash scripts/register.sh --check` and `bash scripts/isolation.sh` before
-the PR. Outside the product, through a port only: ports-declared and
+Run `bash scripts/register.sh --check`, `bash scripts/isolation.sh` and
+`node scripts/unit-conventions-gate.mjs data-capabilities origin/<base>`
+before the PR. Outside the product, through a port only: ports-declared and
 externals-behind-ports. Rules (contract P): rule-tests-untouched, rules-hold.";
 
 const PERSISTED_QUERY: &str = "\

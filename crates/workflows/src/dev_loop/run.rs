@@ -202,6 +202,7 @@ fn rounds(
     let signatures = Rc::clone(&config.signatures);
     let root = config.root.clone();
     let narrow = config.narrow;
+    let scaffold = config.scaffold;
     let ignore_budget = config.ignore_budget;
     let budget_floor = config.budget_floor;
     let autonomous = config.autonomous;
@@ -228,6 +229,7 @@ fn rounds(
             signatures: Rc::clone(&signatures),
             root: root.clone(),
             narrow,
+            scaffold,
             ignore_budget,
             budget_floor,
             autonomous,

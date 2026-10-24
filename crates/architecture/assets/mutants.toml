@@ -16,6 +16,8 @@
 # M4, PR #335). The scratch-database guard likewise: its tests run in the
 # harness (`crates/architecture/tests/scratch_db.rs`), and a test-debt
 # issue filed here would ask a session to edit a file rule 19 forbids it.
+# The test kit the same (`crates/architecture/tests/skeleton_product.rs`,
+# rule 21): the harness's, never edited here.
 # A crate whose functions are seen rather than asserted (a renderer, a
 # page) is added here, with the reason, in a task of its own.
 exclude_globs = [
@@ -23,6 +25,7 @@ exclude_globs = [
   "crates/dataguard/server/**",
   "crates/dataguard/registry/**",
   "crates/platform/scratch-db/**",
+  "crates/platform/test-kit/**",
 ]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI

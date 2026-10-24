@@ -1,0 +1,19 @@
+{
+  "dataCapability": "{{id}}",
+  "owner": "dataguard",
+  "version": 1,
+  "effect": {{effect}},
+  "target": {
+    "aggregate": "{{Agg}}",
+    "id": "SCAFFOLD: $<the payload field naming the row written>"
+  },
+  "touches": {{touches}},
+  "payload": {
+    "SCAFFOLD: <field>": "<type> — <meaning>: one entry per field the command carries"
+  },
+  "mode": "SCAFFOLD: overwrite | confirm_on_stale | relative",
+  "invariants": ["SCAFFOLD: the ids of {{Agg}}'s invariants this command can break, a subset of its aggregate.json"],
+  "permissions": [],
+  "callableBy": ["*"],
+  "idempotencyKey": "optional"
+}

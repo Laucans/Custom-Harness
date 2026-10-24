@@ -1,0 +1,9 @@
+{
+  "capability": "{{id}}",
+  "system": "{{system}}",
+  "version": "1.0.0",
+  "description": "SCAFFOLD: what it answers and for whom — the composer reads it",{{implements}}
+  "input": { "scaffold": "SCAFFOLD: one entry per request variable, its type" },
+  "output": "SCAFFOLD: the answer's shape, as mock/fixtures/{{id}}.json has it",
+  "reads": ["queries/{{folder}}.graphql"]
+}

@@ -60,6 +60,11 @@ pub struct Loop {
     /// stage runs on the task's closure; empty when the tree is whole. Set
     /// by `Narrow`, read by `Ask` for the prompt, cleared by `Widen`.
     pub tree_note: String,
+    /// The files of the unit's skeleton the harness wrote, uncommitted,
+    /// before `code` opened (`Scaffold`): what `Ask` tells the session to
+    /// start from, and what the architecture gate finds no hole left in
+    /// after it. Empty when no skeleton was written.
+    pub skeleton: Vec<String>,
     /// The checkout's head when the task was picked — what the round's
     /// changes are measured from after `code`. Empty when unknown.
     pub round_base: String,

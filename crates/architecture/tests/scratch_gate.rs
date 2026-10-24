@@ -180,6 +180,72 @@ fn a_source_holding_a_test_counts_and_one_holding_none_does_not() {
 }
 
 #[test]
+fn a_new_test_reaching_postgres_by_its_own_connection_fails_and_through_the_kit_passes() {
+    let first = repo("own-connection");
+    let own = "#[tokio::test]\nasync fn moved() {\n    let url = std::env::var(\"DATABASE_URL\").unwrap();\n    let (client, c) = tokio_postgres::connect(&url, NoTls).await.unwrap();\n}\n";
+    let (ok, said) = change(
+        &first,
+        &[(
+            "crates/table/data-capabilities/drop-token/tests/postgres.rs",
+            own,
+        )],
+    );
+    assert!(!ok, "{said}");
+    assert!(said.contains("platform_test_kit::Scratch"), "{said}");
+    let repo = repo("kit");
+    let kit = "use platform_test_kit::Scratch;\n#[tokio::test]\nasync fn moved() {\n    let scratch = Scratch::new(\"moved\").await;\n    std::env::var(\"DATABASE_URL\").ok();\n}\n";
+    let adapter = "pub fn url() -> String { std::env::var(\"DATABASE_URL\").unwrap_or_default() }\n#[cfg(test)]\nmod tests {}\n";
+    let (ok, said) = change(
+        &repo,
+        &[
+            (
+                "crates/table/data-capabilities/drop-token/tests/postgres.rs",
+                kit,
+            ),
+            ("crates/data/src/url.rs", adapter),
+            ("crates/platform/test-kit/tests/own.rs", own),
+        ],
+    );
+    assert!(
+        ok,
+        "the kit, a source outside tests/, the kit's own tests: {said}"
+    );
+}
+
+#[test]
+fn the_check_reads_code_not_words_comments_and_a_struct_of_the_same_name_aside() {
+    let memory = "//! Over memory (`DATABASE_URL=memory`): no connection, no Scratch.\n// std::env::var(\"DATABASE_URL\") is never read here.\n#[tokio::test]\nasync fn moved() {}\n";
+    let first = repo("comments");
+    let (ok, said) = change(
+        &first,
+        &[(
+            "crates/live/data-capabilities/drop-token/tests/engine.rs",
+            memory,
+        )],
+    );
+    assert!(ok, "a comment reaches no database: {said}");
+    let word = "// no Scratch needed\n#[tokio::test]\nasync fn moved() {\n    let url = std::env::var(\"DATABASE_URL\").unwrap();\n}\n";
+    let own = "struct Scratch { client: Client }\nimpl Scratch {\n    async fn new() -> Self {\n        let (client, c) = tokio_postgres::connect(&url, NoTls).await.unwrap();\n    }\n}\n";
+    let repo = repo("names");
+    let (ok, said) = change(
+        &repo,
+        &[
+            ("crates/table/data-capabilities/a/tests/postgres.rs", word),
+            ("crates/table/data-capabilities/b/tests/postgres.rs", own),
+        ],
+    );
+    assert!(!ok, "{said}");
+    for file in ["a/tests/postgres.rs", "b/tests/postgres.rs"] {
+        assert!(
+            said.contains(&format!(
+                "data-capabilities/{file}::a test that reaches PostgreSQL"
+            )),
+            "{file} in {said}"
+        );
+    }
+}
+
+#[test]
 fn the_guard_itself_and_files_outside_crates_are_not_judged() {
     let repo = repo("guard");
     let (ok, said) = change(

@@ -65,6 +65,25 @@ are there: a task's PR that changes `rules.json`, `tests/rules/` or
 the issue's `## Rules` names whose test the `rules-hold` check still shows
 red.
 
+When the change adds or changes a DataCapability or a Capability, read it
+against the deviations its neighbours are known to carry — hints for
+\"Worth checking first\", never blocking by themselves (the gates
+`data-capability-conventions` and `capability-conventions` judge the rest):
+  - a projection in the unit (`.project_pg(`, INSERT/UPDATE/DELETE SQL,
+    src/tables.rs) instead of in its aggregate;
+  - a `to_regclass` probe or another guard that hides an unmigrated schema;
+  - a date from a local `civil_from_days` copy rather than
+    `context.now_millis` and the aggregate's `timestamp()`;
+  - no test that the fields its Prepare writes are the manifest's `touches`
+    (`platform_test_kit::writes_only_touches`);
+  - an invariant the manifest lists that no test of the unit names — say
+    whether its aggregate or a sibling tests it, or the list is too long;
+  - a constant the SQL's WHERE already applies, checked again in Rust;
+  - a `# fields:` line spelling its names unlike its system's other query
+    files;
+  - `unwrap`, `panic!` or a Vec indexed by position in src/;
+  - helpers retyped in its tests that `platform_test_kit` provides.
+
 A line-by-line bug hunt already ran and posted its findings inline. Here is
 what it reported — reference it, do not repeat it:
 <inline-review-output>
@@ -199,6 +218,25 @@ mod tests {
     use super::*;
     use crate::pr_review::config::fake as config_fake;
     use crate::pr_review::ports::fake as ports_fake;
+
+    #[test]
+    fn the_brief_reads_a_unit_against_its_known_deviations_as_hints() {
+        let flat = BRIEF_PROMPT
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for part in [
+            "never blocking by themselves",
+            "`.project_pg(`",
+            "`to_regclass`",
+            "`civil_from_days`",
+            "`platform_test_kit::writes_only_touches`",
+            "`# fields:`",
+            "data-capability-conventions",
+        ] {
+            assert!(flat.contains(part), "the brief names {part}");
+        }
+    }
 
     #[test]
     fn the_table_is_inline_then_brief_then_publish() {
