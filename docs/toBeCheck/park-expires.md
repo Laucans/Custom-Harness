@@ -15,7 +15,8 @@ on every quiet stretch before, until the watch was restarted by hand.
   an hour passes" is said, not debugged.
 
 ## To check
-- [ ] On the next park in a live watch, `watch.out` says the park each tick
-      and the task is taken again about an hour later.
+- [x] On the next park in a live watch, `watch.out` says the park each tick
+      and the task is taken again about an hour later. Checked 2026-10-24:
+      #158 parked 23:25Z, said each tick, retaken by lane 0 at 00:30Z.
 - [ ] A SPEC-question stop retried after an hour halts again cheaply (one
       preflight, no paid session): count its cost in the next run.
