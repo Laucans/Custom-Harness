@@ -302,8 +302,9 @@ impl MarkWaitingMerge {
             .iter()
             .find(|pr| branch.as_deref() == Some(pr.head.as_str()))
         else {
-            // The read side merges its own PR: no PR left open is its
-            // normal case, and the postcondition says what is missing.
+            // Both sides end at a PR carrying the review label: none left
+            // open means the session stopped before it, and the
+            // postcondition says what is missing.
             if ctx.state.write_side {
                 ctx.traces.say(&format!(
                     "#{number} is on the write side and no open PR carrying {} is on its \

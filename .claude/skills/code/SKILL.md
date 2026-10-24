@@ -1,6 +1,6 @@
 ---
 name: code
-description: Implement the task whose SPEC is the body of its harness:agent issue, end to end — pre-flight gate (open harness:human blockers, dirty working tree, stale assumptions, missing inputs), a checklist from the spec's Approach, the build, every Verification bullet run with real output, /code-review, then branch → PR carrying `Closes #N` → gh pr merge --squash. Use when a spec is ready to build, when starting the implementation stage of the pipeline, or when the user says "/code", "implement the spec", "start coding the task", "build what the spec says", or "you are code".
+description: Implement the task whose SPEC is the body of its harness:agent issue, end to end — pre-flight gate (open harness:human blockers, dirty working tree, stale assumptions, missing inputs), a checklist from the spec's Approach, the build, every Verification bullet run with real output, /code-review, then branch → PR carrying `Closes #N`, labelled for the harness's review; the harness merges it. Use when a spec is ready to build, when starting the implementation stage of the pipeline, or when the user says "/code", "implement the spec", "start coding the task", "build what the spec says", or "you are code".
 ---
 
 # Role: Implementer
@@ -165,7 +165,8 @@ stated — quietly ignoring one is what this step exists to catch.
 ## 7. Land it
 
 Branch → PR → merge, every task, no exceptions (`CLAUDE.md`, Repository
-etiquette) — the merge being the harness's own on the write side. The local
+etiquette) — the merge being the harness's own, on both sides: a session
+merges no pull request (`gh pr merge` is denied to it). The local
 hook and the `main` ruleset that refuse a direct push are a backstop, not
 something to test.
 
@@ -185,28 +186,18 @@ something to test.
    its own line in the body** — the issue number of the task. That line
    is what closes the task: no `Closes`, no closed issue, and the loop
    stops rather than replay a task that still looks open.
-5. **On the write side** (`harness:write-side`, or the loop's prompt says
-   so), stop here: open the PR with `--label harness:to-review`, report its
-   number and end your turn. The harness watches its CI from here — it
+5. Stop here, on either side: open the PR with `--label harness:to-review`,
+   report its number and end your turn. The harness watches its CI from here — it
    reviews, repairs and merges the PR itself (`milestone_merge`) and closes
    the task. Never wait on the checks: never poll `gh pr checks`, never a
    background watcher, never `Monitor`, never a sleep loop or a scheduled
    wake-up — a session silent for twenty minutes is killed, and it never
    comes back to its PR.
-6. **On the read side**, wait for `ci` with `gh pr checks <n> --watch
-   --interval 60` **in the foreground** — the one wait you take, one call a
-   minute (the GitHub quota is 5 000 calls an hour for every lane) — then
-   `gh pr merge --squash`, the only method enabled: one commit, titled
-   `<PR title> (#n)`, its body the PR's; the branch auto-deletes. A watch
-   that runs out before the checks end is run again; never a background
-   watcher, never `Monitor`, never a sleep loop. A session killed while
-   waiting has still delivered: the harness labels its open PR
-   `harness:to-review` and takes it through its own cycle.
-7. Confirm GitHub did close it: `gh issue view <n> --json state`. Nobody
-   closes it by hand, so a PR merged without the `Closes` line leaves the
-   task open and the round unfinished. On the write side the task stays
-   open under `harness:review-pending` until the harness merges the PR —
-   expected, not a failure.
+6. The task stays open under `harness:review-pending` until the harness
+   merges the PR — expected, not a failure. A PR without the `Closes` line
+   on its own leaves the task open once merged: the loop stops rather than
+   replay it. Long local commands (the mutants, a full test run) are run
+   in the foreground, before the PR.
 
 ## 8. Edge cases
 
