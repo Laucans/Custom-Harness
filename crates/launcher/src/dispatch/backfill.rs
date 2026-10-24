@@ -8,14 +8,23 @@
 //! them to the ledger, which rewrites itself safely
 //! (`Ledger::backfill_milestones`: a copy first, an atomic rename, nothing
 //! touched that already names its milestone).
+//!
+//! **With the watch stopped.** The ledger keeps out a writer of this version
+//! by its own lock, not one that takes none, so this refuses to run while
+//! the checkout's watch lock is held, and holds it itself until it is done:
+//! no watch starts meanwhile. A ledger named by `--ledger` belongs to the
+//! checkout of its own watch: stop that one first, as this only sees the
+//! lock of the checkout it runs in.
 
 use std::path::{Path, PathBuf};
 
 use harness_adapters::shell::github::GhCli;
 use harness_adapters::store::ledger::{Backfill, Ledger};
+use harness_adapters::store::lock::DirLocks;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Outcome, Slug};
 use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::store::lock::Locks;
 use harness_workflows::common::hierarchy;
 
 use crate::cli::BackfillArgs;
@@ -24,7 +33,8 @@ use crate::cli::BackfillArgs;
 /// says what it did.
 ///
 /// # Errors
-/// A target that is no repository, then whatever [`run`] reports.
+/// A target that is no repository, a watch running on this checkout, then
+/// whatever [`run`] reports.
 pub async fn by_hand(args: &BackfillArgs, here: &Path) -> Outcome<String> {
     let slug = Slug::parse(&args.target_repo_url).ok_or_else(|| {
         Halt::Failed(format!(
@@ -32,7 +42,17 @@ pub async fn by_hand(args: &BackfillArgs, here: &Path) -> Outcome<String> {
             args.target_repo_url
         ))
     })?;
-    run(&GhCli::for_slug(&slug), &ledger_path(args, here)).await
+    let lock_dir = crate::router::watch_lock_dir(here);
+    if !DirLocks.acquire(&lock_dir, crate::router::WATCH_LOCK)? {
+        return Err(Halt::Failed(format!(
+            "a watch runs on this checkout ({} is held) — stop it, then backfill: \
+             a run appending meanwhile could lose its row",
+            lock_dir.display()
+        )));
+    }
+    let done = run(&GhCli::for_slug(&slug), &ledger_path(args, here)).await;
+    DirLocks.release(&lock_dir, crate::router::WATCH_LOCK);
+    done
 }
 
 /// Reads every milestone of `gh`, then fills the ledger at `path`.
@@ -126,6 +146,32 @@ mod tests {
             .await
             .expect_err("no repository");
         assert!(err.reason().contains("TARGET_REPO_URL"));
+    }
+
+    #[tokio::test]
+    async fn a_running_watch_is_refused_and_its_lock_left_held() {
+        let here =
+            std::env::temp_dir().join(format!("harness-backfill-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&here);
+        let lock_dir = crate::router::watch_lock_dir(&here);
+        // The watch's lock, as `harness watch` places it.
+        assert!(
+            DirLocks
+                .acquire(&lock_dir, crate::router::WATCH_LOCK)
+                .expect("placed")
+        );
+        let err = by_hand(&args("/nowhere.tsv", "https://github.com/o/r"), &here)
+            .await
+            .expect_err("a watch runs");
+        assert!(err.reason().contains("stop it"), "{}", err.reason());
+        assert!(
+            !DirLocks
+                .acquire(&lock_dir, crate::router::WATCH_LOCK)
+                .expect("looked at"),
+            "the watch keeps its lock"
+        );
+        DirLocks.release(&lock_dir, crate::router::WATCH_LOCK);
+        let _ = std::fs::remove_dir_all(&here);
     }
 
     #[tokio::test]

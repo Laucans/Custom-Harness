@@ -43,7 +43,7 @@
 mod lanes;
 mod routes;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,6 +70,15 @@ use crate::dispatch::lanes::Lanes;
 
 use routes::dispatch;
 
+/// The name of the one-watch-per-checkout lock, under [`watch_lock_dir`].
+pub const WATCH_LOCK: &str = "watch";
+
+/// Where the checkout at `here` keeps its watch lock: held by a running
+/// watch, and by whatever must not run beside one.
+pub fn watch_lock_dir(here: &Path) -> PathBuf {
+    Workspace::new(here).state_root().join(".llocal/watch-lock")
+}
+
 /// Runs the watch loop: one tick now, then every `--interval` seconds,
 /// forever — or exactly once under `--once`.
 ///
@@ -83,11 +92,11 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
     // One watch per checkout: two started at the same second (two restarts
     // racing, `ForgeDesMondes` 21:20Z) merged the same PR twice and shared
     // their lanes' checkouts. An OS lock, released when the process ends.
-    let lock_dir = Workspace::new(here).state_root().join(".llocal/watch-lock");
+    let lock_dir = watch_lock_dir(here);
     if !harness_core::ports::store::lock::Locks::acquire(
         &harness_adapters::store::lock::DirLocks,
         &lock_dir,
-        "watch",
+        WATCH_LOCK,
     )? {
         return Err(Halt::Failed(format!(
             "another watch already runs on this checkout ({} is held) — stop it first",
@@ -780,6 +789,14 @@ async fn with_split_blockers(gh: &dyn GitHub, milestones: Vec<Issue>) -> Outcome
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_watch_lock_sits_under_the_checkouts_own_state() {
+        assert_eq!(
+            watch_lock_dir(Path::new("/repo")),
+            PathBuf::from("/repo/.llocal/watch-lock")
+        );
+    }
 
     #[test]
     fn a_pr_a_lane_holds_is_not_offered_again() {

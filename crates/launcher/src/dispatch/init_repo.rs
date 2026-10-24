@@ -1,6 +1,5 @@
-//! The wiring of `harness init-repo`: the only place that builds
-//! `GhCli::for_slug`, and a `GitRepos` and `Processes` for the install
-//! clone.
+//! The wiring of `harness init-repo`: a `GhCli::for_slug` (it has a URL,
+//! not a clone), and a `GitRepos` and `Processes` for the install clone.
 
 use std::path::Path;
 use std::process::ExitCode;

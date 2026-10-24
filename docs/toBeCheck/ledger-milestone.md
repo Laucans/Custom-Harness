@@ -31,10 +31,23 @@ breaker and the budget key on the task as written.
   diagnosis and the data-model draft.
 - `harness backfill-milestones [--ledger PATH]` (TARGET_REPO_URL set):
   reads every milestone, open and closed, and its sub-issues, then fills the
-  empty cells; `.bak` copy, atomic rename, refused if the ledger grows
-  meanwhile.
+  empty cells; `.bak` copy, atomic rename. It refuses a first line that is
+  no header the ledger ever had (renamed column, missing header) and
+  touches nothing. The rewrite holds the ledger's lock (`File::lock`),
+  which `Ledger::append` takes too and then reopens the file if it was
+  renamed over. A writer that does not lock (an older binary) is caught
+  only up to the last look before the rename (file, size, mtime changed →
+  refused, nothing changed); one appending in the instant after it would be
+  lost, so the command refuses while the checkout's watch lock is held and
+  holds it itself: **stop the watch first**.
 - The view prefers the column, falls back on the board, and names what
-  neither holds `roadmap`, `PR` or `hors board`.
+  neither holds `roadmap`, `PR`, `hors board` (test debt, a data diagnosis,
+  a run on no issue) or `unknown` (a run on an issue the board
+  does not list: its milestone is unknown, not absent).
+- Until the backfill has run on a ledger, `unknown` holds every old
+  dev-loop row whose milestone closed beyond the board's window and, with no
+  board read, every old task row — no longer mixed with roadmap, PR or
+  off-board work.
 
 Tried on a copy of the ForgeDesMondes ledger (2 378 rows, $1 462.56):
 508 rows filled ($1 024.84 now under a milestone), 1 870 left empty — PR
@@ -45,7 +58,10 @@ A second run filled 0 and left the file byte for byte; every row's first
 
 ## To verify
 
-- [ ] Stop the watch, then on the real ledger:
+- [ ] With the watch still running, from the factory checkout
+      (`cd ~/.harness/factories/forgedesmondes`), the command below is
+      refused (`a watch runs on this checkout`) and the ledger untouched.
+- [ ] Stop the watch, then from that checkout, on the real ledger:
       `TARGET_REPO_URL=https://github.com/Laucans/ForgeDesMondes harness
       backfill-milestones --ledger
       ~/.harness/factories/forgedesmondes/.llocal/logs/agent-loop/costs.tsv`
@@ -55,9 +71,16 @@ A second run filled 0 and left the file byte for byte; every row's first
 - [ ] Restart the watch; the first dev-loop round writes a row whose last
       cell is `#<n> <milestone title>` (`tail -1 costs.tsv | cut -f20`).
       Same for a refinement, a split and an arbitration.
-- [ ] The *Spending* screen, *By milestone*: no `unknown` bucket; `PR`
-      about $395, `hors board` about $40, `roadmap` about $3 on the current
-      ledger; the closed milestones (#3, #4, …) carry their own cost again.
+- [ ] Before the backfill, the *Spending* screen, *By milestone*: the old
+      dev-loop weight of closed milestones (about $960 minus what the `#N`
+      fix placed) sits in `unknown`, not in `hors board`.
+- [ ] After it: `unknown` about $33 (rules $27.39, contract evolve $5.41,
+      one decide — issues no milestone lists); `PR` about $395, `hors
+      board` about $6 (test debt, the data diagnosis), `roadmap` about $3; the closed milestones (#3, #4, …)
+      carry their own cost again.
+- [ ] A copy of the ledger with its first header cell renamed, then one
+      with its header line removed: the backfill refuses both, names the
+      line it found, and leaves the file byte for byte, no `.bak`.
 - [ ] `harness costs --by task` still sums each task as before (the budget
       reads `task`, untouched).
 - [ ] Follow-up to decide: PR review/fix rows ($395) could be placed under

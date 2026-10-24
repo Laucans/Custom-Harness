@@ -60,7 +60,14 @@ src/dispatch/     one module per thing that can be run, plus what they share
   main_agent_merge.rs  a finished milestone's PR into main_agent, opened then merged
                        (a task's PR into its milestone — `milestone_merge` —
                        needs no wiring of its own: the router calls it with its `gh`)
-  init_repo.rs      `harness init-repo`: the only place that builds `GhCli::for_slug`
+  init_repo.rs      `harness init-repo`: a `GhCli::for_slug` (a URL, no clone), a
+                    `GitRepos` and `Processes` for the install clone
+  backfill.rs       `harness backfill-milestones`: the ledger's `milestone` column filled
+                    once from every milestone, open and closed
+                    (`hierarchy::milestone_index` → `Ledger::backfill_milestones`), its
+                    `gh` a `GhCli::for_slug` of `TARGET_REPO_URL`; refused while the
+                    checkout's watch lock (`router::watch_lock_dir`) is held, which it
+                    holds itself until done — run with the watch stopped
   shared.rs         the checkouts and adapters the dispatch modules share
   tooling.rs        the gates that belong to no workflow
   trial.rs          `harness trial`: a prompt's dry-run — a past run's prompt replayed with
@@ -288,7 +295,7 @@ then `TARGET_REPO_URL`, and empty still means "this checkout's own `origin`" —
 ## `dispatch/init_repo.rs` — the second entry point
 
 Builds `GhCli::for_slug(&slug)` (no checkout — `init-repo` has a URL, not a
-clone), `RealDisk`, `GitRepos` and `Processes` (the install runs the
+clone, like every subcommand that reads a board it has no checkout of), `RealDisk`, `GitRepos` and `Processes` (the install runs the
 clone's `scripts/register.sh` through it), calls `harness_workflows::init_repo::run::build(...)`,
 prints the report with `println!` (the one place in library-adjacent code
 where that's correct — library code keeps `tracing`), and maps the result to

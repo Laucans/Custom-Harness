@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use harness_core::domain::task_number;
-use harness_workflows::{planner, pr_fix, pr_review};
+use harness_workflows::{data_diagnosis, planner, pr_fix, pr_review, test_debt};
 use jiff::tz::TimeZone;
 use serde::Serialize;
 
@@ -583,7 +583,8 @@ pub struct Costs {
     pub by_side: Vec<Bucket>,
     /// By milestone, most expensive first — what a milestone cost from its
     /// refinement to its last task; what no milestone holds is named by its
-    /// kind: [`ROADMAP`], [`PULL_REQUEST`] or [`OFF_BOARD`].
+    /// kind: [`ROADMAP`], [`PULL_REQUEST`] or [`OFF_BOARD`], and a task the
+    /// view cannot place is [`UNPLACED`].
     /// Filled by [`attribute_milestones`].
     pub by_milestone: Vec<Bucket>,
     /// Token totals.
@@ -796,13 +797,22 @@ pub fn attribute_sides(
 pub const ROADMAP: &str = "roadmap";
 /// The bucket of what a pull request cost: its review and its repairs.
 pub const PULL_REQUEST: &str = "PR";
-/// The bucket of what no milestone holds and no roadmap item or pull request
-/// explains: test debt, a decision, a data diagnosis, a task under none.
+/// The bucket of what never belonged to a milestone and is neither a
+/// roadmap item nor a pull request: test debt, a data diagnosis, a run on
+/// no issue.
 pub const OFF_BOARD: &str = "hors board";
+/// The bucket of a task the view cannot place: its row names no milestone
+/// (written before the column, never backfilled) and the board does not
+/// list it — a milestone closed beyond the few the board keeps, or no board
+/// read at all. It may well have had a milestone, so it is not
+/// [`OFF_BOARD`]; it is kept apart rather than dropped, and
+/// `harness backfill-milestones` empties it.
+pub const UNPLACED: &str = "unknown";
 
 /// The kind of work a stage gives away when no milestone is named: only
 /// the planner plans a roadmap item, only PR review and PR fix work a pull
-/// request. Read from the workflows' own stage names, so a rename moves
+/// request, and test debt and a data diagnosis never belong to a
+/// milestone. Read from the workflows' own stage names, so a rename moves
 /// both.
 fn kind_of_stage(stage: &str) -> Option<&'static str> {
     match stage {
@@ -810,8 +820,17 @@ fn kind_of_stage(stage: &str) -> Option<&'static str> {
         pr_review::orchestration::stages::INLINE
         | pr_review::orchestration::stages::BRIEF
         | pr_fix::orchestration::stages::FIX => Some(PULL_REQUEST),
+        test_debt::orchestration::stages::COVER
+        | data_diagnosis::orchestration::stages::DIAGNOSE => Some(OFF_BOARD),
         _ => None,
     }
+}
+
+/// Whether a ledger `task` key names an issue (`61`, `#61`) rather than no
+/// task or something else (`main_agent@e0b409e`).
+fn names_an_issue(task: &str) -> bool {
+    let number = task_number(task);
+    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Fills `by_milestone` from the ledger.
@@ -821,8 +840,10 @@ fn kind_of_stage(stage: &str) -> Option<&'static str> {
 /// issue number (`#61` and `61` alike), `None` when the board does not know
 /// it. What neither names is bucketed by kind, read from its run: a run
 /// that planned is a roadmap item's — its repository map included — one
-/// that reviewed or repaired is a pull request's, any other is off the
-/// board.
+/// that reviewed or repaired is a pull request's, test debt and a data
+/// diagnosis are off the board. Any other run on an issue is
+/// [`UNPLACED`] — its milestone is unknown, not absent — and a run on no
+/// issue is off the board.
 pub fn attribute_milestones(
     costs: &mut Costs,
     rows: &[LedgerRow],
@@ -838,10 +859,15 @@ pub fn attribute_milestones(
     for row in rows {
         let key = if row.milestone.is_empty() {
             milestone_of(task_number(&row.task)).unwrap_or_else(|| {
+                let unknown = if names_an_issue(&row.task) {
+                    UNPLACED
+                } else {
+                    OFF_BOARD
+                };
                 run_kinds
                     .get(row.run.as_str())
                     .copied()
-                    .unwrap_or(OFF_BOARD)
+                    .unwrap_or(unknown)
                     .to_string()
             })
         } else {
@@ -951,6 +977,9 @@ mod tests {
             run_row("debt-1", "#77", "cover", 0.75),
             run_row("diag-1", "main_agent@e0b409e", "diagnose", 0.25),
             run_row("none-1", "", "explore", 0.125),
+            // A task the board does not list: an old milestone's, maybe.
+            run_row("loop-1", "61", "code", 4.0),
+            run_row("decide-1", "#62", "decide", 0.5),
         ];
         let mut costs = Costs::default();
         attribute_milestones(&mut costs, &rows, board);
@@ -964,7 +993,36 @@ mod tests {
         assert_eq!(bucket(ROADMAP), Some((1.5, 2)));
         assert_eq!(bucket(PULL_REQUEST), Some((2.5, 3)));
         assert_eq!(bucket(OFF_BOARD), Some((1.125, 3)));
-        assert_eq!(bucket("unknown"), None, "no catch-all left");
+        assert_eq!(bucket(UNPLACED), Some((4.5, 2)), "unknown, not absent");
+        let total: u32 = costs.by_milestone.iter().map(|b| b.count).sum();
+        assert_eq!(
+            usize::try_from(total).ok(),
+            Some(rows.len()),
+            "every row lands in a bucket"
+        );
+    }
+
+    #[test]
+    fn with_no_board_an_old_task_row_is_unplaced_never_off_the_board() {
+        let rows = vec![
+            run_row("loop-1", "61", "code", 1.0),
+            run_row("debt-1", "#77", "cover", 0.5),
+            run_row("diag-1", "main_agent@e0b409e", "explore", 0.25),
+        ];
+        let mut costs = Costs::default();
+        attribute_milestones(&mut costs, &rows, |_| None);
+        let keys: Vec<&str> = costs.by_milestone.iter().map(|b| b.key.as_str()).collect();
+        assert_eq!(keys, [UNPLACED, OFF_BOARD]);
+    }
+
+    #[test]
+    fn only_a_number_with_or_without_its_hash_names_an_issue() {
+        assert!(names_an_issue("61"));
+        assert!(names_an_issue("#61"));
+        assert!(!names_an_issue(""));
+        assert!(!names_an_issue("#"));
+        assert!(!names_an_issue("main_agent@e0b409e"));
+        assert!(!names_an_issue("6a"));
     }
 
     #[test]
@@ -1002,7 +1060,7 @@ mod tests {
             _ => None,
         });
         let keys: Vec<&str> = costs.by_milestone.iter().map(|b| b.key.as_str()).collect();
-        assert_eq!(keys, ["#12 Billing", "#13 Search", OFF_BOARD]);
+        assert_eq!(keys, ["#12 Billing", "#13 Search", UNPLACED]);
         assert!((costs.by_milestone[0].usd - 3.0).abs() < 1e-9);
         assert_eq!(costs.by_milestone[0].count, 2);
     }

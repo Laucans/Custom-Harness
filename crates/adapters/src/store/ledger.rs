@@ -14,7 +14,9 @@
 //! knows what instant it is talking about.
 
 use std::fmt::Write as _;
-use std::io::Write as _;
+use std::fs::File;
+use std::io::{Read as _, Write as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use harness_core::domain::{Halt, Outcome, Spend, Tags, breaker, budget, task_number};
@@ -138,6 +140,14 @@ pub struct Backfill {
     pub unresolved: usize,
 }
 
+/// Whether `line` is a header this ledger wrote: the current one, or one
+/// it had before columns were added at its end — a non-empty prefix of it.
+fn known_header(line: &str) -> bool {
+    let columns = columns();
+    let cells: Vec<&str> = line.split('\t').collect();
+    cells.len() <= columns.len() && columns.iter().zip(&cells).all(|(want, got)| want == got)
+}
+
 /// The ledger's text with each empty `milestone` cell filled from
 /// `milestone_of`, which answers for an issue number (`61`, never `#61`).
 ///
@@ -145,15 +155,27 @@ pub struct Backfill {
 /// milestone already is never touched, nor is one `milestone_of` cannot
 /// place: running it twice gives the same text. The header is the current
 /// one, since a filled row has the cell the old header did not name.
-#[must_use]
+///
+/// # Errors
+///
+/// The first line, as found, when it is no header this ledger ever wrote —
+/// a renamed column, or no header at all: the cells cannot be placed by
+/// name, and replacing that line would drop a row.
 pub fn backfill_text(
     text: &str,
     milestone_of: impl Fn(&str) -> Option<String>,
-) -> (String, Backfill) {
+) -> Result<(String, Backfill), String> {
+    let first = text.lines().next().unwrap_or_default();
+    if text.is_empty() {
+        return Ok((String::new(), Backfill::default()));
+    }
+    if !known_header(first) {
+        return Err(first.to_string());
+    }
     let columns = columns();
     let at = |name: &str| columns.iter().position(|column| *column == name);
     let (Some(task_at), Some(milestone_at)) = (at("task"), at("milestone")) else {
-        return (text.to_string(), Backfill::default());
+        return Ok((text.to_string(), Backfill::default()));
     };
     let mut done = Backfill::default();
     let mut out = String::with_capacity(text.len());
@@ -186,7 +208,38 @@ pub fn backfill_text(
         }
         out.push('\n');
     }
-    (out, done)
+    Ok((out, done))
+}
+
+/// Whether `file` is still the one at `path` — not unlinked, nor replaced
+/// by a rename since it was opened.
+fn still_at(file: &File, path: &Path) -> bool {
+    match (file.metadata(), std::fs::metadata(path)) {
+        (Ok(held), Ok(named)) => held.dev() == named.dev() && held.ino() == named.ino(),
+        _ => false,
+    }
+}
+
+/// What tells whether a file was written to without reading it: which file
+/// it is, its size and when it last changed. Two equal stamps taken apart in
+/// time mean nothing wrote to it in between that the file system saw.
+#[derive(Debug, PartialEq, Eq)]
+struct Stamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl Stamp {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        }
+    }
 }
 
 /// The ledger, on disk.
@@ -220,13 +273,33 @@ impl Ledger {
             let _ = writeln!(text, "{HEADER}");
         }
         let _ = writeln!(text, "{}", row.render());
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|e| self.wrote_nothing(&e))?;
+        let mut file = self.locked().map_err(|e| self.wrote_nothing(&e))?;
         file.write_all(text.as_bytes())
             .map_err(|e| self.wrote_nothing(&e))
+    }
+
+    /// The ledger opened for reading and appending, under its exclusive
+    /// lock, held until the file is dropped.
+    ///
+    /// A backfill renames a new file over the ledger while it holds the
+    /// lock: a writer that opened the old one waits, then finds its file
+    /// replaced and opens the new one, so its row is not written into a file
+    /// nobody reads any more.
+    fn locked(&self) -> std::io::Result<File> {
+        for _ in 0..8 {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .append(true)
+                .open(&self.path)?;
+            file.lock()?;
+            if still_at(&file, &self.path) {
+                return Ok(file);
+            }
+        }
+        Err(std::io::Error::other(
+            "the ledger kept being replaced while it was opened",
+        ))
     }
 
     /// Each data row, split, header excluded.
@@ -427,15 +500,26 @@ impl Ledger {
     ///
     /// The budget reads this file, so a row lost would make it lie: the
     /// original is copied to `<ledger>.bak` first, the new text is written
-    /// beside it and renamed over it in one step, and the rename is refused
-    /// if the ledger grew meanwhile — a run appended a row the new text does
-    /// not hold. Nothing to fill writes nothing, not even the copy.
+    /// beside it and renamed over it in one step. The whole rewrite holds
+    /// the ledger's lock, which [`Self::append`] takes too, so a writer of
+    /// this version waits and then appends to the new file.
+    ///
+    /// **Run it with the watch stopped** (`harness backfill-milestones`
+    /// refuses while the checkout's watch lock is held). A writer that does
+    /// not lock — a watch or a run still on an older binary — is not kept
+    /// out: the rename is refused if the ledger's file, size or modification
+    /// time changed since it was read, but a row appended in the instant
+    /// between that last look and the rename lands in the replaced file and
+    /// is lost. That window is a few system
+    /// calls wide; it is narrow, not closed.
+    /// Nothing to fill writes nothing, not even the copy.
     ///
     /// # Errors
     ///
-    /// [`Halt::Unreadable`] as [`Self::rows`]; [`Halt::Failed`] if the copy,
-    /// the new text or the rename could not be written, or the ledger grew
-    /// while it was rewritten.
+    /// [`Halt::Unreadable`] as [`Self::rows`]; [`Halt::Failed`] if the first
+    /// line is no header this ledger wrote, if the copy, the new text or the
+    /// rename could not be written, or if the ledger changed while it was
+    /// rewritten — the ledger is then left as it was, with no copy.
     pub fn backfill_milestones(
         &self,
         milestone_of: impl Fn(&str) -> Option<String>,
@@ -443,13 +527,26 @@ impl Ledger {
         if !self.path.exists() {
             return Ok(Backfill::default());
         }
-        let text = std::fs::read_to_string(&self.path).map_err(|e| {
+        let unreadable = |e: std::io::Error| {
             Halt::Unreadable(format!(
                 "ledger unreadable at {} ({e}) — nothing was backfilled",
                 self.path.display()
             ))
+        };
+        let mut held = self.locked().map_err(unreadable)?;
+        let before = held
+            .metadata()
+            .map(|meta| Stamp::of(&meta))
+            .map_err(unreadable)?;
+        let mut text = String::new();
+        held.read_to_string(&mut text).map_err(unreadable)?;
+        let (filled, done) = backfill_text(&text, milestone_of).map_err(|header| {
+            Halt::Failed(format!(
+                "ledger {} starts with {header:?}, no header it ever had — \
+                 nothing was backfilled",
+                self.path.display()
+            ))
         })?;
-        let (filled, done) = backfill_text(&text, milestone_of);
         if done.filled == 0 {
             return Ok(done);
         }
@@ -464,12 +561,17 @@ impl Ledger {
             let _ = std::fs::remove_file(&fresh);
             return Err(self.wrote_nothing(&e));
         }
-        let now = std::fs::metadata(&self.path).map(|meta| meta.len()).ok();
-        if now != u64::try_from(text.len()).ok() {
+        // The last look before the rename: what a writer that does not lock
+        // appended up to here is caught; after it, it would be lost.
+        let now = std::fs::metadata(&self.path)
+            .map(|meta| Stamp::of(&meta))
+            .ok();
+        if now.as_ref() != Some(&before) {
             let _ = std::fs::remove_file(&fresh);
+            let _ = std::fs::remove_file(&backup);
             return Err(Halt::Failed(format!(
-                "ledger {} grew while it was backfilled — a run is writing to \
-                 it; stop it and run the backfill again, nothing was changed",
+                "ledger {} changed while it was backfilled — something is writing \
+                 to it; stop the watch and run the backfill again, nothing was changed",
                 self.path.display()
             )));
         }
@@ -477,6 +579,8 @@ impl Ledger {
             let _ = std::fs::remove_file(&fresh);
             self.wrote_nothing(&e)
         })?;
+        // The lock is released only once the new file is in place.
+        drop(held);
         Ok(done)
     }
 
@@ -808,6 +912,11 @@ mod tests {
         assert_eq!(back[0].tags.milestone, "", "not declared, never guessed");
     }
 
+    /// The header as the real ledger still carries it: the first 16 columns.
+    fn old_header() -> String {
+        columns()[..16].join("\t")
+    }
+
     /// A ledger as it stood before the column: an old header, a 15-cell row
     /// of task 42, a 19-cell row of `#43`, one of a pull request, one that
     /// already names its milestone.
@@ -817,12 +926,13 @@ mod tests {
             ..row()
         };
         format!(
-            "when\trun\n\
+            "{}\n\
              2026-09-30T12:00:00Z\trun-1\t03\t42\tcode\t\t\t\t\t\t\tmac\t\t\tSTOP\n\
              2026-09-30T12:00:00Z\trun-1\t01\t#43\twrite\t0.500000\t\t\t\t\t\tmac\t\t\tok\t\
              f\t\t\t\n\
              2026-09-30T12:00:00Z\trun-2\t01\t#105\tfix\t2.000000\t\t\t\t\t\tmac\t\t\tok\n\
              {}\n",
+            old_header(),
             named.render()
         )
     }
@@ -837,7 +947,7 @@ mod tests {
 
     #[test]
     fn a_backfill_fills_the_empty_cells_from_the_task_with_or_without_its_hash() {
-        let (text, done) = backfill_text(&legacy(), board);
+        let (text, done) = backfill_text(&legacy(), board).expect("a known header");
         assert_eq!(
             done,
             Backfill {
@@ -877,7 +987,8 @@ mod tests {
             tags: Tags::default(),
             ..row()
         };
-        let (text, done) = backfill_text(&format!("{HEADER}\n{}\n", unnamed.render()), board);
+        let (text, done) = backfill_text(&format!("{HEADER}\n{}\n", unnamed.render()), board)
+            .expect("the current header");
         assert_eq!(done.filled, 1);
         assert!(text.ends_with("\t#12 Billing\n"), "{text}");
     }
@@ -889,16 +1000,158 @@ mod tests {
             ..row()
         };
         let long = format!("{HEADER}\n{}\textra\n", plain.render());
-        let (text, done) = backfill_text(&long, board);
+        let (text, done) = backfill_text(&long, board).expect("the current header");
         assert_eq!(done.unresolved, 1);
         assert_eq!(text, long);
     }
 
     #[test]
     fn a_blank_line_is_kept_and_counted_as_nothing() {
-        let (text, done) = backfill_text(&format!("{HEADER}\n\n"), board);
+        let (text, done) =
+            backfill_text(&format!("{HEADER}\n\n"), board).expect("the current header");
         assert_eq!(done, Backfill::default());
         assert_eq!(text, format!("{HEADER}\n\n"));
+    }
+
+    #[test]
+    fn a_header_is_known_when_it_is_a_prefix_of_the_current_one() {
+        assert!(known_header(HEADER));
+        assert!(known_header(&old_header()));
+        assert!(known_header("when"));
+        assert!(!known_header(""), "an empty line is no header");
+        assert!(!known_header(&old_header().replacen("when", "WHEN", 1)));
+        assert!(
+            !known_header(&format!("{HEADER}\textra")),
+            "longer than ours"
+        );
+        assert!(!known_header("when\trun\tstage"), "a column skipped");
+    }
+
+    #[test]
+    fn an_empty_text_backfills_to_nothing() {
+        assert_eq!(
+            backfill_text("", board),
+            Ok((String::new(), Backfill::default()))
+        );
+    }
+
+    /// The ledger `text` refused by a backfill, as it was: no copy, no row
+    /// touched.
+    fn refused(tag: &str, text: &str) -> String {
+        let dir = Dir::new(tag);
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, text).expect("a ledger");
+        let err = Ledger::new(&path)
+            .backfill_milestones(board)
+            .expect_err("refused");
+        assert_eq!(std::fs::read_to_string(&path).expect("re-read"), text);
+        assert!(!dir.0.join("costs.tsv.bak").exists(), "no copy");
+        assert!(!dir.0.join("costs.tsv.tmp").exists(), "nothing beside it");
+        err.reason().to_string()
+    }
+
+    #[test]
+    fn a_renamed_header_is_refused_and_the_ledger_left_as_it_was() {
+        let renamed = legacy().replacen("when", "WHEN", 1);
+        assert_eq!(
+            backfill_text(&renamed, board),
+            Err(old_header().replacen("when", "WHEN", 1))
+        );
+        let reason = refused("backfill-renamed", &renamed);
+        assert!(reason.contains("WHEN"), "{reason}");
+    }
+
+    #[test]
+    fn a_missing_header_is_refused_rather_than_a_row_replaced() {
+        let headless = legacy()
+            .split_once('\n')
+            .map(|(_, rest)| rest.to_string())
+            .expect("a header line");
+        assert!(backfill_text(&headless, board).is_err());
+        let reason = refused("backfill-headless", &headless);
+        assert!(reason.contains("2026-09-30T12:00:00Z"), "{reason}");
+    }
+
+    /// A backfill of the old ledger during which `meddle` touches the file
+    /// as a writer that takes no lock would: the refusal's reason and the
+    /// ledger after it, once checked that neither a copy nor the new text is
+    /// left beside it.
+    fn meddled(tag: &str, meddle: impl Fn(&Path)) -> (String, String) {
+        let dir = Dir::new(tag);
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, legacy()).expect("a ledger");
+        let err = Ledger::new(&path)
+            .backfill_milestones(|number| {
+                meddle(&path);
+                board(number)
+            })
+            .expect_err("refused");
+        assert!(!dir.0.join("costs.tsv.bak").exists(), "no copy");
+        assert!(!dir.0.join("costs.tsv.tmp").exists(), "nothing beside it");
+        let text = std::fs::read_to_string(&path).expect("re-read");
+        (err.reason().to_string(), text)
+    }
+
+    #[test]
+    fn a_row_appended_without_the_lock_meanwhile_refuses_the_rename() {
+        let once = std::cell::Cell::new(false);
+        let (reason, text) = meddled("backfill-appended", |path| {
+            if !once.replace(true) {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(path)
+                    .expect("opened, no lock taken");
+                file.write_all(b"late\n").expect("appended");
+            }
+        });
+        assert!(reason.contains("changed while"), "{reason}");
+        assert_eq!(text, format!("{}late\n", legacy()), "the late row kept");
+    }
+
+    #[test]
+    fn a_ledger_touched_without_growing_meanwhile_refuses_the_rename() {
+        let (reason, text) = meddled("backfill-touched", |path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .and_then(|file| file.set_modified(std::time::SystemTime::UNIX_EPOCH))
+                .expect("touched");
+        });
+        assert!(reason.contains("stop the watch"), "{reason}");
+        assert_eq!(text, legacy(), "same size, same text, but written to");
+    }
+
+    #[test]
+    fn a_handle_knows_when_its_file_was_replaced_or_removed() {
+        let dir = Dir::new("still-at");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, "a").expect("a ledger");
+        let held = File::open(&path).expect("opened");
+        assert!(still_at(&held, &path), "the file it opened");
+        let other = dir.0.join("other.tsv");
+        std::fs::write(&other, "b").expect("another");
+        std::fs::rename(&other, &path).expect("renamed over");
+        assert!(!still_at(&held, &path), "replaced by a rename");
+        let fresh = File::open(&path).expect("reopened");
+        std::fs::remove_file(&path).expect("removed");
+        assert!(!still_at(&fresh, &path), "removed");
+    }
+
+    #[test]
+    fn an_append_after_a_backfill_lands_in_the_new_file() {
+        let dir = Dir::new("append-after-backfill");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, legacy()).expect("a ledger");
+        let ledger = Ledger::new(&path);
+        ledger.backfill_milestones(board).expect("backfilled");
+        ledger.append(&row()).expect("appended");
+        let rows = ledger.read().expect("re-read");
+        assert_eq!(rows.len(), 5, "four kept, one appended");
+        assert_eq!(rows[0].tags.milestone, "#12 Billing", "the fill kept");
     }
 
     #[test]
