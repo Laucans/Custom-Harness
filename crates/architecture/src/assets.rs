@@ -6,8 +6,9 @@
 //! CI for its stack, the script that scopes its tests, the one that finds the
 //! dead code the compiler cannot see, the mutation gate's configuration and
 //! its rotation with the script that files what it misses, the script that
-//! dumps its schema, an empty data model to grow, an empty list of mock pages
-//! and the mock-up's loader, screen host, mock server and build, and the
+//! dumps its schema, the guard that gives each test a scratch database and
+//! drops it even when the test panics, an empty data model to grow, an empty
+//! list of mock pages and the mock-up's loader, screen host, mock server and build, and the
 //! rules' kit: their gate, their runtime's stub, the business and journey
 //! suites the rules' task writes their tests in. The kit's base
 //! fragments are not installed: the harness keeps them and writes the styled
@@ -31,9 +32,9 @@ pub const MARKER_OPEN: &str = "<!-- harness:architecture v2 -->";
 /// The version of the rules block in `CLAUDE.md`, counted apart from the
 /// documents: shortening the rules every session pays for must not rewrite
 /// a product's documents.
-pub const CLAUDE_VERSION: u32 = 5;
+pub const CLAUDE_VERSION: u32 = 6;
 /// The opening marker of the rules block in `CLAUDE.md`, with its version.
-pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v5 -->";
+pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v6 -->";
 /// What every version of the opening marker starts with.
 pub const MARKER_PREFIX: &str = "<!-- harness:architecture v";
 /// The closing marker.
@@ -62,12 +63,12 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// session runs its checks through, the isolation check, the dead-code
 /// script, the mutants configuration, rotation and test-debt filing, the
 /// schema dump, the data model, the mock-up's files, the conformance
-/// runner, the `DataGuard` server (its generic library, the registry of the
+/// runner, the tests' scratch-database guard, the `DataGuard` server (its generic library, the registry of the
 /// units and the script that writes it, the product's binary, installed
 /// once and the product's from then on), the contracts A–R, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites, and
 /// the root `.gitignore` that keeps build outputs out of a round's changes.
-pub const FILES: [Asset; 67] = [
+pub const FILES: [Asset; 69] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -127,6 +128,14 @@ pub const FILES: [Asset; 67] = [
     Asset {
         path: "crates/platform/conformance/src/lib.rs",
         content: include_str!("../assets/conformance/src/lib.rs"),
+    },
+    Asset {
+        path: "crates/platform/scratch-db/Cargo.toml",
+        content: include_str!("../assets/scratch-db/Cargo.toml"),
+    },
+    Asset {
+        path: "crates/platform/scratch-db/src/lib.rs",
+        content: include_str!("../assets/scratch-db/src/lib.rs"),
     },
     Asset {
         path: "crates/dataguard/server/Cargo.toml",
@@ -381,6 +390,24 @@ mod tests {
     }
 
     #[test]
+    fn the_rules_runtime_creates_its_database_after_the_build() {
+        // An idle dated database outlived a cold build would be the watch's
+        // sweep's: created right before the server connects to it.
+        let script = content_of("scripts/rules-runtime.sh").unwrap_or_default();
+        let at = |part: &str| {
+            script
+                .find(part)
+                .unwrap_or_else(|| panic!("the runtime holds {part}"))
+        };
+        assert!(
+            at("database=\"$(scratch_database)\"")
+                > at("cargo build --quiet --manifest-path crates/server/Cargo.toml"),
+            "the database is created after the server's build"
+        );
+        assert!(at("database=\"$(scratch_database)\"") < at("nohup \"$binary\""));
+    }
+
+    #[test]
     fn the_rules_runtime_s_background_jobs_hold_no_descriptor_of_its_stdout() {
         // ForgeDesMondes #67: `serve | tee rules-env` never returned once
         // the shell existed — its backgrounded subshell kept the pipe open.
@@ -443,7 +470,7 @@ mod tests {
     #[test]
     fn every_gate_of_the_workflow_is_cited_by_a_rule_card() {
         let gates = gate_ids(include_str!("../assets/gates.yml"));
-        assert_eq!(gates.len(), 28, "{gates:?}");
+        assert_eq!(gates.len(), 29, "{gates:?}");
         let cards: String = crate::vocabulary::Unit::ALL
             .iter()
             .map(|unit| crate::rules::card(*unit))
@@ -724,10 +751,14 @@ mod tests {
         );
         let mutants = content_of(".cargo/mutants.toml").unwrap_or_default();
         assert!(mutants.contains("exclude_globs"), "{mutants}");
-        for owned in ["crates/dataguard/server/**", "crates/dataguard/registry/**"] {
+        for owned in [
+            "crates/dataguard/server/**",
+            "crates/dataguard/registry/**",
+            "crates/platform/scratch-db/**",
+        ] {
             assert!(
-                mutants.contains(owned),
-                "the harness-owned write side is judged in the harness: {owned}"
+                mutants.contains(&format!("  \"{owned}\",")),
+                "what the harness owns is judged in the harness: {owned}"
             );
         }
         let job = ci
@@ -770,6 +801,68 @@ mod tests {
         );
         assert!(mutants.contains("all_features = true"), "{mutants}");
         assert!(mutants.contains("minimum_test_timeout = 20"), "{mutants}");
+    }
+
+    #[test]
+    fn the_scratch_guard_is_installed_and_drops_without_ever_panicking() {
+        let manifest = content_of("crates/platform/scratch-db/Cargo.toml").unwrap_or_default();
+        assert!(
+            manifest.contains("name = \"platform-scratch-db\""),
+            "{manifest}"
+        );
+        assert!(
+            manifest.contains("harness-dataguard = { workspace = true"),
+            "the engine's client, from the workspace: {manifest}"
+        );
+        assert!(
+            manifest.contains("tokio = { version = \"1\""),
+            "a product's workspace holds no tokio: {manifest}"
+        );
+        let guard = content_of("crates/platform/scratch-db/src/lib.rs").unwrap_or_default();
+        assert!(guard.contains("harness_dataguard::tokio_postgres"));
+        let drop = guard
+            .split("impl Drop for ScratchDb")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn name_for").next())
+            .expect("a drop guard");
+        assert!(drop.contains("WITH (FORCE)"), "{drop}");
+        assert!(
+            drop.contains("std::thread::spawn"),
+            "its own runtime: {drop}"
+        );
+        assert!(
+            drop.contains("tokio::time::timeout"),
+            "a hung server: {drop}"
+        );
+        for panics in ["unwrap(", "expect(", "panic!"] {
+            assert!(!drop.contains(panics), "a drop never panics: {panics}");
+        }
+    }
+
+    #[test]
+    fn the_rules_name_the_scratch_guard_and_its_gate_reads_the_added_files() {
+        for part in [
+            "platform_scratch_db::ScratchDb::create",
+            "crates/platform/scratch-db/",
+            "never edit it",
+            "Gate: `scratch-databases-shared`",
+        ] {
+            assert!(CLAUDE_RULES.contains(part), "the rules say {part}");
+        }
+        let gates = content_of(".github/workflows/gates.yml").unwrap_or_default();
+        let gate = gates
+            .split("- id: scratch-databases-shared")
+            .nth(1)
+            .and_then(|rest| rest.split("\n      - id: ").next())
+            .expect("the gate");
+        for part in [
+            "git diff --name-only --diff-filter=A \"$BASE\"...HEAD",
+            "milestone/*) echo",
+            "crates/platform/scratch-db/*) continue ;;",
+            "CREATE[[:space:]]+DATABASE",
+        ] {
+            assert!(gate.contains(part), "the gate: {part}");
+        }
     }
 
     #[test]

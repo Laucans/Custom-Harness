@@ -136,8 +136,23 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
     });
     let mut lanes = Lanes::new(args.parallel).closed_by(draining);
     let mut pulse = Pulse::default();
+    // The tests' stale scratch databases: swept from the loop, not the
+    // tick, which returns early on a quiet board or a quota rest — while
+    // the lanes keep testing, and leaking.
+    let mut scratch = crate::dispatch::scratch_sweep::Sweeper::of(
+        std::env::var("DATABASE_URL").ok(),
+        std::env::var("DATABASE_URL_READONLY").ok().as_deref(),
+    );
     loop {
         let went = tick(args, here, &log, &mut lanes, &mut pulse).await;
+        // A dry run drops nothing; the sweep says its own failures.
+        if !args.dry_run
+            && let Some(sweeper) = &mut scratch
+        {
+            sweeper
+                .sweep(crate::dispatch::dev_loop::now_seconds(), &log)
+                .await;
+        }
         if args.once {
             // One pass was asked for, and its exit code is the answer — once
             // the lanes it may have opened are done, so the pass is whole.

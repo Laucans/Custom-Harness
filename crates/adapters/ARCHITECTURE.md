@@ -26,6 +26,11 @@ shell/    process      the only place in the crate that spawns a subprocess
           git          GitCli, GitRepos — every call names the repo with `-C <root>`
           github       GhCli — issues go through `gh api`, not `gh issue`
           disk         RealDisk
+          database     whether the product's database answers (a TCP connect), and
+                       PgDatabases — the databases the factory's role owns and a plain
+                       DROP DATABASE that keeps one in use, a sweep's drops on one
+                       connection within its deadline; the crate's only Postgres
+                       client (tokio-postgres, the version harness-dataguard locks)
 store/    checkpoint   Checkpoint: a two-line pointer + one JSONL per flow
           ledger       the cost ledger, frozen header, new columns appended
           review_ledger  ReviewLedger: what a PR cost, read from the one ledger on its rows

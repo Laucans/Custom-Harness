@@ -66,6 +66,19 @@ pub enum Event {
         /// `QUOTA` stops in a row.
         strikes: u32,
     },
+    /// The watch dropped the stale scratch databases a product's tests left
+    /// behind: named with their creation time, idle, older than the sweep's
+    /// threshold. Recorded only when the sweep found one.
+    ScratchDatabasesSwept {
+        /// The databases dropped.
+        dropped: usize,
+        /// The ones someone connected to between the listing and the drop:
+        /// kept, tried again at the next sweep.
+        busy: usize,
+        /// The stale ones past the sweep's cap or its deadline: the next
+        /// sweep's.
+        left: usize,
+    },
     /// A watch with no human gate marked an issue `harness:ready` itself.
     TapOpened {
         /// The issue.
@@ -425,6 +438,18 @@ impl Event {
             Self::QuotaRest { ticks, strikes } => format!(
                 "watch: quota -> exhausted, resting {ticks} tick(s) ({strikes} stop(s) in a row)"
             ),
+            Self::ScratchDatabasesSwept {
+                dropped,
+                busy,
+                left,
+            } => {
+                let rest = if *left > 0 {
+                    format!(", {left} left for the next sweep")
+                } else {
+                    String::new()
+                };
+                format!("watch: swept {dropped} stale scratch database(s), {busy} busy kept{rest}")
+            }
             Self::TapOpened { issue, what } => {
                 format!("watch: no human gate -> {what} #{issue} marked harness:ready")
             }
@@ -679,6 +704,37 @@ mod tests {
         assert_eq!(failed.level(), Level::Info);
         let json = serde_json::to_string(&failed).expect("json");
         assert!(json.contains("\"event\":\"checks_failed\""), "{json}");
+    }
+
+    #[test]
+    fn a_sweep_names_both_counts_and_is_no_warning() {
+        let swept = Event::ScratchDatabasesSwept {
+            dropped: 12,
+            busy: 1,
+            left: 0,
+        };
+        assert_eq!(
+            swept.line().as_deref(),
+            Some("watch: swept 12 stale scratch database(s), 1 busy kept")
+        );
+        let capped = Event::ScratchDatabasesSwept {
+            dropped: 200,
+            busy: 0,
+            left: 1,
+        };
+        assert_eq!(
+            capped.line().as_deref(),
+            Some(
+                "watch: swept 200 stale scratch database(s), 0 busy kept, 1 left for the next \
+                 sweep"
+            )
+        );
+        assert_eq!(swept.level(), Level::Info);
+        let json = serde_json::to_string(&swept).expect("json");
+        assert!(
+            json.contains("\"event\":\"scratch_databases_swept\""),
+            "{json}"
+        );
     }
 
     #[test]

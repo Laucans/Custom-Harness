@@ -28,6 +28,8 @@ pub mod sections;
 pub mod sentinel;
 
 #[cfg(test)]
+pub(crate) mod fake_databases;
+#[cfg(test)]
 pub(crate) mod fake_disk;
 #[cfg(test)]
 pub(crate) mod fake_git;

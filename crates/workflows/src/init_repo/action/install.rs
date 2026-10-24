@@ -410,11 +410,10 @@ mod tests {
             .iter()
             .find(|(path, _)| path.ends_with(CLAUDE_MD))
             .expect("CLAUDE.md appended");
-        assert!(
-            claude
-                .1
-                .starts_with("# r\n\nmine.\n\n<!-- harness:architecture v5 -->")
-        );
+        assert!(claude.1.starts_with(&format!(
+            "# r\n\nmine.\n\n{}",
+            harness_architecture::assets::CLAUDE_MARKER_OPEN
+        )));
         assert!(
             lines
                 .iter()

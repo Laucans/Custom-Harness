@@ -126,9 +126,12 @@ pub struct Closure {
 
 /// What every closure carries: the root's files, the CI, the scripts, the
 /// contracts, the data model, the documents but the architecture's (the
-/// rule card stands for it), the query registry, and the rules' tests a
-/// task makes pass (two tasks stopped without them).
-const ALWAYS: [&str; 12] = [
+/// rule card stands for it), the query registry, the rules' tests a task
+/// makes pass (two tasks stopped without them), and the scratch-database
+/// guard every Postgres test takes by path (rule 19) — which no unit
+/// reaches in the cargo graph until its first test names it, and which the
+/// root manifest does not list.
+const ALWAYS: [&str; 13] = [
     "/*",
     "!/*/",
     "/.github/",
@@ -141,6 +144,7 @@ const ALWAYS: [&str; 12] = [
     "!/docs/DATA-INTEGRITY.md",
     "/queries/",
     "/tests/rules/",
+    "/crates/platform/scratch-db/",
 ];
 
 /// The manifest of the product's `DataGuard` server, installed by the
@@ -935,6 +939,29 @@ mod tests {
             found.patterns
         );
         assert!(port_like("ports-2") && !port_like("") && !port_like("Llm"));
+    }
+
+    #[test]
+    fn every_slice_that_tests_against_postgres_gets_the_scratch_guard() {
+        // Rule 19 names `crates/platform/scratch-db` by path; no unit reaches
+        // it in the graph before its first test does, and the root manifest
+        // does not list it.
+        for task in [
+            declared(Unit::DataCapability, "credit", &["credit.saveLedger"], &[]),
+            declared(Unit::Aggregate, "credit", &["Ledger"], &[]),
+            declared(Unit::Capability, "credit", &["credit.calculateRisk"], &[]),
+        ] {
+            let found = closure(&tree(), &task, Some(&graph()), None);
+            assert!(found.narrowed, "{found:?}");
+            assert!(
+                found
+                    .patterns
+                    .contains(&"/crates/platform/scratch-db/".to_string()),
+                "{:?}: {:?}",
+                task.unit,
+                found.patterns
+            );
+        }
     }
 
     #[test]

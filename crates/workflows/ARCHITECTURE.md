@@ -1,7 +1,7 @@
 # `harness-workflows` — architecture
 
 The instances: what `harness-core` cannot name. Eight workflows declared
-against the framework, six deterministic commands beside them (§13), plus
+against the framework, seven deterministic commands beside them (§13), plus
 `common/` for what at least two of them actually read.
 
 Read this before adding a workflow or moving a file inside one. The crate graph
@@ -226,6 +226,7 @@ Current contents:
 | `fake_git` | `#[cfg(test)]` — an in-memory `Repos`: every verb recorded, the ones named failing fail, a merge conflicting on the files a test names (`FakeRepos::conflicting`). |
 | `fake_disk` | `#[cfg(test)]` — an in-memory `Disk`: what it holds reads back, what was written to it can be re-read. |
 | `fake_locks` | `#[cfg(test)]` — `Grants`, a lock nobody else holds. It exists so mounting a table creates no `.lock-*` directory anywhere. |
+| `fake_databases` | `#[cfg(test)]` — an in-memory `Databases` for `scratch_sweep`: lists what it holds, drops what is not busy, refuses what it was told to, can be down or lost before the drops, can stop a pass short as a deadline would. Here with the other fake adapters, where `CLAUDE.md` sends a test looking for one. |
 
 ## 12. A workflow is N rounds
 
@@ -434,9 +435,9 @@ raised a second time — goes to a human under `harness:needs-decision` with
 the reasoning, the mechanical chains kept. `common::decision` is the
 question's shape, shared with the refinement that raises it.
 
-Six more modules sit beside these, not in the tables above: `init_repo`,
-`milestone_merge`, `main_agent_merge`, `data_snapshot`, `data_model_draft`
-and `plan_graph`, all the deterministic-command departure described in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
+Seven more modules sit beside these, not in the tables above: `init_repo`,
+`milestone_merge`, `main_agent_merge`, `data_snapshot`, `data_model_draft`,
+`plan_graph` and `scratch_sweep`, all the deterministic-command departure described in §1, not a workflow. Neither has a `trigger` beyond its own subcommand or
 router route, no `state`, no `remaining`, no round, no lock, no resume, no
 tolerance — every column above would read "n/a". `init_repo` creates the
 `harness:*` labels and the integration branch, installs the architecture's
@@ -467,8 +468,20 @@ its dump and its code, and proposes it as a pull request a human merges;
 `plan_graph` writes the plan's graph (`plan/graph.json`, contract R) from a
 roadmap item's milestones as the board holds them, against the design
 dossier — what the planner writes as it opens milestones, for a plan made
-before the graph existed. Every one of them is reached by its own subcommand or by the
-router (`crates/launcher/ARCHITECTURE.md`).
+before the graph existed. `scratch_sweep` is the smallest: no subcommand, no
+route, no `action/` — the watch's loop calls it after every tick, whatever the
+tick did, and it runs at most every ten minutes (`config::EVERY`); it lists the
+databases the factory's role owns through core's `Databases` port and drops —
+a plain `DROP DATABASE` each, 200 at most (`config::MOST`), on one connection
+within a minute (`config::DROPS_WITHIN`), the rest the next sweep's — those
+whose name carries a creation time
+(`data::names`: `scratch_<epoch>_…`, the product's `platform-scratch-db`
+guard's; `rules_runtime_<epoch>_<pid>`, `schema_dump_<epoch>_<pid>`, the
+installed scripts'), idle, no template, not named by `DATABASE_URL` or
+`DATABASE_URL_READONLY`, older than half an hour (`data::policy`, pure, the
+time a value the launcher hands in). A sweep that cannot reach the server is
+one warning per outage, never a failed tick. Every one of them is reached by
+its own subcommand or by the router (`crates/launcher/ARCHITECTURE.md`).
 
 ## 14. Adding a workflow
 

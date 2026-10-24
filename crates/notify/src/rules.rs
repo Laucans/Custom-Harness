@@ -215,6 +215,9 @@ fn numbers(list: &[u64]) -> String {
         .join(", ")
 }
 
+// One arm per event, every event named: the list of what is told and what
+// is not is read whole, not in two halves.
+#[allow(clippy::too_many_lines)]
 fn tell(board: &mut Board, event: &Event, at: &str) {
     match event {
         Event::WatchStarted { .. } | Event::WatchDraining { .. } | Event::WatchStopped => {
@@ -312,8 +315,10 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         // arrives as the `Halted` event that follows it. Failing checks are
         // being repaired; the repair that gives up says so (`RepairsExhausted`).
         // A task waiting for a producer to land asks nothing of anyone: the
-        // blocker on GitHub and the journal line say it.
+        // blocker on GitHub and the journal line say it. Nor does a sweep of
+        // stale scratch databases: housekeeping the journal tells.
         Event::SessionEnded { .. }
+        | Event::ScratchDatabasesSwept { .. }
         | Event::PreparationTaken { .. }
         | Event::LaneTaken { .. }
         | Event::TapOpened { .. }

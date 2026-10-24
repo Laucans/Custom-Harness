@@ -145,6 +145,50 @@ jobs:
           done
           exit $failed
 
+      # Rule 19 — a test's database is a `ScratchDb` (crates/platform/
+      # scratch-db), whose guard drops it even when the test panics, times
+      # out or is killed by cargo-mutants: a database created by hand is left
+      # on the server by every such test. Scoped to the files the change
+      # adds: the tests written before the guard move to it through a task
+      # of their own, and editing one stays green. A test file is one under
+      # a `tests/` folder, or a source holding a test.
+      # A task's pull request only, measured from the merge base, as the
+      # in-diff mutants: a milestone's own pull request adds every file its
+      # tasks added — each judged on its own, some before this gate existed —
+      # and a push only lands what a pull request already judged.
+      # A test file this change adds creates no database by hand.
+      - id: scratch-databases-shared
+        name: scratch-databases-shared
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "${HEAD_REF:-}" in
+            milestone/*) echo "a milestone's pull request: each of its tasks was judged on its own"; exit 0 ;;
+          esac
+          [ -n "${BASE:-}" ] && git cat-file -e "$BASE" 2>/dev/null || { echo "no base to compare with"; exit 0; }
+          failed=0
+          while IFS= read -r file; do
+            case "$file" in
+              crates/platform/scratch-db/*) continue ;;
+              crates/*.rs) ;;
+              *) continue ;;
+            esac
+            [ -f "$file" ] || continue
+            case "$file" in
+              */tests/*) ;;
+              *) grep -qE '#\[(tokio::)?test|#\[cfg\(test\)\]' "$file" || continue ;;
+            esac
+            if grep -nEi 'CREATE[[:space:]]+DATABASE' "$file"; then
+              echo "::error file=$file::a test takes its database from platform_scratch_db::ScratchDb::create(\"<label>\"), never CREATE DATABASE by hand: the guard drops it even when the test panics"
+              failed=1
+            fi
+          done < <(git diff --name-only --diff-filter=A "$BASE"...HEAD)
+          exit $failed
+
       # Contract B — a Micro-UI's `needs` reference Capabilities that exist or
       # the plan declares, in any system: reading is free. (A shared Capability
       # that must behave differently is duplicated into a new id, never edited —

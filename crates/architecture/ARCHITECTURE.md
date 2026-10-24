@@ -37,7 +37,7 @@ src/compare.rs      two data models side by side: tables, fields, links and view
 src/graph.rs        the plan's graph (contract R): what every milestone produces and consumes, derived from the dossier; the read-ahead errors; the critical path
 src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
 src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the showcase page (assets/showcase.html), the static check a fragment is reused on
-src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit
+src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep)
 assets/             those files, compiled in with include_str! — the harness's own scripts/{dead-code,mutants-rotation,test-debt}.sh are links to them, one script for both
 tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_script.rs: the installed scripts, run on a real folder
                     isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, each way a unit could reach another, a DataCapability on its target aggregate only, the registry crossed by the two servers only
@@ -80,6 +80,16 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   `cargo machete` does not read); the gate runs `scripts/register.sh --check`, which also compares the
   engine's line in the registry and in the root's `[workspace.dependencies]`
   with the server's.
+  One gate has no loop reading, on purpose: `scratch-databases-shared`
+  judges the files a task's pull request *adds*, from the merge base (a
+  test creating its database by hand instead of taking a `ScratchDb`; a
+  milestone's pull request and a push are not judged again), which a `Tree`
+  of one checkout does not carry; `tests/scratch_gate.rs` runs its script on
+  a throwaway repository, and `tests/scratch_db.rs` (ignored; run by the
+  harness CI's `postgres` job) compiles the guard against the engine by path
+  and proves its panic test. The guard is in every narrowed checkout
+  (`closure::ALWAYS`: no unit reaches it in the cargo graph before its first
+  test names it) and out of the product's mutants (`exclude_globs`).
 - **Units live under their system.** Aggregates, `DataCapabilities` and
   Capabilities are read under `crates/<system>/{aggregates,
   data-capabilities,capabilities}/`, the DataGuard's folder included, so

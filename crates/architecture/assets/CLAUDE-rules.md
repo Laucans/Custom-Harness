@@ -1,4 +1,4 @@
-<!-- harness:architecture v5 -->
+<!-- harness:architecture v6 -->
 ## Agent-native architecture — the rules every change is checked against
 
 This repository follows the agent-native architecture of
@@ -42,6 +42,7 @@ crates/dataguard/server/  registry/     the engine planted with every unit; the 
 crates/server/                          the one binary: the shell's wire protocol, GET /health
 crates/ports/<port>/[<provider>/]       a port (trait, fake, contract tests) and its adapters
 crates/platform/conformance/            the Concepts' conformance runner
+crates/platform/scratch-db/             the tests' scratch databases (the harness's: never edited here)
 concepts/<Concept>/v<n>/                concept.json + fixtures.json (A)
 data/model.json                         the data model (M)
 mock/                                   the mock-up: pages.json (N), pages/, components/, src/, design/ and kit/ (O)
@@ -121,6 +122,13 @@ scripts/                                register.sh, queries.sh, isolation.sh, d
     both. A unit that needs the engine takes it from the workspace:
     `harness-dataguard = { workspace = true }`. Gates: `units-registered`,
     `aggregate-placed`, `data-capability-placed`.
+19. **A test's database is a `ScratchDb`**:
+    `platform_scratch_db::ScratchDb::create("<label>")` (dev-dependency
+    `platform-scratch-db = { path = "<to the root>/crates/platform/scratch-db" }`),
+    never `CREATE DATABASE` / `DROP DATABASE` by hand — its guard drops the
+    database even when the test panics. `crates/platform/scratch-db/` is the
+    harness's: never edit it. Gate: `scratch-databases-shared` (a test file
+    the change adds).
 
 ### What a session does before writing code
 

@@ -41,7 +41,7 @@ container:
 
 | variable | what it provisions |
 | --- | --- |
-| `DATABASE_URL` | the application role (`LOGIN CREATEDB CREATEROLE`), its password, and its database, owned by it |
+| `DATABASE_URL` | the application role (`LOGIN CREATEDB CREATEROLE NOSUPERUSER`, a member of `pg_signal_backend`), its password, and its database, owned by it |
 | `DATABASE_URL_READONLY` | the read-only login (`LOGIN`, no other right) |
 | `DATABASE_READONLY_ROLE` | the role that login reads through — created `NOLOGIN` if the migrations have not yet, and granted to the login (`app_lecture` for `dnd_helper`) |
 | `POSTGRES_PORT` | the host port, `5432` by default |
@@ -62,6 +62,40 @@ the same official image — `POSTGRES_IMAGE=public.ecr.aws/docker/library/postgr
   role, applies the migrations, dumps the schema, drops it
   (`crates/workflows/src/data_snapshot/`).
 - **A human**, with `scripts/postgres.sh psql`.
+
+## Who cleans up
+
+A product's tests create a database each. Three things keep the server from
+filling up with the ones a test never dropped (`ForgeDesMondes`, 2026-10-24:
+7 939 databases, 68 GB):
+
+- **The guard, at the source.** A test takes its database from the
+  product's `platform-scratch-db` (`ScratchDb::create`, installed by
+  `init-repo`, rule 19 and gate `scratch-databases-shared` of the product's
+  `CLAUDE.md`): it is named `scratch_<epoch>_<pid>_<seq>_<label>` and dropped
+  `WITH (FORCE)` in the guard's `Drop`, which runs while a failing test
+  unwinds.
+- **The right to force a drop.** The application role holds
+  `pg_signal_backend` (`docker/postgres/provision.sh`, idempotent, still
+  `NOSUPERUSER`), so that `FORCE` also ends a session the read-only login
+  left on the test's database. Without it the drop is refused. A factory
+  whose `DATABASE_URL` logs in as another role than `APP_DATABASE_URL`'s
+  (ForgeDesMondes: `forgedesmondes`) is granted by hand, as `postgres`.
+- **The watch's sweep, for what is killed outright** (a timeout, a mutant).
+  Every ten minutes, from the loop of `harness watch`, the factory's own role
+  (`DATABASE_URL`) lists the databases it owns and drops, with a plain
+  `DROP DATABASE` that a connected database refuses, those whose name
+  carries a creation time (`scratch_<epoch>_…`, `rules_runtime_<epoch>_<pid>`,
+  `schema_dump_<epoch>_<pid>`), idle and older than thirty minutes. Never
+  `postgres`, a template, `DATABASE_URL`'s or `DATABASE_URL_READONLY`'s
+  database, a database another role owns, or a name without a creation
+  time — the older tests' `<name>_<pid>` included, until the product moves
+  them to the guard (`crates/workflows/src/scratch_sweep/`). One sweep drops
+  200 at most, on one connection, within a minute: a backlog or a hung
+  server is worked off a sweep at a time, never by holding the watch.
+
+A cluster provisioned before the grant gets it with
+`scripts/postgres.sh provision`.
 
 ## For future development
 

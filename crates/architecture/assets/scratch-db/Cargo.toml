@@ -1,0 +1,15 @@
+[package]
+name = "platform-scratch-db"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A test's scratch database, dropped even when the test panics — a dev-dependency of every test that needs PostgreSQL, installed by `harness init-repo` and owned by the harness."
+
+[dependencies]
+# The engine's own client (`harness_dataguard::tokio_postgres`): no driver
+# of its own, one version in the lockfile.
+harness-dataguard = { workspace = true, features = ["postgres"] }
+tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt"] }

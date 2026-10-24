@@ -2,7 +2,10 @@
 # Creates, or brings back in line, what the product's runs connect with:
 #
 #   the application role  (DATABASE_URL)          LOGIN CREATEDB CREATEROLE —
-#                           it migrates, and tests create a database each
+#                           it migrates, and tests create a database each;
+#                           a member of pg_signal_backend, so a test's
+#                           DROP DATABASE … WITH (FORCE) ends the sessions
+#                           another role (the read-only login) left on it
 #   its database          (DATABASE_URL's name)   owned by the application role
 #   the read-only login   (DATABASE_URL_READONLY) LOGIN, nothing else — it
 #                           reads through the role named by
@@ -35,6 +38,8 @@ sql -v role="$app" -v pass="$pass" -v db="$db" <<'SQL'
 SELECT format('CREATE ROLE %I', :'role')
  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role') \gexec
 SELECT format('ALTER ROLE %I LOGIN CREATEDB CREATEROLE NOSUPERUSER PASSWORD %L', :'role', :'pass') \gexec
+SELECT format('GRANT pg_signal_backend TO %I', :'role')
+ WHERE NOT pg_has_role(:'role', 'pg_signal_backend', 'USAGE') \gexec
 SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'role')
  WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \gexec
 SQL

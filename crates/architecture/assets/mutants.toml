@@ -13,13 +13,16 @@
 # product's copy is identical to the asset, and their tests run in the
 # harness (`crates/architecture/tests/dataguard_server.rs`), not here —
 # judged in a product, `migrate` and `router` look untested (ForgeDesMondes'
-# M4, PR #335).
+# M4, PR #335). The scratch-database guard likewise: its tests run in the
+# harness (`crates/architecture/tests/scratch_db.rs`), and a test-debt
+# issue filed here would ask a session to edit a file rule 19 forbids it.
 # A crate whose functions are seen rather than asserted (a renderer, a
 # page) is added here, with the reason, in a task of its own.
 exclude_globs = [
   "**/main.rs",
   "crates/dataguard/server/**",
   "crates/dataguard/registry/**",
+  "crates/platform/scratch-db/**",
 ]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI

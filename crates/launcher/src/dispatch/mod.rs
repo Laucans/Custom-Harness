@@ -19,6 +19,8 @@
 //!   integration branch.
 //! - [`init_repo`] and [`main_agent_merge`] mount nothing: both are
 //!   deterministic commands that only talk to GitHub.
+//! - [`scratch_sweep`] mounts nothing either: it talks to the product's
+//!   database server, from the watch's loop.
 //! - [`catch_up`] mounts a writable checkout of its own only when GitHub
 //!   refuses to bring the integration branch into a milestone's: there it
 //!   regenerates `Cargo.lock` and the registry, and pushes the merge.
@@ -54,6 +56,7 @@ pub mod pr_fix;
 pub mod pr_review;
 pub mod refinement;
 pub mod rules;
+pub mod scratch_sweep;
 pub mod shared;
 pub mod skills;
 pub mod split;

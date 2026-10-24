@@ -81,6 +81,7 @@ shell/git     Repo, Repos — reads answer, setup verbs return `Ran`
 shell/github  GitHub — a failed read is never an empty list
 shell/disk    Disk — exists so deletion is testable
 shell/process Ran, last_line — what a shell port hands back
+shell/database Databases, OwnedDatabase, Dropping, Dropped — the databases the factory's role owns, and drops that never take one in use, bounded by a deadline
 store/spending    Spending, Entry — implemented in the launcher, not here
 store/lock        Locks — one bearer per name
 store/checkpoint  Checkpoints, Pointer — where a run says what it was doing

@@ -173,8 +173,9 @@ or refuses it before anything queues (`Refusal::not_found`, 404;
 `Shared` (`.needs::<T>()`): the server refuses to start while one is unfilled.
 Its dependencies: the engine from the workspace, `harness-dataguard = {
 workspace = true }` (never a git line or tag of its own: one engine, one
-`Plugin` type), and the aggregate crate its `target.aggregate` names. No
-other unit.
+`Plugin` type), the aggregate crate its `target.aggregate` names, no other
+unit. Its tests' database: `ScratchDb::create` (platform-scratch-db, gate
+scratch-databases-shared), never one created by hand.
 
 Its manifest: `dataCapability` (`<system>.<name>`), `owner: dataguard`,
 `version`, `effect` (insert | update | delete | upsert), `target` (the
@@ -204,8 +205,7 @@ contracts-untouched (a consumer that needs its manifest changed stops with
 `AGENT_LOOP_STOP: contract <id> — <what it needs>`).
 Run `bash scripts/register.sh --check` and `bash scripts/isolation.sh` before
 the PR. Outside the product, through a port only: ports-declared and
-externals-behind-ports. The rules (contract P): rule-tests-untouched and
-rules-hold.";
+externals-behind-ports. Rules (contract P): rule-tests-untouched, rules-hold.";
 
 const PERSISTED_QUERY: &str = "\
 UNIT: Persisted query — a declared, hashed read a Capability goes through.
@@ -316,8 +316,9 @@ aggregate-placed (its system's folder, named after it), units-registered
 (named in the registry, its library `aggregate_<snake>`), invariants-tested,
 ownership (the DataCapabilities that mutate it name fields it declares, none
 derived), capability-isolation, externals-behind-ports (no database client
-of its own). schema-impact is declared and switched on
-with the engine. After the merge the harness dumps the real schema and
+of its own). Its tests' database: `ScratchDb::create` (platform-scratch-db,
+gate scratch-databases-shared), never one created by hand. schema-impact is
+declared and switched on with the engine. After the merge the harness dumps the real schema and
 compares it with data/model.json: a divergence opens a diagnosis.";
 
 const INFRASTRUCTURE: &str = "\
@@ -350,7 +351,9 @@ are filtered here.
 Gates that judge it: capability-isolation (scripts/isolation.sh: a shared
 crate reaches no slice and stays in its system), read-only (a Capability
 reaches no application role's connection), units-registered.
-Keep scripts/dump-schema.sh printing the schema the migrations build.
+Keep scripts/dump-schema.sh printing the schema the migrations build. A
+test's database: `ScratchDb::create` (crates/platform/scratch-db, the
+harness's, never edited here; gate scratch-databases-shared).
 A port is infrastructure: ports-declared (every port has its fake and its
 contract tests, and lists the units that use it), externals-behind-ports
 (a provider is reached from its adapter under crates/ports/<port>/<provider>/

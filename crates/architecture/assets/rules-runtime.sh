@@ -97,8 +97,6 @@ serve() {
     return 0
   fi
   mkdir -p "$state"
-  local database
-  database="$(scratch_database)"
 
   (cd "$root" && cargo build --quiet --manifest-path crates/server/Cargo.toml)
   local binary
@@ -108,6 +106,11 @@ serve() {
     say "crates/server builds no binary ($binary)"
     return 1
   fi
+  # Created after the build, right before the server connects to it: a
+  # database left idle through a cold build would look stale to the watch's
+  # sweep (idle, dated, half an hour old) and be dropped under the server.
+  local database
+  database="$(scratch_database)"
   local fixtures=""
   [ -d "$root/mock/fixtures" ] && fixtures="$root/mock/fixtures"
   PORT="$SERVER_PORT" DATABASE_URL="$database" FIXTURES_DIR="$fixtures" PORTS=fake \

@@ -50,6 +50,10 @@ src/dispatch/     one module per thing that can be run, plus what they share
   data_snapshot.rs  every tick that read the board: the data model of each branch whose head
                     moved (main, main_agent, open milestones), dumped and archived on the
                     target's `harness/data-model` branch; a failure is an event, never a failed tick
+  scratch_sweep.rs  from the watch's loop, after every tick whatever it did (a quiet board,
+                    a quota rest): the stale scratch databases a product's tests left on
+                    the server `DATABASE_URL` names, dropped through `PgDatabases`, at most
+                    every ten minutes; never under `--dry-run`, never a failed tick
   main_agent_merge.rs  a finished milestone's PR into main_agent, opened then merged
                        (a task's PR into its milestone — `milestone_merge` —
                        needs no wiring of its own: the router calls it with its `gh`)
