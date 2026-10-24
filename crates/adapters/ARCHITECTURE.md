@@ -55,8 +55,10 @@ for: the dev loop, split, refinement and the arbiter set it from what they
 already read (`Context::tags`); every other workflow leaves it empty rather
 than guess. A row older than the column has fewer cells and reads as "no
 milestone known". `Ledger::backfill_milestones` fills those rows once
-(`harness backfill-milestones`): it copies the file to `costs.tsv.bak`,
-writes the new text beside it and renames it over the ledger, and never
+(`harness backfill-milestones`): it copies the file to one of its own
+(`costs.tsv.bak`, or the first free `costs.tsv.bak.<n>` when an earlier
+backfill left one, which it never overwrites nor removes), writes the new
+text beside it and renames it over the ledger, and never
 touches a row that names its milestone — a second run changes nothing. It
 refuses a first line that is no header the ledger ever had (a renamed
 column, a missing header): cells it cannot place by name are not rewritten,
@@ -66,7 +68,7 @@ has it, reopens the ledger if its file was renamed over meanwhile — so a
 writer of this version waits and appends to the new file. A writer that
 does not lock (a watch or a run still on an older binary) is not kept out:
 the rename is refused if the ledger's file, size or modification time
-changed since it was read (no copy left, nothing changed), but a row
+changed since it was read (its own copy removed, nothing changed), but a row
 appended between that last look and the rename lands in the replaced file
 and is lost. The window is a few system calls wide — narrow, not closed.
 **Run the backfill with the watch stopped**: `harness backfill-milestones`

@@ -129,7 +129,7 @@ impl Row {
 }
 
 /// What a milestone backfill did to the rows of a ledger.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Backfill {
     /// Rows whose empty `milestone` cell is now filled.
     pub filled: usize,
@@ -138,7 +138,14 @@ pub struct Backfill {
     /// Rows no milestone holds — a roadmap, a pull request, a run on no
     /// task — left as written, their cell still empty.
     pub unresolved: usize,
+    /// The copy of the ledger as it was, when rows were filled: a file of
+    /// its own, never one an earlier backfill left.
+    pub backup: Option<PathBuf>,
 }
+
+/// How many copies of a ledger a backfill leaves beside it at most before
+/// it refuses: the old ones are the human's to remove.
+const COPIES: u32 = 100;
 
 /// Whether `line` is a header this ledger wrote: the current one, or one
 /// it had before columns were added at its end — a non-empty prefix of it.
@@ -499,7 +506,9 @@ impl Ledger {
     /// existed.
     ///
     /// The budget reads this file, so a row lost would make it lie: the
-    /// original is copied to `<ledger>.bak` first, the new text is written
+    /// original is copied first to a file of its own — `<ledger>.bak`, or
+    /// the first free `<ledger>.bak.<n>` when an earlier backfill left one,
+    /// which is never overwritten nor removed — the new text is written
     /// beside it and renamed over it in one step. The whole rewrite holds
     /// the ledger's lock, which [`Self::append`] takes too, so a writer of
     /// this version waits and then appends to the new file.
@@ -519,7 +528,8 @@ impl Ledger {
     /// [`Halt::Unreadable`] as [`Self::rows`]; [`Halt::Failed`] if the first
     /// line is no header this ledger wrote, if the copy, the new text or the
     /// rename could not be written, or if the ledger changed while it was
-    /// rewritten — the ledger is then left as it was, with no copy.
+    /// rewritten — the ledger is then left as it was, with no copy of this
+    /// call's (an earlier backfill's copy stays).
     pub fn backfill_milestones(
         &self,
         milestone_of: impl Fn(&str) -> Option<String>,
@@ -550,8 +560,7 @@ impl Ledger {
         if done.filled == 0 {
             return Ok(done);
         }
-        let backup = self.beside("bak");
-        std::fs::copy(&self.path, &backup).map_err(|e| self.wrote_nothing(&e))?;
+        let backup = self.copy_aside(&text).map_err(|e| self.wrote_nothing(&e))?;
         let fresh = self.beside("tmp");
         let written = std::fs::File::create(&fresh).and_then(|mut file| {
             file.write_all(filled.as_bytes())?;
@@ -581,7 +590,46 @@ impl Ledger {
         })?;
         // The lock is released only once the new file is in place.
         drop(held);
-        Ok(done)
+        Ok(Backfill {
+            backup: Some(backup),
+            ..done
+        })
+    }
+
+    /// Writes `text`, the ledger as it was read, to a copy of its own:
+    /// `<ledger>.bak`, or the first `<ledger>.bak.<n>` no earlier backfill
+    /// left. Created new, so an older copy is never overwritten.
+    fn copy_aside(&self, text: &str) -> std::io::Result<PathBuf> {
+        for n in 0..COPIES {
+            let path = if n == 0 {
+                self.beside("bak")
+            } else {
+                self.beside(&format!("bak.{n}"))
+            };
+            let created = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path);
+            let mut file = match created {
+                Ok(file) => file,
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::AlreadyExists => continue,
+                    _ => return Err(e),
+                },
+            };
+            if let Err(e) = file
+                .write_all(text.as_bytes())
+                .and_then(|()| file.sync_all())
+            {
+                let _ = std::fs::remove_file(&path);
+                return Err(e);
+            }
+            return Ok(path);
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{COPIES} copies of the ledger already beside it: remove the old ones"),
+        ))
     }
 
     /// `<ledger>.<suffix>`, in the ledger's own directory — so a rename
@@ -953,7 +1001,8 @@ mod tests {
             Backfill {
                 filled: 2,
                 kept: 1,
-                unresolved: 1
+                unresolved: 1,
+                backup: None,
             }
         );
         let mut lines = text.lines();
@@ -1164,6 +1213,7 @@ mod tests {
 
         let first = ledger.backfill_milestones(board).expect("backfilled");
         assert_eq!(first.filled, 2);
+        assert_eq!(first.backup, Some(dir.0.join("costs.tsv.bak")));
         let backup = std::fs::read_to_string(dir.0.join("costs.tsv.bak")).expect("a copy");
         assert_eq!(backup, legacy(), "the copy is the ledger as it was");
         assert!(
@@ -1181,7 +1231,8 @@ mod tests {
             Backfill {
                 filled: 0,
                 kept: 3,
-                unresolved: 1
+                unresolved: 1,
+                backup: None,
             }
         );
         assert_eq!(
@@ -1189,6 +1240,88 @@ mod tests {
             after,
             "idempotent"
         );
+    }
+
+    /// Only task 42 placed: a first backfill that leaves `#43` for a later
+    /// one.
+    fn half_board(number: &str) -> Option<String> {
+        (number == "42").then(|| "#12 Billing".to_string())
+    }
+
+    #[test]
+    fn a_second_filling_backfill_copies_to_a_file_of_its_own() {
+        let dir = Dir::new("backfill-twice");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, legacy()).expect("a ledger");
+        let ledger = Ledger::new(&path);
+        assert_eq!(
+            ledger
+                .backfill_milestones(half_board)
+                .expect("first")
+                .filled,
+            1
+        );
+        let middle = std::fs::read_to_string(&path).expect("re-read");
+        let second = ledger.backfill_milestones(board).expect("second");
+        assert_eq!(second.filled, 1);
+        assert_eq!(second.backup, Some(dir.0.join("costs.tsv.bak.1")));
+        let read = |name: &str| std::fs::read_to_string(dir.0.join(name)).expect("a copy");
+        assert_eq!(read("costs.tsv.bak"), legacy(), "the first copy kept");
+        assert_eq!(read("costs.tsv.bak.1"), middle, "the second beside it");
+    }
+
+    #[test]
+    fn a_refused_second_backfill_keeps_the_first_copy() {
+        let dir = Dir::new("backfill-refused-twice");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, legacy()).expect("a ledger");
+        let ledger = Ledger::new(&path);
+        ledger.backfill_milestones(half_board).expect("first");
+        let err = ledger
+            .backfill_milestones(|number| {
+                // A writer that takes no lock touches the ledger meanwhile.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .and_then(|file| file.set_modified(std::time::SystemTime::UNIX_EPOCH))
+                    .expect("touched");
+                board(number)
+            })
+            .expect_err("refused");
+        assert!(err.reason().contains("changed while"), "{}", err.reason());
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("costs.tsv.bak")).expect("kept"),
+            legacy(),
+            "the only copy of the original survives"
+        );
+        assert!(
+            !dir.0.join("costs.tsv.bak.1").exists(),
+            "its own copy removed"
+        );
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_created_refuses_with_its_own_reason() {
+        let dir = Dir::new("backfill-no-copy");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, legacy()).expect("a ledger");
+        // A read-only directory: the copy cannot be created, for a reason
+        // other than an older copy in the way.
+        let mut perms = std::fs::metadata(&dir.0).expect("stat").permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
+        std::fs::set_permissions(&dir.0, perms.clone()).expect("read-only");
+        let refused = Ledger::new(&path).backfill_milestones(board);
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&dir.0, perms).expect("writable again");
+        let reason = refused
+            .expect_err("no copy, no rewrite")
+            .reason()
+            .to_string();
+        assert!(reason.contains("denied"), "{reason}");
+        assert_eq!(std::fs::read_to_string(&path).expect("re-read"), legacy());
     }
 
     #[test]

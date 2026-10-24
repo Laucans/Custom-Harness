@@ -435,13 +435,16 @@ lists the open milestones and the last few closed), its task looked up by
 issue number — the dev loop bills `61`, every other workflow `#61`. What
 neither names is bucketed by kind, read from the stages of its run
 (`traces::attribute_milestones`): `roadmap` (a planner run, its repository
-map included), `PR` (PR review and PR fix), `hors board` (test debt, a data
-diagnosis, a run on no issue — work that never had a milestone). Any other
-row on an issue the board does not list is `unknown`: its milestone is
-unknown, not absent (a row older than the column whose milestone closed
-beyond the board's window, or no board read at all). It stays apart, never
-dropped nor folded into `hors board`, and `harness backfill-milestones`
-empties it; `unknown` holds nothing a kind could name.
+map included), `PR` (PR review and PR fix), `rules` (the rules' task, its
+`write` and `fidelity`), `contract` (the contract manager's `evolve`),
+`hors board` (test debt, a data diagnosis, a run on no issue — work that
+never had a milestone). Any other row on an issue the board does not list
+is `unknown`: its milestone is unknown, not absent. Two cases: a row older
+than the column whose milestone closed beyond the board's window, or no
+board read at all — `harness backfill-milestones` places those; and a run
+that never names its milestone (a decision) on an issue no milestone lists
+— no backfill places it, so `unknown` never quite empties. It stays apart,
+never dropped nor folded into `hors board`.
 
 ## The steward, and the doctor
 

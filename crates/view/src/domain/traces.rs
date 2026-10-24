@@ -13,7 +13,9 @@
 use std::collections::HashMap;
 
 use harness_core::domain::task_number;
-use harness_workflows::{data_diagnosis, planner, pr_fix, pr_review, test_debt};
+use harness_workflows::{
+    contract_manager, data_diagnosis, planner, pr_fix, pr_review, rules, test_debt,
+};
 use jiff::tz::TimeZone;
 use serde::Serialize;
 
@@ -583,8 +585,8 @@ pub struct Costs {
     pub by_side: Vec<Bucket>,
     /// By milestone, most expensive first — what a milestone cost from its
     /// refinement to its last task; what no milestone holds is named by its
-    /// kind: [`ROADMAP`], [`PULL_REQUEST`] or [`OFF_BOARD`], and a task the
-    /// view cannot place is [`UNPLACED`].
+    /// kind: [`ROADMAP`], [`PULL_REQUEST`], [`RULES`], [`CONTRACT`] or
+    /// [`OFF_BOARD`], and a task the view cannot place is [`UNPLACED`].
     /// Filled by [`attribute_milestones`].
     pub by_milestone: Vec<Bucket>,
     /// Token totals.
@@ -797,29 +799,40 @@ pub fn attribute_sides(
 pub const ROADMAP: &str = "roadmap";
 /// The bucket of what a pull request cost: its review and its repairs.
 pub const PULL_REQUEST: &str = "PR";
+/// The bucket of what the product's rules cost: written, then judged, on
+/// a `harness:rules` issue no milestone holds.
+pub const RULES: &str = "rules";
+/// The bucket of what a contract change cost: the contract manager's
+/// evolution of a contract, on an issue no milestone holds.
+pub const CONTRACT: &str = "contract";
 /// The bucket of what never belonged to a milestone and is neither a
 /// roadmap item nor a pull request: test debt, a data diagnosis, a run on
 /// no issue.
 pub const OFF_BOARD: &str = "hors board";
 /// The bucket of a task the view cannot place: its row names no milestone
-/// (written before the column, never backfilled) and the board does not
-/// list it — a milestone closed beyond the few the board keeps, or no board
-/// read at all. It may well have had a milestone, so it is not
-/// [`OFF_BOARD`]; it is kept apart rather than dropped, and
-/// `harness backfill-milestones` empties it.
+/// and the board does not list it, and its run gives no kind away. Either
+/// a row older than the column whose milestone closed beyond the few the
+/// board keeps, or no board read at all — `harness backfill-milestones`
+/// places those — or a run that never names its milestone (a decision)
+/// on an issue no milestone lists, which no backfill places. It may well
+/// have had a milestone, so it is not [`OFF_BOARD`]; it is kept apart
+/// rather than dropped.
 pub const UNPLACED: &str = "unknown";
 
 /// The kind of work a stage gives away when no milestone is named: only
 /// the planner plans a roadmap item, only PR review and PR fix work a pull
-/// request, and test debt and a data diagnosis never belong to a
-/// milestone. Read from the workflows' own stage names, so a rename moves
-/// both.
+/// request, only the rules' task writes and judges rules, only the
+/// contract manager evolves a contract, and test debt and a data diagnosis
+/// never belong to a milestone. Read from the workflows' own stage names,
+/// so a rename moves both.
 fn kind_of_stage(stage: &str) -> Option<&'static str> {
     match stage {
         planner::orchestration::stages::PLAN => Some(ROADMAP),
         pr_review::orchestration::stages::INLINE
         | pr_review::orchestration::stages::BRIEF
         | pr_fix::orchestration::stages::FIX => Some(PULL_REQUEST),
+        rules::orchestration::stages::WRITE | rules::orchestration::stages::FIDELITY => Some(RULES),
+        contract_manager::orchestration::stages::EVOLVE => Some(CONTRACT),
         test_debt::orchestration::stages::COVER
         | data_diagnosis::orchestration::stages::DIAGNOSE => Some(OFF_BOARD),
         _ => None,
@@ -840,8 +853,9 @@ fn names_an_issue(task: &str) -> bool {
 /// issue number (`#61` and `61` alike), `None` when the board does not know
 /// it. What neither names is bucketed by kind, read from its run: a run
 /// that planned is a roadmap item's — its repository map included — one
-/// that reviewed or repaired is a pull request's, test debt and a data
-/// diagnosis are off the board. Any other run on an issue is
+/// that reviewed or repaired is a pull request's, one that wrote rules is
+/// the rules', one that evolved a contract is the contract's, test debt and
+/// a data diagnosis are off the board. Any other run on an issue is
 /// [`UNPLACED`] — its milestone is unknown, not absent — and a run on no
 /// issue is off the board.
 pub fn attribute_milestones(
@@ -977,6 +991,10 @@ mod tests {
             run_row("debt-1", "#77", "cover", 0.75),
             run_row("diag-1", "main_agent@e0b409e", "diagnose", 0.25),
             run_row("none-1", "", "explore", 0.125),
+            // The rules' task, written then judged; a contract evolved.
+            run_row("rules-1", "#361", "write", 0.375),
+            run_row("rules-1", "#361", "fidelity", 0.125),
+            run_row("contract-1", "#414", "evolve", 1.25),
             // A task the board does not list: an old milestone's, maybe.
             run_row("loop-1", "61", "code", 4.0),
             run_row("decide-1", "#62", "decide", 0.5),
@@ -993,6 +1011,8 @@ mod tests {
         assert_eq!(bucket(ROADMAP), Some((1.5, 2)));
         assert_eq!(bucket(PULL_REQUEST), Some((2.5, 3)));
         assert_eq!(bucket(OFF_BOARD), Some((1.125, 3)));
+        assert_eq!(bucket(RULES), Some((0.5, 2)), "never unknown");
+        assert_eq!(bucket(CONTRACT), Some((1.25, 1)), "never unknown");
         assert_eq!(bucket(UNPLACED), Some((4.5, 2)), "unknown, not absent");
         let total: u32 = costs.by_milestone.iter().map(|b| b.count).sum();
         assert_eq!(

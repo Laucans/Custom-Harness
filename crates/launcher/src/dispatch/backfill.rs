@@ -6,8 +6,8 @@
 //! the board still lists. This reads the board's milestones once, open and
 //! closed (`hierarchy::milestone_index`, through the GitHub port), and hands
 //! them to the ledger, which rewrites itself safely
-//! (`Ledger::backfill_milestones`: a copy first, an atomic rename, nothing
-//! touched that already names its milestone).
+//! (`Ledger::backfill_milestones`: a copy of its own first, an atomic
+//! rename, nothing touched that already names its milestone).
 //!
 //! **With the watch stopped.** The ledger keeps out a writer of this version
 //! by its own lock, not one that takes none, so this refuses to run while
@@ -87,11 +87,10 @@ fn report(path: &Path, done: Backfill, placed: usize) -> String {
         done.filled,
         done.kept,
         done.unresolved,
-        if done.filled > 0 {
-            " (the ledger as it was is beside it, .bak)"
-        } else {
-            ""
-        }
+        done.backup.map_or_else(String::new, |copy| format!(
+            " (the ledger as it was is beside it, {})",
+            copy.display()
+        ))
     )
 }
 
@@ -129,13 +128,14 @@ mod tests {
                 filled: 3,
                 kept: 2,
                 unresolved: 1,
+                backup: Some(PathBuf::from("/l/costs.tsv.bak.1")),
             },
             40,
         );
         assert_eq!(
             said,
             "/l/costs.tsv: 3 row(s) filled, 2 already named, 1 on no milestone — 40 issue(s) \
-             placed under a milestone (the ledger as it was is beside it, .bak)"
+             placed under a milestone (the ledger as it was is beside it, /l/costs.tsv.bak.1)"
         );
         assert!(!report(path, Backfill::default(), 0).contains(".bak"));
     }

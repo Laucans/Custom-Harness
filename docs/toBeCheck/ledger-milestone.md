@@ -41,9 +41,14 @@ breaker and the budget key on the task as written.
   lost, so the command refuses while the checkout's watch lock is held and
   holds it itself: **stop the watch first**.
 - The view prefers the column, falls back on the board, and names what
-  neither holds `roadmap`, `PR`, `hors board` (test debt, a data diagnosis,
-  a run on no issue) or `unknown` (a run on an issue the board
-  does not list: its milestone is unknown, not absent).
+  neither holds `roadmap`, `PR`, `rules` (rules write/fidelity),
+  `contract` (contract evolve), `hors board` (test debt, a data diagnosis,
+  a run on no issue) or `unknown` (any other run on an issue the board
+  does not list: its milestone is unknown, not absent — a decide on an
+  issue outside every milestone stays there for good).
+- A second backfill never overwrites nor removes an earlier copy: it
+  writes the first free `costs.tsv.bak.<n>` and the report names it; a
+  refused run removes only its own copy.
 - Until the backfill has run on a ledger, `unknown` holds every old
   dev-loop row whose milestone closed beyond the board's window and, with no
   board read, every old task row — no longer mixed with roadmap, PR or
@@ -74,10 +79,14 @@ A second run filled 0 and left the file byte for byte; every row's first
 - [ ] Before the backfill, the *Spending* screen, *By milestone*: the old
       dev-loop weight of closed milestones (about $960 minus what the `#N`
       fix placed) sits in `unknown`, not in `hors board`.
-- [ ] After it: `unknown` about $33 (rules $27.39, contract evolve $5.41,
-      one decide — issues no milestone lists); `PR` about $395, `hors
-      board` about $6 (test debt, the data diagnosis), `roadmap` about $3; the closed milestones (#3, #4, …)
-      carry their own cost again.
+- [ ] After it: `unknown` only one decide row (an issue no milestone
+      lists); `rules` about $27.39, `contract` about $5.41, `PR` about
+      $395, `hors board` about $6 (test debt, the data diagnosis),
+      `roadmap` about $3; the closed milestones (#3, #4, …) carry their own
+      cost again.
+- [ ] A second backfill that fills rows (after the board placed more)
+      leaves `costs.tsv.bak` as it was and writes `costs.tsv.bak.1`, named
+      in its report.
 - [ ] A copy of the ledger with its first header cell renamed, then one
       with its header line removed: the backfill refuses both, names the
       line it found, and leaves the file byte for byte, no `.bak`.
