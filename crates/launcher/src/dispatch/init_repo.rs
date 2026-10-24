@@ -9,7 +9,6 @@ use std::rc::Rc;
 use harness_adapters::shell::disk::RealDisk;
 use harness_adapters::shell::git::GitRepos;
 use harness_adapters::shell::github::GhCli;
-use harness_adapters::shell::process::Processes;
 use harness_core::domain::Slug;
 use harness_workflows::init_repo::config::Config;
 use harness_workflows::init_repo::data::report::Verdict;
@@ -34,7 +33,7 @@ pub async fn upgrade(target_url: &str, branch: &str, here: &Path, log: &Logbook)
         gh: Rc::new(GhCli::for_slug(&slug)),
         disk: Rc::new(RealDisk),
         repos: Rc::new(GitRepos),
-        process: Rc::new(Processes),
+        process: Rc::new(crate::toolchain::processes()),
     };
     let config = Config {
         slug,
@@ -78,7 +77,7 @@ pub async fn run(args: &InitRepoArgs, here: &Path) -> ExitCode {
         gh: Rc::new(GhCli::for_slug(&slug)),
         disk: Rc::new(RealDisk),
         repos: Rc::new(GitRepos),
-        process: Rc::new(Processes),
+        process: Rc::new(crate::toolchain::processes()),
     };
     let config = Config {
         slug,

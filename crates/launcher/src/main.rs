@@ -17,6 +17,7 @@ mod dispatch;
 mod router;
 #[cfg(test)]
 mod testing;
+mod toolchain;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -105,6 +106,7 @@ async fn main() -> ExitCode {
             lane_exit(&here, "arbitrate", sub.issue, ran)
         }
         Some(cli::Command::Costs(sub)) => costs_by_hand(sub, &here),
+        Some(cli::Command::Toolchain(sub)) => toolchain_by_hand(sub, &here).await,
         Some(cli::Command::Route(sub)) => router::run_route(sub, &here).await,
         Some(cli::Command::PlanGraph(sub)) => {
             exit_of(dispatch::plan_graph::by_hand(sub, &here).await)
@@ -135,6 +137,18 @@ fn costs_by_hand(sub: &cli::CostsArgs, here: &Path) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(halt) => halt_to_code(&halt),
+    }
+}
+
+/// `harness toolchain`: the line on stdout; exit 1 when a tool is missing
+/// or too old, its fix in the line.
+async fn toolchain_by_hand(sub: &cli::ToolchainArgs, here: &Path) -> ExitCode {
+    let (line, whole) = toolchain::by_hand(sub, here).await;
+    println!("{line}");
+    if whole {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 

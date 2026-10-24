@@ -15,7 +15,11 @@ use crate::main_agent_merge::ports::Ports;
 /// # Errors
 /// [`harness_core::domain::Halt`] from any read or write that fails outright
 /// — reading the milestone's tasks, reading or writing a PR, labelling the
-/// milestone. A PR not existing yet is **not** treated as such a failure:
+/// milestone. The merge itself is the exception: a conflicting PR is
+/// [`MergeOutcome::Conflicting`], a mergeability that cannot be read is
+/// [`MergeOutcome::MergeabilityUnread`], a merge GitHub refuses is
+/// [`MergeOutcome::MergeRefused`] — told, and the watch goes on. A PR not
+/// existing yet is **not** treated as such a failure:
 /// see the inline note on why that can't be told apart from a genuine one
 /// with the port as it stands, and why that is an accepted simplification.
 pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<MergeOutcome> {
@@ -51,7 +55,41 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
     // and that error does propagate.
     if let Ok(pr) = ports.gh.pr(&branch).await {
         if ports.gh.pr_checks_green(&pr.num).await? {
-            ports.gh.merge_pr(&pr.num).await?;
+            // Green checks say nothing of a conflict: they ran on an older
+            // base, and GitHub refuses the merge of a conflicting PR
+            // (#423/#442 halted the watch that way). Asked first; the
+            // refusal itself is told, never a halt.
+            match ports.gh.pr_mergeable(&pr.num).await {
+                Ok(Some(true)) => {}
+                // GitHub has not computed it yet: a later tick reads it.
+                Ok(None) => return Ok(MergeOutcome::WaitingOnChecks),
+                // A failed read is told, not taken for "not computed yet".
+                Err(halt) => {
+                    return Ok(MergeOutcome::MergeabilityUnread {
+                        pr: pr.reference(),
+                        why: halt.reason().to_string(),
+                    });
+                }
+                Ok(Some(false)) => {
+                    // What landed on the base may resolve it; when GitHub
+                    // can merge it in, the push reruns the checks.
+                    return Ok(
+                        match ports.gh.merge_branch(&branch, &config.base_branch).await {
+                            Ok(()) => MergeOutcome::WaitingOnChecks,
+                            Err(halt) => MergeOutcome::Conflicting {
+                                pr: pr.reference(),
+                                why: halt.reason().to_string(),
+                            },
+                        },
+                    );
+                }
+            }
+            if let Err(halt) = ports.gh.merge_pr(&pr.num).await {
+                return Ok(MergeOutcome::MergeRefused {
+                    pr: pr.reference(),
+                    why: halt.reason().to_string(),
+                });
+            }
             ports.gh.add_label(milestone, labels::WAITING_MERGE).await?;
             close_delivered(ports, &tasks, &pr.reference()).await?;
             let built = mark_built(ports, config, graph, milestone, &pr.num).await?;
@@ -539,6 +577,123 @@ mod tests {
                 crate::common::fake_github::Wrote::MergedPr("99".to_string()),
                 crate::common::fake_github::Wrote::Label(4, labels::WAITING_MERGE.to_string()),
             ]
+        );
+    }
+
+    /// A delivered milestone whose PR #99 is green, with `tune` applied.
+    fn green_pr(tune: impl FnOnce(FakeGitHub) -> FakeGitHub) -> Rc<FakeGitHub> {
+        Rc::new(tune(FakeGitHub {
+            issues: vec![issue(4, "open", "Territory tooling", &[labels::MILESTONE])],
+            subs: vec![(4, vec![task(11, "closed")])],
+            merged: merged_closing(&[11]),
+            prs: vec![(
+                "milestone/4-territory-tooling".to_string(),
+                Pr {
+                    num: "99".to_string(),
+                    base: "main_agent".to_string(),
+                    head: "milestone/4-territory-tooling".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            pr_checks: HashMap::from([("99".to_string(), true)]),
+            ..FakeGitHub::default()
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_green_pr_that_conflicts_is_told_conflicting_and_never_merged() {
+        // #423/#442: green checks from an older base, a conflict since — the
+        // merge GitHub refused halted the watch. Now it is asked first.
+        let gh = green_pr(|gh| FakeGitHub {
+            pr_mergeable: HashMap::from([("99".to_string(), Some(false))]),
+            refused_merges: vec!["milestone/4-territory-tooling".to_string()],
+            ..gh
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict, not a halt");
+        assert_eq!(
+            outcome,
+            MergeOutcome::Conflicting {
+                pr: "#99".to_string(),
+                why: "milestone/4-territory-tooling conflicts with main_agent".to_string(),
+            }
+        );
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
+    }
+
+    #[tokio::test]
+    async fn a_conflict_the_base_resolves_waits_for_the_checks_its_push_runs() {
+        use crate::common::fake_github::Wrote;
+        let gh = green_pr(|gh| FakeGitHub {
+            pr_mergeable: HashMap::from([("99".to_string(), Some(false))]),
+            ..gh
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(outcome, MergeOutcome::WaitingOnChecks);
+        assert_eq!(
+            gh.writes(),
+            [Wrote::MergedBranch(
+                "milestone/4-territory-tooling".to_string(),
+                "main_agent".to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mergeability_that_cannot_be_read_is_told_never_taken_for_not_computed() {
+        let gh = green_pr(|gh| FakeGitHub {
+            unreadable_mergeability: vec!["99".to_string()],
+            ..gh
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict, not a halt");
+        assert_eq!(
+            outcome,
+            MergeOutcome::MergeabilityUnread {
+                pr: "#99".to_string(),
+                why: "HTTP 502: Bad Gateway".to_string(),
+            }
+        );
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
+    }
+
+    #[tokio::test]
+    async fn a_mergeability_github_has_not_computed_yet_waits() {
+        let gh = green_pr(|gh| FakeGitHub {
+            pr_mergeable: HashMap::from([("99".to_string(), None)]),
+            ..gh
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(outcome, MergeOutcome::WaitingOnChecks);
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
+    }
+
+    #[tokio::test]
+    async fn a_merge_github_refuses_is_a_warning_not_a_halt() {
+        let gh = green_pr(|gh| FakeGitHub {
+            refused_pr_merges: vec!["99".to_string()],
+            ..gh
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict, not a halt");
+        assert_eq!(
+            outcome,
+            MergeOutcome::MergeRefused {
+                pr: "#99".to_string(),
+                why: "Pull request #99 is not mergeable".to_string(),
+            }
+        );
+        assert!(
+            gh.writes().is_empty(),
+            "nothing labelled, nothing closed: {:?}",
+            gh.writes()
         );
     }
 

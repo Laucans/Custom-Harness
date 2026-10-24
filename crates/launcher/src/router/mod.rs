@@ -112,6 +112,9 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
         },
         journal: Workspace::new(here).rel(&journal),
     });
+    // The tools every process of this watch runs with, said once: what an
+    // inline catch-up's cargo and a session's shell will be.
+    crate::toolchain::at_watch_start(here, &args.target_repo_url, &args.branch, &log).await;
     // The changes the human left in the view reach the runs here, and only
     // here: a start is the one moment no run is reading the book.
     match crate::dispatch::shared::apply_drafts(here, crate::dispatch::dev_loop::now_seconds()) {

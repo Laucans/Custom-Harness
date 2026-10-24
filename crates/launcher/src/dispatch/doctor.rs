@@ -153,7 +153,7 @@ pub fn stray_folders(source: &Workspace) -> Vec<String> {
 ///
 /// Kept in one place on purpose: a new store added without its name here
 /// shows up in `harness doctor` as a stray, which is the reminder to add it.
-const KNOWN_LLOCAL: [&str; 9] = [
+const KNOWN_LLOCAL: [&str; 10] = [
     "agentic_workspaces",
     "logs",
     "grill",
@@ -163,6 +163,7 @@ const KNOWN_LLOCAL: [&str; 9] = [
     "split-locks",
     "pr-fix-locks",
     "trials",
+    "toolchain",
 ];
 
 /// The bytes under a folder, following nothing: a leftover is measured,
@@ -452,6 +453,8 @@ mod tests {
         let dir = Dir::new("strays");
         let llocal = dir.0.join(".llocal");
         std::fs::create_dir_all(llocal.join("logs")).expect("a known folder");
+        // The toolchain's shims: a watch's processes run through them.
+        std::fs::create_dir_all(llocal.join("toolchain/bin")).expect("a known folder");
         std::fs::create_dir_all(llocal.join("archive/old")).expect("a stray");
         std::fs::write(
             llocal.join("archive/old/dump.sql"),

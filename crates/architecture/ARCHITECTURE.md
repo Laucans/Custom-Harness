@@ -42,6 +42,8 @@ assets/             those files, compiled in with include_str! — the harness's
 tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_script.rs: the installed scripts, run on a real folder
                     isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, each way a unit could reach another, a DataCapability on its target aggregate only, the registry crossed by the two servers only
                     gates_parity.rs: gates.yml's gates (each a step, found by its id) and tree::violations on the same fixture workspaces, one verdict for both
+                    queries_script.rs: the installed queries.sh against a golden registry (tests/golden/) written by the GNU path — and on macOS, under PATH=/usr/bin:/bin with /bin/bash 3.2 and BSD sed, byte for byte
+                    assets_rustfmt.rs: every installed .rs asset passes `rustfmt --check --edition 2024` under default settings — a product's CI runs `cargo fmt --check`, and the assets are no member of this workspace, so `cargo fmt --all` here never sees them
 ```
 
 ## Decisions
@@ -109,6 +111,12 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   `--check` (a warning when the script writes, so `init-repo` still installs
   on a product not migrated yet). The script edits the root only on install
   or a tag move, never when a unit is added.
+- **The installed scripts are portable.** A product's script runs in CI
+  (GNU, bash 5) and on the owner's Mac, where BSD `/usr/bin/sed` reads `\s`
+  as a literal `s` and once wrote a wrong registry while exiting 0. So
+  `queries.sh` uses POSIX classes (`[[:space:]]`), no `globstar`, and
+  `shasum -a 256` when `sha256sum` is missing; `tests/queries_script.rs`
+  compares its output byte for byte, never only its exit code.
 - **The cards are the units' contract with a session.** `rules.rs` tells a
   session building an aggregate, a `DataCapability` or a Capability the
   conventional items the glue calls (`plugin()`, or the four items), the

@@ -41,6 +41,9 @@ src/feed.rs          both together: the watch gone without a word, the windows, 
 - **Keyed, not listed.** `failing:#15` told twelve times is one notification
   counting twelve, at its latest words and its loudest level. A success
   clears it.
+- **An incomplete toolchain, one warning.** `Event::ToolchainResolved`
+  with problems is `toolchain`, its fixes the detail; the next start that
+  finds every tool clears it.
 - **One warning per stop.** A lane that stops for a human ends with exit 1,
   is parked, and its dev loop halts: three events, one notification
   (`parked:#n`).

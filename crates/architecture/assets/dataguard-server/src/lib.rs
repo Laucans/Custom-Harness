@@ -6,7 +6,9 @@
 //! - [`plant`]: the engine and the reads, from the registry's manifests and
 //!   plugins and what the product shares with its units;
 //! - [`router`]: the routes of the wire protocol;
-//! - [`applier`]: the single applier, every second;
+//! - [`woken_applier`] and [`waking`]: the single applier, every second
+//!   and at once when a write reaches the wire; [`applier`] is the same
+//!   applier on its clock alone, for a binary that wakes nothing;
 //! - [`migrate`]: the engine's own tables.
 //!
 //! The product's binary (`crates/server`) composes them, and is where the
@@ -18,11 +20,14 @@
 //! in-memory store, which forgets everything at exit, for a mock-up, a demo,
 //! a smoke test.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Request, State};
+use axum::http::{Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use harness_dataguard::Error;
@@ -40,6 +45,8 @@ use harness_dataguard::reads::{Reads, Rows};
 use harness_dataguard::registry::Registry;
 use harness_dataguard::store::{RandomIds, Store};
 use serde_json::{Value, json};
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 
 pub use dataguard_registry as registry;
 pub use harness_dataguard as engine;
@@ -148,18 +155,77 @@ pub async fn migrate(url: &str) -> Result<&'static str, Failure> {
     Ok("migrated")
 }
 
-/// The single applier: every second, each partition's head. Its handle is
-/// the caller's, to abort on shutdown.
+/// How long the applier waits when no write wakes it: the holds' and the
+/// parked commands' expiries are seen within it.
+const TICK: Duration = Duration::from_secs(1);
+
+/// The routes that read and never write: no reason to wake the applier.
+const READS: &str = "/capabilities/";
+
+/// The single applier on its clock alone: every second, each partition's
+/// head. Its handle is the caller's, to abort on shutdown. A command waits
+/// for the next tick before it is applied; [`woken_applier`] with
+/// [`waking`] applies it at once.
 #[must_use]
-pub fn applier(engine: Arc<Engine>) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+pub fn applier(engine: Arc<Engine>) -> JoinHandle<()> {
+    woken_applier(engine, Arc::new(Notify::new()))
+}
+
+/// The single applier: every second, and as soon as `wake` is notified —
+/// by [`waking`], once each write the wire answers is answered — so what
+/// one tab does shows in the other within the second. Its handle is the
+/// caller's, to abort on shutdown.
+#[must_use]
+pub fn woken_applier(engine: Arc<Engine>, wake: Arc<Notify>) -> JoinHandle<()> {
+    driving(wake, TICK, move || {
+        let engine = Arc::clone(&engine);
+        async move {
             if let Err(e) = engine.run_once().await {
                 eprintln!("applier: {e}");
             }
         }
     })
+}
+
+/// `run` once per `tick`, and once more each time `wake` is notified.
+fn driving<F, R>(wake: Arc<Notify>, tick: Duration, run: R) -> JoinHandle<()>
+where
+    R: Fn() -> F + Send + 'static,
+    F: Future<Output = ()> + Send,
+{
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep(tick) => {}
+                () = wake.notified() => {}
+            }
+            run().await;
+        }
+    })
+}
+
+/// `app` notifying `wake` once each write it answers — a command
+/// submitted, confirmed, cancelled or requeued, a hold or a review — has
+/// been answered, its command queued. Wrap the whole app, the product's
+/// own routes with [`router`]'s.
+pub fn waking(app: Router, wake: Arc<Notify>) -> Router {
+    app.layer(middleware::from_fn_with_state(wake, woken))
+}
+
+/// Whether a request writes: a `POST` anywhere but a Capability's read.
+fn writes(method: &Method, path: &str) -> bool {
+    method == Method::POST && !path.starts_with(READS)
+}
+
+/// One request through [`waking`]: answered, then the applier woken when it
+/// was a write.
+async fn woken(State(wake): State<Arc<Notify>>, request: Request, next: Next) -> Response {
+    let write = writes(request.method(), request.uri().path());
+    let response = next.run(request).await;
+    if write {
+        wake.notify_one();
+    }
+    response
 }
 
 /// The routes of the wire protocol, over what [`plant`] planted.
@@ -332,4 +398,63 @@ async fn version(State(planted): State<Planted>) -> Reply<Value> {
             .await
             .map(|v| json!({ "dataVersion": v })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// A counter `driving` adds one to at each run.
+    fn counting(runs: &Arc<AtomicUsize>) -> impl Fn() -> std::future::Ready<()> + Send + 'static {
+        let counted = Arc::clone(runs);
+        move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(())
+        }
+    }
+
+    #[test]
+    fn a_write_wakes_the_applier_and_a_read_does_not() {
+        assert!(writes(&Method::POST, "/commands"));
+        assert!(writes(&Method::POST, "/commands/c1/confirm"));
+        assert!(writes(&Method::POST, "/holds"));
+        assert!(!writes(&Method::POST, "/capabilities/table.listTables"));
+        assert!(!writes(&Method::GET, "/commands/c1"));
+        assert!(!writes(&Method::GET, "/dataVersion"));
+    }
+
+    #[tokio::test]
+    async fn the_applier_runs_when_woken_without_waiting_for_its_tick() {
+        let wake = Arc::new(Notify::new());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let handle = driving(
+            Arc::clone(&wake),
+            Duration::from_secs(3600),
+            counting(&runs),
+        );
+        wake.notify_one();
+        let ran = tokio::time::timeout(Duration::from_secs(1), async {
+            while runs.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        handle.abort();
+        assert!(ran.is_ok(), "the applier did not run once woken");
+    }
+
+    #[tokio::test]
+    async fn the_applier_runs_every_tick_unwoken() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let handle = driving(
+            Arc::new(Notify::new()),
+            Duration::from_millis(10),
+            counting(&runs),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        handle.abort();
+        assert!(runs.load(Ordering::SeqCst) >= 2);
+    }
 }

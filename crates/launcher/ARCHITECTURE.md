@@ -63,6 +63,14 @@ src/dispatch/     one module per thing that can be run, plus what they share
   trial.rs          `harness trial`: a prompt's dry-run — a past run's prompt replayed with
                     another text (stdin), asked once in plan mode in the `prompt-trial` clone
 
+src/toolchain.rs  the one toolchain resolver: the `PATH` and `SHELL` a product's processes
+                  and every session get (shims for GNU sed/grep, bash ≥ 5, node ≥ 22; the
+                  product's pinned cargo, else rustup's proxies; then the inherited `PATH`),
+                  handed to the adapters the launcher builds (`processes()`,
+                  `environment()`: `with_env`) and said as `Event::ToolchainResolved` when
+                  the watch starts and when a run mounts its checkout; `harness toolchain`
+                  prints the same line
+
 src/adapters/     the ports only the launcher can fill — written here, not wired
   sink.rs           where log lines go: console + file
   spending.rs       the `Spending` port, implemented: clock, run id, machine
@@ -101,9 +109,9 @@ asserted by a test. `RunArgs` is the dev loop's flags and the only type that
 reads the environment; `Cli` flattens it (`#[command(flatten)]`) alongside an
 optional `#[command(subcommand)] command: Option<Command>` — no subcommand
 still parses exactly as the flat `Cli` once did (`harness --rounds 1 --stages
-code` keeps meaning the dev loop). Eight subcommands today: `init-repo`,
-`watch`, `doctor`, `refine`, `split`, `trial`, `data-snapshot` and
-`data-model-draft`. `refine` and `split` exist for the lanes of a parallel
+code` keeps meaning the dev loop). Thirteen subcommands today: `init-repo`,
+`watch`, `doctor`, `refine`, `split`, `arbitrate`, `trial`, `data-snapshot`,
+`data-model-draft`, `costs`, `route`, `plan-graph` and `toolchain`. `refine` and `split` exist for the lanes of a parallel
 watch — one child process per issue — and for a human who wants one issue
 done now; `planner`, `pr_review`, `pr_fix`, `arbiter`, `test_debt`, `rules`, the merges and `data_diagnosis`
 have **no** subcommand on purpose: they are reached by the router, whose own
@@ -273,6 +281,66 @@ version it would undercount silently — a gate costs one local call, a false
 Two gates are relaxed when the run works in a clone (`TheIntegrationBranch`'s
 current-branch check, `WorkingTreeIsClean`): the human's own tree is not what the
 run touches.
+
+## `toolchain.rs` — one `PATH`, said once per start
+
+The owner asked to see easily what is on the `PATH` the harness uses. One
+resolver composes it, for the harness's own spawns on a product's behalf (a
+product's script, an inline catch-up's `cargo metadata`, the signature
+index's `npx tsc`) and for every Claude session alike:
+
+1. `<factory>/.llocal/toolchain/bin`, the shims: `sed` → `gsed`, `grep` →
+   `ggrep` when Homebrew installed them, `bash` → the first bash ≥ 5, `node`
+   → the first node ≥ 22 (searched in the inherited `PATH`, then
+   `/opt/homebrew/bin`, `/usr/local/bin`). **Links, not folders**: putting
+   `/opt/homebrew/bin` ahead would move every other tool in it too —
+   Homebrew's cargo 1.98 ahead of rustup's, `python3`, `git`. A shim is
+   replaced atomically and taken back when its tool is gone; BSD `sed` once
+   wrote a wrong registry while exiting 0;
+2. the `bin` of rustup's toolchain for the channel the **target product's**
+   `rust-toolchain.toml` pins (`<RUSTUP_HOME or ~/.rustup>/toolchains/<channel>`
+   or `<channel>-*`). Without it — a product that pins nothing, a channel not
+   installed, a pin that could not be read — rustup's proxies
+   (`$CARGO_HOME/bin`, else the folder of the `rustup` found, links followed:
+   Homebrew's keg), which honour a checkout's own pin or refuse it clearly;
+3. the inherited `PATH`, in its own order, every folder once.
+
+Problems, each naming its fix: a pinned channel not installed (`rustup
+toolchain install <channel>`), clippy missing from it, **a pin that could not
+be read** (`cannot read rust-toolchain.toml on <branch> of <repo>: <why>` — a
+`gh` failure is never taken for "unpinned"), a cargo that runs and is not
+rustup's (`install rustup`), bash < 5, node < 22, sed or grep not GNU.
+
+What is said is what a process will run: each tool is looked up in the
+composed `PATH` and asked `--version`, after composing. The line —
+`Event::ToolchainResolved`, a warning when a problem is found, a notification
+in the view until a start finds it whole — is said when the watch starts (the
+pin read on GitHub, `at_watch_start`) and when a run mounts its checkout (the
+checkout's own pin, `at_run_start`, from `shared::mount_named` and
+`dev_loop`'s mount): every lane's `run.log` carries it. `harness toolchain`
+prints it (exit 1 on a problem). Never the rest of the environment.
+
+**How it reaches the adapters — a decision.** The adapters take it by
+injection (`Processes::with_env`, `ClaudeCliFactory::with_env`); the launcher
+hands it to every one it builds after a start, through
+`toolchain::processes()` / `toolchain::environment()`, which read what the
+last `take` resolved. That value is a `thread_local`, not threaded through
+every `dispatch/*` signature: a start (the watch's, a run's mount) and the
+adapters it builds sit far apart in the composition root, and a watch or a
+run is one thread (`current_thread`) — while each test is its own thread, so
+a test that resolves a toolchain never reaches another's spawns. Nothing in
+`harness-adapters`, `core` or `workflows` holds it. `git` and `gh` keep the
+harness's own environment; a command run by hand (`init-repo`, `doctor`)
+before any start gets none.
+
+Composition-root code by nature — it reads `PATH`, `HOME`, `RUSTUP_HOME`,
+`CARGO_HOME`, the disk — and only the launcher has it; `core` and `workflows`
+never see it. The pure parts (`channel_of`, `version_in`, `major`, `Pin`) and
+`resolve` over folders a test builds are tested here;
+`at_watch_start`/`product_file`/`by_hand` wire `gh` and are excluded from the
+mutants. `.llocal/toolchain` is a store the janitor and `harness doctor` know
+(`cleanup::KNOWN`, `doctor::KNOWN_LLOCAL`): a link left right never changes,
+so it looks idle for as long as a watch runs through it.
 
 ## `adapters/sink.rs` — both, always
 

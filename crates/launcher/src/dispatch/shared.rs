@@ -155,6 +155,9 @@ pub async fn mount_named(
     if mount.mounted() {
         crate::dispatch::skills::lend(here, mount.workspace.root(), lender.as_ref(), log)?;
     }
+    // The run's start: its journal says the tools its processes and its
+    // sessions get, the cargo the checkout's own pin names.
+    crate::toolchain::at_run_start(here, mount.workspace.root(), log).await;
     Ok(mount)
 }
 
@@ -267,7 +270,8 @@ pub async fn adapters_caching(
     let sessions: Rc<dyn SessionFactory> = if dry_run {
         Rc::new(Rehearsal::new(log.clone()))
     } else {
-        let factory = ClaudeCliFactory::new(workspace.root(), permission_mode, trace);
+        let factory = ClaudeCliFactory::new(workspace.root(), permission_mode, trace)
+            .with_env(crate::toolchain::environment());
         Rc::new(if short_cache {
             factory.with_short_cache()
         } else {

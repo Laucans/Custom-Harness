@@ -26,11 +26,22 @@
 # Exits 1 on a missing file or a missing fields line, every one printed as a
 # CI annotation; with --check, also when queries/registry.json is not what
 # this would write.
+#
+# Portable on purpose: the same registry under GNU and BSD tools, bash 3.2
+# included — POSIX classes (`[[:space:]]`, never `\s`, which BSD sed reads as
+# a literal `s`), no `globstar`, and `shasum -a 256` where `sha256sum` is
+# missing.
 set -euo pipefail
-shopt -s nullglob globstar
+shopt -s nullglob
 
 command -v jq >/dev/null || { echo "::error::queries.sh needs jq"; exit 1; }
-command -v sha256sum >/dev/null || { echo "::error::queries.sh needs sha256sum"; exit 1; }
+if command -v sha256sum >/dev/null; then
+  sha256() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null; then
+  sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  echo "::error::queries.sh needs sha256sum or shasum"; exit 1
+fi
 
 check=0
 [ "${1:-}" = "--check" ] && check=1
@@ -52,19 +63,19 @@ for manifest in crates/*/capabilities/*/capability.json; do
       failed=1
       continue
     fi
-    fields=$(grep -m1 -E '^\s*(#|--)\s*fields:' "$file" | sed -E 's/^\s*(#|--)\s*fields:\s*//' | tr ',' '\n' | sed -E 's/^\s+|\s+$//g' | grep -v '^$' | jq -R . | jq -s . || echo '[]')
+    fields=$(grep -m1 -E '^[[:space:]]*(#|--)[[:space:]]*fields:' "$file" | sed -E 's/^[[:space:]]*(#|--)[[:space:]]*fields:[[:space:]]*//' | tr ',' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | grep -v '^$' | jq -R . | jq -s .) || fields='[]'
     if [ "$(jq 'length' <<< "$fields")" = "0" ]; then
       echo "::error file=$file::declares no \`fields:\` line — the registry answers which Capability reads which field"
       failed=1
       continue
     fi
-    name=$(grep -m1 -oE '^\s*query\s+[A-Za-z_][A-Za-z0-9_]*' "$file" | awk '{print $2}' || true)
+    name=$(grep -m1 -oE '^[[:space:]]*query[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$file" | awk '{print $2}' || true)
     if [ -z "$name" ]; then
       name=$(basename "$file")
       name="${name%%.*}"
       name="$(tr '[:lower:]' '[:upper:]' <<< "${name:0:1}")${name:1}"
     fi
-    sha=$(sha256sum "$file" | awk '{print $1}')
+    sha=$(sha256 "$file")
     entries=$(jq -c --arg q "$name" --arg c "$capability" --arg f "$file" --arg s "$sha" --argjson fields "$fields" \
       '. + [{query: $q, capability: $c, file: $f, sha256: $s, fields: $fields}]' <<< "$entries")
   done

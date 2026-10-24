@@ -621,6 +621,29 @@ pub(super) async fn run_main_agent_merge(
                     ));
                     None
                 }
+                // Neither stops the watch: a conflict waits for a catch-up,
+                // a refusal for a later tick — told every tick it holds.
+                MergeReport::Conflicting { pr, why } => {
+                    log.warn(&format!(
+                        "watch: main_agent_merge -> PR {pr} of #{milestone} conflicts with the \
+                         integration branch: not merged, it waits for a catch-up — {why}"
+                    ));
+                    None
+                }
+                MergeReport::MergeabilityUnread { pr, why } => {
+                    log.warn(&format!(
+                        "watch: main_agent_merge -> whether PR {pr} of #{milestone} can merge \
+                         cannot be read: {why} — not merged, read again at a later tick"
+                    ));
+                    None
+                }
+                MergeReport::MergeRefused { pr, why } => {
+                    log.warn(&format!(
+                        "watch: main_agent_merge -> GitHub refused to merge PR {pr} of \
+                         #{milestone}: {why} — tried again at a later tick"
+                    ));
+                    None
+                }
                 MergeReport::NotReady
                 | MergeReport::WaitingOnProducers(_)
                 | MergeReport::WaitingOnChecks => None,

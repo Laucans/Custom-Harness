@@ -133,7 +133,8 @@ async fn attempt(
     )
     .await?;
     let sessions =
-        ClaudeCliFactory::new(mount.workspace.root(), READ_ONLY, Some(dir.to_path_buf()));
+        ClaudeCliFactory::new(mount.workspace.root(), READ_ONLY, Some(dir.to_path_buf()))
+            .with_env(crate::toolchain::environment());
     let answered = async {
         let mut session = sessions
             .open(&SessionSpec {

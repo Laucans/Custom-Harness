@@ -570,7 +570,7 @@ time (`domain::cleanup`), the walk and the removal are the `Yard` port's
 | a run's folder under `logs/`, its `flow-*.jsonl` with it | 30 days old |
 | `init/`, the throwaway clones of `init-repo` | idle a day |
 | a stray, a folder the harness never writes | only when the human allows it, idle a day |
-| a clone's code, `.git`, the ledgers, the event store, the locks, the view's mirror and mock-up workspaces | never |
+| a clone's code, `.git`, the ledgers, the event store, the locks, the view's mirror and mock-up workspaces, the launcher's toolchain shims (`toolchain/`, first on every watch process's `PATH`) | never |
 
 A name that a project might commit (`dist`, `build`) is not on the list: a
 sweep never takes what a reset would not give back. A folder under the

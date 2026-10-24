@@ -26,7 +26,6 @@ use harness_adapters::agent::rehearsal::Rehearsal;
 use harness_adapters::shell::disk::RealDisk;
 use harness_adapters::shell::git::{GitCli, GitRepos};
 use harness_adapters::shell::github::GhCli;
-use harness_adapters::shell::process;
 use harness_adapters::store::checkpoint::Checkpoint;
 use harness_adapters::store::handoffs::FsHandoffs;
 use harness_core::domain::Verdict;
@@ -37,6 +36,7 @@ use harness_core::ports::agent::SessionFactory;
 use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::git::{Repo, Repos};
 use harness_core::ports::shell::github::GitHub;
+use harness_core::ports::shell::process::Process;
 use harness_core::ports::store::checkpoint::Checkpoints;
 use harness_core::ports::store::spending::Spending;
 use harness_core::traces::{Logbook, Sink, Verbosity};
@@ -123,6 +123,9 @@ async fn logged(
     if mount.mounted() {
         crate::dispatch::skills::lend(source.root(), workspace.root(), disk.as_ref(), &log)?;
     }
+    // The run's start: its journal says the tools its processes and its
+    // sessions get, the cargo the checkout's own pin names.
+    crate::toolchain::at_run_start(source.root(), workspace.root(), &log).await;
     // The two target-facing gates run here, against the mounted workspace —
     // D4: once the target comes from a setting rather than the cwd, running
     // them pre-mount would check the *harness's own* branch and CI.
@@ -443,7 +446,11 @@ async fn typescript_index(
     .iter()
     .map(|arg| (*arg).to_string())
     .collect();
-    if let Err(why) = process::run_for("npx", &args, workspace.root(), INDEX_TIMEOUT).await {
+    // With the run's toolchain: the node the line said.
+    let index = crate::toolchain::processes()
+        .run("npx", &args, workspace.root(), INDEX_TIMEOUT)
+        .await;
+    if let Err(why) = index {
         log.warn(&format!(
             "tsc could not emit the signature index ({why}) — sessions will read \
              the files themselves, as before"
@@ -526,7 +533,8 @@ async fn turns(
                 &args.permission_mode,
                 Some(crate::dispatch::shared::trace_dir(run_log)),
             )
-            .with_short_cache(),
+            .with_short_cache()
+            .with_env(crate::toolchain::environment()),
         )
     };
     let spending: Rc<dyn Spending> = Rc::new(
@@ -554,7 +562,7 @@ async fn turns(
         spending,
         disk: Rc::clone(&disk),
         repo: Rc::new(GitCli::new(workspace.root())),
-        process: Rc::new(process::Processes),
+        process: Rc::new(crate::toolchain::processes()),
         history: Rc::new(LedgerSpending::new(&workspace.ledger(), run_id, "")),
         handoffs: Rc::new(FsHandoffs::new(&workspace.loop_dir().join("handoffs"))),
     };

@@ -22,7 +22,9 @@ layer allowed to spawn a process, touch the disk, or call a library, and only
 agent/    claude_cli   one process per turn, stitched with `--resume`
           rehearsal    the `--dry-run` carrier: returns the prompt, opens nothing
           stream_log   the JSON stream, read into `Reply`
-shell/    process      the only place in the crate that spawns a subprocess
+shell/    process      the only place in the crate that spawns a subprocess; `Processes`
+                       carries the variables it was built with (`with_env`: the
+                       launcher's toolchain `PATH`) to every child it spawns
           git          GitCli, GitRepos — every call names the repo with `-C <root>`
           github       GhCli — issues go through `gh api`, not `gh issue`
           disk         RealDisk
@@ -55,6 +57,15 @@ Three invariants here are the expensive ones:
   `/code` session apart.
 - **A dry-run is a wiring choice**, not a framework branch: the stage opens a
   session without knowing `Rehearsal` is behind it.
+
+**The toolchain is injected, never ambient.** The launcher's resolver
+(`harness-launcher`'s `toolchain.rs`) composes a `PATH` and a `SHELL`; the
+adapters that spawn on a product's behalf are built with them —
+`Processes::with_env` (a product's scripts, `cargo`, `npx`) and
+`ClaudeCliFactory::with_env` (every session: the toolchain first, the
+session's own variables after, which win on a shared name). Nothing in this
+crate holds it globally: an adapter built without it spawns with the
+harness's own environment, as `GitCli` and `GhCli` always do.
 
 ## Where to add what
 

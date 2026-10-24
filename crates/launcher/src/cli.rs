@@ -83,6 +83,28 @@ pub enum Command {
     /// roadmap item's milestones, as they stand on the board — what the
     /// planner writes as it opens them, for a plan made before it did.
     PlanGraph(PlanGraphArgs),
+    /// Print the tools the harness runs with — bash, the pinned cargo, GNU
+    /// sed and grep, node — each with its version and place, then the
+    /// whole `PATH`: the line a watch or a run says when it starts. Exits 1
+    /// when one is missing or too old, its fix named.
+    Toolchain(ToolchainArgs),
+}
+
+/// `harness toolchain`'s own arguments.
+#[derive(Debug, Args)]
+pub struct ToolchainArgs {
+    /// The target repository whose `rust-toolchain.toml` pins cargo.
+    /// Empty: this checkout's own `origin`, else its own file.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
+
+    /// The branch the pin is read on.
+    #[arg(long, env = "INTEGRATION_BRANCH", default_value = "main_agent")]
+    pub branch: String,
+
+    /// A Rust channel to resolve instead of the product's pin.
+    #[arg(long)]
+    pub channel: Option<String>,
 }
 
 /// `harness plan-graph <roadmap>`'s own arguments.

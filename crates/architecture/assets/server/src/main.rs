@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use axum::routing::get;
 use dataguard_server::engine::plugins::Shared;
-use dataguard_server::{Failure, applier, migrate, plant, registry, router};
+use dataguard_server::{Failure, migrate, plant, registry, router, waking, woken_applier};
 
 /// What the product shares with its units: one value per type a unit
 /// declares it `needs`. The server refuses to start while a need has
@@ -67,9 +67,15 @@ fn inventory() -> String {
 
 async fn serve(addr: String) -> Result<(), Failure> {
     let planted = plant(&database_url()?, shared()).await?;
-    let app = router(&planted).route("/health", get(|| async { "ok" }));
+    // Woken by every write the wire answers: a command is applied at once,
+    // not at the next second's tick.
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let app = waking(
+        router(&planted).route("/health", get(|| async { "ok" })),
+        Arc::clone(&wake),
+    );
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    let applier = applier(Arc::clone(&planted.engine));
+    let applier = woken_applier(Arc::clone(&planted.engine), wake);
     println!("server on {addr}");
     axum::serve(listener, app)
         .with_graceful_shutdown(async {

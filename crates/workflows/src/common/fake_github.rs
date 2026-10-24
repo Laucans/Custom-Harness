@@ -120,6 +120,12 @@ pub struct FakeGitHub {
     pub activity: Option<Activity>,
     /// The branches that refuse a merge into them (a conflict), by name.
     pub refused_merges: Vec<String>,
+    /// The pull requests whose merge GitHub refuses, by ref — a branch
+    /// protection, a race with a push.
+    pub refused_pr_merges: Vec<String>,
+    /// The pull requests whose mergeability cannot be read, by ref — a
+    /// `gh` outage, a field renamed.
+    pub unreadable_mergeability: Vec<String>,
     /// Blockers GitHub refuses to set, by the blocker's number — a pull
     /// request's, for one: "Target issue may only be an issue".
     pub refused_blockers: Vec<u64>,
@@ -474,6 +480,11 @@ impl GitHub for FakeGitHub {
 
     async fn merge_pr(&self, pr_ref: &str) -> Outcome<()> {
         self.ok()?;
+        if self.refused_pr_merges.iter().any(|r| r == pr_ref) {
+            return Err(Halt::Failed(format!(
+                "Pull request #{pr_ref} is not mergeable"
+            )));
+        }
         self.wrote
             .borrow_mut()
             .push(Wrote::MergedPr(pr_ref.to_string()));
@@ -494,6 +505,9 @@ impl GitHub for FakeGitHub {
 
     async fn pr_mergeable(&self, pr_ref: &str) -> Outcome<Option<bool>> {
         self.ok()?;
+        if self.unreadable_mergeability.iter().any(|r| r == pr_ref) {
+            return Err(Halt::Failed("HTTP 502: Bad Gateway".to_string()));
+        }
         Ok(self.pr_mergeable.get(pr_ref).copied().unwrap_or(Some(true)))
     }
 

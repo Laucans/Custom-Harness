@@ -12,7 +12,6 @@ use std::time::Duration;
 use harness_adapters::shell::disk::RealDisk;
 use harness_adapters::shell::git::GitRepos;
 use harness_adapters::shell::github::GhCli;
-use harness_adapters::shell::process::Processes;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Outcome, Slug};
 use harness_core::ports::shell::github::GitHub;
@@ -45,7 +44,7 @@ pub async fn run(
         gh,
         repos: Rc::new(GitRepos),
         disk: Rc::new(RealDisk),
-        process: Rc::new(Processes),
+        process: Rc::new(crate::toolchain::processes()),
         now: spending::now,
     };
     let config = config(here, slug);

@@ -50,8 +50,20 @@ pub async fn run_for(binary: &str, args: &[String], cwd: &Path, timeout: Duratio
 /// [`run`], with the deadline as a parameter — the seam a test uses to prove
 /// a hung process is a failure without actually waiting out [`TIMEOUT`].
 async fn run_within(binary: &str, args: &[String], cwd: &Path, timeout: Duration) -> Outcome<Ran> {
+    run_within_env(binary, args, &[], cwd, timeout).await
+}
+
+/// [`run_within`], with variables added to the child's environment.
+async fn run_within_env(
+    binary: &str,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: &Path,
+    timeout: Duration,
+) -> Outcome<Ran> {
     let spawn = tokio::process::Command::new(binary)
         .args(args)
+        .envs(env.iter().map(|(name, value)| (name, value)))
         .current_dir(cwd)
         .output();
     let out = tokio::time::timeout(timeout, spawn)
@@ -70,10 +82,24 @@ async fn run_within(binary: &str, args: &[String], cwd: &Path, timeout: Duration
     })
 }
 
-/// The [`Process`] port: a program of the target's, run like `git` and `gh`
-/// — here, the one place that spawns.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Processes;
+/// The [`Process`] port: a program of the target's, run like `git` and `gh`.
+///
+/// Here, the one place that spawns — with the variables it was built with
+/// on top of the harness's own environment: the toolchain's `PATH` the
+/// launcher composed (`harness-launcher`'s `toolchain.rs`).
+#[derive(Debug, Default, Clone)]
+pub struct Processes {
+    /// Added to every child's environment.
+    env: Vec<(String, String)>,
+}
+
+impl Processes {
+    /// Processes that each get `env` on top of the harness's environment.
+    #[must_use]
+    pub const fn with_env(env: Vec<(String, String)>) -> Self {
+        Self { env }
+    }
+}
 
 #[async_trait(?Send)]
 impl Process for Processes {
@@ -84,7 +110,7 @@ impl Process for Processes {
         cwd: &Path,
         timeout: Duration,
     ) -> Outcome<Ran> {
-        run_within(program, args, cwd, timeout).await
+        run_within_env(program, args, &self.env, cwd, timeout).await
     }
 }
 
@@ -374,6 +400,25 @@ fn cpu_time_seconds(text: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn processes_built_with_variables_hand_them_to_every_child() {
+        let probe = Processes::with_env(vec![(
+            "HARNESS_TOOLCHAIN_PROBE".to_string(),
+            "composed".to_string(),
+        )]);
+        let said = "echo $HARNESS_TOOLCHAIN_PROBE";
+        let ran = probe
+            .run("sh", &sh(said), Path::new("."), Duration::from_secs(10))
+            .await
+            .expect("ran");
+        assert_eq!(ran.stdout.trim(), "composed");
+        let plain = Processes::default()
+            .run("sh", &sh(said), Path::new("."), Duration::from_secs(10))
+            .await
+            .expect("ran");
+        assert_eq!(plain.stdout.trim(), "", "nothing added by default");
+    }
 
     #[tokio::test]
     async fn a_missing_binary_is_a_failure_not_a_non_zero_code() {

@@ -455,8 +455,11 @@ levels of one fold: `milestone_merge` merges a task's PR into its milestone
 branch once the agent review has run and every check is green — the write
 side's PR, which the session leaves open — and marks the task delivered;
 `main_agent_merge` opens, then merges, the milestone branch's PR into the
-integration branch once every task is merged into it and its CI is green —
-and is the **merge train** when the plan has a graph (`data/merge_train`):
+integration branch once every task is merged into it and its CI is green and
+GitHub says it is mergeable (`pr_mergeable`: green checks from an older base
+say nothing of a conflict) — a conflicting PR is `Conflicting`, a merge GitHub
+refuses is `MergeRefused`, both told as warnings and never a `Halt` that stops
+the watch — and is the **merge train** when the plan has a graph (`data/merge_train`):
 a consumer waits on the producers of what it reads (`WaitingOnProducers`,
 whatever its number); a landing marks `built` in `plan/graph.json` every id
 whose manifest its PR carried, and brings the integration branch into every

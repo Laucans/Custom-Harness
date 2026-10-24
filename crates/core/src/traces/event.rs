@@ -398,6 +398,18 @@ pub enum Event {
         /// How many stash entries.
         stashes: u64,
     },
+    /// The tools a process of the harness runs with — itself, the product's
+    /// scripts it spawns, its Claude sessions — resolved when the watch or
+    /// a run starts: each tool's version and where it is, then the whole
+    /// `PATH`. Never the rest of the environment.
+    ToolchainResolved {
+        /// One per tool, `name version (where)`, in a fixed order.
+        tools: Vec<String>,
+        /// The `PATH` every spawned process gets.
+        path: String,
+        /// What is missing or too old, each line naming its fix.
+        problems: Vec<String>,
+    },
 }
 
 impl Event {
@@ -624,6 +636,18 @@ impl Event {
                     held.join(", ")
                 )
             }
+            Self::ToolchainResolved {
+                tools,
+                path,
+                problems,
+            } => {
+                let told = if problems.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — problems: {}", problems.join("; "))
+                };
+                format!("toolchain: {} · PATH={path}{told}", tools.join(" · "))
+            }
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
@@ -638,6 +662,7 @@ impl Event {
     pub fn level(&self) -> Level {
         match self {
             Self::Halted { kind, .. } if kind == "FAILED" => Level::Error,
+            Self::ToolchainResolved { problems, .. } if !problems.is_empty() => Level::Warning,
             Self::LaneEnded { code: Some(0), .. } => Level::Info,
             Self::TickFailed { .. }
             | Self::QuotaRest { .. }
@@ -704,6 +729,48 @@ mod tests {
         assert_eq!(failed.level(), Level::Info);
         let json = serde_json::to_string(&failed).expect("json");
         assert!(json.contains("\"event\":\"checks_failed\""), "{json}");
+    }
+
+    #[test]
+    fn the_toolchain_names_each_tool_then_the_path_and_warns_on_a_problem() {
+        let fine = Event::ToolchainResolved {
+            tools: vec![
+                "bash 5.2.37 (/opt/homebrew/bin/bash)".to_string(),
+                "node v22.14.0 (/opt/homebrew/bin/node)".to_string(),
+            ],
+            path: "/opt/homebrew/bin:/usr/bin".to_string(),
+            problems: Vec::new(),
+        };
+        assert_eq!(
+            fine.line().as_deref(),
+            Some(
+                "toolchain: bash 5.2.37 (/opt/homebrew/bin/bash) · node v22.14.0 \
+                 (/opt/homebrew/bin/node) · PATH=/opt/homebrew/bin:/usr/bin"
+            )
+        );
+        assert_eq!(fine.level(), Level::Info);
+        let short = Event::ToolchainResolved {
+            tools: vec!["cargo 1.98.1 (/opt/homebrew/bin/cargo)".to_string()],
+            path: "/usr/bin".to_string(),
+            problems: vec![
+                "cargo 1.99.1 missing: rustup toolchain install 1.99.1".to_string(),
+                "node missing".to_string(),
+            ],
+        };
+        assert_eq!(
+            short.line().as_deref(),
+            Some(
+                "toolchain: cargo 1.98.1 (/opt/homebrew/bin/cargo) · PATH=/usr/bin — problems: \
+                 cargo 1.99.1 missing: rustup toolchain install 1.99.1; node missing"
+            )
+        );
+        assert_eq!(short.level(), Level::Warning);
+        let json = serde_json::to_string(&short).expect("json");
+        assert!(json.contains("\"event\":\"toolchain_resolved\""), "{json}");
+        assert_eq!(
+            serde_json::from_str::<Event>(&json).expect("read back"),
+            short
+        );
     }
 
     #[test]

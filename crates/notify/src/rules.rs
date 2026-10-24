@@ -307,6 +307,7 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         Event::BaseRed { branch, sha } => base_red(board, branch, sha.as_deref(), at),
         Event::BaseGreen { branch } => board.clear(&format!("base-red:{branch}")),
         Event::WorkKept { .. } => work_kept(board, event, at),
+        Event::ToolchainResolved { problems, .. } => toolchain(board, problems, at),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }
@@ -442,6 +443,23 @@ fn base_red(board: &mut Board, branch: &str, sha: Option<&str>, at: &str) {
              the issue \"Integration branch {branch} is red\" once it is green",
             sha.unwrap_or("its newest head")
         ),
+        at,
+        Some(screen("journal", at)),
+    ));
+}
+
+/// A toolchain missing a tool, or holding one too old: one warning, its
+/// fixes the detail, taken back by the next start that finds it whole.
+fn toolchain(board: &mut Board, problems: &[String], at: &str) {
+    if problems.is_empty() {
+        board.clear("toolchain");
+        return;
+    }
+    board.add(Notification::once(
+        "toolchain",
+        Level::Warning,
+        "The toolchain is incomplete",
+        problems.join("; "),
         at,
         Some(screen("journal", at)),
     ));
@@ -688,6 +706,38 @@ mod tests {
             "{}",
             human.detail
         );
+    }
+
+    #[test]
+    fn an_incomplete_toolchain_is_told_until_a_start_finds_it_whole() {
+        let resolved = |minute, problems: &[&str]| {
+            stored(
+                minute,
+                Event::ToolchainResolved {
+                    tools: vec!["bash 5.2.37 (/opt/homebrew/bin/bash)".to_string()],
+                    path: "/opt/homebrew/bin:/usr/bin".to_string(),
+                    problems: problems.iter().map(ToString::to_string).collect(),
+                },
+            )
+        };
+        let short = from_events(&[resolved(
+            1,
+            &[
+                "cargo 1.99.1 missing: rustup toolchain install 1.99.1",
+                "node missing",
+            ],
+        )]);
+        let told = short.get("toolchain").expect("told");
+        assert_eq!(told.level, Level::Warning);
+        assert_eq!(told.title, "The toolchain is incomplete");
+        assert_eq!(
+            told.detail,
+            "cargo 1.99.1 missing: rustup toolchain install 1.99.1; node missing"
+        );
+        assert_eq!(told.link, Some(screen("journal", &at(1))));
+        let whole = from_events(&[resolved(1, &["node missing"]), resolved(2, &[])]);
+        assert!(whole.get("toolchain").is_none(), "taken back");
+        assert!(from_events(&[resolved(1, &[])]).get("toolchain").is_none());
     }
 
     #[test]

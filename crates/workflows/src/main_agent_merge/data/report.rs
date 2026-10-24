@@ -27,6 +27,34 @@ pub enum Outcome {
         /// The failing checks, one readable line each.
         checks: Vec<String>,
     },
+    /// A PR's checks were green, but GitHub says it conflicts with the base,
+    /// and the base could not be merged into the milestone branch: nothing
+    /// merged, told every tick it holds — a catch-up resolves it, never a
+    /// halt.
+    Conflicting {
+        /// The pull request, `#99`.
+        pr: String,
+        /// Why the base could not be merged in, in GitHub's own words — a
+        /// conflict, or a failure to ask that the line must not hide.
+        why: String,
+    },
+    /// A PR's checks were green, and whether it can merge could not be read:
+    /// nothing merged, told every tick it holds, never a halt — a read that
+    /// keeps failing must not leave a green milestone waiting in silence.
+    MergeabilityUnread {
+        /// The pull request, `#99`.
+        pr: String,
+        /// The failed read, in its own words.
+        why: String,
+    },
+    /// A PR was green and mergeable, and GitHub refused the merge all the
+    /// same: nothing merged, told as a warning, tried again at a later tick.
+    MergeRefused {
+        /// The pull request, `#99`.
+        pr: String,
+        /// GitHub's refusal, in its own words.
+        why: String,
+    },
     /// A PR's checks were green; it was merged, and the milestone is now
     /// `harness:waiting-merge`.
     Merged {

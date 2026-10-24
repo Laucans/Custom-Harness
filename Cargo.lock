@@ -2899,6 +2899,7 @@ dependencies = [
  "harness-core",
  "harness-workflows",
  "jiff",
+ "proptest",
  "serde_json",
  "serial_test",
  "tokio",

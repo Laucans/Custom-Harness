@@ -11,6 +11,7 @@ name = "harness"
 path = "src/main.rs"
 
 [dev-dependencies]
+proptest.workspace = true
 serial_test.workspace = true
 
 [dependencies]

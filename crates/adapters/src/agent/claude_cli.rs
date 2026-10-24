@@ -98,9 +98,15 @@ const LEAN: [&str; 4] = [
 /// one turn, now; what waits is the harness's. `Monitor` is the tool that
 /// waits on a condition; a plain `Bash` cannot be taken away, so the prompts
 /// say the rest in words.
+///
+/// Nor does a session merge a pull request: merging is the harness's, on
+/// green checks. Sessions merged their own PRs six times (`ForgeDesMondes`,
+/// 2026-10-21/24), the last one red, which turned `milestone/22` red and
+/// held every merge of the milestone for an hour and a half. A deny rule
+/// holds under `bypassPermissions`.
 const NO_SCHEDULING: [&str; 2] = [
     "--disallowedTools",
-    "ScheduleWakeup,CronCreate,CronDelete,CronList,RemoteTrigger,Monitor",
+    "ScheduleWakeup,CronCreate,CronDelete,CronList,RemoteTrigger,Monitor,Bash(gh pr merge:*)",
 ];
 
 /// The only tools a robot's session is given: the ones they use. Measured
@@ -255,6 +261,9 @@ pub struct ClaudeCli {
     /// The prompt-cache lifetime asked (`5m`), or `None` for the CLI's own
     /// (an hour), which a session later forked or resumed keeps.
     cache_ttl: Option<&'static str>,
+    /// Added to the process's environment under the session's own
+    /// variables: the toolchain the launcher composed (`PATH`, `SHELL`).
+    toolchain: Vec<(String, String)>,
 }
 
 impl ClaudeCli {
@@ -280,6 +289,7 @@ impl ClaudeCli {
             traces,
             turn: 0,
             cache_ttl: None,
+            toolchain: Vec::new(),
         }
     }
 
@@ -650,7 +660,7 @@ impl ClaudeCli {
                     &stamped(&rendered, started.elapsed()),
                 );
             };
-            let env = environment(self.cache_ttl);
+            let env = self.environment();
             process::run_streaming_with_env(
                 BINARY,
                 &self.argv(prompt),
@@ -692,6 +702,18 @@ impl ClaudeCli {
     }
 }
 
+impl ClaudeCli {
+    /// The process's added variables: the toolchain first, then the
+    /// session's own ([`environment`]), which win on a shared name.
+    fn environment(&self) -> Vec<(&str, &str)> {
+        self.toolchain
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .chain(environment(self.cache_ttl))
+            .collect()
+    }
+}
+
 /// What a turn cost on its own, once the base it branched from is taken out.
 ///
 /// A branch reports the whole conversation's cost, its base's included
@@ -711,6 +733,8 @@ pub struct ClaudeCliFactory {
     traces: Option<PathBuf>,
     /// Fresh sessions ask a five-minute cache: none of them is forked.
     short_cache: bool,
+    /// Every session's added variables: the launcher's toolchain.
+    env: Vec<(String, String)>,
 }
 
 impl ClaudeCliFactory {
@@ -726,7 +750,23 @@ impl ClaudeCliFactory {
             permission_mode: permission_mode.to_string(),
             traces,
             short_cache: false,
+            env: Vec::new(),
         }
+    }
+
+    /// The same factory whose sessions each get `env` on top of the
+    /// harness's environment: the toolchain the launcher composed — the
+    /// `PATH`, and the `SHELL` a session's Bash tool runs.
+    #[must_use]
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// `session`, carrying this factory's toolchain.
+    fn dressed(&self, mut session: ClaudeCli) -> ClaudeCli {
+        session.toolchain.clone_from(&self.env);
+        session
     }
 
     /// The session a stage opens (resumed and bounded as `opening` says):
@@ -744,7 +784,7 @@ impl ClaudeCliFactory {
         if self.short_cache {
             session.cache_ttl = Some("5m");
         }
-        session
+        self.dressed(session)
     }
 
     /// The same factory whose fresh sessions write a five-minute cache: for
@@ -774,17 +814,17 @@ impl SessionFactory for ClaudeCliFactory {
         if self.short_cache {
             session.cache_ttl = Some("5m");
         }
-        Ok(Box::new(session))
+        Ok(Box::new(self.dressed(session)))
     }
 
     async fn fork(&self, spec: &SessionSpec, base: &Base) -> Outcome<Box<dyn Session>> {
-        Ok(Box::new(ClaudeCli::forked(
+        Ok(Box::new(self.dressed(ClaudeCli::forked(
             self.cwd.clone(),
             spec,
             &self.permission_mode,
             self.traces.clone(),
             base.clone(),
-        )))
+        ))))
     }
 
     /// Resumed: the first `ask` passes `--resume` with the conversation a
@@ -796,6 +836,33 @@ impl SessionFactory for ClaudeCliFactory {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_factory_s_toolchain_reaches_every_session_under_the_session_s_own_variables() {
+        let spec = SessionSpec {
+            model: "sonnet".to_string(),
+            effort: "high".to_string(),
+        };
+        let toolchain = vec![
+            ("PATH".to_string(), "/shims:/usr/bin".to_string()),
+            ("BASH_MAX_TIMEOUT_MS".to_string(), "1".to_string()),
+        ];
+        let factory =
+            ClaudeCliFactory::new(Path::new("."), "default", None).with_env(toolchain.clone());
+        let session = factory.opened(&spec, &Opening::default());
+        assert_eq!(session.toolchain, toolchain);
+        let env = session.environment();
+        assert_eq!(env.first(), Some(&("PATH", "/shims:/usr/bin")));
+        // A name both set: the session's own comes last, and the last wins.
+        let timeouts: Vec<_> = env
+            .iter()
+            .filter(|(name, _)| *name == "BASH_MAX_TIMEOUT_MS")
+            .map(|(_, value)| *value)
+            .collect();
+        assert_eq!(timeouts, ["1", "3600000"]);
+        let plain = ClaudeCliFactory::new(Path::new("."), "default", None);
+        assert_eq!(plain.opened(&spec, &Opening::default()).toolchain, []);
+    }
 
     #[tokio::test]
     async fn a_short_cache_factory_asks_five_minutes_on_every_opening_and_a_plain_one_never() {
@@ -1031,6 +1098,10 @@ mod tests {
         assert!(
             options.contains("--disallowedTools") && options.contains("ScheduleWakeup,"),
             "a robot's session schedules no wait: {options}"
+        );
+        assert!(
+            options.contains(",Bash(gh pr merge:*)"),
+            "a robot's session merges no pull request: {options}"
         );
         assert!(
             options.contains(",Monitor"),

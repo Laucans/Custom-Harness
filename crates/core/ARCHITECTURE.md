@@ -70,6 +70,12 @@ verdict (`pass`, `skip`, `halt`) and the reason. The journal line is short
 nobody can see passing cannot be told from one that never ran — that is what
 the pass event is for.
 
+The tools a process runs with are an event too: `Event::ToolchainResolved`
+(each tool `name version (where)`, the whole `PATH`, the problems with their
+fixes; a warning when there is one). Core only carries it — resolving the
+tools reads the process's environment and disk, which is the launcher's
+(`harness-launcher`'s `toolchain.rs`).
+
 ## `ports/` — what the inside needs from the outside
 
 One module per external component, traits only (plus the few values those

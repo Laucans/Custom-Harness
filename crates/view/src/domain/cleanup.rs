@@ -92,7 +92,7 @@ pub const INIT: &str = "init";
 /// Every folder the harness itself writes under the yard — the launcher's
 /// own list, mirrored: a store added there without its name here shows up
 /// as a stray, which is the reminder to add it.
-const KNOWN: [&str; 13] = [
+const KNOWN: [&str; 14] = [
     WORKSPACES,
     LOGS,
     "grill",
@@ -103,6 +103,9 @@ const KNOWN: [&str; 13] = [
     "split-locks",
     "pr-fix-locks",
     "trials",
+    // The launcher's toolchain shims (`sed` → `gsed`, `bash`, `node`): every
+    // process of a running watch has it first on its `PATH`.
+    "toolchain",
     VIEW_MIRROR,
     VIEW_MOCKUPS,
     VIEW_DEMO,
@@ -789,6 +792,16 @@ mod tests {
         assert!(
             !rels(&d.sweep).contains(&"lanes"),
             "a known folder is not a stray"
+        );
+        // The toolchain's shims never change once right, so they look idle
+        // for as long as a watch runs through them: never a stray.
+        let mut shims = survey();
+        shims.folders.push(heap("toolchain", 1, 30 * 86_400));
+        let d = diagnose(&shims, &allowed);
+        assert!(
+            !rels(&d.sweep).contains(&"toolchain"),
+            "{:?}",
+            rels(&d.sweep)
         );
     }
 

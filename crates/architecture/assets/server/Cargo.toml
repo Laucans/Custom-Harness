@@ -14,4 +14,4 @@ path = "src/main.rs"
 [dependencies]
 dataguard-server = { path = "../dataguard/server" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }

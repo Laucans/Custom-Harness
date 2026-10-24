@@ -9,7 +9,6 @@ use std::path::Path;
 use std::rc::Rc;
 
 use harness_adapters::shell::git::GitCli;
-use harness_adapters::shell::process::Processes;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Logbook;
 use harness_workflows::common::branching::{self, Checkout};
@@ -62,7 +61,7 @@ pub async fn run(
     let root = mount.workspace.root().to_path_buf();
     let checkout = Checkout {
         repo: Rc::new(GitCli::new(&root)),
-        process: Rc::new(Processes),
+        process: Rc::new(crate::toolchain::processes()),
         root,
     };
     let caught_up = branching::catch_up_locally(&checkout, branch, integration, log).await;
