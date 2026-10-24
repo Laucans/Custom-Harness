@@ -4,7 +4,9 @@
 //! Read by the loop and by the refinement, so every session that works on an
 //! issue knows what its neighbours own.
 
-use harness_core::domain::{Issue, Named, Outcome, Scope, Sibling};
+use std::collections::BTreeMap;
+
+use harness_core::domain::{Issue, Named, Outcome, Scope, Sibling, milestone_label};
 use harness_core::ports::shell::github::GitHub;
 
 use crate::common::{labels, sections};
@@ -276,10 +278,81 @@ pub async fn around(gh: &dyn GitHub, task: &Issue) -> Outcome<Option<Scope>> {
     Ok(None)
 }
 
+/// Every milestone, open or closed, and every task under one, by issue
+/// number, to the milestone that holds it.
+///
+/// Named as [`milestone_label`] names it; a milestone maps to itself, since
+/// its own refinement and split are billed on its number. What the ledger's backfill reads once, for the rows written before
+/// they carried their milestone. A task listed under two milestones keeps
+/// the first one read; a milestone is never placed under another.
+///
+/// # Errors
+///
+/// A failed GitHub read: a partial index would leave rows unplaced that a
+/// second run could not tell from rows no milestone holds.
+pub async fn milestone_index(gh: &dyn GitHub) -> Outcome<BTreeMap<String, String>> {
+    let milestones = gh.issues_labelled(labels::MILESTONE, "all").await?;
+    let mut index: BTreeMap<String, String> = milestones
+        .iter()
+        .map(|milestone| {
+            (
+                milestone.number.to_string(),
+                milestone_label(milestone.number, &milestone.title),
+            )
+        })
+        .collect();
+    for milestone in &milestones {
+        let label = milestone_label(milestone.number, &milestone.title);
+        for task in gh.sub_issues(milestone.number).await? {
+            index
+                .entry(task.number.to_string())
+                .or_insert_with(|| label.clone());
+        }
+    }
+    Ok(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::common::fake_github::FakeGitHub;
+
+    #[tokio::test]
+    async fn the_index_places_every_task_and_every_milestone_open_or_closed() {
+        let mut closed = issue(3, &[labels::MILESTONE]);
+        closed.state = "closed".to_string();
+        closed.title = "Old".to_string();
+        let mut open = issue(7, &[labels::MILESTONE]);
+        open.title = "New".to_string();
+        let gh = FakeGitHub {
+            issues: vec![closed, open, issue(2, &[labels::ROADMAP])],
+            subs: vec![
+                (3, vec![issue(10, &[]), issue(11, &[])]),
+                // 11 listed twice keeps the first; 3 is never another's task.
+                (7, vec![issue(11, &[]), issue(12, &[]), issue(3, &[])]),
+                (2, vec![issue(7, &[])]),
+            ],
+            ..FakeGitHub::default()
+        };
+        let index = milestone_index(&gh).await.expect("read");
+        let at = |n: &str| index.get(n).map(String::as_str);
+        assert_eq!(at("3"), Some("#3 Old"), "a milestone is its own");
+        assert_eq!(at("7"), Some("#7 New"));
+        assert_eq!(at("10"), Some("#3 Old"));
+        assert_eq!(at("11"), Some("#3 Old"));
+        assert_eq!(at("12"), Some("#7 New"));
+        assert_eq!(at("2"), None, "a roadmap item is no milestone's");
+        assert_eq!(index.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_board_gives_no_index_rather_than_a_partial_one() {
+        let gh = FakeGitHub {
+            broken: Some(harness_core::domain::Halt::Unreadable("down".to_string())),
+            ..FakeGitHub::default()
+        };
+        assert!(milestone_index(&gh).await.is_err());
+    }
 
     fn issue(number: u64, labels: &[&str]) -> Issue {
         Issue {

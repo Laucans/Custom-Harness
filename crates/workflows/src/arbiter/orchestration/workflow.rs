@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::domain::{Halt, Outcome, Verdict};
+use harness_core::domain::{Halt, Outcome, Verdict, milestone_label};
 use harness_core::execution::{Context, Executable, Gate, Lock, Round, Workflow};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
@@ -87,11 +87,11 @@ impl Workflow<ArbiterState> for ArbiterRun {
         for milestone in self.gh.issues_labelled(labels::MILESTONE, "open").await? {
             let subs = self.gh.sub_issues(milestone.number).await?;
             if subs.iter().any(|sub| sub.number == issue.number) {
-                placed = Some((milestone.number, subs));
+                placed = Some((milestone.number, milestone.title, subs));
                 break;
             }
         }
-        let Some((milestone, siblings)) = placed else {
+        let Some((milestone, title, siblings)) = placed else {
             return Err(Halt::Halted(format!(
                 "{} is under no open milestone — the board it would be chained on does not exist",
                 issue.reference()
@@ -107,6 +107,7 @@ impl Workflow<ArbiterState> for ArbiterRun {
         ctx.state.issue = Some(issue);
         ctx.state.question = Some(question);
         ctx.state.milestone = Some(milestone);
+        ctx.tags.milestone = milestone_label(milestone, &title);
         ctx.state.siblings = siblings;
         Ok(None)
     }
@@ -224,6 +225,10 @@ mod tests {
         let mut context = ctx();
         built(&gh, false).precheck(&mut context).await.expect("ok");
         assert_eq!(context.state.milestone, Some(5));
+        assert_eq!(
+            context.tags.milestone, "#5 task 5",
+            "the ledger's milestone"
+        );
         assert_eq!(context.state.siblings.len(), 2);
         assert_eq!(context.state.question().needs, ["PJ"]);
     }

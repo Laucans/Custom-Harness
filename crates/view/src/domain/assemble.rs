@@ -677,7 +677,8 @@ pub fn snapshot(inputs: &Inputs<'_>) -> Snapshot {
     let watch = &inputs.observed.watch;
     let board = inputs.board.map(|b| board_view(b, inputs.project));
     // The side and the milestone of a task, from the board: a task of a
-    // milestone the board no longer lists is `unknown`, never guessed.
+    // milestone the board no longer lists is `unknown` for its side, never
+    // guessed; its milestone is the one its row wrote, when it wrote one.
     let sides = inputs
         .board
         .map(BoardReading::task_sides)
@@ -1163,6 +1164,7 @@ mod tests {
             cache_read: Some(cache_read),
             cache_write: None,
             outcome: "ok".to_string(),
+            milestone: String::new(),
         }
     }
 

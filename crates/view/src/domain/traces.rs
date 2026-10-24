@@ -10,6 +10,10 @@
 //! is a contract the harness promised, so every parser answers "unknown"
 //! rather than failing when a line does not match.
 
+use std::collections::HashMap;
+
+use harness_core::domain::task_number;
+use harness_workflows::{planner, pr_fix, pr_review};
 use jiff::tz::TimeZone;
 use serde::Serialize;
 
@@ -576,8 +580,8 @@ pub struct Costs {
     /// longer lists. Filled by [`attribute_sides`].
     pub by_side: Vec<Bucket>,
     /// By milestone, most expensive first — what a milestone cost from its
-    /// refinement to its last task; `unknown` for a roadmap item, a pull
-    /// request, or a task of a milestone the board no longer lists.
+    /// refinement to its last task; what no milestone holds is named by its
+    /// kind: [`ROADMAP`], [`PULL_REQUEST`] or [`OFF_BOARD`].
     /// Filled by [`attribute_milestones`].
     pub by_milestone: Vec<Bucket>,
     /// Token totals.
@@ -786,16 +790,61 @@ pub fn attribute_sides(
     }
 }
 
-/// Fills `by_milestone` from the ledger: `milestone_of(task)` names the
-/// milestone a task belongs to, `None` when the board does not know it.
+/// The bucket of what a roadmap item cost: its planning.
+pub const ROADMAP: &str = "roadmap";
+/// The bucket of what a pull request cost: its review and its repairs.
+pub const PULL_REQUEST: &str = "PR";
+/// The bucket of what no milestone holds and no roadmap item or pull request
+/// explains: test debt, a decision, a data diagnosis, a task under none.
+pub const OFF_BOARD: &str = "hors board";
+
+/// The kind of work a stage gives away when no milestone is named: only
+/// the planner plans a roadmap item, only PR review and PR fix work a pull
+/// request. Read from the workflows' own stage names, so a rename moves
+/// both.
+fn kind_of_stage(stage: &str) -> Option<&'static str> {
+    match stage {
+        planner::orchestration::stages::PLAN => Some(ROADMAP),
+        pr_review::orchestration::stages::INLINE
+        | pr_review::orchestration::stages::BRIEF
+        | pr_fix::orchestration::stages::FIX => Some(PULL_REQUEST),
+        _ => None,
+    }
+}
+
+/// Fills `by_milestone` from the ledger.
+///
+/// A row's milestone is the one its run wrote; for a row older than the
+/// column, `milestone_of(number)` — the board — names it from the task's
+/// issue number (`#61` and `61` alike), `None` when the board does not know
+/// it. What neither names is bucketed by kind, read from its run: a run
+/// that planned is a roadmap item's — its repository map included — one
+/// that reviewed or repaired is a pull request's, any other is off the
+/// board.
 pub fn attribute_milestones(
     costs: &mut Costs,
     rows: &[LedgerRow],
     milestone_of: impl Fn(&str) -> Option<String>,
 ) {
     costs.by_milestone.clear();
+    let mut run_kinds: HashMap<&str, &'static str> = HashMap::new();
     for row in rows {
-        let key = milestone_of(&row.task).unwrap_or_else(|| "unknown".to_string());
+        if let Some(kind) = kind_of_stage(&row.stage) {
+            run_kinds.entry(row.run.as_str()).or_insert(kind);
+        }
+    }
+    for row in rows {
+        let key = if row.milestone.is_empty() {
+            milestone_of(task_number(&row.task)).unwrap_or_else(|| {
+                run_kinds
+                    .get(row.run.as_str())
+                    .copied()
+                    .unwrap_or(OFF_BOARD)
+                    .to_string()
+            })
+        } else {
+            row.milestone.clone()
+        };
         bump(&mut costs.by_milestone, &key, row.cost_usd.unwrap_or(0.0));
     }
     costs.by_milestone.sort_by(|a, b| b.usd.total_cmp(&a.usd));
@@ -833,7 +882,87 @@ mod tests {
             cache_read: None,
             cache_write: None,
             outcome: "ok".to_string(),
+            milestone: String::new(),
         }
+    }
+
+    fn run_row(run: &str, task: &str, stage: &str, usd: f64) -> LedgerRow {
+        LedgerRow {
+            run: run.to_string(),
+            stage: stage.to_string(),
+            ..ledger_row(task, usd)
+        }
+    }
+
+    fn board(number: &str) -> Option<String> {
+        match number {
+            "64" | "12" => Some("#12 Billing".to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn the_milestone_a_row_wrote_wins_over_the_board() {
+        let rows = vec![
+            LedgerRow {
+                milestone: "#3 Closed long ago".to_string(),
+                ..ledger_row("64", 2.0)
+            },
+            ledger_row("64", 1.0),
+        ];
+        let mut costs = Costs::default();
+        attribute_milestones(&mut costs, &rows, board);
+        let usd = |key: &str| {
+            costs
+                .by_milestone
+                .iter()
+                .find(|b| b.key == key)
+                .map(|b| b.usd)
+        };
+        assert_eq!(usd("#3 Closed long ago"), Some(2.0));
+        assert_eq!(
+            usd("#12 Billing"),
+            Some(1.0),
+            "an older row falls back on the board"
+        );
+    }
+
+    #[test]
+    fn a_reference_key_is_looked_up_by_its_issue_number() {
+        let rows = vec![run_row("r1", "#64", "write", 1.5)];
+        let mut costs = Costs::default();
+        attribute_milestones(&mut costs, &rows, board);
+        assert_eq!(costs.by_milestone[0].key, "#12 Billing");
+    }
+
+    #[test]
+    fn what_no_milestone_holds_is_named_by_the_kind_of_its_run() {
+        let rows = vec![
+            // A planner run: its repository map is the roadmap's too.
+            run_row("plan-1", "#2", "explore", 0.5),
+            run_row("plan-1", "#2", "plan", 1.0),
+            // A pull request: reviewed under its bare number, fixed under its reference.
+            run_row("review-1", "105", "inline", 0.25),
+            run_row("review-1", "105", "brief", 0.25),
+            run_row("fix-1", "#105", "fix", 2.0),
+            // Test debt, a data diagnosis, a run on no task.
+            run_row("debt-1", "#77", "cover", 0.75),
+            run_row("diag-1", "main_agent@e0b409e", "diagnose", 0.25),
+            run_row("none-1", "", "explore", 0.125),
+        ];
+        let mut costs = Costs::default();
+        attribute_milestones(&mut costs, &rows, board);
+        let bucket = |key: &str| {
+            costs
+                .by_milestone
+                .iter()
+                .find(|b| b.key == key)
+                .map(|b| (b.usd, b.count))
+        };
+        assert_eq!(bucket(ROADMAP), Some((1.5, 2)));
+        assert_eq!(bucket(PULL_REQUEST), Some((2.5, 3)));
+        assert_eq!(bucket(OFF_BOARD), Some((1.125, 3)));
+        assert_eq!(bucket("unknown"), None, "no catch-all left");
     }
 
     #[test]
@@ -871,7 +1000,7 @@ mod tests {
             _ => None,
         });
         let keys: Vec<&str> = costs.by_milestone.iter().map(|b| b.key.as_str()).collect();
-        assert_eq!(keys, ["#12 Billing", "#13 Search", "unknown"]);
+        assert_eq!(keys, ["#12 Billing", "#13 Search", OFF_BOARD]);
         assert!((costs.by_milestone[0].usd - 3.0).abs() < 1e-9);
         assert_eq!(costs.by_milestone[0].count, 2);
     }
@@ -1275,6 +1404,7 @@ mod tests {
             cache_read: Some(30),
             cache_write: Some(40),
             outcome: outcome.to_string(),
+            milestone: String::new(),
         }
     }
 

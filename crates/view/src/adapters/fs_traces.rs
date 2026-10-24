@@ -168,6 +168,7 @@ impl Traces for FsTraces {
                     cache_read: number(&cells, &columns, "cache_read"),
                     cache_write: number(&cells, &columns, "cache_write"),
                     outcome: cell(&cells, &columns, "outcome"),
+                    milestone: cell(&cells, &columns, "milestone"),
                 }
             })
             .collect()
@@ -326,12 +327,29 @@ mod tests {
         assert_eq!(rows[0].outcome, "STOP");
         assert_eq!(rows[1].cost_usd, None, "empty is not observed, not zero");
         assert_eq!(rows[1].outcome, "ok");
+        assert_eq!(rows[0].milestone, "", "a row older than the column");
         let errors = traces.errors();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].kind, "STOP");
         assert_eq!(errors[0].workflow, "dev_loop");
         let quota = traces.quota().expect("quota");
         assert_eq!(quota.windows[0].name, "five_hour");
+    }
+
+    #[test]
+    fn the_milestone_a_run_wrote_is_read_by_its_column_name() {
+        let dir = Dir::new("ledger-milestone");
+        dir.write(
+            ".llocal/logs/agent-loop/costs.tsv",
+            &format!(
+                "{}\n2026-10-06T15:01:07Z\tr1\t01\t50\tcode\t0.5\t\t\t\t\t\thost\t\t\tok\tf\tcapability\tmid\t\
+                 harness:read-side\t#12 Billing\n",
+                ledger::HEADER
+            ),
+        );
+        let rows = dir.traces().ledger();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].milestone, "#12 Billing");
     }
 
     #[test]

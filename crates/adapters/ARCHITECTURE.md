@@ -47,6 +47,19 @@ store/    checkpoint   Checkpoint: a two-line pointer + one JSONL per flow
 `ledger` and `error_ledger` carry no port: the launcher writes them and the
 hexagon never reads them, so a trait would be a seam with one side.
 
+The cost ledger (`.llocal/logs/agent-loop/costs.tsv`) is the one register of
+what the harness spent, and what a row was spent on is written at the
+source. Its last column, `milestone`, is `#<n> <title>`
+(`harness_core::domain::milestone_label`) of the milestone the run worked
+for: the dev loop, split, refinement and the arbiter set it from what they
+already read (`Context::tags`); every other workflow leaves it empty rather
+than guess. A row older than the column has fewer cells and reads as "no
+milestone known". `Ledger::backfill_milestones` fills those rows once
+(`harness backfill-milestones`): it copies the file to `costs.tsv.bak`,
+writes the new text beside it and renames it over the ledger, refuses if
+the ledger grew meanwhile, and never touches a row that names its
+milestone — a second run changes nothing.
+
 Three invariants here are the expensive ones:
 
 - **A failed read never returns an empty list.** `[]` reads as "this milestone

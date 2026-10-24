@@ -17,17 +17,19 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use harness_core::domain::{Halt, Outcome, Spend, Tags, breaker, budget};
+use harness_core::domain::{Halt, Outcome, Spend, Tags, breaker, budget, task_number};
 
 /// The header, frozen character for character.
 ///
-/// `fingerprint`, then `unit`, `profile` and `side`, are the columns added
-/// since: they sit **last**, so every row written before they existed is
-/// still read correctly — it simply has fewer cells, which read as "no
-/// fingerprint known" and "no unit declared" rather than as a match.
+/// `fingerprint`, then `unit`, `profile`, `side` and `milestone`, are the
+/// columns added since: they sit **last**, so every row written before they
+/// existed is still read correctly — it simply has fewer cells, which read
+/// as "no fingerprint known", "no unit declared" and "no milestone known"
+/// rather than as a match.
 pub const HEADER: &str = "when\trun\tround\ttask\tstage\tcost_usd\tturns\t\
                           duration_ms\tin\tout\tsession\tran_on\tcache_read\t\
-                          cache_write\toutcome\tfingerprint\tunit\tprofile\tside";
+                          cache_write\toutcome\tfingerprint\tunit\tprofile\tside\t\
+                          milestone";
 
 /// The columns, derived from the header.
 ///
@@ -60,8 +62,8 @@ pub struct Row {
     /// The fingerprint of the prompt this stage sent, so a later run can
     /// recognise the identical session.
     pub fingerprint: String,
-    /// What the task is — unit, profile, side — empty when the run works
-    /// on no task, or on one that declares nothing.
+    /// What the task is — unit, profile, side, milestone — empty when the
+    /// run works on no task, or on one that declares nothing.
     pub tags: Tags,
 }
 
@@ -113,6 +115,7 @@ impl Row {
             flat(&self.tags.unit),
             flat(&self.tags.profile),
             flat(&self.tags.side),
+            flat(&self.tags.milestone),
         ];
         debug_assert_eq!(
             values.len(),
@@ -121,6 +124,69 @@ impl Row {
         );
         values.join("\t")
     }
+}
+
+/// What a milestone backfill did to the rows of a ledger.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Backfill {
+    /// Rows whose empty `milestone` cell is now filled.
+    pub filled: usize,
+    /// Rows that already named their milestone, left as written.
+    pub kept: usize,
+    /// Rows no milestone holds — a roadmap, a pull request, a run on no
+    /// task — left as written, their cell still empty.
+    pub unresolved: usize,
+}
+
+/// The ledger's text with each empty `milestone` cell filled from
+/// `milestone_of`, which answers for an issue number (`61`, never `#61`).
+///
+/// Pure, so the rule is tested without a disk. A row that names its
+/// milestone already is never touched, nor is one `milestone_of` cannot
+/// place: running it twice gives the same text. The header is the current
+/// one, since a filled row has the cell the old header did not name.
+#[must_use]
+pub fn backfill_text(
+    text: &str,
+    milestone_of: impl Fn(&str) -> Option<String>,
+) -> (String, Backfill) {
+    let columns = columns();
+    let at = |name: &str| columns.iter().position(|column| *column == name);
+    let (Some(task_at), Some(milestone_at)) = (at("task"), at("milestone")) else {
+        return (text.to_string(), Backfill::default());
+    };
+    let mut done = Backfill::default();
+    let mut out = String::with_capacity(text.len());
+    for (index, line) in text.lines().enumerate() {
+        if index == 0 {
+            out.push_str(HEADER);
+        } else if line.trim().is_empty() {
+            out.push_str(line);
+        } else {
+            let mut cells: Vec<String> = line.split('\t').map(ToString::to_string).collect();
+            let task = cells.get(task_at).map_or("", String::as_str);
+            if cells.get(milestone_at).is_some_and(|cell| !cell.is_empty()) {
+                done.kept += 1;
+                out.push_str(line);
+            } else if let Some(milestone) = (cells.len() <= columns.len())
+                .then(|| milestone_of(task_number(task)))
+                .flatten()
+            {
+                // A row older than the column is padded up to it.
+                cells.resize(columns.len(), String::new());
+                if let Some(cell) = cells.get_mut(milestone_at) {
+                    *cell = flat(&milestone);
+                }
+                done.filled += 1;
+                out.push_str(&cells.join("\t"));
+            } else {
+                done.unresolved += 1;
+                out.push_str(line);
+            }
+        }
+        out.push('\n');
+    }
+    (out, done)
 }
 
 /// The ledger, on disk.
@@ -241,6 +307,7 @@ impl Ledger {
                         unit: text("unit"),
                         profile: text("profile"),
                         side: text("side"),
+                        milestone: text("milestone"),
                     },
                 }
             })
@@ -354,6 +421,74 @@ impl Ledger {
         Ok(breaker::trailing_failures(&outcomes))
     }
 
+    /// Fills each row's empty `milestone` cell from `milestone_of`
+    /// ([`backfill_text`]), once, for the rows written before the column
+    /// existed.
+    ///
+    /// The budget reads this file, so a row lost would make it lie: the
+    /// original is copied to `<ledger>.bak` first, the new text is written
+    /// beside it and renamed over it in one step, and the rename is refused
+    /// if the ledger grew meanwhile — a run appended a row the new text does
+    /// not hold. Nothing to fill writes nothing, not even the copy.
+    ///
+    /// # Errors
+    ///
+    /// [`Halt::Unreadable`] as [`Self::rows`]; [`Halt::Failed`] if the copy,
+    /// the new text or the rename could not be written, or the ledger grew
+    /// while it was rewritten.
+    pub fn backfill_milestones(
+        &self,
+        milestone_of: impl Fn(&str) -> Option<String>,
+    ) -> Outcome<Backfill> {
+        if !self.path.exists() {
+            return Ok(Backfill::default());
+        }
+        let text = std::fs::read_to_string(&self.path).map_err(|e| {
+            Halt::Unreadable(format!(
+                "ledger unreadable at {} ({e}) — nothing was backfilled",
+                self.path.display()
+            ))
+        })?;
+        let (filled, done) = backfill_text(&text, milestone_of);
+        if done.filled == 0 {
+            return Ok(done);
+        }
+        let backup = self.beside("bak");
+        std::fs::copy(&self.path, &backup).map_err(|e| self.wrote_nothing(&e))?;
+        let fresh = self.beside("tmp");
+        let written = std::fs::File::create(&fresh).and_then(|mut file| {
+            file.write_all(filled.as_bytes())?;
+            file.sync_all()
+        });
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&fresh);
+            return Err(self.wrote_nothing(&e));
+        }
+        let now = std::fs::metadata(&self.path).map(|meta| meta.len()).ok();
+        if now != u64::try_from(text.len()).ok() {
+            let _ = std::fs::remove_file(&fresh);
+            return Err(Halt::Failed(format!(
+                "ledger {} grew while it was backfilled — a run is writing to \
+                 it; stop it and run the backfill again, nothing was changed",
+                self.path.display()
+            )));
+        }
+        std::fs::rename(&fresh, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&fresh);
+            self.wrote_nothing(&e)
+        })?;
+        Ok(done)
+    }
+
+    /// `<ledger>.<suffix>`, in the ledger's own directory — so a rename
+    /// from it never crosses a file system.
+    fn beside(&self, suffix: &str) -> PathBuf {
+        let mut name = self.path.clone().into_os_string();
+        name.push(".");
+        name.push(suffix);
+        PathBuf::from(name)
+    }
+
     fn wrote_nothing(&self, err: &std::io::Error) -> Halt {
         Halt::Failed(format!(
             "cannot write ledger {} ({err}) — this stage's spending is not \
@@ -397,6 +532,7 @@ mod tests {
                 unit: "capability".to_string(),
                 profile: "mid".to_string(),
                 side: "harness:read-side".to_string(),
+                milestone: "#12 Billing".to_string(),
             },
         }
     }
@@ -416,10 +552,10 @@ mod tests {
         ));
         assert_eq!(
             &columns()[15..],
-            ["fingerprint", "unit", "profile", "side"],
+            ["fingerprint", "unit", "profile", "side", "milestone"],
             "the columns added since the Python ledger, in the order they came"
         );
-        assert_eq!(columns().len(), 19);
+        assert_eq!(columns().len(), 20);
     }
 
     #[test]
@@ -445,6 +581,7 @@ mod tests {
         assert_eq!(at("unit"), "capability");
         assert_eq!(at("profile"), "mid");
         assert_eq!(at("side"), "harness:read-side");
+        assert_eq!(at("milestone"), "#12 Billing");
     }
 
     #[test]
@@ -456,7 +593,7 @@ mod tests {
         let rendered = untagged.render();
         let cells: Vec<&str> = rendered.split('\t').collect();
         assert_eq!(cells.len(), columns().len());
-        assert_eq!(&cells[16..], ["", "", ""]);
+        assert_eq!(&cells[16..], ["", "", "", ""]);
     }
 
     #[test]
@@ -536,6 +673,7 @@ mod tests {
                 unit: unit.to_string(),
                 profile: "mid".to_string(),
                 side: String::new(),
+                milestone: String::new(),
             },
             ..row()
         }
@@ -650,6 +788,174 @@ mod tests {
         assert_eq!(got.tags.unit, "capability");
         assert_eq!(got.tags.profile, "mid");
         assert_eq!(got.tags.side, "harness:read-side");
+        assert_eq!(got.tags.milestone, "#12 Billing");
+    }
+
+    #[test]
+    fn a_row_written_before_the_milestone_column_reads_as_no_milestone() {
+        let dir = Dir::new("short-milestone");
+        let path = dir.0.join("costs.tsv");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        // The 19 cells of the header before `milestone`.
+        let old = format!(
+            "{HEADER}\n2026-09-30T12:00:00Z\trun-1\t03\t42\tcode\t1.500000\t\t\t\t\t\tmac\t\t\tok\t\
+             0123456789abcdef\tcapability\tmid\tharness:read-side\n"
+        );
+        std::fs::write(&path, old).expect("a ledger");
+        let back = Ledger::new(&path).read().expect("re-read");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].tags.side, "harness:read-side", "no shifted column");
+        assert_eq!(back[0].tags.milestone, "", "not declared, never guessed");
+    }
+
+    /// A ledger as it stood before the column: an old header, a 15-cell row
+    /// of task 42, a 19-cell row of `#43`, one of a pull request, one that
+    /// already names its milestone.
+    fn legacy() -> String {
+        let named = Row {
+            task: "44".to_string(),
+            ..row()
+        };
+        format!(
+            "when\trun\n\
+             2026-09-30T12:00:00Z\trun-1\t03\t42\tcode\t\t\t\t\t\t\tmac\t\t\tSTOP\n\
+             2026-09-30T12:00:00Z\trun-1\t01\t#43\twrite\t0.500000\t\t\t\t\t\tmac\t\t\tok\t\
+             f\t\t\t\n\
+             2026-09-30T12:00:00Z\trun-2\t01\t#105\tfix\t2.000000\t\t\t\t\t\tmac\t\t\tok\n\
+             {}\n",
+            named.render()
+        )
+    }
+
+    fn board(number: &str) -> Option<String> {
+        match number {
+            "42" | "43" | "12" => Some("#12 Billing".to_string()),
+            "44" => Some("#99 Elsewhere".to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_backfill_fills_the_empty_cells_from_the_task_with_or_without_its_hash() {
+        let (text, done) = backfill_text(&legacy(), board);
+        assert_eq!(
+            done,
+            Backfill {
+                filled: 2,
+                kept: 1,
+                unresolved: 1
+            }
+        );
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some(HEADER), "the current header");
+        let milestone_at = columns().len() - 1;
+        let cells = |line: &str| line.split('\t').map(str::to_string).collect::<Vec<_>>();
+        let first = cells(lines.next().expect("task 42"));
+        assert_eq!(first.len(), columns().len(), "padded up to the column");
+        assert_eq!(first[milestone_at], "#12 Billing");
+        assert_eq!(first[14], "STOP", "the old cells stay where they were");
+        let second = cells(lines.next().expect("task #43"));
+        assert_eq!(second[milestone_at], "#12 Billing");
+        assert_eq!(second[5], "0.500000");
+        let pull = lines.next().expect("the pull request");
+        assert_eq!(
+            cells(pull).len(),
+            15,
+            "a row nobody places is left as written"
+        );
+        let named = cells(lines.next().expect("the named row"));
+        assert_eq!(
+            named[milestone_at], "#12 Billing",
+            "a named row is never rewritten"
+        );
+        assert_eq!(lines.next(), None, "no row lost, none added");
+    }
+
+    #[test]
+    fn a_row_as_long_as_the_header_with_an_empty_cell_is_filled() {
+        let unnamed = Row {
+            tags: Tags::default(),
+            ..row()
+        };
+        let (text, done) = backfill_text(&format!("{HEADER}\n{}\n", unnamed.render()), board);
+        assert_eq!(done.filled, 1);
+        assert!(text.ends_with("\t#12 Billing\n"), "{text}");
+    }
+
+    #[test]
+    fn a_row_longer_than_the_header_is_left_alone() {
+        let plain = Row {
+            tags: Tags::default(),
+            ..row()
+        };
+        let long = format!("{HEADER}\n{}\textra\n", plain.render());
+        let (text, done) = backfill_text(&long, board);
+        assert_eq!(done.unresolved, 1);
+        assert_eq!(text, long);
+    }
+
+    #[test]
+    fn a_blank_line_is_kept_and_counted_as_nothing() {
+        let (text, done) = backfill_text(&format!("{HEADER}\n\n"), board);
+        assert_eq!(done, Backfill::default());
+        assert_eq!(text, format!("{HEADER}\n\n"));
+    }
+
+    #[test]
+    fn a_backfill_keeps_a_copy_and_a_second_run_changes_nothing() {
+        let dir = Dir::new("backfill");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, legacy()).expect("a ledger");
+        let ledger = Ledger::new(&path);
+
+        let first = ledger.backfill_milestones(board).expect("backfilled");
+        assert_eq!(first.filled, 2);
+        let backup = std::fs::read_to_string(dir.0.join("costs.tsv.bak")).expect("a copy");
+        assert_eq!(backup, legacy(), "the copy is the ledger as it was");
+        assert!(
+            !dir.0.join("costs.tsv.tmp").exists(),
+            "renamed, not left behind"
+        );
+        let after = std::fs::read_to_string(&path).expect("re-read");
+        let rows = ledger.read().expect("re-read");
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].tags.milestone, "#12 Billing");
+
+        let second = ledger.backfill_milestones(board).expect("backfilled");
+        assert_eq!(
+            second,
+            Backfill {
+                filled: 0,
+                kept: 3,
+                unresolved: 1
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("re-read"),
+            after,
+            "idempotent"
+        );
+    }
+
+    #[test]
+    fn a_backfill_with_nothing_to_fill_writes_nothing() {
+        let dir = Dir::new("backfill-none");
+        std::fs::create_dir_all(&dir.0).expect("a directory");
+        let path = dir.0.join("costs.tsv");
+        std::fs::write(&path, legacy()).expect("a ledger");
+        let done = Ledger::new(&path)
+            .backfill_milestones(|_| None)
+            .expect("read");
+        assert_eq!(done.filled, 0);
+        assert!(!dir.0.join("costs.tsv.bak").exists());
+        assert_eq!(std::fs::read_to_string(&path).expect("re-read"), legacy());
+        assert_eq!(
+            Ledger::new(&dir.0.join("absent.tsv"))
+                .backfill_milestones(board)
+                .expect("absent"),
+            Backfill::default()
+        );
     }
 
     #[test]

@@ -211,6 +211,7 @@ mod tests {
                     unit: "aggregate".to_string(),
                     profile: "strong".to_string(),
                     side: "harness:write-side".to_string(),
+                    milestone: "#3 Campaign".to_string(),
                 },
             })
             .expect("written");
@@ -232,6 +233,7 @@ mod tests {
         assert_eq!(at("unit"), "aggregate");
         assert_eq!(at("profile"), "strong");
         assert_eq!(at("side"), "harness:write-side");
+        assert_eq!(at("milestone"), "#3 Campaign");
         // Unobserved remains empty: a column of zeros would read as a free
         // session.
         assert_eq!(at("out"), "");

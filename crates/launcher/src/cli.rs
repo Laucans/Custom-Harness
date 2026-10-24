@@ -76,6 +76,10 @@ pub enum Command {
     /// What the harness spent, grouped by unit of the architecture, profile,
     /// side, stage or task — read from the cost ledger, nothing is run.
     Costs(CostsArgs),
+    /// Fill the cost ledger's `milestone` column on the rows written before
+    /// it existed, from the board's milestones, open and closed. Run once,
+    /// the watch stopped: the ledger is copied to `costs.tsv.bak` first.
+    BackfillMilestones(BackfillArgs),
     /// Run one of the router's paid routes — a decision, a review, a
     /// repair, the rules' task — as a parallel `watch` does on a lane.
     Route(RouteArgs),
@@ -162,6 +166,19 @@ pub struct CostsArgs {
     /// ISO-8601 timestamp). Empty: every row.
     #[arg(long, default_value = "")]
     pub since: String,
+}
+
+/// `harness backfill-milestones`'s own arguments.
+#[derive(Debug, Args)]
+pub struct BackfillArgs {
+    /// The ledger to fill. Empty: this checkout's own
+    /// (`.llocal/logs/agent-loop/costs.tsv`).
+    #[arg(long, default_value = "")]
+    pub ledger: String,
+
+    /// The repository whose milestones name the rows.
+    #[arg(long, env = "TARGET_REPO_URL", default_value = "")]
+    pub target_repo_url: String,
 }
 
 /// `harness data-model-draft`'s own arguments.

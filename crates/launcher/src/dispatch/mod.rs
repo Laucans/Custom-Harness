@@ -32,12 +32,14 @@
 //! no session. The first reads why the last run stopped and repairs what it
 //! can; the second reads what the runs cost, by unit of the architecture —
 //! the two modules here whose subject is the harness itself rather than the
-//! target repository.
+//! target repository. [`backfill`] is their one-off sibling: it fills the
+//! ledger's `milestone` column on rows older than it, from the board.
 //!
 //! **Nothing here decides *whether* to run.** That is `cli` (a human typed
 //! it) or `router` (a poll found the conditions met).
 
 pub mod arbiter;
+pub mod backfill;
 pub mod catch_up;
 pub mod contract_manager;
 pub mod costs;

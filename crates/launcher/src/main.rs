@@ -107,6 +107,11 @@ async fn main() -> ExitCode {
         }
         Some(cli::Command::Costs(sub)) => costs_by_hand(sub, &here),
         Some(cli::Command::Toolchain(sub)) => toolchain_by_hand(sub, &here).await,
+        Some(cli::Command::BackfillMilestones(sub)) => exit_of(
+            dispatch::backfill::by_hand(sub, &here)
+                .await
+                .map(|said| println!("{said}")),
+        ),
         Some(cli::Command::Route(sub)) => router::run_route(sub, &here).await,
         Some(cli::Command::PlanGraph(sub)) => {
             exit_of(dispatch::plan_graph::by_hand(sub, &here).await)

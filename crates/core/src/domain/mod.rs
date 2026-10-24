@@ -27,5 +27,5 @@ pub use prompts::{Named, Scope, Scoped, Sibling};
 pub use pulls::Pr;
 pub use remote::{Slug, clone_url, same_repo};
 pub use resumable::Resumable;
-pub use spend::{Spend, Tags, Tokens};
+pub use spend::{Spend, Tags, Tokens, milestone_label, task_number};
 pub use verdict::{Outcome, Verdict};

@@ -44,6 +44,10 @@ pub struct LedgerRow {
     pub cache_write: Option<u64>,
     /// `ok`, `STOP`, `FAILED`, `QUOTA`, or empty.
     pub outcome: String,
+    /// `#<n> <title>` of the milestone the run spent it on, as the run
+    /// wrote it; empty on a row older than the column, or one no milestone
+    /// holds.
+    pub milestone: String,
 }
 
 /// One row of the error ledger.
@@ -138,7 +142,7 @@ impl BoardReading {
         self.milestones
             .iter()
             .flat_map(|m| {
-                let key = format!("#{} {}", m.issue.number, m.issue.title);
+                let key = harness_core::domain::milestone_label(m.issue.number, &m.issue.title);
                 std::iter::once(m.issue.number.to_string())
                     .chain(m.tasks.iter().map(|t| t.number.to_string()))
                     .map(move |number| (number, key.clone()))

@@ -339,6 +339,7 @@ pub fn tags(issue: &Issue) -> Tags {
             unit: declaration.unit.key().to_string(),
             profile: declaration.profile.clone().unwrap_or_default(),
             side: declaration.side().label().to_string(),
+            milestone: String::new(),
         })
 }
 

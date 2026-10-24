@@ -186,6 +186,7 @@ mod tests {
                         unit: unit.to_string(),
                         profile: profile.to_string(),
                         side: String::new(),
+                        milestone: String::new(),
                     },
                 })
                 .expect("a row");

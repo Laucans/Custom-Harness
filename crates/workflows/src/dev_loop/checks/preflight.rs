@@ -305,6 +305,7 @@ mod budget_tests {
             unit: unit.to_string(),
             profile: "mid".to_string(),
             side: String::new(),
+            milestone: String::new(),
         };
         ctx
     }

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::domain::{Halt, Outcome, Verdict, prompts};
+use harness_core::domain::{Halt, Outcome, Verdict, milestone_label, prompts};
 use harness_core::execution::{Context, Executable, Gate, Lock, Round, Workflow};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
@@ -129,8 +129,10 @@ impl Workflow<RefinementState> for RefinementRun {
             self.issue
         ));
 
-        ctx.state.hierarchy = if milestone {
-            hierarchy::above(self.gh.as_ref(), issue.number)
+        // The ledger's milestone: a milestone pays for its own refinement, a
+        // task for the milestone the hierarchy read finds it under.
+        (ctx.state.hierarchy, ctx.tags.milestone) = if milestone {
+            let block = hierarchy::above(self.gh.as_ref(), issue.number)
                 .await?
                 .map(|found| {
                     prompts::milestone_hierarchy_block(
@@ -140,12 +142,18 @@ impl Workflow<RefinementState> for RefinementRun {
                         prompts::INJECTOR,
                     )
                 })
-                .unwrap_or_default()
+                .unwrap_or_default();
+            (block, milestone_label(issue.number, &issue.title))
         } else {
-            hierarchy::around(self.gh.as_ref(), &issue)
-                .await?
+            let scope = hierarchy::around(self.gh.as_ref(), &issue).await?;
+            let label = scope
+                .as_ref()
+                .map(|scope| milestone_label(&scope.milestone.number, &scope.milestone.title))
+                .unwrap_or_default();
+            let block = scope
                 .map(|scope| prompts::hierarchy_block(&scope, prompts::INJECTOR))
-                .unwrap_or_default()
+                .unwrap_or_default();
+            (block, label)
         };
         ctx.state.issue = Some(issue);
         ctx.state.phase = self.phase;
@@ -329,6 +337,35 @@ mod tests {
         round.execute(&mut context).await.expect("a success");
         assert!(context.state.hierarchy.contains("ROADMAP #2"));
         assert!(context.state.hierarchy.contains("is a **milestone**"));
+        assert_eq!(context.tags.milestone, "#25 ", "it pays for itself");
+    }
+
+    #[tokio::test]
+    async fn a_task_is_billed_to_the_milestone_it_sits_under() {
+        let mut milestone = issue(7, "open", &[labels::MILESTONE], "");
+        milestone.title = "Campaign".to_string();
+        let task = issue(25, "open", &[labels::AGENT, labels::REFINEMENT], "");
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![milestone, task.clone()],
+            subs: vec![(7, vec![task])],
+            ..FakeGitHub::default()
+        });
+        let round = built(&gh, false, "", dir("task-milestone"));
+        let mut context = ctx(true);
+        round.execute(&mut context).await.expect("a success");
+        assert_eq!(context.tags.milestone, "#7 Campaign");
+    }
+
+    #[tokio::test]
+    async fn a_task_under_no_milestone_is_billed_to_none() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![issue(25, "open", &[labels::AGENT, labels::REFINEMENT], "")],
+            ..FakeGitHub::default()
+        });
+        let round = built(&gh, false, "", dir("task-no-milestone"));
+        let mut context = ctx(true);
+        round.execute(&mut context).await.expect("a success");
+        assert_eq!(context.tags.milestone, "", "never invented");
     }
 
     #[tokio::test]

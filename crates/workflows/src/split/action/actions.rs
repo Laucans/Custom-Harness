@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use async_trait::async_trait;
 use harness_core::domain::prompts::splice;
-use harness_core::domain::{Issue, Outcome, Verdict, prompts};
+use harness_core::domain::{Issue, Outcome, Verdict, milestone_label, prompts};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
 use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
@@ -433,6 +433,8 @@ impl SessionAction<SplitState> for AskForSlice {
             ],
         );
         let task = format!("#{}", milestone.number);
+        // A split is paid for by the milestone it cuts.
+        open.ctx.tags.milestone = milestone_label(milestone.number, &milestone.title);
 
         let reply =
             ask_and_record(open, &prompt, &self.stage, 1, &task, self.spending.as_ref()).await?;
@@ -596,5 +598,50 @@ mod tests {
             existing_block(&still_open(vec![issue(1, "closed")])),
             "No task exists yet under this milestone."
         );
+    }
+
+    /// A session that answers nothing usable: the action asks twice.
+    struct Blank;
+
+    #[async_trait(?Send)]
+    impl harness_core::ports::agent::Session for Blank {
+        async fn ask(&mut self, _prompt: &str) -> Outcome<harness_core::ports::agent::Reply> {
+            Ok(harness_core::ports::agent::Reply {
+                text: String::new(),
+                stop_line: None,
+                spend: harness_core::domain::Spend::default(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_split_is_billed_to_the_milestone_it_cuts() {
+        let mut milestone = issue(4, "open");
+        milestone.title = "Campaign".to_string();
+        let mut ctx = Context::new(
+            harness_core::execution::Settings {
+                dry_run: true,
+                stages: String::new(),
+            },
+            SplitState {
+                milestone: Some(milestone),
+                ..SplitState::default()
+            },
+            harness_core::traces::Logbook::null(),
+        );
+        let action = AskForSlice {
+            stage: "slice".to_string(),
+            template: String::new(),
+            spending: Rc::new(crate::split::ports::fake::Nowhere),
+            profile: "mid".to_string(),
+        };
+        action
+            .run(&mut Open {
+                ctx: &mut ctx,
+                session: &mut Blank,
+            })
+            .await
+            .expect("asked");
+        assert_eq!(ctx.tags.milestone, "#4 Campaign");
     }
 }

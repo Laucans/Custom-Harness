@@ -427,6 +427,18 @@ call that answered with no parseable `result` event logs nothing; one that
 did, but carried no cost, is kept and counted under *uncosted* rather than
 silently read as free.
 
+The *Spending* screen's *By milestone* reads the ledger's `milestone`
+column first (`LedgerRow::milestone`, by its header name), as the run wrote
+it, so a milestone closed long ago still owns what it cost. Only a row
+older than the column falls back on the board (`task_milestones`, which
+lists the open milestones and the last few closed), its task looked up by
+issue number — the dev loop bills `61`, every other workflow `#61`. What
+neither names is bucketed by kind, read from the stages of its run
+(`traces::attribute_milestones`): `roadmap` (a planner run, its repository
+map included), `PR` (PR review and PR fix), `hors board` (test debt, a
+decision, a data diagnosis, a task under no milestone). There is no
+`unknown` bucket left.
+
 ## The steward, and the doctor
 
 The grinning mascot in a blue jumpsuit giving a thumbs-up, on the forecourt and in the hall.

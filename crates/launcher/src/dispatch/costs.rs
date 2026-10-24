@@ -189,6 +189,7 @@ mod tests {
                 unit: unit.to_string(),
                 profile: "mid".to_string(),
                 side: "harness:read-side".to_string(),
+                milestone: String::new(),
             },
         }
     }

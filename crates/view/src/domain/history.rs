@@ -166,6 +166,7 @@ mod tests {
             cache_read: None,
             cache_write: None,
             outcome: "ok".to_string(),
+            milestone: String::new(),
         }
     }
 

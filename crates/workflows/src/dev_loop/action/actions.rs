@@ -17,7 +17,7 @@
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, prompts};
+use harness_core::domain::{Halt, Named, Outcome, Scoped, Verdict, milestone_label, prompts};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
 use harness_core::ports::shell::git::Repo;
 use harness_core::ports::shell::github::GitHub;
@@ -154,6 +154,9 @@ impl Action<Loop> for PickTask {
         ctx.state.resumed = resumed.is_some();
         ctx.state.write_side = tasks::is_write_side(task);
         ctx.tags = tasks::tags(task);
+        // The board read above names the milestone: the ledger keeps it on
+        // every row of the round, so its cost survives the milestone closing.
+        ctx.tags.milestone = milestone_label(here.milestone.number, &here.milestone.title);
         ctx.state.round_base = self.repo.head_sha().await.unwrap_or_default();
         // The sessions a quota cut on this task: one per stage, resumed by
         // the stage runner when it opens that stage.
@@ -650,6 +653,10 @@ mod tests {
         assert_eq!(context.state.task_key, "11");
         assert_eq!(context.state.kind, "auto");
         assert!(context.state.has_task());
+        assert_eq!(
+            context.tags.milestone, "#4 task 4",
+            "every row of the round names the milestone it is spent on"
+        );
     }
 
     #[tokio::test]

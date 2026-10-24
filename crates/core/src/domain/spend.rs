@@ -24,9 +24,9 @@ pub struct Tokens {
 }
 
 /// What the billed task is, for the ledger: its unit of the architecture,
-/// the profile it was cut for, and its side.
+/// the profile it was cut for, its side, and the milestone it belongs to.
 ///
-/// Three plain strings, empty when unknown: `core` names no unit of the
+/// Plain strings, empty when unknown: `core` names no unit of the
 /// target's architecture, it only carries what the workflow read of it to
 /// the row. A run that works on no task (a review, a split) leaves them
 /// empty, and empty reads back as "not declared", never as a unit.
@@ -38,6 +38,31 @@ pub struct Tags {
     pub profile: String,
     /// The side of the architecture (`harness:read-side`, `harness:write-side`).
     pub side: String,
+    /// `#<n> <title>` of the task's milestone ([`milestone_label`]), empty
+    /// if unknown. Written where the money is spent, so a milestone closed
+    /// long ago still owns what it cost.
+    pub milestone: String,
+}
+
+/// How a milestone is named in the ledger and in the view: `#<n> <title>`.
+///
+/// One spelling for the writer and every reader, so a row written by a run
+/// and a row rebuilt from the board land in the same bucket. `number` is the
+/// issue number, as a `u64` or as the text a `Named` keeps it in.
+#[must_use]
+pub fn milestone_label(number: impl std::fmt::Display, title: &str) -> String {
+    format!("#{number} {title}")
+}
+
+/// The issue number a ledger `task` key names: `61` and `#61` are the same
+/// issue.
+///
+/// The dev loop bills a task under its bare number, every other workflow
+/// under its reference (`#61`); a reader that looks the key up on the board
+/// strips the `#` here rather than miss half the rows.
+#[must_use]
+pub fn task_number(key: &str) -> &str {
+    key.strip_prefix('#').unwrap_or(key)
 }
 
 /// What a turn cost, and what it consumed.
@@ -105,6 +130,20 @@ mod tests {
         // A cost of zero **observed** is not the same as nothing observed: the
         // first is a measurement, the second is ignorance.
         assert!(!spend.is_blind());
+    }
+
+    #[test]
+    fn a_milestone_is_named_by_its_number_then_its_title() {
+        assert_eq!(milestone_label(12, "Billing"), "#12 Billing");
+        assert_eq!(milestone_label("12", "Billing"), "#12 Billing");
+    }
+
+    #[test]
+    fn a_task_key_names_the_same_issue_with_or_without_its_hash() {
+        assert_eq!(task_number("#61"), "61");
+        assert_eq!(task_number("61"), "61");
+        assert_eq!(task_number(""), "");
+        assert_eq!(task_number("main_agent@e0b409e"), "main_agent@e0b409e");
     }
 
     #[test]
