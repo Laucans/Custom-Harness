@@ -95,6 +95,12 @@ exclude_re = [
   # their operator and match-arm mutants; a whole-body `Ok(..)` mutant
   # would need the signature written `Result<T, Halt>`.
   "-> (\\w+::)*Outcome<.*> with Outcome::(new|from|from_iter)\\(",
+  # Workflows, kill batch 2. Equivalent: a resumed marker and a wait marker
+  # open with different text (`harness-resumed` against `harness-waits-on`),
+  # so no two ever start at the same position of the comments: a resume
+  # `>` the wait's position and `>=` it agree.
+  "common/contest\\.rs:.*replace > with >= in waits_named$",
+  "common/contest\\.rs:.*replace > with >= in contract_waits$",
 ]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI

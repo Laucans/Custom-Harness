@@ -275,6 +275,61 @@ mod tests {
         assert!(writes.contains(&Wrote::BlockedByLink(11, 1)));
     }
 
+    #[test]
+    fn a_request_is_waited_on_its_own_number_and_the_task_s_own_on_none() {
+        assert_eq!(Asked::Opened(42).request(), Some(42));
+        assert_eq!(Asked::Existing(503).request(), Some(503));
+        assert_eq!(Asked::TasksOwn("own".to_string()).request(), None);
+    }
+
+    #[tokio::test]
+    async fn a_task_blocked_by_another_issue_still_gets_the_request_s_blocker() {
+        let blocked = |by: u64| Issue {
+            number: 11,
+            blocked_by: vec![Issue {
+                number: by,
+                ..Issue::default()
+            }],
+            ..Issue::default()
+        };
+        // Blocked by #9: the request #1 is linked too.
+        let elsewhere = FakeGitHub {
+            subs: vec![(4, vec![blocked(9)])],
+            ..gh(Vec::new())
+        };
+        let asked = ask(
+            &elsewhere,
+            &task(),
+            ("session.listScenes", "x"),
+            "main_agent",
+            &Logbook::null(),
+        )
+        .await
+        .expect("asked");
+        assert_eq!(asked, Asked::Opened(1));
+        assert!(elsewhere.writes().contains(&Wrote::BlockedByLink(11, 1)));
+        // Blocked by the request already: never linked twice.
+        let already = FakeGitHub {
+            subs: vec![(4, vec![blocked(1)])],
+            ..gh(Vec::new())
+        };
+        ask(
+            &already,
+            &task(),
+            ("session.listScenes", "x"),
+            "main_agent",
+            &Logbook::null(),
+        )
+        .await
+        .expect("asked");
+        assert!(
+            !already
+                .writes()
+                .iter()
+                .any(|wrote| matches!(wrote, Wrote::BlockedByLink(..)))
+        );
+    }
+
     #[tokio::test]
     async fn a_second_stop_on_the_same_id_reuses_the_open_request_whoever_asked() {
         let open = Issue {

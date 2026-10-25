@@ -322,8 +322,8 @@ mod tests {
         assert_eq!(change.task.title, "session.listScenes v2");
         assert_eq!(change.task.goal, "Scenes show their media.");
         assert_eq!(
-            change.task.acceptance.len(),
-            1,
+            change.task.acceptance,
+            ["given a scene with media, when listed, then mediaIds holds them"],
             "an empty criterion is dropped"
         );
         assert!(!change.breaking);

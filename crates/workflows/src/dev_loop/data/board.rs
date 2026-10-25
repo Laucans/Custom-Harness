@@ -333,6 +333,19 @@ mod tests {
     }
 
     #[test]
+    fn wanted_gives_the_numbered_task_only_when_it_can_run() {
+        let board = Board {
+            milestone: issue(4, &[labels::MILESTONE]),
+            // #11 may run; #12 has no `harness:ready`, so it may not.
+            tasks: vec![task(11), issue(12, &[labels::AGENT])],
+            resuming: None,
+        };
+        assert_eq!(board.wanted(11).map(|task| task.number), Some(11));
+        assert!(board.wanted(12).is_none(), "a task that cannot run");
+        assert!(board.wanted(99).is_none(), "not on this board");
+    }
+
+    #[test]
     fn stuck_tells_you_to_merge_when_everything_is_delivered() {
         let board = Board {
             milestone: issue(4, &[labels::MILESTONE]),

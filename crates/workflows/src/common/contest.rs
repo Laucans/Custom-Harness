@@ -847,6 +847,25 @@ mod tests {
         assert!(open_contest(5160, &rules).is_none());
     }
 
+    #[test]
+    fn the_latest_closed_contest_is_this_pr_s_and_closed() {
+        let closed = vec![
+            rules_issue(517, "closed", "Rules contested: PR #516"),
+            rules_issue(600, "closed", "Rules contested: PR #12"),
+            rules_issue(700, "open", "Rules contested: PR #516 (2)"),
+        ];
+        assert_eq!(latest_closed_contest(516, &closed), Some(517));
+    }
+
+    #[test]
+    fn only_rules_json_and_the_rules_tests_are_the_rules() {
+        assert!(is_rules_path("rules.json"));
+        assert!(is_rules_path("tests/rules/business/tests/r10.rs"));
+        for path in ["src/a.rs", "crates/x/rules.json", "tests/other/r10.rs"] {
+            assert!(!is_rules_path(path), "{path}");
+        }
+    }
+
     #[tokio::test]
     async fn a_pr_waits_on_its_open_contest_or_on_a_decided_wait_still_blocking() {
         let rules = vec![rules_issue(517, "open", "Rules contested: PR #516")];
@@ -983,6 +1002,17 @@ mod tests {
             .await
             .expect("read");
         assert_eq!(gone, Vec::<Settled>::new(), "#516 is no longer open");
+    }
+
+    #[tokio::test]
+    async fn a_contest_of_a_pr_no_longer_open_never_settles_another_pr() {
+        let gh = settled_board(false);
+        let closed = [rules_issue(517, "closed", "Rules contested: PR #516")];
+        let other = [pr("530", "feat/other", "main_agent")];
+        let found = settled(&gh, &closed, &[], &other, &[], "main_agent")
+            .await
+            .expect("read");
+        assert_eq!(found, Vec::<Settled>::new(), "#530 never contested");
     }
 
     #[tokio::test]
@@ -1234,6 +1264,30 @@ mod tests {
         .await
         .expect("read");
         assert_eq!(found, Vec::<Settled>::new());
+    }
+
+    #[tokio::test]
+    async fn a_contest_of_a_closed_milestone_lifts_nothing() {
+        let closed_milestone = Issue {
+            number: 28,
+            state: "closed".to_string(),
+            title: "x".to_string(),
+            ..Issue::default()
+        };
+        let branch = branching::milestone_branch(28, "x");
+        let gh = FakeGitHub {
+            files: HashMap::from([(("CONTEST.md".to_string(), branch), "R10".to_string())]),
+            ..FakeGitHub::default()
+        };
+        let closed = [rules_issue(
+            459,
+            "closed",
+            "Rules contested: R10 on milestone/28",
+        )];
+        let found = settled(&gh, &closed, &[], &[], &[closed_milestone], "main_agent")
+            .await
+            .expect("read");
+        assert_eq!(found, Vec::<Settled>::new(), "the milestone is closed");
     }
 
     #[tokio::test]

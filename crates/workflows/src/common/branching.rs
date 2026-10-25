@@ -1035,6 +1035,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_clean_merge_with_nothing_staled_builds_no_bundle_without_a_split() {
+        let repos = FakeRepos::default().rewriting(&["mock/pages.json"]);
+        let process = Rc::new(FakeProcess::default());
+        let (caught, _) = rebuilding(&repos, &process, &pages(PAGES_BUILT), &[]).await;
+        assert_eq!(caught, CaughtUp::Locally(Vec::new()));
+        assert!(process.ran.borrow().is_empty(), "no mock/build.sh");
+        assert!(!repos.asked("stage_all") && !repos.asked("commit"));
+        assert!(repos.asked("push HEAD:milestone/17-ai"));
+    }
+
+    #[tokio::test]
     async fn a_product_that_builds_no_bundle_is_not_rebuilt() {
         for disk in [
             Rc::new(FakeDisk::default()),

@@ -1107,6 +1107,23 @@ mod tests {
     }
 
     #[test]
+    fn a_park_ending_this_second_holds_no_task() {
+        let mut catch_ups = at("h1");
+        let all = building();
+        catch_ups.held.insert(6, "h1".to_string());
+        catch_ups.held.insert(7, "h1".to_string());
+        catch_ups.parked.insert(
+            6,
+            Parked {
+                until: 500,
+                recheck_at: 400,
+            },
+        );
+        assert_eq!(catch_ups.holding(&all, 499), [6], "still parked");
+        assert!(catch_ups.holding(&all, 500).is_empty(), "the park is over");
+    }
+
+    #[test]
     fn a_residual_conflict_holds_its_tasks_until_the_branch_takes_the_base() {
         let mut catch_ups = at("h1");
         let all = building();
@@ -2305,6 +2322,33 @@ mod tests {
             said,
             ["milestone/6-media holds main_agent on GitHub's merge — its park ends"]
         );
+        assert!(catch_ups.parked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_park_ending_this_second_goes_local_on_a_refusal() {
+        // `run` catches up at 10: a park until 10 is over.
+        let mut catch_ups = at("h1");
+        catch_ups.parked.insert(
+            6,
+            Parked {
+                until: 10,
+                recheck_at: 10,
+            },
+        );
+        let refusing = FakeGitHub {
+            refused_merges: vec!["milestone/6-media".to_string()],
+            ..FakeGitHub::default()
+        };
+        let regenerated = CaughtUp::Locally(vec!["Cargo.lock".to_string()]);
+        let (caught, went_local, _) = run(
+            &refusing,
+            &mut catch_ups,
+            &Busy::default(),
+            regenerated.clone(),
+        )
+        .await;
+        assert_eq!((caught, went_local), (regenerated, true));
         assert!(catch_ups.parked.is_empty());
     }
 

@@ -85,7 +85,13 @@ fn clean(source: &str) -> Vec<Line> {
         let chars: Vec<char> = raw.chars().collect();
         let mut code = Vec::new();
         let mut i = 0;
-        while i < chars.len() {
+        // Every step moves forward, so a line takes at most one step per
+        // character: the bound makes a step that does not move end the line
+        // rather than hang the scan.
+        for _ in 0..chars.len() {
+            if i >= chars.len() {
+                break;
+            }
             let Some((next, then)) = lex(&chars, i, state, &mut code) else {
                 break;
             };
@@ -156,10 +162,10 @@ fn lex_code(chars: &[char], i: usize, code: &mut Vec<char>) -> Option<(usize, Le
         code.extend(['"', '…']);
         (from + hashes + 1, Lexing::Text(Some(hashes)))
     } else if c == '\'' && at(i + 1) == Some('\\') {
-        let mut end = i + 3;
-        while end < chars.len() && chars[end] != '\'' {
-            end += 1;
-        }
+        // The closing quote, or the end of the line when it has none.
+        let end = (i + 3..chars.len())
+            .find(|&n| chars.get(n) == Some(&'\''))
+            .unwrap_or(chars.len());
         code.extend(['\'', '…', '\'']);
         (end + 1, Lexing::Code)
     } else if c == '\'' && at(i + 2) == Some('\'') {

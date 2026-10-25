@@ -287,6 +287,28 @@ mod tests {
     }
 
     #[test]
+    fn a_screen_need_is_a_composition_s_and_no_other_kind_is() {
+        let waits = Waits(BTreeMap::from([(
+            "R3".to_string(),
+            vec!["micro-ui:CampaignList".to_string()],
+        )]));
+        assert_eq!(
+            unblocked(&task("composition", "CampaignList"), &waits),
+            Unblocked::default(),
+            "a composition builds no Micro-UI"
+        );
+    }
+
+    #[test]
+    fn a_rule_waiting_on_no_unit_is_never_completed() {
+        let waits = Waits(BTreeMap::from([("R1".to_string(), Vec::new())]));
+        assert_eq!(
+            unblocked(&task("capability", "x.list"), &waits),
+            Unblocked::default()
+        );
+    }
+
+    #[test]
     fn the_bonus_counts_rules_up_to_the_cap_and_a_data_capability_goes_first() {
         let many = |count: usize, completed: bool| {
             Waits(

@@ -325,6 +325,16 @@ mod tests {
     }
 
     #[test]
+    fn bringing_a_branch_up_to_date_in_one_word_is_caught() {
+        assert!(prescribed("Bring milestone/28 up-to-date with main_agent.", BASE, None).is_some());
+        assert_eq!(
+            prescribed("milestone/28 is up-to-date with main_agent.", BASE, None),
+            None,
+            "a description, no bring"
+        );
+    }
+
+    #[test]
     fn a_longer_branch_name_is_not_the_integration_branch() {
         assert_eq!(prescribed("merge main_agent_old into it", BASE, None), None);
         assert_eq!(prescribed("pull my-main_agent", BASE, None), None);

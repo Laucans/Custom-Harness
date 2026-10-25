@@ -182,9 +182,8 @@ pub fn usage_order(sources: &[String], ident: &str, modules: &[String]) -> Vec<S
         }
     };
     for source in sources {
-        let mut rest = source.as_str();
-        while let Some(at) = rest.find(&prefix) {
-            rest = &rest[at + prefix.len()..];
+        // What follows each `ident::`, read up to the next one.
+        for rest in source.split(prefix.as_str()).skip(1) {
             if let Some(group) = rest.strip_prefix('{') {
                 let inside = group.split('}').next().unwrap_or_default();
                 for item in inside.split(',') {
@@ -459,6 +458,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             "{said}"
         );
         assert!(!said.contains(".cargo"), "{said}");
+    }
+
+    /// A dependency of the `modules` named, each a one-line API.
+    fn small(modules: &[&str]) -> Dependency {
+        Dependency {
+            name: "d".to_string(),
+            source: "v1".to_string(),
+            modules: modules
+                .iter()
+                .map(|name| Module {
+                    name: (*name).to_string(),
+                    path: format!("src/{name}.rs"),
+                    shape: format!("pub fn {name}()"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_module_that_fits_its_budget_exactly_is_carried_one_byte_less_is_not() {
+        let whole = carried_dependencies(&[small(&["lib"])], usize::MAX);
+        // The block and the two bytes of the separator it may need.
+        let fits = whole.len() + 2;
+        assert_eq!(carried_dependencies(&[small(&["lib"])], fits), whole);
+        let short = carried_dependencies(&[small(&["lib"])], fits - 1);
+        assert!(!short.contains("pub fn lib()"), "{short}");
+        assert!(short.contains("1 module(s) of d not carried"), "{short}");
+    }
+
+    #[test]
+    fn the_blocks_are_separated_by_a_blank_line_and_none_comes_first() {
+        let lib = carried_dependencies(&[small(&["lib"])], usize::MAX);
+        let queue = carried_dependencies(&[small(&["queue"])], usize::MAX);
+        assert_eq!(
+            carried_dependencies(&[small(&["lib", "queue"])], usize::MAX),
+            format!("{lib}\n\n{queue}")
+        );
+    }
+
+    #[test]
+    fn a_module_s_sub_files_join_its_own_one_line_apart() {
+        let files = [
+            (
+                "postgres/values.rs".to_string(),
+                "pub fn b() {}\n".to_string(),
+            ),
+            ("postgres.rs".to_string(), "pub fn a() {}\n".to_string()),
+        ];
+        let dependency = dependency("d", "v1", &files, &[], DATAGUARD_IDENT, &[]);
+        let shapes: Vec<&str> = dependency
+            .modules
+            .iter()
+            .map(|m| m.shape.as_str())
+            .collect();
+        assert_eq!(shapes, ["pub fn a()\npub fn b()"]);
+    }
+
+    #[test]
+    fn a_use_past_the_start_of_a_line_is_counted() {
+        let product = strings(&[" harness_dataguard::queue::Q; harness_dataguard::queue::R;"]);
+        let modules = strings(&["aggregate", "queue"]);
+        assert_eq!(
+            usage_order(&product, DATAGUARD_IDENT, &modules),
+            strings(&["queue", "aggregate"])
+        );
     }
 
     /// The engine's sources as this workspace holds them.

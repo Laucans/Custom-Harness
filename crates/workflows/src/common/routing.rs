@@ -4625,6 +4625,85 @@ mod tests {
         assert_eq!(pulled(&stuck, &[]), None);
     }
 
+    /// Plan order #2, #1, #3: #3 waits on #1 alone.
+    const UNRELATED_FIRST: &str = r#"{"version":1,"milestones":[
+      {"number":2,"title":"B","systems":["b"],"produces":[],"consumes":[],"depends_on":[]},
+      {"number":1,"title":"A","systems":["a"],"produces":[],"consumes":[],"depends_on":[]},
+      {"number":3,"title":"C","systems":["c"],"produces":[],"consumes":[],"depends_on":[1]}
+    ],"ids":{}}"#;
+
+    /// Plan order #1, #2, #3, each waiting on the one before.
+    const CHAIN: &str = r#"{"version":1,"milestones":[
+      {"number":1,"title":"A","systems":["a"],"produces":[],"consumes":[],"depends_on":[]},
+      {"number":2,"title":"B","systems":["b"],"produces":[],"consumes":[],"depends_on":[1]},
+      {"number":3,"title":"C","systems":["c"],"produces":[],"consumes":[],"depends_on":[2]}
+    ],"ids":{}}"#;
+
+    #[test]
+    fn a_pull_walks_only_what_its_start_waits_on_through_unsplit_milestones() {
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        let taken = |producer: u64| Pull {
+            producer,
+            milestone: 9,
+            task: 90,
+            need: "x".to_string(),
+            why: Starving::Starved,
+            splittable: true,
+            through: None,
+        };
+        let graph = parse_graph(Some(UNRELATED_FIRST)).expect("a graph");
+        let milestones = vec![ready(1), ready(2), ready(3)];
+        assert_eq!(
+            pulled_through(3, &graph, &milestones, &[]),
+            Some(1),
+            "#2 comes first, but #3 does not wait on it"
+        );
+        assert_eq!(
+            pulled_through(3, &graph, &milestones, &[taken(2)]),
+            Some(1),
+            "another producer pulled already"
+        );
+        assert_eq!(pulled_through(3, &graph, &milestones, &[taken(1)]), None);
+        let chain = parse_graph(Some(CHAIN)).expect("a graph");
+        let split = vec![
+            ready(1),
+            issue(2, &[labels::MILESTONE, labels::TRIGGERED]),
+            ready(3),
+        ];
+        assert_eq!(
+            pulled_through(3, &chain, &split, &[]),
+            None,
+            "#2 is split: the walk stops there"
+        );
+    }
+
+    #[test]
+    fn a_starving_milestone_is_said_in_words() {
+        assert_eq!(Starving::Starved.said(), "starved");
+        assert_eq!(Starving::HeldAtLanding.said(), "held at landing");
+    }
+
+    #[test]
+    fn a_debt_merge_holds_the_next_for_three_hours() {
+        let pulse = Pulse {
+            debt_merged_at: Some(10_000),
+            ..quiet()
+        };
+        let held_at = |now: u64| {
+            let mut snapshot = Snapshot {
+                debt_landings: vec![Landing::Merge {
+                    issue: 7,
+                    pr: debt("40", 7),
+                }],
+                ..empty()
+            };
+            hold_debt_merges(&mut snapshot, &pulse, now);
+            snapshot.debt_landings.is_empty()
+        };
+        assert!(held_at(10_000 + 3 * 3600 - 1));
+        assert!(!held_at(10_000 + 3 * 3600));
+    }
+
     #[test]
     fn a_stuck_pull_is_told_once_per_change() {
         let mut pulse = Pulse::default();
@@ -4927,6 +5006,9 @@ mod tests {
             .labels
             .push(labels::WAITING_MERGE.to_string());
         assert_eq!(touched(&snapshot), [(61, 1), (62, 1)]);
+        // A rule no task builds a unit of: nobody unblocks it.
+        snapshot.rule_waits = waits_of(&[("R4", &["micro-ui:Elsewhere"])]);
+        assert!(touched(&snapshot).is_empty(), "{:?}", touched(&snapshot));
     }
 
     fn arbitrary_plant() -> impl Strategy<Value = (Vec<Issue>, Graph, Option<u64>)> {
